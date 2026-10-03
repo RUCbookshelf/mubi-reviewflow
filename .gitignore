@@ -1,0 +1,35 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# User data, databases, and logs
+data/
+instance/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Python and editor artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Generated Windows build output
+build/Output/
+build/.venv/
+build/runtime/
+build/wheelhouse/
+build/*.exe
+build/*.msi

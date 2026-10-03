@@ -1,0 +1,13 @@
+# Co-Bookshelf 自定义后端依赖（Python 3.12，装进项目 .venv）
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+PyJWT>=2.8
+passlib[bcrypt]>=1.7
+# 说明：passlib 1.7.4 与 bcrypt>=4.1 存在版本探测兼容问题，
+# 本后端密码哈希直接调用 bcrypt 库（随 passlib[bcrypt] 一并安装）。
+bcrypt>=4.0
+python-docx>=1.1
+python-pptx>=1.0
+# 以下为 coscreen 本体既有依赖（后端复用），仅供部署参考：
+# pandas pypdf rapidfuzz

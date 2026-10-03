@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="木笔WriteLab icon">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#2F6F6A"/>
+  <!-- 白玉笔尖花苞 -->
+  <path d="M32 54 C25 45 19 38 19 30 C19 23 24 18 30 17 C31.2 16.6 31.2 16.6 32 18 C32.8 16.6 32.8 16.6 34 17 C40 18 45 23 45 30 C45 38 39 45 32 54 Z" fill="#F7FBF9"/>
+  <!-- 玉青笔缝与花瓣折线 -->
+  <path d="M32 54 L32 42" fill="none" stroke="#2F6F6A" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M32 40 C28 33 25 27 24 20" fill="none" stroke="#2F6F6A" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M32 40 C36 33 39 27 40 20" fill="none" stroke="#2F6F6A" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- 花芽黄呼吸孔 -->
+  <circle cx="32" cy="40" r="2.6" fill="#C2A878"/>
+</svg>

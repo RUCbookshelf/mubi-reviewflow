@@ -1,0 +1,48 @@
+/* Surface roles, not a blanket recoloring rule.
+ * Workspace ground, editing surface, and subdued regions are shared by all pages.
+ * PDF paper, publication plots, semantic decisions, highlights and login art are exempt. */
+:root {
+ --workspace-ground:var(--bg);
+ --surface-subtle:color-mix(in srgb,var(--surface) 82%,var(--primary-light));
+ --reader-stage:#E5EAE8;
+ --document-paper:#FFFFFF;
+ --document-ink:#1F2A37;
+ --status-warning-bg:color-mix(in srgb,var(--surface) 88%,var(--accent));
+ --status-warning-ink:#765C2C;
+ --on-primary:#FFFFFF;
+ --on-danger:#FFFFFF;
+}
+html[data-theme="dark"] {
+ --reader-stage:#20262B;
+ --status-warning-ink:var(--accent);
+ --on-primary:#102621;
+ --on-danger:#29170F;
+}
+/* Explicit backgrounds prevent transparent workspaces exposing the login canvas. */
+body[data-workspace] {background:var(--workspace-ground)}
+#appMain,#appMain>.view,body[data-workspace="analysis"] #appMain>.view {background:var(--workspace-ground)}
+#appMain section.page {background:transparent}
+#appMain>.top {background:var(--surface)}
+body {--an-bg:var(--workspace-ground);--an-paper:var(--surface);--an-soft:var(--surface-subtle)}
+/* Form panels use the same surface in both themes; stateful accents remain untouched. */
+#appMain .card {background:var(--surface)}
+#appMain .an-config-summary {background:transparent}
+#appMain .rf-raw-output pre,#appMain pre.dot {background:var(--surface-subtle)}
+/* Reader surround is deliberately distinct; paper and its original colors are not filtered. */
+#appMain .pdfstage,#appMain .bench-pdf-stage,#appMain .pdfwrap,
+#appMain .pdf-container:not(:empty),#appMain #pdfFrame,#appMain #cbPdfFrame {background:var(--reader-stage)}
+#appMain .pdfempty {background:var(--reader-stage)}
+#appMain .pdf-toolbar,#appMain .ft-side,#appMain .ft-decide {background:var(--surface)}
+#appMain .pdf-container .pdfViewer .page {background:var(--document-paper);color-scheme:light}
+/* Empty report previews are surfaces; a rendered publication has white paper. */
+#appMain .prisma-view {background:var(--surface);color:var(--ink)}
+#appMain .prisma-view:has(svg),#appMain .prisma-view:has(img) {background:var(--document-paper);color:var(--document-ink);color-scheme:light}
+/* Do not target SVG fill, canvas, highlight swatches or screenshot/export generation. */
+#appMain .chip.c-may,#appMain #prIssues li.c-may {background:var(--status-warning-bg);color:var(--status-warning-ink)}
+#appMain .pr-field .pr-tag.manual {background:var(--status-warning-bg);color:var(--status-warning-ink)}
+
+/* Keep the original semantic background hues while using legible foregrounds. */
+#appMain .btn.b-inc,#appMain .al-mode button.on,#appMain .al-tag {color:var(--on-primary)}
+#appMain .btn.b-exc,#appMain .vdot:not(.vwarn) {color:var(--on-danger)}
+.toast.t-inc {color:var(--on-primary)}
+.toast.t-exc {color:var(--on-danger)}

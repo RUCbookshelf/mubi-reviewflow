@@ -1,0 +1,30 @@
+# 木笔ReviewFlow 运行时依赖（Python 3.12）。
+# 仅包含 Path B（custom_backend + custom_frontend）打包所需的运行库；
+# 测试/开发依赖（streamlit、pytest 等）不进安装包。
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+PyJWT>=2.8
+passlib[bcrypt]>=1.7
+bcrypt>=4.0
+pandas>=2.2,<3
+rispy>=0.9
+rapidfuzz>=3.6
+pypdf>=4.0
+statsmodels==0.14.5
+python-docx>=1.1
+python-pptx>=1.0
+
+# Research trace chart exports
+CairoSVG>=2.7
+Pillow>=10
+
+# AI ranking and analysis dependencies are required at runtime.
+numpy>=1.26,<3
+scipy>=1.11,<2
+scikit-learn>=1.4,<2
+
+# Windows SVG rendering: native extensions ship in wheels; no external Cairo DLL.
+reportlab>=4,<5; sys_platform == "win32"
+svglib==1.5.1; sys_platform == "win32"
+rl-renderPM==4.0.3; sys_platform == "win32"

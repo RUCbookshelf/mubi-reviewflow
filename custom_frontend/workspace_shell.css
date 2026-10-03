@@ -1,0 +1,98 @@
+/* Shared navigation: identical geometry and theme tokens in every workspace.
+   Kept separate from analysis panels to avoid changing reader/chart algorithms. */
+:root {--rf-sidebar-width:196px}
+#appShell.sb,body[data-workspace="analysis"] #appShell.sb {
+  width:var(--rf-sidebar-width);padding:16px 12px;background:var(--bg);border-color:var(--border);
+  scrollbar-width:thin;overscroll-behavior:contain;
+}
+#appShell .lockup {gap:8px;margin-bottom:22px}
+#appShell .lockup img {width:34px;height:34px}
+#appShell .lockup .nm {font-size:14px;white-space:nowrap;letter-spacing:-.3px}
+#appShell .lockup .sub {font-size:10px;letter-spacing:1.2px;margin-top:3px}
+#appShell .grp {font-size:10px;letter-spacing:1px;border:0;color:var(--muted);margin:20px 0 8px;padding:0 0 0 9px}
+#appShell .nav button {font-size:13px;line-height:1.5;min-height:34px;padding:7px 10px;border-radius:4px;gap:9px;margin:2px 0;overflow-wrap:anywhere}
+#appShell .nav button.on,body[data-workspace="analysis"] #appShell .nav button.on {background:var(--surface);box-shadow:inset 3px 0 var(--primary);color:var(--ink)}
+#appShell .nav button:hover {background:var(--primary-light)}
+#appShell .fld {display:block;font-size:11px;margin-top:12px;color:var(--muted)}
+#appShell .fld select {display:block;width:100%;height:32px;margin-top:5px;border:1px solid var(--border);border-radius:4px;font:12px var(--font-body);background:var(--surface);color:var(--ink)}
+#appShell .pg .bar {height:3px}
+#appShell .pg .cap {font-size:10px;line-height:1.5}
+#appShell #whoName {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#appShell #logoutBtn {white-space:nowrap;flex-shrink:0}
+#appMain {min-width:0}
+#appMain .top {position:relative;min-height:54px;padding:8px 22px;gap:8px 12px;flex-wrap:wrap;flex-shrink:0;background:var(--surface);border-color:var(--border);z-index:20}
+#appMain .top .tabs {display:flex;order:3;flex-basis:100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;padding-top:7px;border-top:1px solid var(--border)}
+#appMain .top .tabs button {flex:none;white-space:nowrap}
+#appMain .top .rf-breadcrumb {order:1}
+#appMain .top #rfTaskContext,#appMain .top>div:last-child {order:2}
+#appMain .top>div:last-child {margin-left:auto;flex-shrink:0}
+#appMain .top #themeBtn,#appMain .top #rf-app-language-button {border:0;border-radius:4px;min-height:32px;padding:5px 8px;font-size:12px}
+#appMain .view {min-width:0;scrollbar-gutter:stable}
+body > .footer,body[data-workspace="analysis"] > .footer {left:var(--rf-sidebar-width);background:var(--surface);border-color:var(--border)}
+.rf-breadcrumb {display:flex;align-items:center;gap:8px;min-width:0;flex:1;font:12px/1.5 var(--font-body);color:var(--muted)}
+.rf-workspace-link {padding:6px 4px;flex-shrink:0;max-width:48%;color:var(--muted);text-decoration:none;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;border-radius:3px}
+.rf-workspace-link:hover {color:var(--primary-dark);background:var(--primary-light)}
+.rf-breadcrumb-separator {opacity:.6;flex-shrink:0;user-select:none}
+.rf-context-switcher {position:relative;min-width:0;max-width:100%}
+#appMain .top .rf-context-button {display:flex;align-items:center;gap:7px;border:0;border-radius:4px;padding:6px 8px;color:var(--ink);font:12px/1.5 var(--font-body);max-width:100%;min-width:0}
+.rf-context-button span {display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:30vw}
+.rf-context-button svg {width:13px;height:13px;flex-shrink:0}
+#rfWorkspaceMenu {position:absolute;top:calc(100% + 7px);left:0;width:260px;max-width:calc(100vw - 28px);max-height:min(600px,75dvh);overflow-y:auto;overscroll-behavior:contain;padding:8px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:7px;box-shadow:0 12px 36px rgba(0,0,0,.16);z-index:70}
+#rfWorkspaceMenu[hidden] {display:none!important}
+#rfWorkspaceMenu .rf-menu-heading {font-size:11px;line-height:1.5;color:var(--muted);padding:7px 10px 9px;border-bottom:1px solid var(--border);margin-bottom:4px}
+#rfWorkspaceMenu a {display:flex;align-items:center;justify-content:space-between;gap:12px;text-decoration:none;color:var(--ink);font:12px/1.5 var(--font-body);padding:9px 10px;border-radius:4px}
+#rfWorkspaceMenu a:hover,#rfWorkspaceMenu a:focus-visible {background:var(--primary-light);color:var(--primary-dark)}
+#rfWorkspaceMenu a[aria-current="page"] {background:var(--bg);box-shadow:inset 2px 0 var(--primary);font-weight:650}
+#rfWorkspaceMenu a[aria-current="page"]::after {content:"";width:5px;height:5px;border-radius:50%;background:var(--primary);flex-shrink:0}
+#rfCloseNavigation {display:none}
+#appMain :focus-visible,#appShell :focus-visible {outline:2px solid var(--primary);outline-offset:3px}
+html[data-theme="dark"] {color-scheme:dark}
+html[data-theme="light"] {color-scheme:light}
+/* Horizontal tables scroll in their own region, not the whole application. */
+.rf-table-scroll {max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin}
+.rf-table-scroll:focus-visible {outline-offset:1px}
+#appMain .ta {max-width:100%;font-family:var(--font-body);color:var(--ink);background:var(--surface);border-color:var(--border)}
+@media(max-width:760px) {
+ #appShell.sb,body[data-workspace="analysis"] #appShell.sb {width:240px;padding-top:16px}
+ #appShell .lockup {padding-right:22px}
+ #rfCloseNavigation {display:block;position:absolute;right:9px;top:12px;border:0;padding:7px;background:transparent;color:var(--ink);border-radius:4px;font:12px var(--font-body);cursor:pointer}
+ #rfCloseNavigation svg {width:16px;height:16px;display:block}
+ #appMain .top,body[data-workspace="analysis"] #appMain .top {padding:8px 12px;gap:6px;flex-wrap:wrap}
+ #appMain .top .rf-breadcrumb {order:3;flex-basis:100%;min-height:28px;border-top:1px solid var(--border);padding-top:6px;font-size:11px}
+ #appMain .top .rf-context-button {font-size:11px;padding:3px 6px}
+ .rf-context-button span {max-width:52vw}
+ .rf-workspace-link {padding:3px 4px;max-width:45%}
+ #rfWorkspaceMenu {position:fixed;left:12px!important;right:12px;top:100px;width:auto;max-height:calc(100dvh - 120px);max-width:none}
+ body>.footer,body[data-workspace="analysis"]>.footer {left:0}
+ #appMain .view {padding-left:14px;padding-right:14px}
+}
+@media(prefers-reduced-motion:reduce) {
+ #appMain *,#appShell *,#appMain *::before {transition:none!important;animation:none!important;scroll-behavior:auto!important}
+}
+/* Qualitative evidence uses the same field and surface system, with visible labels. */
+.page[data-p="analysis"] .rf-qual-section {border-top:1px solid var(--border);padding:18px 0}
+.page[data-p="analysis"] .rf-qual-section h4 {font-size:14px;margin-bottom:14px}
+.rf-qual-fields {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 18px;align-items:start}
+.rf-qual-field {display:flex;flex-direction:column;gap:6px;min-width:0;color:var(--muted);font-size:12px}
+.rf-qual-field .input {width:100%;margin:0}
+.rf-qual-field:has(select[multiple]) {grid-column:span 2}
+.rf-qual-field select[multiple] {min-height:100px}
+.rf-qual-actions {display:flex;justify-content:flex-end;margin-top:14px}
+.rf-qual-records {border-top:1px solid var(--border);padding:20px 0}
+.rf-qual-records h4 {font-size:14px;margin-bottom:12px}
+.rf-record-group h5 {font:600 12px var(--font-body);color:var(--muted);padding:10px 0}
+.rf-qual-record {padding:12px 0;border-top:1px solid var(--border);overflow-wrap:anywhere}
+.rf-qual-record p {font-size:13px;line-height:1.7}
+.rf-qual-record blockquote {border-left:2px solid var(--border);padding:8px 12px;color:var(--muted);font-size:12px;margin:8px 0}
+.rf-record-meta {display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin-top:7px}
+.rf-raw-output pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:12px/1.6 ui-monospace,monospace;background:var(--an-soft);padding:12px}
+#appMain .rf-table-scroll table {width:100%}
+html[data-theme="dark"] #appMain .btn.b-inc {color:var(--bg)}
+@media(max-width:1050px){.rf-qual-fields {grid-template-columns:repeat(2,minmax(0,1fr))}.rf-qual-field:has(select[multiple]){grid-column:span 1}}
+@media(max-width:600px){.rf-qual-fields{grid-template-columns:minmax(0,1fr)}.rf-qual-field:has(select[multiple]){grid-column:auto}.rf-qual-actions{justify-content:flex-start}}
+
+.rf-qual-field textarea {min-height:76px;resize:vertical;line-height:1.65;padding:9px 11px}
+@media(min-width:1051px){
+ .rf-qual-field:has(#anQualFinding){grid-column:1 / -1}
+ .rf-qual-field:has(#anQualQuote){grid-column:span 2}
+}
