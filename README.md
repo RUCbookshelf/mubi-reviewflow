@@ -111,7 +111,7 @@ python -m pytest
 
 ### 许可证与联系
 
-项目自身的许可证尚未确定，仓库当前未提供根目录 `LICENSE`。第三方组件遵循各自许可证，见[第三方许可](THIRD_PARTY_NOTICES.md)与[发布准备说明](OPEN_SOURCE_RELEASE.md)。
+本项目采用 MIT 许可证，详见根目录 [`LICENSE`](LICENSE)。第三方组件遵循各自许可证，见[第三方许可](THIRD_PARTY_NOTICES.md)与[发布准备说明](OPEN_SOURCE_RELEASE.md)。
 
 作者：**Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
@@ -204,7 +204,7 @@ Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscre
 
 ### License and contact
 
-A project license has not yet been selected; no root `LICENSE` is currently provided. Third-party components retain their respective licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and [release preparation](OPEN_SOURCE_RELEASE.md).
+This project is licensed under the MIT License; see the root [`LICENSE`](LICENSE). Third-party components retain their respective licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and [release preparation](OPEN_SOURCE_RELEASE.md).
 
 Author: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
@@ -297,7 +297,7 @@ python -m pytest
 
 ### Лицензия и контакты
 
-Лицензия самого проекта ещё не выбрана; файла `LICENSE` в корне пока нет. Сторонние компоненты распространяются по собственным лицензиям. См. [уведомления](THIRD_PARTY_NOTICES.md) и [подготовку выпуска](OPEN_SOURCE_RELEASE.md).
+Проект распространяется по лицензии MIT; см. корневой файл [`LICENSE`](LICENSE). Сторонние компоненты распространяются по собственным лицензиям. См. [уведомления](THIRD_PARTY_NOTICES.md) и [подготовку выпуска](OPEN_SOURCE_RELEASE.md).
 
 Автор: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
@@ -390,6 +390,6 @@ Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API
 
 ### Licence et contact
 
-La licence du projet n'a pas encore été choisie ; aucun fichier `LICENSE` n'est actuellement fourni à la racine. Les composants tiers conservent leurs licences respectives. Voir les [mentions tierces](THIRD_PARTY_NOTICES.md) et la [préparation de publication](OPEN_SOURCE_RELEASE.md).
+Ce projet est distribué sous licence MIT ; voir le fichier [`LICENSE`](LICENSE) à la racine. Les composants tiers conservent leurs licences respectives. Voir les [mentions tierces](THIRD_PARTY_NOTICES.md) et la [préparation de publication](OPEN_SOURCE_RELEASE.md).
 
 Auteur : **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
