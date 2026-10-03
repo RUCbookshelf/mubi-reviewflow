@@ -1,10 +1,10 @@
-# 木笔 ReviewFlow
-
-**系统综述与 Meta 分析工作台 · Systematic review and meta-analysis workspace**
-
-[中文](#中文) · [English](#english) · [Русский](#русский) · [Français](#français)
-
-[GitHub](https://github.com/RUCbookshelf/mubi-reviewflow) · [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) · [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues)
+<div align="center">
+  <h1>木笔 ReviewFlow</h1>
+  <p><img src="custom_frontend/assets/icon_writelab_budnib_20260824.svg" alt="木笔 WriteLab 标识" width="96"></p>
+  <p><strong>系统综述与 Meta 分析工作台 · Systematic review and meta-analysis workspace</strong></p>
+  <p><a href="#中文">中文</a> · <a href="#english">English</a> · <a href="#русский">Русский</a> · <a href="#français">Français</a></p>
+  <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
+</div>
 
 ## 中文
 
