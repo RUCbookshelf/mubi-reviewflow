@@ -24,8 +24,8 @@
 | XlsxWriter 3.2.9 | python-pptx 依赖 | BSD-2-Clause |
 | python-dateutil 2.9.0.post0 | pandas 的依赖 | BSD-3-Clause 或 Apache-2.0 双许可 |
 | six 1.17.0 | python-dateutil 的依赖 | MIT |
-| annotated-doc 0.0.5、annotated-types 0.8.0、typing-inspection 0.4.4 | 类型支持 | MIT |
-| typing-extensions 4.16.0 | 类型支持 | PSF-2.0 |
+| annotated-doc 0.0.5、annotated-types 0.8.0、typing-inspection 0.4.4 | 输入支持 | MIT |
+| typing-extensions 4.16.0 | 输入支持 | PSF-2.0 |
 | PDF.js 4.10.38 | 浏览器内 PDF 阅读 | Apache-2.0；完整文本见 `custom_frontend/pdfjs/LICENSE` |
 
 PRISMA 图下方的 16 种来源引文由 [Citation Style Language 官方样式库](https://github.com/citation-style-language/styles)
