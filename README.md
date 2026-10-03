@@ -24,3 +24,8 @@ Third-party components retain their respective licenses. See [THIRD_PARTY_NOTICE
 ## License
 
 This project is distributed under the MIT License. See [LICENSE](LICENSE).
+
+## Screenshots
+<img width="2559" height="1480" alt="preview-3" src="https://github.com/user-attachments/assets/2b0ff311-585b-4cb9-9212-bdecff39dbf7" />
+<img width="2559" height="1476" alt="preview-2" src="https://github.com/user-attachments/assets/cde6472f-5022-4384-ab15-3f862d38f678" />
+<img width="2559" height="1479" alt="preview-1" src="https://github.com/user-attachments/assets/d31d71a5-4bb3-4d5b-a21a-e4c619466f9f" />
