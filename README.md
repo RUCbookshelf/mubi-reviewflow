@@ -88,9 +88,9 @@ macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚�
 
 ### 常见问题
 
-- **无法连接 8613：**8613 是默认端口，不是错误代码。登录页提供「连接诊断与修复」。Windows 页面打不开时，可从开始菜单运行「检查与修复 ReviewFlow」，或运行安装目录的 `repair_reviewflow.bat`。
-- **依赖修复失败：**查看 `%LOCALAPPDATA%\ReviewFlow\startup_diagnostic.log`。若自带 Python 被删除，重新运行安装 EXE。修复不删除研究数据。
-- **反馈问题：**请在 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) 提供系统、应用版本、复现步骤及已去除个人信息的日志。
+- **无法连接 8613**：8613 是默认端口，不是错误代码。登录页提供「连接诊断与修复」。Windows 页面打不开时，可从开始菜单运行「检查与修复 ReviewFlow」，或运行安装目录的 `repair_reviewflow.bat`。
+- **依赖修复失败**：查看 `%LOCALAPPDATA%\ReviewFlow\startup_diagnostic.log`。若自带 Python 被删除，重新运行安装 EXE。修复不删除研究数据。
+- **反馈问题**：请在 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) 提供系统、应用版本、复现步骤及已去除个人信息的日志。
 
 ### 开发与贡献
 
