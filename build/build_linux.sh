@@ -27,6 +27,7 @@ PY="$WORK/venv/bin/python"
 cp -a "$WORK/dist/ReviewFlow/." "$APPDIR/usr/bin/"
 cp "$ROOT/build/icon_256.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/reviewflow.png"
 cp "$ROOT/build/icon_256.png" "$APPDIR/.DirIcon"
+cp "$ROOT/build/icon_256.png" "$APPDIR/reviewflow.png"
 cp "$ROOT/LICENSE" "$APPDIR/LICENSE"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APPDIR/THIRD_PARTY_NOTICES.md"
 cat > "$APPDIR/AppRun" <<'EOF'
