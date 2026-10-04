@@ -1,0 +1,94 @@
+name: Build and publish desktop releases
+
+on:
+  push:
+    branches:
+      - "release/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-2022
+            command: windows
+            artifact: ReviewFlow-Setup-x64.exe
+          - platform: macos-x64
+            runner: macos-14
+            command: macos
+            artifact: ReviewFlow.dmg
+          - platform: linux-x64
+            runner: ubuntu-22.04
+            command: linux
+            artifact: ReviewFlow-x86_64.AppImage
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Linux build dependencies
+        if: matrix.command == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libcairo2-dev pkg-config libfuse2
+      - name: Install Windows installer compiler
+        if: matrix.command == 'windows'
+        run: choco install innosetup --yes --no-progress
+      - name: Build Windows installer
+        if: matrix.command == 'windows'
+        shell: cmd
+        run: build\build_windows.bat __inner__
+      - name: Build macOS disk image
+        if: matrix.command == 'macos'
+        run: bash build/build_macos.sh
+      - name: Build Linux AppImage
+        if: matrix.command == 'linux'
+        run: bash build/build_linux.sh
+      - name: Collect release file
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          if [ "${{ matrix.command }}" = windows ]; then
+            cp build/Output/${{ matrix.artifact }} release-assets/
+          else
+            cp build/dist/${{ matrix.artifact }} release-assets/
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewflow-${{ matrix.platform }}
+          path: release-assets/${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reviewflow-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate checksums
+        run: cd release-assets && sha256sum * > SHA256SUMS.txt
+      - name: Create v2.0.0 release and upload installers
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0.0
+          target_commitish: ${{ github.sha }}
+          name: 木笔 ReviewFlow 2.0.0
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: release-assets/*

@@ -325,6 +325,7 @@ echo   log: %LOG%
 echo   Please send this log file back for diagnosis.
 echo ============================================================
 echo.
+if defined GITHUB_ACTIONS exit /b 1
 pause
 exit /b 1
 
