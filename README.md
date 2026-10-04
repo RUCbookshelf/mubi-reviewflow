@@ -8,9 +8,10 @@
 
 ## 中文
 
-木笔 ReviewFlow 将文献导入、筛选、编码、数据分析与研究过程记录放在同一个工作台中。个人可以在本机离线使用；团队可以部署到服务器，共享任务文献和进度，同时独立保存各自的筛选决定。
+木笔 ReviewFlow 将文献导入、筛选、编码、数据分析与研究过程记录放在同一个工作台中，避免来回调动软件。
+个人可以在本机离线使用；团队可以部署到服务器，共享任务文献和进度，同时独立保存各自的筛选决定。
 
-应用采用 FastAPI 后端、浏览器前端和 Python 计算模块。桌面安装包包含 Python 与运行依赖，通过浏览器打开界面；使用者无需自行配置 Python 或 WSL。当前 Windows 安装包版本为 **2.0**。
+应用采用 FastAPI 后端、浏览器前端和 Python 计算模块。桌面安装包包含 Python 与运行依赖，通过浏览器打开界面；使用者无需自行配置 Python 或 WSL。您可以直接前往Releases下载Linux、Windows、macOS对应安装包进行体验。
 
 ### 主要功能
 
@@ -89,7 +90,7 @@ macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚�
 
 - **无法连接 8613：**8613 是默认端口，不是错误代码。登录页提供「连接诊断与修复」。Windows 页面打不开时，可从开始菜单运行「检查与修复 ReviewFlow」，或运行安装目录的 `repair_reviewflow.bat`。
 - **依赖修复失败：**查看 `%LOCALAPPDATA%\ReviewFlow\startup_diagnostic.log`。若自带 Python 被删除，重新运行安装 EXE。修复不删除研究数据。
-- **提交问题：**在 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) 提供系统、应用版本、复现步骤及已去除个人信息的日志。
+- **反馈问题：**请在 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) 提供系统、应用版本、复现步骤及已去除个人信息的日志。
 
 ### 开发与贡献
 
