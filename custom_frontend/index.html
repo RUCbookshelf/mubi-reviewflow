@@ -86,6 +86,9 @@ main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 #rf-restart-button:hover{color:var(--primary-dark);border-color:var(--primary);background:var(--surface)}
 #rf-restart-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;background:color-mix(in srgb,var(--ink) 32%,transparent);backdrop-filter:blur(2px)}
 #rf-restart-overlay[hidden]{display:none}
+#rf-power-dialog{max-width:440px;width:calc(100% - 40px);padding:26px;border:1px solid var(--border);border-radius:16px;background:var(--surface);color:var(--ink);box-shadow:0 12px 48px var(--shadow)}
+#rf-power-dialog::backdrop{background:rgba(0,0,0,.4);backdrop-filter:blur(2px)}
+#rf-power-dialog .rf-power-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:24px}
 #rf-restart-overlay .rf-restart-card{max-width:420px;width:100%;padding:26px;border:1px solid var(--border);border-radius:16px;background:var(--surface);box-shadow:0 12px 48px var(--shadow);color:var(--ink);text-align:center}
 #rf-restart-overlay .rf-restart-spinner{width:30px;height:30px;margin:0 auto 14px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:rf-restart-spin .8s linear infinite}
 @keyframes rf-restart-spin{to{transform:rotate(360deg)}}
@@ -824,7 +827,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <button type="button" data-language="ko" lang="ko" aria-pressed="false">한국어</button>
       </div>
     </div>
-    <button id="rf-restart-button" type="button" title="重启软件" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.7-2L20 12M4 12l2.7 5a7 7 0 0 0 11.7-2"/></svg><span>重启软件</span></button>
+    <button id="rf-restart-button" type="button" title="关闭/重启" hidden><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9a7 7 0 0 1 11.7-2L20 12M4 12l2.7 5a7 7 0 0 0 11.7-2"/></svg><span>关闭/重启</span></button>
     <button id="themeBtn" type="button" aria-label="切换深色模式" title="切换深色模式"><svg class="icon" id="themeBtnIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 0 1 9.7 3.5a8.5 8.5 0 1 0 10.8 10.8Z"/></svg><span id="themeBtnText">深色模式</span></button>
   </div>
 </div>
@@ -4979,7 +4982,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
-<script src="./restart_app_locale.js?v=20261005-restart1"></script>
+<script src="./restart_app_locale.js?v=20261006-power1"></script>
 <script src="./help_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./navigation_registry.js?v=20261002-ui1"></script>
@@ -8425,54 +8428,54 @@ async function enterApp() {
 }
 
 const restartButton = $('#rf-restart-button');
+function chooseDesktopAction(){
+  return new Promise(resolve=>{
+    const dialog=el('dialog',{id:'rf-power-dialog','aria-labelledby':'rf-power-title'});
+    const title=el('h2',{id:'rf-power-title',text:T('关闭/重启'),style:'margin:0 0 12px'});
+    const detail=el('p',{text:T('请选择关闭程序或重启软件。未提交的表单内容请先保存。'),style:'line-height:1.7;color:var(--muted)'});
+    const actions=el('div',{class:'rf-power-actions'});
+    for(const [action,label] of [['shutdown','关闭程序'],['restart','重启软件'],['','取消']]){
+      actions.append(el('button',{type:'button',class:'btn b-out',text:T(label),onclick:()=>dialog.close(action)}));
+    }
+    dialog.append(title,detail,actions);document.body.append(dialog);
+    dialog.addEventListener('close',()=>{const value=dialog.returnValue;dialog.remove();resolve(value);},{once:true});
+    dialog.showModal();actions.lastElementChild.focus();
+  });
+}
 restartButton.addEventListener('click', async () => {
-  if (!restartSupported || restartButton.disabled) return;
-  if (!confirm(T('将等待当前保存完成，然后重启 ReviewFlow。未提交的表单内容请先保存。现在重启吗？'))) return;
+  if (!restartSupported || restartButton.disabled || $('#rf-power-dialog')) return;
+  const action=await chooseDesktopAction();if(!action)return;
+  const closing=action==='shutdown';
   const overlay = document.createElement('div');
-  overlay.id = 'rf-restart-overlay';
-  overlay.setAttribute('role', 'alertdialog');
-  overlay.setAttribute('aria-live', 'assertive');
+  overlay.id = 'rf-restart-overlay';overlay.setAttribute('role', 'alertdialog');overlay.setAttribute('aria-live', 'assertive');
   const card = el('div', {class:'rf-restart-card'});
   const spinner = el('div', {class:'rf-restart-spinner', 'aria-hidden':'true'});
-  const title = el('strong', {text:T('正在保存并重启…')});
-  const detail = el('p', {text:T('请稍候，当前保存操作完成后会自动重新打开页面。')});
-  card.append(spinner, title, detail); overlay.append(card);
-  $('#appShell').inert = true; $('#appMain').inert = true;
-  document.body.append(overlay);
-  restartButton.disabled = true;
-  const deadline = Date.now() + 30000;
-  let quietSince = 0;
-  while (Date.now() < deadline) {
-    if (apiPendingWrites === 0) {
-      if (!quietSince) quietSince = Date.now();
-      if (Date.now() - quietSince >= 1200) break;
-    } else quietSince = 0;
-    await new Promise(resolve => setTimeout(resolve, 100));
+  const title = el('strong', {text:T('正在等待保存完成…')});
+  const detail = el('p', {text:T('请稍候，正在完成当前操作。')});
+  card.append(spinner,title,detail);overlay.append(card);
+  $('#appShell').inert=true;$('#appMain').inert=true;document.body.append(overlay);restartButton.disabled=true;
+  const restore=()=>{$('#appShell').inert=false;$('#appMain').inert=false;overlay.remove();restartButton.disabled=false;};
+  const deadline=Date.now()+30000;let quietSince=0;
+  while(Date.now()<deadline){
+    if(apiPendingWrites===0){if(!quietSince)quietSince=Date.now();if(Date.now()-quietSince>=1200)break;}else quietSince=0;
+    await new Promise(resolve=>setTimeout(resolve,100));
   }
-  if (apiPendingWrites !== 0) {
-    $('#appShell').inert = false; $('#appMain').inert = false;
-    overlay.remove(); restartButton.disabled = false;
-    toast(T('保存仍在进行，暂时无法重启。请稍后再试。'), 'warn');
-    return;
-  }
-  try {
-    await api('/api/app/restart', {method:'POST', body:{}});
-    title.textContent = T('正在重启软件…');
-    const until = Date.now() + 60000;
-    while (Date.now() < until) {
-      await new Promise(resolve => setTimeout(resolve, 900));
-      try {
-        const response = await fetch('/api/health', {cache:'no-store'});
-        if (response.ok && (await response.json()).status === 'ok') { location.reload(); return; }
-      } catch (_) {}
+  if(apiPendingWrites!==0){restore();toast(T('保存仍在进行，暂时无法关闭或重启。请稍后再试。'),'warn');return;}
+  try{
+    const previous=(await api('/api/runtime')).instance_id;
+    await api('/api/app/'+action,{method:'POST',body:{}});
+    title.textContent=T(closing?'正在关闭程序…':'正在重启软件…');
+    const until=Date.now()+60000;let offline=0;
+    while(Date.now()<until){
+      await new Promise(resolve=>setTimeout(resolve,900));
+      try{
+        const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),2500);
+        let response;try{response=await fetch('/api/runtime',{cache:'no-store',signal:controller.signal});}finally{clearTimeout(timer);}
+        if(response.ok){const runtime=await response.json();offline=0;if(!closing&&runtime.instance_id!==previous){location.reload();return;}}
+      }catch(_){offline++;if(closing&&offline>=3){spinner.remove();title.textContent=T('程序已关闭');detail.textContent=T('服务已停止。可关闭此浏览器页面；下次请从应用快捷方式启动。');return;}}
     }
-    detail.textContent = T('服务尚未恢复。请稍后手动刷新页面。');
-    restartButton.disabled = false;
-  } catch (error) {
-    $('#appShell').inert = false; $('#appMain').inert = false;
-    overlay.remove(); restartButton.disabled = false;
-    toast(T('重启失败：') + error.message, 'warn');
-  }
+    spinner.remove();detail.textContent=T(closing?'关闭尚未确认，请稍后检查。':'服务尚未恢复。请稍后手动刷新页面。');
+  }catch(error){restore();toast(T('操作失败：')+error.message,'warn');}
 });
 (async function init() {
   await detectApiBase();

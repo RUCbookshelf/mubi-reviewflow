@@ -89,6 +89,10 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         run: cd release-assets && sha256sum * > SHA256SUMS.txt
+      - name: Point release tag to this build
+        run: |
+          git tag -f "v${APP_VERSION}" "$GITHUB_SHA"
+          git push origin "refs/tags/v${APP_VERSION}" --force
       - name: Create versioned release and upload installers
         uses: softprops/action-gh-release@v2
         with:

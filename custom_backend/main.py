@@ -971,10 +971,12 @@ def health() -> dict:
 def runtime() -> dict:
     return {"mode": "server" if _server_mode() else "desktop",
             "storage": "server" if _server_mode() else "local",
-            "restart_supported": not _server_mode() and _desktop_restart_callback is not None}
+            "restart_supported": not _server_mode() and _desktop_restart_callback is not None,
+            "instance_id": _desktop_instance_id}
 
 
 _desktop_restart_callback = None
+_desktop_instance_id = uuid.uuid4().hex
 
 
 def configure_desktop_restart(callback) -> None:
@@ -985,7 +987,16 @@ def configure_desktop_restart(callback) -> None:
 
 @app.post("/api/app/restart")
 def restart_desktop_app(user: dict = Depends(require_user)) -> dict:
-    """Ask the desktop supervisor to restart this service after the response."""
+    return _request_desktop_action("restart")
+
+
+@app.post("/api/app/shutdown")
+def shutdown_desktop_app(user: dict = Depends(require_user)) -> dict:
+    return _request_desktop_action("shutdown")
+
+
+def _request_desktop_action(action: str) -> dict:
+    """Gracefully stop our worker; the supervisor decides whether to relaunch."""
     if _server_mode() or _desktop_restart_callback is None:
         raise HTTPException(404, "Software restart is available only in the desktop app.")
     request_file = os.environ.get("REVIEWFLOW_RESTART_REQUEST_FILE")
@@ -994,7 +1005,7 @@ def restart_desktop_app(user: dict = Depends(require_user)) -> dict:
     try:
         marker = Path(request_file)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("restart", encoding="ascii")
+        marker.write_text(action, encoding="ascii")
     except OSError as exc:
         raise HTTPException(503, "Could not request an app restart.") from exc
     threading.Timer(1.0, _desktop_restart_callback).start()

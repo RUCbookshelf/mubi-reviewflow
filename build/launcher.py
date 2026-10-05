@@ -309,7 +309,10 @@ def main() -> int:
             child.wait()
             if not restart_file.exists():
                 break
+            action = restart_file.read_text(encoding="ascii").strip()
             restart_file.unlink(missing_ok=True)
+            if action != "restart":
+                break
             child = _spawn_server(port, restart_file)
         return child.returncode or 0
     except RuntimeError as exc:
