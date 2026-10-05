@@ -1,0 +1,13 @@
+#authScreen #rf-update-notice[hidden] { display:none !important; }
+#rf-update-check { position:relative; }
+#rf-update-check[aria-busy="true"] { opacity:.65; pointer-events:none; }
+.rf-update-backdrop { position:fixed; inset:0; z-index:10020; display:grid; place-items:center; padding:20px; background:rgba(20,31,32,.46); }
+.rf-update-dialog { width:min(520px,100%); max-height:min(78vh,700px); overflow:auto; padding:24px; border:1px solid var(--border); border-radius:14px; color:var(--ink); background:var(--surface); box-shadow:0 24px 80px rgba(0,0,0,.24); }
+.rf-update-dialog h2 { margin:0 0 8px; font-size:20px; }
+.rf-update-dialog p { color:var(--muted); line-height:1.6; }
+.rf-update-version { margin:0 0 12px; font-weight:600; color:var(--primary); }
+.rf-update-notes { max-height:34vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:12px; border-radius:8px; background:var(--soft); font:inherit; font-size:12px; line-height:1.65; }
+.rf-update-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
+.rf-update-actions button { min-height:38px; padding:7px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--ink); cursor:pointer; }
+.rf-update-actions .primary { border-color:var(--primary); background:var(--primary); color:#fff; }
+.rf-update-actions button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }

@@ -110,6 +110,7 @@ from coscreen.stats.prisma_form import (
 from coscreen.security import sanitize_component
 
 from custom_backend import auth
+from custom_backend.update_check import check_latest_release, current_version
 from custom_backend.source_provenance import source_articles
 from custom_backend.security import (
     MAX_UPLOAD_BYTES,  # noqa: F401  上限常量随模块口径导出
@@ -152,7 +153,7 @@ def _cors_origins() -> list[str]:
 
 app = FastAPI(
     title="Co-Bookshelf API",
-    version="1.0.0",
+    version=current_version(),
     docs_url=None,
     redoc_url=None,
     openapi_url=None,  # 产品化：不对外暴露接口文档
@@ -953,6 +954,14 @@ def health() -> dict:
 def runtime() -> dict:
     return {"mode": "server" if _server_mode() else "desktop",
             "storage": "server" if _server_mode() else "local"}
+
+
+@app.get("/api/app-update/check")
+def app_update_check() -> dict:
+    """Check the public stable GitHub Release; server deployments cannot self-update."""
+    if _server_mode():
+        return {"supported": False, "current_version": current_version(), "has_update": False}
+    return {"supported": True, **check_latest_release()}
 
 
 @app.post("/api/auth/register")

@@ -35,6 +35,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Read application version
+        shell: bash
+        run: echo "APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -75,6 +78,10 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+      - name: Read application version
+        shell: bash
+        run: echo "APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           pattern: reviewflow-*
@@ -82,12 +89,12 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         run: cd release-assets && sha256sum * > SHA256SUMS.txt
-      - name: Create v2.0.0 release and upload installers
+      - name: Create versioned release and upload installers
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.0
+          tag_name: v${{ env.APP_VERSION }}
           target_commitish: ${{ github.sha }}
-          name: 木笔 ReviewFlow 2.0.0
+          name: 木笔 ReviewFlow ${{ env.APP_VERSION }}
           draft: false
           prerelease: false
           generate_release_notes: true

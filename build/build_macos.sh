@@ -32,6 +32,7 @@ iconutil -c icns "$ICONSET" -o "$BUILD/work-macos/ReviewFlow.icns"
   --icon "$BUILD/work-macos/ReviewFlow.icns" \
   --add-data "$ROOT/custom_backend:custom_backend" \
   --add-data "$ROOT/custom_frontend:custom_frontend" \
+  --add-data "$ROOT/VERSION:." \
   --add-data "$ROOT/coscreen/assets:coscreen/assets" \
   --collect-all scipy --collect-all sklearn --collect-all statsmodels \
   --collect-all pandas --collect-data babel \

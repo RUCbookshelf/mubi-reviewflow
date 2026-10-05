@@ -19,6 +19,7 @@ PY="$WORK/venv/bin/python"
   --noconfirm --clean --onedir --name ReviewFlow \
   --add-data "$ROOT/custom_backend:custom_backend" \
   --add-data "$ROOT/custom_frontend:custom_frontend" \
+  --add-data "$ROOT/VERSION:." \
   --add-data "$ROOT/coscreen/assets:coscreen/assets" \
   --collect-all scipy --collect-all sklearn --collect-all statsmodels \
   --collect-all pandas --collect-data babel \
