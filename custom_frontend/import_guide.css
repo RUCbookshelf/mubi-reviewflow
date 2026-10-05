@@ -1,0 +1,36 @@
+/* Floating checklist uses the existing theme tokens. */
+#rfImportGuide{position:fixed;right:22px;z-index:15;width:310px;max-width:calc(100vw - 28px);background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 26px rgba(0,0,0,.12);font:13px/1.5 var(--font-body)}
+#rfImportGuide[hidden]{display:none!important}
+#rfImportGuide>summary{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;list-style:none}
+#rfImportGuide>summary::-webkit-details-marker{display:none}
+#rfImportGuide>summary b{font-size:13px;flex:1;min-width:0}
+#rfImportGuide .rf-guide-count{font-size:11px;color:var(--muted);white-space:nowrap}
+#rfImportGuide:not([open]){width:auto;border-radius:999px}
+#rfImportGuide .rf-guide-chevron{font-size:18px;line-height:1}
+#rfImportGuide .rf-guide-body{padding:0 14px 12px}
+#rfImportGuide ol{list-style:none;padding:0;margin:0;border-top:1px solid var(--border)}
+#rfImportGuide li{display:flex;align-items:flex-start;gap:9px;margin-top:12px}
+#rfImportGuide .rf-guide-mark{width:15px;height:15px;margin-top:3px;flex-shrink:0;border:1px solid var(--muted);border-radius:50%;font:11px/15px var(--font-body);text-align:center}
+#rfImportGuide [data-complete="true"] .rf-guide-mark{border-color:var(--primary);color:var(--primary)}
+#rfImportGuide button{padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
+#rfImportGuide [data-complete="true"] button{color:var(--muted)}
+#rfImportGuide .rf-guide-message{font-size:11px;color:var(--muted);margin:12px 0 0}
+#rfImportGuide .rf-guide-error{cursor:pointer;color:var(--danger)}
+#rfImportGuide :focus-visible{outline:2px solid var(--primary);outline-offset:3px;border-radius:4px}
+@media(max-width:760px){#rfImportGuide{right:14px;width:280px}}
+
+/* Keep the review section distinct from the import metric table. */
+#titleDupWrap{margin-top:24px;padding:20px;border:1px solid var(--border);border-top:4px solid var(--primary);border-radius:12px;background:var(--surface)}
+#titleDupWrap>.row:first-child{gap:14px;flex-wrap:wrap;padding-bottom:16px;border-bottom:1px solid var(--border)}
+#titleDupWrap>.row:first-child>div{flex:1;min-width:220px}
+#titleDupWrap>.row:first-child b{font-size:1.05rem;color:var(--primary)}
+#titleDupSummary{line-height:1.7}
+#titleDupGroups>.card{margin:18px 0!important;padding:16px!important;border-left:3px solid var(--primary)}
+#titleDupGroups h4{font-size:.95rem;line-height:1.6}
+#titleDupGroups>.card>.row:last-child{padding-top:12px;margin-top:12px;border-top:1px solid var(--border);gap:8px}
+#titleDupWrap>.row:last-child{padding-top:12px;border-top:1px solid var(--border);align-items:center}
+#titleDupWrap,#dropZone,[data-p="import"]{scroll-margin-top:84px}
+.rf-guide-target{animation:rf-guide-locate 1.8s ease-out}
+@keyframes rf-guide-locate{0%,35%{outline:3px solid var(--primary);outline-offset:4px}100%{outline-color:transparent;outline-offset:8px}}
+@media(prefers-reduced-motion:reduce){.rf-guide-target{animation:none;outline:2px solid var(--primary)}}
+@media(max-width:760px){#titleDupWrap{padding:14px}#titleDupGroups>.card{padding:12px!important}}

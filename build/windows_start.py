@@ -107,6 +107,7 @@ def main(force_repair: bool = False) -> int:
             marker.touch()
         if overlay.exists():
             sys.path.insert(0, str(overlay))
+            os.environ['REVIEWFLOW_RUNTIME_OVERLAY'] = str(overlay)
         from launcher import main as launch
         return launch()
     except Exception:

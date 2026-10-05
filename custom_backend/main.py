@@ -970,7 +970,35 @@ def health() -> dict:
 @app.get("/api/runtime")
 def runtime() -> dict:
     return {"mode": "server" if _server_mode() else "desktop",
-            "storage": "server" if _server_mode() else "local"}
+            "storage": "server" if _server_mode() else "local",
+            "restart_supported": not _server_mode() and _desktop_restart_callback is not None}
+
+
+_desktop_restart_callback = None
+
+
+def configure_desktop_restart(callback) -> None:
+    """Install the local desktop server's graceful shutdown callback."""
+    global _desktop_restart_callback
+    _desktop_restart_callback = callback
+
+
+@app.post("/api/app/restart")
+def restart_desktop_app(user: dict = Depends(require_user)) -> dict:
+    """Ask the desktop supervisor to restart this service after the response."""
+    if _server_mode() or _desktop_restart_callback is None:
+        raise HTTPException(404, "Software restart is available only in the desktop app.")
+    request_file = os.environ.get("REVIEWFLOW_RESTART_REQUEST_FILE")
+    if not request_file:
+        raise HTTPException(503, "Desktop restart supervisor is unavailable.")
+    try:
+        marker = Path(request_file)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("restart", encoding="ascii")
+    except OSError as exc:
+        raise HTTPException(503, "Could not request an app restart.") from exc
+    threading.Timer(1.0, _desktop_restart_callback).start()
+    return {"accepted": True}
 
 
 @app.get("/api/app-update/check")
@@ -1351,7 +1379,7 @@ def _stabilize_generated_import_keys(existing: list, incoming: list) -> None:
 def _title_review_groups(exact_survivors: list, incoming_keys: set,
                          fuzzy_pairs: list | None = None) -> list[dict]:
     """Combine identical-title and fuzzy title/author links for human review."""
-    eligible = [article for article in exact_survivors if not article.is_duplicate_of]
+    eligible = exact_survivors
     articles_by_key = {article.zotero_key: article for article in eligible}
     parent = {key: key for key in articles_by_key}
 
@@ -1450,9 +1478,8 @@ def _exact_duplicate_metrics(report, incoming_keys: set | None = None,
 def _count_title_groups_with_incoming(groups: list[list], incoming_keys: set) -> tuple[int, int]:
     selected = []
     for group in groups:
-        eligible = [article for article in group if not article.is_duplicate_of]
-        if len(eligible) > 1 and any(a.zotero_key in incoming_keys for a in eligible):
-            selected.append(eligible)
+        if len(group) > 1 and any(a.zotero_key in incoming_keys for a in group):
+            selected.append(group)
     return len(selected), sum(len(g) - 1 for g in selected)
 
 
@@ -1722,7 +1749,8 @@ def list_title_duplicate_reviews(
     db = _screener_db(info, screener or user["username"])
     groups, total = db_mod.list_title_duplicate_reviews(db, limit=limit, offset=offset)
     return {"groups": groups, "total": total, "offset": offset,
-            "progress": db_mod.title_duplicate_review_progress(db)}
+            "progress": db_mod.title_duplicate_review_progress(db),
+            "undo_available": db_mod.title_duplicate_undo_available(db, user["username"])}
 
 
 @app.post("/api/tasks/{task_id}/title-duplicate-reviews/{review_id}")
@@ -1740,6 +1768,23 @@ def decide_title_duplicate_review(
         raise _bad(str(exc), 400) from exc
     if not found:
         raise _bad("标题候选组不存在。", 404)
+    tasks_mod.touch_task(info.task_id, DATA_DIR)
+    return {"progress": db_mod.title_duplicate_review_progress(db),
+            "screening": db_mod.get_progress(db)}
+
+
+@app.post("/api/tasks/{task_id}/title-duplicate-undo")
+def undo_title_duplicate_review(
+    task_id: str, screener: str | None = None, user: dict = Depends(require_user),
+) -> dict:
+    info = _task_or_404(task_id)
+    db = _screener_db(info, screener or user["username"])
+    try:
+        restored = db_mod.undo_title_duplicate_review(db, user["username"])
+    except ValueError as exc:
+        raise _bad(str(exc), 409) from exc
+    if not restored:
+        raise _bad("没有可撤销的人工核验操作。", 404)
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"progress": db_mod.title_duplicate_review_progress(db),
             "screening": db_mod.get_progress(db)}

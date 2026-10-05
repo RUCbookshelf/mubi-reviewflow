@@ -17,6 +17,7 @@ FastAPI 应用的 ``/`` 上（API 路由先注册、优先匹配），并自动�
 from __future__ import annotations
 
 import os
+import subprocess
 import socket
 import sys
 import threading
@@ -193,15 +194,60 @@ def ensure_standard_streams(data_dir: Path | str) -> None:
             sys.stderr = log
 
 
+def _run_server(port: int) -> int:
+    """Run one API/UI worker; the parent launcher owns locking and restarts."""
+    app = build_app()
+    from custom_backend import main as backend_main
+
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(
+        app,
+        host=os.environ.get("REVIEWFLOW_HOST", "127.0.0.1"),
+        port=port,
+        log_level="warning",
+    ))
+    backend_main.configure_desktop_restart(lambda: setattr(server, "should_exit", True))
+    server.run()
+    return 0
+
+
+def _spawn_server(port: int, restart_file: Path) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["REVIEWFLOW_MODE"] = "desktop"
+    env["REVIEWFLOW_PORT"] = str(port)
+    env["REVIEWFLOW_RESTART_REQUEST_FILE"] = str(restart_file)
+    env["REVIEWFLOW_RESTART_CHILD"] = "1"
+    overlay = env.get("REVIEWFLOW_RUNTIME_OVERLAY")
+    python_paths = [str(APP_DIR), str(APP_DIR.parent)]
+    if overlay:
+        python_paths.insert(0, overlay)
+    if env.get("PYTHONPATH"):
+        python_paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
+
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--restart-child"]
+    else:
+        command = [sys.executable, str(Path(__file__).resolve()), "--restart-child"]
+    log_path = Path(env["COBOOKSHELF_DATA_DIR"]) / "reviewflow.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab") as log:
+        return subprocess.Popen(command, cwd=APP_DIR, env=env, stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=log,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
 def main() -> int:
     # 包内布局：launcher.py 与 custom_backend/ coscreen/ 同级；仓库布局：包在上一级。
-    for p in (str(APP_DIR), str(APP_DIR.parent)):
-        if p not in sys.path:
+    for p in (os.environ.get("REVIEWFLOW_RUNTIME_OVERLAY"), str(APP_DIR), str(APP_DIR.parent)):
+        if p and p not in sys.path:
             sys.path.insert(0, p)
 
     if os.environ.get("REVIEWFLOW_MODE") == "server":
         os.environ.pop("COBOOKSHELF_DATA_DIR", None)
     os.environ["REVIEWFLOW_MODE"] = "desktop"
+    child_mode = "--restart-child" in sys.argv[1:]
 
     from coscreen import local_storage
 
@@ -214,14 +260,15 @@ def main() -> int:
 
     process_lock = None
     try:
-        try:
-            process_lock = acquire_process_lock()
-        except RuntimeError:
-            if reopen_running_app():
-                return 0
-            raise
+        if not child_mode:
+            try:
+                process_lock = acquire_process_lock()
+            except RuntimeError:
+                if reopen_running_app():
+                    return 0
+                raise
         default = default_data_dir()
-        if migration_enabled:
+        if migration_enabled and not child_mode:
             queued = local_storage._read_config().get("pending")
             if os.name == "nt" and queued:
                 import ctypes
@@ -238,11 +285,14 @@ def main() -> int:
         os.environ["COBOOKSHELF_DATA_DIR"] = str(data_dir)
         ensure_standard_streams(data_dir)
 
-        port = find_free_port(int(os.environ.get("REVIEWFLOW_PORT", DEFAULT_PORT)))
-        app = build_app()
         instance_port = local_storage.control_dir() / "desktop-port.txt"
-        instance_port.write_text(str(port), encoding="ascii")
+        if child_mode:
+            return _run_server(int(os.environ.get("REVIEWFLOW_PORT", DEFAULT_PORT)))
 
+        port = find_free_port(int(os.environ.get("REVIEWFLOW_PORT", DEFAULT_PORT)))
+        restart_file = local_storage.control_dir() / "desktop-restart.request"
+        restart_file.unlink(missing_ok=True)
+        instance_port.write_text(str(port), encoding="ascii")
         port_file = os.environ.get("REVIEWFLOW_PORT_FILE")
         if port_file:
             port_path = Path(port_file)
@@ -250,16 +300,18 @@ def main() -> int:
             port_path.write_text(str(port), encoding="ascii")
 
         url = f"http://127.0.0.1:{port}"
-        threading.Thread(target=wait_and_open, args=(url, port), daemon=True).start()
-
-        import uvicorn
-
         print(f"木笔ReviewFlow 启动中... 浏览器将自动打开 {url}")
         print(f"数据目录: {data_dir}")
         print("按 Ctrl+C 停止")
-        uvicorn.run(app, host=os.environ.get("REVIEWFLOW_HOST", "127.0.0.1"),
-                    port=port, log_level="warning")
-        return 0
+        child = _spawn_server(port, restart_file)
+        threading.Thread(target=wait_and_open, args=(url, port), daemon=True).start()
+        while True:
+            child.wait()
+            if not restart_file.exists():
+                break
+            restart_file.unlink(missing_ok=True)
+            child = _spawn_server(port, restart_file)
+        return child.returncode or 0
     except RuntimeError as exc:
         if os.name == "nt":
             import ctypes

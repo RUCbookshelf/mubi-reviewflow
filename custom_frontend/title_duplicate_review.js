@@ -5,6 +5,31 @@
   let offset = 0;
   let loading = false;
   let currentTask = null;
+  let undoAvailable = false;
+  const undoButton = el('button', {class:'btn b-out sm', id:'titleDupUndo', disabled:'disabled', onclick:undo});
+  $('#titleDupExport').before(undoButton);
+  function undoLabel(){undoButton.textContent=T('撤销上次核验');undoButton.title=/Mac|iPhone|iPad/.test(navigator.platform)?'Command+Z':'Ctrl+Z';}
+  undoLabel();
+  document.addEventListener('reviewflow:language-changed',undoLabel);
+  async function undo(){
+    if(!S.task||loading||!undoAvailable)return;
+    const taskId=S.task.task_id, screener=S.screener;
+    loading=true;undoButton.disabled=true;
+    try{
+      const result=await api(taskApi()+'/title-duplicate-undo'+scrQ(),{method:'POST'});
+      if(S.task?.task_id!==taskId||S.screener!==screener)return;
+      const row=Array.from($('#reportBody').querySelectorAll('tr')).find(r=>r.firstElementChild?.textContent===T('进入筛选（非重复总数）'));
+      if(row?.lastElementChild)row.lastElementChild.replaceChildren(el('b',{text:String(result.screening.total)}));
+      offset=0;await refreshProgress();await load();toast(T('已撤销上次人工核验'),'inc');
+    }catch(error){toast(T('撤销失败：')+error.message,'warn');}
+    finally{loading=false;undoButton.disabled=!undoAvailable;}
+  }
+  document.addEventListener('keydown',event=>{
+    const mac=/Mac|iPhone|iPad/.test(navigator.platform);
+    if(S.page!=='import'||!S.user||loading||!undoAvailable||event.repeat||event.isComposing||event.altKey||event.shiftKey||event.key.toLowerCase()!=='z'||!(mac?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey))return;
+    if(event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"]'))return;
+    event.preventDefault();undo();
+  });
 
   function label(value) { return value === null || value === undefined || value === '' ? '—' : String(value); }
 
@@ -33,6 +58,7 @@
     if (!S.task || loading) return;
     const taskId = S.task.task_id;
     loading = true;
+    undoButton.disabled = true;
     try {
       const result = await api(taskApi() + '/title-duplicate-reviews/' + encodeURIComponent(reviewId) + scrQ(), {
         method: 'POST', body: { decision, keeper_key: keeperKey || '' }
@@ -50,7 +76,7 @@
         : decision === 'not_duplicate' ? T('已标记为不同文献，全部保留')
           : T('保留为待核验'), 'inc');
     } catch (error) { toast(T('核验保存失败：') + error.message, 'warn'); }
-    finally { loading = false; }
+    finally { loading = false; undoButton.disabled = !undoAvailable; }
     if (S.task?.task_id !== taskId) return;
   }
 
@@ -60,16 +86,20 @@
     if (currentTask !== S.task.task_id) {
       currentTask = S.task.task_id;
       offset = 0;
+      undoAvailable = false; undoButton.disabled = true;
     }
     if (report) {
       const hasReview = Number(report.title_review_groups || 0) > 0;
       if (hasReview) offset = 0;
     }
     try {
-      const d = await api(taskApi() + '/title-duplicate-reviews?limit=' + pageSize + '&offset=' + offset + scrQ());
+      const d = await api(taskApi() + '/title-duplicate-reviews' + scrQ()
+        + (S.screener ? '&' : '?') + 'limit=' + pageSize + '&offset=' + offset);
       if (S.task?.task_id !== currentTask) return;
       const p = d.progress || {};
-      wrap.style.display = Number(p.candidate_groups || 0) || Number(p.pending_groups || 0) ? '' : 'none';
+      undoAvailable = !!d.undo_available; undoButton.disabled = !undoAvailable;
+      document.dispatchEvent(new CustomEvent('reviewflow:title-review-progress', { detail: { taskId: currentTask, screener: S.screener, progress: p } }));
+      wrap.style.display = Number(p.candidate_groups || 0) || Number(p.pending_groups || 0) || undoAvailable ? '' : 'none';
       $('#titleDupSummary').textContent = T('候选组 {0} 组；已确认重复 {1} 组（排除 {2} 条）；判定不同 {3} 组；待核验 {4} 组／{5} 条。待核验条目暂不进入初筛。',
         p.candidate_groups || 0, p.confirmed_duplicate_groups || 0,
         p.confirmed_duplicate_records_excluded || 0, p.not_duplicate_groups || 0,

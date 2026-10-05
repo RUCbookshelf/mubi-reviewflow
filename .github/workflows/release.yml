@@ -97,5 +97,6 @@ jobs:
           name: 木笔 ReviewFlow ${{ env.APP_VERSION }}
           draft: false
           prerelease: false
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: release-assets/*

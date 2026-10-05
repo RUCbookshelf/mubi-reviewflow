@@ -24,7 +24,7 @@ body[data-workspace="analysis"] .pg .cap {font-size:10px;line-height:1.5}
 body[data-workspace="analysis"] main {min-width:0}
 body[data-workspace="analysis"] .top {min-height:54px;padding:8px 22px;gap:12px;background:var(--an-paper);border-color:var(--an-line)}
 body[data-workspace="analysis"] .top .tabs {display:flex}
-body[data-workspace="analysis"] #themeBtn,body[data-workspace="analysis"] #rf-app-language-button {border:0;border-radius:4px;min-height:32px;padding:5px 8px;font-size:12px}
+body[data-workspace="analysis"] #themeBtn,body[data-workspace="analysis"] #rf-app-language-button {border:1px solid var(--border);border-radius:22px;min-height:32px;padding:5px 8px;font-size:12px}
 body[data-workspace="analysis"] .view {padding:23px 22px 56px;background:var(--an-bg);scrollbar-gutter:stable;min-width:0}
 body[data-workspace="analysis"] section.page.on {animation:none}
 .page[data-p="analysis"] {font:14px/1.6 var(--font-body);color:var(--an-ink)}

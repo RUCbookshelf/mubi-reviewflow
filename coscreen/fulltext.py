@@ -907,19 +907,22 @@ def list_stage2_decisions(db_path: StrPath) -> list[dict]:
 
 
 def get_stage2_progress(db_path: StrPath) -> dict:
-    """复筛进度（口径与初筛 get_progress 完全一致）。
+    """复筛进度：只统计已纳入初筛且非重复的文献。
 
-    total 只统计非重复条目（复筛队列通常是其子集，UI 层另行按队列计数）；
+    复筛队列是初筛纳入条目的子集，因此尚未开始初筛时 total 为 0；
     返回 {"total", "screened", "remaining", "include", "exclude", "maybe"}。
     """
     counts = {"include": 0, "exclude": 0, "maybe": 0}
     with closing(_connect(db_path)) as conn:
         total = conn.execute(
-            "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NULL"
+            "SELECT COUNT(*) FROM articles a "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
+            "WHERE a.is_duplicate_of IS NULL"
         ).fetchone()[0]
         for decision, cnt in conn.execute(
             "SELECT s.decision, COUNT(*) FROM stage2_decisions s "
             "JOIN articles a ON a.zotero_key = s.zotero_key "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
             "WHERE a.is_duplicate_of IS NULL "
             "GROUP BY s.decision"
         ):

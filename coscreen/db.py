@@ -94,6 +94,15 @@ CREATE TABLE IF NOT EXISTS title_duplicate_members (
 );
 CREATE INDEX IF NOT EXISTS idx_title_duplicate_member_key
   ON title_duplicate_members(zotero_key, imported_in_batch);
+CREATE TABLE IF NOT EXISTS title_duplicate_undo (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL,
+  undone INTEGER NOT NULL DEFAULT 0
+);
+
 """
 
 # 复筛（全文阶段，SPEC §14）三表：PDF 全文元数据 / 高亮标记 / 复筛决策。
@@ -831,6 +840,55 @@ def title_duplicate_review_progress(db_path: StrPath) -> dict:
             "not_duplicate_groups": int(rejected or 0)}
 
 
+def _title_review_snapshot(conn: sqlite3.Connection, review_id: str) -> dict:
+    row = conn.execute(
+        "SELECT status,keeper_key,decision_by,updated_at,members_json FROM title_duplicate_reviews WHERE review_id=?",
+        (review_id,),
+    ).fetchone()
+    if row is None:
+        return {}
+    keys = sorted({m["zotero_key"] for m in json.loads(row[4])})
+    return {"review": list(row), "articles": [list(conn.execute(
+        "SELECT zotero_key,is_duplicate_of,content_hash FROM articles WHERE zotero_key=?", (key,)
+    ).fetchone()) for key in keys], "metadata": [list(conn.execute(
+        "SELECT * FROM articles WHERE zotero_key=?", (key,)
+    ).fetchone()) for key in keys], "fulltext_decisions": [list(r) for key in keys for r in conn.execute(
+        "SELECT * FROM stage2_decisions WHERE zotero_key=?", (key,)
+    ).fetchall()], "screening": [list(r) for key in keys for r in conn.execute(
+        "SELECT * FROM decisions WHERE zotero_key=?", (key,)
+    ).fetchall()]}
+
+
+def title_duplicate_undo_available(db_path: StrPath, actor: str) -> bool:
+    with closing(_connect(db_path)) as conn:
+        return conn.execute(
+            "SELECT 1 FROM title_duplicate_undo WHERE actor=? AND undone=0 LIMIT 1", (actor,)
+        ).fetchone() is not None
+
+
+def undo_title_duplicate_review(db_path: StrPath, actor: str) -> bool:
+    """Restore the latest decision atomically without overwriting subsequent edits."""
+    with closing(_connect(db_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        entry = conn.execute(
+            "SELECT seq,review_id,before_json,after_json FROM title_duplicate_undo "
+            "WHERE actor=? AND undone=0 ORDER BY seq DESC LIMIT 1", (actor,)
+        ).fetchone()
+        if entry is None:
+            return False
+        before, after = json.loads(entry[2]), json.loads(entry[3])
+        if _title_review_snapshot(conn, entry[1]) != after:
+            raise ValueError("相关记录已有后续变更，无法安全撤销。")
+        conn.executemany("UPDATE articles SET is_duplicate_of=? WHERE zotero_key=?",
+                         [(r[1], r[0]) for r in before["articles"]])
+        conn.execute(
+            "UPDATE title_duplicate_reviews SET status=?,keeper_key=?,decision_by=?,updated_at=? WHERE review_id=?",
+            (*before["review"][:4], entry[1]),
+        )
+        conn.execute("UPDATE title_duplicate_undo SET undone=1 WHERE seq=?", (entry[0],))
+    return True
+
+
 def decide_title_duplicate_review(
     db_path: StrPath, review_id: str, decision: str, keeper_key: str = "",
     decided_by: str = "",
@@ -840,6 +898,8 @@ def decide_title_duplicate_review(
         raise ValueError("decision must be duplicate, not_duplicate, or undecided")
     now = _now()
     with closing(_connect(db_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        before = _title_review_snapshot(conn, review_id)
         row = conn.execute(
             "SELECT status,members_json FROM title_duplicate_reviews WHERE review_id=?",
             (review_id,),
@@ -865,6 +925,11 @@ def decide_title_duplicate_review(
         conn.execute(
             "UPDATE title_duplicate_reviews SET status=?,keeper_key=?,decision_by=?,updated_at=? WHERE review_id=?",
             (status, keeper_key if decision == "duplicate" else "", decided_by, now, review_id),
+        )
+        after = _title_review_snapshot(conn, review_id)
+        conn.execute(
+            "INSERT INTO title_duplicate_undo(review_id,actor,before_json,after_json) VALUES (?,?,?,?)",
+            (review_id, decided_by, json.dumps(before), json.dumps(after)),
         )
     return True
 
