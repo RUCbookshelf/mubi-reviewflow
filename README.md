@@ -2,7 +2,7 @@
   <h1>木笔 ReviewFlow</h1>
   <p><img src="custom_frontend/assets/icon_writelab_budnib_20260824.svg" alt="木笔 WriteLab 标识" width="96"></p>
   <p><strong>系统综述与 Meta 分析工作台 · Systematic review and meta-analysis workspace</strong></p>
-  <p><a href="#中文">中文</a> · <a href="#english">English</a> · <a href="#русский">Русский</a> · <a href="#français">Français</a></p>
+  <p><a href="#中文">中文</a> · <a href="#english">English</a> · <a href="#français">Français</a> · <a href="#русский">Русский</a> · <a href="#español">Español</a> · <a href="#日本語">日本語</a> · <a href="#português">Português</a> · <a href="#deutsch">Deutsch</a> · <a href="#српски">Српски</a> · <a href="#한국어">한국어</a></p>
   <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
 </div>
 
@@ -122,7 +122,7 @@ python -m pytest
 
 ReviewFlow is a workspace for systematic reviews and meta-analysis, covering reference import, screening, coding, analysis and records of the research process. Individuals can work locally offline. Teams can deploy it on a server to share references and progress while keeping each reviewer's decisions separate.
 
-The application uses FastAPI, a browser interface and Python calculation modules. Desktop packages bundle Python and runtime dependencies; users do not need to install Python or WSL. The current Windows installer version is **2.0**.
+The application uses FastAPI, a browser interface and Python calculation modules. Desktop packages bundle Python and runtime dependencies; users do not need to install Python or WSL. The [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) page lists the current version and available desktop installers.
 
 ### Features
 
@@ -210,6 +210,157 @@ This project is licensed under the MIT License; see the root [`LICENSE`](LICENSE
 Author: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
 ---
+
+
+## Español
+
+ReviewFlow reúne la importación de referencias, el cribado, la codificación, el análisis y el registro del proceso de revisión sistemática y metaanálisis. Puede utilizarse sin conexión en un ordenador personal o desplegarse en un servidor para colaborar, manteniendo separadas las decisiones de cada revisor.
+
+### Funciones
+
+- Importación RIS, detección y gestión de duplicados, historial y trazabilidad de los archivos originales.
+- Cribado de título/resumen y de texto completo en PDF; motivos de exclusión estándar o personalizados.
+- Ordenación asistida por IA; las decisiones de inclusión, duda y exclusión siguen correspondiendo al usuario.
+- Codificación de estudios con evidencia del texto completo; análisis de tamaños del efecto, heterogeneidad, subgrupos, metarregresión y sensibilidad.
+- Evaluación manual del riesgo de sesgo, bibliometría, mapas de evidencia, colaboración y diagramas PRISMA.
+- Registro de investigación opcional y exportación de materiales, según el módulo, a DOCX, PPTX o LaTeX.
+
+La disponibilidad de un método no significa que esté validado para todos los diseños. Consulte la [evaluación de análisis](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), compruebe los resultados y cite las fuentes metodológicas.
+
+### Inicio y datos
+
+Descargue el instalador disponible para su sistema desde [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases). Los instaladores de escritorio incluyen Python y sus dependencias. Para ejecutar el código fuente en Ubuntu o macOS, prepare Python 3.12 y Git; en Linux instale Cairo y `python3-venv` si son necesarios, y siga los comandos de la sección [English](#english).
+
+Los datos se guardan localmente de forma predeterminada: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` y Linux `~/.local/share/ReviewFlow` o `XDG_DATA_HOME`. Los PDF ocupan espacio dentro de la carpeta de datos. La ubicación puede migrarse desde Inicio y configuración; reinicie la aplicación para aplicar el cambio y mantenga copias de seguridad. El modo servidor conserva los datos en el servidor; use almacenamiento persistente y HTTPS para el acceso externo. Las funciones de IA en línea envían las solicitudes pertinentes al servicio configurado.
+
+### Compilación, ayuda y licencia
+
+Las instrucciones para Windows, macOS y Linux están en [Construir paquetes](#building-packages). Consulte la ayuda de la barra lateral y la [guía de colaboración](docs/handoff/2026-09-30-cloud-collaboration.md). Para informar un problema, abra un [Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues) con el sistema, la versión y los pasos para reproducirlo; quite los datos personales de los registros. Las contribuciones pueden enviarse mediante Pull Request. Licencia MIT: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+
+## 日本語
+
+ReviewFlowは、文献の取り込み、スクリーニング、コーディング、分析、研究過程の記録をまとめたシステマティックレビュー／メタ分析用ワークスペースです。個人はローカルでオフライン利用でき、チームはサーバーに配置して進捗を共有しながら、各レビュアーの判断を分けて保存できます。
+
+### 主な機能
+
+- RIS取り込み、重複候補の確認、インポート履歴、元ファイルの追跡。
+- タイトル／抄録スクリーニング、PDF全文スクリーニング、標準またはカスタムの除外理由。
+- AIによる閲覧順の補助。採用・保留・除外の判断はユーザーが行います。
+- 全文根拠を伴う研究情報のコーディング、効果量、異質性、サブグループ、メタ回帰、感度分析。
+- バイアスリスクの評価、文献計量、エビデンスマップ、チーム共同作業、PRISMAフロー図。
+- 研究履歴の記録と、各モジュールに応じたDOCX／PPTX／LaTeX出力。
+
+機能が実装されていることは、すべての研究デザインで妥当性が確認されたことを意味しません。[分析機能の評価](REVIEW_DATA_ANALYSIS_ASSESSMENT.md)を確認し、結果を検証して方法論の原典を引用してください。
+
+### はじめに・データ保存
+
+対応するデスクトップ版を[Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases)から入手してください。インストーラーにはPythonと実行依存関係が含まれます。Ubuntu／macOSでソースから実行する場合はPython 3.12とGitを用意し、Linuxでは必要に応じてCairoと`python3-venv`をインストールして、[English](#english)の手順を実行してください。
+
+データは既定でローカルに保存されます。Windowsは`%LOCALAPPDATA%\ReviewFlow`、macOSは`~/Library/Application Support/ReviewFlow`、Linuxは`~/.local/share/ReviewFlow`または`XDG_DATA_HOME`配下です。PDFはデータフォルダー内に保存されます。保存先を移行した後はアプリを再起動し、別途バックアップを保管してください。サーバーモードではデータはサーバーに保存されます。外部公開には永続ストレージとHTTPSを使用してください。オンラインAI機能では設定したサービスに該当するリクエストが送信されます。
+
+### ビルド・サポート・ライセンス
+
+Windows、macOS、Linuxのビルド方法は[パッケージのビルド](#building-packages)を参照してください。サイドバーのヘルプと[共同作業ガイド](docs/handoff/2026-09-30-cloud-collaboration.md)も利用できます。不具合は、OS、バージョン、再現手順を添えて[Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues)へ報告してください。ログから個人情報を削除してください。ライセンスはMIT（[`LICENSE`](LICENSE)）。作者：**Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)。
+
+## Português
+
+O ReviewFlow reúne importação de referências, triagem, codificação, análise e registro do processo de revisão sistemática e meta-análise. Pode ser usado offline localmente ou implantado em um servidor para colaboração, mantendo separadas as decisões de cada revisor.
+
+### Recursos
+
+- Importação RIS, identificação e revisão de duplicatas, histórico e rastreabilidade dos arquivos originais.
+- Triagem de título/resumo e de texto completo em PDF, com motivos de exclusão padrão ou personalizados.
+- Ordenação de leitura assistida por IA; as decisões de incluir, deixar em dúvida ou excluir pertencem ao usuário.
+- Codificação de estudos com evidências do texto completo; tamanhos de efeito, heterogeneidade, subgrupos, meta-regressão e análises de sensibilidade.
+- Avaliação manual de risco de viés, bibliometria, mapas de evidências, colaboração e diagramas PRISMA.
+- Registro da pesquisa e exportação, conforme o módulo, para DOCX, PPTX ou LaTeX.
+
+A implementação de um método não comprova sua validação para todos os delineamentos. Consulte a [avaliação dos recursos de análise](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), confira os resultados e cite as fontes metodológicas.
+
+### Como começar e onde ficam os dados
+
+Baixe o instalador disponível para seu sistema em [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases). Os instaladores incluem Python e as dependências. Para executar o código-fonte no Ubuntu ou macOS, instale Python 3.12 e Git; no Linux, instale Cairo e `python3-venv` se necessário e siga os comandos na seção [English](#english).
+
+Por padrão, os dados ficam no computador: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` e Linux `~/.local/share/ReviewFlow` ou em `XDG_DATA_HOME`. PDFs ficam na pasta de dados. A migração do local de armazenamento é feita em Início e configurações e requer reiniciar o aplicativo. Mantenha cópias de segurança. No modo servidor, os dados ficam no servidor; use armazenamento persistente e HTTPS para acesso externo. Recursos de IA online enviam as solicitações pertinentes ao serviço configurado.
+
+### Compilação, suporte e licença
+
+As instruções para Windows, macOS e Linux estão em [Build packages](#building-packages). Consulte a ajuda na barra lateral e o [guia de colaboração](docs/handoff/2026-09-30-cloud-collaboration.md). Para relatar um problema, abra um [Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues) com sistema, versão e etapas para reproduzi-lo; remova dados pessoais dos registros. Contribuições são bem-vindas por Pull Request. Licença MIT: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+
+## Deutsch
+
+ReviewFlow bündelt Literaturimport, Screening, Kodierung, Analyse und die Dokumentation des Forschungsprozesses für systematische Reviews und Metaanalysen. Einzelpersonen können lokal offline arbeiten. Teams können die Anwendung auf einem Server betreiben und Fortschritte teilen, während die Entscheidungen der einzelnen Reviewer getrennt bleiben.
+
+### Funktionen
+
+- RIS-Import, Erkennung und Prüfung von Duplikaten, Importverlauf und Rückverfolgbarkeit der Originaldateien.
+- Titel-/Abstract-Screening und PDF-Volltextscreening mit standardisierten oder eigenen Ausschlussgründen.
+- KI-gestützte Lesereihenfolge; über Einschluss, Unsicherheit und Ausschluss entscheidet weiterhin der Nutzer.
+- Studienkodierung mit Volltextbelegen; Effektgrößen, Heterogenität, Subgruppen, Metaregression und Sensitivitätsanalysen.
+- Manuelle Bewertung des Verzerrungsrisikos, Bibliometrie, Evidenzkarten, Zusammenarbeit und PRISMA-Flussdiagramme.
+- Forschungsprotokoll und je nach Modul Export als DOCX, PPTX oder LaTeX.
+
+Eine implementierte Methode ist nicht automatisch für jedes Studiendesign validiert. Lesen Sie die [Bewertung der Analysefunktionen](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), prüfen Sie die Ergebnisse und zitieren Sie die methodischen Originalquellen.
+
+### Einstieg und Datenspeicherung
+
+Laden Sie ein verfügbares Installationspaket für Ihr System unter [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) herunter. Desktop-Pakete enthalten Python und Laufzeitabhängigkeiten. Für die Ausführung aus dem Quellcode unter Ubuntu oder macOS benötigen Sie Python 3.12 und Git; unter Linux bei Bedarf Cairo und `python3-venv`. Die Befehle stehen im Abschnitt [English](#english).
+
+Standardmäßig werden Daten lokal gespeichert: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` und Linux `~/.local/share/ReviewFlow` oder unter `XDG_DATA_HOME`. PDFs liegen im Datenordner. Nach einer Änderung des Speicherorts muss die Anwendung neu gestartet werden. Erstellen Sie zusätzliche Sicherungskopien. Im Servermodus liegen Aufgabendaten auf dem Server; für externen Zugriff sind dauerhafter Speicher und HTTPS erforderlich. Online-KI-Funktionen senden die betreffenden Anfragen an den konfigurierten Dienst.
+
+### Pakete, Hilfe und Lizenz
+
+Die Bauanleitungen für Windows, macOS und Linux stehen unter [Pakete erstellen](#building-packages). Nutzen Sie die Hilfe in der Seitenleiste und den [Leitfaden zur Zusammenarbeit](docs/handoff/2026-09-30-cloud-collaboration.md). Melden Sie Probleme unter [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) mit Betriebssystem, Version und Reproduktionsschritten; entfernen Sie persönliche Daten aus Protokollen. Beiträge sind als Pull Request willkommen. MIT-Lizenz: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+
+## Српски
+
+ReviewFlow objedinjuje uvoz literature, skrining, kodiranje, analizu i beleženje istraživačkog procesa za sistematske preglede i meta-analize. Može se koristiti lokalno bez interneta ili postaviti na server radi timskog rada, uz odvojeno čuvanje odluka svakog recenzenta.
+
+### Funkcije
+
+- RIS uvoz, otkrivanje i provera duplikata, istorija uvoza i praćenje izvornih datoteka.
+- Skrining naslova/apstrakta i punog teksta PDF-a, uz standardne ili prilagođene razloge za isključivanje.
+- AI pomoć pri određivanju redosleda čitanja; korisnik donosi odluke o uključivanju, neizvesnosti ili isključivanju.
+- Kodiranje studija uz dokaze iz punog teksta; veličine efekta, heterogenost, podgrupe, meta-regresija i analize osetljivosti.
+- Ručna procena rizika od pristrasnosti, bibliometrija, mape dokaza, saradnja i PRISMA dijagrami toka.
+- Beleženje istraživačkog procesa i izvoz u DOCX, PPTX ili LaTeX, u zavisnosti od modula.
+
+Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. Pogledajte [procenu analitičkih mogućnosti](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), proverite rezultate i citirajte izvorne metodološke radove.
+
+### Početak rada i čuvanje podataka
+
+Preuzmite odgovarajući instalacioni paket sa stranice [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases). Paketi uključuju Python i zavisnosti. Za pokretanje izvornog koda na Ubuntu ili macOS-u instalirajte Python 3.12 i Git; na Linuxu po potrebi instalirajte Cairo i `python3-venv`, a zatim pratite komande u odeljku [English](#english).
+
+Podaci se podrazumevano čuvaju lokalno: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow`, Linux `~/.local/share/ReviewFlow` ili u okviru `XDG_DATA_HOME`. PDF datoteke su u direktorijumu sa podacima. Posle migracije lokacije ponovo pokrenite aplikaciju i čuvajte zasebne rezervne kopije. U serverskom režimu podaci zadataka ostaju na serveru; za spoljašnji pristup koristite trajno skladište i HTTPS. Mrežne AI funkcije šalju odgovarajuće zahteve podešenom servisu.
+
+### Paketi, podrška i licenca
+
+Uputstva za Windows, macOS i Linux nalaze se u odeljku [Building packages](#building-packages). Pogledajte pomoć u bočnoj traci i [vodič za saradnju](docs/handoff/2026-09-30-cloud-collaboration.md). Problem prijavite preko [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) uz sistem, verziju i korake za reprodukciju; uklonite lične podatke iz evidencije. Doprinosi su dobrodošli kroz Pull Request. MIT licenca: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+
+## 한국어
+
+ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오기, 선별, 코딩, 분석 및 연구 과정 기록을 한곳에 제공합니다. 개인은 로컬에서 오프라인으로 사용할 수 있고, 팀은 서버에 배포해 진행 상황을 공유하면서 검토자별 판단을 분리해 보관할 수 있습니다.
+
+### 주요 기능
+
+- RIS 가져오기, 중복 탐지 및 검토, 가져오기 기록과 원본 파일 추적.
+- 제목/초록 선별 및 PDF 전문 선별, 기본 또는 사용자 지정 제외 사유.
+- AI 읽기 순서 지원. 포함·보류·제외 결정은 사용자가 내립니다.
+- 전문 근거를 포함한 연구 코딩, 효과크기, 이질성, 하위그룹, 메타회귀 및 민감도 분석.
+- 비뚤림 위험 수동 평가, 서지계량, 근거 지도, 팀 협업 및 PRISMA 흐름도.
+- 연구 과정 기록과 모듈별 DOCX, PPTX, LaTeX 내보내기.
+
+기능이 구현되어 있다고 해서 모든 연구 설계에서 검증되었다는 뜻은 아닙니다. [분석 기능 평가](REVIEW_DATA_ANALYSIS_ASSESSMENT.md)를 확인하고 결과를 검토하며 방법론 원문을 인용하세요.
+
+### 시작하기와 데이터 저장
+
+[Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases)에서 운영체제에 맞는 설치 파일을 받으세요. 데스크톱 설치 파일에는 Python과 실행 종속성이 포함됩니다. Ubuntu 또는 macOS에서 소스 코드를 실행하려면 Python 3.12와 Git을 준비하세요. Linux에서는 필요에 따라 Cairo와 `python3-venv`를 설치하고 [English](#english) 안내의 명령을 실행하세요.
+
+데이터는 기본적으로 로컬에 저장됩니다. Windows는 `%LOCALAPPDATA%\ReviewFlow`, macOS는 `~/Library/Application Support/ReviewFlow`, Linux는 `~/.local/share/ReviewFlow` 또는 `XDG_DATA_HOME`을 사용합니다. PDF는 데이터 폴더에 저장됩니다. 저장 위치를 옮긴 뒤에는 앱을 재시작하고 별도 백업을 보관하세요. 서버 모드의 작업 데이터는 서버에 저장됩니다. 외부 접속에는 영구 저장소와 HTTPS를 사용하세요. 온라인 AI 기능은 설정된 서비스로 관련 요청을 전송합니다.
+
+### 빌드, 도움말 및 라이선스
+
+Windows, macOS, Linux 빌드 방법은 [Building packages](#building-packages)를 참고하세요. 사이드바 도움말과 [협업 안내](docs/handoff/2026-09-30-cloud-collaboration.md)도 확인할 수 있습니다. 문제를 보고할 때는 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues)에 운영체제, 버전, 재현 단계를 적고 로그에서 개인정보를 삭제하세요. Pull Request를 통한 기여를 환영합니다. MIT 라이선스: [`LICENSE`](LICENSE). 작성자: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
 
 ## Русский
 
