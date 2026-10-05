@@ -2,7 +2,7 @@ Unicode true
 SetCompressor /SOLID zlib
 
 !ifndef APP_VERSION
-  !define APP_VERSION "2.0"
+  !define APP_VERSION "2.0.1"
 !endif
 !include "MUI2.nsh"
 !include "x64.nsh"

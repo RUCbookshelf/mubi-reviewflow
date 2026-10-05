@@ -26,7 +26,7 @@
 #appMain .top .rf-breadcrumb {order:1}
 #appMain .top #rfTaskContext,#appMain .top>div:last-child {order:2}
 #appMain .top>div:last-child {margin-left:auto;flex-shrink:0}
-#appMain .top #themeBtn,#appMain .top #rf-app-language-button {border:0;border-radius:4px;min-height:32px;padding:5px 8px;font-size:12px}
+#appMain .top #themeBtn,#appMain .top #rf-app-language-button {border:1px solid var(--border);border-radius:22px;min-height:32px;padding:5px 8px;font-size:12px}
 #appMain .view {min-width:0;scrollbar-gutter:stable}
 body > .footer,body[data-workspace="analysis"] > .footer {left:var(--rf-sidebar-width);background:var(--surface);border-color:var(--border)}
 .rf-breadcrumb {display:flex;align-items:center;gap:8px;min-width:0;flex:1;font:12px/1.5 var(--font-body);color:var(--muted)}
@@ -96,3 +96,11 @@ html[data-theme="dark"] #appMain .btn.b-inc {color:var(--bg)}
  .rf-qual-field:has(#anQualFinding){grid-column:1 / -1}
  .rf-qual-field:has(#anQualQuote){grid-column:span 2}
 }
+
+/* Desktop sidebar toggle leaves mobile drawer behavior unchanged. */
+#rfSidebarToggle {order:0;flex-shrink:0;font-size:12px;padding:5px 8px;min-height:32px}
+@media(min-width:761px){
+ body.rf-sidebar-collapsed {--rf-sidebar-width:0px}
+ body.rf-sidebar-collapsed #appShell.sb {display:none!important}
+}
+@media(max-width:760px){#rfSidebarToggle {display:none}}

@@ -29,6 +29,7 @@
     let current = null;         // 会话内经确认生效的预设（null=未设置→显示默认）
     let profiles = {};          // name -> {label, description}
     let defaultName = 'legacy';
+    let placeholder = '请先选择任务';
 
     const page = document.querySelector('.page[data-p="screen"]');
     const modeRow = page ? page.querySelector('.al-mode') : null;
@@ -72,8 +73,8 @@
         const p = profiles[name] || {};   // 防御：预设项缺失/为 null 时仍可渲染
         select.append(el('option', { value: name, text: T(p.label || name), title: T(p.description || '') }));
       }
-      if (!select.options.length) select.append(el('option', { value: '', text: T('暂不可用') }));
-      select.value = selected;
+      if (!select.options.length) select.append(el('option', { value: '', text: T(placeholder) }));
+      else select.value = selected;
       const info = profiles[selected];
       select.title = info ? T(info.description || '') : '';
       }
@@ -84,24 +85,29 @@
     /* ---- 任务载入：拉取预设清单与已保存选择（未设置即默认经典模式） ---- */
     function onTask(detail) {
       const taskId = (typeof S !== 'undefined' && S.task) ? S.task.task_id : (detail || null);
-      if (!taskId || (typeof S !== 'undefined' && !S.task)) { version++; current = null; disable(true); handledTaskId = null; return; }
+      if (!taskId || (typeof S !== 'undefined' && !S.task)) { version++; current = null; profiles = {}; placeholder = '请先选择任务'; disable(true); handledTaskId = null; renderOptions(); return; }
       if (handledTaskId === taskId) return;   // 同一任务重复事件：保留会话内选择
       handledTaskId = taskId;
       current = null;
       S.al.profileLabel = '';
       renderALChrome();
       const ticket = ++version;
+      profiles = {}; placeholder = '加载中…'; renderOptions();
       disable(true);
       if (typeof api !== 'function' || typeof taskApi !== 'function') return;
       api(taskApi() + '/al/profiles').then(d => {
         if (ticket !== version || (typeof S !== 'undefined' && S.task && S.task.task_id !== taskId)) return;
         profiles = (d && d.profiles) || {};
+        placeholder = '暂不可用';
         current = (d && d.al_profile) || null;
         defaultName = (d && d.default) || 'legacy';
         if (!profiles[defaultName]) defaultName = orderedNames()[0] || 'legacy';
         renderOptions();
         disable(false);
-      }).catch(() => { /* 拉取失败：保持禁用占位，不打扰主流程 */ });
+      }).catch(() => {
+        if (ticket !== version) return;
+        handledTaskId = null; placeholder = '暂不可用'; renderOptions();
+      });
     }
 
     /* ---- 切换：确认 → PUT；取消 → 回退（§10 不变量 6） ---- */
@@ -147,6 +153,6 @@
     });
 
     /* 首次加载时若任务已在（例如脚本晚于 pickTask 注册）：立即初始化一次 */
-    if (typeof S !== 'undefined' && S.task) onTask(S.task.task_id);
+    if (typeof S !== 'undefined') onTask(S.task?.task_id);
   } catch (e) { /* 单点故障：模块初始化失败不影响主应用与 /api/health */ }
 })();

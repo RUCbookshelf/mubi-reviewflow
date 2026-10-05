@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -74,6 +75,7 @@ def parse_csv(path: str | Path) -> list[Article]:
     p = Path(path)
     if not p.is_file():
         raise ParseError(f"文件不存在: {p}")
+    source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     try:
         frame = pd.read_csv(p, encoding="utf-8-sig", dtype=str, keep_default_na=False)
     except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as exc:
@@ -105,9 +107,15 @@ def parse_csv(path: str | Path) -> list[Article]:
             year = extract_year(get("date"))
 
         content_hash = compute_content_hash(doi, title)
+        zotero_key = build_zotero_key(row, content_hash)
+        raw = dict(row)
+        if not key_raw:
+            raw["_generated_key"] = True
+            raw["_fallback_key"] = zotero_key
+            raw["_fallback_id"] = f"{source_digest}:{idx + 2}"
         articles.append(
             Article(
-                zotero_key=build_zotero_key(row, content_hash),
+                zotero_key=zotero_key,
                 item_type=get("item_type"),
                 title=title,
                 authors=normalize_authors(get("authors")),
@@ -117,7 +125,7 @@ def parse_csv(path: str | Path) -> list[Article]:
                 abstract=get("abstract"),
                 url=get("url"),
                 source_format="csv",
-                raw=dict(row),
+                raw=raw,
                 content_hash=content_hash,
             )
         )

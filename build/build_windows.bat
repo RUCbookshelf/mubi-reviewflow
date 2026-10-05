@@ -24,6 +24,8 @@ title MuBi ReviewFlow - Windows build
 
 set "SRCDIR=%~dp0"
 if "%SRCDIR:~-1%"=="\" set "SRCDIR=%SRCDIR:~0,-1%"
+for /f "usebackq delims=" %%V in ("%SRCDIR%\..\VERSION") do set "APP_VERSION=%%V"
+if not defined APP_VERSION set "APP_VERSION=0.0.0"
 
 set "LOG=%SRCDIR%\build_windows.log"
 (>"%LOG%" echo MuBi ReviewFlow Windows build log) 2>nul
@@ -187,6 +189,7 @@ set "COPYFAIL="
 for %%P in (custom_backend custom_frontend coscreen) do call :copyapp "%%P"
 if defined COPYFAIL goto :fail_copy
 copy /y "%SRCDIR%\launcher.py" "%STAGING%\launcher.py" >nul
+copy /y "%SRCDIR%\..\VERSION" "%STAGING%\VERSION" >nul
 copy /y "%SRCDIR%\requirements-app.txt" "%STAGING%\requirements-app.txt" >nul
 copy /y "%SRCDIR%\..\THIRD_PARTY_NOTICES.md" "%STAGING%\THIRD_PARTY_NOTICES.md" >nul
 copy /y "%SRCDIR%\windows_start.py" "%STAGING%\windows_start.py" >nul
@@ -229,11 +232,11 @@ echo [6/6] compiling the installer (%INSTALLER_ENGINE%) ...
 if exist "%INSTALLER%" del /q "%INSTALLER%"
 if not exist "%SRCDIR%\Output" mkdir "%SRCDIR%\Output"
 if /I "%INSTALLER_ENGINE%"=="Inno Setup" goto :compile_inno
-"%MAKENSIS%" /DAPP_VERSION=2.0 "installer.nsi" >>"%LOG%" 2>&1
+"%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "installer.nsi" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_compiler
 goto :compile_done
 :compile_inno
-"%ISCC%" /DAppVersion=2.0 "installer.iss" >>"%LOG%" 2>&1
+"%ISCC%" /DAppVersion=%APP_VERSION% "installer.iss" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_compiler
 :compile_done
 if not exist "%INSTALLER%" goto :fail_noexe
@@ -325,6 +328,7 @@ echo   log: %LOG%
 echo   Please send this log file back for diagnosis.
 echo ============================================================
 echo.
+if defined GITHUB_ACTIONS exit /b 1
 pause
 exit /b 1
 

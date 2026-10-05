@@ -13,6 +13,19 @@
   const taskName=el('span',{id:'rfCurrentTask',translate:'no'});taskContext.append(taskLabel,taskName);
   const appearanceControls=top.lastElementChild;
   top.insertBefore(crumb,top.querySelector('.tabs')||appearanceControls);top.insertBefore(taskContext,appearanceControls);
+  const sidebarToggle=el('button',{id:'rfSidebarToggle',class:'btn b-out',type:'button','aria-controls':'appShell'});
+  top.prepend(sidebarToggle);
+  function syncSidebar(){
+    const collapsed=document.body.classList.contains('rf-sidebar-collapsed');
+    sidebarToggle.textContent=T(collapsed?'展开侧边栏':'收起侧边栏');
+    sidebarToggle.setAttribute('aria-expanded',String(!collapsed));
+    shell.inert=collapsed&&window.innerWidth>760;
+  }
+  function setSidebarCollapsed(collapsed){document.body.classList.toggle('rf-sidebar-collapsed',collapsed);syncSidebar();}
+  sidebarToggle.addEventListener('click',()=>setSidebarCollapsed(!document.body.classList.contains('rf-sidebar-collapsed')));
+  window.addEventListener('resize',syncSidebar);
+  document.addEventListener('reviewflow:language-changed',syncSidebar);
+  syncSidebar();
   // Reuse the original controls and icons; no second global navigation is introduced.
   const home=shell.querySelector('[data-nav="home"]'),firstGroup=shell.querySelector('.grp');
   const homeNav=el('nav',{class:'nav rf-home-navigation','aria-label':T('首页与设置')},home);firstGroup.before(homeNav);
@@ -142,7 +155,7 @@
     const route=registry.parse(link.hash);if(!route)return;event.preventDefault();navigate(route,{focus:event.detail===0});
   });
   shell.addEventListener('click',event=>{const button=event.target.closest('[data-nav]');if(!button)return;event.preventDefault();event.stopImmediatePropagation();navigate(button.dataset.nav,{focus:event.detail===0});},true);
-  taskContext.addEventListener('click',()=>{if(window.innerWidth<=760)setMobileNav(true);const selector=document.getElementById('taskSel');selector.scrollIntoView({block:'nearest'});selector.focus({preventScroll:true});});
+  taskContext.addEventListener('click',()=>{setSidebarCollapsed(false);if(window.innerWidth<=760)setMobileNav(true);const selector=document.getElementById('taskSel');selector.scrollIntoView({block:'nearest'});selector.focus({preventScroll:true});});
   document.addEventListener('pointerdown',event=>{if(openNode&&!openNode.item.contains(event.target))close();});
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&openNode){event.preventDefault();suppressed=openNode;close(true);}});
   function fromHistory(){
