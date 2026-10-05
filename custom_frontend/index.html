@@ -636,6 +636,12 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 #connectionRepairBody p { margin:8px 0; line-height:1.6; text-wrap:pretty; }
 #connectionRepairBody code { display:block; overflow-wrap:anywhere; }
 #connectionRepairBody button { display:inline-block; margin:8px 12px 0 0; }
+#importBusyOverlay { position:fixed; inset:0; z-index:100000; display:grid; place-items:center; padding:24px; background:rgba(17,24,39,.52); backdrop-filter:blur(3px); }
+#importBusyOverlay[hidden] { display:none; }
+#importBusyCard { width:min(460px,100%); padding:24px; border:1px solid var(--border); border-radius:16px; background:var(--surface); box-shadow:0 20px 70px rgba(0,0,0,.24); }
+#importBusyTrack { height:10px; margin:18px 0 9px; overflow:hidden; border-radius:99px; background:var(--border); }
+#importBusyFill { width:1%; height:100%; border-radius:inherit; background:var(--accent); transition:width .2s ease; }
+#importBusyPct { font-variant-numeric:tabular-nums; }
 </style>
 <link rel="stylesheet" href="./analysis_workbench.css?v=20261002-language-wrap-final1">
 <link rel="stylesheet" href="./workspace_shell.css?v=20260929-ui3">
@@ -645,6 +651,15 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./update_check.css?v=20261005-update1">
 </head>
 <body>
+
+<div id="importBusyOverlay" hidden tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="importBusyTitle">
+  <div id="importBusyCard">
+    <h2 id="importBusyTitle" style="margin:0 0 8px">正在导入文献</h2>
+    <p id="importBusyMessage" class="hint" aria-live="polite" style="margin:0">正在解析文件并准备去重…</p>
+    <div id="importBusyTrack" role="progressbar" aria-label="导入与去重进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="1"><div id="importBusyFill"></div></div>
+    <div id="importBusyPct" class="hint" style="margin:0;text-align:right">1%</div>
+  </div>
+</div>
 
 <!-- ================= 登录 / 注册（ReviewFlow · 文献之流 概念版：纸面 + 文献河流 canvas） ================= -->
 <div id="authScreen">
@@ -972,12 +987,26 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <tbody id="batchFilesBody"></tbody></table>
     </div>
     <div id="crossDupWrap" style="display:none">
-      <b style="font-size:.85rem">跨文件重复（已合并去重）</b>
-      <table><thead><tr><th>来自文件A（保留）</th><th>来自文件B（重复）</th><th>去重方式</th><th>标题</th></tr></thead>
-        <tbody id="crossDupBody"></tbody></table>
+      <details id="crossDupDetails">
+        <summary style="cursor:pointer"><b style="font-size:.85rem">跨文件重复（已合并去重）</b></summary>
+        <table><thead><tr><th>来自文件A（保留）</th><th>来自文件B（重复）</th><th>去重方式</th><th>标题</th></tr></thead>
+          <tbody id="crossDupBody"></tbody></table>
+      </details>
     </div>
     <table><thead><tr><th>指标</th><th>数值</th></tr></thead>
       <tbody id="reportBody"><tr><td colspan="2" class="hint" style="margin:0">—</td></tr></tbody></table>
+    <div id="titleDupWrap" style="display:none;margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><b>重复候选（人工核验）</b><div class="hint" id="titleDupSummary" style="margin:4px 0 0"></div></div>
+        <button class="btn b-out sm" id="titleDupExport">导出核验记录 CSV</button>
+      </div>
+      <div id="titleDupGroups"></div>
+      <div class="row" style="justify-content:space-between">
+        <button class="btn b-out sm" id="titleDupPrev">上一页</button>
+        <span class="hint" id="titleDupPage" style="margin:0"></span>
+        <button class="btn b-out sm" id="titleDupNext">下一页</button>
+      </div>
+    </div>
     <div class="row"><button class="btn b-out" id="goScreenBtn" style="display:none">前往初筛 →</button></div>
   </div>
 </section>
@@ -4942,6 +4971,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./interface_locale.js?v=20261002-language-wrap-final2"></script>
 <script src="./research_trace_locale.js?v=20261002-default-on1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
+<script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
+<script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./help_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
@@ -5187,6 +5218,7 @@ function go(p) {
   $('.view').scrollTop = 0;
   if (p === 'home') { renderHub(); loadALSettingsUI(); }
   if (p === 'screen') loadScreen();
+  if (p === 'import' && window.TitleDuplicateReview) TitleDuplicateReview.load();
   if (p === 'fulltext') loadFulltext();
   if (p === 'export') refreshExportButtons();
   if (p === 'scheme') loadDims();
@@ -5429,7 +5461,39 @@ $('#densitySel').addEventListener('change', e => {
 const dz = $('#dropZone');
 const importPromptHtml = $('#dzInner').innerHTML;
 let importVersion = 0;
+let importBusyPreviousInert = new Map();
 const DUP_METHOD_LABEL = { exact_doi: 'DOI 精确匹配', exact_key: 'Key 精确匹配', fuzzy: '标题模糊匹配' };
+function setImportBusy(active, phase = 'parse', percent = 1) {
+  const overlay = $('#importBusyOverlay');
+  if (!overlay) return;
+  if (active) {
+    if (overlay.hidden) {
+      importBusyPreviousInert = new Map();
+      for (const child of document.body.children) {
+        if (child === overlay) continue;
+        importBusyPreviousInert.set(child, child.inert);
+        child.inert = true;
+      }
+      overlay.hidden = false;
+      overlay.focus();
+    }
+    const message = phase === 'exact' ? T('正在进行精确去重…')
+      : phase === 'fuzzy' ? T('精确匹配已完成，正在分段查找标题和作者相似候选…')
+        : phase === 'save' ? T('匹配已完成，正在保存导入结果…')
+          : T('正在解析文件并准备去重…');
+    $('#importBusyMessage').textContent = message;
+    $('#importBusyTitle').textContent = T('正在导入文献');
+    $('#importBusyTrack').setAttribute('aria-label', T('导入与去重进度'));
+    const value = Math.max(1, Math.min(99, Number(percent) || 1));
+    $('#importBusyFill').style.width = value + '%';
+    $('#importBusyPct').textContent = value + '%';
+    $('#importBusyTrack').setAttribute('aria-valuenow', String(value));
+  } else if (!overlay.hidden) {
+    for (const [node, wasInert] of importBusyPreviousInert) node.inert = wasInert;
+    importBusyPreviousInert.clear();
+    overlay.hidden = true;
+  }
+}
 function fmtSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -5452,6 +5516,7 @@ function renderImportReport(d) {
   $('#batchFilesWrap').style.display = isBatch ? '' : 'none';
   const cross = d.cross_file_duplicates || [];
   $('#crossDupWrap').style.display = (isBatch && cross.length) ? '' : 'none';
+  $('#crossDupDetails').open = false;
   if (isBatch) {
     const fb = $('#batchFilesBody'); fb.textContent = '';
     d.files.forEach(f => fb.append(el('tr', {},
@@ -5470,23 +5535,38 @@ function renderImportReport(d) {
   const body = $('#reportBody'); body.textContent = '';
   const rows = isBatch ? [
     ['总解析条数', d.total_parsed],
-    ['精确重复（DOI / Key）', d.exact_duplicates],
-    ['模糊重复（标题 + 作者）', d.fuzzy_duplicates],
-    ['去重后唯一条目', d.unique_after_dedup],
+    ['精确匹配命中次数', d.exact_match_hits],
+    ['精确重复组数', d.exact_duplicate_groups],
+    ['精确去重多余记录数', d.exact_duplicate_excess],
+    ['模糊匹配候选记录数（待人工核验）', d.fuzzy_candidate_excess],
+    ['标题候选组数（含精确重复重叠）', d.title_candidate_groups_including_exact],
+    ['标题候选多余记录数（含精确重复重叠）', d.title_candidate_excess_including_exact],
+    ['待人工核验标题候选组数', d.title_review_groups],
+    ['待人工核验标题候选记录数', d.title_review_pending_records],
+    ['精确去重后记录数（含待核验候选）', d.unique_after_dedup],
     ['实际导入（唯一条目）', d.imported],
     ['新插入', d.new],
     ['已存在（内容刷新）', d.existing],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ] : [
     ['导入记录数', d.n_imported],
-    ['其中重复（去重标记）', d.n_duplicates],
+    ['精确匹配命中次数', d.exact_match_hits],
+    ['精确重复组数', d.exact_duplicate_groups],
+    ['精确去重多余记录数', d.exact_duplicate_excess],
+    ['模糊匹配候选记录数（待人工核验）', d.fuzzy_candidate_excess],
     ['　— 其中与库内已有文献重复', d.duplicates_against_db],
+    ['标题候选组数（含精确重复重叠）', d.title_candidate_groups_including_exact],
+    ['标题候选多余记录数（含精确重复重叠）', d.title_candidate_excess_including_exact],
+    ['待人工核验标题候选组数', d.title_review_groups],
+    ['待人工核验标题候选记录数', d.title_review_pending_records],
     ['新插入', d.n_new],
     ['已存在（内容刷新）', d.n_existing],
+    ['精确去重后唯一记录数', d.unique_after_exact_dedup],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ];
   if (d.note) rows.push(['说明', d.note]);
   rows.forEach(([k, v]) => body.append(el('tr', {}, el('td', { text: k }), el('td', {}, el('b', { text: v === undefined || v === null ? '—' : String(v) })))));
+  if (window.TitleDuplicateReview) TitleDuplicateReview.load(d);
 }
 function resetImportUI() {
   importVersion++;
@@ -5496,6 +5576,7 @@ function resetImportUI() {
   $('#dzInner').innerHTML = importPromptHtml;
   $('#repHint').textContent = '尚未导入 —— 选择当前任务与筛选员后，点击上方上传区开始。';
   $('#batchFilesWrap').style.display = 'none'; $('#crossDupWrap').style.display = 'none';
+  $('#titleDupWrap').style.display = 'none';
   $('#batchFilesBody').replaceChildren(); $('#crossDupBody').replaceChildren(); $('#reportBody').replaceChildren();
   $('#goScreenBtn').style.display = 'none';
 }
@@ -5509,11 +5590,25 @@ async function realImport(files) {
   $('#dzBarI').style.width = '40%';
   const batch = files.length > 1;
   const fd = new FormData();
+  const jobId = crypto.randomUUID();
+  fd.append('job_id', jobId);
   if (batch) files.forEach(f => fd.append('files', f, f.name));
   else fd.append('file', files[0], files[0].name);
   const url = taskApi() + (batch ? '/import-batch' : '/import') + scrQ();
+  setImportBusy(true, 'parse', 1);
   try {
-    const d = await api(url, { method: 'POST', form: fd });
+    const request = api(url, { method: 'POST', form: fd });
+    let settled = false;
+    request.then(() => { settled = true; }, () => { settled = true; });
+    while (!settled) {
+      await new Promise(resolve => setTimeout(resolve, 350));
+      if (settled) break;
+      try {
+        const p = await api(taskApi() + '/import-progress/' + encodeURIComponent(jobId) + scrQ());
+        setImportBusy(true, p.phase, p.percent);
+      } catch (_) { /* The import request remains authoritative if polling briefly fails. */ }
+    }
+    const d = await request;
     if (ticket !== importVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     $('#dzBarI').style.width = '100%';
     dz.classList.add('done');
@@ -5522,14 +5617,19 @@ async function realImport(files) {
     renderImportReport(d);
     document.dispatchEvent(new CustomEvent('reviewflow:import-completed'));
     $('#goScreenBtn').style.display = '';
+    setImportBusy(false);
     await refreshProgress();
-    toast(batch
-      ? T('批量导入完成：解析 {0} 条，去重 {1} 条，导入 {2} 条', d.total_parsed, d.exact_duplicates + d.fuzzy_duplicates, d.imported)
-      : T('导入完成：{0} 条，重复 {1} 条', d.n_imported, d.n_duplicates), 'inc');
+    toast(Number(d.title_review_pending || 0) > 0
+      ? T('导入已完成；标题候选待人工核验')
+      : batch
+        ? T('批量导入完成：解析 {0} 条，精确去重 {1} 条，导入 {2} 条', d.total_parsed, d.exact_duplicate_excess, d.imported)
+        : T('导入完成：{0} 条，精确重复 {1} 条', d.n_imported, d.exact_duplicate_excess), 'inc');
   } catch (e) {
     if (ticket !== importVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     $('#dzBar').style.display = 'none'; $('#dzBarI').style.width = '0';
     toast(e.status === 0 ? e.message : T('导入失败：') + e.message, 'warn');
+  } finally {
+    setImportBusy(false);
   }
 }
 dz.addEventListener('click', () => $('#importFile').click());
@@ -5792,6 +5892,13 @@ async function loadScreen() {
   try {
     const d = await api(taskApi() + '/articles' + scrQ());
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
+    if (Number(d.title_review_pending || 0) > 0) {
+      body.textContent = '';
+      body.append(el('h3', { text: T('标题重复候选尚未核验') }),
+        el('p', { class: 'hint', text: T('请先完成导入页的标题候选判断，再开始文献初筛。待核验组数：{0}', d.title_review_pending) }),
+        el('button', { class: 'btn b-out', text: T('前往标题重复核验'), onclick: () => go('import') }));
+      return;
+    }
     const dd = await api(taskApi() + '/decisions' + scrQ());
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     S.articles = (d.articles || []).map(nzArticle);      /* 字段清洗：null / "null" 一律变空串 */
@@ -6754,6 +6861,10 @@ $('#prImport').addEventListener('click', async () => {
       api(taskApi() + '/decisions' + scr),
       api(taskApi() + '/stage2/decisions' + scr)
     ]);
+    if (Number(all.title_review_progress?.pending_groups || 0) > 0) {
+      toast(T('请先完成标题重复核验，再导入 PRISMA 计数。'), 'warn');
+      return;
+    }
     const s1 = prog.stage1 || {}, s2 = prog.stage2 || {};
     const nonDupTotal = nonDup.total != null ? nonDup.total : nonDup.articles.length;
     const allTotal = all.total != null ? all.total : all.articles.length;
@@ -8321,6 +8432,7 @@ async function enterApp() {
 $('#auTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.togglePaused(); });
 </script>
+<script src="./title_duplicate_review.js?v=20261005-title-review1"></script>
 <script src="./analysis_runner.js?v=20260930-p0p1"></script>
 <script src="./analysis_forest.js?v=20261002-language-wrap-final1"></script>
 <script src="./analysis_dose_nonlinear.js?v=20261002-language-wrap-final1"></script><script src="./analysis_ipd_survival.js?v=20260929-ui3"></script>

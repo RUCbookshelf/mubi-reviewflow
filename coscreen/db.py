@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -71,6 +72,29 @@ CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON rankings(created_at);
 """
 
 _SCHEMA = _SCHEMA + _RANKINGS_SCHEMA
+
+_TITLE_DUPLICATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS title_duplicate_reviews (
+  review_id TEXT PRIMARY KEY,
+  normalized_title TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','undecided','duplicate','not_duplicate')),
+  members_json TEXT NOT NULL,
+  keeper_key TEXT NOT NULL DEFAULT '',
+  decision_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_title_duplicate_status
+  ON title_duplicate_reviews(status, created_at);
+CREATE TABLE IF NOT EXISTS title_duplicate_members (
+  review_id TEXT NOT NULL REFERENCES title_duplicate_reviews(review_id) ON DELETE CASCADE,
+  zotero_key TEXT NOT NULL REFERENCES articles(zotero_key) ON DELETE CASCADE,
+  imported_in_batch INTEGER NOT NULL CHECK(imported_in_batch IN (0,1)),
+  PRIMARY KEY(review_id, zotero_key)
+);
+CREATE INDEX IF NOT EXISTS idx_title_duplicate_member_key
+  ON title_duplicate_members(zotero_key, imported_in_batch);
+"""
 
 # 复筛（全文阶段，SPEC §14）三表：PDF 全文元数据 / 高亮标记 / 复筛决策。
 # stage2_decisions 与初筛 decisions 字段语义完全一致（排除必填理由在调用层
@@ -533,6 +557,7 @@ def _connect(db_path: StrPath) -> sqlite3.Connection:
         if schema_version is not None and _MIGRATED_SCHEMAS.get(path) == schema_version:
             return conn
         _ensure_tags_column(conn)  # 旧库自愈（幂等）：补齐 decisions.tags 列
+        conn.executescript(_TITLE_DUPLICATE_SCHEMA)
         _ensure_stage2_tables(conn)  # 旧库自愈（幂等）：补建复筛三表（SPEC §14）
         _ensure_coding_tables(conn)  # 旧库自愈（幂等）：补建编码四表（SPEC §15.1）
         conn.executescript(_ANALYSIS_SCHEMA)
@@ -603,6 +628,7 @@ def upsert_articles(
     db_path: StrPath,
     articles: list[Article],
     duplicate_pairs: list[DuplicatePair],
+    title_review_groups: list[dict] | None = None,
 ) -> ImportSummary:
     """写入一批文献；重复条目也入库（is_duplicate_of 指向保留条目）。
 
@@ -636,7 +662,7 @@ def upsert_articles(
             d = art.to_dict()
             values = [d[col] for col in _ARTICLE_COLUMNS]
             exists = conn.execute(
-                "SELECT 1 FROM articles WHERE zotero_key = ?", (art.zotero_key,)
+                "SELECT is_duplicate_of FROM articles WHERE zotero_key = ?", (art.zotero_key,)
             ).fetchone()
             if exists is None:
                 conn.execute(
@@ -645,13 +671,75 @@ def upsert_articles(
                 next_order += 1
                 n_new += 1
             else:
+                # Refreshing imported content must not undo an earlier exact or
+                # manually confirmed title-duplicate decision.
+                kept_duplicate_of = dup_of if dup_of is not None else exists[0]
                 conn.execute(
                     "UPDATE articles SET item_type=?, title=?, authors=?, journal=?, "
                     "year=?, doi=?, abstract=?, url=?, source_format=?, raw_json=?, "
                     "content_hash=?, is_duplicate_of=? WHERE zotero_key=?",
-                    (*values[1:], dup_of, art.zotero_key),
+                    (*values[1:], kept_duplicate_of, art.zotero_key),
                 )
                 n_existing += 1
+
+        now = _now()
+        for group in title_review_groups or []:
+            members = group["members"]
+            member_keys = {m["zotero_key"] for m in members}
+            pending_rows = conn.execute(
+                "SELECT review_id,normalized_title,members_json FROM title_duplicate_reviews "
+                "WHERE status IN ('pending','undecided') ORDER BY created_at"
+            ).fetchall()
+            prior_rows = []
+            for prior in pending_rows:
+                prior_members = json.loads(prior[2])
+                prior_keys = {m["zotero_key"] for m in prior_members}
+                if prior[1] == group["normalized_title"] or member_keys.intersection(prior_keys):
+                    prior_rows.append((prior, prior_members))
+            if prior_rows:
+                first_prior = prior_rows[0][0]
+                review_id = first_prior[0]
+                merged: dict[str, dict] = {}
+                for _, prior_members in prior_rows:
+                    merged.update({m["zotero_key"]: m for m in prior_members})
+                for member in members:
+                    old = merged.get(member["zotero_key"])
+                    if old:
+                        old["imported_in_batch"] = bool(
+                            old["imported_in_batch"] or member["imported_in_batch"]
+                        )
+                        if member.get("match_kind") == "fuzzy":
+                            old["match_kind"] = "fuzzy"
+                    else:
+                        merged[member["zotero_key"]] = member
+                members = list(merged.values())
+                conn.execute(
+                    "UPDATE title_duplicate_reviews SET normalized_title=?,members_json=?,updated_at=? "
+                    "WHERE review_id=?",
+                    (first_prior[1], json.dumps(members, ensure_ascii=False, allow_nan=False),
+                     now, review_id),
+                )
+                for prior, _ in prior_rows[1:]:
+                    conn.execute(
+                        "DELETE FROM title_duplicate_reviews WHERE review_id=?", (prior[0],)
+                    )
+            else:
+                review_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO title_duplicate_reviews "
+                    "(review_id,normalized_title,status,members_json,created_at,updated_at) "
+                    "VALUES (?,?, 'pending', ?,?,?)",
+                    (review_id, group["normalized_title"],
+                     json.dumps(members, ensure_ascii=False, allow_nan=False), now, now),
+                )
+            conn.executemany(
+                "INSERT INTO title_duplicate_members "
+                "(review_id,zotero_key,imported_in_batch) VALUES (?,?,?) "
+                "ON CONFLICT(review_id,zotero_key) DO UPDATE SET "
+                "imported_in_batch=MAX(imported_in_batch,excluded.imported_in_batch)",
+                [(review_id, m["zotero_key"], int(bool(m["imported_in_batch"])))
+                 for m in members],
+            )
 
     return ImportSummary(
         n_imported=len(articles),
@@ -665,11 +753,131 @@ def list_articles(db_path: StrPath, include_duplicates: bool = False) -> list[Ar
     """按 import_order 列出文献；默认过滤掉重复条目。"""
     sql = f"SELECT {', '.join(_ARTICLE_COLUMNS)} FROM articles"
     if not include_duplicates:
-        sql += " WHERE is_duplicate_of IS NULL"
+        sql += (
+            " WHERE is_duplicate_of IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE m.zotero_key=articles.zotero_key "
+            "AND m.imported_in_batch=1 AND r.status IN ('pending','undecided'))"
+        )
     sql += " ORDER BY import_order, zotero_key"
     with closing(_connect(db_path)) as conn:
         rows = conn.execute(sql).fetchall()
     return [_row_to_article(r) for r in rows]
+
+
+def list_title_duplicate_reviews(
+    db_path: StrPath, *, status: str | None = "pending",
+    limit: int = 25, offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Return paginated human-review groups and the total matching group count."""
+    with closing(_connect(db_path)) as conn:
+        if status is None:
+            total = conn.execute("SELECT COUNT(*) FROM title_duplicate_reviews").fetchone()[0]
+            rows = conn.execute(
+            "SELECT review_id,normalized_title,status,members_json,keeper_key,decision_by,updated_at "
+                "FROM title_duplicate_reviews ORDER BY created_at,review_id LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        else:
+            if status in {"pending", "undecided"}:
+                where = "status IN ('pending','undecided')"
+                count_params = ()
+                params = (limit, offset)
+            else:
+                where = "status=?"
+                count_params = (status,)
+                params = (status, limit, offset)
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM title_duplicate_reviews WHERE {where}", count_params
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT review_id,normalized_title,status,members_json,keeper_key,decision_by,updated_at "
+                f"FROM title_duplicate_reviews WHERE {where} "
+                "ORDER BY created_at,review_id LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+    return ([{"review_id": r[0], "normalized_title": r[1], "status": r[2],
+              "members": json.loads(r[3]), "keeper_key": r[4],
+              "decision_by": r[5], "updated_at": r[6]} for r in rows], total)
+
+
+def title_duplicate_review_progress(db_path: StrPath) -> dict:
+    with closing(_connect(db_path)) as conn:
+        pending, total = conn.execute(
+            "SELECT SUM(status IN ('pending','undecided')),COUNT(*) FROM title_duplicate_reviews"
+        ).fetchone()
+        pending_records = conn.execute(
+            "SELECT COUNT(DISTINCT m.zotero_key) FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE r.status IN ('pending','undecided')"
+        ).fetchone()[0]
+        confirmed = conn.execute(
+            "SELECT COUNT(*) FROM title_duplicate_reviews WHERE status='duplicate'"
+        ).fetchone()[0]
+        rejected = conn.execute(
+            "SELECT COUNT(*) FROM title_duplicate_reviews WHERE status='not_duplicate'"
+        ).fetchone()[0]
+        excluded_records = conn.execute(
+            "SELECT COUNT(DISTINCT m.zotero_key) FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE r.status='duplicate' "
+            "AND m.zotero_key<>r.keeper_key"
+        ).fetchone()[0]
+    return {"pending_groups": int(pending or 0), "candidate_groups": int(total or 0),
+            "pending_records": int(pending_records or 0),
+            "confirmed_duplicate_records_excluded": int(excluded_records or 0),
+            "confirmed_duplicate_groups": int(confirmed or 0),
+            "not_duplicate_groups": int(rejected or 0)}
+
+
+def decide_title_duplicate_review(
+    db_path: StrPath, review_id: str, decision: str, keeper_key: str = "",
+    decided_by: str = "",
+) -> bool:
+    """Resolve a candidate group; confirmed duplicates are excluded from screening."""
+    if decision not in {"duplicate", "not_duplicate", "undecided"}:
+        raise ValueError("decision must be duplicate, not_duplicate, or undecided")
+    now = _now()
+    with closing(_connect(db_path)) as conn, conn:
+        row = conn.execute(
+            "SELECT status,members_json FROM title_duplicate_reviews WHERE review_id=?",
+            (review_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        members = json.loads(row[1])
+        keys = {m["zotero_key"] for m in members}
+        if decision == "duplicate":
+            if keeper_key not in keys:
+                raise ValueError("keeper_key must identify a member of the candidate group")
+            duplicate_keys = [m["zotero_key"] for m in members
+                               if m["zotero_key"] != keeper_key]
+            conn.executemany(
+                "UPDATE articles SET is_duplicate_of=? WHERE zotero_key=?",
+                [(keeper_key, key) for key in duplicate_keys],
+            )
+            status = "duplicate"
+        elif decision == "not_duplicate":
+            status = "not_duplicate"
+        else:
+            status = "undecided"
+        conn.execute(
+            "UPDATE title_duplicate_reviews SET status=?,keeper_key=?,decision_by=?,updated_at=? WHERE review_id=?",
+            (status, keeper_key if decision == "duplicate" else "", decided_by, now, review_id),
+        )
+    return True
+
+
+def has_pending_title_duplicate_review(db_path: StrPath, zotero_key: str) -> bool:
+    with closing(_connect(db_path)) as conn:
+        return conn.execute(
+            "SELECT 1 FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE m.zotero_key=? AND m.imported_in_batch=1 "
+            "AND r.status IN ('pending','undecided') LIMIT 1",
+            (zotero_key,),
+        ).fetchone() is not None
 
 
 def get_article(db_path: StrPath, zotero_key: str) -> Article | None:
@@ -975,12 +1183,20 @@ def get_progress(db_path: StrPath) -> dict:
     counts = {"include": 0, "exclude": 0, "maybe": 0}
     with closing(_connect(db_path)) as conn:
         total = conn.execute(
-            "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NULL"
+            "SELECT COUNT(*) FROM articles a WHERE is_duplicate_of IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1 "
+            "AND r.status IN ('pending','undecided'))"
         ).fetchone()[0]
         for decision, cnt in conn.execute(
             "SELECT dec.decision, COUNT(*) FROM decisions dec "
             "JOIN articles a ON a.zotero_key = dec.zotero_key "
-            "WHERE a.is_duplicate_of IS NULL "
+            "WHERE a.is_duplicate_of IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1 "
+            "AND r.status IN ('pending','undecided')) "
             "GROUP BY dec.decision"
         ):
             if decision in counts:

@@ -5,6 +5,7 @@ RIS 作者为列表，经 normalize_authors 以 "; " 连接；记录数与 "ER -
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import rispy
@@ -63,6 +64,7 @@ def parse_ris(path: str | Path) -> list[Article]:
     if not p.is_file():
         raise ParseError(f"文件不存在: {p}")
     text = _read_text(p)
+    source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     try:
         records = rispy.loads(text)
     except Exception as exc:  # rispy 异常类型随版本变化，统一包装并保留定位信息
@@ -84,7 +86,15 @@ def parse_ris(path: str | Path) -> list[Article]:
             year = extract_year(_first(record, _DATE_KEYS))
 
         content_hash = compute_content_hash(doi, title)
-        zotero_key = _first(record, _KEY_KEYS) or build_zotero_key(record, content_hash)
+        source_key = _first(record, _KEY_KEYS)
+        zotero_key = source_key or build_zotero_key(record, content_hash)
+        raw = dict(record)
+        if not source_key:
+            # Retain the legacy key as a base for compatibility, but give each
+            # source row a stable identity so same-title rows are not collapsed.
+            raw["_generated_key"] = True
+            raw["_fallback_key"] = zotero_key
+            raw["_fallback_id"] = f"{source_digest}:{record_no}"
 
         articles.append(
             Article(
@@ -98,7 +108,7 @@ def parse_ris(path: str | Path) -> list[Article]:
                 abstract=_first(record, _ABSTRACT_KEYS),
                 url=_first(record, _URL_KEYS),
                 source_format="ris",
-                raw=dict(record),
+                raw=raw,
                 content_hash=content_hash,
             )
         )

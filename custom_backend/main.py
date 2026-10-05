@@ -21,7 +21,11 @@ from __future__ import annotations
 
 from typing import Literal
 
+import asyncio
 import json
+import hashlib
+import csv
+import io
 import logging
 import math
 import os
@@ -62,7 +66,11 @@ from coscreen.pool_compatibility import NON_DIRECTIONAL_MEASURES
 from coscreen.al.ranker import ActiveLearningRanker
 from coscreen.al.stop import current_streak as al_current_streak
 from coscreen.al.stop import suggest_stop as al_suggest_stop
-from coscreen.dedup import find_duplicates
+from coscreen.dedup import (
+    find_duplicates,
+    find_title_candidate_groups,
+    normalize_title_candidate,
+)
 from coscreen.export import (
     export_articles_ris,
     export_coding_matrix,
@@ -190,6 +198,10 @@ class TaskLockMiddleware:
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+        if re.fullmatch(r"/api/tasks/[^/]+/import-progress/[0-9a-fA-F-]{36}",
+                        scope.get("path", "")):
             await self.app(scope, receive, send)
             return
         match = self._PATH_RE.match(scope.get("path", ""))
@@ -334,6 +346,11 @@ class DecisionIn(BaseModel):
     reason: str = Field(default="", max_length=2000)
     notes: str = Field(default="", max_length=8000)
     tags: str | None = Field(default=None, max_length=500)
+
+
+class TitleDuplicateDecisionIn(BaseModel):
+    decision: Literal["duplicate", "not_duplicate", "undecided"]
+    keeper_key: str = Field(default="", max_length=300)
 
 
 class DimensionIn(BaseModel):
@@ -1226,7 +1243,10 @@ def list_articles(
                 )
     db = _screener_db(info, screener or user["username"])
     articles = db_mod.list_articles(db, include_duplicates=include_duplicates)
-    return {"articles": [_article_dump(a) for a in articles], "total": len(articles)}
+    review = db_mod.title_duplicate_review_progress(db)
+    return {"articles": [_article_dump(a) for a in articles], "total": len(articles),
+            "title_review_pending": review["pending_groups"],
+            "title_review_progress": review}
 
 
 async def _parse_upload_to_articles(upload: UploadFile, tmpdir: Path, idx: int) -> tuple[str, list, Path]:
@@ -1246,14 +1266,201 @@ async def _parse_upload_to_articles(upload: UploadFile, tmpdir: Path, idx: int) 
         raise _bad(f"解析失败（{name}）：{exc}") from exc
 
 
+_IMPORT_PROGRESS_DIR = Path(tempfile.gettempdir()) / "reviewflow_import_progress"
+
+
+def _import_progress_path(job_id: str) -> Path:
+    try:
+        safe_id = str(uuid.UUID(job_id))
+    except (ValueError, AttributeError) as exc:
+        raise _bad("导入进度编号无效。", 400) from exc
+    return _IMPORT_PROGRESS_DIR / f"{safe_id}.json"
+
+
+def _set_import_progress(job_id: str | None, task_id: str, user_id: str,
+                         phase: str, percent: int, **extra) -> None:
+    if not job_id:
+        return
+    path = _import_progress_path(job_id)
+    payload = {"job_id": str(uuid.UUID(job_id)), "task_id": task_id,
+               "user_id": user_id, "phase": phase,
+               "percent": max(0, min(100, int(percent))), **extra}
+    temp = path.with_suffix(f".{threading.get_ident()}.tmp")
+    try:
+        _IMPORT_PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
+        temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
+    except OSError as exc:
+        # Progress reporting must not interrupt an otherwise successful import.
+        logger.debug("Unable to persist import progress %s: %s", job_id, exc)
+
+
+def _fuzzy_progress(job_id: str | None, task_id: str, user_id: str,
+                    stage: str, done: int, total: int,
+                    start: int = 10, span: int = 85) -> None:
+    if stage == "exact":
+        percent = start
+        phase = "exact"
+    else:
+        ratio = 1.0 if total <= 0 else min(1.0, done / total)
+        percent = start + int(span * ratio)
+        phase = "fuzzy"
+    _set_import_progress(job_id, task_id, user_id, phase, percent,
+                         completed=done, total=total)
+
+
 def _keys_of(articles: list) -> set:
     return {a.zotero_key for a in articles}
+
+
+def _stabilize_generated_import_keys(existing: list, incoming: list) -> None:
+    """Keep legacy fallback keys when possible, while separating same-title rows.
+
+    Generated ``auto-*`` values are storage identifiers, not evidence of a match.
+    The source digest + row locator makes collision suffixes stable on re-import.
+    """
+    occupied = {a.zotero_key for a in existing}
+    key_by_fallback_id: dict[str, str] = {}
+    for article in existing:
+        fallback_id = str(article.raw.get("_fallback_id") or "")
+        if fallback_id:
+            key_by_fallback_id[fallback_id] = article.zotero_key
+    for article in incoming:
+        if not article.raw.get("_generated_key"):
+            continue
+        base_key = str(article.raw.get("_fallback_key") or article.zotero_key)
+        fallback_id = str(article.raw.get("_fallback_id") or "")
+        known_key = key_by_fallback_id.get(fallback_id) if fallback_id else None
+        if known_key:
+            chosen = known_key
+        elif base_key not in occupied:
+            chosen = base_key
+        else:
+            suffix = hashlib.sha256(fallback_id.encode("utf-8")).hexdigest()[:12]
+            chosen = f"{base_key}-{suffix}"
+            serial = 2
+            while chosen in occupied:
+                chosen = f"{base_key}-{suffix}-{serial}"
+                serial += 1
+        article.zotero_key = chosen
+        occupied.add(chosen)
+        if fallback_id:
+            key_by_fallback_id[fallback_id] = chosen
+
+
+def _title_review_groups(exact_survivors: list, incoming_keys: set,
+                         fuzzy_pairs: list | None = None) -> list[dict]:
+    """Combine identical-title and fuzzy title/author links for human review."""
+    eligible = [article for article in exact_survivors if not article.is_duplicate_of]
+    articles_by_key = {article.zotero_key: article for article in eligible}
+    parent = {key: key for key in articles_by_key}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[max(root_left, root_right)] = min(root_left, root_right)
+
+    for group in find_title_candidate_groups(eligible):
+        first_key = group[0].zotero_key
+        for article in group[1:]:
+            union(first_key, article.zotero_key)
+    fuzzy_pairs = fuzzy_pairs or []
+    for pair in fuzzy_pairs:
+        if pair.kept_key in parent and pair.dup_key in parent:
+            union(pair.kept_key, pair.dup_key)
+
+    components: dict[str, list] = {}
+    for key, article in articles_by_key.items():
+        components.setdefault(find(key), []).append(article)
+
+    fuzzy_keys = {key for pair in fuzzy_pairs for key in (pair.kept_key, pair.dup_key)}
+    result = []
+    for group in components.values():
+        if len(group) < 2 or not any(a.zotero_key in incoming_keys for a in group):
+            continue
+        is_fuzzy = any(a.zotero_key in fuzzy_keys for a in group)
+        members = []
+        for article in group:
+            raw = article.raw if isinstance(article.raw, dict) else {}
+            def raw_value(*names):
+                lowered = {str(k).lower(): v for k, v in raw.items()}
+                for name in names:
+                    value = lowered.get(name.lower())
+                    if value not in (None, "", []):
+                        return value
+                return ""
+            page_start = raw_value("start_page", "SP")
+            page_end = raw_value("end_page", "EP")
+            page_text = (f"{page_start}-{page_end}" if page_start and page_end
+                         else raw_value("pages", "page", "start_page", "SP", "C7"))
+            source_record = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+            members.append({
+                "zotero_key": article.zotero_key,
+                "title": article.title,
+                "authors": article.authors,
+                "year": article.year,
+                "journal": article.journal,
+                "volume": raw_value("volume", "VL"),
+                "issue": raw_value("issue", "IS"),
+                "pages": page_text,
+                "doi": article.doi,
+                "source_file": raw.get("source_file", ""),
+                "imported_in_batch": article.zotero_key in incoming_keys,
+                "match_kind": "fuzzy" if is_fuzzy else "title",
+                "raw": source_record,
+            })
+        if is_fuzzy:
+            digest = hashlib.sha256(
+                "\0".join(sorted(a.zotero_key for a in group)).encode("utf-8")
+            ).hexdigest()[:20]
+            group_key = f"fuzzy:{digest}"
+        else:
+            group_key = normalize_title_candidate(group[0].title)
+        result.append({
+            "normalized_title": group_key,
+            "members": members,
+        })
+    return result
+
+
+def _exact_duplicate_metrics(report, incoming_keys: set | None = None,
+                             previous_report=None) -> dict:
+    hits = [p for p in report.exact_pairs
+            if incoming_keys is None or p.dup_key in incoming_keys]
+    groups = {p.kept_key for p in hits}
+    previous_excess = (
+        max(0, previous_report.total - previous_report.unique)
+        if previous_report is not None else 0
+    )
+    return {
+        "exact_match_hits": len(hits),
+        "exact_duplicate_groups": len(groups),
+        "exact_duplicate_excess": max(
+            0, report.total - report.unique - previous_excess
+        ),
+    }
+
+
+def _count_title_groups_with_incoming(groups: list[list], incoming_keys: set) -> tuple[int, int]:
+    selected = []
+    for group in groups:
+        eligible = [article for article in group if not article.is_duplicate_of]
+        if len(eligible) > 1 and any(a.zotero_key in incoming_keys for a in eligible):
+            selected.append(eligible)
+    return len(selected), sum(len(g) - 1 for g in selected)
 
 
 @app.post("/api/tasks/{task_id}/import")
 async def import_articles(
     task_id: str,
     file: UploadFile = File(...),
+    job_id: str | None = Form(default=None),
     screener: str | None = None,
     user: dict = Depends(require_user),
 ) -> dict:
@@ -1262,22 +1469,44 @@ async def import_articles(
     db = _screener_db(info, screener_name)
     tmpdir = Path(tempfile.mkdtemp(prefix="cobook_import_"))
     try:
+        _set_import_progress(job_id, task_id, user["user_id"], "parse", 2)
         name, articles, raw_path = await _parse_upload_to_articles(file, tmpdir, 0)
+        for article in articles:
+            article.raw["source_file"] = name
 
         # 与库中已有文献合并后统一去重：修复"先导 A 再导 B 时，B 不与 A 的文献去重"的缺口。
         existing = db_mod.list_articles(db, include_duplicates=True)
+        _stabilize_generated_import_keys(existing, articles)
         combined = existing + articles
-        _, report = find_duplicates(combined)
+        title_groups_all = find_title_candidate_groups(combined)
+        exact_survivors, exact_report = await asyncio.to_thread(
+            find_duplicates, combined, include_fuzzy=False
+        )
+        _, previous_exact_report = find_duplicates(existing, include_fuzzy=False)
+        _set_import_progress(job_id, task_id, user["user_id"], "fuzzy", 10,
+                             completed=0, total=len(exact_survivors))
+        _, report = await asyncio.to_thread(
+            find_duplicates, combined,
+            progress_callback=lambda stage, done, total: _fuzzy_progress(
+                job_id, task_id, user["user_id"], stage, done, total
+            ),
+        )
 
-        # 只 upsert 本次文件解析出的条目；重复对传入用于给新行打 is_duplicate_of 标记
-        # （指向库内已有条目或本批次内保留条目）。
-        pairs = report.exact_pairs + report.fuzzy_pairs
+        # DOI/Key 精确匹配仍自动标记；模糊匹配只进入核验清单，用户确认后才排除。
+        pairs = report.exact_pairs
         new_keys = _keys_of(articles)
         existing_keys = _keys_of(existing)
         duplicates_against_db = sum(
             1 for p in pairs if p.dup_key in new_keys and p.kept_key in existing_keys
         )
-        summary = db_mod.upsert_articles(db, articles, pairs)
+        title_groups = _title_review_groups(
+            exact_survivors,
+            new_keys - existing_keys,
+            report.fuzzy_pairs,
+        )
+        _set_import_progress(job_id, task_id, user["user_id"], "save", 97)
+        summary = db_mod.upsert_articles(db, articles, pairs, title_groups)
+        review_progress = db_mod.title_duplicate_review_progress(db)
         db_mod.set_meta(db, "task", info.display_name)
         db_mod.set_meta(db, "screener", screener_name)
         db_mod.set_meta(db, "source_file", name)
@@ -1288,7 +1517,21 @@ async def import_articles(
             "n_duplicates": summary.n_duplicates,
             "n_new": summary.n_new,
             "n_existing": summary.n_existing,
+            "unique_after_exact_dedup": max(
+                0, len(articles) - max(0, exact_report.total - exact_report.unique
+                                       - (previous_exact_report.total - previous_exact_report.unique))
+            ),
+            "fuzzy_candidate_excess": sum(
+                1 for pair in report.fuzzy_pairs if pair.dup_key in new_keys
+            ),
             "duplicates_against_db": duplicates_against_db,
+            **_exact_duplicate_metrics(exact_report, new_keys, previous_exact_report),
+            "title_candidate_groups_including_exact": _count_title_groups_with_incoming(title_groups_all, new_keys)[0],
+            "title_candidate_excess_including_exact": _count_title_groups_with_incoming(title_groups_all, new_keys)[1],
+            "title_review_groups": len(title_groups),
+            "title_review_pending": review_progress["pending_groups"],
+            "title_review_pending_records": review_progress["pending_records"],
+            "title_review_excess": sum(len(g["members"]) - 1 for g in title_groups),
             "note": report.note,
             "progress": db_mod.get_progress(db),
         }
@@ -1296,7 +1539,12 @@ async def import_articles(
             _import_history_db(info), task_id=task_id, screener=screener_name,
             import_type="single", stats=result, files=[(name, raw_path)],
         )
+        _set_import_progress(job_id, task_id, user["user_id"], "complete", 100)
         return result
+    except Exception as exc:
+        _set_import_progress(job_id, task_id, user["user_id"], "error", 100,
+                             error=str(exc))
+        raise
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1305,6 +1553,7 @@ async def import_articles(
 async def import_articles_batch(
     task_id: str,
     files: list[UploadFile] = File(...),
+    job_id: str | None = Form(default=None),
     screener: str | None = None,
     user: dict = Depends(require_user),
 ) -> dict:
@@ -1324,6 +1573,7 @@ async def import_articles_batch(
 
     tmpdir = Path(tempfile.mkdtemp(prefix="cobook_import_"))
     try:
+        _set_import_progress(job_id, task_id, user["user_id"], "parse", 2)
         per_file: list[dict] = []  # {"name", "parsed", "articles", "raw_path"}
         combined: list = []
         for i, f in enumerate(files):
@@ -1333,9 +1583,19 @@ async def import_articles_batch(
             combined.extend(articles)
             per_file.append({"name": name, "parsed": len(articles), "articles": articles,
                              "raw_path": raw_path})
+            _set_import_progress(job_id, task_id, user["user_id"], "parse",
+                                 min(9, 2 + int(7 * (i + 1) / len(files))),
+                                 completed=i + 1, total=len(files))
 
-        kept, report = find_duplicates(combined)
-        pairs = report.exact_pairs + report.fuzzy_pairs
+        existing = db_mod.list_articles(db, include_duplicates=True)
+        _stabilize_generated_import_keys(existing, combined)
+        title_groups_all = find_title_candidate_groups(existing + combined)
+        title_groups_with_incoming = _count_title_groups_with_incoming(title_groups_all, _keys_of(combined))
+        exact_survivors, exact_report = await asyncio.to_thread(
+            find_duplicates, combined, include_fuzzy=False
+        )
+        kept = exact_survivors
+        pairs = exact_report.exact_pairs
 
         # key -> 来源文件 / 标题（用于逐文件重复计数与跨文件重复明细）
         source_of: dict[str, str] = {}
@@ -1358,19 +1618,36 @@ async def import_articles_batch(
                     "title": title_of.get(p.dup_key, ""),
                 })
 
-        # 与库中已有文献合并再统一去重：批次内保留条目若与库内条目重复，
-        # upsert 时打 is_duplicate_of（避免换序重导产生影子行）。
-        existing = db_mod.list_articles(db, include_duplicates=True)
+        # 与库内已有文献做第二次精确匹配；模糊命中保留为人工核验候选。
         existing_keys = _keys_of(existing)
-        _, global_report = find_duplicates(existing + kept)
-        global_pairs = global_report.exact_pairs + global_report.fuzzy_pairs
+        global_articles = existing + kept
+        global_exact_survivors, global_exact_report = await asyncio.to_thread(
+            find_duplicates, global_articles, include_fuzzy=False
+        )
+        _set_import_progress(job_id, task_id, user["user_id"], "fuzzy", 10,
+                             completed=0, total=global_exact_report.unique)
+        _, global_fuzzy_report = await asyncio.to_thread(
+            find_duplicates, global_articles,
+            progress_callback=lambda stage, done, total: _fuzzy_progress(
+                job_id, task_id, user["user_id"], stage, done, total,
+                start=10, span=85,
+            ),
+        )
+        global_pairs = global_exact_report.exact_pairs
         kept_keys = _keys_of(kept)
         duplicates_against_db = sum(
             1 for p in global_pairs
             if p.dup_key in kept_keys and p.kept_key in existing_keys and p.kept_key not in kept_keys
         )
 
-        summary = db_mod.upsert_articles(db, kept, global_pairs)
+        title_groups = _title_review_groups(
+            global_exact_survivors,
+            kept_keys - existing_keys,
+            global_fuzzy_report.fuzzy_pairs,
+        )
+        _set_import_progress(job_id, task_id, user["user_id"], "save", 97)
+        summary = db_mod.upsert_articles(db, kept, global_pairs, title_groups)
+        review_progress = db_mod.title_duplicate_review_progress(db)
         db_mod.set_meta(db, "task", info.display_name)
         db_mod.set_meta(db, "screener", screener_name)
         tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
@@ -1379,16 +1656,26 @@ async def import_articles_batch(
                 {"name": pf["name"], "parsed": pf["parsed"], "duplicates_within": dup_within.get(pf["name"], 0)}
                 for pf in per_file
             ],
-            "total_parsed": report.total,
+            "total_parsed": exact_report.total,
             "cross_file_duplicates": cross_file_duplicates,
-            "exact_duplicates": len(report.exact_pairs),
-            "fuzzy_duplicates": len(report.fuzzy_pairs),
-            "unique_after_dedup": report.unique,
+            "exact_duplicates": exact_report.total - exact_report.unique,
+            **_exact_duplicate_metrics(exact_report),
+            "fuzzy_candidate_excess": sum(
+                1 for pair in global_fuzzy_report.fuzzy_pairs
+                if pair.dup_key in _keys_of(combined)
+            ),
+            "unique_after_dedup": exact_report.unique,
             "imported": summary.n_imported,
             "new": summary.n_new,
             "existing": summary.n_existing,
             "duplicates_against_db": duplicates_against_db,
-            "note": report.note or global_report.note,
+            "title_candidate_groups_including_exact": title_groups_with_incoming[0],
+            "title_candidate_excess_including_exact": title_groups_with_incoming[1],
+            "title_review_groups": len(title_groups),
+            "title_review_pending": review_progress["pending_groups"],
+            "title_review_pending_records": review_progress["pending_records"],
+            "title_review_excess": sum(len(g["members"]) - 1 for g in title_groups),
+            "note": exact_report.note or global_fuzzy_report.note,
             "progress": db_mod.get_progress(db),
         }
         result["import_id"] = import_history_mod.save_import(
@@ -1396,9 +1683,99 @@ async def import_articles_batch(
             import_type="batch", stats=result,
             files=[(pf["name"], pf["raw_path"]) for pf in per_file],
         )
+        _set_import_progress(job_id, task_id, user["user_id"], "complete", 100)
         return result
+    except Exception as exc:
+        _set_import_progress(job_id, task_id, user["user_id"], "error", 100,
+                             error=str(exc))
+        raise
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@app.get("/api/tasks/{task_id}/import-progress/{job_id}")
+def import_progress(task_id: str, job_id: str,
+                    user: dict = Depends(require_user)) -> dict:
+    """Read-only import progress, stored in a temp file so API workers can share it."""
+    _task_or_404(task_id)
+    path = _import_progress_path(job_id)
+    if not path.is_file():
+        return {"job_id": job_id, "phase": "starting", "percent": 1}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"job_id": job_id, "phase": "starting", "percent": 1}
+    if state.get("task_id") != task_id or state.get("user_id") != user["user_id"]:
+        raise _bad("找不到此导入进度。", 404)
+    return {key: value for key, value in state.items() if key != "user_id"}
+
+
+@app.get("/api/tasks/{task_id}/title-duplicate-reviews")
+def list_title_duplicate_reviews(
+    task_id: str,
+    screener: str | None = None,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user: dict = Depends(require_user),
+) -> dict:
+    info = _task_or_404(task_id)
+    db = _screener_db(info, screener or user["username"])
+    groups, total = db_mod.list_title_duplicate_reviews(db, limit=limit, offset=offset)
+    return {"groups": groups, "total": total, "offset": offset,
+            "progress": db_mod.title_duplicate_review_progress(db)}
+
+
+@app.post("/api/tasks/{task_id}/title-duplicate-reviews/{review_id}")
+def decide_title_duplicate_review(
+    task_id: str, review_id: str, body: TitleDuplicateDecisionIn,
+    screener: str | None = None, user: dict = Depends(require_user),
+) -> dict:
+    info = _task_or_404(task_id)
+    db = _screener_db(info, screener or user["username"])
+    try:
+        found = db_mod.decide_title_duplicate_review(
+            db, review_id, body.decision, body.keeper_key, user["username"]
+        )
+    except ValueError as exc:
+        raise _bad(str(exc), 400) from exc
+    if not found:
+        raise _bad("标题候选组不存在。", 404)
+    tasks_mod.touch_task(info.task_id, DATA_DIR)
+    return {"progress": db_mod.title_duplicate_review_progress(db),
+            "screening": db_mod.get_progress(db)}
+
+
+@app.get("/api/tasks/{task_id}/title-duplicate-reviews/export")
+def export_title_duplicate_reviews(
+    task_id: str, screener: str | None = None,
+    user: dict = Depends(require_user),
+) -> Response:
+    info = _task_or_404(task_id)
+    db = _screener_db(info, screener or user["username"])
+    groups, _ = db_mod.list_title_duplicate_reviews(
+        db, status=None, limit=1_000_000, offset=0
+    )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([
+        "review_id", "status", "decision_by", "updated_at", "normalized_title",
+        "keeper_key", "zotero_key",
+        "imported_in_batch", "source_file", "title", "authors", "year", "journal",
+        "volume", "issue", "pages", "doi", "original_record_json",
+    ])
+    for group in groups:
+        for member in group["members"]:
+            writer.writerow([
+                group["review_id"], group["status"], group["decision_by"],
+                group["updated_at"], group["normalized_title"],
+                group["keeper_key"], member["zotero_key"],
+                member["imported_in_batch"], member["source_file"], member["title"],
+                member["authors"], member["year"], member["journal"],
+                member["volume"], member["issue"], member["pages"], member["doi"],
+                json.dumps(member["raw"], ensure_ascii=False),
+            ])
+    data = ("\ufeff" + output.getvalue()).encode("utf-8")
+    return _file_response(data, "text/csv; charset=utf-8", "title-duplicate-review.csv")
 
 
 @app.get("/api/tasks/{task_id}/import-history")
@@ -1481,6 +1858,8 @@ def _trace_context(info, user, source="manual"):
 
 
 def _save_decision_checked(db: Path, body: DecisionIn, saver, *, trace_context=None) -> None:
+    if db_mod.has_pending_title_duplicate_review(db, body.zotero_key):
+        raise _bad("请先完成该条目的标题重复核验，再进行文献初筛。", 409)
     try:
         saver(db, body.zotero_key, body.decision, body.reason, body.notes, body.tags,
               **({"trace_context": trace_context} if trace_context is not None else {}))
