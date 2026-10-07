@@ -29,7 +29,7 @@
 | 团队协作 | 受邀成员共享任务目录、查看团队进度；支持离线决策导出、合并与仲裁 |
 | 研究材料导出 | PRISMA 流程图，以及对应模块提供的 DOCX、PPTX、LaTeX 等材料 |
 
-分析模块的实现不代表所有研究设计均已充分验证。方法前提、验证范围和限制见[分析能力评估](REVIEW_DATA_ANALYSIS_ASSESSMENT.md)。发表时请核对方法来源并引用相应文献；软件结果仍需研究者检查。
+分析模块的实现不代表所有研究设计均已充分验证。方法前提、验证范围和限制见[分析能力评估](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#zh-cn)。发表时请核对方法来源并引用相应文献；软件结果仍需研究者检查。
 
 ### 快速开始
 
@@ -72,7 +72,7 @@ COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
 REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
 ```
 
-请将示例目录替换为有写入权限的持久目录，外部访问使用 HTTPS 反向代理。协作和离线合并步骤见应用左下角「帮助」及[协作说明](docs/handoff/2026-09-30-cloud-collaboration.md)。
+请将示例目录替换为有写入权限的持久目录，外部访问使用 HTTPS 反向代理。协作和离线合并步骤见应用左下角「帮助」及[协作说明](docs/handoff/2026-09-30-cloud-collaboration.md#zh-cn)。
 
 ### 构建安装包
 
@@ -84,7 +84,7 @@ REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
 
-macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md)。
+macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。
 
 ### 常见问题
 
@@ -112,7 +112,7 @@ python -m pytest
 
 ### 许可证与联系
 
-本项目采用 MIT 许可证，详见根目录 [`LICENSE`](LICENSE)。第三方组件遵循各自许可证，见[第三方许可](THIRD_PARTY_NOTICES.md)与[发布准备说明](OPEN_SOURCE_RELEASE.md)。
+本项目采用 MIT 许可证，详见根目录 [`LICENSE`](LICENSE)。第三方组件遵循各自许可证，见[第三方许可](THIRD_PARTY_NOTICES.md)与[发布准备说明](OPEN_SOURCE_RELEASE.md#zh-cn)。
 
 作者：**Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
@@ -138,7 +138,7 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Collaboration:** shared task references and team progress, plus offline decision export, merging and adjudication.
 - **Exports:** PRISMA diagrams and module-specific DOCX, PPTX and LaTeX materials.
 
-Implementation does not establish validation for every study design. Consult the [analysis assessment](REVIEW_DATA_ANALYSIS_ASSESSMENT.md) for assumptions and validation limits. Check results and cite the original methods when publishing.
+Implementation does not establish validation for every study design. Consult the [analysis assessment](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#en) for assumptions and validation limits. Check results and cite the original methods when publishing.
 
 ### Getting started
 
@@ -176,7 +176,7 @@ COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
 REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
 ```
 
-Use a writable persistent directory and an HTTPS reverse proxy for external access. See **Help** in the sidebar and the [collaboration guide](docs/handoff/2026-09-30-cloud-collaboration.md).
+Use a writable persistent directory and an HTTPS reverse proxy for external access. See **Help** in the sidebar and the [collaboration guide](docs/handoff/2026-09-30-cloud-collaboration.md#en).
 
 ### Building packages
 
@@ -188,7 +188,7 @@ Build on the target operating system with an internet connection.
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
 
-Build Intel and Apple Silicon macOS packages separately on the corresponding architecture. Check release dates and versions: a build script does not imply that an up-to-date binary is published. See the [Windows build guide](build/WINDOWS_TRANSFER.md).
+Build Intel and Apple Silicon macOS packages separately on the corresponding architecture. Check release dates and versions: a build script does not imply that an up-to-date binary is published. See the [Windows build guide](build/WINDOWS_TRANSFER.md#en).
 
 ### Troubleshooting and contributing
 
@@ -205,7 +205,7 @@ Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscre
 
 ### License and contact
 
-This project is licensed under the MIT License; see the root [`LICENSE`](LICENSE). Third-party components retain their respective licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and [release preparation](OPEN_SOURCE_RELEASE.md).
+This project is licensed under the MIT License; see the root [`LICENSE`](LICENSE). Third-party components retain their respective licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) and [release preparation](OPEN_SOURCE_RELEASE.md#en).
 
 Author: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
@@ -225,7 +225,7 @@ ReviewFlow reúne la importación de referencias, el cribado, la codificación, 
 - Evaluación manual del riesgo de sesgo, bibliometría, mapas de evidencia, colaboración y diagramas PRISMA.
 - Registro de investigación opcional y exportación de materiales, según el módulo, a DOCX, PPTX o LaTeX.
 
-La disponibilidad de un método no significa que esté validado para todos los diseños. Consulte la [evaluación de análisis](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), compruebe los resultados y cite las fuentes metodológicas.
+La disponibilidad de un método no significa que esté validado para todos los diseños. Consulte la [evaluación de análisis](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#es), compruebe los resultados y cite las fuentes metodológicas.
 
 ### Inicio y datos
 
@@ -235,7 +235,7 @@ Los datos se guardan localmente de forma predeterminada: Windows `%LOCALAPPDATA%
 
 ### Compilación, ayuda y licencia
 
-Las instrucciones para Windows, macOS y Linux están en [Construir paquetes](#building-packages). Consulte la ayuda de la barra lateral y la [guía de colaboración](docs/handoff/2026-09-30-cloud-collaboration.md). Para informar un problema, abra un [Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues) con el sistema, la versión y los pasos para reproducirlo; quite los datos personales de los registros. Las contribuciones pueden enviarse mediante Pull Request. Licencia MIT: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+Las instrucciones para Windows, macOS y Linux están en [Construir paquetes](#building-packages). Consulte la ayuda de la barra lateral y la [guía de colaboración](docs/handoff/2026-09-30-cloud-collaboration.md#es). Para informar un problema, abra un [Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues) con el sistema, la versión y los pasos para reproducirlo; quite los datos personales de los registros. Las contribuciones pueden enviarse mediante Pull Request. Licencia MIT: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
 
 ## 日本語
 
@@ -250,7 +250,7 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 - バイアスリスクの評価、文献計量、エビデンスマップ、チーム共同作業、PRISMAフロー図。
 - 研究履歴の記録と、各モジュールに応じたDOCX／PPTX／LaTeX出力。
 
-機能が実装されていることは、すべての研究デザインで妥当性が確認されたことを意味しません。[分析機能の評価](REVIEW_DATA_ANALYSIS_ASSESSMENT.md)を確認し、結果を検証して方法論の原典を引用してください。
+機能が実装されていることは、すべての研究デザインで妥当性が確認されたことを意味しません。[分析機能の評価](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#ja)を確認し、結果を検証して方法論の原典を引用してください。
 
 ### はじめに・データ保存
 
@@ -260,7 +260,7 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 
 ### ビルド・サポート・ライセンス
 
-Windows、macOS、Linuxのビルド方法は[パッケージのビルド](#building-packages)を参照してください。サイドバーのヘルプと[共同作業ガイド](docs/handoff/2026-09-30-cloud-collaboration.md)も利用できます。不具合は、OS、バージョン、再現手順を添えて[Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues)へ報告してください。ログから個人情報を削除してください。ライセンスはMIT（[`LICENSE`](LICENSE)）。作者：**Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)。
+Windows、macOS、Linuxのビルド方法は[パッケージのビルド](#building-packages)を参照してください。サイドバーのヘルプと[共同作業ガイド](docs/handoff/2026-09-30-cloud-collaboration.md#ja)も利用できます。不具合は、OS、バージョン、再現手順を添えて[Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues)へ報告してください。ログから個人情報を削除してください。ライセンスはMIT（[`LICENSE`](LICENSE)）。作者：**Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)。
 
 ## Português
 
@@ -275,7 +275,7 @@ O ReviewFlow reúne importação de referências, triagem, codificação, análi
 - Avaliação manual de risco de viés, bibliometria, mapas de evidências, colaboração e diagramas PRISMA.
 - Registro da pesquisa e exportação, conforme o módulo, para DOCX, PPTX ou LaTeX.
 
-A implementação de um método não comprova sua validação para todos os delineamentos. Consulte a [avaliação dos recursos de análise](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), confira os resultados e cite as fontes metodológicas.
+A implementação de um método não comprova sua validação para todos os delineamentos. Consulte a [avaliação dos recursos de análise](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#pt), confira os resultados e cite as fontes metodológicas.
 
 ### Como começar e onde ficam os dados
 
@@ -285,7 +285,7 @@ Por padrão, os dados ficam no computador: Windows `%LOCALAPPDATA%\ReviewFlow`, 
 
 ### Compilação, suporte e licença
 
-As instruções para Windows, macOS e Linux estão em [Build packages](#building-packages). Consulte a ajuda na barra lateral e o [guia de colaboração](docs/handoff/2026-09-30-cloud-collaboration.md). Para relatar um problema, abra um [Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues) com sistema, versão e etapas para reproduzi-lo; remova dados pessoais dos registros. Contribuições são bem-vindas por Pull Request. Licença MIT: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+As instruções para Windows, macOS e Linux estão em [Build packages](#building-packages). Consulte a ajuda na barra lateral e o [guia de colaboração](docs/handoff/2026-09-30-cloud-collaboration.md#pt). Para relatar um problema, abra um [Issue](https://github.com/RUCbookshelf/mubi-reviewflow/issues) com sistema, versão e etapas para reproduzi-lo; remova dados pessoais dos registros. Contribuições são bem-vindas por Pull Request. Licença MIT: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
 
 ## Deutsch
 
@@ -300,7 +300,7 @@ ReviewFlow bündelt Literaturimport, Screening, Kodierung, Analyse und die Dokum
 - Manuelle Bewertung des Verzerrungsrisikos, Bibliometrie, Evidenzkarten, Zusammenarbeit und PRISMA-Flussdiagramme.
 - Forschungsprotokoll und je nach Modul Export als DOCX, PPTX oder LaTeX.
 
-Eine implementierte Methode ist nicht automatisch für jedes Studiendesign validiert. Lesen Sie die [Bewertung der Analysefunktionen](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), prüfen Sie die Ergebnisse und zitieren Sie die methodischen Originalquellen.
+Eine implementierte Methode ist nicht automatisch für jedes Studiendesign validiert. Lesen Sie die [Bewertung der Analysefunktionen](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#de), prüfen Sie die Ergebnisse und zitieren Sie die methodischen Originalquellen.
 
 ### Einstieg und Datenspeicherung
 
@@ -310,7 +310,7 @@ Standardmäßig werden Daten lokal gespeichert: Windows `%LOCALAPPDATA%\ReviewFl
 
 ### Pakete, Hilfe und Lizenz
 
-Die Bauanleitungen für Windows, macOS und Linux stehen unter [Pakete erstellen](#building-packages). Nutzen Sie die Hilfe in der Seitenleiste und den [Leitfaden zur Zusammenarbeit](docs/handoff/2026-09-30-cloud-collaboration.md). Melden Sie Probleme unter [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) mit Betriebssystem, Version und Reproduktionsschritten; entfernen Sie persönliche Daten aus Protokollen. Beiträge sind als Pull Request willkommen. MIT-Lizenz: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+Die Bauanleitungen für Windows, macOS und Linux stehen unter [Pakete erstellen](#building-packages). Nutzen Sie die Hilfe in der Seitenleiste und den [Leitfaden zur Zusammenarbeit](docs/handoff/2026-09-30-cloud-collaboration.md#de). Melden Sie Probleme unter [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) mit Betriebssystem, Version und Reproduktionsschritten; entfernen Sie persönliche Daten aus Protokollen. Beiträge sind als Pull Request willkommen. MIT-Lizenz: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
 
 ## Српски
 
@@ -325,7 +325,7 @@ ReviewFlow objedinjuje uvoz literature, skrining, kodiranje, analizu i beleženj
 - Ručna procena rizika od pristrasnosti, bibliometrija, mape dokaza, saradnja i PRISMA dijagrami toka.
 - Beleženje istraživačkog procesa i izvoz u DOCX, PPTX ili LaTeX, u zavisnosti od modula.
 
-Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. Pogledajte [procenu analitičkih mogućnosti](REVIEW_DATA_ANALYSIS_ASSESSMENT.md), proverite rezultate i citirajte izvorne metodološke radove.
+Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. Pogledajte [procenu analitičkih mogućnosti](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#sr), proverite rezultate i citirajte izvorne metodološke radove.
 
 ### Početak rada i čuvanje podataka
 
@@ -335,7 +335,7 @@ Podaci se podrazumevano čuvaju lokalno: Windows `%LOCALAPPDATA%\ReviewFlow`, ma
 
 ### Paketi, podrška i licenca
 
-Uputstva za Windows, macOS i Linux nalaze se u odeljku [Building packages](#building-packages). Pogledajte pomoć u bočnoj traci i [vodič za saradnju](docs/handoff/2026-09-30-cloud-collaboration.md). Problem prijavite preko [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) uz sistem, verziju i korake za reprodukciju; uklonite lične podatke iz evidencije. Doprinosi su dobrodošli kroz Pull Request. MIT licenca: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+Uputstva za Windows, macOS i Linux nalaze se u odeljku [Building packages](#building-packages). Pogledajte pomoć u bočnoj traci i [vodič za saradnju](docs/handoff/2026-09-30-cloud-collaboration.md#sr). Problem prijavite preko [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues) uz sistem, verziju i korake za reprodukciju; uklonite lične podatke iz evidencije. Doprinosi su dobrodošli kroz Pull Request. MIT licenca: [`LICENSE`](LICENSE). Autor: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
 
 ## 한국어
 
@@ -350,7 +350,7 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 - 비뚤림 위험 수동 평가, 서지계량, 근거 지도, 팀 협업 및 PRISMA 흐름도.
 - 연구 과정 기록과 모듈별 DOCX, PPTX, LaTeX 내보내기.
 
-기능이 구현되어 있다고 해서 모든 연구 설계에서 검증되었다는 뜻은 아닙니다. [분석 기능 평가](REVIEW_DATA_ANALYSIS_ASSESSMENT.md)를 확인하고 결과를 검토하며 방법론 원문을 인용하세요.
+기능이 구현되어 있다고 해서 모든 연구 설계에서 검증되었다는 뜻은 아닙니다. [분석 기능 평가](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#ko)를 확인하고 결과를 검토하며 방법론 원문을 인용하세요.
 
 ### 시작하기와 데이터 저장
 
@@ -360,7 +360,7 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 
 ### 빌드, 도움말 및 라이선스
 
-Windows, macOS, Linux 빌드 방법은 [Building packages](#building-packages)를 참고하세요. 사이드바 도움말과 [협업 안내](docs/handoff/2026-09-30-cloud-collaboration.md)도 확인할 수 있습니다. 문제를 보고할 때는 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues)에 운영체제, 버전, 재현 단계를 적고 로그에서 개인정보를 삭제하세요. Pull Request를 통한 기여를 환영합니다. MIT 라이선스: [`LICENSE`](LICENSE). 작성자: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
+Windows, macOS, Linux 빌드 방법은 [Building packages](#building-packages)를 참고하세요. 사이드바 도움말과 [협업 안내](docs/handoff/2026-09-30-cloud-collaboration.md#ko)도 확인할 수 있습니다. 문제를 보고할 때는 [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues)에 운영체제, 버전, 재현 단계를 적고 로그에서 개인정보를 삭제하세요. Pull Request를 통한 기여를 환영합니다. MIT 라이선스: [`LICENSE`](LICENSE). 작성자: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn).
 
 ## Русский
 
@@ -382,7 +382,7 @@ ReviewFlow — рабочая среда для систематических �
 - Командный прогресс, экспорт автономных решений, объединение и разрешение разногласий.
 - Диаграммы PRISMA и экспорт DOCX, PPTX, LaTeX в соответствующих модулях.
 
-Наличие метода в программе не означает его полную проверку для всех дизайнов исследований. Условия применения и границы проверки описаны в [оценке аналитических возможностей](REVIEW_DATA_ANALYSIS_ASSESSMENT.md). Проверяйте результаты и цитируйте первоисточники методов при публикации.
+Наличие метода в программе не означает его полную проверку для всех дизайнов исследований. Условия применения и границы проверки описаны в [оценке аналитических возможностей](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#ru). Проверяйте результаты и цитируйте первоисточники методов при публикации.
 
 ### Начало работы
 
@@ -420,7 +420,7 @@ COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
 REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
 ```
 
-Укажите постоянный каталог с правом записи; для внешнего доступа используйте обратный прокси с HTTPS. Инструкции доступны в разделе помощи боковой панели и в [руководстве по совместной работе](docs/handoff/2026-09-30-cloud-collaboration.md).
+Укажите постоянный каталог с правом записи; для внешнего доступа используйте обратный прокси с HTTPS. Инструкции доступны в разделе помощи боковой панели и в [руководстве по совместной работе](docs/handoff/2026-09-30-cloud-collaboration.md#ru).
 
 ### Сборка установочных пакетов
 
@@ -432,7 +432,7 @@ REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
 
-Пакеты macOS для Intel и Apple Silicon собираются отдельно на соответствующей архитектуре. Проверяйте дату и версию выпуска: наличие скрипта сборки не означает наличие актуального опубликованного пакета. Подробнее: [сборка для Windows](build/WINDOWS_TRANSFER.md).
+Пакеты macOS для Intel и Apple Silicon собираются отдельно на соответствующей архитектуре. Проверяйте дату и версию выпуска: наличие скрипта сборки не означает наличие актуального опубликованного пакета. Подробнее: [сборка для Windows](build/WINDOWS_TRANSFER.md#ru).
 
 ### Помощь и участие в разработке
 
@@ -449,7 +449,7 @@ python -m pytest
 
 ### Лицензия и контакты
 
-Проект распространяется по лицензии MIT; см. корневой файл [`LICENSE`](LICENSE). Сторонние компоненты распространяются по собственным лицензиям. См. [уведомления](THIRD_PARTY_NOTICES.md) и [подготовку выпуска](OPEN_SOURCE_RELEASE.md).
+Проект распространяется по лицензии MIT; см. корневой файл [`LICENSE`](LICENSE). Сторонние компоненты распространяются по собственным лицензиям. См. [уведомления](THIRD_PARTY_NOTICES.md) и [подготовку выпуска](OPEN_SOURCE_RELEASE.md#ru).
 
 Автор: **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
 
@@ -475,7 +475,7 @@ L'application repose sur FastAPI, une interface dans le navigateur et des module
 - Progression de l'équipe, export des décisions hors ligne, fusion et arbitrage.
 - Diagrammes PRISMA et documents DOCX, PPTX ou LaTeX selon le module.
 
-La présence d'une méthode ne signifie pas qu'elle a été entièrement validée pour tous les plans d'étude. Consultez l'[évaluation des analyses](REVIEW_DATA_ANALYSIS_ASSESSMENT.md) pour les hypothèses et limites de validation. Vérifiez les résultats et citez les sources des méthodes lors de la publication.
+La présence d'une méthode ne signifie pas qu'elle a été entièrement validée pour tous les plans d'étude. Consultez l'[évaluation des analyses](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#fr) pour les hypothèses et limites de validation. Vérifiez les résultats et citez les sources des méthodes lors de la publication.
 
 ### Prise en main
 
@@ -513,7 +513,7 @@ COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
 REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
 ```
 
-Choisissez un dossier persistant accessible en écriture et un proxy inverse HTTPS pour l'accès externe. Consultez l'aide de la barre latérale et le [guide de collaboration](docs/handoff/2026-09-30-cloud-collaboration.md).
+Choisissez un dossier persistant accessible en écriture et un proxy inverse HTTPS pour l'accès externe. Consultez l'aide de la barre latérale et le [guide de collaboration](docs/handoff/2026-09-30-cloud-collaboration.md#fr).
 
 ### Création des paquets
 
@@ -525,7 +525,7 @@ Compilez sur le système cible avec une connexion Internet.
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
 
-Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur l'architecture correspondante. Vérifiez la date et la version : un script de compilation ne garantit pas l'existence d'un paquet publié à jour. Voir le [guide Windows](build/WINDOWS_TRANSFER.md).
+Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur l'architecture correspondante. Vérifiez la date et la version : un script de compilation ne garantit pas l'existence d'un paquet publié à jour. Voir le [guide Windows](build/WINDOWS_TRANSFER.md#fr).
 
 ### Dépannage et contributions
 
@@ -542,6 +542,6 @@ Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API
 
 ### Licence et contact
 
-Ce projet est distribué sous licence MIT ; voir le fichier [`LICENSE`](LICENSE) à la racine. Les composants tiers conservent leurs licences respectives. Voir les [mentions tierces](THIRD_PARTY_NOTICES.md) et la [préparation de publication](OPEN_SOURCE_RELEASE.md).
+Ce projet est distribué sous licence MIT ; voir le fichier [`LICENSE`](LICENSE) à la racine. Les composants tiers conservent leurs licences respectives. Voir les [mentions tierces](THIRD_PARTY_NOTICES.md) et la [préparation de publication](OPEN_SOURCE_RELEASE.md#fr).
 
 Auteur : **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
