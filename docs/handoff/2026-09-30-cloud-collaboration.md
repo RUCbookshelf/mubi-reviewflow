@@ -5,11 +5,11 @@
 <a id="zh-cn"></a>
 ## 中文
 
-ReviewFlow 的服务器协作适用于同一受控服务器上的多个账户共同完成任务。它依赖服务器模式；桌面本地模式不会开放团队邀请和团队进度 API。
+ReviewFlow 的服务器协作适用于同一受控服务器上的多个账户共同完成任务。它依赖服务器模式；桌面本地模式不会开放团队邀请和团队进度 API。Ubuntu 部署步骤见[服务器部署指南](../deployment/UBUNTU_SERVER.md#zh-cn)。
 
 ## 1. 部署服务器
 
-按 README 的服务器启动说明设置持久、可写的数据目录，并在受控主机上运行服务。对外访问应由 HTTPS 反向代理保护；不要将开发服务器直接暴露到公网。限制服务器和数据目录的系统账户访问，安排数据库及附件备份，并定期验证恢复流程。
+按[服务器部署指南](../deployment/UBUNTU_SERVER.md#zh-cn)设置持久、可写的数据目录，并在受控主机上运行服务。对外访问应由 HTTPS 反向代理保护；不要将开发服务器直接暴露到公网。限制服务器和数据目录的系统账户访问，安排数据库及附件备份，并定期验证恢复流程。
 
 服务器中的账户、任务数据库、导入原件、PDF 和筛选决定保存在服务器数据目录。服务器管理员应按组织的数据管理要求设置访问控制、备份周期和保留期限。在线 AI 功能还会将相应请求发送到用户配置的服务。
 
@@ -54,10 +54,10 @@ ReviewFlow 的服务器协作适用于同一受控服务器上的多个账户共
 <a id="en"></a>
 ## English
 
-ReviewFlow server collaboration lets multiple accounts work on tasks hosted by the same controlled server. It requires server mode; the local desktop mode does not expose team invitations or team-progress APIs.
+ReviewFlow server collaboration lets multiple accounts work on tasks hosted by the same controlled server. It requires server mode; the local desktop mode does not expose team invitations or team-progress APIs. See the [Ubuntu deployment guide](../deployment/UBUNTU_SERVER.md#en) for deployment steps.
 
 ### 1. Deploy the server
-Configure a persistent, writable data directory and run the service on a controlled host. Protect external access with an HTTPS reverse proxy; do not expose the development server directly to the public internet. Restrict OS access to the service and data directory, back up the database and attachments, and test restores.
+Configure a persistent, writable data directory and run the service on a controlled host. Protect external access with an HTTPS reverse proxy; do not expose the development server directly to the public internet. Restrict OS access to the service and data directory, back up the database and attachments, and test restores. See the [Ubuntu deployment guide](../deployment/UBUNTU_SERVER.md#en) for the verified setup.
 
 Accounts, task databases, imported originals, PDFs, and screening decisions are stored in the server data directory. Administrators should set access, backup, and retention controls under their organization’s policy. Online AI requests are sent to the service configured by the user.
 
@@ -86,7 +86,7 @@ Back up the entire ReviewFlow data directory, including task database, PDFs, and
 <a id="fr"></a>
 ## Français
 
-La collaboration serveur permet à plusieurs comptes de travailler sur des tâches hébergées par le même serveur contrôlé. Elle nécessite le mode serveur ; le mode local ne fournit pas les invitations d’équipe ni les API de progression collective.
+La collaboration serveur permet à plusieurs comptes de travailler sur des tâches hébergées par le même serveur contrôlé. Elle nécessite le mode serveur ; le mode local ne fournit pas les invitations d’équipe ni les API de progression collective. Consultez le [guide de déploiement Ubuntu](../deployment/UBUNTU_SERVER.md#fr) pour la procédure.
 
 ### Déploiement et comptes
 Configurez un répertoire de données persistant et accessible en écriture sur un hôte contrôlé. Protégez l’accès externe par un proxy HTTPS et n’exposez pas directement le serveur de développement. Limitez les accès système, sauvegardez base et pièces jointes, puis testez la restauration. Les comptes, tâches, originaux importés, PDF et décisions sont stockés sur le serveur. L’administrateur définit accès, sauvegarde et conservation. Les requêtes IA en ligne sont envoyées au service configuré par l’utilisateur.
@@ -104,7 +104,7 @@ Pour travailler hors ligne, exportez les décisions dans l’application, conser
 Совместная работа ReviewFlow позволяет нескольким аккаунтам работать над задачами на одном контролируемом сервере. Нужен серверный режим; локальная настольная версия не предоставляет приглашения команды и API общего прогресса.
 
 ### Развёртывание и доступ
-Настройте постоянный каталог данных с правом записи на контролируемом хосте. Защитите внешний доступ HTTPS-прокси и не открывайте напрямую сервер разработки. Ограничьте системный доступ, резервируйте БД и вложения, проверяйте восстановление. Аккаунты, задачи, исходные импорты, PDF и решения хранятся в серверном каталоге. Администратор задаёт доступ, резервирование и сроки хранения. Онлайн-запросы ИИ отправляются в сервис, настроенный пользователем.
+Настройте постоянный каталог данных с правом записи на контролируемом хосте. Защитите внешний доступ HTTPS-прокси и не открывайте напрямую сервер разработки. Ограничьте системный доступ, резервируйте БД и вложения, проверяйте восстановление. Аккаунты, задачи, исходные импорты, PDF и решения хранятся в серверном каталоге. Администратор задаёт доступ, резервирование и сроки хранения. Онлайн-запросы ИИ отправляются в сервис, настроенный пользователем. Проверенная процедура установки приведена в [руководстве для Ubuntu](../deployment/UBUNTU_SERVER.md#ru).
 
 Владелец создаёт задачу; участники сначала регистрируются на том же сервере. Приглашение использует серверное имя пользователя, не создаёт аккаунт и не отправляет письмо. Владелец назначает роли: **coder** отправляет разрешённое кодирование; **reconciler** читает необходимые данные, обрабатывает консенсус и фиксирует его. Роли действуют только для задачи. Старые задачи без владельца не назначаются автоматически.
 
@@ -116,7 +116,7 @@ Pour travailler hors ligne, exportez les décisions dans l’application, conser
 <a id="es"></a>
 ## Español
 
-La colaboración en servidor permite que varias cuentas trabajen en tareas alojadas en un mismo servidor controlado. Requiere el modo servidor; el modo local de escritorio no ofrece invitaciones de equipo ni API de progreso compartido.
+La colaboración en servidor permite que varias cuentas trabajen en tareas alojadas en un mismo servidor controlado. Requiere el modo servidor; el modo local de escritorio no ofrece invitaciones de equipo ni API de progreso compartido. Consulte la [guía de despliegue de Ubuntu](../deployment/UBUNTU_SERVER.md#es) para ver los pasos.
 
 ### Servidor y miembros
 Configure un directorio de datos persistente y escribible en un host controlado. Proteja el acceso externo con un proxy HTTPS; no exponga directamente el servidor de desarrollo. Restrinja el acceso al sistema, haga copias de la base y los adjuntos y pruebe la restauración. Cuentas, tareas, originales importados, PDF y decisiones se guardan en el servidor. El administrador define controles de acceso, copias y retención. Las solicitudes de IA en línea se envían al servicio configurado por el usuario.
@@ -131,7 +131,7 @@ Para trabajar sin conexión, exporte decisiones desde la aplicación, conserve l
 <a id="ja"></a>
 ## 日本語
 
-サーバー協業では、同一の管理されたサーバー上の複数アカウントでタスクを進められます。サーバーモードが必要です。デスクトップのローカルモードではチーム招待と共有進捗 API は利用できません。
+サーバー協業では、同一の管理されたサーバー上の複数アカウントでタスクを進められます。サーバーモードが必要です。デスクトップのローカルモードではチーム招待と共有進捗 API は利用できません。構築手順は[Ubuntu サーバー導入ガイド](../deployment/UBUNTU_SERVER.md#ja)を参照してください。
 
 ### サーバー構築とメンバー
 管理されたホストに永続的で書き込み可能なデータディレクトリを設定し、外部アクセスは HTTPS リバースプロキシで保護してください。開発サーバーを直接公開しないでください。OS 権限を制限し、DB と添付ファイルをバックアップして復元を試します。アカウント、タスク、インポート原本、PDF、判定はサーバーに保存されます。管理者がアクセス、保存期間、バックアップを管理します。オンライン AI リクエストはユーザーが設定したサービスに送信されます。
@@ -146,7 +146,7 @@ Para trabajar sin conexión, exporte decisiones desde la aplicación, conserve l
 <a id="pt"></a>
 ## Português
 
-A colaboração em servidor permite que várias contas trabalhem em tarefas hospedadas no mesmo servidor controlado. É necessário usar o modo servidor; o modo local de desktop não oferece convites de equipe nem APIs de progresso compartilhado.
+A colaboração em servidor permite que várias contas trabalhem em tarefas hospedadas no mesmo servidor controlado. É necessário usar o modo servidor; o modo local de desktop não oferece convites de equipe nem APIs de progresso compartilhado. Consulte o [guia de implantação Ubuntu](../deployment/UBUNTU_SERVER.md#pt) para seguir os passos.
 
 ### Implantação e membros
 Configure um diretório persistente e gravável em um host controlado. Proteja o acesso externo com proxy HTTPS e não exponha diretamente o servidor de desenvolvimento. Restrinja o acesso ao sistema, faça backup do banco e anexos e teste a restauração. Contas, tarefas, originais importados, PDFs e decisões ficam no servidor. O administrador define acesso, retenção e backups. Solicitações de IA online são enviadas ao serviço escolhido pelo usuário.
@@ -161,7 +161,7 @@ Para trabalhar offline, exporte decisões pelo aplicativo, preserve os originais
 <a id="de"></a>
 ## Deutsch
 
-Die Server-Kollaboration ermöglicht mehreren Konten, Aufgaben auf demselben kontrollierten Server zu bearbeiten. Sie setzt den Servermodus voraus; der lokale Desktopmodus bietet keine Teameinladungen oder APIs für gemeinsamen Fortschritt.
+Die Server-Kollaboration ermöglicht mehreren Konten, Aufgaben auf demselben kontrollierten Server zu bearbeiten. Sie setzt den Servermodus voraus; der lokale Desktopmodus bietet keine Teameinladungen oder APIs für gemeinsamen Fortschritt. Die Schritte stehen im [Ubuntu-Serverleitfaden](../deployment/UBUNTU_SERVER.md#de).
 
 ### Server und Mitglieder
 Richten Sie auf einem kontrollierten Host ein dauerhaftes, beschreibbares Datenverzeichnis ein. Schützen Sie externen Zugriff durch einen HTTPS-Reverse-Proxy und stellen Sie den Entwicklungsserver nicht direkt ins Internet. Beschränken Sie Systemzugriffe, sichern Sie Datenbank und Anhänge und testen Sie die Wiederherstellung. Konten, Aufgaben, Importoriginale, PDFs und Entscheidungen liegen im Serververzeichnis. Administratoren legen Zugriffe, Sicherung und Aufbewahrung fest. Online-KI-Anfragen gehen an den vom Nutzer konfigurierten Dienst.
@@ -176,7 +176,7 @@ Für Offline-Arbeit Entscheidungen in der App exportieren, Originale aufbewahren
 <a id="sr"></a>
 ## Српски
 
-Serverska saradnja omogućava da više naloga radi na zadacima na istom kontrolisanom serveru. Potreban je serverski režim; lokalna desktop verzija ne pruža timske pozivnice ni API za zajednički napredak.
+Serverska saradnja omogućava da više naloga radi na zadacima na istom kontrolisanom serveru. Potreban je serverski režim; lokalna desktop verzija ne pruža timske pozivnice ni API za zajednički napredak. Postupak postavljanja opisan je u [Ubuntu vodiču za server](../deployment/UBUNTU_SERVER.md#sr).
 
 ### Server i članovi
 Podesite trajan direktorijum podataka sa dozvolom za upis na kontrolisanom računaru. Spoljni pristup zaštitite HTTPS posredničkim serverom; razvojni server ne izlažite direktno internetu. Ograničite sistemski pristup, pravite rezervne kopije baze i priloga i proveravajte vraćanje. Nalozi, zadaci, originalni uvozi, PDF-ovi i odluke čuvaju se na serveru. Administrator uređuje pristup, rokove čuvanja i kopije. Online AI zahtevi šalju se servisu koji je korisnik podesio.
@@ -191,7 +191,7 @@ Za rad van mreže izvezite odluke iz aplikacije, sačuvajte originale i zabelež
 <a id="ko"></a>
 ## 한국어
 
-서버 협업은 동일한 관리 서버에 있는 여러 계정이 작업을 함께 수행하도록 합니다. 서버 모드가 필요하며 데스크톱 로컬 모드는 팀 초대 및 공동 진행 API를 제공하지 않습니다.
+서버 협업은 동일한 관리 서버에 있는 여러 계정이 작업을 함께 수행하도록 합니다. 서버 모드가 필요하며 데스크톱 로컬 모드는 팀 초대 및 공동 진행 API를 제공하지 않습니다. 배포 절차는 [Ubuntu 서버 배포 안내](../deployment/UBUNTU_SERVER.md#ko)를 참고하세요.
 
 ### 서버 배포 및 구성원 초대
 관리되는 호스트에 영구적이고 쓰기 가능한 데이터 디렉터리를 설정하세요. 외부 접속은 HTTPS 역방향 프록시로 보호하고 개발 서버를 인터넷에 직접 노출하지 마세요. 시스템 접근을 제한하고 DB와 첨부파일을 백업하며 복구를 시험하세요. 계정, 작업 DB, 가져온 원본, PDF 및 판정은 서버 데이터 디렉터리에 저장됩니다. 관리자는 접근 권한, 백업 주기와 보존 기간을 정합니다. 온라인 AI 요청은 사용자가 설정한 서비스로 전송됩니다.

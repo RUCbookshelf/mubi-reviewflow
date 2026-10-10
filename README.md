@@ -46,7 +46,7 @@ git clone https://github.com/RUCbookshelf/mubi-reviewflow.git
 cd mubi-reviewflow
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
@@ -65,14 +65,7 @@ python build/launcher.py
 
 本机使用的数据保存在本机。启用在线 AI/API 时，相应请求会发往配置的服务。服务器模式将任务数据持久保存到服务器；同一服务器的任务成员能查看彼此进度，但不能修改他人的个人筛选决定。
 
-完成上述依赖安装后，服务器部署可使用：
-
-```bash
-COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
-REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
-```
-
-请将示例目录替换为有写入权限的持久目录，外部访问使用 HTTPS 反向代理。协作和离线合并步骤见应用左下角「帮助」及[协作说明](docs/handoff/2026-09-30-cloud-collaboration.md#zh-cn)。
+团队服务器请按[Ubuntu 服务器部署指南](docs/deployment/UBUNTU_SERVER.md#zh-cn)配置。团队协作必须设置 `REVIEWFLOW_MODE=server`；不要用桌面启动器启动团队服务。账户、任务、导入原件、PDF 和决定保存在服务器数据目录，请备份整个目录。协作与离线合并说明见应用左下角「帮助」及[协作指南](docs/handoff/2026-09-30-cloud-collaboration.md#zh-cn)。
 
 ### 构建安装包
 
@@ -151,7 +144,7 @@ git clone https://github.com/RUCbookshelf/mubi-reviewflow.git
 cd mubi-reviewflow
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
@@ -169,14 +162,7 @@ Uploaded PDFs are stored under `tasks/<task-id>/pdfs` inside the data folder. In
 
 Local mode stores research data locally. Online AI/API features send relevant requests to the configured service. Server mode persists task data on the server. Task members can see each other's progress without changing another reviewer's personal decisions.
 
-After installing dependencies, start a team server with:
-
-```bash
-COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
-REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
-```
-
-Use a writable persistent directory and an HTTPS reverse proxy for external access. See **Help** in the sidebar and the [collaboration guide](docs/handoff/2026-09-30-cloud-collaboration.md#en).
+For team deployment, follow the [Ubuntu server deployment guide](docs/deployment/UBUNTU_SERVER.md#en). Team collaboration requires `REVIEWFLOW_MODE=server`; do not use the desktop launcher for the team service. Accounts, tasks, imported originals, PDFs, and decisions are stored in the server data directory, which should be backed up in full. See **Help** in the sidebar and the [collaboration guide](docs/handoff/2026-09-30-cloud-collaboration.md#en) for collaboration and offline merging.
 
 ### Building packages
 
@@ -231,7 +217,7 @@ La disponibilidad de un método no significa que esté validado para todos los d
 
 Descargue el instalador disponible para su sistema desde [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases). Los instaladores de escritorio incluyen Python y sus dependencias. Para ejecutar el código fuente en Ubuntu o macOS, prepare Python 3.12 y Git; en Linux instale Cairo y `python3-venv` si son necesarios, y siga los comandos de la sección [English](#english).
 
-Los datos se guardan localmente de forma predeterminada: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` y Linux `~/.local/share/ReviewFlow` o `XDG_DATA_HOME`. Los PDF ocupan espacio dentro de la carpeta de datos. La ubicación puede migrarse desde Inicio y configuración; reinicie la aplicación para aplicar el cambio y mantenga copias de seguridad. El modo servidor conserva los datos en el servidor; use almacenamiento persistente y HTTPS para el acceso externo. Las funciones de IA en línea envían las solicitudes pertinentes al servicio configurado.
+Los datos se guardan localmente de forma predeterminada: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` y Linux `~/.local/share/ReviewFlow` o `XDG_DATA_HOME`. Los PDF ocupan espacio dentro de la carpeta de datos. La ubicación puede migrarse desde Inicio y configuración; reinicie la aplicación para aplicar el cambio y mantenga copias de seguridad. El modo servidor conserva los datos en el servidor; use almacenamiento persistente y HTTPS para el acceso externo. Las funciones de IA en línea envían las solicitudes pertinentes al servicio configurado. Para el despliegue de equipos, consulte la [guía de servidor Ubuntu](docs/deployment/UBUNTU_SERVER.md#es).
 
 ### Compilación, ayuda y licencia
 
@@ -256,7 +242,7 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 
 対応するデスクトップ版を[Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases)から入手してください。インストーラーにはPythonと実行依存関係が含まれます。Ubuntu／macOSでソースから実行する場合はPython 3.12とGitを用意し、Linuxでは必要に応じてCairoと`python3-venv`をインストールして、[English](#english)の手順を実行してください。
 
-データは既定でローカルに保存されます。Windowsは`%LOCALAPPDATA%\ReviewFlow`、macOSは`~/Library/Application Support/ReviewFlow`、Linuxは`~/.local/share/ReviewFlow`または`XDG_DATA_HOME`配下です。PDFはデータフォルダー内に保存されます。保存先を移行した後はアプリを再起動し、別途バックアップを保管してください。サーバーモードではデータはサーバーに保存されます。外部公開には永続ストレージとHTTPSを使用してください。オンラインAI機能では設定したサービスに該当するリクエストが送信されます。
+データは既定でローカルに保存されます。Windowsは`%LOCALAPPDATA%\ReviewFlow`、macOSは`~/Library/Application Support/ReviewFlow`、Linuxは`~/.local/share/ReviewFlow`または`XDG_DATA_HOME`配下です。PDFはデータフォルダー内に保存されます。保存先を移行した後はアプリを再起動し、別途バックアップを保管してください。サーバーモードではデータはサーバーに保存されます。外部公開には永続ストレージとHTTPSを使用してください。オンラインAI機能では設定したサービスに該当するリクエストが送信されます。チームサーバーの手順は[Ubuntuサーバー構築ガイド](docs/deployment/UBUNTU_SERVER.md#ja)を参照してください。
 
 ### ビルド・サポート・ライセンス
 
@@ -281,7 +267,7 @@ A implementação de um método não comprova sua validação para todos os deli
 
 Baixe o instalador disponível para seu sistema em [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases). Os instaladores incluem Python e as dependências. Para executar o código-fonte no Ubuntu ou macOS, instale Python 3.12 e Git; no Linux, instale Cairo e `python3-venv` se necessário e siga os comandos na seção [English](#english).
 
-Por padrão, os dados ficam no computador: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` e Linux `~/.local/share/ReviewFlow` ou em `XDG_DATA_HOME`. PDFs ficam na pasta de dados. A migração do local de armazenamento é feita em Início e configurações e requer reiniciar o aplicativo. Mantenha cópias de segurança. No modo servidor, os dados ficam no servidor; use armazenamento persistente e HTTPS para acesso externo. Recursos de IA online enviam as solicitações pertinentes ao serviço configurado.
+Por padrão, os dados ficam no computador: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` e Linux `~/.local/share/ReviewFlow` ou em `XDG_DATA_HOME`. PDFs ficam na pasta de dados. A migração do local de armazenamento é feita em Início e configurações e requer reiniciar o aplicativo. Mantenha cópias de segurança. No modo servidor, os dados ficam no servidor; use armazenamento persistente e HTTPS para acesso externo. Recursos de IA online enviam as solicitações pertinentes ao serviço configurado. Para implantação em equipe, consulte o [guia de servidor Ubuntu](docs/deployment/UBUNTU_SERVER.md#pt).
 
 ### Compilação, suporte e licença
 
@@ -306,7 +292,7 @@ Eine implementierte Methode ist nicht automatisch für jedes Studiendesign valid
 
 Laden Sie ein verfügbares Installationspaket für Ihr System unter [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) herunter. Desktop-Pakete enthalten Python und Laufzeitabhängigkeiten. Für die Ausführung aus dem Quellcode unter Ubuntu oder macOS benötigen Sie Python 3.12 und Git; unter Linux bei Bedarf Cairo und `python3-venv`. Die Befehle stehen im Abschnitt [English](#english).
 
-Standardmäßig werden Daten lokal gespeichert: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` und Linux `~/.local/share/ReviewFlow` oder unter `XDG_DATA_HOME`. PDFs liegen im Datenordner. Nach einer Änderung des Speicherorts muss die Anwendung neu gestartet werden. Erstellen Sie zusätzliche Sicherungskopien. Im Servermodus liegen Aufgabendaten auf dem Server; für externen Zugriff sind dauerhafter Speicher und HTTPS erforderlich. Online-KI-Funktionen senden die betreffenden Anfragen an den konfigurierten Dienst.
+Standardmäßig werden Daten lokal gespeichert: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow` und Linux `~/.local/share/ReviewFlow` oder unter `XDG_DATA_HOME`. PDFs liegen im Datenordner. Nach einer Änderung des Speicherorts muss die Anwendung neu gestartet werden. Erstellen Sie zusätzliche Sicherungskopien. Im Servermodus liegen Aufgabendaten auf dem Server; für externen Zugriff sind dauerhafter Speicher und HTTPS erforderlich. Online-KI-Funktionen senden die betreffenden Anfragen an den konfigurierten Dienst. Für die Teambereitstellung siehe den [Ubuntu-Serverleitfaden](docs/deployment/UBUNTU_SERVER.md#de).
 
 ### Pakete, Hilfe und Lizenz
 
@@ -331,7 +317,7 @@ Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. 
 
 Preuzmite odgovarajući instalacioni paket sa stranice [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases). Paketi uključuju Python i zavisnosti. Za pokretanje izvornog koda na Ubuntu ili macOS-u instalirajte Python 3.12 i Git; na Linuxu po potrebi instalirajte Cairo i `python3-venv`, a zatim pratite komande u odeljku [English](#english).
 
-Podaci se podrazumevano čuvaju lokalno: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow`, Linux `~/.local/share/ReviewFlow` ili u okviru `XDG_DATA_HOME`. PDF datoteke su u direktorijumu sa podacima. Posle migracije lokacije ponovo pokrenite aplikaciju i čuvajte zasebne rezervne kopije. U serverskom režimu podaci zadataka ostaju na serveru; za spoljašnji pristup koristite trajno skladište i HTTPS. Mrežne AI funkcije šalju odgovarajuće zahteve podešenom servisu.
+Podaci se podrazumevano čuvaju lokalno: Windows `%LOCALAPPDATA%\ReviewFlow`, macOS `~/Library/Application Support/ReviewFlow`, Linux `~/.local/share/ReviewFlow` ili u okviru `XDG_DATA_HOME`. PDF datoteke su u direktorijumu sa podacima. Posle migracije lokacije ponovo pokrenite aplikaciju i čuvajte zasebne rezervne kopije. U serverskom režimu podaci zadataka ostaju na serveru; za spoljašnji pristup koristite trajno skladište i HTTPS. Mrežne AI funkcije šalju odgovarajuće zahteve podešenom servisu. Za timsku instalaciju pogledajte [Ubuntu vodič za server](docs/deployment/UBUNTU_SERVER.md#sr).
 
 ### Paketi, podrška i licenca
 
@@ -356,7 +342,7 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 
 [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases)에서 운영체제에 맞는 설치 파일을 받으세요. 데스크톱 설치 파일에는 Python과 실행 종속성이 포함됩니다. Ubuntu 또는 macOS에서 소스 코드를 실행하려면 Python 3.12와 Git을 준비하세요. Linux에서는 필요에 따라 Cairo와 `python3-venv`를 설치하고 [English](#english) 안내의 명령을 실행하세요.
 
-데이터는 기본적으로 로컬에 저장됩니다. Windows는 `%LOCALAPPDATA%\ReviewFlow`, macOS는 `~/Library/Application Support/ReviewFlow`, Linux는 `~/.local/share/ReviewFlow` 또는 `XDG_DATA_HOME`을 사용합니다. PDF는 데이터 폴더에 저장됩니다. 저장 위치를 옮긴 뒤에는 앱을 재시작하고 별도 백업을 보관하세요. 서버 모드의 작업 데이터는 서버에 저장됩니다. 외부 접속에는 영구 저장소와 HTTPS를 사용하세요. 온라인 AI 기능은 설정된 서비스로 관련 요청을 전송합니다.
+데이터는 기본적으로 로컬에 저장됩니다. Windows는 `%LOCALAPPDATA%\ReviewFlow`, macOS는 `~/Library/Application Support/ReviewFlow`, Linux는 `~/.local/share/ReviewFlow` 또는 `XDG_DATA_HOME`을 사용합니다. PDF는 데이터 폴더에 저장됩니다. 저장 위치를 옮긴 뒤에는 앱을 재시작하고 별도 백업을 보관하세요. 서버 모드의 작업 데이터는 서버에 저장됩니다. 외부 접속에는 영구 저장소와 HTTPS를 사용하세요. 온라인 AI 기능은 설정된 서비스로 관련 요청을 전송합니다. 팀 서버 배포는 [Ubuntu 서버 배포 안내](docs/deployment/UBUNTU_SERVER.md#ko)를 참고하세요.
 
 ### 빌드, 도움말 및 라이선스
 
@@ -395,7 +381,7 @@ git clone https://github.com/RUCbookshelf/mubi-reviewflow.git
 cd mubi-reviewflow
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
@@ -413,14 +399,7 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 
 При локальной работе данные остаются на компьютере. Онлайн-функции ИИ/API отправляют соответствующие запросы настроенному сервису. В серверном режиме данные задач постоянно хранятся на сервере. Участники задачи видят прогресс друг друга, но не могут изменять личные решения другого участника.
 
-После установки зависимостей сервер запускается так:
-
-```bash
-COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
-REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
-```
-
-Укажите постоянный каталог с правом записи; для внешнего доступа используйте обратный прокси с HTTPS. Инструкции доступны в разделе помощи боковой панели и в [руководстве по совместной работе](docs/handoff/2026-09-30-cloud-collaboration.md#ru).
+Для развёртывания команды следуйте [руководству по серверной установке Ubuntu](docs/deployment/UBUNTU_SERVER.md#ru). Для совместной работы требуется `REVIEWFLOW_MODE=server`; не запускайте командный сервис через настольный загрузчик. Аккаунты, задачи, исходные импорты, PDF и решения хранятся в каталоге данных сервера — резервируйте его целиком. Правила сотрудничества и офлайн-объединения описаны в [руководстве](docs/handoff/2026-09-30-cloud-collaboration.md#ru) и в справке боковой панели.
 
 ### Сборка установочных пакетов
 
@@ -488,7 +467,7 @@ git clone https://github.com/RUCbookshelf/mubi-reviewflow.git
 cd mubi-reviewflow
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
@@ -506,14 +485,7 @@ Les PDF sont stockés dans `tasks/<task-id>/pdfs` sous le dossier de données. L
 
 En mode local, les données restent sur l'ordinateur. Les fonctions IA/API en ligne envoient les requêtes correspondantes au service configuré. En mode serveur, les données des tâches sont conservées sur le serveur. Les membres voient leur progression respective sans pouvoir modifier les décisions personnelles d'un autre membre.
 
-Après installation des dépendances, démarrez le serveur avec :
-
-```bash
-COBOOKSHELF_DATA_DIR=/srv/reviewflow-data \
-REVIEWFLOW_HOST=127.0.0.1 bash build/start_server.sh
-```
-
-Choisissez un dossier persistant accessible en écriture et un proxy inverse HTTPS pour l'accès externe. Consultez l'aide de la barre latérale et le [guide de collaboration](docs/handoff/2026-09-30-cloud-collaboration.md#fr).
+Pour déployer l’équipe, suivez le [guide de déploiement serveur Ubuntu](docs/deployment/UBUNTU_SERVER.md#fr). La collaboration exige `REVIEWFLOW_MODE=server` ; n’utilisez pas le lanceur de bureau pour le service d’équipe. Les comptes, tâches, imports originaux, PDF et décisions sont conservés dans le répertoire serveur, à sauvegarder intégralement. Consultez aussi l’aide latérale et le [guide de collaboration](docs/handoff/2026-09-30-cloud-collaboration.md#fr) pour le travail hors ligne et la fusion.
 
 ### Création des paquets
 
