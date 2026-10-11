@@ -61,6 +61,7 @@ class WorkflowRuntime:
                 self.latch_team_db(owner_db)
             kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
             actor_db = self.screener_db(info, user["username"])
+            store.migrate(actor_db)
             return WorkflowContext(info, user, owner, owner_db, actor_db,
                                    owner["owner_user_id"] == user["user_id"], kind, collab)
 
@@ -230,7 +231,8 @@ class WorkflowRuntime:
             ctx = self.context(task_id, user)
             state = store.settings(ctx.owner_db)
             if expected_version is not None and state["version"] != expected_version:
-                raise HTTPException(409, {"code": "workflow_version_conflict", "version": state["version"]})
+                raise HTTPException(409, {"code": "workflow_version_conflict", "version": state["version"],
+                                          "workflow_settings": self.settings(ctx)})
             if key is None:
                 if not ctx.can_manage:
                     raise HTTPException(403, "Only a verified task owner can manage workflow settings.")
@@ -241,12 +243,14 @@ class WorkflowRuntime:
                 self.sync_catalog(ctx)
                 reason = self.writable_reason(ctx, stage, key, canonical_only=canonical_only)
                 if reason:
-                    raise HTTPException(409, {"code": reason, "version": state["version"]})
+                    raise HTTPException(409, {"code": reason, "version": state["version"],
+                                              "workflow_settings": self.settings(ctx)})
             yield ctx
 
     def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str) -> None:
         if decision == "maybe" and not store.settings(ctx.owner_db)["stages"][stage].get("show_maybe", True):
-            raise HTTPException(409, {"code": "maybe_disabled"})
+            raise HTTPException(409, {"code": "maybe_disabled", "version": store.settings(ctx.owner_db)["version"],
+                                      "workflow_settings": self.settings(ctx)})
 
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
         """Completion hook for Task 3's required-evidence check.
@@ -276,8 +280,9 @@ class WorkflowRuntime:
                 return {"total": len(items), "completed": done, "pending": len(items) - done}
             keys = [row["zotero_key"] for row in scoped]
             if order == "random" and ctx.owner is not None:
-                scope = json.dumps({"stage": stage, "source_id": source_id,
-                                    "sources": self.allowed_sources(ctx, stage)}, sort_keys=True)
+                # UI selection identifies the journal; the current policy only
+                # filters keys. Source/policy changes must not reset positions.
+                scope = json.dumps({"stage": stage, "source_id": source_id}, sort_keys=True)
                 keys = store.random_order(ctx.actor_db, str(user["user_id"]), task_id, scope, keys,
                                           {key for key in keys if not complete(key)}, shuffle=shuffle)
             by_key = {row["zotero_key"]: row for row in scoped}

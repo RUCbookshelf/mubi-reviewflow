@@ -9,6 +9,7 @@ from pathlib import Path
 
 from coscreen import db as db_mod
 from coscreen import tasks
+from coscreen import review_workflow as workflow_store
 from coscreen.security import safe_path
 from coscreen.task_collaboration import DB_FILENAME as COLLABORATION_DB_FILENAME
 
@@ -76,6 +77,13 @@ def sync_shared_articles(
     if member_db.exists() and owner_db.samefile(member_db):
         raise ValueError("owner and member resolve to the same database")
 
+    # The caller has verified owner/member identities. Upgrade an existing
+    # reviewer through the numbered backup path before any catalogue write;
+    # workflow schema belongs only to that migration, including sync markers.
+    if not member_db.is_file():
+        db_mod.init_db(member_db)
+    workflow_store.migrate(member_db)
+
     owner_identity = owner_db.name
     if catalog_revision is not None and member_db.is_file():
         with closing(sqlite3.connect(member_db.as_uri() + "?mode=ro", uri=True, timeout=15)) as conn:
@@ -111,7 +119,6 @@ def sync_shared_articles(
                 raise ValueError("member articles table is missing required columns")
             conn.executemany(upsert_sql, rows)
             if catalog_revision is not None:
-                conn.execute("CREATE TABLE IF NOT EXISTS workflow_catalog_sync(owner_identity TEXT PRIMARY KEY,revision INTEGER NOT NULL)")
                 conn.execute("INSERT INTO workflow_catalog_sync VALUES(?,?) ON CONFLICT(owner_identity) DO UPDATE SET revision=excluded.revision",
                              (owner_identity, catalog_revision))
             conn.commit()
