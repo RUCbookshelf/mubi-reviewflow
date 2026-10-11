@@ -638,6 +638,7 @@ def upsert_articles(
     articles: list[Article],
     duplicate_pairs: list[DuplicatePair],
     title_review_groups: list[dict] | None = None,
+    *, conn: sqlite3.Connection | None = None, preserve_existing: bool = False,
 ) -> ImportSummary:
     """写入一批文献；重复条目也入库（is_duplicate_of 指向保留条目）。
 
@@ -645,7 +646,13 @@ def upsert_articles(
     - 已存在条目（zotero_key 命中）刷新内容字段，import_order 保持不变；
     - 重复导入同一文件是幂等的：行数不变、顺序不变，n_existing 计数命中行。
     整个批次在一个事务内完成（原子提交）。
+    ``conn`` joins the caller transaction without committing it.
+    ``preserve_existing`` leaves every existing article column untouched.
     """
+    if conn is None:
+        with closing(_connect(db_path)) as owned, owned:
+            return upsert_articles(db_path, articles, duplicate_pairs, title_review_groups,
+                                   conn=owned, preserve_existing=preserve_existing)
     # dup_key -> kept_key；并解析链式指向（A->B->C 解析为 A->C），兜底外部传入的配对。
     # 自指配对（dup_key == kept_key，即同 zotero_key 的重复行）不产生标记：
     # 两行在主键 upsert 时自然合并为一条，幸存行是"保留条目"而非重复条目。
@@ -661,94 +668,95 @@ def upsert_articles(
 
     n_new = 0
     n_existing = 0
-    with closing(_connect(db_path)) as conn, conn:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(import_order), -1) FROM articles"
+    row = conn.execute(
+        "SELECT COALESCE(MAX(import_order), -1) FROM articles"
+    ).fetchone()
+    next_order = row[0] + 1
+    for art in articles:
+        dup_of = resolved.get(art.zotero_key)
+        d = art.to_dict()
+        values = [d[col] for col in _ARTICLE_COLUMNS]
+        exists = conn.execute(
+            "SELECT is_duplicate_of FROM articles WHERE zotero_key = ?", (art.zotero_key,)
         ).fetchone()
-        next_order = row[0] + 1
-        for art in articles:
-            dup_of = resolved.get(art.zotero_key)
-            d = art.to_dict()
-            values = [d[col] for col in _ARTICLE_COLUMNS]
-            exists = conn.execute(
-                "SELECT is_duplicate_of FROM articles WHERE zotero_key = ?", (art.zotero_key,)
-            ).fetchone()
-            if exists is None:
-                conn.execute(
-                    _INSERT_ARTICLE, (*values, dup_of, next_order)
-                )
-                next_order += 1
-                n_new += 1
-            else:
-                # Refreshing imported content must not undo an earlier exact or
-                # manually confirmed title-duplicate decision.
-                kept_duplicate_of = dup_of if dup_of is not None else exists[0]
-                conn.execute(
-                    "UPDATE articles SET item_type=?, title=?, authors=?, journal=?, "
-                    "year=?, doi=?, abstract=?, url=?, source_format=?, raw_json=?, "
-                    "content_hash=?, is_duplicate_of=? WHERE zotero_key=?",
-                    (*values[1:], kept_duplicate_of, art.zotero_key),
-                )
-                n_existing += 1
-
-        now = _now()
-        for group in title_review_groups or []:
-            members = group["members"]
-            member_keys = {m["zotero_key"] for m in members}
-            pending_rows = conn.execute(
-                "SELECT review_id,normalized_title,members_json FROM title_duplicate_reviews "
-                "WHERE status IN ('pending','undecided') ORDER BY created_at"
-            ).fetchall()
-            prior_rows = []
-            for prior in pending_rows:
-                prior_members = json.loads(prior[2])
-                prior_keys = {m["zotero_key"] for m in prior_members}
-                if prior[1] == group["normalized_title"] or member_keys.intersection(prior_keys):
-                    prior_rows.append((prior, prior_members))
-            if prior_rows:
-                first_prior = prior_rows[0][0]
-                review_id = first_prior[0]
-                merged: dict[str, dict] = {}
-                for _, prior_members in prior_rows:
-                    merged.update({m["zotero_key"]: m for m in prior_members})
-                for member in members:
-                    old = merged.get(member["zotero_key"])
-                    if old:
-                        old["imported_in_batch"] = bool(
-                            old["imported_in_batch"] or member["imported_in_batch"]
-                        )
-                        if member.get("match_kind") == "fuzzy":
-                            old["match_kind"] = "fuzzy"
-                    else:
-                        merged[member["zotero_key"]] = member
-                members = list(merged.values())
-                conn.execute(
-                    "UPDATE title_duplicate_reviews SET normalized_title=?,members_json=?,updated_at=? "
-                    "WHERE review_id=?",
-                    (first_prior[1], json.dumps(members, ensure_ascii=False, allow_nan=False),
-                     now, review_id),
-                )
-                for prior, _ in prior_rows[1:]:
-                    conn.execute(
-                        "DELETE FROM title_duplicate_reviews WHERE review_id=?", (prior[0],)
-                    )
-            else:
-                review_id = uuid.uuid4().hex
-                conn.execute(
-                    "INSERT INTO title_duplicate_reviews "
-                    "(review_id,normalized_title,status,members_json,created_at,updated_at) "
-                    "VALUES (?,?, 'pending', ?,?,?)",
-                    (review_id, group["normalized_title"],
-                     json.dumps(members, ensure_ascii=False, allow_nan=False), now, now),
-                )
-            conn.executemany(
-                "INSERT INTO title_duplicate_members "
-                "(review_id,zotero_key,imported_in_batch) VALUES (?,?,?) "
-                "ON CONFLICT(review_id,zotero_key) DO UPDATE SET "
-                "imported_in_batch=MAX(imported_in_batch,excluded.imported_in_batch)",
-                [(review_id, m["zotero_key"], int(bool(m["imported_in_batch"])))
-                 for m in members],
+        if exists is None:
+            conn.execute(
+                _INSERT_ARTICLE, (*values, dup_of, next_order)
             )
+            next_order += 1
+            n_new += 1
+        elif preserve_existing:
+            n_existing += 1
+        else:
+            # Refreshing imported content must not undo an earlier exact or
+            # manually confirmed title-duplicate decision.
+            kept_duplicate_of = dup_of if dup_of is not None else exists[0]
+            conn.execute(
+                "UPDATE articles SET item_type=?, title=?, authors=?, journal=?, "
+                "year=?, doi=?, abstract=?, url=?, source_format=?, raw_json=?, "
+                "content_hash=?, is_duplicate_of=? WHERE zotero_key=?",
+                (*values[1:], kept_duplicate_of, art.zotero_key),
+            )
+            n_existing += 1
+
+    now = _now()
+    for group in title_review_groups or []:
+        members = group["members"]
+        member_keys = {m["zotero_key"] for m in members}
+        pending_rows = conn.execute(
+            "SELECT review_id,normalized_title,members_json FROM title_duplicate_reviews "
+            "WHERE status IN ('pending','undecided') ORDER BY created_at"
+        ).fetchall()
+        prior_rows = []
+        for prior in pending_rows:
+            prior_members = json.loads(prior[2])
+            prior_keys = {m["zotero_key"] for m in prior_members}
+            if prior[1] == group["normalized_title"] or member_keys.intersection(prior_keys):
+                prior_rows.append((prior, prior_members))
+        if prior_rows:
+            first_prior = prior_rows[0][0]
+            review_id = first_prior[0]
+            merged: dict[str, dict] = {}
+            for _, prior_members in prior_rows:
+                merged.update({m["zotero_key"]: m for m in prior_members})
+            for member in members:
+                old = merged.get(member["zotero_key"])
+                if old:
+                    old["imported_in_batch"] = bool(
+                        old["imported_in_batch"] or member["imported_in_batch"]
+                    )
+                    if member.get("match_kind") == "fuzzy":
+                        old["match_kind"] = "fuzzy"
+                else:
+                    merged[member["zotero_key"]] = member
+            members = list(merged.values())
+            conn.execute(
+                "UPDATE title_duplicate_reviews SET normalized_title=?,members_json=?,updated_at=? "
+                "WHERE review_id=?",
+                (first_prior[1], json.dumps(members, ensure_ascii=False, allow_nan=False),
+                 now, review_id),
+            )
+            for prior, _ in prior_rows[1:]:
+                conn.execute(
+                    "DELETE FROM title_duplicate_reviews WHERE review_id=?", (prior[0],)
+                )
+        else:
+            review_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO title_duplicate_reviews "
+                "(review_id,normalized_title,status,members_json,created_at,updated_at) "
+                "VALUES (?,?, 'pending', ?,?,?)",
+                (review_id, group["normalized_title"],
+                 json.dumps(members, ensure_ascii=False, allow_nan=False), now, now),
+            )
+        conn.executemany(
+            "INSERT INTO title_duplicate_members "
+            "(review_id,zotero_key,imported_in_batch) VALUES (?,?,?) "
+            "ON CONFLICT(review_id,zotero_key) DO UPDATE SET "
+            "imported_in_batch=MAX(imported_in_batch,excluded.imported_in_batch)",
+            [(review_id, m["zotero_key"], int(bool(m["imported_in_batch"])))
+             for m in members],
+        )
 
     return ImportSummary(
         n_imported=len(articles),

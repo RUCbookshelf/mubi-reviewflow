@@ -5773,7 +5773,7 @@ function showFileList(files) {
   });
 }
 function renderImportReport(d) {
-  $('#repHint').textContent = '解析与去重完成：';
+  $('#repHint').textContent = d.staged ? T('导入已暂存，等待核验与激活。') : '解析与去重完成：';
   const isBatch = Array.isArray(d.files);
   $('#batchFilesWrap').style.display = isBatch ? '' : 'none';
   const cross = d.cross_file_duplicates || [];
@@ -5808,7 +5808,7 @@ function renderImportReport(d) {
     ['精确去重后记录数（含待核验候选）', d.unique_after_dedup],
     ['实际导入（唯一条目）', d.imported],
     ['新插入', d.new],
-    ['已存在（内容刷新）', d.existing],
+    ['已存在（保留当前元数据）', d.existing],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ] : [
     ['导入记录数', d.n_imported],
@@ -5822,10 +5822,11 @@ function renderImportReport(d) {
     ['待人工核验标题候选组数', d.title_review_groups],
     ['待人工核验标题候选记录数', d.title_review_pending_records],
     ['新插入', d.n_new],
-    ['已存在（内容刷新）', d.n_existing],
+    ['已存在（保留当前元数据）', d.n_existing],
     ['精确去重后唯一记录数', d.unique_after_exact_dedup],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ];
+  if (d.staged) rows.push(['暂存待激活记录', d.pending_records], ['元数据待核验', d.metadata_review_count]);
   if (d.note) rows.push(['说明', d.note]);
   rows.forEach(([k, v]) => body.append(el('tr', {}, el('td', { text: k }), el('td', {}, el('b', { text: v === undefined || v === null ? '—' : String(v) })))));
   if (window.TitleDuplicateReview) TitleDuplicateReview.load(d);
@@ -5878,10 +5879,10 @@ async function realImport(files) {
     $('#dzInner').append(T('✓ 已接收 '), el('b', { text: files.map(f => f.name).join('、') }));
     renderImportReport(d);
     document.dispatchEvent(new CustomEvent('reviewflow:import-completed'));
-    $('#goScreenBtn').style.display = '';
+    $('#goScreenBtn').style.display = d.staged || d.screening_ready === false ? 'none' : '';
     setImportBusy(false);
     await refreshProgress();
-    toast(Number(d.title_review_pending || 0) > 0
+    toast(d.staged ? T('导入已暂存，等待核验与激活。') : Number(d.title_review_pending || 0) > 0
       ? T('导入已完成；标题候选待人工核验')
       : batch
         ? T('批量导入完成：解析 {0} 条，精确去重 {1} 条，导入 {2} 条', d.total_parsed, d.exact_duplicate_excess, d.imported)

@@ -131,3 +131,10 @@ def get_import_file(
             (task_id, screener, import_id, file_index),
         ).fetchone()
     return (row[0], bytes(row[1])) if row else None
+
+
+def update_import_stats(path: str | Path, import_id: str, stats: dict) -> None:
+    """Update derived progress only; archived original bytes remain immutable."""
+    with closing(_connect(path)) as conn, conn:
+        conn.execute("UPDATE imports SET stats_json=? WHERE import_id=?",
+                     (json.dumps(stats, ensure_ascii=False, allow_nan=False), import_id))
