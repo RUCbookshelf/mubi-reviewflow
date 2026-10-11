@@ -1339,7 +1339,8 @@ def coding_queue(db: StrPath, mode: str | None = None) -> list[str]:
     stage2_keys = _include_keys(list_stage2_decisions(db))
     if stage2_keys:
         return stage2_keys
-    return _include_keys(list_decisions(db))
+    stage2_maybe = {row["zotero_key"] for row in list_stage2_decisions(db) if row["decision"] == "maybe"}
+    return [key for key in _include_keys(list_decisions(db)) if key not in stage2_maybe]
 
 
 def coding_progress(db: StrPath) -> dict:
