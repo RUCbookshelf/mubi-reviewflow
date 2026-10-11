@@ -170,6 +170,21 @@ def build_app():
     """导入 FastAPI 应用并把前端静态目录挂载到根路径。"""
     from fastapi.staticfiles import StaticFiles
 
+    class CachedStaticFiles(StaticFiles):
+        def file_response(self, full_path, stat_result, scope, status_code=200):
+            response = super().file_response(full_path, stat_result, scope, status_code)
+            # Conditional 304 responses otherwise lose the resolved filename.
+            response.path = full_path
+            return response
+
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            filename = Path(getattr(response, "path", "")).name
+            response.headers["Cache-Control"] = (
+                "no-cache" if filename in {"index.html", "404.html"}
+                else "public, max-age=86400")
+            return response
+
     from custom_backend.main import app as api_app
 
     frontend_dir = APP_DIR / "custom_frontend"
@@ -178,7 +193,7 @@ def build_app():
     if frontend_dir.is_dir():
         # API 路由已注册在前，挂在 / 的静态目录只兜底其余路径；
         # 直接复用 api_app 以保留其异常处理器与中间件。
-        api_app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="static")
+        api_app.mount("/", CachedStaticFiles(directory=str(frontend_dir), html=True), name="static")
     return api_app
 
 

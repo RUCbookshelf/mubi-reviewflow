@@ -3,6 +3,8 @@
  const main=document.getElementById('appMain');if(!main)return;
  const card=el('details',{id:'rfImportGuide',open:'','aria-label':T('引导-导入文献')});
  const summary=el('summary',{}),title=el('b',{}),count=el('span',{class:'rf-guide-count'}),chevron=el('span',{class:'rf-guide-chevron','aria-hidden':'true',text:'⌃'});
+ const companion=document.querySelector('#alModeAI .rf-pearl-companion')?.cloneNode(true);
+ if(companion){companion.classList.add('rf-pearl-guide');summary.append(companion);}
  summary.append(title,count,chevron);
  const body=el('div',{class:'rf-guide-body'}),list=el('ol',{}),message=el('p',{class:'rf-guide-message',role:'status'});
  body.append(list,message);card.append(summary,body);main.append(card);card.hidden=true;

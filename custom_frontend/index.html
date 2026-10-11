@@ -235,6 +235,23 @@ html:lang(ko) .page :is(p,.hint,.lbl){word-break:keep-all}
 .team-list{display:grid;gap:8px;margin-top:12px}
 .team-member{display:grid;grid-template-columns:minmax(120px,1fr) repeat(3,minmax(84px,auto));gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:10px}
 .team-member small{display:block;color:var(--muted);font-size:.72rem}
+.team-heading{display:flex;align-items:center;gap:12px}
+.team-member.can-manage{grid-template-columns:minmax(120px,1fr) repeat(3,minmax(84px,auto)) 36px}
+.team-member strong{overflow-wrap:anywhere}
+.team-member-actions{position:relative;justify-self:end}
+.team-more{display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--ink);font-size:22px;letter-spacing:1px;cursor:pointer}
+.team-more:hover,.team-more[aria-expanded=true]{background:var(--primary-light);color:var(--primary-dark)}
+.team-member-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:25;min-width:210px;max-width:calc(100vw - 48px);padding:6px;border:1px solid var(--border);border-radius:10px;background:var(--surface);box-shadow:0 8px 24px rgba(0,0,0,.16)}
+.team-member-menu[hidden],.team-role-options[hidden]{display:none}
+.team-member-menu button{display:block;width:100%;padding:9px 12px;border:0;border-radius:6px;background:transparent;color:var(--ink);text-align:left;font:inherit;font-size:.85rem;cursor:pointer}
+.team-member-menu button:hover,.team-member-menu button:focus-visible{background:var(--primary-light);outline:2px solid var(--primary);outline-offset:-2px}
+.team-member-menu button:disabled{color:var(--muted);cursor:default;background:transparent;outline:none}
+.team-member-menu .team-remove{color:var(--danger);margin-top:4px;border-top:1px solid var(--border)}
+.team-role-options{padding-left:10px;border-left:2px solid var(--border);margin:4px 8px}
+.team-role-options button[aria-checked=true]{color:var(--primary-dark);font-weight:700}
+.team-role-options button[aria-checked=true]::after{content:' ✓';float:right}
+@media(max-width:1000px){.team-member,.team-member.can-manage{grid-template-columns:repeat(2,minmax(0,1fr))}.team-member-actions{grid-column:2;grid-row:1}}
+@media(max-width:650px){.team-heading{flex-wrap:wrap}}
 .row{display:flex;gap:10px;align-items:center;margin:10px 0;flex-wrap:wrap}
 .row[hidden]{display:none}
 .btn{border:none;border-radius:9px;padding:8px 18px;font-weight:600;cursor:pointer;font-family:var(--font-body);font-size:.88rem;transition:filter .15s ease,transform .1s ease,opacity .15s ease}
@@ -296,6 +313,22 @@ tbody tr:hover{background:var(--primary-light)}
 .absbox{max-height:150px;overflow:auto;background:var(--bg);border-radius:10px;padding:12px 14px;font-size:.85rem;line-height:1.85;border:1px solid var(--border)}
 #scrCard{transition:opacity .22s ease,transform .22s ease}
 #scrCard.out{opacity:0;transform:translateX(26px)}
+.scr-status{min-width:0;gap:8px}
+#scrHist{display:inline-flex;align-items:center;gap:5px;max-width:100%;overflow-x:auto;white-space:nowrap}
+#scrHist .chip{flex-shrink:0;margin:0}
+#scrHistCounts{font-size:.75rem;color:var(--muted);max-width:100%;overflow-x:auto;white-space:nowrap}
+.scr-title{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.scr-title-text{flex:1;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+.scr-title .al-tag{flex-shrink:0;margin-left:0}
+.scr-title-wrap{position:relative;min-width:0}
+.scr-title-text{cursor:help}
+.scr-title-full{position:absolute;left:0;top:100%;z-index:40;width:100%;max-height:min(45vh,320px);overflow:auto;padding:12px 14px;border:1px solid var(--primary);border-radius:10px;background:var(--surface);color:var(--ink);box-shadow:0 8px 24px rgba(0,0,0,.18);font:400 .9rem/1.7 var(--font-body);white-space:normal;overflow-wrap:anywhere}
+.scr-title-full[hidden]{display:none}
+#scrBody .scr-meta{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;white-space:nowrap}
+.scr-meta>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:28%}
+.scr-meta .scr-authors{flex:1;min-width:60px;max-width:none}
+.scr-meta .scr-year{flex-shrink:0;max-width:none}
+.scr-meta .chip{margin:0}
 @keyframes shakeX{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
 .shake{animation:shakeX .12s 3}
 
@@ -304,6 +337,27 @@ tbody tr:hover{background:var(--primary-light)}
 .al-mode button{border:1px solid var(--border);background:var(--surface);color:var(--muted);padding:5px 14px;border-radius:999px;cursor:pointer;font-size:.82rem;font-family:var(--font-body);transition:background .15s ease,color .15s ease,border-color .15s ease}
 .al-mode button:hover{background:var(--primary-light)}
 .al-mode button.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.al-mode button{display:inline-flex;align-items:center;gap:6px}
+.al-import-icon{width:18px;height:18px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+/* Original Pearl Companion: shared by AI ranking and the import guide. */
+.rf-pearl-companion{width:26px;height:26px;flex-shrink:0;overflow:visible}
+.rf-pearl-shell{fill:#f8faf9;stroke:#aab6bd;stroke-width:1.25}
+.rf-pearl-shine{fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;opacity:.9}
+.rf-pearl-cheeks{fill:#85b8b4;animation:rf-pearl-tint 20s ease-in-out infinite}
+.rf-pearl-motion{transform-origin:24px 24px;animation:rf-pearl-breathe 4s ease-in-out infinite}
+.rf-pearl-face{fill:none;stroke:#304452;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;opacity:0;animation:rf-pearl-expression 20s infinite}
+.rf-pearl-face ellipse{fill:#304452;stroke:none}
+.rf-pearl-face.happy{animation-delay:-15s}
+.rf-pearl-face.wink{animation-delay:-10s}
+.rf-pearl-face.curious{animation-delay:-5s}
+.rf-pearl-eyes{transform-origin:24px 24px;animation:rf-pearl-blink 6s infinite}
+.rf-pearl-companion *{animation-play-state:paused}
+.page.on .rf-pearl-companion *{animation-play-state:running}
+@keyframes rf-pearl-tint{0%,100%{fill:#85b8b4}25%{fill:#b4a5d0}50%{fill:#d4b77a}75%{fill:#85b8b4}}
+@keyframes rf-pearl-breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-.6px) scale(1.025)}}
+@keyframes rf-pearl-blink{0%,43%,47%,100%{transform:scaleY(1)}45%{transform:scaleY(.12)}}
+@keyframes rf-pearl-expression{0%,21%{opacity:1}25%,96%{opacity:0}100%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.rf-pearl-companion *{animation:none!important}.rf-pearl-face{opacity:0}.rf-pearl-face.calm{opacity:1}}
 .al-trained{font-size:.72rem;animation:pageIn .25s ease}
 .al-tag{display:inline-block;margin-left:8px;background:var(--primary);color:#fff;font-size:.66rem;padding:1px 7px;border-radius:999px;vertical-align:3px;letter-spacing:1px;cursor:help}
 .al-score{display:flex;align-items:center;gap:8px;margin:6px 0 2px}
@@ -336,6 +390,12 @@ body.fp-screen #scrCard{flex:1;min-height:0;display:flex;flex-direction:column;m
 body.fp-screen #scrBody{flex:1;min-height:0;display:flex;flex-direction:column}
 body.fp-screen #scrBody>*{flex-shrink:0}
 body.fp-screen #scrBody .absbox{flex:1;min-height:96px;max-height:none;overflow:auto}
+@media(max-height:800px),(max-width:760px){
+  body.fp-screen .view{overflow-y:auto}
+  body.fp-screen section.page.on{flex:none;min-height:100%}
+  body.fp-screen #scrCard{flex:none}
+  body.fp-screen #scrBody .absbox{flex:none;max-height:220px}
+}
 
 /* ---------- 复筛 ---------- */
 .ft-layout{position:relative;display:flex;flex:1;min-height:0}
@@ -658,9 +718,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./workspace_shell.css?v=20261005-sidebar1">
 <link rel="stylesheet" href="./navigation_hierarchy.css?v=20260929-ui3">
 <link rel="stylesheet" href="./workspace_surfaces.css?v=20260929-ui3">
-<link rel="stylesheet" href="./research_trace.css?v=20261002-language-wrap-final1">
+<link rel="stylesheet" href="./research_trace.css?v=20261011-trace-topbar2">
 <link rel="stylesheet" href="./update_check.css?v=20261005-update1">
-<link rel="stylesheet" href="./import_guide.css?v=20261005-guide4">
+<link rel="stylesheet" href="./import_guide.css?v=20261011-pearl1">
 </head>
 <body>
 
@@ -867,7 +927,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <p class="hint">数据保存在此服务器</p>
       <ol>
         <li>每位成员先在同一服务器注册账号。</li>
-        <li>任务属主按用户名添加成员，授予筛选与编码或仲裁权限。</li>
+        <li>任务属主按用户名添加成员，授予 Coder 或 Reconciler 权限。</li>
         <li>属主导入文献，成员打开文献列表时会取得同一文献目录。</li>
         <li>团队进度只显示完成数量，个人决策由本人账号保存。</li>
         <li>可从最近的仲裁记录导出 JSON。</li>
@@ -907,12 +967,12 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div id="newTaskNext" class="card" hidden><b>任务已建立</b><p class="hint">下一步导入文献，然后开始初筛。</p><button class="btn b-inc" type="button" data-nav="import">导入文献</button></div>
   <div class="hubgrid" id="hubGrid"></div>
   <section class="card" id="teamPanel" hidden aria-labelledby="teamTitle">
-    <div class="row" style="align-items:center;margin:0"><h3 id="teamTitle" style="margin:0">团队进度</h3><span class="hint" id="teamStorage" style="margin-left:auto">此服务器保存任务数据</span></div>
+    <div class="team-heading"><h3 id="teamTitle" style="margin:0">团队进度</h3><span class="hint" id="teamStorage" style="margin-left:auto">此服务器保存任务数据</span></div>
     <p class="hint">这里只显示完成数量。每个人的筛选决定仍由本人保存；仲裁结果单独记录。</p>
     <div class="team-list" id="teamList" aria-live="polite"></div>
     <div class="row" id="teamInvite" hidden style="margin-top:14px">
       <input class="input" id="teamInviteName" placeholder="已注册用户的用户名" aria-label="已注册用户的用户名" style="max-width:220px">
-      <select class="input" id="teamInviteRole" aria-label="协作权限" style="width:230px;max-width:100%"><option value="coder">筛选与编码</option><option value="reconciler">仲裁员</option></select>
+      <select class="input" id="teamInviteRole" aria-label="协作权限" style="width:230px;max-width:100%"><option value="coder">Coder</option><option value="reconciler">Reconciler</option></select>
       <button class="btn b-out" id="teamInviteBtn" type="button">添加成员</button>
     </div>
     <p class="hint" id="teamMessage" role="status"></p>
@@ -1019,8 +1079,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <section class="page" data-p="screen">
   <h2>文献初筛</h2><p class="hint">键盘：<kbd>1</kbd> 纳入 · <kbd>2</kbd> 待定 · <kbd>3</kbd> 排除（排除必填理由）· 每次决策实时保存到服务器</p>
   <div class="al-mode">
-    <button id="alModeImport" class="on" title="按 Zotero 导入顺序逐篇筛选">📋 导入顺序</button>
-    <button id="alModeAI" title="AI 排序：基于你的筛选决策，按当前策略排列待筛文献">🧠 AI 排序</button>
+    <button id="alModeImport" class="on" title="按 Zotero 导入顺序逐篇筛选"><svg class="al-import-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M7 10h1m3 0h6M7 14h1m3 0h6M7 18h1m3 0h6"/></svg><span>导入顺序</span></button>
+    <button id="alModeAI" title="AI 排序：基于你的筛选决策，按当前策略排列待筛文献"><svg class="rf-pearl-companion" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><g class="rf-pearl-motion"><path class="rf-pearl-shell" d="M24 3C12 3 3.5 11.2 3.5 23.5S10.4 44 24 44s20.5-8.2 20.5-20.5S36 3 24 3Z"/><path class="rf-pearl-shine" d="M10 16c2-5.8 6.6-9 12-9"/><g class="rf-pearl-cheeks"><ellipse cx="12" cy="29" rx="2.2" ry="1.15"/><ellipse cx="36" cy="29" rx="2.2" ry="1.15"/></g><g class="rf-pearl-face calm"><g class="rf-pearl-eyes"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><ellipse cx="31.5" cy="24" rx="2.4" ry="3.25"/></g><path d="M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face happy"><path d="M13 24q3-5 6 0m10 0q3-5 6 0M21 28.5q3 5 6 0"/></g><g class="rf-pearl-face wink"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><path d="M29 24q3-3 6 0M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face curious"><ellipse cx="16.5" cy="25" rx="2.4" ry="3.1"/><ellipse cx="31.5" cy="22.5" rx="2.4" ry="3.7"/><path d="M22 30q2.8 2.2 5-.7"/></g></g></svg><span>AI 排序</span></button>
     <span class="chip al-trained" id="alBadge" style="display:none"></span>
     <span class="hint" id="alHint" style="margin:0"></span>
   </div>
@@ -1028,10 +1088,11 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <span id="alStopText"></span>
     <button id="alStopClose" title="关闭本次提示">✕</button>
   </div>
-  <div class="row" style="margin-top:0">
+  <div class="row scr-status" style="margin-top:0">
     <span class="chip" id="scrPos">—</span>
     <span class="hint" style="margin:0" id="scrHistCap">决策历史：</span>
     <span id="scrHist"></span>
+    <span id="scrHistCounts"></span>
   </div>
   <div class="card" id="scrCard"><div id="scrBody"></div></div>
 </section>
@@ -3932,8 +3993,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["纳入 ·","include ·","inclure ·","включить ·","incluir ·","採用 ·","incluir ·","einschließen ·","укључи ·", "포함 ·"],
   ["待定 ·","maybe ·","à décider ·","возможно ·","pendiente ·","保留 ·","talvez ·","vielleicht ·","неодлучено ·", "보류 ·"],
   ["排除（排除必填理由）· 每次决策实时保存到服务器","exclude (reason required) · every decision is saved to the server in real time","exclure (motif obligatoire) · chaque décision est enregistrée sur le serveur en temps réel","исключить (обязателен мотив) · каждое решение сохраняется на сервере в реальном времени","excluir (motivo obligatorio) · cada decisión se guarda en el servidor en tiempo real","除外（理由必須）· 判定は毎回リアルタイムでサーバーに保存","excluir (motivo obrigatório) · cada decisão é salva no servidor em tempo real","ausschließen (Grund erforderlich) · jede Entscheidung wird in Echtzeit auf dem Server gespeichert","искључи (разлог је обавезан) · свака одлука се чува на серверу у реалном времену", "제외(사유 필수) · 판정 즉시 서버 저장"],
-  ["📋 导入顺序","📋 Import order","📋 Ordre d'import","📋 Порядок импорта","📋 Orden de importación","📋 取り込み順","📋 Ordem de importação","📋 Importreihenfolge","📋 Ред увоза", "📋 가져온 순서"],
-  ["🧠 AI 排序", "🧠 AI ranking", "🧠 Classement IA", "🧠 ИИ-сортировка", "🧠 Ordenación IA", "🧠 AI 並べ替え", "🧠 Ordenação IA", "🧠 KI-Sortierung", "🧠 AI рангирање", "🧠 AI 정렬"],
+  ["导入顺序","Import order","Ordre d'import","Порядок импорта","Orden de importación","取り込み順","Ordem de importação","Importreihenfolge","Ред увоза", "가져온 순서"],
+  ["AI 排序", "AI ranking", "Classement IA", "ИИ-сортировка", "Ordenación IA", "AI 並べ替え", "Ordenação IA", "KI-Sortierung", "AI рангирање", "AI 정렬"],
   ["决策历史：","Decision history:","Historique des décisions :","История решений:","Historial de decisiones:","判定履歴：","Histórico de decisões:","Entscheidungsverlauf:","Историја одлука:", "결정 이력:"],
   ["请先在首页选择或创建任务。","Pick or create a task on the Home page first.","Choisissez ou créez d'abord une tâche dans l'accueil.","Сначала выберите или создайте задачу на главной.","Elija o cree primero una tarea en Inicio.","先にホームでタスクを選択または作成してください。","Escolha ou crie uma tarefa na Início primeiro.","Wählen oder erstellen Sie zuerst eine Aufgabe auf der Startseite.","Прво изаберите или направите задатак на почетној.", "먼저 홈에서 작업을 선택하거나 만들어 주세요."],
   ["正在载入文献队列…","Loading the screening queue…","Chargement de la file de sélection…","Загрузка очереди отбора…","Cargando la cola de cribado…","スクリーニングキューを読み込み中…","Carregando a fila de triagem…","Screening-Warteschlange wird geladen…","Учитавање реда за одабир…", "문헌 대기열 불러오는 중…"],
@@ -4976,14 +5037,14 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261002-language-wrap-final1"></script>
-<script src="./interface_locale.js?v=20261002-language-wrap-final2"></script>
+<script src="./interface_locale.js?v=20261011-screen-history1"></script>
 <script src="./research_trace_locale.js?v=20261002-default-on1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
-<script src="./help_locale.js?v=20261002-language-wrap-final1"></script>
+<script src="./help_locale.js?v=20261011-roles1"></script>
 <script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./navigation_registry.js?v=20261002-ui1"></script>
 
@@ -5101,6 +5162,8 @@ function saveToken(tok) {
   try { sessionStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* 隐私模式等：仅内存持有 */ }
 }
 function logout(msg) {
+  closeTeamMemberMenus();
+  closeEvents();
   AUTH_TOKEN = null;
   S.user = null; S.task = null; S.tasks = []; S.screener = null; S.taskVersion++;
   S.articles = []; S.articlesBase = []; S.decisions = {}; S.ftQueue = []; S.cbQueue = []; S.dims = [];
@@ -5279,10 +5342,134 @@ function taskApi() { return '/api/tasks/' + encodeURIComponent(S.task.task_id); 
 function scrQ() { return S.screener ? ('?screener=' + encodeURIComponent(S.screener)) : ''; }
 let runtimeMode = 'desktop';
 let teamVersion = 0;
+let teamMutationTaskId = null;
+let taskListVersion = 0;
+let taskEvents = null;
+let eventRefresh = Promise.resolve();
+function closeTeamMemberMenus(except = null, restoreFocus = false) {
+  for (const actions of $$('.team-member-actions')) {
+    if (actions === except) continue;
+    const menu = $('.team-member-menu', actions), trigger = $('.team-more', actions);
+    if (restoreFocus && !menu.hidden) trigger.focus();
+    menu.hidden = true; trigger.setAttribute('aria-expanded', 'false');
+  }
+}
+document.addEventListener('click', event => {
+  if (!event.target.closest('.team-member-actions')) closeTeamMemberMenus();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.querySelector('.team-member-menu:not([hidden])')) {
+    event.preventDefault(); closeTeamMemberMenus(null, true);
+  }
+});
+document.addEventListener('focusin', event => {
+  if (!event.target.closest('.team-member-actions')) closeTeamMemberMenus();
+});
+function teamMemberActions(taskId, member, grants, isOwner) {
+  const actions = el('div', {class:'team-member-actions', 'data-task-id':taskId});
+  const menuId = 'team-member-menu-' + member.user_id;
+  const trigger = el('button', {type:'button', class:'team-more', text:'···', translate:'no',
+    'aria-label':T('管理成员 {0}', member.username), 'aria-haspopup':'menu',
+    'aria-controls':menuId, 'aria-expanded':'false'});
+  const menu = el('div', {id:menuId, class:'team-member-menu', role:'menu',
+    'aria-label':T('管理成员 {0}', member.username)});
+  menu.hidden = true;
+  if (isOwner) {
+    const owner = el('button', {type:'button', role:'menuitem', text:T('任务属主')});
+    owner.disabled = true; menu.append(owner);
+  } else {
+    const roles = grants.filter(grant => grant.user_id === member.user_id).map(grant => grant.role);
+    const change = el('button', {type:'button', role:'menuitem', class:'team-change-role',
+      text:T('更改角色'), 'aria-expanded':'false', 'aria-controls':menuId + '-roles'});
+    const choices = el('div', {id:menuId + '-roles', class:'team-role-options', role:'group', 'aria-label':T('更改角色')});
+    choices.hidden = true;
+    for (const [role, label] of [['coder','Coder'], ['reconciler','Reconciler']]) {
+      const selected = roles.length === 1 && roles[0] === role;
+      const choice = el('button', {type:'button', role:'menuitemradio', 'data-role':role,
+        'aria-checked':String(selected), text:label});
+      choice.addEventListener('click', () => {
+        closeTeamMemberMenus();
+        if (!selected) changeTeamMemberRole(taskId, member, role);
+      });
+      choices.append(choice);
+    }
+    change.addEventListener('click', () => {
+      choices.hidden = !choices.hidden;
+      change.setAttribute('aria-expanded', String(!choices.hidden));
+      if (!choices.hidden) choices.querySelector('button').focus();
+    });
+    const remove = el('button', {type:'button', role:'menuitem', class:'team-remove', text:T('移除')});
+    remove.addEventListener('click', () => {
+      closeTeamMemberMenus(); removeTeamMember(taskId, member, grants);
+    });
+    menu.append(change, choices, remove);
+  }
+  const visibleItems = () => Array.from(menu.querySelectorAll('button')).filter(button => !button.disabled && !button.closest('[hidden]'));
+  trigger.addEventListener('click', () => {
+    const open = menu.hidden;
+    closeTeamMemberMenus(actions);
+    menu.hidden = !open; trigger.setAttribute('aria-expanded', String(open));
+    if (open) visibleItems()[0]?.focus();
+  });
+  trigger.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' && menu.hidden) { event.preventDefault(); trigger.click(); }
+  });
+  menu.addEventListener('keydown', event => {
+    const items = visibleItems(), index = items.indexOf(document.activeElement);
+    if (!items.length) return;
+    let next;
+    if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+    else if (event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = items.length - 1;
+    if (next !== undefined) { event.preventDefault(); items[next].focus(); }
+  });
+  actions.append(trigger, menu);
+  return actions;
+}
+function closeEvents() {
+  if (taskEvents) taskEvents.close();
+  taskEvents = null;
+  taskListVersion++; teamVersion++;
+}
+function connectEvents() {
+  closeEvents();
+  if (runtimeMode !== 'server' || !S.user || !AUTH_TOKEN || !window.EventSource) return;
+  const token = AUTH_TOKEN;
+  try {
+    const source = new EventSource(API_BASE + '/api/events?token=' + encodeURIComponent(token));
+    taskEvents = source;
+    let lastNotice = null;
+    source.addEventListener('tasks-changed', event => {
+      let change;
+      try { change = JSON.parse(event.data); } catch (_) { return; }
+      if (typeof change.task_name !== 'string') return;
+      // Serialize notifications so concurrent grants cannot overwrite newer task lists.
+      eventRefresh = eventRefresh.catch(() => {}).then(async () => {
+        if (taskEvents !== source || AUTH_TOKEN !== token) return;
+        await loadTasks();
+        if (taskEvents !== source || AUTH_TOKEN !== token) return;
+        const duplicate = lastNotice && lastNotice.reason === change.reason &&
+          lastNotice.task_name === change.task_name && Date.now() - lastNotice.at < 2000;
+        if (change.reason === 'invited' && !duplicate) {
+          toast(T('你已被加入团队任务“{0}”，任务列表已更新', change.task_name));
+          lastNotice = {...change, at:Date.now()};
+        }
+        // Revoking one of several roles does not remove task membership yet.
+        else if (change.reason === 'revoked' && !duplicate && !S.tasks.some(task => task.name === change.task_name)) {
+          toast(T('你已被移出团队任务“{0}”', change.task_name), 'warn');
+          lastNotice = {...change, at:Date.now()};
+        }
+      }).catch(() => { /* Polling retries transient failures. */ });
+    });
+  } catch (_) { /* Unsupported/restricted EventSource falls back to polling. */ }
+}
 async function refreshTeam() {
   const panel = $('#teamPanel');
   panel.hidden = runtimeMode !== 'server' || !S.task;
-  if (panel.hidden) return;
+  if (panel.hidden || teamMutationTaskId === S.task.task_id) return;
+  const openMenu = panel.querySelector('.team-member-menu:not([hidden])');
+  if (openMenu?.parentElement.dataset.taskId === S.task.task_id) return;
   const ticket = ++teamVersion, taskId = S.task.task_id;
   try {
     const data = await api(taskApi() + '/team-progress');
@@ -5294,15 +5481,61 @@ async function refreshTeam() {
       const count = (stage, label) => el('span', {},
         el('b', {text: `${stage.completed} / ${stage.total}`}),
         el('small', {text: label}));
-      list.append(el('div', {class:'team-member'},
+      const row = el('div', {class:data.can_manage ? 'team-member can-manage' : 'team-member'},
         el('strong', {text: member.username, translate:'no'}),
         count(member.stage1, T('文献初筛')), count(member.stage2, T('文献复筛')),
-        count(member.coding, T('文献编码'))));
+        count(member.coding, T('文献编码')));
+      if (data.can_manage) row.append(teamMemberActions(taskId, member, data.grants || [], member.user_id === data.owner_user_id));
+      list.append(row);
     }
     if (!data.members.length) list.append(el('p', {class:'hint', text:T('暂无成员进度。')}));
   } catch (error) {
     if (ticket === teamVersion) $('#teamMessage').textContent = error.message;
   }
+}
+async function removeTeamMember(taskId, member, grants) {
+  if (teamMutationTaskId || S.task?.task_id !== taskId) return;
+  const roles = [...new Set(grants.filter(grant => grant.user_id === member.user_id).map(grant => grant.role))];
+  if (!roles.length) { $('#teamMessage').textContent = T('此成员没有可移除的协作权限。'); return; }
+  if (!confirm(T('确定将 {0} 从此任务中移除吗？对方将不再看到此任务。', member.username))) return;
+  await mutateTeamMember(taskId, async () => {
+    const data = await api('/api/tasks/' + encodeURIComponent(taskId) + '/team-progress');
+    const currentRoles = data.grants.filter(grant => grant.user_id === member.user_id).map(grant => grant.role);
+    for (const role of currentRoles) {
+      await api('/api/tasks/' + encodeURIComponent(taskId) + '/collaboration/roles/' +
+        encodeURIComponent(member.user_id) + '/' + encodeURIComponent(role), {method:'DELETE'});
+    }
+  }, T('已将 {0} 从任务中移除', member.username));
+}
+async function changeTeamMemberRole(taskId, member, role) {
+  if (teamMutationTaskId || S.task?.task_id !== taskId || member.user_id === S.user?.user_id || !['coder','reconciler'].includes(role)) return;
+  const path = '/api/tasks/' + encodeURIComponent(taskId);
+  await mutateTeamMember(taskId, async () => {
+    const data = await api(path + '/team-progress');
+    const roles = data.grants.filter(grant => grant.user_id === member.user_id).map(grant => grant.role);
+    // Grant the chosen role first so switching roles never removes task access.
+    if (!roles.includes(role)) await api(path + '/collaboration/roles', {
+      method:'POST', body:{user_id:member.user_id, role}});
+    for (const oldRole of roles.filter(value => value !== role)) {
+      await api(path + '/collaboration/roles/' + encodeURIComponent(member.user_id) + '/' + oldRole, {method:'DELETE'});
+    }
+  }, T('已将 {0} 的角色更改为 {1}', member.username, role === 'coder' ? 'Coder' : 'Reconciler'));
+}
+async function mutateTeamMember(taskId, action, successMessage) {
+  if (teamMutationTaskId || S.task?.task_id !== taskId) return;
+  teamMutationTaskId = taskId; teamVersion++;
+  const controls = Array.from($('#teamPanel').querySelectorAll('button'));
+  controls.forEach(button => { button.disabled = true; });
+  let failure = null;
+  try {
+    await action();
+  } catch (error) { failure = error; }
+  finally { teamMutationTaskId = null; controls.forEach(button => { button.disabled = false; }); }
+  // Reload even after a partial failure so any already-revoked role is reflected.
+  try { await loadTasks(); await refreshTeam(); } catch (error) { failure = failure || error; }
+  if (failure) {
+    if (S.task?.task_id === taskId) $('#teamMessage').textContent = failure.message;
+  } else toast(successMessage);
 }
 $('#teamInviteBtn').addEventListener('click', async () => {
   if (!S.task) return;
@@ -5322,9 +5555,15 @@ $('#teamInviteBtn').addEventListener('click', async () => {
 setInterval(() => {
   if (runtimeMode === 'server' && S.task && document.visibilityState === 'visible') refreshTeam();
 }, 15000);
+setInterval(() => {
+  if (runtimeMode === 'server' && S.user && document.visibilityState === 'visible')
+    loadTasks().catch(() => { /* Retry on the next poll. */ });
+}, 30000);
 
 async function loadTasks() {
+  const token = AUTH_TOKEN, ticket = ++taskListVersion;
   const d = await api('/api/tasks?include_archived=true');
+  if (AUTH_TOKEN !== token || !S.user || ticket !== taskListVersion) return;
   S.tasks = d.tasks;
   const sel = $('#taskSel');
   sel.textContent = '';
@@ -5832,10 +6071,36 @@ function nextUndecided() {
 function renderScreenHist() {
   const box = $('#scrHist');
   box.textContent = '';
+  const history = [], counts = {include:0, maybe:0, exclude:0};
   S.articles.forEach((a, i) => {
     const d = S.decisions[a.zotero_key];
-    if (d) box.append(el('span', { class: 'chip c-' + DEC_KEY[d.decision], title: (a.title || '').slice(0, 40), text: '#' + (i + 1) }));
+    if (d) {
+      history.push({a, i, d});
+      if (counts[d.decision] !== undefined) counts[d.decision]++;
+    }
   });
+  const visible = history.length > 5 ? [...history.slice(0, 2), null, ...history.slice(-2)] : history;
+  visible.forEach(item => {
+    box.append(item
+      ? el('span', {class:'chip c-' + DEC_KEY[item.d.decision], title:item.a.title || '', text:'#' + (item.i + 1)})
+      : el('span', {text:'…'}));
+  });
+  $('#scrHistCounts').textContent = T('(纳入：{0} | 待定：{1} | 排除：{2})', counts.include, counts.maybe, counts.exclude);
+}
+function screenTitle(article, score) {
+  const fullTitle = (article.title || '').trim() || T('（无标题）');
+  const text = el('span', {class:'scr-title-text', tabindex:'0', 'aria-describedby':'scrTitleFull', 'data-rf-verbatim':'', text:fullTitle});
+  const tip = el('div', {id:'scrTitleFull', class:'scr-title-full', role:'tooltip', hidden:'', 'data-rf-verbatim':'', text:fullTitle});
+  const heading = el('h3', {class:'scr-title'}, text,
+    typeof score === 'number' ? el('span', {class:'al-tag', title:'AI 排序：本篇按模型预测的纳入概率排在该队列前列', text:'AI'}) : null);
+  const wrap = el('div', {class:'scr-title-wrap'}, heading, tip);
+  const show = () => { tip.hidden = !(text.scrollHeight > text.clientHeight + 1 || text.scrollWidth > text.clientWidth + 1); };
+  wrap.addEventListener('mouseenter', show);
+  wrap.addEventListener('mouseleave', () => { tip.hidden = true; });
+  text.addEventListener('focus', show);
+  text.addEventListener('blur', () => { tip.hidden = true; });
+  text.addEventListener('keydown', event => { if (event.key === 'Escape') tip.hidden = true; });
+  return wrap;
 }
 function renderScreen() {
   renderScreenHist();
@@ -5880,15 +6145,13 @@ function renderScreen() {
      会把 null 字符串化成文本节点，正是初筛卡片摘要上方出现裸 "null" 的根源
      （导入顺序模式下 score 为 null，AI 分数条不渲染）。 */
   body.append(...[
-    el('h3', {},
-      el('span', { text: (r.title || '').trim() || '（无标题）' }),
-      typeof score === 'number' ? el('span', { class: 'al-tag', title: 'AI 排序：本篇按模型预测的纳入概率排在该队列前列', text: 'AI' }) : null),
-    el('div', { class: 'hint' },
-      el('span', { text: nz(r.authors) || '—' }), ' · ',
-      el('span', { class: 'chip', text: nz(r.journal) || '—' }),
-      r.year != null && r.year !== '' ? el('span', { class: 'chip', text: String(r.year) }) : null,
-      el('span', { class: 'chip', text: nz(r.item_type) || '—' }),
-      nz(r.doi) ? el('span', { class: 'chip', text: 'DOI ' + nz(r.doi) }) : null),
+    screenTitle(r, score),
+    el('div', { class: 'hint scr-meta' },
+      el('span', {class:'scr-authors', title:nz(r.authors), text: nz(r.authors) || '—'}),
+      el('span', { class: 'chip', title:nz(r.journal), text: nz(r.journal) || '—' }),
+      r.year != null && r.year !== '' ? el('span', { class: 'chip scr-year', title:String(r.year), text: String(r.year) }) : null,
+      el('span', { class: 'chip', title:nz(r.item_type), text: nz(r.item_type) || '—' }),
+      nz(r.doi) ? el('span', { class: 'chip', title:'DOI ' + nz(r.doi), text: 'DOI ' + nz(r.doi) }) : null),
     typeof score === 'number' ? el('div', { class: 'al-score', title: 'AI 相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练' },
       el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(score * 100) + '%' })),
       el('span', { class: 'num', text: T('AI 相关度 {0}%', (score * 100).toFixed(1)) })) : null,
@@ -8411,6 +8674,7 @@ async function enterApp() {
   $('#appMain').style.display = '';
   $('.footer').style.display = '';
   await loadTasks();
+  connectEvents();
   await refreshProgress();
   await refreshTeam();
   // Resolve only known local destinations after authentication and task loading.
@@ -8561,8 +8825,8 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_navigation.js?v=20261002-ui1"></script>
 <script src="./workspace_shell.js?v=20261005-sidebar1"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./research_trace.js?v=20261002-default-on1"></script>
-<script src="./import_guide.js?v=20261005-guide4"></script>
+<script src="./research_trace.js?v=20261011-trace-topbar2"></script>
+<script src="./import_guide.js?v=20261011-pearl1"></script>
 <script src="./import_history.js?v=20261002-report-restore1"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>

@@ -46,7 +46,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from coscreen import coding as coding_mod
@@ -118,6 +118,7 @@ from coscreen.stats.prisma_form import (
 from coscreen.security import sanitize_component
 
 from custom_backend import auth
+from custom_backend.events import BUS, notify_tasks_changed
 from custom_backend.update_check import check_latest_release, current_version
 from custom_backend.source_provenance import source_articles
 from custom_backend.security import (
@@ -1048,6 +1049,30 @@ def me(user: dict = Depends(require_user)) -> dict:
     return {"user_id": user["user_id"], "username": user["username"]}
 
 
+@app.get("/api/events")
+async def task_events(request: Request, token: str | None = Query(default=None),
+                      authorization: str | None = Header(default=None)):
+    # EventSource cannot set a Bearer header. Reuse all normal auth checks.
+    user = require_user(request, authorization or (f"Bearer {token}" if token else None))
+
+    async def stream():
+        queue = BUS.subscribe(user["user_id"])
+        try:
+            yield "retry: 10000\n\n"
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                else:
+                    yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            BUS.unsubscribe(user["user_id"], queue)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ---------------------------------------------------------------------------
 # 任务 CRUD
 # ---------------------------------------------------------------------------
@@ -1176,6 +1201,7 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
         path, actor_user_id=user["user_id"], user_id=target["id"],
         role=body.role, task_id=task_id)
     tasks_mod.register_screener(task_id, target["username"], DATA_DIR)
+    notify_tasks_changed(target["id"], "invited", _task_or_404(task_id).display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
 
@@ -1193,11 +1219,17 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
             store, actor_user_id=user["user_id"], task_id=task_id)
     except PermissionError as exc:
         raise HTTPException(403, "当前账号不是该任务的参与者。") from exc
-    names = [account["username"] for uid in ids
-             if (account := auth.get_user_by_id(uid)) is not None]
+    accounts = [account for uid in ids
+                if (account := auth.get_user_by_id(uid)) is not None]
+    user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
-    return {"members": list_team_progress(task_id, names, DATA_DIR),
-            "can_manage": owner["owner_user_id"] == user["user_id"]}
+    can_manage = owner["owner_user_id"] == user["user_id"]
+    members = list_team_progress(task_id, list(user_ids), DATA_DIR)
+    return {"members": [{**member, "user_id": user_ids[member["username"]]}
+                        for member in members],
+            "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
+            "grants": collaboration_mod.list_role_grants(
+                store, actor_user_id=user["user_id"], task_id=task_id) if can_manage else []}
 
 
 @app.post("/api/tasks/{task_id}/collaboration/roles", status_code=201)
@@ -1212,6 +1244,7 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
     grant = collaboration_mod.grant_role(
         path, actor_user_id=user["user_id"], user_id=body.user_id,
         role=body.role, task_id=task_id)
+    notify_tasks_changed(body.user_id, "invited", _task_or_404(task_id).display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
 
@@ -1220,9 +1253,12 @@ def collaboration_revoke_role(task_id: str, target_user_id: int,
                               role: Literal["coder", "reconciler"],
                               user: dict = Depends(require_user)) -> dict:
     path = _collaboration_owner_store(task_id, user)
-    return {"revoked": collaboration_mod.revoke_role(
+    revoked = collaboration_mod.revoke_role(
         path, actor_user_id=user["user_id"], user_id=target_user_id,
-        role=role, task_id=task_id)}
+        role=role, task_id=task_id)
+    if revoked:
+        notify_tasks_changed(target_user_id, "revoked", _task_or_404(task_id).display_name)
+    return {"revoked": revoked}
 
 
 @app.put("/api/tasks/{task_id}")

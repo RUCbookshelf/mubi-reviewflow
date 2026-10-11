@@ -12,7 +12,7 @@
  function time(value){if(!value)return '—';const d=new Date(value);return Number.isNaN(d.getTime())?value:d.toLocaleString(RFLang.get());}
  function error(e){let n=root.querySelector('.trace-error');if(!n){n=node('p',null,{class:'trace-error',role:'alert'});root.prepend(n);}n.textContent=e.message||String(e);}
  function base(){return taskApi()+'/trace';}
- async function load(){clearTimeout(state.exportExpiryTimer);const ticket=++state.ticket;if(!S.task){root.replaceChildren(node('h1','轨迹'),node('p','请先选择任务'));return;}root.setAttribute('aria-busy','true');root.replaceChildren(node('h1','轨迹'),node('p','正在加载…',{role:'status'}));try{const [settings,summary,events]=await Promise.all([api(base()+'/settings'),api(base()+'/summary'),api(base()+'/events'+params())]);if(ticket!==state.ticket)return;state.settings=settings;state.summary=summary;state.events=events.events||[];state.next=events.next_cursor;render();}catch(e){if(ticket===state.ticket){root.replaceChildren(node('h1','轨迹'));error(e);root.append(button('重试',load));}}finally{if(ticket===state.ticket)root.removeAttribute('aria-busy');}}
+ async function load(){clearTimeout(state.exportExpiryTimer);const ticket=++state.ticket;if(!S.task){root.replaceChildren(node('h1','轨迹'),node('p','请先选择任务'));return;}root.setAttribute('aria-busy','true');root.replaceChildren(node('h1','轨迹'),node('p','正在加载…',{role:'status'}));try{const [settings,summary,events]=await Promise.all([api(base()+'/settings'),api(base()+'/summary'),api(base()+'/events'+params())]);if(ticket!==state.ticket)return;state.settings=settings;refreshShortcutLabels(settings.status);state.summary=summary;state.events=events.events||[];state.next=events.next_cursor;render();}catch(e){if(ticket===state.ticket){root.replaceChildren(node('h1','轨迹'));error(e);root.append(button('重试',load));}}finally{if(ticket===state.ticket)root.removeAttribute('aria-busy');}}
  function params(){const p=new URLSearchParams({limit:'50'});if(state.cursor)p.set('cursor',state.cursor);if(state.stage)p.set('stage',state.stage);if(state.query)p.set('subject_id',state.query);if(state.since)p.set('since',state.since+'T00:00:00Z');if(state.until)p.set('until',state.until+'T23:59:59Z');if(state.action)p.set('action',state.action);return '?'+p;}
  async function configure(status){if(state.configuring)return;state.configuring=true;const selected=Array.from(root.querySelectorAll('[name=traceStage]:checked'),n=>n.value);const payload={status,stages:root.querySelector('[name=traceStage]')?selected:(state.settings?.stages?.length?state.settings.stages:Object.keys(stages)),operation_id:crypto.randomUUID(),expected_version:state.settings?.version||0};try{state.pendingSettings=payload;const result=await api(base()+'/settings',{method:'PUT',body:payload});if(result.status!=='partial')state.pendingSettings=null;state.cursor=null;await load();}catch(e){error(e);}finally{state.configuring=false;}}
  function render(){clearTimeout(state.exportExpiryTimer);root.replaceChildren();const head=node('header',null,{class:'trace-heading'}),title=node('div');title.append(node('h1','轨迹'),node('p','查看我的筛选与编码变更。',{class:'trace-muted'}));head.append(title);const actions=node('div',null,{class:'trace-actions'}),status=state.settings?.status||'off';actions.append(node('span',status==='recording'?'记录中':status==='paused'?'已暂停':status==='partial'?'部分记录未就绪':'未启用',{class:'trace-status','data-status':status}));actions.append(button(status==='recording'?'暂停记录':status==='paused'?'恢复记录':'启用记录',()=>configure(status==='recording'?'paused':'recording')));actions.append(button('导出材料',()=>{state.tab='export';render();},'btn b-inc'));head.append(actions);if(status==='off')title.append(node('p','轨迹已关闭。选择需要记录的阶段后，可重新启用。',{class:'trace-muted'}));root.append(head,node('p',runtimeMode==='server'?'数据保存在此服务器':'数据保存在本机',{class:'trace-muted'}));const tabs=node('div',null,{class:'trace-tabs',role:'tablist'});for(const [id,label]of [['overview','概览'],['events','记录明细'],['export','导出材料']])tabs.append(button(label,()=>{state.tab=id;render();},''));Array.from(tabs.children).forEach((n,i)=>{n.setAttribute('role','tab');n.setAttribute('aria-selected',String(['overview','events','export'][i]===state.tab));n.tabIndex=['overview','events','export'][i]===state.tab?0:-1;n.addEventListener('keydown',e=>{const next=e.key==='ArrowRight'?(i+1)%3:e.key==='ArrowLeft'?(i+2)%3:e.key==='Home'?0:e.key==='End'?2:null;if(next==null)return;e.preventDefault();state.tab=['overview','events','export'][next];render();root.querySelectorAll('[role=tab]')[next].focus();});});if(status==='partial'){root.append(node('p','部分存储尚未就绪，请重试并检查各阶段状态。',{class:'trace-error',role:'status'}));if(state.pendingSettings)root.append(button('重试',async()=>{try{const result=await api(base()+'/settings',{method:'PUT',body:state.pendingSettings});if(result.status!=='partial')state.pendingSettings=null;await load();}catch(e){error(e);}}));}root.append(tabs);if(state.tab==='overview')overview();else if(state.tab==='events')records();else exportsView();}
@@ -137,13 +137,32 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
  }
  function refreshShortcutLabels(status){
   document.querySelectorAll('.trace-shortcut-status').forEach(n=>{
-   if(status!==undefined)n.dataset.traceStatus=status;
+   if(status!==undefined){n.dataset.traceStatus=status;n.hidden=false;}
+   n.title=T('查看轨迹');
    if(!n.dataset.traceStatus)return;
    const current=n.dataset.traceStatus;
    n.textContent=current==='unavailable'?T('轨迹记录暂不可用'):T('轨迹')+': '+T(current==='recording'?'记录中':current==='paused'?'已暂停':current==='partial'?'部分记录未就绪':'未启用');
   });
  }
- function statusLinks(){for(const page of ['home','screen','fulltext','bench']){const parent=document.querySelector('section[data-p="'+page+'"]');if(!parent||parent.querySelector('.trace-shortcut'))continue;const line=node('div',null,{class:'trace-shortcut trace-actions'}),status=node('span',null,{class:'trace-shortcut-status'}),link=button('查看轨迹',()=>go('trace'),'btn b-out');line.append(status,link);parent.prepend(line);}}
- statusLinks();
- document.addEventListener('reviewflow:workspace-changed',async e=>{if(e.detail==='trace'){load();return;}if(!S.task||!['home','screen','fulltext','bench'].includes(e.detail))return;const task=S.task.task_id;try{const settings=await api(base()+'/settings');if(S.task?.task_id!==task)return;refreshShortcutLabels(settings.status);}catch(_){if(S.task?.task_id===task)refreshShortcutLabels('unavailable');}});document.addEventListener('reviewflow:analysis-task-changed',()=>{state.cursor=null;state.pendingSettings=null;state.importResult=null;state.clearResult=null;state.pendingClear=null;if(S.page==='trace')load();});document.addEventListener('reviewflow:language-changed',()=>{refreshShortcutLabels();if(S.page==='trace')render();});
+ const taskContext=document.getElementById('rfTaskContext');
+ const topStatus=button(null,()=>go('trace'),'trace-shortcut-status');
+ topStatus.hidden=true;
+ taskContext?.after(topStatus);
+ let statusTask=null,statusTicket=0;
+ document.addEventListener('reviewflow:task-context-changed',()=>{
+  const task=S.task?.task_id||null;
+  if(task===statusTask)return;
+  statusTask=task;statusTicket++;state.ticket++;
+  topStatus.hidden=true;delete topStatus.dataset.traceStatus;topStatus.textContent='';
+ });
+ document.addEventListener('reviewflow:workspace-changed',async e=>{
+  const ticket=++statusTicket;
+  if(e.detail==='trace'){load();return;}
+  if(!S.task)return;
+  const task=S.task.task_id;
+  try{const settings=await api(base()+'/settings');if(ticket!==statusTicket||S.task?.task_id!==task)return;refreshShortcutLabels(settings.status);}
+  catch(_){if(ticket===statusTicket&&S.task?.task_id===task)refreshShortcutLabels('unavailable');}
+ });
+ document.addEventListener('reviewflow:analysis-task-changed',()=>{state.cursor=null;state.pendingSettings=null;state.importResult=null;state.clearResult=null;state.pendingClear=null;if(S.page==='trace')load();});
+ document.addEventListener('reviewflow:language-changed',()=>{refreshShortcutLabels();if(S.page==='trace')render();});
 })();
