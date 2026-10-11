@@ -377,6 +377,7 @@ class DimensionUpdateIn(BaseModel):
 
 
 class CodingValueIn(BaseModel):
+    draft: bool = False
     expected_policy_version: int | None = Field(default=None, ge=1)
     dim_id: int = Field(ge=1, le=10**9)
     zotero_key: str = Field(min_length=1, max_length=300)
@@ -1228,7 +1229,7 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
-    members = list_team_progress(task_id, list(user_ids), DATA_DIR)
+    members = list_team_progress(task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
     return {"members": [{**member, "user_id": user_ids[member["username"]]}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
@@ -1739,7 +1740,7 @@ def progress(task_id: str, screener: str | None = None, user: dict = Depends(req
     return {
         "stage1": db_mod.get_progress(db),
         "stage2": get_stage2_progress(db),
-        "coding": coding_mod.coding_progress(db),
+        "coding": coding_mod.coding_progress(db, owner_db=_coding_owner_db(info) or db),
     }
 
 
@@ -1764,7 +1765,7 @@ def _trace_context(info, user, source="manual"):
             except sqlite3.Error as db_exc:
                 raise HTTPException(503, "本次修改尚未保存。无法确认轨迹记录状态。") from db_exc
         return None
-    return TraceContext(task_id=info.task_id, actor_id=user["user_id"], source=source, request_id=user.get("_trace_request_id"))
+    return TraceContext(task_id=info.task_id, actor_id=user["user_id"], source=source, request_id=user.get("_trace_request_id") or str(uuid.uuid4()))
 
 
 def _save_decision_checked(db: Path, body: DecisionIn, saver, *, trace_context=None) -> None:
@@ -2336,7 +2337,11 @@ def coding_dimensions(task_id: str, screener: str | None = None,
                       user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    return {"dimensions": coding_mod.list_dimensions(db)}
+    with app.state.review_workflow.lock(task_id):
+        ctx = app.state.review_workflow.context(task_id, user)
+        from coscreen import coding_evidence
+        mapped, issues, required = coding_evidence.mapping(db, ctx.owner_db)
+        return {"dimensions": [{**d, "field_id": mapped.get(d["id"], d.get("field_id")), "required": mapped.get(d["id"]) in required} for d in coding_evidence.field_rows(db)], "mapping_issues": issues}
 
 
 @app.post("/api/tasks/{task_id}/coding/dimensions", status_code=201)
@@ -2345,15 +2350,16 @@ def add_dimension(task_id: str, body: DimensionIn, screener: str | None = None,
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        dim_id = coding_mod.add_dimension(
-            db, body.name, body.dtype, body.options,
-            multi_select=body.multi_select, unit=body.unit,
-            description=body.description, section=body.section,
-            trace_context=_trace_context(info, user),
-        )
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            dim_id = coding_mod.add_dimension(
+                db, body.name, body.dtype, body.options,
+                multi_select=body.multi_select, unit=body.unit,
+                description=body.description, section=body.section,
+                trace_context=_trace_context(info, user),
+            )
     except ValueError as exc:
         raise _bad(str(exc)) from exc
-    return {"id": dim_id, "dimensions": coding_mod.list_dimensions(db)}
+    return {"id": dim_id, **coding_dimensions(task_id, screener, user)}
 
 
 @app.put("/api/tasks/{task_id}/coding/dimensions/{dim_id}")
@@ -2365,10 +2371,11 @@ def update_dimension_ep(task_id: str, dim_id: int, body: DimensionUpdateIn,
     if not fields:
         raise _bad("没有需要更新的字段。")
     try:
-        coding_mod.update_dimension(db, dim_id, trace_context=_trace_context(info, user), **fields)
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            coding_mod.update_dimension(db, dim_id, trace_context=_trace_context(info, user), **fields)
     except ValueError as exc:
         raise _dim_error(exc) from exc
-    return {"updated": True, "dimensions": coding_mod.list_dimensions(db)}
+    return {"updated": True, **coding_dimensions(task_id, screener, user)}
 
 
 @app.delete("/api/tasks/{task_id}/coding/dimensions/{dim_id}")
@@ -2377,10 +2384,11 @@ def delete_dimension_ep(task_id: str, dim_id: int, screener: str | None = None,
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        coding_mod.delete_dimension(db, dim_id, trace_context=_trace_context(info, user))
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            coding_mod.delete_dimension(db, dim_id, trace_context=_trace_context(info, user))
     except ValueError as exc:
         raise _dim_error(exc) from exc
-    return {"deleted": True, "dimensions": coding_mod.list_dimensions(db)}
+    return {"deleted": True, **coding_dimensions(task_id, screener, user)}
 
 
 @app.post("/api/tasks/{task_id}/coding/values")
@@ -2390,14 +2398,21 @@ def save_coding_value(task_id: str, body: CodingValueIn, screener: str | None = 
     db = _screener_db(info, screener or user["username"])
     try:
         with app.state.review_workflow.write_guard(task_id, user, "coding", body.zotero_key,
-                                                   body.expected_policy_version):
-            coding_mod.save_coding_value(db, body.dim_id, body.zotero_key, body.value, trace_context=_trace_context(info, user))
+                                                   body.expected_policy_version) as ctx:
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Coding is limited to your own workspace.")
+            from coscreen import coding_evidence
+            context = _trace_context(info, user)
+            if context is None:
+                raise HTTPException(503, "Undo is unavailable. Please try again.")
+            coding_evidence.save_form(db, body.zotero_key, {body.dim_id: body.value}, notes=None, evidence=None, trace_context=context)
+            result = app.state.review_workflow.coding_result(ctx, body.zotero_key, body.draft)
     except ValueError as exc:
         raise _bad(str(exc)) from exc
     except sqlite3.IntegrityError as exc:
         raise _bad("维度或文献不存在（请确认后重试）。", 400) from exc
     tasks_mod.touch_task(info.task_id, DATA_DIR)
-    return {"saved": True, "progress": coding_mod.coding_progress(db)}
+    return result
 
 
 @app.get("/api/tasks/{task_id}/coding/values/{zotero_key}")
@@ -2413,7 +2428,10 @@ def coding_values_for(task_id: str, zotero_key: str, screener: str | None = None
         note = coding_mod.get_coding_note(db, int(dim["id"]), zotero_key)
         if note and (note.get("text") or "").strip():
             note_map[str(int(dim["id"]))] = note.get("text") or ""
-    return {"values": values, "notes": note_map}
+    ctx = app.state.review_workflow.context(task_id, user)
+    if ctx.actor_db.resolve() != db.resolve():
+        raise HTTPException(403, "Coding evidence is limited to your own workspace.")
+    return {"values": values, "notes": note_map, **app.state.review_workflow.evidence_state(ctx, zotero_key)}
 
 
 @app.get("/api/tasks/{task_id}/coding/queue")
@@ -2430,7 +2448,7 @@ def coding_queue_ep(task_id: str, screener: str | None = None,
         {"zotero_key": k, "title": by_key[k].title, "year": by_key[k].year}
         for k in keys if k in by_key
     ]
-    return {"queue": items, "total": len(items), "progress": coding_mod.coding_progress(db)}
+    return {"queue": items, "total": len(items), "progress": coding_mod.coding_progress(db, owner_db=_coding_owner_db(info) or db)}
 
 
 @app.get("/api/tasks/{task_id}/coding/scheme")
@@ -2438,7 +2456,17 @@ def export_scheme_ep(task_id: str, screener: str | None = None,
                      user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    return coding_mod.export_scheme(db)
+    from coscreen import coding_evidence
+    runtime = app.state.review_workflow
+    with runtime.lock(task_id):
+        ctx = runtime.context(task_id, user)
+        mapping, _, _ = coding_evidence.mapping(db, ctx.owner_db)
+        dims = coding_evidence.field_rows(db)
+        scheme = coding_mod.export_scheme(db)
+        for item, dim in zip(scheme['dimensions'], dims):
+            if dim['id'] in mapping:
+                item['field_id'] = mapping[dim['id']]
+        return scheme
 
 
 @app.post("/api/tasks/{task_id}/coding/scheme")
@@ -2447,10 +2475,11 @@ def import_scheme_ep(task_id: str, body: SchemeImportIn, screener: str | None = 
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        n = coding_mod.import_scheme(db, body.scheme, replace=body.replace, trace_context=_trace_context(info, user, "import"))
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            n = coding_mod.import_scheme(db, body.scheme, replace=body.replace, trace_context=_trace_context(info, user, "import"))
     except ValueError as exc:
         raise _bad(str(exc)) from exc
-    return {"imported": n, "dimensions": coding_mod.list_dimensions(db)}
+    return {"imported": n, **coding_dimensions(task_id, screener, user)}
 
 
 # ---------------------------------------------------------------------------

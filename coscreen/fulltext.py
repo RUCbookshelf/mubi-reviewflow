@@ -921,13 +921,13 @@ def get_stage2_progress(db_path: StrPath) -> dict:
     with closing(_connect(db_path)) as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM articles a "
-            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
             "WHERE a.is_duplicate_of IS NULL"
         ).fetchone()[0]
         for decision, cnt in conn.execute(
             "SELECT s.decision, COUNT(*) FROM stage2_decisions s "
             "JOIN articles a ON a.zotero_key = s.zotero_key "
-            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
             "WHERE a.is_duplicate_of IS NULL "
             "GROUP BY s.decision"
         ):

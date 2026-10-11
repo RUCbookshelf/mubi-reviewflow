@@ -13,7 +13,7 @@ from typing import Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from coscreen import coding, review_workflow as store, task_collaboration, tasks
+from coscreen import coding, coding_evidence, review_workflow as store, task_collaboration, tasks
 from coscreen.models import Article
 from custom_backend.events import BUS
 
@@ -56,12 +56,15 @@ class WorkflowRuntime:
         with self.lock(task_id):
             owner_db = self.screener_db(info, owner["owner_username"])
             store.migrate(owner_db)
+            coding_evidence.ensure_fields(owner_db)
             grants = task_collaboration.list_role_grants(collab, actor_user_id=owner["owner_user_id"], task_id=task_id)
             if any(grant["user_id"] != owner["owner_user_id"] for grant in grants):
                 self.latch_team_db(owner_db)
             kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
             actor_db = self.screener_db(info, user["username"])
             store.migrate(actor_db)
+            if actor_db.resolve() != owner_db.resolve():
+                coding_evidence.ensure_fields(actor_db)
             return WorkflowContext(info, user, owner, owner_db, actor_db,
                                    owner["owner_user_id"] == user["user_id"], kind, collab)
 
@@ -79,7 +82,65 @@ class WorkflowRuntime:
     def settings(self, ctx: WorkflowContext) -> dict:
         data = store.settings(ctx.owner_db)
         return {key: data[key] for key in ("version", "stages", "evidence_required_field_ids")} | {
-            "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": store.sources(ctx.owner_db)}
+            "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": store.sources(ctx.owner_db),
+            "evidence_fields": [{**d, "dimension_id": d['id']}
+                                for d in coding_evidence.field_rows(ctx.owner_db)],
+            "mapping_issues": coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1]}
+
+    @contextmanager
+    def schema_guard(self, task_id: str, user: dict, db: Path):
+        with self.lock(task_id):
+            ctx = self.context(task_id, user)
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, 'Coding schemes are limited to your own workspace.')
+            before = coding_evidence.field_rows(db)
+            yield ctx
+            coding_evidence.ensure_fields(db)
+            if before != coding_evidence.field_rows(db):
+                with closing(store.connect(ctx.owner_db)) as conn, conn:
+                    self.bump_version(conn)
+                self.notify(ctx, 'coding-scheme')
+
+    def evidence_state(self, ctx: WorkflowContext, key: str) -> dict:
+        return coding_evidence.evidence_state(ctx.actor_db, key, ctx.owner_db, ctx.info.task_id)
+
+    def coding_result(self, ctx: WorkflowContext, key: str, draft: bool = False) -> dict:
+        state = self.evidence_state(ctx, key)
+        complete = key in coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db, [key])
+        return {'saved': True, 'progress': coding.coding_progress(ctx.actor_db, owner_db=ctx.owner_db),
+                **state, 'complete': complete, 'draft': bool(draft or not complete)}
+
+    def trace_actions(self, task_id: str, user: dict, events: list[dict]) -> None:
+        from coscreen import workspace_undo
+        from coscreen.research_trace import TraceContext
+        with self.lock(task_id):
+            ctx = self.context(task_id, user)
+            context = TraceContext(task_id=task_id, actor_id=user['user_id'])
+            with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
+                linked = store.has_table(conn, 'workspace_undo') and 'request_id' in {
+                    r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
+                for event in events:
+                    stage, key = event.get('stage'), event.get('subject_id')
+                    imported = bool(event.get('origin_store_id') or event.get('source') == 'import')
+                    document_action = event.get('action') in {'baseline_value', 'baseline_rater_revision'} or any(word in event.get('action', '') for word in ('decision', 'coding_value', 'coding_note', 'coding_evidence', 'rater_record'))
+                    own = self.article_row(ctx.actor_db, key) if key else None
+                    canonical = self.article_row(ctx.owner_db, key) if key else None
+                    can_open = bool(not imported and document_action and stage in store.STAGES and
+                        (own or (canonical and canonical.get('is_duplicate_of') is None)))
+                    reason = self.writable_reason(ctx, stage, key) if can_open else 'unlinked_subject'
+                    actions = {'can_open': can_open, 'can_undo': False, 'undo_entry_id': None,
+                               'writable': can_open and reason is None, 'reason': reason or 'no_linked_latest_save'}
+                    if can_open and linked and event.get('source') == 'manual' and event.get('request_id') and event.get('partition') == 'personal':
+                        last = workspace_undo._latest(conn, context, stage)
+                        if last:
+                            row = conn.execute('SELECT request_id,zotero_key,after_json FROM workspace_undo WHERE id=?', (last['entry_id'],)).fetchone()
+                            if row[0] == event['request_id'] and row[1] == key:
+                                after = json.loads(row[2])
+                                current = workspace_undo.snapshot(conn, stage, key, [int(d) for d in after.get('values', {})], evidence='evidence' in after)
+                                same = {name: value for name, value in current.items() if name in after} == after
+                                actions.update(undo_entry_id=last['entry_id'], can_undo=reason is None and same,
+                                               reason=reason or (None if same else 'saved_state_changed'))
+                    event['actions'] = actions
 
     def notify(self, ctx: WorkflowContext, reason: str) -> None:
         if ctx.owner is None:
@@ -253,12 +314,8 @@ class WorkflowRuntime:
                                       "workflow_settings": self.settings(ctx)})
 
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
-        """Completion hook for Task 3's required-evidence check.
-
-        Foundation semantics match existing coding_progress: all configured
-        dimensions contain nonempty values, and an empty scheme is incomplete.
-        """
-        return bool(dimension_ids) and all(str(values.get(dim, "")).strip() for dim in dimension_ids)
+        """Current owner requirements apply to every actor's current saved evidence."""
+        return key in coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db, [key])
 
     def queue(self, task_id: str, user: dict, stage: str, source_id: str | None = None,
               order: str = "import", *, shuffle: bool = False) -> dict:
@@ -267,14 +324,10 @@ class WorkflowRuntime:
             self.sync_catalog(ctx)
             rows, saved = self.eligible(ctx, stage)
             scoped = self.scoped(ctx, stage, rows, source_id)
-            dimensions = set()
-            if stage == "coding" and ctx.actor_db.is_file():
-                with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
-                    if store.has_table(conn, "coding_dimensions"):
-                        dimensions = {row[0] for row in conn.execute("SELECT id FROM coding_dimensions")}
+            completed_coding = coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db,
+                [row['zotero_key'] for row in rows]) if stage == 'coding' else set()
             def complete(key: str) -> bool:
-                return bool(saved.get(key)) if stage != "coding" else self.coding_complete(
-                    ctx, key, saved.get(key, {}), dimensions)
+                return bool(saved.get(key)) if stage != "coding" else key in completed_coding
             def progress(items: list[dict]) -> dict:
                 done = sum(complete(row["zotero_key"]) for row in items)
                 return {"total": len(items), "completed": done, "pending": len(items) - done}
@@ -312,6 +365,7 @@ class WorkflowRuntime:
             article = Article.from_dict({**row, "raw": raw}).to_dict()
             article["raw"] = json.loads(article.pop("raw_json") or "{}")
             return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
+                    **(self.evidence_state(ctx, key) if stage == 'coding' else {}),
                     "writable": reason is None, "reason": reason,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 
@@ -328,7 +382,7 @@ class WorkflowRuntime:
 class SettingsIn(BaseModel):
     expected_version: int = Field(ge=1)
     stages: dict
-    evidence_required_field_ids: list[int] = Field(default_factory=list, max_length=1000)
+    evidence_required_field_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
 class SourceIn(BaseModel):
@@ -372,12 +426,15 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                         raise HTTPException(400, "show_maybe must be a boolean.")
                     stages[stage]["show_maybe"] = raw.get("show_maybe", True)
             field_ids = body.evidence_required_field_ids
-            dimensions = {dim["id"] for dim in coding.list_dimensions(ctx.owner_db)}
-            if any(type(fid) is not int or fid not in dimensions for fid in field_ids):
+            dimensions = {dim['field_id']: dim for dim in coding_evidence.field_rows(ctx.owner_db)}
+            if any(fid not in dimensions for fid in field_ids):
                 raise HTTPException(400, "Required evidence fields must exist in the task coding scheme.")
             with closing(store.connect(ctx.owner_db)) as conn, conn:
                 conn.execute("UPDATE workflow_state SET stages_json=?,evidence_json=? WHERE singleton=1",
                              (json.dumps(stages), json.dumps(sorted(set(field_ids)))))
+                conn.execute('DELETE FROM workflow_evidence_requirements')
+                conn.executemany('INSERT INTO workflow_evidence_requirements VALUES(?,?)',
+                                 [(fid, coding_evidence.definition(dimensions[fid])) for fid in set(field_ids)])
                 runtime.bump_version(conn)
             runtime.notify(ctx, "settings")
             return runtime.settings(ctx)
