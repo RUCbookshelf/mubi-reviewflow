@@ -17,11 +17,12 @@
   function clear(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();current=null;baseline='';}
   E.discovery=value=>{
     discovery=value;
+    const show=!!value?.available && W.settings()?.task_kind==='team';
     let host=$('#wf-coding-entry');
     if(!host){host=node('div',null,{id:'wf-coding-entry',class:'row'});document.querySelector('section[data-p="bench"] .wf-queue-tools').after(host);}
-    if(host.dataset.available===String(!!value?.available))return;
-    host.dataset.available=String(!!value?.available);host.replaceChildren();
-    if(value?.available)host.append(btn('Personal coding',()=>switchMode('personal')),btn('Shared submission evidence',()=>switchMode('canonical')),node('span','Evidence-only editing uses your private notes and images. It does not submit shared coding values.',{class:'hint'}));
+    if(host.dataset.available===String(show))return;
+    host.dataset.available=String(show);host.replaceChildren();
+    if(show)host.append(btn('Personal coding',()=>switchMode('personal')),btn('Shared submission evidence',()=>switchMode('canonical')),node('span','Evidence-only editing uses your private notes and images. It does not submit shared coding values.',{class:'hint'}));
   };
   async function switchMode(next){if(!await W.guard())return;mode=next;await loadBench();}
   E.queue=async()=>{
