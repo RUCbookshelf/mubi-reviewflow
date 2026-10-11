@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const W=WorkflowControls,E=window.WorkflowEvidence={};
-  let mode='personal', discovery=null, current=null, ticket=0, baseline='', pending=0, saving=false, readOnlyKey=null, context='';
+  let mode='personal', discovery=null, current=null, ticket=0, baseline='', pending=0, saving=false, readOnlyKey=null, context='', uploadFailed=false, uploadStatus=false;
   const images=new Map(), urls=new Set();
   const node=(tag,text,attrs={})=>el(tag,{...attrs,...(text==null?{}:{text:T(text)})});
   const btn=(text,fn)=>node('button',text,{type:'button',class:'btn b-out sm',onclick:fn});
@@ -14,7 +14,7 @@
   E.discard=()=>{baseline=signature();};
   E.context=()=>mode==='canonical'?'coding_submission_evidence':'personal';
   E.readOnly=key=>{readOnlyKey=key;};
-  function clear(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();current=null;baseline='';}
+  function clear(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();current=null;baseline='';uploadFailed=false;uploadStatus=false;}
   E.discovery=value=>{
     discovery=value;
     const show=!!value?.available && W.settings()?.task_kind==='team';
@@ -59,6 +59,8 @@
       if(gap)missing++;
     }
     const mapping=current.mapping_issues?.length||0;
+    if(pending){$('#cbStatus').textContent=T('Uploading evidence… Wait before saving or leaving.');return;}
+    if(uploadFailed){$('#cbStatus').textContent=T('Image upload failed. Your notes and attached images are retained. Choose the image again to retry.');return;}
     $('#cbStatus').textContent=missing||mapping?T('Evidence gaps: {0}; mapping issues: {1}',missing,mapping):T('Editing');
   }
   function drawImages(dim,host,scope,t,writable){
@@ -75,6 +77,7 @@
   async function upload(files,dim,host,writable){
     if(!writable||!current||saving)return;
     const scope=identity(),t=ticket,key=current.article.zotero_key||current.article.key,base=taskApi();
+    if(!pending)uploadFailed=false;
     for(const file of files){
       if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>10*1024*1024){toast(T('Use PNG, JPEG or WebP images up to 10 MB.'),'warn');continue;}
       pending++;updateBusy();
@@ -83,17 +86,19 @@
         const result=await api(mode==='canonical'?discovery.upload_url:base+'/coding/evidence/uploads',{method:'POST',form});
         if(scope!==identity()||t!==ticket)continue;
         const list=images.get(dim)||[];if(!list.some(image=>image.upload_id===result.upload_id))list.push(result);images.set(dim,list);drawImages(dim,host,scope,t,writable);updateGaps();
-      }catch(error){if(scope===identity())W.error(error);}finally{pending--;updateBusy();}
+      }catch(error){if(scope===identity()&&t===ticket){uploadFailed=true;W.error(error);}}finally{pending--;if(scope===identity()&&t===ticket)updateBusy();}
     }
   }
   function updateBusy(){
     const undoBusy=!!window.WorkspaceUndo?.isBusy()||W.settings()?.stages?.coding?.mode==='paused';
     $('#cbSave').disabled=!current?.writable||current?.policy_version!==W.version()||pending>0||saving||undoBusy||!S.codingFormReady;
     for(const control of $$('#cbForms input,#cbForms textarea,#cbForms select,#cbForms button'))control.disabled=!current?.writable||control.dataset.wfReadonly==='true'||saving||undoBusy;
-    if(pending)$('#cbStatus').textContent=T('Uploading evidence… Wait before saving or leaving.');
+    if(pending){uploadStatus=true;$('#cbStatus').textContent=T('Uploading evidence… Wait before saving or leaving.');}
+    else if(uploadStatus){uploadStatus=false;updateGaps();}
   }
   E.syncBusy=updateBusy;
   E.render=async()=>{
+    if(!W.renderAllowed())return;
     const t=++ticket,scope=identity(),version=S.taskVersion,screener=S.screener,cur=S.cbQueue[S.cbIdx];
     clear();S.codingFormReady=false;
     if($('#rfExtractPanel'))$('#rfExtractPanel').hidden=mode==='canonical';
@@ -104,7 +109,7 @@
     openBenchPdf();$('#cbStatus').textContent=T('Loading current saved work…');
     try{
       const item=mode==='canonical'?await api(discovery.read_url_template.replace('{zotero_key}',encodeURIComponent(cur.zotero_key))):await W.item('coding',cur.zotero_key);
-      if(!item||scope!==identity()||t!==ticket||version!==S.taskVersion||screener!==S.screener)return;
+      if(!item||scope!==identity()||t!==ticket||version!==S.taskVersion||screener!==S.screener||!W.renderAllowed())return;
       if(readOnlyKey===cur.zotero_key)item.writable=false;
       current=item;const dims=mode==='canonical'?item.dimensions:S.dims;
       if(!dims.length){forms.append(node('p','方案为空 —— 请先到「编码方案」添加维度。'));return;}
@@ -131,10 +136,10 @@
       if(item.mapping_issues?.length)forms.append(node('p','Evidence field mapping needs owner review. Existing values are preserved.',{class:'wf-evidence-gap'}));
       S.codingFormReady=true;baseline=signature();updateGaps();updateBusy();
       document.dispatchEvent(new Event('reviewflow:coding-form-loaded'));
-    }catch(error){if(t!==ticket||scope!==identity())return;forms.append(node('p',error.message),btn('Retry / refresh',()=>E.render()));$('#cbStatus').textContent=T('Load failed');}
+    }catch(error){if(t!==ticket||scope!==identity()||!W.renderAllowed())return;forms.append(node('p',error.message),btn('Retry / refresh',()=>E.render()));$('#cbStatus').textContent=T('Load failed');}
   };
   E.save=async()=>{
-    if(!current?.writable||current?.policy_version!==W.version()||pending||saving||window.WorkspaceUndo?.isBusy()||!S.codingFormReady)return false;
+    if(W.refreshing()||!current?.writable||current?.policy_version!==W.version()||pending||saving||window.WorkspaceUndo?.isBusy()||!S.codingFormReady)return false;
     const scope=identity(),t=ticket,key=current.article.zotero_key||current.article.key;
     const notes={},evidence={},values={};
     for(const text of $$('#cbForms .wf-note'))if(text.dataset.wfReadonly!=='true')notes[text.dataset.dim]=text.value;

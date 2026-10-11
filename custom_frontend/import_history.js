@@ -10,6 +10,7 @@
   if(!S.task){$('#repHint').textContent=T('请先选择任务');return;}
   const taskId=S.task.task_id,screener=S.screener,url=taskApi()+'/import-history',query=scrQ(),historyQuery=query+(query?'&':'?')+'limit=20&offset='+offset;body.textContent=T('正在加载…');
   try{const result=await api(url+historyQuery);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;body.replaceChildren();
+   for(const batch of result.imports||[])window.WorkflowImports?.remember(batch.result);
    if(offset===0&&!window.WorkflowImports?.active()&&result.imports?.length){const latest=result.imports[0].result||{};renderImportReport(latest);$('#goScreenBtn').style.display=latest.staged||latest.screening_ready===false?'none':'';}
    if(!result.imports?.length){body.textContent=T('尚无导入历史');
     if(offset===0&&!window.WorkflowImports?.active()){const progress=await api(taskApi()+'/progress'+query);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;
@@ -17,8 +18,8 @@
     return;}
 
    for(const batch of result.imports){const section=document.createElement('section');section.className='import-history-batch';const date=new Date(batch.created_at);section.append(text('h4',Number.isNaN(date.getTime())?batch.created_at:date.toLocaleString(RFLang.get())));
-    const r=batch.result||{},parsed=r.total_parsed??r.n_parsed,imported=r.imported??r.n_imported,duplicates=r.n_duplicates??((r.exact_duplicates||0)+(r.fuzzy_duplicates||0));
-    section.append(text('p',[parsed==null?null:T('解析')+': '+parsed,imported==null?null:T('导入')+': '+imported,T('重复')+': '+duplicates].filter(Boolean).join(' · ')));
+    const r=batch.result||{},parsed=r.total_parsed??r.n_parsed,imported=r.batch_id?r.activated_new_total:(r.imported??r.n_imported),duplicates=r.n_duplicates??((r.exact_duplicates||0)+(r.fuzzy_duplicates||0));
+    section.append(text('p',[parsed==null?null:T('解析')+': '+parsed,imported==null?null:T(r.batch_id?'Activated new articles':'导入')+': '+imported,r.batch_id?T('Activated source records')+': '+(r.activated_source_records_total??r.active_records??'—'):T('重复')+': '+duplicates].filter(Boolean).join(' · ')));
     if(r.batch_id)section.append(el('button',{type:'button',class:'btn b-out sm',text:T('Review / resume'),onclick:()=>window.WorkflowImports?.open(r.batch_id)}));
     if(r.staged)section.append(text('p',T('导入已暂存，等待核验与激活。')+' '+String(r.pending_records??0)));
     const list=document.createElement('ul');for(const file of batch.files||[]){const line=document.createElement('li'),name=text('span',file.name+' · '+new Intl.NumberFormat(RFLang.get(),{maximumFractionDigits:1}).format(file.size/1024)+' KB'),download=el('button',{type:'button',class:'btn b-out',text:T('下载原文件')});download.setAttribute('aria-label',T('下载原文件')+' '+file.name);
@@ -27,7 +28,7 @@
     section.append(list);body.append(section);
    }
    const footer=el('div',{class:'row'}),first=el('button',{type:'button',class:'btn b-out',text:T('返回首批')}),next=el('button',{type:'button',class:'btn b-out',text:T('下一批')});first.disabled=offset===0;next.disabled=result.next_offset==null;first.addEventListener('click',()=>{offset=0;load();});next.addEventListener('click',()=>{offset=result.next_offset;load();});footer.append(first,next);body.append(footer);
-  }catch(e){if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;body.textContent=T('历史加载失败，请重试。');if(offset===0)$('#repHint').textContent=T('历史加载失败，请重试。');}
+  }catch(e){if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;body.textContent=T('历史加载失败，请重试。');if(offset===0&&!window.WorkflowImports?.active())$('#repHint').textContent=T('历史加载失败，请重试。');}
  }
  refresh.addEventListener('click',load);
  document.addEventListener('reviewflow:import-completed',()=>{offset=0;load();});

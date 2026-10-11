@@ -11,6 +11,7 @@
   const editLibrary = field => { dirtyFields.add(field); libraryDirty=true; };
   const cleanLibrary = field => { if(field)dirtyFields.delete(field); libraryDirty=dirtyFields.size>0; };
   let settings = null, draft = null, settingsDirty = false, libraryDirty = false, alDirty = false;
+  let editRevision = 0, autoReload = null, deferredRefresh = false, reasonsTicket = 0, pendingPolicyRefresh = false;
   let context = '', refreshTicket = 0, activeTab = 'overview', animation = null, dialogPromise = null;
   let order = localStorage.getItem('rf_workflow_order') || 'import';
   const scope = () => [S.task?.task_id, S.user?.user_id, S.screener].join('|');
@@ -30,6 +31,21 @@
   W.markDecisionClean=stage=>{decisionBaselines[stage]=reasonSignature(stage);};
   W.decisionDirty=()=>['screen','fulltext'].some(stage=>S.page===stage&&decisionBaselines[stage]!=null&&decisionBaselines[stage]!==reasonSignature(stage));
   W.anyDirty=()=>W.settingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
+  const pendingWork=()=>apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving();
+  const retainDraft=()=>{$('#wf-settings-notice').textContent=T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.');$('#wf-policy-recovery').hidden=false;};
+  for(const event of ['input','change'])document.addEventListener(event,()=>editRevision++,true);
+  W.refreshing=()=>!!autoReload;
+  W.renderAllowed=()=>!autoReload||(autoReload.scope===scope()&&autoReload.page===S.page&&autoReload.ticket===refreshTicket&&autoReload.revision===editRevision);
+  async function automaticReload(stage,token){
+    if(token.scope!==scope()||token.page!==S.page||token.ticket!==refreshTicket)return;
+    if(token.revision!==editRevision||W.anyDirty()||pendingWork()){retainDraft();return;}
+    const page=document.querySelector('section[data-p="'+stagePage[stage]+'"]'),inert=page.inert,busy=page.getAttribute('aria-busy');
+    // Only the clean replacement transaction is frozen. Settings/reason requests leave drafts editable.
+    autoReload=token;page.inert=true;page.setAttribute('aria-busy','true');
+    try{if(W.renderAllowed()){await W.reload(stage);if(W.renderAllowed())pendingPolicyRefresh=false;}}
+    finally{autoReload=null;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
+  }
+
   W.error = error => {
     toast(error.status === 409 ? T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.') + ' ' + error.message : error.message, 'warn');
     if (error.status === 409) run(() => W.refresh('conflict'));
@@ -198,10 +214,10 @@
       host.append(name,button('Create source',()=>run(name.wfSave)));
     }
   }
-  async function loadReasons() {
-    const current=scope();
+  async function loadReasons(refresh=null) {
+    const current=scope(),ticket=++reasonsTicket;
     const results=await Promise.all(['screen','fulltext'].map(stage=>api(taskApi()+'/reason-library?stage='+stage)));
-    if(current!==scope())return;
+    if(current!==scope()||ticket!==reasonsTicket||(refresh!=null&&refresh!==refreshTicket))return;
     for(let i=0;i<2;i++)reasons[['screen','fulltext'][i]]=results[i].entries||[];
     if(!libraryDirty) {
       const host=$('#wf-reasons');host.replaceChildren(n('h3','Reusable exclusion reasons'),n('p',results[0].task_kind==='personal'?'Personal reusable reasons':'Team reusable reasons',{class:'hint'}));
@@ -241,12 +257,12 @@
     return host;
   }
   W.queue=async stage=>{
-    await W.refresh('entry',false);
+    if(!autoReload)await W.refresh('entry',false);
     const current=scope(),ticket=++tickets[stage],host=tools(stage);host.querySelector('.wf-scope-progress').textContent=T('Loading scope…');
     const query=new URLSearchParams({order:stage==='screen'&&order==='random'?'random':'import'});if(selected[stage])query.set('source_id',selected[stage]);
     try {
       const result=await api(taskApi()+'/work-queue/'+stage+'?'+query);
-      if(current!==scope()||ticket!==tickets[stage])throw Error(T('The task changed. Reload the queue.'));
+      if(current!==scope()||ticket!==tickets[stage]||!W.renderAllowed())throw Error(T('The task changed. Reload the queue.'));
       queues[stage]=result;delete items[stage];delete readOnlyKeys[stage];
       const select=host.querySelector('select');select.replaceChildren(n('option','All permitted sources',{value:''}));
       for(const id of result.allowed_sources||[]){const source=settings.sources.find(source=>source.id===id);if(source)select.append(el('option',{value:source.id,text:source.name,translate:'no'}));}
@@ -261,7 +277,7 @@
     const current=scope(),ticket=++tickets[stage];
     delete items[stage];
     const item=await api(taskApi()+'/work-items/'+stage+'/'+encodeURIComponent(key));
-    if(current!==scope()||ticket!==tickets[stage])return null;
+    if(current!==scope()||ticket!==tickets[stage]||!W.renderAllowed())return null;
     if(readOnlyKeys[stage]===key){item.writable=false;item.reason=T('This saved article is outside the selected queue. Return to the queue to continue.');}
     items[stage]={...item,key};return item;
   };
@@ -282,6 +298,7 @@
     if(stage!=='coding')W.decorateReasons(stage);
   };
   W.canSave=(stage,decision)=>{
+    if(autoReload)return false;
     const item=items[stage],key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:stage==='fulltext'?curFt()?.zotero_key:S.cbQueue[S.cbIdx]?.zotero_key;
     if(!item||item.key!==key||!item.writable||settings?.stages?.[stage]?.mode==='paused'||item.policy_version!==settings?.version||decision==='maybe'&&!W.maybe(stage)){toast(T('This item is read-only under the current workflow policy.'),'warn');return false;}return true;
   };
@@ -321,10 +338,12 @@
   };
   W.refresh=async(reason='poll',reload=true)=>{
     if(!S.task||!S.user)return;
-    const current=scope(),ticket=++refreshTicket;
+    if(autoReload){if(reason!=='entry')deferredRefresh=true;return;}
+    const current=scope(),ticket=++refreshTicket,revision=editRevision,page=S.page;
     const result=await api(taskApi()+'/workflow-settings');
-    if(current!==scope()||(settings&&result.version<settings.version))return;
-    const changed=settings&&JSON.stringify(settings)!==JSON.stringify(result);
+    if(current!==scope()||ticket!==refreshTicket||(settings&&result.version<settings.version))return;
+    pendingPolicyRefresh=!!(pendingPolicyRefresh||(settings&&JSON.stringify(settings)!==JSON.stringify(result)));
+    const changed=pendingPolicyRefresh;
     settings=result;
     for(const [stage,id] of [['screen','btnMay'],['fulltext','ftMay']]){const maybe=$('#'+id);if(maybe){maybe.hidden=!W.maybe(stage);if(!W.maybe(stage))maybe.disabled=true;}}
     for(const [stage,ids] of [['screen',['btnInc','btnMay','btnExc']],['fulltext',['ftInc','ftMay','ftExc']]])if(result.stages[stage].mode==='paused')for(const id of ids){const control=$('#'+id);if(control)control.disabled=true;}
@@ -332,18 +351,20 @@
     $('#wf-settings-notice').textContent=changed&&dirty?T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'):'';
     if(changed&&dirty||reason==='conflict')$('#wf-policy-recovery').hidden=false;
     if(!W.settingsDirty())policyEditor();
-    await loadReasons(); // Libraries can change without a policy version increment.
-    if(current!==scope())return;
+    await loadReasons(ticket); // Libraries can change without a policy version increment.
+    if(current!==scope()||ticket!==refreshTicket)return;
     $('#wf-current-task').replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue screening',()=>go('screen')),button('Continue coding',()=>go('bench')));
     window.WorkflowEvidence?.discovery(result.submission_evidence);
     window.WorkspaceUndo?.sync();
     if(S.page==='home'&&window.WorkflowImports)await WorkflowImports.notice();
-    if(current!==scope())return;
-    if(changed&&reload&&!dirty&&stages.includes({bench:'coding'}[S.page]||S.page))await W.reload({bench:'coding'}[S.page]||S.page);
+    if(current!==scope()||ticket!==refreshTicket)return;
+    if(changed&&(W.anyDirty()||pendingWork()||revision!==editRevision))retainDraft();
+    if(changed&&reload&&page===S.page&&stages.includes({bench:'coding'}[page]||page))await automaticReload({bench:'coding'}[page]||page,{scope:current,page,ticket,revision});
     if(reason==='conflict'&&draft&&!settingsDirty)draft.version=result.version;
   };
   W.guard=async()=>{
-    if(apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving()){toast(T('Wait for the current save or upload to finish.'),'warn');return false;}
+    if(autoReload){toast(T('Wait for the current refresh to finish.'),'info');return false;}
+    if(pendingWork()){toast(T('Wait for the current save or upload to finish.'),'warn');return false;}
     if(!W.anyDirty())return true;
     if(dialogPromise)return dialogPromise;
     dialogPromise=new Promise(resolve=>{
@@ -372,7 +393,7 @@
   for(const id of ['alStrategy','alSeed','alMinLabeled','alStopThreshold'])$('#'+id).addEventListener('input',()=>alDirty=true);
   document.addEventListener('reviewflow:al-settings-saved',()=>alDirty=false);
   document.addEventListener('reviewflow:task-context-changed',()=>{
-    if(context===scope())return;context=scope();refreshTicket++;for(const stage of stages){tickets[stage]++;selected[stage]='';delete items[stage];delete queues[stage];delete decisionBaselines[stage];}settings=null;draft=null;settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;$('#wf-policy-recovery').hidden=true;run(()=>W.refresh('context',false));
+    if(context===scope())return;context=scope();refreshTicket++;for(const stage of stages){tickets[stage]++;selected[stage]='';delete items[stage];delete queues[stage];delete decisionBaselines[stage];}settings=null;draft=null;pendingPolicyRefresh=false;settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;$('#wf-policy-recovery').hidden=true;run(()=>W.refresh('context',false));
   });
   document.addEventListener('reviewflow:workspace-changed',()=>run(()=>W.refresh('entry',false)));
   document.addEventListener('reviewflow:workflow-changed',event=>{if(String(event.detail?.task_id)===String(S.task?.task_id))run(()=>W.refresh(event.detail.reason||'event'));});
@@ -380,5 +401,5 @@
   window.addEventListener('focus',()=>run(()=>W.refresh('focus')));
   setInterval(()=>{if(!document.hidden&&S.user&&S.task)run(()=>W.refresh());},30000);
   window.addEventListener('beforeunload',event=>{if(W.anyDirty()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving()){event.preventDefault();event.returnValue='';}});
-  window.addEventListener('load',()=>run(async()=>{if(!S.task)return;await W.refresh('bootstrap',false);const stage={bench:'coding'}[S.page]||S.page;if(stages.includes(stage)&&!W.anyDirty())await W.reload(stage);}));
+  window.addEventListener('load',()=>run(async()=>{if(!S.task)return;await W.refresh('bootstrap',false);const stage={bench:'coding'}[S.page]||S.page;if(stages.includes(stage))await automaticReload(stage,{scope:scope(),page:S.page,ticket:refreshTicket,revision:editRevision});}));
 })();

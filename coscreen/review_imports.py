@@ -452,6 +452,25 @@ def batch_summary(conn: sqlite3.Connection, bid: str) -> dict:
                               (SELECT record_id FROM workflow_import_members WHERE batch_id=?)''', (bid,)).fetchall()
     candidates = candidate_rows(conn, bid, include_members=False)
     roots = {record_target(conn, r['id']) for r in records}
+    # Current cumulative provenance counts, distinct from each activation call's deltas.
+    # A retained source row can belong to later reimports; attribute new roots only
+    # to their first batch, never count the same introduced article again.
+    introduced = set()
+    for row in records:
+        if (row['state'] != 'active' or row['target_record_id'] is not None
+                or row['outcome'] not in ('new', 'identity_conflict')
+                or row['canonical_key'] not in (row['staged_key'], row['incoming_key'])):
+            continue
+        first = conn.execute('''SELECT b.id FROM workflow_import_members m
+            JOIN workflow_import_batches b ON b.id=m.batch_id WHERE m.record_id=?
+            ORDER BY b.created_at,b.rowid LIMIT 1''', (row['id'],)).fetchone()
+        if first and first[0] == bid:
+            introduced.add(row['canonical_key'])
+    screening_total = conn.execute('''SELECT COUNT(*) FROM articles a WHERE a.is_duplicate_of IS NULL
+        AND NOT EXISTS (SELECT 1 FROM title_duplicate_members m
+        JOIN title_duplicate_reviews r ON r.review_id=m.review_id
+        WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1
+        AND r.status IN ('pending','undecided'))''').fetchone()[0]
     return {**dict(batch), 'batch_id': bid, 'staged': any(r['state'] == 'staged' for r in records),
             'raw_source_records': len(records),
             'input_rows': conn.execute('SELECT COUNT(*) FROM workflow_import_members WHERE batch_id=?', (bid,)).fetchone()[0],
@@ -463,6 +482,9 @@ def batch_summary(conn: sqlite3.Connection, bid: str) -> dict:
             'pending_candidate_groups': sum(c['status'] in ('pending', 'undecided') for c in candidates),
             'pending_records': sum(r['state'] == 'staged' for r in records),
             'active_records': sum(r['state'] == 'active' for r in records),
+            'activated_new_total': len(introduced),
+            'activated_source_records_total': sum(r['state'] == 'active' for r in records),
+            'current_screening_total': screening_total,
             'files': [dict(f) for f in conn.execute('SELECT * FROM workflow_import_files WHERE batch_id=? ORDER BY file_index', (bid,))]}
 
 

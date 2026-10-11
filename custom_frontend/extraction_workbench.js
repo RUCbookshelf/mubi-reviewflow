@@ -79,7 +79,7 @@
     let currentTaskId = typeof S !== 'undefined' ? S.task?.task_id : null;
     let currentKey = null;        // 当前文献 zotero_key
     let expanded = false;
-    let draftActor = [S.user?.user_id,S.screener].join('|'), extractionDirty = false, extractionSaving = false;
+    let draftActor = [S.user?.user_id,S.screener].join('|'), extractionDirty = false, extractionSaving = false, extractionRevision = 0;
     const drafts = new Map();     // `${taskVersion}|${key}` -> 草稿（模板选择+字段值+分析层输入）
 
     /* ---- 面板骨架 ---- */
@@ -421,8 +421,8 @@
       discard:()=>{extractionDirty=false;if(currentKey)drafts.delete(draftKey(currentKey));currentTemplateId='';tplSelect.value='';restoreCommonInputs({common:{}});renderFields(true);},
       stash:()=>stashDraft(currentKey)
     };
-    body.addEventListener('input',()=>{extractionDirty=true;});
-    body.addEventListener('change',()=>{extractionDirty=true;});
+    body.addEventListener('input',()=>{extractionDirty=true;extractionRevision++;});
+    body.addEventListener('change',()=>{extractionDirty=true;extractionRevision++;});
     function onArticleChanged() {
       try {
         const cur = currentArticle();
@@ -449,6 +449,7 @@
 
     /* ---- 应用提取：校验 → POST → 展示结果 ---- */
     async function applyExtraction() {
+      if(extractionSaving || window.WorkflowControls?.refreshing()) return;
       let ticket;
       try {
         resultBox.hidden = true;
@@ -483,6 +484,7 @@
         }
 
         ticket = ++version;
+        const submittedRevision = extractionRevision;
         applyBtn.disabled = true;extractionSaving=true;
         statusLine.textContent = T('正在计算效应量并保存…');
         try {
@@ -490,8 +492,9 @@
             { method: 'POST', body: body });
           if (ticket !== version) return;
           showResult(d, tpl);
-          statusLine.textContent = '';
-          stashDraft(cur.zotero_key);extractionDirty=false;
+          extractionDirty = extractionRevision !== submittedRevision;
+          statusLine.textContent = extractionDirty ? T('Saved the submitted extraction. Newer edits are still unsaved.') : '';
+          stashDraft(cur.zotero_key);
         } finally {
           extractionSaving=false;if (ticket === version) applyBtn.disabled = false;
         }

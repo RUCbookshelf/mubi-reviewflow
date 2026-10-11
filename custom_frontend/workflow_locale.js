@@ -3,6 +3,12 @@
 (function(){
   'use strict';
   const rows = [
+    ["Original parsing snapshot", "Original parsing snapshot"],
+    ["Pending candidate groups", "Pending candidate groups"],
+    ["Counts reflect the current batch state. Activation totals are cumulative; screening total covers the current task.", "Counts reflect the current batch state. Activation totals are cumulative; screening total covers the current task."],
+    ["Wait for the current refresh to finish.", "Wait for the current refresh to finish."],
+    ["Saved the submitted extraction. Newer edits are still unsaved.", "Saved the submitted extraction. Newer edits are still unsaved."],
+    ["Image upload failed. Your notes and attached images are retained. Choose the image again to retry.", "Image upload failed. Your notes and attached images are retained. Choose the image again to retry."],
     ["Personal reusable reasons", "Personal reusable reasons"],
     ["Team reusable reasons", "Team reusable reasons"],
     ["A reason must contain 1–2000 characters.", "A reason must contain 1–2000 characters."],

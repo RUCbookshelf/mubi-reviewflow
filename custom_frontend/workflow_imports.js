@@ -8,6 +8,8 @@
   const n=(tag,text,attrs={})=>el(tag,{...attrs,...(text==null?{}:{text:T(text)})});
   const b=(text,fn)=>n('button',text,{type:'button',class:'btn b-out sm',onclick:()=>Promise.resolve().then(fn).catch(W.error)});
   const literal=(tag,text)=>el(tag,{text:String(text??''),translate:'no'});
+  const reports=new Map();
+  I.remember=result=>{if(result?.batch_id)reports.set(result.batch_id,result);};
   I.active=()=>!!active;
   I.assign=async files=>{
     if(assigning)return null;
@@ -53,7 +55,7 @@
     p.textContent=T('Source records: {0} · Activated: {1} · Staged: {2} · Metadata proposals: {3} · Pending candidates: {4}',batch.raw_source_records||0,batch.active_records??batch.activated_source_records??0,batch.pending_records||0,batch.metadata_review_count||0,batch.pending_candidate_groups??batch.candidate_groups??0);
     return p;
   }
-  I.received=async result=>{if(result.batch_id){active=result.batch_id;offset=0;candidateOffset=0;await I.open(active);}await I.notice().catch(W.error);};
+  I.received=async result=>{I.remember(result);if(result.batch_id){active=result.batch_id;offset=0;candidateOffset=0;await I.open(active);}await I.notice().catch(W.error);};
   I.notice=async()=>{
     if(!S.task)return;
     const current=W.scope(),result=await api(taskApi()+'/import-history?limit=1&offset=0');if(current!==W.scope())return;
@@ -75,7 +77,9 @@
     const current=W.scope(),id=active;
     await api(taskApi()+'/import-batches/'+encodeURIComponent(id)+path,{method:'POST',body:{...body,expected_policy_version:W.version()}});
     if(current!==W.scope()||id!==active)return;
-    await W.refresh('import',false);await I.open(id);await I.notice();await refreshProgress();
+    await W.refresh('import',false);if(current!==W.scope()||id!==active)return;
+    await I.open(id);if(current!==W.scope()||id!==active)return;
+    await I.notice();if(current!==W.scope()||id!==active)return;await refreshProgress();
     document.dispatchEvent(new CustomEvent('reviewflow:import-completed'));
   }
   I.open=async id=>{
@@ -83,6 +87,8 @@
     try{
       const [batch,review,legacy]=await Promise.all([api(base+'?limit=20&offset='+offset),api(base+'/candidates?limit=20&offset='+candidateOffset),api(taskApi()+'/title-duplicate-reviews?limit=1&offset=0')]);
       if(t!==ticket||current!==W.scope()||active!==id)return;
+      const report={...(reports.get(id)||{}),...batch,source_files:batch.files,files:reports.get(id)?.files,screening_ready:!batch.pending_records&&!batch.pending_candidate_groups&&!Number(legacy.progress?.pending_groups||0)};
+      I.remember(report);renderImportReport(report);
       $('#goScreenBtn').style.display=batch.pending_records||batch.pending_candidate_groups||Number(legacy.progress?.pending_groups||0)?'none':'';
       host.replaceChildren(n('h3','Staged import review'),literal('p',id),counts(batch),b('All batches',I.list),b('Export provenance CSV',()=>download(base+'/export','import-'+id+'.csv')));
       if(batch.can_manage)host.append(b('Activate resolved records',()=>mutate('/activate',{})));
@@ -122,5 +128,5 @@
     }catch(error){if(t===ticket&&current===W.scope())host.replaceChildren(n('p',error.message),b('Retry / refresh',()=>I.open(id)),b('All batches',I.list));}
   };
   document.addEventListener('reviewflow:workspace-changed',event=>{if(event.detail==='import')Promise.resolve(active?I.open(active):I.list()).catch(W.error);if(event.detail==='home')I.notice().catch(W.error);});
-  document.addEventListener('reviewflow:task-context-changed',()=>{if(context===W.scope())return;context=W.scope();ticket++;active=null;offset=0;candidateOffset=0;listOffset=0;host.replaceChildren();if(S.task)I.notice().catch(W.error);});
+  document.addEventListener('reviewflow:task-context-changed',()=>{if(context===W.scope())return;context=W.scope();ticket++;active=null;reports.clear();offset=0;candidateOffset=0;listOffset=0;host.replaceChildren();if(S.task)I.notice().catch(W.error);});
 })();
