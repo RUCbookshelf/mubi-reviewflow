@@ -1040,7 +1040,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div class="card">
     <div class="dz" id="dropZone" role="button" tabindex="0" aria-label="选择 Zotero CSV 或 RIS 文献文件">
       <div class="big">📥</div>
-      <div id="dzInner">把 <b>Zotero 导出文件</b> 拖到此处，或点击选择（.csv / .ris，可多选）<br><span class="hint" style="margin:4px 0 0">同一文件重复导入是幂等的：已存在的条目只刷新内容；多文件将合并去重后导入</span></div>
+      <div id="dzInner">把 <b>Zotero 导出文件</b> 拖到此处，或点击选择（.csv / .ris，可多选）<br><span class="hint" style="margin:4px 0 0">Additional imports are staged when saved research exists. Review metadata and candidates, then activate resolved records.</span></div>
       <div id="fileList" style="display:none;margin-top:12px;text-align:left;max-width:460px;margin-left:auto;margin-right:auto"></div>
       <div class="dzbar" id="dzBar"><i id="dzBarI"></i></div>
       <input type="file" id="importFile" accept=".csv,.ris,.txt" multiple hidden>
@@ -5164,7 +5164,8 @@ function saveToken(tok) {
   AUTH_TOKEN = tok;
   try { sessionStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* 隐私模式等：仅内存持有 */ }
 }
-function logout(msg) {
+async function logout(msg) {
+  if (window.WorkflowControls && !await WorkflowControls.guard()) return;
   closeTeamMemberMenus();
   closeEvents();
   AUTH_TOKEN = null;
@@ -5281,7 +5282,8 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape' && do
 mobileNavQuery.addEventListener('change', () => setMobileNav(false));
 $$('#appShell .nav svg').forEach(icon => icon.setAttribute('aria-hidden', 'true'));
 setMobileNav(false);
-function go(p) {
+async function go(p, opts = {}) {
+  if (!opts.guarded && window.WorkflowControls && !await WorkflowControls.guard()) return false;
   if (!Array.from(document.querySelectorAll('#appMain section.page[data-p]')).some(node => node.dataset.p === p)) return;
   if (document.body.classList.contains('mobile-nav-open')) setMobileNav(false);
   /* 切页时静默退出上一页的高亮编辑模式（复筛/编码两个阅读器实例各自持有
@@ -5301,18 +5303,21 @@ function go(p) {
   document.body.classList.toggle('fp-fulltext', p === 'fulltext');
   document.body.classList.toggle('fp-bench', p === 'bench');
   $('.view').scrollTop = 0;
-  if (p === 'home') { renderHub(); loadALSettingsUI(); }
-  if (p === 'screen') loadScreen();
+  if (p === 'home') { renderHub(); if (!window.WorkflowControls?.settingsDirty()) loadALSettingsUI(); }
+  let loading;
+  if (p === 'screen' && !opts.skipLoad) loading = loadScreen();
   if (p === 'import' && window.TitleDuplicateReview) TitleDuplicateReview.load();
-  if (p === 'fulltext') loadFulltext();
+  if (p === 'fulltext' && !opts.skipLoad) loading = loadFulltext();
   if (p === 'export') refreshExportButtons();
   if (p === 'scheme') loadDims();
-  if (p === 'bench') loadBench();
+  if (p === 'bench' && !opts.skipLoad) loading = loadBench();
   if (p === 'analysis') loadAnalysis();
   /* 进入 PRISMA 页时重绘结果区：其中的文案是 T() 合成句，若不重绘会停留在
      上次渲染时的语言（切语言发生在别的页面时尤其明显）。 */
   if (p === 'prisma') prRefreshLangUI();
   document.dispatchEvent(new CustomEvent('reviewflow:workspace-changed', {detail:p}));
+  await loading;
+  return true;
 }
 $$('[data-nav]').forEach(elm => elm.addEventListener('click', () => go(elm.dataset.nav)));
 
@@ -5326,8 +5331,8 @@ function refreshAllText() {
   try { refreshProgress(); } catch (e) {}
   try { if (runtimeMode === 'server') refreshTeam(); } catch (e) {}
   try { if (S.merge) renderConf(); } catch (e) {}
-  try { if (S.page === 'screen' && Array.isArray(S.articles) && S.articles.length) renderScreen(); } catch (e) {}
-  try { if (S.page === 'fulltext' && Array.isArray(S.ftQueue) && S.ftQueue.length) renderFtDoc(); } catch (e) {}
+  try { if (!window.WorkflowControls?.decisionDirty() && S.page === 'screen' && Array.isArray(S.articles) && S.articles.length) renderScreen(); } catch (e) {}
+  try { if (!window.WorkflowControls?.decisionDirty() && S.page === 'fulltext' && Array.isArray(S.ftQueue) && S.ftQueue.length) renderFtDoc(); } catch (e) {}
   try { if (S.page === 'bench' && Array.isArray(S.cbQueue)) { const cur = S.cbQueue[S.cbIdx]; $('#cbLabel').textContent = T('第 {0} / {1} 篇', S.cbQueue.length ? S.cbIdx + 1 : 0, S.cbQueue.length); if (cur) $('#cbTitle').textContent = cur.title || cur.zotero_key; } } catch (e) {}
   try { if (S.page === 'prisma') prRefreshLangUI(); } catch (e) {}
   try { if (window.RFRefreshIpdSurvivalText) window.RFRefreshIpdSurvivalText(); } catch (e) {}
@@ -5337,7 +5342,7 @@ function refreshAllText() {
   try { if (window.RFRefreshDoseArmsText) window.RFRefreshDoseArmsText(); } catch (e) {}
   try { if (window.RFRefreshDoseNonlinearText) window.RFRefreshDoseNonlinearText(); } catch (e) {}
   try { refreshToasts(); } catch (e) {}
-  try { loadALSettingsUI(); } catch (e) {}
+  try { if (!window.WorkflowControls?.settingsDirty()) loadALSettingsUI(); } catch (e) {}
 }
 window.RFRefreshAll = refreshAllText;
 
@@ -5444,6 +5449,10 @@ function connectEvents() {
     const source = new EventSource(API_BASE + '/api/events?token=' + encodeURIComponent(token));
     taskEvents = source;
     let lastNotice = null;
+    source.addEventListener('task-workflow-changed', event => {
+      if (taskEvents !== source || AUTH_TOKEN !== token) return;
+      try { document.dispatchEvent(new CustomEvent('reviewflow:workflow-changed', {detail:JSON.parse(event.data)})); } catch (_) {}
+    });
     source.addEventListener('tasks-changed', event => {
       let change;
       try { change = JSON.parse(event.data); } catch (_) { return; }
@@ -5574,12 +5583,14 @@ async function loadTasks() {
   for (const t of S.tasks) {
     sel.append(el('option', { value: t.task_id, translate:'no', text: t.name + (t.archived ? T('（已归档）') : '') }));
   }
-  if (!S.tasks.length) { pickTask(null, { silent: true }); return; }
+  if (!S.tasks.length) { await pickTask(null, { silent: true }); return; }
   const keep = S.tasks.find(t => S.task && t.task_id === S.task.task_id);
-  pickTask((keep || S.tasks[0]).task_id, { silent: true });
+  await pickTask((keep || S.tasks[0]).task_id, { silent: true });
 }
-function pickTask(taskId, opts = {}) {
+async function pickTask(taskId, opts = {}) {
   const previousTaskId = S.task?.task_id;
+  if (previousTaskId === taskId) { S.task = S.tasks.find(t => t.task_id === taskId) || S.task; $('#taskSel').value = taskId || ''; return true; }
+  if (window.WorkflowControls && !await WorkflowControls.guard()) { $('#taskSel').value = previousTaskId || ''; return false; }
   S.task = S.tasks.find(t => t.task_id === taskId) || null;
   $('#taskSel').value = S.task ? S.task.task_id : '';
   renderScreenerSel();
@@ -5603,6 +5614,7 @@ function pickTask(taskId, opts = {}) {
     document.dispatchEvent(new Event('reviewflow:analysis-task-changed'));
     if (S.page) go(S.page);
   }
+  return true;
 }
 function renderScreenerSel() {
   const sel = $('#screenerSel');
@@ -5651,7 +5663,7 @@ function renderHub() {
             try { await api(taskPath(t), { method: 'PUT', body: { archived: false } }); await loadTasks(); toast('已恢复任务', 'inc'); } catch (e) { toast(e.message, 'warn'); }
             return;
           }
-          pickTask(t.task_id);
+          if (!await pickTask(t.task_id)) return;
           await refreshProgress();
           go('screen');
         } }),
@@ -5661,9 +5673,11 @@ function renderHub() {
           try { await api(taskPath(t), { method: 'PUT', body: { name } }); await loadTasks(); toast(T('已重命名'), 'inc'); } catch (e) { toast(e.message, 'warn'); }
         } }),
         t.archived ? null : el('button', { class: 'btn b-out', text: T('归档'), onclick: async () => {
+          if (S.task?.task_id === t.task_id && window.WorkflowControls && !await WorkflowControls.guard()) return;
           try { await api(taskPath(t), { method: 'PUT', body: { archived: true } }); await loadTasks(); toast(T('已归档（可在“显示已归档”中查看）'), 'inc'); } catch (e) { toast(e.message, 'warn'); }
         } }),
         el('button', { class: 'btn b-exc', text: T('删除'), onclick: async () => {
+          if (S.task?.task_id === t.task_id && window.WorkflowControls && !await WorkflowControls.guard()) return;
           if (!confirm(T('删除任务《{0}》？任务将移入隔离区，之后可手动恢复。', t.name))) return;
           try { await api(taskPath(t), { method: 'DELETE' }); await loadTasks(); await refreshProgress(); toast(T('已删除（移入 .trash）'), 'exc'); } catch (e) { toast(e.message, 'warn'); }
         } })
@@ -5675,13 +5689,14 @@ function renderHub() {
 function taskPath(t) { return '/api/tasks/' + encodeURIComponent(t.task_id); }
 
 $('#newTaskBtn').addEventListener('click', async () => {
+  if (window.WorkflowControls && !await WorkflowControls.guard()) return;
   const name = $('#newTaskName').value.trim();
   if (!name) { toast('任务名不能为空', 'warn'); return; }
   try {
     const t = await api('/api/tasks', { method: 'POST', body: { name, description: $('#newTaskDesc').value.trim() } });
     $('#newTaskName').value = ''; $('#newTaskDesc').value = '';
     await loadTasks();
-    pickTask(t.task_id, { silent: true });
+    await pickTask(t.task_id, { silent: true });
     $('#newTaskNext').hidden = false;
     toast(T('已创建任务《{0}》，你已登记为筛选员', t.name), 'inc');
   } catch (e) { toast(e.message, 'warn'); }
@@ -5808,7 +5823,7 @@ function renderImportReport(d) {
     ['精确去重后记录数（含待核验候选）', d.unique_after_dedup],
     ['实际导入（唯一条目）', d.imported],
     ['新插入', d.new],
-    ['已存在（保留当前元数据）', d.existing],
+    [d.batch_id ? '已存在（保留当前元数据）' : '已存在（内容刷新）', d.existing],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ] : [
     ['导入记录数', d.n_imported],
@@ -5822,11 +5837,11 @@ function renderImportReport(d) {
     ['待人工核验标题候选组数', d.title_review_groups],
     ['待人工核验标题候选记录数', d.title_review_pending_records],
     ['新插入', d.n_new],
-    ['已存在（保留当前元数据）', d.n_existing],
+    [d.batch_id ? '已存在（保留当前元数据）' : '已存在（内容刷新）', d.n_existing],
     ['精确去重后唯一记录数', d.unique_after_exact_dedup],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ];
-  if (d.staged) rows.push(['暂存待激活记录', d.pending_records], ['元数据待核验', d.metadata_review_count]);
+  if (d.batch_id) rows.push(['Source records', d.raw_source_records], ['Existing matches / source links', d.existing_source_links], ['Activated new articles', d.activated_new], ['Activated source records', d.activated_source_records], ['暂存待激活记录', d.pending_records], ['元数据待核验', d.metadata_review_count]);
   if (d.note) rows.push(['说明', d.note]);
   rows.forEach(([k, v]) => body.append(el('tr', {}, el('td', { text: k }), el('td', {}, el('b', { text: v === undefined || v === null ? '—' : String(v) })))));
   if (window.TitleDuplicateReview) TitleDuplicateReview.load(d);
@@ -5848,6 +5863,10 @@ async function realImport(files) {
   const taskId = S.task.task_id, screener = S.screener, ticket = ++importVersion;
   files = [...files].filter(Boolean);
   if (!files.length) return;
+  let sourceIds;
+  try { sourceIds = await window.WorkflowImports?.assign(files); }
+  catch (error) { WorkflowControls.error(error); return; }
+  if (!sourceIds || ticket !== importVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
   showFileList(files);
   $('#dzBar').style.display = 'block';
   $('#dzBarI').style.width = '40%';
@@ -5855,6 +5874,7 @@ async function realImport(files) {
   const fd = new FormData();
   const jobId = crypto.randomUUID();
   fd.append('job_id', jobId);
+  fd.append(batch ? 'source_ids' : 'source_id', batch ? JSON.stringify(sourceIds) : sourceIds[0]);
   if (batch) files.forEach(f => fd.append('files', f, f.name));
   else fd.append('file', files[0], files[0].name);
   const url = taskApi() + (batch ? '/import-batch' : '/import') + scrQ();
@@ -5878,6 +5898,8 @@ async function realImport(files) {
     $('#dzInner').textContent = '';
     $('#dzInner').append(T('✓ 已接收 '), el('b', { text: files.map(f => f.name).join('、') }));
     renderImportReport(d);
+    await window.WorkflowImports?.received(d);
+    if (ticket !== importVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     document.dispatchEvent(new CustomEvent('reviewflow:import-completed'));
     $('#goScreenBtn').style.display = d.staged || d.screening_ready === false ? 'none' : '';
     setImportBusy(false);
@@ -5892,7 +5914,7 @@ async function realImport(files) {
     $('#dzBar').style.display = 'none'; $('#dzBarI').style.width = '0';
     toast(e.status === 0 ? e.message : T('导入失败：') + e.message, 'warn');
   } finally {
-    setImportBusy(false);
+    if (ticket === importVersion && S.task?.task_id === taskId && S.screener === screener) setImportBusy(false);
   }
 }
 dz.addEventListener('click', () => $('#importFile').click());
@@ -5925,7 +5947,7 @@ async function refreshALRank() {
     if (e.status !== 401) toast(T('AI 排序获取失败：') + e.message, 'warn');
     S.al.available = false; S.al.orderKeys = []; S.al.scores = {};
     renderALChrome();
-    if (S.al.mode === 'ai') applyAIOrder();
+    if (S.al.mode === 'ai') await applyAIOrder();
     return;
   }
   if (ticket !== alRankVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
@@ -5947,9 +5969,9 @@ async function refreshALRank() {
     S.al.suggestStop = !!d.stop_suggestion.suggest;
   }
   renderALChrome();
-  if (S.al.mode === 'ai') applyAIOrder();
+  if (S.al.mode === 'ai') await applyAIOrder();
 }
-function applyAIOrder() {
+async function applyAIOrder() {
   if (S.al.mode !== 'ai') return;
   const base = S.articlesBase || [];
   const done = base.filter(a => S.decisions[a.zotero_key]);
@@ -5960,14 +5982,15 @@ function applyAIOrder() {
   }
   S.articles = done.concat(ranked, [...pending.values()]);
   S.scrIdx = S.screenEditingKey ? S.articles.findIndex(a => a.zotero_key === S.screenEditingKey) : nextUndecided();
-  renderScreen();
+  await renderScreen();
 }
 function alStrategyLabel(strategy) {
   return $('#alStrategy').querySelector('option[value="' + strategy + '"]')?.textContent || strategy;
 }
 function renderALChrome() {
   const ai = S.al.mode === 'ai';
-  $('#alModeImport').classList.toggle('on', !ai);
+  $('#alModeImport').classList.toggle('on', !ai && window.WorkflowControls?.order() !== 'random');
+  $('#alModeRandom')?.classList.toggle('on', window.WorkflowControls?.order() === 'random');
   $('#alModeAI').classList.toggle('on', ai);
   const badge = $('#alBadge');
   if (ai && S.al.available) {
@@ -5989,6 +6012,7 @@ function renderALChrome() {
   } else side.style.display = 'none';
 }
 async function setALMode(mode) {
+  if (window.WorkflowControls) return WorkflowControls.setOrder(mode);
   if (S.al.mode === mode) return;
   S.al.mode = mode;
   S.al.dismissStreak = -1;
@@ -6026,10 +6050,11 @@ async function loadALSettingsUI() {
     $('#alSettingsInfo').textContent = T('当前：{0} · seed {1} · 阈值 {2} · 最少标签 {3}', alStrategyLabel(st.strategy), st.seed, st.stop_threshold, st.min_labeled);
   } catch (e) { /* 首页静默：设置载入失败不打扰 */ }
 }
-$('#alSaveSettings').addEventListener('click', async () => {
+async function saveALSettings() {
   if (!S.task) { toast('请先选择任务', 'warn'); return; }
   if ($('#alSaveSettings').disabled) return;
   const taskId = S.task.task_id, screener = S.screener, ticket = ++alSettingsVersion;
+  const submittedDraftVersion = alSettingsDraftVersion;
   alSettingsSavingTaskId = taskId;
   $('#alSaveSettings').disabled = true;
   const body = {
@@ -6046,12 +6071,15 @@ $('#alSaveSettings').addEventListener('click', async () => {
     renderALChrome();
     if (S.al.mode === 'ai') await refreshALRank();
     toast(T('AI 排序设置已保存'), 'inc');
+    if (submittedDraftVersion === alSettingsDraftVersion) document.dispatchEvent(new Event('reviewflow:al-settings-saved'));
+    return submittedDraftVersion === alSettingsDraftVersion;
   } catch (e) { if (ticket === alSettingsVersion && S.task?.task_id === taskId && S.screener === screener) toast(T('保存失败：') + e.message, 'warn'); }
   finally {
     if (alSettingsSavingTaskId === taskId) alSettingsSavingTaskId = null;
     $('#alSaveSettings').disabled = false;
   }
-});
+}
+$('#alSaveSettings').addEventListener('click', saveALSettings);
 $('#alModeImport').addEventListener('click', () => setALMode('import'));
 $('#alModeAI').addEventListener('click', () => setALMode('ai'));
 $('#alStopClose').addEventListener('click', () => { S.al.dismissStreak = S.al.streak; renderALChrome(); });
@@ -6087,7 +6115,7 @@ function renderScreenHist() {
   const visible = history.length > 5 ? [...history.slice(0, 2), null, ...history.slice(-2)] : history;
   visible.forEach(item => {
     box.append(item
-      ? el('span', {class:'chip c-' + DEC_KEY[item.d.decision], title:item.a.title || '', text:'#' + (item.i + 1)})
+      ? el('button', {type:'button',class:'chip c-' + DEC_KEY[item.d.decision], title:item.a.title || '', text:'#' + (item.i + 1),onclick:async()=>{if(!await WorkflowControls.guard())return;S.screenEditingKey=item.a.zotero_key;S.scrIdx=item.i;await renderScreen();}})
       : el('span', {text:'…'}));
   });
   $('#scrHistCounts').textContent = T('(纳入：{0} | 待定：{1} | 排除：{2})', counts.include, counts.maybe, counts.exclude);
@@ -6107,7 +6135,7 @@ function screenTitle(article, score) {
   text.addEventListener('keydown', event => { if (event.key === 'Escape') tip.hidden = true; });
   return wrap;
 }
-function renderScreen() {
+async function renderScreen() {
   renderScreenHist();
   let i = S.scrIdx;
   const cur = S.articles[i];
@@ -6135,7 +6163,15 @@ function renderScreen() {
     refreshProgress();
     return;
   }
-  const r = S.articles[i];
+  let r = S.articles[i];
+  const itemKey = r.zotero_key, renderTask = S.taskVersion, renderScreener = S.screener;
+  body.append(el('p', {text:T('Loading current saved work…')}));
+  try {
+    const item = await WorkflowControls.item('screen', itemKey);
+    if (!item || renderTask !== S.taskVersion || renderScreener !== S.screener || S.articles[S.scrIdx]?.zotero_key !== itemKey) return;
+    r = {...r, ...item.article}; S.articles[i] = r;
+    body.replaceChildren();
+  } catch (error) { body.replaceChildren(el('p', {text:error.message}), el('button', {class:'btn b-out',text:T('Retry / refresh'),onclick:()=>renderScreen()})); return; }
   const aiOn = S.al.mode === 'ai' && S.al.available;
   const score = aiOn ? S.al.scores[r.zotero_key] : null;
   $('#scrCard').classList.toggle('ai-active', aiOn);
@@ -6167,10 +6203,15 @@ function renderScreen() {
       el('button', { class: 'btn b-exc', id: 'btnExc', text: '3 排除', onclick: () => screenDecide('exclude') }),
       reason, customReason)
   ].filter(x => x !== null && x !== undefined));
+  WorkflowControls.decorateStage('screen');
+  const saved = WorkflowControls.activeItem('screen')?.saved;
+  if (saved && S.screenEditingKey === r.zotero_key) window.WorkspaceUndo?.restoreReason(reason, customReason, saved.exclusion_reason || saved.reason || '');
+  WorkflowControls.markDecisionClean('screen');
 }
 let screenRequestVersion = 0;
 async function loadScreen() {
   const ticket = ++screenRequestVersion, taskId = S.task?.task_id, screener = S.screener;
+  const reopenKey = S.screenEditingKey;
   S.screenEditingKey = null;
   S.screenLoadedTask = null;
   const body = $('#scrBody');
@@ -6178,25 +6219,20 @@ async function loadScreen() {
   if (!S.task) { body.append(el('div', { class: 'hint', text: T('请先在首页选择或创建任务。') })); return; }
   body.append(el('div', { class: 'hint', text: T('正在载入文献队列…') }));
   try {
-    const d = await api(taskApi() + '/articles' + scrQ());
+    S.al.mode = WorkflowControls.order() === 'ai' ? 'ai' : 'import';
+    const d = await WorkflowControls.queue('screen');
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
-    if (Number(d.title_review_pending || 0) > 0) {
-      body.textContent = '';
-      body.append(el('h3', { text: T('标题重复候选尚未核验') }),
-        el('p', { class: 'hint', text: T('请先完成导入页的标题候选判断，再开始文献初筛。待核验组数：{0}', d.title_review_pending) }),
-        el('button', { class: 'btn b-out', text: T('前往标题重复核验'), onclick: () => go('import') }));
-      return;
-    }
     const dd = await api(taskApi() + '/decisions' + scrQ());
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
-    S.articles = (d.articles || []).map(nzArticle);      /* 字段清洗：null / "null" 一律变空串 */
+    S.articles = (d.queue || []).map(nzArticle);
     S.articlesBase = S.articles.slice();
     S.decisions = {};
     for (const r of dd.decisions) S.decisions[r.zotero_key] = { decision: r.decision, reason: r.exclusion_reason };
-    S.scrIdx = nextUndecided();
+    S.screenEditingKey = S.articles.some(article => article.zotero_key === reopenKey) ? reopenKey : null;
+    S.scrIdx = S.screenEditingKey ? S.articles.findIndex(article=>article.zotero_key===reopenKey) : nextUndecided();
     S.screenLoadedTask = taskId;
     if (S.al.mode === 'ai') await refreshALRank();   /* 拉取排名 → 重排 → 渲染 */
-    else { renderALChrome(); renderScreen(); }
+    else { renderALChrome(); await renderScreen(); }
     window.WorkspaceUndo?.sync();
   } catch (e) {
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
@@ -6205,6 +6241,7 @@ async function loadScreen() {
   }
 }
 async function screenDecide(decision) {
+  if (!window.WorkflowControls?.canSave('screen', decision)) return;
   if (!S.task || S.screenLoadedTask !== S.task.task_id) return;
   if (window.WorkspaceUndo?.isBusy() || $('#scrCard').classList.contains('out')) return;
   const ticket = screenRequestVersion, taskId = S.task.task_id, screener = S.screener;
@@ -6226,7 +6263,7 @@ async function screenDecide(decision) {
   try {
     const d = await api(taskApi() + '/decisions' + scrQ(), {
       method: 'POST',
-      body: { zotero_key: r.zotero_key, decision, reason,
+      body: { zotero_key: r.zotero_key, decision, reason, expected_policy_version:WorkflowControls.activeItem('screen')?.policy_version,
         ...(S.screenEditingKey === r.zotero_key && S.decisions[r.zotero_key] ?
           {notes:S.decisions[r.zotero_key].notes || '', tags:S.decisions[r.zotero_key].tags || ''} : {}) }
     });
@@ -6235,6 +6272,8 @@ async function screenDecide(decision) {
       return;
     }
     S.decisions[r.zotero_key] = { decision, reason };
+    WorkflowControls.markDecisionClean('screen');
+    WorkflowControls.updateProgress('screen').catch(WorkflowControls.error);
     S.screenEditingKey = null;
     const name = (r.title || '').slice(0, 22) + '…';
     toast({ include: T('✓ 已纳入《{0}》', name), maybe: T('◐ 待定《{0}》', name), exclude: T('✗ 已排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision]);
@@ -6251,7 +6290,7 @@ async function screenDecide(decision) {
       $('#capScreen').textContent = T('初筛进度 {0} / {1} · 纳入 {2}', s1.screened, s1.total, s1.include);
     }, 220);
   } catch (e) {
-    if (ticket === screenRequestVersion && S.task?.task_id === taskId) toast(T('保存失败：') + e.message, 'warn');
+    if (ticket === screenRequestVersion && S.task?.task_id === taskId) WorkflowControls.error(e);
   } finally {
     window.WorkspaceUndo?.endSave('screen');
   }
@@ -6266,7 +6305,7 @@ async function loadFulltext() {
   const empty = $('#pdfEmptyText');
   if (!S.task) { empty.textContent = T('请先在首页选择任务'); return; }
   try {
-    const d = await api(taskApi() + '/stage2/queue' + scrQ());
+    const d = await WorkflowControls.queue('fulltext');
     if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion) return;
     const dd = await api(taskApi() + '/stage2/decisions' + scrQ());
     if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion) return;
@@ -6277,17 +6316,28 @@ async function loadFulltext() {
     window.WorkspaceUndo?.sync();
     S.ftIdx = 0;
     if (!S.ftQueue.length) {
-      $('#ftDocTitle').textContent = T('（队列为空：先在初筛中纳入文献）');
+      $('#ftDocTitle').textContent = T('Initial Include or Maybe decisions enter full-text screening. No eligible records in this scope.');
       renderFtDoc(); return;
     }
-    renderFtDoc();
+    await renderFtDoc();
     await openFtPdf();
   } catch (e) { if (version === S.taskVersion && screener === S.screener && ticket === fulltextLoadVersion) toast(T('载入复筛队列失败：') + e.message, 'warn'); }
 }
 S.ftDec = {};
 function curFt() { return S.ftQueue[S.ftIdx] || null; }
-function renderFtDoc() {
+async function renderFtDoc() {
   const cur = curFt();
+  const taskVersion = S.taskVersion, screener = S.screener;
+  for (const id of ['ftInc','ftMay','ftExc']) $('#'+id).disabled = true;
+  if (cur) {
+    try {
+      const item = await WorkflowControls.item('fulltext',cur.zotero_key);
+      if (!item || taskVersion !== S.taskVersion || screener !== S.screener || curFt()?.zotero_key !== cur.zotero_key) return;
+      Object.assign(cur,item.article);
+      if(item.saved) {S.ftDec[cur.zotero_key]=item.saved.decision;S.ftUndoSaved={key:cur.zotero_key,decision:item.saved};}
+      window.WorkspaceUndo?.restoreReason($('#ftReason'),$('#ftCustomReason'),item.saved?.exclusion_reason||item.saved?.reason||'');
+    } catch(error) {WorkflowControls.error(error);return;}
+  }
   $('#ftDocLabel').textContent = T('文献 {0} / {1}', S.ftQueue.length ? S.ftIdx + 1 : 0, S.ftQueue.length);
   $('#ftDocTitle').textContent = cur ? (cur.title || cur.zotero_key) : '—';
   const chip = $('#ftDocChip');
@@ -6297,6 +6347,8 @@ function renderFtDoc() {
   const list = $('#annList');
   list.textContent = '';
   if (cur) list.append(el('div', { class: 'hint', text: T('正在载入高亮…') }));
+  WorkflowControls.decorateStage('fulltext');
+  WorkflowControls.markDecisionClean('fulltext');
 }
 /* ---------- pdf.js 4.x 原生阅读器工厂（复筛全文页 + 编码页 共用） ----------
    取代旧「fetch → blob → objectURL → iframe」方案：
@@ -6637,8 +6689,8 @@ async function openFtPdf() {
     emptyText.textContent = e.status === 404 ? T('该文献尚未上传 PDF（可在此上传）') : (T('载入失败：') + e.message);
   }
 }
-$('#ftPrevDoc').addEventListener('click', () => { if (S.ftQueue.length) { S.ftIdx = (S.ftIdx - 1 + S.ftQueue.length) % S.ftQueue.length; renderFtDoc(); openFtPdf(); } });
-$('#ftNextDoc').addEventListener('click', () => { if (S.ftQueue.length) { S.ftIdx = (S.ftIdx + 1) % S.ftQueue.length; renderFtDoc(); openFtPdf(); } });
+$('#ftPrevDoc').addEventListener('click', async () => { if (!await WorkflowControls.guard()) return; if (S.ftQueue.length) { S.ftIdx = (S.ftIdx - 1 + S.ftQueue.length) % S.ftQueue.length; renderFtDoc(); openFtPdf(); } });
+$('#ftNextDoc').addEventListener('click', async () => { if (!await WorkflowControls.guard()) return; if (S.ftQueue.length) { S.ftIdx = (S.ftIdx + 1) % S.ftQueue.length; renderFtDoc(); openFtPdf(); } });
 $('#ftReload').addEventListener('click', () => openFtPdf());
 $('#pdfUploadBtn').addEventListener('click', () => $('#pdfFile').click());
 $('#pdfFile').addEventListener('change', async e => {
@@ -6697,6 +6749,7 @@ $('#annAdd').addEventListener('click', async () => {
   } catch (e) { toast(T('保存失败：') + e.message, 'warn'); }
 });
 async function fullDecide(decision) {
+  if (!window.WorkflowControls?.canSave('fulltext', decision)) return;
   if (window.WorkspaceUndo?.isBusy()) return;
   if (!S.task || S.fulltextLoadedTask !== S.task.task_id) return;
   const cur = curFt();
@@ -6716,12 +6769,14 @@ async function fullDecide(decision) {
   try {
     const d = await api(taskApi() + '/stage2/decisions' + scrQ(), {
       method: 'POST',
-      body: { zotero_key: cur.zotero_key, decision, reason,
+      body: { zotero_key: cur.zotero_key, decision, reason, expected_policy_version:WorkflowControls.activeItem('fulltext')?.policy_version,
         ...(S.ftUndoSaved?.key === cur.zotero_key && S.ftUndoSaved.decision ?
           {notes:S.ftUndoSaved.decision.notes || '', tags:S.ftUndoSaved.decision.tags || ''} : {}) }
     });
     if (version !== S.taskVersion || screener !== S.screener) { toast('Decision saved in the previous task. Switch back to review it.', 'info'); return; }
     S.ftDec[cur.zotero_key] = decision;
+    WorkflowControls.markDecisionClean('fulltext');
+    WorkflowControls.updateProgress('fulltext').catch(WorkflowControls.error);
     S.ftUndoSaved = null;
     toast({ include: T('✓ 复筛纳入'), maybe: T('◐ 复筛待定'), exclude: T('✗ 复筛排除 · {0}', reason) }[decision], DEC_KEY[decision]);
     const nxt = S.ftQueue.findIndex(x => !S.ftDec[x.zotero_key]);
@@ -6731,7 +6786,7 @@ async function fullDecide(decision) {
     $('#barFull').style.width = (s2.total ? s2.screened / s2.total * 100 : 0).toFixed(1) + '%';
     $('#capFull').textContent = T('复筛进度 {0} / {1} · 纳入 {2}', s2.screened, s2.total, s2.include);
   } catch (e) {
-    if (version === S.taskVersion && screener === S.screener) toast(T('保存失败：') + e.message, 'warn');
+    if (version === S.taskVersion && screener === S.screener) WorkflowControls.error(e);
   } finally {
     window.WorkspaceUndo?.endSave('fulltext');
   }
@@ -7928,14 +7983,15 @@ async function loadBench() {
   benchRenderVersion++;
   if (!S.task) { $('#cbForms').textContent = ''; $('#cbForms').append(el('div', { class: 'card hint', text: T('请先选择任务。') })); return; }
   try {
-    const d = await api(taskApi() + '/coding/queue' + scrQ());
+    const d = await WorkflowEvidence.queue();
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion) return;
     S.cbQueue = d.queue;
+    if (d.overall_progress) applyCodingProgress({total:d.overall_progress.total,coded:d.overall_progress.completed,remaining:d.overall_progress.pending});
     if (d.progress) applyCodingProgress(d.progress);  // 复筛纳入后切页即同步进度
     await Promise.all([loadDims()]);
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion) return;
     S.cbIdx = 0;
-    renderBench();
+    await renderBench();
   } catch (e) {
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion) return;
     $('#cbForms').textContent = '';
@@ -7943,87 +7999,10 @@ async function loadBench() {
   }
 }
 let benchRenderVersion = 0;
-function renderBench() {
-  const ticket = ++benchRenderVersion, version = S.taskVersion, screener = S.screener;
-  S.codingFormReady = false;
-  const i = S.cbIdx;
-  const cur = S.cbQueue[i];
-  $('#cbLabel').textContent = T('第 {0} / {1} 篇', S.cbQueue.length ? i + 1 : 0, S.cbQueue.length);
-  $('#cbTitle').textContent = cur ? (cur.title || cur.zotero_key) : '—';
-  openBenchPdf();   /* PDF 面板与表单并行载入（切篇即换源，旧文档由工厂销毁回收） */
-  const forms = $('#cbForms');
-  forms.textContent = '';
-  if (!cur) { forms.append(el('div', { class: 'card hint', text: T('编码队列为空（复筛/初筛纳入后自动进入队列）。') })); return; }
-  if (!S.dims.length) { forms.append(el('div', { class: 'card hint', text: T('方案为空 —— 请先到「编码方案」添加维度。') })); return; }
-  $('#cbStatus').textContent = '载入中…';
-  api(taskApi() + '/coding/values/' + encodeURIComponent(cur.zotero_key) + scrQ()).then(saved => {
-    if (ticket !== benchRenderVersion || version !== S.taskVersion || screener !== S.screener || S.cbQueue[S.cbIdx]?.zotero_key !== cur.zotero_key) return;
-    $('#cbStatus').textContent = '编辑中';
-    $('#cbStatus').className = 'chip c-may';
-    for (const [di, d] of S.dims.entries()) {
-      const val = saved.values[String(d.id)] || '';
-      let ctrl;
-      if (d.dtype === 'choice' && !d.multi_select) {
-        ctrl = el('select', { class: 'input cb-v', 'data-dim': String(d.id), style: 'max-width:240px' },
-          el('option', { value: '', text: '— 选择 —' }),
-          d.options.map(o => el('option', { value: o, text: o, selected: val === o ? '' : null })));
-      } else if (d.dtype === 'choice' && d.multi_select) {
-        const picked = val.split('|').filter(Boolean);
-        ctrl = el('div', { class: 'row', style: 'margin:0' },
-          d.options.map(o => el('label', { class: 'chip', style: 'cursor:pointer' },
-            el('input', { type: 'checkbox', class: 'cb-v', 'data-dim': String(d.id), value: o, checked: picked.includes(o) ? '' : null, style: 'vertical-align:-2px' }), ' ' + o)));
-      } else {
-        ctrl = el('input', { class: 'input cb-v', 'data-dim': String(d.id), value: val, style: 'max-width:240px', placeholder: T('填写内容') });
-      }
-      forms.append(el('div', { class: 'card', style: 'margin-bottom:10px' },
-        el('b', { text: d.name }), ' ', el('span', { class: 'chip', text: d.multi_select ? T('多选') : (d.dtype === 'text' ? T('填空') : T('单选')) }),
-        el('div', { class: 'row', style: 'margin-bottom:4px' }, ctrl)));
-    }
-    S.codingFormReady = true;
-    document.dispatchEvent(new Event('reviewflow:coding-form-loaded'));
-  }).catch(e => {
-    if (ticket !== benchRenderVersion || version !== S.taskVersion || screener !== S.screener) return;
-    $('#cbStatus').textContent = '载入失败';
-    forms.append(el('div', { class: 'card hint', text: e.message }));
-  });
-}
-$('#cbPrev').addEventListener('click', () => { S.cbIdx = Math.max(0, S.cbIdx - 1); renderBench(); });
-$('#cbNext').addEventListener('click', () => { S.cbIdx = Math.min(S.cbQueue.length - 1, S.cbIdx + 1); renderBench(); });
-$('#cbSave').addEventListener('click', async () => {
-  if (window.WorkspaceUndo?.isBusy() || !S.codingFormReady) return;
-  const version = S.taskVersion, screener = S.screener;
-  const cur = S.cbQueue[S.cbIdx];
-  if (!cur) { toast(T('队列为空'), 'warn'); return; }
-  const controls = $$('#cbForms .cb-v');
-  if (!controls.length) { toast(T('方案为空，无法保存'), 'warn'); return; }
-  const byDim = {};
-  for (const c of controls) {
-    const dim = c.dataset.dim;
-    if (c.type === 'checkbox') { byDim[dim] = byDim[dim] || []; if (c.checked) byDim[dim].push(c.value); }
-    else byDim[dim] = [c.value];
-  }
-  window.WorkspaceUndo?.beginSave();
-  const frozenControls = [...controls, $('#cbSave'), $('#cbPrev'), $('#cbNext')].map(control => [control, control.disabled]);
-  for (const [control] of frozenControls) control.disabled = true;
-  try {
-    const last = await api(taskApi() + '/coding/values-batch' + scrQ(), {
-      method: 'POST',
-      body: { zotero_key: cur.zotero_key, values: Object.fromEntries(Object.entries(byDim).map(([dim, values]) => [dim, values.join('|')])) }
-    });
-    if (version !== S.taskVersion || screener !== S.screener) return;
-    document.dispatchEvent(new CustomEvent('reviewflow:coding-form-saved', {detail:cur.zotero_key}));
-    if (S.cbQueue[S.cbIdx]?.zotero_key === cur.zotero_key) {
-      $('#cbStatus').textContent = '已保存';
-      $('#cbStatus').className = 'chip c-inc';
-    }
-    if (last) applyCodingProgress(last.progress);
-    toast(T('✓ 已保存《{0}》的编码（{1} 个维度）', (cur.title || '').slice(0, 18) + '…', Object.keys(byDim).length), 'inc');
-  } catch (e) { if (version === S.taskVersion && screener === S.screener) toast(T('保存失败：') + e.message, 'warn'); }
-  finally {
-    for (const [control, disabled] of frozenControls) if (control.isConnected) control.disabled = disabled;
-    window.WorkspaceUndo?.endSave('coding');
-  }
-});
+function renderBench() { return WorkflowEvidence.render(); }
+$('#cbPrev').addEventListener('click', async () => { if (!await WorkflowControls.guard()) return; S.cbIdx = Math.max(0, S.cbIdx - 1); await renderBench(); });
+$('#cbNext').addEventListener('click', async () => { if (!await WorkflowControls.guard()) return; S.cbIdx = Math.min(S.cbQueue.length - 1, S.cbIdx + 1); await renderBench(); });
+$('#cbSave').addEventListener('click', () => WorkflowEvidence.save());
 
 /* ---------- 全局键盘快捷键 ---------- */
 document.addEventListener('keydown', e => {
@@ -8871,12 +8850,13 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_dta_exploratory_lr.js?v=20260929-ui3"></script>
 <script src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
 <script src="./analysis_navigation.js?v=20261002-ui1"></script>
-<script src="./workspace_shell.js?v=20261011-sheet2"></script>
+<script src="./workspace_shell.js?v=20261012-workflow1"></script>
 <script src="./sidebar_sheet.js?v=20261011-sheet2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./research_trace.js?v=20261011-undo1"></script>
-<script src="./import_guide.js?v=20261011-pearl1"></script>
-<script src="./import_history.js?v=20261002-report-restore1"></script>
+<script src="./workflow_locale.js?v=20261012-workflow1"></script>
+<script src="./research_trace.js?v=20261012-workflow1"></script>
+<script src="./import_guide.js?v=20261012-workflow1"></script>
+<script src="./import_history.js?v=20261012-workflow1"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
@@ -8887,9 +8867,13 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./screen_reader.js?v=20261011-reader2"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
-<script src="./extraction_workbench.js?v=20261002-ui1"></script>
-<script src="./workspace_layouts.js?v=20261011-layouts3"></script>
-<script src="./workspace_undo.js?v=20261011-undo1"></script>
+<script src="./extraction_workbench.js?v=20261012-workflow1"></script>
+<script src="./workspace_layouts.js?v=20261012-workflow1"></script>
+<link rel="stylesheet" href="./workflow_controls.css?v=20261012-workflow1">
+<script src="./workflow_controls.js?v=20261012-workflow1"></script>
+<script src="./workflow_evidence.js?v=20261012-workflow1"></script>
+<script src="./workflow_imports.js?v=20261012-workflow1"></script>
+<script src="./workspace_undo.js?v=20261012-workflow1"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>

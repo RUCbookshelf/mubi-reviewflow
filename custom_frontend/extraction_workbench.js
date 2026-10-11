@@ -79,6 +79,7 @@
     let currentTaskId = typeof S !== 'undefined' ? S.task?.task_id : null;
     let currentKey = null;        // 当前文献 zotero_key
     let expanded = false;
+    let draftActor = [S.user?.user_id,S.screener].join('|'), extractionDirty = false, extractionSaving = false;
     const drafts = new Map();     // `${taskVersion}|${key}` -> 草稿（模板选择+字段值+分析层输入）
 
     /* ---- 面板骨架 ---- */
@@ -368,7 +369,7 @@
 
     /* ---- 草稿（切篇暂存，内存级） ---- */
     function draftKey(key) {
-      return (currentTaskId || '') + '|' + (key || '');
+      return draftActor + '|' + (currentTaskId || '') + '|' + (key || '');
     }
     function draftFor(key) { return drafts.get(draftKey(key)) || null; }
     function stashDraft(key) {
@@ -414,6 +415,14 @@
       const cur = S.cbQueue[S.cbIdx];
       return cur || null;
     }
+    window.WorkflowExtraction = {
+      dirty:()=>extractionDirty, saving:()=>extractionSaving,
+      save:async()=>{await applyExtraction();return !extractionDirty;},
+      discard:()=>{extractionDirty=false;if(currentKey)drafts.delete(draftKey(currentKey));currentTemplateId='';tplSelect.value='';restoreCommonInputs({common:{}});renderFields(true);},
+      stash:()=>stashDraft(currentKey)
+    };
+    body.addEventListener('input',()=>{extractionDirty=true;});
+    body.addEventListener('change',()=>{extractionDirty=true;});
     function onArticleChanged() {
       try {
         const cur = currentArticle();
@@ -422,7 +431,7 @@
         if (currentKey) stashDraft(currentKey);
         version++;
         applyBtn.disabled = false;
-        currentKey = key;
+        currentKey = key;extractionDirty=false;
         restoreCommonInputs({common: {}});
         currentTemplateId = '';
         tplSelect.value = '';
@@ -474,7 +483,7 @@
         }
 
         ticket = ++version;
-        applyBtn.disabled = true;
+        applyBtn.disabled = true;extractionSaving=true;
         statusLine.textContent = T('正在计算效应量并保存…');
         try {
           const d = await api(taskApi() + '/extraction/' + encodeURIComponent(cur.zotero_key) + '/apply',
@@ -482,9 +491,9 @@
           if (ticket !== version) return;
           showResult(d, tpl);
           statusLine.textContent = '';
-          stashDraft(cur.zotero_key);
+          stashDraft(cur.zotero_key);extractionDirty=false;
         } finally {
-          if (ticket === version) applyBtn.disabled = false;
+          extractionSaving=false;if (ticket === version) applyBtn.disabled = false;
         }
       } catch (e) {
         if (ticket !== undefined && ticket !== version) return;
@@ -568,10 +577,11 @@
     document.addEventListener('reviewflow:workspace-changed', safe(e => { if (e && e.detail === 'bench') waitForCoding(); }));
     function onTaskChanged() {
       const taskId = S.task?.task_id || null;
-      if (taskId === currentTaskId) return;
+      const nextActor=[S.user?.user_id,S.screener].join('|');
+      if (taskId === currentTaskId && nextActor===draftActor) return;
       stashDraft(currentKey);
       version++;
-      currentTaskId = taskId;
+      currentTaskId = taskId;draftActor=nextActor;extractionDirty=false;
       if (!taskId) drafts.clear();
       currentKey = null; currentTemplateId = '';
       restoreCommonInputs({common: {}});

@@ -6,19 +6,20 @@
  let version=0,offset=0;
  const text=(tag,value)=>{const n=document.createElement(tag);n.textContent=String(value??'');return n;};
  async function load(){const ticket=++version;body.replaceChildren();
-  if(offset===0){$('#reportBody').replaceChildren();$('#batchFilesBody').replaceChildren();$('#crossDupBody').replaceChildren();$('#batchFilesWrap').style.display='none';$('#crossDupWrap').style.display='none';$('#goScreenBtn').style.display='none';$('#repHint').textContent=T('正在加载…');}
+  if(offset===0&&!window.WorkflowImports?.active()){$('#reportBody').replaceChildren();$('#batchFilesBody').replaceChildren();$('#crossDupBody').replaceChildren();$('#batchFilesWrap').style.display='none';$('#crossDupWrap').style.display='none';$('#goScreenBtn').style.display='none';$('#repHint').textContent=T('正在加载…');}
   if(!S.task){$('#repHint').textContent=T('请先选择任务');return;}
   const taskId=S.task.task_id,screener=S.screener,url=taskApi()+'/import-history',query=scrQ(),historyQuery=query+(query?'&':'?')+'limit=20&offset='+offset;body.textContent=T('正在加载…');
   try{const result=await api(url+historyQuery);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;body.replaceChildren();
-   if(offset===0&&result.imports?.length){const latest=result.imports[0].result||{};renderImportReport(latest);$('#goScreenBtn').style.display=latest.staged||latest.screening_ready===false?'none':'';}
+   if(offset===0&&!window.WorkflowImports?.active()&&result.imports?.length){const latest=result.imports[0].result||{};renderImportReport(latest);$('#goScreenBtn').style.display=latest.staged||latest.screening_ready===false?'none':'';}
    if(!result.imports?.length){body.textContent=T('尚无导入历史');
-    if(offset===0){const progress=await api(taskApi()+'/progress'+query);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;
+    if(offset===0&&!window.WorkflowImports?.active()){const progress=await api(taskApi()+'/progress'+query);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;
      if(progress.stage1?.total>0){$('#reportBody').replaceChildren(el('tr',{},el('td',{text:T('进入筛选（非重复总数）')}),el('td',{},el('b',{text:String(progress.stage1.total)}))));$('#repHint').textContent=T('当前任务')+' · '+T('尚无导入历史');$('#goScreenBtn').style.display='';}else $('#repHint').textContent=T('尚未导入 —— 选择当前任务与筛选员后，点击上方上传区开始。');}
     return;}
 
    for(const batch of result.imports){const section=document.createElement('section');section.className='import-history-batch';const date=new Date(batch.created_at);section.append(text('h4',Number.isNaN(date.getTime())?batch.created_at:date.toLocaleString(RFLang.get())));
     const r=batch.result||{},parsed=r.total_parsed??r.n_parsed,imported=r.imported??r.n_imported,duplicates=r.n_duplicates??((r.exact_duplicates||0)+(r.fuzzy_duplicates||0));
     section.append(text('p',[parsed==null?null:T('解析')+': '+parsed,imported==null?null:T('导入')+': '+imported,T('重复')+': '+duplicates].filter(Boolean).join(' · ')));
+    if(r.batch_id)section.append(el('button',{type:'button',class:'btn b-out sm',text:T('Review / resume'),onclick:()=>window.WorkflowImports?.open(r.batch_id)}));
     if(r.staged)section.append(text('p',T('导入已暂存，等待核验与激活。')+' '+String(r.pending_records??0)));
     const list=document.createElement('ul');for(const file of batch.files||[]){const line=document.createElement('li'),name=text('span',file.name+' · '+new Intl.NumberFormat(RFLang.get(),{maximumFractionDigits:1}).format(file.size/1024)+' KB'),download=el('button',{type:'button',class:'btn b-out',text:T('下载原文件')});download.setAttribute('aria-label',T('下载原文件')+' '+file.name);
      download.addEventListener('click',async()=>{download.disabled=true;try{const blob=await api(url+'/'+encodeURIComponent(batch.id)+'/files/'+encodeURIComponent(file.id)+query,{blob:true});const object=URL.createObjectURL(blob),a=document.createElement('a');a.href=object;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(object),1000);}catch(e){toast(T('导入失败：')+e.message,'warn');}finally{download.disabled=false;}});

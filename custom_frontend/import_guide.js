@@ -34,7 +34,7 @@
   summary.title=T(card.open?'收起为胶囊':'展开引导');chevron.textContent=card.open?'⌃':'⌄';
   list.replaceChildren();
   row(T('导入文献'),imported,()=>focusArea('dropZone'));
-  row(progress===null?T('人工核验：等待导入'):T('人工核验：{0}/{1} 组',checked,total),reviewed,()=>focusArea('titleDupWrap'));
+  row(staged?T('Review staged records and activate resolved imports'):progress===null?T('人工核验：等待导入'):T('人工核验：{0}/{1} 组',checked,total),reviewed,()=>focusArea(staged?'wf-import-review':'titleDupWrap'));
   row(T('检查轨迹是否开启'),!!state.traceVisited,()=>{visitTrace();go('trace');});
   message.textContent=error?T('引导进度加载失败，请点击重试。'):staged?T('导入已暂存，等待核验与激活。'):!imported?T('导入后自动显示待核验组数。'):total===0&&progress!==null?T('没有需要人工核验的候选组。'):T('完成所有待办后，引导卡片自动关闭。');
   message.classList.toggle('rf-guide-error',error);position();
