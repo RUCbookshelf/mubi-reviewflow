@@ -1,6 +1,6 @@
 /* ReviewFlow · 停止建议面板（召回证书 UI；规格书 2026-09-30 §7.2，API=W11 §6.2/§6.3 路由）。
  *
- * 筛选页底部「停止建议」面板：
+ * 筛选页状态栏「停止建议」悬浮卡片（统计和抽验语义不变）：
  *   - 常显两行（数字全部来自只读端点 GET /api/tasks/{id}/al/stop-certificate/check）：
  *       「已筛 1,234 / 5,678 条（21.8%）」「已发现 23 篇相关文献」+ 进度条；
  *   - 到达 look 点（50/70/85/95%）且本点未完成过抽验：建议随机抽验——
@@ -58,11 +58,47 @@
     const resultBox = el('div', { class: 'al-stop-result', hidden: '' });
     const streakLine = el('p', { class: 'hint', style: 'margin:6px 0 0;flex-shrink:0' });
     const startBtn = el('button', { class: 'btn b-out', type: 'button', text: T('开始抽验') });
-    const panel = el('div', { class: 'card al-stop-panel', id: 'alStopPanel', hidden: '' },
-      title,
+    const summaryLabel = el('span', { text: T('停止建议') });
+    const summaryCount = el('span');
+    const summaryBar = el('i');
+    const summary = el('button', { class: 'rf-stop-summary', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'alStopPanel' },
+      el('span', { class: 'rf-stop-mini', 'aria-hidden': 'true' }, summaryBar), summaryLabel, summaryCount);
+    const close = el('button', { class: 'rf-stop-collapse', type: 'button', 'aria-label': T('收起停止建议'), text: '⌃' });
+    const head = el('header', { class: 'rf-stop-head' }, title, close);
+    const pearl = document.querySelector('#alModeAI .rf-pearl-companion');
+    if (pearl) head.prepend(pearl.cloneNode(true));
+    title.id = 'alStopTitle';
+    const panel = el('div', { class: 'card al-stop-panel', id: 'alStopPanel', hidden: '', 'aria-labelledby': 'alStopTitle' },
+      head, el('div', { class: 'rf-stop-body' },
       el('div', { class: 'pg' }, el('div', { class: 'bar' }, barLine)),
-      statusLine, foundLine, lookBox, resultBox, streakLine, nextLine);
-    card.after(panel);
+      statusLine, foundLine, lookBox, resultBox, streakLine, nextLine));
+    const anchor = el('div', { class: 'rf-stop-anchor', hidden: '' }, summary, panel);
+    const statusRow = page.querySelector('.scr-status');
+    if (!statusRow) return;
+    statusRow.append(anchor);
+    function placePanel() {
+      if (panel.hidden) return;
+      const rect = summary.getBoundingClientRect(), width = Math.min(310, window.innerWidth - 24);
+      panel.style.width = width + 'px';
+      panel.style.maxHeight = Math.max(100, window.innerHeight - 24) + 'px';
+      panel.style.left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12)) + 'px';
+      panel.style.top = Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - panel.offsetHeight - 12)) + 'px';
+    }
+    function setOpen(open, restoreFocus) {
+      panel.hidden = !open;
+      summary.setAttribute('aria-expanded', String(open));
+      if (open) placePanel();
+      else if (restoreFocus && !anchor.hidden) summary.focus();
+    }
+    summary.addEventListener('click', () => setOpen(panel.hidden));
+    close.addEventListener('click', () => setOpen(false, true));
+    document.addEventListener('click', event => { if (!panel.hidden && !anchor.contains(event.target)) setOpen(false); });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !panel.hidden) { event.preventDefault(); setOpen(false, true); }
+    });
+    window.addEventListener('resize', placePanel);
+    document.querySelector('#appMain>.view')?.addEventListener('scroll', () => setOpen(false), { passive: true });
+    window.RFStoppingGuidance = Object.freeze({ close: () => setOpen(false) });
 
     /* ---- 状态 ---- */
     let version = 0;        // 网络票据
@@ -84,7 +120,8 @@
       trackedTask = id;
       version++;
       data = null; spot = null; result = null; doneLook = -1;
-      panel.hidden = true;
+      anchor.hidden = true;
+      setOpen(false);
       if (id && (typeof S !== 'undefined' && S.page === 'screen')) waitForScreen();
     }
 
@@ -103,9 +140,8 @@
 
     function onScreeningReady() {
       const id = taskId();
-      if (!id) { panel.hidden = true; return; }
+      if (!id) { anchor.hidden = true; setOpen(false); return; }
       trackedTask = id;
-      panel.hidden = false;
       refresh(true);
     }
 
@@ -113,7 +149,7 @@
        维度，按 W11 契约传空串原样回显；screener 与主应用同口径） ---- */
     function refresh(force) {
       const id = taskId();
-      if (!id || typeof api !== 'function' || typeof taskApi !== 'function') { panel.hidden = true; return; }
+      if (!id || typeof api !== 'function' || typeof taskApi !== 'function') { anchor.hidden = true; setOpen(false); return; }
       if (typeof S !== 'undefined' && S.screenLoadedTask !== id) { renderPanel(); return; }
       const now = Date.now();
       if (!force && now - lastFetchAt < 2000) { renderPanel(); return; }
@@ -160,10 +196,15 @@
       const screened = data.screened_count | 0;
       const found = data.found_relevant | 0;
       const frac = Number(data.progress_fraction) || 0;
+      anchor.hidden = false;
       title.textContent = T('停止建议');
+      summaryLabel.textContent = T('停止建议');
+      summaryCount.textContent = fmt(screened) + ' / ' + fmt(total);
+      close.setAttribute('aria-label', T('收起停止建议'));
       statusLine.textContent = T('已筛 {0} / {1} 条（{2}%）', fmt(screened), fmt(total), (frac * 100).toFixed(1));
       foundLine.textContent = T('已发现 {0} 篇相关文献', fmt(found));
       barLine.style.width = (total > 0 ? Math.min(100, screened / total * 100) : 0).toFixed(1) + '%';
+      summaryBar.style.width = barLine.style.width;
 
       const look = (data.look_fraction === null || data.look_fraction === undefined) ? null : Number(data.look_fraction);
       const atLook = !!(data.at_look_point && look !== null);
@@ -204,6 +245,9 @@
 
       const next = (data.next_look_fraction === null || data.next_look_fraction === undefined) ? null : Number(data.next_look_fraction);
       nextLine.textContent = (!atLook && next !== null) ? T('下一检查点：已筛 {0}%', String(Math.round(next * 100))) : '';
+      const notice = !spot && atLook && m > 0 && doneLook < look ? 'look:' + look : result ? 'result:' + result.look : '';
+      summary.classList.toggle('rf-stop-attention', !!notice);
+      placePanel();
     }
 
     /* ---- [开始抽验]：随机选 m 条置顶队列（抽样=用户手动，§10 不变量 3） ---- */
@@ -282,7 +326,7 @@
 
     /* ---- 事件接入：规格事件 + 既有桥接 ---- */
     document.addEventListener('reviewflow:screening-loaded', safe(onScreeningReady));
-    document.addEventListener('reviewflow:workspace-changed', safe(e => { if (e && e.detail === 'screen') waitForScreen(); }));
+    document.addEventListener('reviewflow:workspace-changed', safe(e => { setOpen(false); if (e && e.detail === 'screen') waitForScreen(); }));
     document.addEventListener('reviewflow:task-loaded', safe(onTask));
     document.addEventListener('reviewflow:task-context-changed', safe(onTask));
     document.addEventListener('reviewflow:language-changed', safe(renderPanel));

@@ -1,0 +1,105 @@
+/* Presentation only. Keep selectors confined to the three approved workspaces. */
+.rf-fulltext-reader>.page-cap,.rf-coding-reader>.page-cap{display:none}
+.rf-document-toolbar{gap:7px;margin:0 0 8px!important;flex-shrink:0}
+.rf-document-toolbar>.btn{font-size:12px;min-height:34px;padding:5px 10px}
+.rf-document-toolbar>.chip{font-size:12px;margin:0}
+#ftDocTitle,#cbTitle{flex:1;min-width:80px;font-size:13px!important;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+#ftNextDoc{margin-left:0!important}
+.rf-fulltext-reader .ft-layout{gap:0}
+.rf-fulltext-reader .ft-side{position:relative;inset:auto;width:290px;max-width:40%;flex-shrink:0;box-shadow:none;border-radius:0 12px 12px 0;overflow:auto}
+.rf-fulltext-reader .ft-side h3{padding-right:50px;flex-shrink:0}
+#rfCloseAnnotations{position:absolute;top:8px;right:8px;padding:3px 7px;min-height:28px;font-size:11px}
+.rf-fulltext-reader .pdfstage{min-width:0}
+.rf-fulltext-reader .rf-notes-open .pdfstage{border-radius:12px 0 0 12px}
+.rf-fulltext-reader .ft-decide{padding:10px 0 0;margin-top:0;border:0;box-shadow:none;background:transparent}
+.rf-fulltext-reader .ft-decide>.row{display:grid;grid-template-columns:1fr 1fr 1fr 1.6fr;gap:9px}
+.rf-fulltext-reader .ft-decide .btn{width:100%;min-height:42px;justify-content:center}
+.rf-fulltext-reader #ftReason{max-width:none!important;width:100%;min-width:0}
+.rf-fulltext-reader #ftCustomReason{grid-column:1/-1;max-width:none!important}
+.rf-fulltext-reader .ft-decide .hint{display:none}
+body.rf-document-focus #appMain>.top,body.rf-document-focus #rfNavigationSheet{display:none!important}
+body.rf-document-focus.fp-fulltext .view{padding:10px}
+.rf-coding-reader .bench-layout{--rf-coding-share:40%;gap:0}
+.rf-coding-reader .bench-form{width:var(--rf-coding-share);min-width:240px;max-width:48%;border:1px solid var(--border);border-radius:12px;background:var(--surface);overflow:hidden}
+.rf-coding-reader .bench-layout.no-pdf .bench-form{min-width:0;max-width:none;width:auto}
+.rf-coding-divider{align-self:stretch;width:18px;flex:0 0 18px;border:0;background:transparent;color:var(--muted);cursor:col-resize;font:22px var(--font-body);touch-action:none}
+.bench-layout.no-pdf .rf-coding-divider{display:none}
+.rf-coding-header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--border);font-size:13px;flex-shrink:0}
+.rf-coding-header .chip{font-size:11px;margin:0;background:transparent;padding:0;color:var(--muted)}
+.rf-coding-reader #cbForms{padding:0 13px 10px}
+.rf-coding-reader #cbForms>.card:has(.cb-v){border:0;box-shadow:none;border-radius:0;padding:0;margin:0!important;border-bottom:1px solid var(--border)}
+.rf-coding-reader #cbForms summary{display:flex;align-items:center;gap:7px;list-style:none;cursor:pointer;padding:12px 0;font-size:13px}
+.rf-coding-reader #cbForms summary::-webkit-details-marker{display:none}
+.rf-coding-reader #cbForms summary b{flex:1;min-width:0;overflow-wrap:anywhere}
+.rf-coding-reader #cbForms summary:after{content:'+';color:var(--muted);font-size:17px}
+.rf-coding-reader #cbForms details[open]>summary:after{content:'−'}
+.rf-coding-reader #cbForms .input{max-width:none!important;width:100%;min-width:0}
+.rf-coding-reader #cbForms .row{margin:0 0 12px!important}
+.rf-coding-savebar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;flex-shrink:0;padding:10px 13px;border-top:1px solid var(--border)}
+.rf-coding-savebar .btn{font-size:12px;min-height:34px;padding:6px 9px}
+.rf-coding-savebar .chip{font-size:12px;margin:0}
+.rf-coding-reader .rf-extract{margin:0 13px 10px;max-height:45%}
+.rf-prisma-workspace>h2{display:none}
+.rf-prisma-workspace>.hint{font-size:12px;margin:0 0 10px}
+.rf-prisma-toolbar{padding:10px 12px!important}
+.rf-prisma-toolbar .btn{font-size:12px;min-height:34px}
+.rf-prisma-toolbar .hint{font-size:12px;min-width:0!important;line-height:1.6;margin:0}
+.rf-prisma-toolbar>.row{align-items:center;gap:8px}
+.rf-prisma-toolbar #prImportCap{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.rf-prisma-instructions{position:relative}
+.rf-prisma-instructions>summary{cursor:pointer;padding:6px 8px;font-size:12px;list-style:none;color:var(--muted)}
+.rf-prisma-instructions>summary::-webkit-details-marker{display:none}
+.rf-prisma-instructions>.hint{position:absolute;left:0;top:100%;width:320px;max-width:calc(100vw - 40px);padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:var(--shadow);z-index:12}
+.rf-prisma-toolbar #prGenerate{margin-left:auto}
+.rf-prisma-layout{display:grid;grid-template-columns:minmax(280px,320px) minmax(0,1fr);gap:14px;align-items:start}
+.rf-prisma-inputs,.rf-prisma-preview{min-width:0}
+.rf-prisma-inputs>.card{margin:0!important;border-bottom:0;border-radius:0;padding:0 13px;box-shadow:none}
+.rf-prisma-inputs>.card:first-child{border-radius:12px 12px 0 0}
+.rf-prisma-inputs>.card:last-child{border-radius:0 0 12px 12px;border-bottom:1px solid var(--border)}
+.rf-prisma-section>summary{display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer;padding:13px 0;font-size:13px;overflow-wrap:anywhere}
+.rf-prisma-section>summary::-webkit-details-marker{display:none}
+.rf-prisma-section>summary>b,.rf-prisma-section>summary>span{flex:1;min-width:0}
+.rf-prisma-section>summary:after{content:'+';color:var(--muted);font-size:17px}
+.rf-prisma-section[open]>summary:after{content:'−'}
+.rf-prisma-section .row{gap:8px;align-items:flex-start}
+.rf-prisma-section .row>div{flex:1 1 115px;min-width:0!important}
+.rf-prisma-section .lbl,.rf-prisma-section .btn{font-size:12px}
+.rf-prisma-section .input{font-size:12px;max-width:100%!important;width:100%;min-width:0}
+.rf-prisma-section>div:last-child,.rf-prisma-section>button:last-child{margin-bottom:12px}
+.rf-prisma-section #prRowsDb>.row,.rf-prisma-section #prRowsOther>.row{display:grid;grid-template-columns:minmax(0,1fr) 72px 28px}
+.rf-prisma-section #prRowsDb>.row>select,.rf-prisma-section #prRowsOther>.row>select{grid-column:1/-1}
+.rf-prisma-section #prReasonsScreen>.row,.rf-prisma-section #prReasonsFull>.row{display:grid;grid-template-columns:minmax(0,1fr) 72px 28px}
+.rf-prisma-citation{margin:10px 0 12px}
+.rf-prisma-preview{position:sticky;top:0;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.rf-prisma-preview-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
+.rf-prisma-export-actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.rf-prisma-export-actions>.btn{font-size:11px;min-height:28px;padding:4px 7px}
+.rf-prisma-extra-exports{position:relative}
+.rf-prisma-extra-exports>summary{cursor:pointer;padding:3px 9px;font-size:18px;list-style:none}
+.rf-prisma-extra-exports>summary::-webkit-details-marker{display:none}
+.rf-prisma-export-menu{position:absolute;right:0;top:100%;min-width:180px;padding:8px;display:grid;gap:6px;z-index:10;border:1px solid var(--border);border-radius:9px;background:var(--surface);box-shadow:var(--shadow)}
+.rf-prisma-export-menu .btn{font-size:12px}
+.rf-prisma-preview #prIssues{padding:0 12px}
+.rf-prisma-preview #prView{margin:0;border:0;border-radius:0 0 12px 12px;max-width:100%}
+.rf-prisma-preview #prView svg{width:100%;max-width:100%;height:auto}
+.rf-prisma-empty{padding:24px 14px;text-align:center}
+.rf-prisma-empty[hidden],.rf-prisma-extra-exports[hidden]{display:none!important}
+@media(max-width:900px){.rf-prisma-layout{grid-template-columns:1fr}.rf-prisma-preview{position:static}.rf-prisma-preview #prView{max-height:none}}
+@media(max-width:720px){
+ .rf-prisma-instructions[open]{flex-basis:100%;order:5}
+ .rf-prisma-instructions>.hint{position:static;width:auto;max-width:none;margin-top:6px}
+ body.fp-bench .view{overflow:auto}body.fp-bench .rf-coding-reader.on{flex:none}
+ .rf-coding-reader .bench-layout{flex-direction:column;min-height:0;gap:12px;flex:none}
+ .rf-coding-reader .bench-pdf{flex:none;height:65vh;min-height:320px}
+ .rf-coding-reader .bench-form{width:100%;max-width:none;min-width:0;max-height:none;overflow:visible;flex:none}
+ .rf-coding-reader #cbForms{overflow:visible!important;flex:none!important}
+ .rf-coding-reader .rf-extract{max-height:none}
+ .rf-coding-divider{display:none}
+ body.fp-fulltext .rf-fulltext-reader .ft-layout{flex-direction:column}
+ .rf-fulltext-reader .ft-side{width:100%;max-width:none;max-height:35vh;flex:0 0 auto;border-radius:0 0 12px 12px}
+ .rf-fulltext-reader .rf-notes-open .pdfstage{border-radius:12px 12px 0 0;min-height:150px}
+ .rf-fulltext-reader .ft-decide>.row{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .rf-fulltext-reader #ftReason{grid-column:1/-1}
+ .rf-document-toolbar>#ftDocTitle,.rf-document-toolbar>#cbTitle{flex-basis:calc(100% - 120px);max-width:100%}
+}
+@media(pointer:coarse){.rf-document-toolbar>.btn,.rf-prisma-workspace .btn{min-height:44px}.rf-prisma-extra-exports>summary{min-height:44px}.rf-prisma-section .input,.rf-coding-reader #cbForms .input{font-size:16px}}

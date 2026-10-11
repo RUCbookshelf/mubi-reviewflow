@@ -45,7 +45,7 @@
 ['每日保存的变更','Daily saved changes','Changements enregistrés par jour','Изменения по дням','Cambios diarios guardados','日ごとの保存済み変更','Alterações salvas por dia','Täglich gespeicherte Änderungen','Дневне сачуване измене','일별 저장 변경'],
 ['文献初筛','Title and abstract screening','Sélection sur titre et résumé','Первичный отбор литературы','Cribado por título y resumen','文献の一次スクリーニング','Triagem por título e resumo','Titelsichtung und Abstractprüfung',"Скрининг наслова и сажетака",'제목·초록 1차 선별'],
 ['文献复筛','Full-text screening','Sélection en texte intégral','Отбор по полному тексту','Cribado de texto completo','全文スクリーニング','Triagem de texto completo','Volltextprüfung',"Селекција према пуном тексту",'전문 2차 선별'],
-['文献编码','Reference coding','Codage des références','Кодирование публикаций','Codificación de referencias','文献のコーディング','Codificação de referências','Literaturkodierung',"Кодирање референци",'문헌 코딩'],
+['数据提取与编码','Data extraction & coding','Extraction et codage des données','Извлечение и кодирование данных','Extracción y codificación de datos','データ抽出・コーディング','Extração e codificação de dados','Datenextraktion und Kodierung',"Екстракција и кодирање података",'데이터 추출 및 코딩'],
 ['请先选择任务','Select a task first','Veuillez d’abord sélectionner une tâche','Сначала выберите задачу','Seleccione primero una tarea','先にタスクを選択してください','Selecione uma tarefa primeiro','Wählen Sie zuerst eine Aufgabe aus',"Најпре изаберите задатак",'먼저 작업을 선택하세요'],
 ['重试','Retry','Réessayer','Повторить','Reintentar','再試行','Tentar novamente','Erneut versuchen',"Покушај поново",'다시 시도'],
 ['查看轨迹','View trace','Voir le journal','Просмотреть историю','Ver el registro','操作履歴を見る','Ver o histórico','Verlauf ansehen',"Погледај траг",'기록 보기'],

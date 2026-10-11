@@ -2,6 +2,15 @@
 
 ### English
 
+#### Updated 2.0.4 build — reader and workspace layouts
+
+- The sidebar is now a shared floating button that expands into a navigation sheet on every workspace. The same container grows over 360 ms, options appear in staggered groups, and closing reverses the motion. The original product logo remains beside 木笔 ReviewFlow. Keyboard navigation, small screens and reduced-motion preferences are supported.
+- Title/abstract screening prioritizes the article reader with a compact toolbar, a details panel, full-width decision controls and a Focus mode. Stopping guidance opens as a compact floating card with Pearl Companion, freeing the space below the article.
+- Full-text screening uses a compact document toolbar, Focus mode and an annotation panel docked beside the PDF. Existing PDF navigation, highlights, uploads and screening decisions are retained.
+- **Data extraction & coding** replaces the inconsistent Literature coding / Reference coding labels across all ten interface languages. The PDF/form split is adjustable by dragging or arrow keys, coding dimensions can be folded individually, and the existing Save/Next controls sit beside the form. The structured extraction panel remains available.
+- PRISMA inputs are arranged in collapsible sections beside a larger diagram preview. Import, validation, citation selection and all export formats are retained. The existing PRISMA engine, reporting fields, template structures and consistency checks are unchanged; concept sample content is not included in the application.
+- These layout changes do not change the backend, database schema or saved research decisions. Version remains **2.0.4**; the new installers replace the earlier assets under the same release tag.
+
 #### Team collaboration
 
 - Server task lists refresh through real-time SSE notifications after invitations and role changes, with polling every 30 seconds while the page is visible as a fallback.
@@ -25,6 +34,15 @@
 - This release does not include Remote Operation or differential updates. The existing update entry downloads an installer. Keep and back up the existing data directory when upgrading.
 
 ### 中文
+
+#### 2.0.4 更新构建 — 阅读与工作区布局
+
+- 所有工作区使用统一的悬浮侧边栏：同一容器在 360 毫秒内从按钮展开为导航面板，选项分组依次出现，关闭时沿原路径逆向收回；「木笔 ReviewFlow」前保留产品原有 logo。支持键盘操作、小屏幕及系统减少动态效果的偏好。
+- 文献初筛以阅读区为中心，工具栏更紧凑，详情可按需展开，决策按钮占满整行，并提供专注阅读。停止建议改为带 Pearl Companion 的悬浮卡片，不再占用文献下方空间。
+- 文献复筛采用紧凑的文献工具栏和专注阅读；批注面板在开启时停靠 PDF 旁。原有 PDF 导航、高亮、上传及筛选决策功能保留。
+- 文献编码名称统一为 **数据提取与编码**，同步十种界面语言。PDF 与表单的宽度可通过拖动或方向键调整，各编码维度可独立折叠，原有保存及下一篇按钮移至表单旁；结构化数据提取区域保留。
+- PRISMA 输入区改为可折叠分区，与更大的流程图预览并排显示。保留导入、校验、引文格式及全部导出格式；现有 PRISMA 引擎、报告字段、模板结构和数量一致性校验不变，概念稿的示例内容未写入产品。
+- 本次布局更新不修改后端、数据库结构或已保存的研究决策。版本号仍为 **2.0.4**，新安装包覆盖同一发布标签下的原有文件。
 
 #### 团队协作
 

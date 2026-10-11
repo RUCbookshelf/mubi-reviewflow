@@ -1,0 +1,55 @@
+/* The existing sidebar controls live in one FAB-to-sheet overlay on every page. */
+body.rf-navigation-sheet {--rf-sidebar-width:0px}
+body.rf-navigation-sheet>.footer,body.rf-navigation-sheet[data-workspace="analysis"]>.footer {left:0}
+#rfNavigationSheet {
+  position:fixed;left:12px;top:8px;width:44px;height:44px;z-index:60;
+  overflow:hidden;border:1px solid transparent;border-radius:22px;
+  background:var(--primary);color:var(--ink);box-shadow:0 4px 14px rgba(0,0,0,.16);
+  font:13px/1.5 var(--font-body);isolation:isolate;
+}
+#rfNavigationSheet[hidden] {display:none!important}
+#rfNavigationSheet .rf-sheet-header {position:relative;height:46px;flex-shrink:0}
+#rfNavigationSheet #rfSidebarToggle {
+  display:flex;align-items:center;justify-content:center;position:absolute;left:0;top:0;
+  width:42px;height:42px;min-height:42px;padding:0;border:0;border-radius:21px;
+  background:transparent;color:var(--surface);font:inherit;cursor:pointer;transition:none;
+}
+#rfNavigationSheet #rfSidebarToggle:hover {background:color-mix(in srgb,var(--primary-light) 28%,transparent)}
+#rfNavigationSheet #rfSidebarToggle svg {width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+#rfNavigationSheet .lockup {position:absolute;left:49px;top:7px;display:flex;align-items:center;gap:7px;height:32px;margin:0;white-space:nowrap}
+#rfNavigationSheet .lockup img {width:28px;height:28px;flex-shrink:0}
+#rfNavigationSheet .lockup .nm {font-size:16px;line-height:1.3;font-weight:600;letter-spacing:-.3px}
+#rfNavigationSheet .lockup .sub {display:none}
+#rfSheetContent {position:absolute;left:0;top:46px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin}
+#rfNavigationSheet #appShell.sb,body[data-workspace="analysis"] #rfNavigationSheet #appShell.sb,body.rf-sidebar-collapsed #rfNavigationSheet #appShell.sb {
+  position:relative;inset:auto;width:100%;height:auto;min-height:0;padding:0 10px 12px;
+  border:0;background:transparent;transform:none;transition:none;box-shadow:none;
+  overflow:visible;flex-shrink:0;
+}
+#rfNavigationSheet #appShell .grp {font-size:11px;letter-spacing:0;margin:7px 0 3px;padding:0 8px}
+#rfNavigationSheet #appShell .nav button {min-height:31px;margin:1px 0;padding:5px 8px;border-radius:6px;font-size:12px;line-height:1.5;gap:7px}
+#rfNavigationSheet #appShell .nav button.on,body[data-workspace="analysis"] #rfNavigationSheet #appShell .nav button.on {background:var(--primary-light);color:var(--primary-dark);box-shadow:inset 3px 0 var(--primary)}
+#rfNavigationSheet #appShell .nav svg {width:16px;height:16px;flex-shrink:0}
+#rfNavigationSheet #appShell .fld {display:grid;grid-template-columns:57px minmax(0,1fr);align-items:center;gap:5px;font-size:11px;margin-top:7px}
+#rfNavigationSheet #appShell .fld select {height:29px;min-width:0;margin:0;padding:4px 5px;font-size:11px;border-radius:7px}
+#rfNavigationSheet #appShell .pg {margin:8px 3px 4px}
+#rfNavigationSheet #appShell .pg .bar {height:3px}
+#rfNavigationSheet #appShell .pg .cap {font-size:11px}
+#rfNavigationSheet #appShell .sidebar-help {margin-top:9px;padding-top:6px}
+#rfNavigationSheet #appShell #whoami {font-size:11px;margin-top:7px;padding-top:7px}
+#rfNavigationSheet #appShell #logoutBtn {font-size:11px;min-height:28px}
+#rfNavigationSheet [data-rf-sheet-reveal] {opacity:0}
+#rfNavigationSheet :focus-visible {outline:2px solid var(--primary);outline-offset:2px}
+body.rf-navigation-sheet #appMain>.top {padding-left:70px}
+body.rf-navigation-sheet #mobileMenuBtn,#rfNavigationSheet #rfCloseNavigation {display:none!important}
+body.rf-navigation-sheet #mobileNavBackdrop {display:none!important}
+@media(max-width:760px){
+ body.rf-navigation-sheet.mobile-nav-open #mobileNavBackdrop {display:block!important;position:fixed;inset:0;z-index:59;background:rgba(15,23,42,.12)}
+ body.rf-navigation-sheet #appMain>.top .rf-breadcrumb {flex-basis:100%}
+}
+@media(pointer:coarse){
+ #rfNavigationSheet #appShell .nav button,#rfNavigationSheet #appShell #logoutBtn {min-height:44px}
+ #rfNavigationSheet #appShell .fld {grid-template-columns:1fr}
+ #rfNavigationSheet #appShell .fld select {height:44px;font-size:16px}
+}
+@media(prefers-reduced-motion:reduce){#rfNavigationSheet *,#rfNavigationSheet *::before {transition:none!important;scroll-behavior:auto!important}}

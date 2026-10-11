@@ -1,0 +1,93 @@
+/* Reader-first initial screening. All rules are scoped to this workspace. */
+.rf-reader-page>h2{display:none}
+.rf-reader-page>.al-mode{gap:8px;margin:0 0 8px;flex-shrink:0}
+.rf-reader-page .rf-screen-order{display:flex;gap:3px;padding:3px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.rf-reader-page .rf-screen-order button{border:0;border-radius:9px;padding:4px 10px;min-height:32px;font-size:12px}
+.rf-reader-page .rf-screen-order .rf-pearl-companion{width:23px;height:23px}
+.rf-reader-page .al-profile-picker{font-size:12px}
+.rf-reader-page .al-profile-picker .input{font-size:12px;max-width:190px;min-height:34px}
+.rf-reader-page:not(.rf-screen-ai) .al-profile-picker{display:none}
+.rf-reader-page .rf-screen-tools{display:flex;align-items:center;gap:8px;margin-left:auto}
+.rf-reader-page .rf-screen-tools>button{border-radius:9px;min-height:34px;padding:5px 10px;font-size:12px}
+.rf-screen-icon{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.rf-reader-page .scr-status{margin:0 0 10px!important;gap:8px;font-size:12px;flex-shrink:0}
+.rf-reader-page #scrHistCap{display:none}
+.rf-reader-page #scrHistCounts{font-size:12px;white-space:normal;overflow:visible}
+.rf-reader-page #scrPos{font-size:12px;margin:0}
+.rf-reader-page #scrCard{padding:20px 24px 0;overflow:visible}
+.rf-reader-page .scr-title{font-size:clamp(20px,1.7vw,27px);line-height:1.32;margin:0 0 8px;text-wrap:pretty}
+.rf-reader-page #scrBody .scr-meta{flex-wrap:wrap;gap:6px;margin-bottom:10px;overflow:visible;white-space:normal;font-size:12px}
+.rf-reader-page .scr-meta .scr-authors{flex:0 0 100%;max-width:100%;order:-1;line-height:1.5}
+.rf-reader-page .scr-meta .scr-journal{max-width:65%;background:transparent;padding:0;border-radius:0;color:var(--muted);font-size:12px}
+.rf-reader-page .scr-meta .scr-year{background:transparent;padding:0;font-size:12px;color:var(--muted)}
+.rf-reader-page .scr-meta .scr-type,.rf-reader-page .scr-meta .scr-doi{display:none}
+.rf-reader-page .rf-screen-details{margin-left:auto;display:inline-flex;align-items:center;gap:6px;border:0;border-radius:8px;background:var(--primary-light);color:var(--primary-dark);padding:4px 8px;font:12px var(--font-body);cursor:pointer}
+.rf-reader-page .rf-screen-metadata{padding:10px 12px;margin:0 0 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);font-size:12px;overflow-wrap:anywhere}
+.rf-reader-page .rf-screen-metadata p{margin:3px 0;line-height:1.6}
+.rf-reader-page #scrBody .absbox{border:0;background:transparent;padding:8px 0 18px;border-radius:0;font-size:var(--fs-view);line-height:1.8;white-space:pre-wrap}
+.rf-reader-page .scr-decisions{display:grid;grid-template-columns:1fr 1fr 1fr 1.45fr;gap:9px;align-items:stretch;border-top:1px solid var(--border);padding:14px 0;margin:0!important}
+.rf-reader-page .scr-decisions>.btn{width:100%;min-height:44px;padding:10px;font-size:14px;justify-content:center}
+.rf-reader-page .scr-decisions>.input{width:100%;min-width:0;max-width:none!important;min-height:44px;font-size:12px}
+.rf-reader-page #excCustomReason{grid-column:1/-1}
+.rf-reader-page .rf-focus-strip{display:none;align-items:center;gap:10px;justify-content:space-between;flex-shrink:0;margin:0 0 12px;font-size:12px;color:var(--muted)}
+.rf-reader-page .rf-focus-strip button{display:inline-flex;align-items:center;gap:6px;font-size:12px;min-height:34px}
+.rf-stop-anchor{margin-left:auto;flex-shrink:0;max-width:100%}
+.rf-stop-summary{display:inline-flex;align-items:center;gap:8px;min-height:32px;padding:5px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--muted);font:12px var(--font-body);cursor:pointer}
+.rf-stop-summary:hover,.rf-stop-summary[aria-expanded="true"],.rf-stop-summary.rf-stop-attention{background:var(--primary-light);color:var(--primary-dark);border-color:var(--primary)}
+.rf-stop-mini{width:32px;height:4px;overflow:hidden;border-radius:3px;background:var(--border)}
+.rf-stop-mini i{display:block;height:100%;width:0;background:var(--primary)}
+#alStopPanel{position:fixed;z-index:45;width:310px;max-width:calc(100vw - 24px);margin:0;padding:0;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 26px rgba(0,0,0,.16);font:13px/1.5 var(--font-body);overflow:auto;transform-origin:top right;animation:rf-stop-popup 260ms cubic-bezier(.2,.8,.2,1)}
+#alStopPanel[hidden],.rf-stop-anchor[hidden]{display:none!important}
+#alStopPanel .rf-stop-head{display:flex;align-items:center;gap:10px;padding:12px 14px}
+#alStopPanel .rf-stop-head h3{flex:1;min-width:0;font:600 13px/1.5 var(--font-body);margin:0}
+#alStopPanel .rf-pearl-companion{width:30px;height:30px}
+#alStopPanel .rf-pearl-companion *{animation:none}
+#alStopPanel .rf-pearl-face{opacity:0}
+#alStopPanel .rf-pearl-face.calm{opacity:1}
+#alStopPanel .rf-stop-collapse{width:28px;min-height:28px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:20px var(--font-body);cursor:pointer}
+#alStopPanel .rf-stop-collapse:hover{background:var(--primary-light)}
+#alStopPanel .rf-stop-body{margin:0 14px;padding:12px 0 14px;border-top:1px solid var(--border)}
+#alStopPanel .hint{font-size:12px;line-height:1.6}
+#alStopPanel .pg{margin:0 0 10px}
+#alStopPanel .pg .bar{height:5px}
+#alStopPanel .al-stop-look,#alStopPanel .al-stop-result{font-size:12px;line-height:1.6;margin-top:12px}
+#alStopPanel .al-stop-look .btn{width:100%;justify-content:center;min-height:36px}
+#alStopPanel .rf-stop-body>p:last-child:not(:empty){margin-top:12px!important;padding:8px 10px;background:var(--primary-light);color:var(--primary-dark);border-radius:8px}
+@keyframes rf-stop-popup{0%{opacity:0;transform:translateY(-9px) scale(.94)}70%{opacity:1;transform:translateY(1px) scale(1.01)}100%{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){#alStopPanel{animation:none}}
+.rf-screen-help{position:fixed;z-index:45;width:340px;max-width:calc(100vw - 24px);padding:14px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 26px rgba(0,0,0,.16);font:12px/1.6 var(--font-body);max-height:calc(100vh - 36px);overflow:auto}
+.rf-screen-help[hidden],.rf-screen-metadata[hidden]{display:none!important}
+.rf-screen-help>header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.rf-screen-help>header button{border:0;background:transparent;color:var(--muted);padding:4px;cursor:pointer}
+.rf-screen-help .hint{font-size:12px;margin:8px 0!important}
+.rf-screen-help #alBadge{font-size:12px;margin:8px 0}
+.rf-screen-help #alHint{display:block}
+body.rf-screen-focus.fp-screen #appShell,body.rf-screen-focus.fp-screen #appMain>.top{display:none!important}
+body.rf-screen-focus.fp-screen .rf-reader-page>.al-mode,body.rf-screen-focus.fp-screen .rf-reader-page>.scr-status{display:none!important}
+body.rf-screen-focus.fp-screen .rf-focus-strip{display:flex}
+body.rf-screen-focus.fp-screen .view{padding:12px}
+/* Retain the full reader on shorter desktop windows; actions remain below the abstract. */
+@media(min-width:480px) and (min-height:600px){
+ body.fp-screen .view:has(.rf-reader-page){display:flex;flex-direction:column;overflow:hidden}
+ body.fp-screen .rf-reader-page.on{display:flex;flex-direction:column;flex:1;min-height:0}
+ body.fp-screen .rf-reader-page #scrCard{display:flex;flex-direction:column;flex:1;min-height:0}
+ body.fp-screen .rf-reader-page #scrBody{display:flex;flex-direction:column;flex:1;min-height:0}
+ body.fp-screen .rf-reader-page #scrBody .absbox{flex:1;min-height:96px;max-height:none;overflow:auto}
+}
+@media(max-width:760px){
+ .rf-reader-page #scrCard{padding:16px 16px 0}
+ .rf-reader-page .scr-decisions{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+ .rf-reader-page .scr-decisions>.input{grid-column:1/-1}
+ .rf-reader-page .scr-decisions>.btn{font-size:13px;padding:9px 5px}
+ .rf-reader-page .scr-meta .scr-journal{max-width:70%}
+ .rf-reader-page .al-profile-picker .input{max-width:170px}
+}
+@media(max-width:479px),(max-height:599px){
+ body.fp-screen .rf-reader-page #scrBody .absbox{max-height:55vh;min-height:200px;overflow:auto}
+ .rf-reader-page .scr-title{font-size:20px}
+}
+@media(pointer:coarse){
+ .rf-reader-page .al-mode button,.rf-reader-page .rf-screen-details,.rf-screen-help>header button{min-height:44px}
+ .rf-stop-summary,#alStopPanel .rf-stop-collapse{min-height:44px}
+ .rf-reader-page .al-profile-picker .input,.rf-reader-page .scr-decisions>.input{font-size:16px}
+}

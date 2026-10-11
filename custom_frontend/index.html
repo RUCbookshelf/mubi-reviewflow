@@ -715,12 +715,15 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 #importBusyPct { font-variant-numeric:tabular-nums; }
 </style>
 <link rel="stylesheet" href="./analysis_workbench.css?v=20261005-button-borders1">
-<link rel="stylesheet" href="./workspace_shell.css?v=20261005-sidebar1">
+<link rel="stylesheet" href="./workspace_shell.css?v=20261011-sheet2">
 <link rel="stylesheet" href="./navigation_hierarchy.css?v=20260929-ui3">
 <link rel="stylesheet" href="./workspace_surfaces.css?v=20260929-ui3">
 <link rel="stylesheet" href="./research_trace.css?v=20261011-trace-topbar2">
 <link rel="stylesheet" href="./update_check.css?v=20261005-update1">
 <link rel="stylesheet" href="./import_guide.css?v=20261011-pearl1">
+<link rel="stylesheet" href="./screen_reader.css?v=20261011-reader1">
+<link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
+<link rel="stylesheet" href="./workspace_layouts.css?v=20261011-layouts3">
 </head>
 <body>
 
@@ -842,7 +845,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div class="grp">编码</div>
   <nav class="nav">
     <button type="button" data-nav="scheme"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M4 6h16M4 12l2 1 2-1 2 1 2-1 2 1 2-1 2 1 2-1M4 18l2 1 2-1 2 1 2-1 2 1 2-1 2 1 2-1" fill="none" stroke="currentColor" stroke-width="1.8"/></svg> 编码方案</button>
-    <button type="button" data-nav="bench"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M4 5h16v14H4z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8 11 2 2 4-4M8 16h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg> 文献编码</button>
+    <button type="button" data-nav="bench"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M4 5h16v14H4z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8 11 2 2 4-4M8 16h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg> 数据提取与编码</button>
   </nav>
   <div class="grp">分析</div>
   <nav class="nav">
@@ -983,7 +986,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 13.6 9l4.4 1.6-4.4 1.6L12 16.7l-1.6-4.5L6 10.6 10.4 9Z"/><path d="M18.5 3.5v3M17 5h3M6.5 16.5v3M5.5 18h2"/></svg><b>AI 智能排序</b><span>根据已有筛选决策调整待筛文献的顺序，最终决定仍由筛选员作出</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5.5 5.5"/></svg><b>独立筛选</b><span>逐篇阅读题目与摘要，纳入 / 待定 / 排除（键盘 1/2/3），决策实时入库</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5c2.4-1.1 4.8-1.1 8 0 3.2-1.1 5.6-1.1 8 0v13c-2.4-1.1-4.8-1.1-8 0-3.2-1.1-5.6-1.1-8 0Z"/><path d="M12 5.5v13"/></svg><b>全文复筛</b><span>阅读 PDF 原文做二次筛选，荧光笔高亮与批注实时保存，吸底决策条</span></div>
-    <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16.5" rx="2"/><path d="m8.5 11 2 2 4-4.5M8.5 17h7"/></svg><b>文献编码</b><span>自定义编码维度（单选 / 多选 / 填空），左侧同步阅读 PDF，逐篇填写保存</span></div>
+    <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16.5" rx="2"/><path d="m8.5 11 2 2 4-4.5M8.5 17h7"/></svg><b>数据提取与编码</b><span>自定义编码维度（单选 / 多选 / 填空），左侧同步阅读 PDF，逐篇填写保存</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.2" cy="12" r="5.7"/><circle cx="14.8" cy="12" r="5.7"/></svg><b>Cohen's κ 一致性</b><span>多筛选员双盲独立完成后自动计算 kappa 系数，冲突清单辅助逐条仲裁</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3.5" width="7.5" height="6" rx="1.5"/><rect x="12.5" y="14.5" width="7.5" height="6" rx="1.5"/><path d="M7.75 9.5v5h8.5"/></svg><b>PRISMA 流程图</b><span>一键生成 PRISMA 2020 官方结构流程图，导出 SVG / PNG（300 DPI）/ PDF</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 15v-4m5 4V7m5 8v-6"/></svg><b>数据分析</b><span>合并效应量，查看森林图，并进行亚组和敏感性分析。</span></div>
@@ -2169,7 +2172,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 
 <!-- ============ 文献编码 ============ -->
 <section class="page" data-p="bench">
-  <div class="page-cap"><b>文献编码</b><span>逐篇编码（队列 = 复筛纳入，空时回退初筛纳入）· 左侧同步阅读 PDF 原文 · 「保存本篇」逐维度写入服务器</span></div>
+  <div class="page-cap"><b>数据提取与编码</b><span>逐篇编码（队列 = 复筛纳入，空时回退初筛纳入）· 左侧同步阅读 PDF 原文 · 「保存本篇」逐维度写入服务器</span></div>
   <div class="row" style="margin-top:0">
     <button class="btn b-out" id="cbPrev">‹</button>
     <span class="chip" id="cbLabel">—</span>
@@ -3907,7 +3910,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["导出决策","Export decisions","Exporter les décisions","Экспорт решений","Exportar decisiones","判定のエクスポート","Exportar decisões","Entscheidungen exportieren","Извоз одлука", "판정 내보내기"],
   ["合并仲裁","Merge & arbitrate","Fusion et arbitrage","Объединение и разрешение разногласий","Fusión y arbitraje","マージと仲裁","Mesclar e arbitrar","Zusammenführen und Schlichten","Обједињавање и решавање неслагања", "병합 및 조정"],
   ["编码方案","Coding scheme","Schéma de codage","Схема кодирования","Esquema de codificación","コーディング設計","Esquema de codificação","Kodierschema","Шема кодирања", "코딩 체계"],
-  ["文献编码","Literature coding","Codage des publications","Кодирование публикаций","Codificación de literatura","文献コーディング","Codificação da literatura","Literaturkodierung","Кодирање литературе", "문헌 코딩"],
+  ["数据提取与编码","Data extraction & coding","Extraction et codage des données","Извлечение и кодирование данных","Extracción y codificación de datos","データ抽出・コーディング","Extração e codificação de dados","Datenextraktion und Kodierung","Екстракција и кодирање података", "데이터 추출 및 코딩"],
   ["任务名","Task","Tâche","Задача","Tarea","タスク","Tarefa","Aufgabe","Задатак", "작업 이름"],
   ["筛选员", "Screener", "Évaluateur", "Скринер", "Revisor", "スクリーナー", "Revisor", "Screener", "Члан тима за одабир", "검토자"],
   ["初筛进度 —","Screening progress —","Avancement de la sélection —","Прогресс первичного отбора —","Progreso del cribado —","スクリーニング進捗 —","Progresso da triagem —","Screening-Fortschritt —","Напредак скрининга —", "초록 선별 진행률 —"],
@@ -5037,8 +5040,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261002-language-wrap-final1"></script>
-<script src="./interface_locale.js?v=20261011-screen-history1"></script>
-<script src="./research_trace_locale.js?v=20261002-default-on1"></script>
+<script src="./interface_locale.js?v=20261011-layouts1"></script>
+<script src="./research_trace_locale.js?v=20261011-layouts1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
@@ -5046,7 +5049,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
 <script src="./help_locale.js?v=20261011-roles1"></script>
 <script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
-<script src="./navigation_registry.js?v=20261002-ui1"></script>
+<script src="./navigation_registry.js?v=20261011-layouts2"></script>
 
 <script>
 'use strict';
@@ -5262,6 +5265,7 @@ $('#themeSel').addEventListener('change', e => setTheme(e.target.value));
 /* ---------- 页面切换 ---------- */
 const mobileNavQuery = window.matchMedia('(max-width:760px)');
 function setMobileNav(open) {
+  if (window.RFNavigationSheet) { window.RFNavigationSheet.setOpen(open); return; }
   const active = open && mobileNavQuery.matches;
   const wasOpen = document.body.classList.contains('mobile-nav-open');
   document.body.classList.toggle('mobile-nav-open', active);
@@ -5484,7 +5488,7 @@ async function refreshTeam() {
       const row = el('div', {class:data.can_manage ? 'team-member can-manage' : 'team-member'},
         el('strong', {text: member.username, translate:'no'}),
         count(member.stage1, T('文献初筛')), count(member.stage2, T('文献复筛')),
-        count(member.coding, T('文献编码')));
+        count(member.coding, T('数据提取与编码')));
       if (data.can_manage) row.append(teamMemberActions(taskId, member, data.grants || [], member.user_id === data.owner_user_id));
       list.append(row);
     }
@@ -6107,7 +6111,7 @@ function renderScreen() {
   let i = S.scrIdx;
   const cur = S.articles[i];
   if (!cur || S.decisions[cur.zotero_key]) S.scrIdx = i = nextUndecided();
-  $('#scrPos').textContent = T('第 {0} / {1} 篇', i < 0 ? S.articles.length : i + 1, S.articles.length);
+  $('#scrPos').textContent = '#' + (i < 0 ? S.articles.length : i + 1) + ' / ' + S.articles.length;
   const body = $('#scrBody');
   body.textContent = '';
   if (i < 0) {
@@ -6148,15 +6152,15 @@ function renderScreen() {
     screenTitle(r, score),
     el('div', { class: 'hint scr-meta' },
       el('span', {class:'scr-authors', title:nz(r.authors), text: nz(r.authors) || '—'}),
-      el('span', { class: 'chip', title:nz(r.journal), text: nz(r.journal) || '—' }),
+      el('span', { class: 'chip scr-journal', title:nz(r.journal), text: nz(r.journal) || '—' }),
       r.year != null && r.year !== '' ? el('span', { class: 'chip scr-year', title:String(r.year), text: String(r.year) }) : null,
-      el('span', { class: 'chip', title:nz(r.item_type), text: nz(r.item_type) || '—' }),
-      nz(r.doi) ? el('span', { class: 'chip', title:'DOI ' + nz(r.doi), text: 'DOI ' + nz(r.doi) }) : null),
+      el('span', { class: 'chip scr-type', title:nz(r.item_type), text: nz(r.item_type) || '—' }),
+      nz(r.doi) ? el('span', { class: 'chip scr-doi', title:'DOI ' + nz(r.doi), text: 'DOI ' + nz(r.doi) }) : null),
     typeof score === 'number' ? el('div', { class: 'al-score', title: 'AI 相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练' },
       el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(score * 100) + '%' })),
       el('span', { class: 'num', text: T('AI 相关度 {0}%', (score * 100).toFixed(1)) })) : null,
     el('div', { class: 'absbox', text: nz(r.abstract) ? T('摘要：') + nz(r.abstract) : T('（无摘要）') }),
-    el('div', { class: 'row', style: 'margin-bottom:0' },
+    el('div', { class: 'row scr-decisions', style: 'margin-bottom:0' },
       el('button', { class: 'btn b-inc', id: 'btnInc', text: '1 纳入', onclick: () => screenDecide('include') }),
       el('button', { class: 'btn b-may', id: 'btnMay', text: '2 待定', onclick: () => screenDecide('maybe') }),
       el('button', { class: 'btn b-exc', id: 'btnExc', text: '3 排除', onclick: () => screenDecide('exclude') }),
@@ -6715,11 +6719,11 @@ $('#ftReason').addEventListener('change', () => {
 $('#ftInc').addEventListener('click', () => fullDecide('include'));
 $('#ftMay').addEventListener('click', () => fullDecide('maybe'));
 $('#ftExc').addEventListener('click', () => fullDecide('exclude'));
-/* 批注侧栏开合：浮层覆盖 PDF 右缘，默认收起给 PDF 让出全部宽度 */
+/* 批注侧栏默认收起；展示层在开启时将其停靠在 PDF 旁。 */
 $('#ftSideToggle').addEventListener('click', () => {
   const open = $('#ftSide').classList.toggle('open');
   $('#ftSideToggle').classList.toggle('toggled', open);
-  toast(open ? '批注面板已展开（浮层，不影响 PDF 宽度）' : '批注面板已收起', 'info');
+  toast(T(open ? '批注面板已展开' : '批注面板已收起'), 'info');
 });
 
 /* ---------- 导出（真实下载） ---------- */
@@ -8823,9 +8827,10 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_dta_exploratory_lr.js?v=20260929-ui3"></script>
 <script src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
 <script src="./analysis_navigation.js?v=20261002-ui1"></script>
-<script src="./workspace_shell.js?v=20261005-sidebar1"></script>
+<script src="./workspace_shell.js?v=20261011-sheet2"></script>
+<script src="./sidebar_sheet.js?v=20261011-sheet2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./research_trace.js?v=20261011-trace-topbar2"></script>
+<script src="./research_trace.js?v=20261011-layouts2"></script>
 <script src="./import_guide.js?v=20261011-pearl1"></script>
 <script src="./import_history.js?v=20261002-report-restore1"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
@@ -8833,11 +8838,13 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./update_check.js?v=20261005-update1"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
 <script src="./al_profile_selector.js?v=20261005-placeholder1"></script>
-<script src="./al_stop_panel.js?v=20260930-al1"></script>
+<script src="./al_stop_panel.js?v=20261011-reader2"></script>
 <script src="./al_blind_mode.js?v=20260930-al1"></script>
+<script src="./screen_reader.js?v=20261011-reader2"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
 <script src="./extraction_workbench.js?v=20261002-ui1"></script>
+<script src="./workspace_layouts.js?v=20261011-layouts3"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>

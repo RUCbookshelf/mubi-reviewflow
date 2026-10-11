@@ -11,7 +11,7 @@
     {id:'export',label:'导出决策',stage:'screening'},
     {id:'prisma',label:'PRISMA 流程图',stage:'screening'},
     {id:'scheme',label:'编码方案',stage:'coding'},
-    {id:'bench',label:'文献编码',stage:'coding'},
+    {id:'bench',label:'数据提取与编码',stage:'coding'},
     {id:'analysis',label:'数据分析',stage:'analysis'},
     {id:'trace',label:'轨迹',stage:null},
     {id:'help',label:'帮助',stage:null}
