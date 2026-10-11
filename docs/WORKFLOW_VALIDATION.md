@@ -12,7 +12,7 @@ Scope: isolated `codex/workflow-controls`, based on `56cf864`; final review base
 | Private evidence | Optional/required notes and images, validation/staging, current field mapping, atomic form and Undo snapshot; shared evidence source selector and evidence-only scope progress | `coscreen/coding_evidence.py`, coding/Undo modules, `custom_backend/workspace_undo_api.py`, `workflow_evidence.js` |
 | Trace | Authorized current article reopening, latest-save guarded Undo; current field target resolved from actor lifecycle and semantic definition, with owner mapping required for canonical evidence | Trace API/runtime, `research_trace.js`, `workflow_controls.js` |
 | UI and localization | Six Home tabs, source controls, Save/Discard/Stay, shared policy-read readiness, stale response protection, context clearing, explicit conflict guidance, 190 ten-language workflow rows | `index.html`, workflow modules, locale files, workspace/reader integrations |
-| Cache and packaging | Common `20261012-workflow5` on every branch-modified external script/style; source packaging includes new modules and Pillow | `index.html`, packaging manifests and dependency files |
+| Cache and packaging | Common `20261012-workflow6` on every branch-modified external script/style; source packaging includes new modules and Pillow | `index.html`, packaging manifests and dependency files |
 
 The legacy `coscreen.living_review` library still exposes incremental functions for external Python consumers. Repository source inspection found no remaining production application caller or scheduled entry path after replacing the two HTTP call chains. This release does not redesign that standalone library or add automatic post-activation Living Review analysis.
 
@@ -28,13 +28,13 @@ The legacy `coscreen.living_review` library still exposes incremental functions 
 | M4 | Canonical endpoint accepts authorized `source_id`, returns allowed sources and scope/overall evidence requirement counts; personal coding header is not replaced by evidence counts | Coding-only member narrows multiple sources, observes overlap/deduplicated total, Paused/revoked access, private values unchanged |
 | M5 | Upload-triggered cleanup of unattached staging older than seven days documented separately from attached/detached Undo binaries | Retention/cleanup remains unexecuted in this wave |
 | M6 | Grammatical Serbian blind-mode phrase | Native-language review remains separate |
-| M7 | All current cache claims use workflow5; prior workflow3/workflow4 claims explicitly historical | Hard refresh and inspect final asset requests |
+| M7 | All current cache claims use workflow6; prior workflow3/workflow4 claims explicitly historical | Hard refresh and inspect final asset requests |
 
 ## Source gates
 
 The final repair implementer ran source-only Python `ast.parse` over the 16 Python files changed since `56cf864`; all parsed. Node `--check` passed for 25 standalone scripts (changed files plus all language packs) and both extracted inline scripts from `index.html`; neither inline body nor application code was executed. `git diff --check` passed. Final small source adjustments received syntax/diff rechecking before commit.
 
-The existing source audit expectations were updated to 190 rows and common workflow5. The final repair did not execute application imports, automated tests, databases/migrations, HTTP, browser automation, preview processes, package builds, main-checkout operations or installed-client operations. Static syntax establishes parseability only. The controller owns the fictional-data preview at loopback port 18738 and performs separate manual acceptance.
+The existing source audit expectations were updated to 190 rows and common workflow6. The final repair did not execute application imports, automated tests, databases/migrations, HTTP, browser automation, preview processes, package builds, main-checkout operations or installed-client operations. Static syntax establishes parseability only. The controller owns the fictional-data preview at loopback port 18738 and performs separate manual acceptance.
 
 ## Bounded manual evidence
 
@@ -62,3 +62,6 @@ No migration is added by this repair wave. The branch has additive workflow vers
 Version markers and transaction guards implement repeatability in source; this wave did not run migrations or restore them. See [WORKFLOW_CONTROLS.md](WORKFLOW_CONTROLS.md) for exact storage and API contracts.
 
 For authorized maintenance, stop writers, preserve a current consistent copy of all owner/actor/account/shared databases, original imports, PDFs, assets including staged/detached images, task metadata and configuration. Record the code commit and work on a separate copy. Never restore pre-workflow snapshots over later research; they omit later decisions, evidence and imports. Older code does not enforce current source/Maybe/evidence policies or protected imports. Do not run mixed-version writers, delete added tables, renumber fields or manually activate staged records. Restore-on-copy and compatibility review must precede any production rollback. No rollback, merge, push, release or installation change was performed here.
+
+
+Final-wave continuation: the controller found that clearing the initial-screen reader removes its dynamically rendered decision buttons before the reset loop disables them. The reset now checks for each control before disabling it, so missing stage controls cannot interrupt policy readiness. The scoped reviewer also found a duplicated Serbian conjunction; the duplicate was removed. The common asset cache version is workflow6. These two source corrections received Node syntax and diff checks; their runtime acceptance belongs to the controller's subsequent check.

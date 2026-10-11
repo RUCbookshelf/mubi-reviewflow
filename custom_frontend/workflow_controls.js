@@ -436,7 +436,7 @@
     for(const id of ['scrBody','scrHist','scrHistCounts','scrPos','ftDocTitle','ftDocLabel','ftDocChip','cbTitle','cbForms','cbLabel','cbStatus','cbSaveProg','capScreen','capFull','capCode','annList'])document.getElementById(id)?.replaceChildren();
     for(const id of ['wf-current-task','wf-policy','wf-personal-maybe','wf-reasons','wf-requirements','wf-sources'])document.getElementById(id)?.replaceChildren(n('p','Loading scope…'));
     for(const id of ['barScreen','barFull','barCode']){const bar=document.getElementById(id);if(bar)bar.style.width='0%';}
-    for(const id of ['btnInc','btnMay','btnExc','ftInc','ftMay','ftExc','cbSave'])document.getElementById(id).disabled=true;
+    for(const id of ['btnInc','btnMay','btnExc','ftInc','ftMay','ftExc','cbSave']){const control=document.getElementById(id);if(control)control.disabled=true;}
     for(const stage of stages){const host=tools(stage);host.querySelector('select').replaceChildren();host.querySelector('select').disabled=true;host.querySelector('.wf-scope-progress').textContent=T('Loading scope…');host.querySelector('.wf-readonly').textContent='';}
     if(S.task&&S.user)run(()=>W.refresh('context',false));
   });
