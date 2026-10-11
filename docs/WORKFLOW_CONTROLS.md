@@ -126,7 +126,7 @@ Deliver the backend and frontend together. New Python modules are `coscreen/revi
 
 Windows packaging recursively copies `custom_backend`, `custom_frontend`, and `coscreen`; its exclusions do not exclude these files. Linux/macOS add the complete frontend/backend directories and PyInstaller follows the explicit Python imports from the launcher/main modules into the new `coscreen` modules. Pillow is declared in both backend and packaged runtime requirements. This is source inspection only: no installer or frozen executable was built or launched.
 
-Every branch-modified external script/style reference in `index.html`, including import guide/history, now uses `20261012-workflow3`. Language packs changed for Machine Learning terminology share that version. Hard-refreshing an old cached script can make an apparent missing Trace action disappear; cache versioning is part of the delivery and must accompany the HTML. Do not publish only the new locale file.
+Every branch-modified external script reference in `index.html`, including import guide/history and changed language packs, uses `20261012-workflow3`. The workflow stylesheet uses `20261012-workflow4` after the controller-observed Trace drawer menu clipping correction: its dropdown is anchored inside the drawer and constrained to the available content width, while table menu placement stays unchanged. Hard-refreshing an old cached script can make an apparent missing Trace action disappear; cache versioning is part of the delivery and must accompany the HTML. Do not publish only the new locale file.
 
 ## Maintenance rollback
 

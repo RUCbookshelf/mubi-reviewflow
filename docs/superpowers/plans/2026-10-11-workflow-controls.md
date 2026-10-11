@@ -54,6 +54,7 @@ Approved by the user on 2026-10-11. Base: 56cf864. Branch: codex/workflow-contro
 - Migration/API/private-image/packaging/maintenance rollback documentation is in [WORKFLOW_CONTROLS.md](../../WORKFLOW_CONTROLS.md). Migration execution and rollback-on-copy acceptance remain pending.
 - Controller reported the Task 4 suspected missing Trace actions resolved after refreshing stale frontend cache; the current event-detail response exposed authorized canonical evidence actions. This observation does not validate all Task 5 assets.
 - Remaining minor review observation: a rejected task-selector change can invalidate an automatic refresh render transaction. Retained in the final review ledger; not changed by Task 5.
+- Controller-observed Trace drawer mouse menu clipping received a scoped CSS correction after localization commit `016fdb3`: left anchor below the toggle, bounded drawer width, wrapping labels. The workflow stylesheet cache version is `20261012-workflow4`; scripts remain `20261012-workflow3`. Final mouse verification is pending controller.
 
 ## Delivery checks completed; manual acceptance pending
 
