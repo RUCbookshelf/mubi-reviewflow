@@ -55,6 +55,7 @@ Approved by the user on 2026-10-11. Base: 56cf864. Branch: codex/workflow-contro
 - Controller reported the Task 4 suspected missing Trace actions resolved after refreshing stale frontend cache; the current event-detail response exposed authorized canonical evidence actions. This observation does not validate all Task 5 assets.
 - Remaining minor review observation: a rejected task-selector change can invalidate an automatic refresh render transaction. Retained in the final review ledger; not changed by Task 5.
 - Controller-observed Trace drawer mouse menu clipping received a scoped CSS correction after localization commit `016fdb3`: left anchor below the toggle, bounded drawer width, wrapping labels. The workflow stylesheet cache version is `20261012-workflow4`; scripts remain `20261012-workflow3`. Final mouse verification is pending controller.
+- Controller manual subset evidence: keyboard Trace correction/current private note and latest Undo restored the prior blank-note gap without changing coding/screening values; invalid PNG rejection cleared busy state; Batch B cumulative counts and Database D exact-match source activation/reimport preserved the seven-article catalogue and existing Maybe history. These fictional-data observations are bounded examples, detailed in WORKFLOW_CONTROLS.md; two nonexistent-fixture upload attempts are excluded. They do not mark every functional acceptance box complete.
 
 ## Delivery checks completed; manual acceptance pending
 
