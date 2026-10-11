@@ -9,6 +9,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -85,7 +86,31 @@ class WorkflowRuntime:
             "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": store.sources(ctx.owner_db),
             "evidence_fields": [{**d, "dimension_id": d['id']}
                                 for d in coding_evidence.field_rows(ctx.owner_db)],
-            "mapping_issues": coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1]}
+            "mapping_issues": coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1],
+            'submission_evidence': self.submission_evidence_capability(ctx)}
+
+    @staticmethod
+    def can_submit_coding(ctx: WorkflowContext) -> bool:
+        return bool(ctx.owner is not None and task_collaboration.authorize_action(
+            ctx.collaboration_db, ctx.user['user_id'], 'coding:submit', task_id=ctx.info.task_id))
+
+    def submission_evidence_capability(self, ctx: WorkflowContext) -> dict:
+        from coscreen.workspace_undo import SUBMISSION_EVIDENCE
+        base = f'/api/tasks/{quote(ctx.info.task_id, safe="")}'
+        return {'available': self.can_submit_coding(ctx), 'access_context': SUBMISSION_EVIDENCE,
+                'queue_url': base + '/coding/submission-evidence',
+                'read_url_template': base + '/coding/submission-evidence/{zotero_key}',
+                'save_url': base + '/coding/submission-evidence',
+                'upload_url': base + '/coding/submission-evidence/uploads',
+                'undo_url': base + '/undo/coding'}
+
+    @staticmethod
+    def validate_evidence_dimensions(ctx: WorkflowContext, dimensions: set[int]) -> None:
+        mapped, issues, _ = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)
+        if not dimensions <= set(mapped):
+            raise HTTPException(409, {'code': 'requirement_mapping_gap',
+                'message': 'Evidence fields must map exactly to the current task coding scheme.',
+                'dimension_ids': sorted(dimensions - set(mapped)), 'mapping_issues': issues})
 
     @contextmanager
     def schema_guard(self, task_id: str, user: dict, db: Path):
@@ -116,30 +141,60 @@ class WorkflowRuntime:
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             context = TraceContext(task_id=task_id, actor_id=user['user_id'])
+            can_submit = self.can_submit_coding(ctx)
+            mapped_dimensions = set(coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[0])
             with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
                 linked = store.has_table(conn, 'workspace_undo') and 'request_id' in {
                     r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
                 for event in events:
                     stage, key = event.get('stage'), event.get('subject_id')
                     imported = bool(event.get('origin_store_id') or event.get('source') == 'import')
-                    document_action = event.get('action') in {'baseline_value', 'baseline_rater_revision'} or any(word in event.get('action', '') for word in ('decision', 'coding_value', 'coding_note', 'coding_evidence', 'rater_record'))
+                    document_action = event.get('action') in {'baseline_value', 'baseline_rater_revision'} or any(
+                        word in event.get('action', '') for word in
+                        ('decision', 'coding_value', 'coding_note', 'coding_evidence', 'rater_record'))
+                    operation = None
+                    local_event = not imported and event.get('partition') == 'personal'
+                    if linked and local_event and event.get('source') == 'manual' and event.get('request_id'):
+                        operation = conn.execute(
+                            'SELECT id,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? '
+                            'AND stage=? AND zotero_key=? AND request_id=? ORDER BY id DESC LIMIT 1',
+                            (task_id, str(user['user_id']), stage, key, event['request_id'])).fetchone()
+                    # Restorations have an explicit server-assigned link to their original operation.
+                    restore_link = str(event.get('source_record_id') or '')
+                    if linked and local_event and event.get('source') == 'undo' and restore_link.startswith('workspace_undo:'):
+                        identity = restore_link.removeprefix('workspace_undo:')
+                        if identity.isdecimal():
+                            operation = conn.execute(
+                                'SELECT id,before_json,after_json FROM workspace_undo WHERE id=? AND task_id=? '
+                                'AND actor_id=? AND stage=? AND zotero_key=?',
+                                (int(identity), task_id, str(user['user_id']), stage, key)).fetchone()
+                    before = json.loads(operation[1]) if operation else {}
+                    after = json.loads(operation[2]) if operation else {}
+                    canonical_access = stage == 'coding' and workspace_undo.is_submission_evidence(before, after)
                     own = self.article_row(ctx.actor_db, key) if key else None
                     canonical = self.article_row(ctx.owner_db, key) if key else None
-                    can_open = bool(not imported and document_action and stage in store.STAGES and
-                        (own or (canonical and canonical.get('is_duplicate_of') is None)))
-                    reason = self.writable_reason(ctx, stage, key) if can_open else 'unlinked_subject'
+                    canonical_exists = bool(canonical and canonical.get('is_duplicate_of') is None)
+                    can_open = bool(not imported and document_action and stage in store.STAGES and (own or canonical_exists))
+                    if canonical_access:
+                        can_open = can_open and can_submit and canonical_exists
+                    if canonical_access and not can_submit:
+                        reason = 'coding_submission_access_denied'
+                    else:
+                        reason = self.writable_reason(ctx, stage, key, canonical_only=canonical_access) if can_open else 'unlinked_subject'
+                    if canonical_access and reason is None and not {int(d) for d in after.get('values', {})} <= mapped_dimensions:
+                        reason = 'requirement_mapping_gap'
+                    access_context = workspace_undo.SUBMISSION_EVIDENCE if canonical_access else 'personal'
+                    item_path = ('coding/submission-evidence/' if canonical_access else f'work-items/{stage}/')
+                    item_url = f'/api/tasks/{quote(task_id, safe="")}/{item_path}{quote(str(key), safe="")}'
                     actions = {'can_open': can_open, 'can_undo': False, 'undo_entry_id': None,
-                               'writable': can_open and reason is None, 'reason': reason or 'no_linked_latest_save'}
-                    if can_open and linked and event.get('source') == 'manual' and event.get('request_id') and event.get('partition') == 'personal':
+                               'writable': can_open and reason is None, 'reason': reason or 'no_linked_latest_save',
+                               'access_context': access_context, 'work_item_url': item_url if can_open else None}
+                    if can_open and operation and event.get('source') == 'manual':
                         last = workspace_undo._latest(conn, context, stage)
-                        if last:
-                            row = conn.execute('SELECT request_id,zotero_key,after_json FROM workspace_undo WHERE id=?', (last['entry_id'],)).fetchone()
-                            if row[0] == event['request_id'] and row[1] == key:
-                                after = json.loads(row[2])
-                                current = workspace_undo.snapshot(conn, stage, key, [int(d) for d in after.get('values', {})], evidence='evidence' in after)
-                                same = {name: value for name, value in current.items() if name in after} == after
-                                actions.update(undo_entry_id=last['entry_id'], can_undo=reason is None and same,
-                                               reason=reason or (None if same else 'saved_state_changed'))
+                        if last and last['entry_id'] == operation[0]:
+                            same = workspace_undo.snapshot_matches(conn, stage, key, before, after)
+                            actions.update(undo_entry_id=last['entry_id'], can_undo=reason is None and same,
+                                           reason=reason or (None if same else 'saved_state_changed'))
                     event['actions'] = actions
 
     def notify(self, ctx: WorkflowContext, reason: str) -> None:
@@ -298,8 +353,7 @@ class WorkflowRuntime:
                 if not ctx.can_manage:
                     raise HTTPException(403, "Only a verified task owner can manage workflow settings.")
             else:
-                if canonical_only and (stage != "coding" or ctx.owner is None or not task_collaboration.authorize_action(
-                        ctx.collaboration_db, user["user_id"], "coding:submit", task_id=task_id)):
+                if canonical_only and (stage != 'coding' or not self.can_submit_coding(ctx)):
                     raise HTTPException(403, "Task coding submission access denied.")
                 self.sync_catalog(ctx)
                 reason = self.writable_reason(ctx, stage, key, canonical_only=canonical_only)
@@ -347,25 +401,58 @@ class WorkflowRuntime:
                     "policy_version": state["version"], "allowed_sources": self.allowed_sources(ctx, stage),
                     "paused": state["stages"][stage]["mode"] == "paused"}
 
-    def work_item(self, task_id: str, user: dict, stage: str, key: str) -> dict:
+    def submission_evidence_queue(self, task_id: str, user: dict) -> dict:
         with self.lock(task_id):
             ctx = self.context(task_id, user)
+            if not self.can_submit_coding(ctx):
+                raise HTTPException(403, 'Task coding submission access denied.')
+            self.sync_catalog(ctx)
+            # Screen eligibility supplies only current canonical, reviewed catalogue
+            # records. Coding source policy applies; actor screening decisions do not.
+            canonical, _ = self.eligible(ctx, 'screen')
+            rows = self.scoped(ctx, 'coding', canonical)
+            queue = [{'key': row['zotero_key'], 'zotero_key': row['zotero_key'],
+                      **{field: row.get(field) for field in ('title', 'authors', 'journal', 'year', 'doi', 'item_type')}}
+                     for row in rows]
+            state = store.settings(ctx.owner_db)
+            return {'queue': queue, 'total': len(queue), 'policy_version': state['version'],
+                    'paused': state['stages']['coding']['mode'] == 'paused',
+                    'submission_evidence': self.submission_evidence_capability(ctx)}
+
+    def work_item(self, task_id: str, user: dict, stage: str, key: str, *, submission_evidence: bool = False) -> dict:
+        with self.lock(task_id):
+            ctx = self.context(task_id, user)
+            if submission_evidence and (stage != 'coding' or not self.can_submit_coding(ctx)):
+                raise HTTPException(403, 'Task coding submission access denied.')
             self.sync_catalog(ctx)
             row = self.article_row(ctx.owner_db, key)
+            if submission_evidence and (row is None or row.get('is_duplicate_of') is not None):
+                raise HTTPException(404, 'Canonical coding article not found.')
             if row is None:
                 # An actor's own historical active record remains readable.
                 row = self.article_row(ctx.actor_db, key)
             if row is None:
                 raise HTTPException(404, "Article not found.")
-            reason = self.writable_reason(ctx, stage, key)
+            reason = self.writable_reason(ctx, stage, key, canonical_only=submission_evidence)
             try:
                 raw = json.loads(row.get("raw_json") or "{}")
             except (ValueError, TypeError):
                 raw = {}
             article = Article.from_dict({**row, "raw": raw}).to_dict()
             article["raw"] = json.loads(article.pop("raw_json") or "{}")
+            submission = {}
+            if submission_evidence:
+                from coscreen.workspace_undo import SUBMISSION_EVIDENCE
+                mapped, _, required = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)
+                submission = {'submission_evidence': self.submission_evidence_capability(ctx),
+                              'access_context': SUBMISSION_EVIDENCE,
+                              'dimensions': [{**dim, 'field_id': mapped.get(dim['id']),
+                                              'required': mapped.get(dim['id']) in required,
+                                              'writable': dim['id'] in mapped and reason is None}
+                                             for dim in coding_evidence.field_rows(ctx.actor_db)]}
             return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
                     **(self.evidence_state(ctx, key) if stage == 'coding' else {}),
+                    **submission,
                     "writable": reason is None, "reason": reason,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 

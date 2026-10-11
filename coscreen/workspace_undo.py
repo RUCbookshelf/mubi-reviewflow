@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
     from coscreen.research_trace import TraceContext
 
 STAGES = ("screen", "fulltext", "coding")
+SUBMISSION_EVIDENCE = 'coding_submission_evidence'
 _DECISION_COLUMNS = "decision,exclusion_reason,notes,tags,screened_at,updated_at"
 _TABLES = {"screen": "decisions", "fulltext": "stage2_decisions"}
 
@@ -92,14 +94,38 @@ def _exists(conn: sqlite3.Connection) -> bool:
     return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_undo'").fetchone())
 
 
+def is_submission_evidence(before: dict, after: dict) -> bool:
+    """Only server-marked evidence-only operations can use canonical coding access."""
+    return (before.get('access_context') == after.get('access_context') == SUBMISSION_EVIDENCE
+            and isinstance(before.get('evidence'), dict) and isinstance(after.get('evidence'), dict)
+            and isinstance(before.get('values'), dict)
+            and before['values'] == after.get('values')
+            and set(before['evidence']) == set(after['evidence']) == set(before['values'])
+            and before.get('definitions') == after.get('definitions')
+            and before.get('stable_fields') == after.get('stable_fields'))
+
+
+def snapshot_matches(conn: sqlite3.Connection, stage: str, key: str, before: dict, after: dict) -> bool:
+    dims = [int(d) for d in after.get('values', {})]
+    current = snapshot(conn, stage, key, dims, evidence='evidence' in after)
+    if stage == 'coding' and is_submission_evidence(before, after):
+        current['access_context'] = SUBMISSION_EVIDENCE
+    # Historical entries only protect the state they actually captured.
+    return {name: value for name, value in current.items() if name in after} == after
+
+
 def _latest(conn: sqlite3.Connection, context: TraceContext, stage: str) -> dict | None:
     if not _exists(conn):
         return None
     row = conn.execute(
-        "SELECT id,zotero_key FROM workspace_undo WHERE task_id=? AND actor_id=? AND stage=? "
+        "SELECT id,zotero_key,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? AND stage=? "
         "AND undone=0 ORDER BY id DESC LIMIT 1", (context.task_id, str(context.actor_id), stage),
     ).fetchone()
-    return {"entry_id": row[0], "zotero_key": row[1]} if row else None
+    if not row:
+        return None
+    canonical = stage == 'coding' and is_submission_evidence(json.loads(row[2]), json.loads(row[3]))
+    return {'entry_id': row[0], 'zotero_key': row[1],
+            'access_context': SUBMISSION_EVIDENCE if canonical else 'personal'}
 
 
 def latest(db: str | Path, context: TraceContext, stage: str) -> dict | None:
@@ -130,18 +156,16 @@ def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> di
         if not row:
             raise ValueError("There is no saved operation to undo.")
         key, before_json, after_json, undone = row
+        before, after = json.loads(before_json), json.loads(after_json)
+        if stage == 'coding' and is_submission_evidence(before, after):
+            context = replace(context, source_record_id=f'workspace_undo:{entry_id}')
         if not undone:
             last = _latest(conn, context, stage)
             if not last or last["entry_id"] != entry_id:
                 raise ValueError("Undo history changed. Reload and try again.")
             if not conn.execute("SELECT 1 FROM articles WHERE zotero_key=?", (key,)).fetchone():
                 raise ValueError("This article is no longer available for Undo.")
-            before, after = json.loads(before_json), json.loads(after_json)
-            dims = [int(d) for d in after.get("values", {})]
-            current = snapshot(conn, stage, key, dims, evidence='evidence' in after)
-            # Historical entries only protect the state they actually captured.
-            current = {name: value for name, value in current.items() if name in after}
-            if current != after:
+            if not snapshot_matches(conn, stage, key, before, after):
                 raise ValueError("The saved result or downstream work has changed. Undo cannot overwrite newer changes.")
             begin_capture_transaction(conn, context, stage)
             if stage in _TABLES:
@@ -190,4 +214,5 @@ def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> di
             conn.execute("UPDATE workspace_undo SET undone=1 WHERE id=?", (entry_id,))
         restored = (_row(conn, _TABLES[stage], key) if stage in _TABLES else None)
         return {"undone": True, "zotero_key": key, "latest": _latest(conn, context, stage),
+                'access_context': SUBMISSION_EVIDENCE if stage == 'coding' and is_submission_evidence(before, after) else 'personal',
                 "decision": (dict(zip(_DECISION_COLUMNS.split(","), restored)) if restored else None)}

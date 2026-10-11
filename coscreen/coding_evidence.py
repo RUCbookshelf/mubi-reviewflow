@@ -127,6 +127,11 @@ def mapping(actor_db: str | Path, owner_db: str | Path) -> tuple[dict[int, str],
     return result, issues, required
 
 
+def has_note_text(text: str | None) -> bool:
+    """Use Python's Unicode whitespace semantics without changing stored text."""
+    return bool((text or '').strip())
+
+
 def evidence_state(db: str | Path, key: str, owner_db: str | Path, task_id: str = '') -> dict:
     mapped, issues, required = mapping(db, owner_db)
     evidence = {}
@@ -141,7 +146,7 @@ def evidence_state(db: str | Path, key: str, owner_db: str | Path, task_id: str 
             evidence[str(did)] = {'text': note[1] or '' if note else '', 'images': images,
                                   'field_id': fid, 'required': fid in required}
     missing = [{'field_id': fid, 'dimension_id': did} for did, fid in mapped.items()
-               if fid in required and not evidence[str(did)]['text'].strip() and not evidence[str(did)]['images']]
+               if fid in required and not has_note_text(evidence[str(did)]['text']) and not evidence[str(did)]['images']]
     missing += [{'field_id': i['field_id'], 'dimension_id': None} for i in issues]
     return {'evidence': evidence, 'evidence_complete': not missing, 'missing_evidence': missing,
             'mapping_issues': issues}
@@ -163,9 +168,12 @@ def complete_keys(db: str | Path, owner_db: str | Path, keys: list[str]) -> set[
         for dim, key in conn.execute("SELECT dimension_id,zotero_key FROM coding_values WHERE TRIM(COALESCE(value,''))<>''"):
             filled.setdefault(key, set()).add(dim)
         if required_dims and workflow.has_table(conn, 'coding_notes'):
-            image_clause = ' OR EXISTS(SELECT 1 FROM coding_note_images i WHERE i.note_id=n.id)' if workflow.has_table(conn, 'coding_note_images') else ''
-            for dim, key in conn.execute("SELECT n.dimension_id,n.zotero_key FROM coding_notes n WHERE TRIM(COALESCE(n.text,''))<>''" + image_clause):
-                supported.setdefault(key, set()).add(dim)
+            image_support = ('EXISTS(SELECT 1 FROM coding_note_images i WHERE i.note_id=n.id)'
+                             if workflow.has_table(conn, 'coding_note_images') else '0')
+            rows = conn.execute('SELECT n.dimension_id,n.zotero_key,n.text,' + image_support + ' FROM coding_notes n')
+            for dim, key, text, has_image in rows:
+                if has_note_text(text) or has_image:
+                    supported.setdefault(key, set()).add(dim)
     return {key for key in keys if dims <= filled.get(key, set()) and required_dims <= supported.get(key, set())}
 
 
@@ -244,8 +252,10 @@ def cleanup_staging(conn: sqlite3.Connection, db: str | Path) -> None:
 
 
 def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[int, str] | None,
-              evidence: dict[int, dict] | None, trace_context) -> None:
+              evidence: dict[int, dict] | None, trace_context, submission_evidence: bool = False) -> None:
     from coscreen import workspace_undo as undo, research_trace as trace
+    if submission_evidence and values:
+        raise ValueError('Submission evidence cannot change personal coding values.')
     migrate(db)
     notes, evidence = notes or {}, evidence or {}
     dims = sorted(set(values) | set(notes) | set(evidence))
@@ -256,6 +266,8 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
         undo.begin_save(conn)
         trace.begin_capture_transaction(conn, context, 'coding')
         payload = {'key': key, 'values': values, 'notes': notes, 'evidence': evidence}
+        if submission_evidence:
+            payload['access_context'] = undo.SUBMISSION_EVIDENCE
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
         if context.request_id:
             old = conn.execute('SELECT digest FROM workflow_form_requests WHERE task_id=? AND actor_id=? AND request_id=?',
@@ -313,4 +325,7 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
                     conn.execute('UPDATE workflow_evidence_uploads SET attached=1 WHERE id=?', (uid,))
                     trace.capture_event(conn, context, stage='coding', action='coding_note_image_added', subject_id=key,
                         before=None, after={'id': cur.lastrowid, 'sha256': upload[1]}, field=field)
-        undo.record_save(conn, context, 'coding', key, before, undo.snapshot(conn, 'coding', key, dims, evidence=True))
+        after = undo.snapshot(conn, 'coding', key, dims, evidence=True)
+        if submission_evidence:
+            before['access_context'] = after['access_context'] = undo.SUBMISSION_EVIDENCE
+        undo.record_save(conn, context, 'coding', key, before, after)
