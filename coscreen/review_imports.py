@@ -206,7 +206,9 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
                 key_prior = pending_keys.get(key)
                 key_prior_doi = _norm_doi(json.loads(key_prior['article_json']).get('doi')) if key_prior else ''
                 if key_prior and doi and key_prior_doi and key_prior_doi != doi:
-                    conflicts.append(({('record', rid), ('record', key_prior['id'])}, 'identity_conflict'))
+                    prior_key, _ = record_target(conn, key_prior['id'])
+                    prior_ref = ('active', prior_key) if prior_key else ('record', key_prior['id'])
+                    conflicts.append(({('record', rid), prior_ref}, 'identity_conflict'))
                     outcome = 'identity_conflict'
                 elif prior or key_prior:
                     target = (prior or key_prior)['id']
