@@ -342,6 +342,7 @@ class TaskUpdateIn(BaseModel):
 
 
 class DecisionIn(BaseModel):
+    expected_policy_version: int | None = Field(default=None, ge=1)
     zotero_key: str = Field(min_length=1, max_length=300)
     decision: str = Field(pattern="^(include|exclude|maybe)$")
     reason: str = Field(default="", max_length=2000)
@@ -376,6 +377,7 @@ class DimensionUpdateIn(BaseModel):
 
 
 class CodingValueIn(BaseModel):
+    expected_policy_version: int | None = Field(default=None, ge=1)
     dim_id: int = Field(ge=1, le=10**9)
     zotero_key: str = Field(min_length=1, max_length=300)
     value: str = Field(default="", max_length=4000)
@@ -1197,9 +1199,11 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
     target = auth.get_user(body.username)
     if target is None:
         raise HTTPException(404, "该账号不存在。请对方先在此服务器注册。")
-    grant = collaboration_mod.grant_role(
-        path, actor_user_id=user["user_id"], user_id=target["id"],
-        role=body.role, task_id=task_id)
+    with app.state.review_workflow.lock(task_id):
+        grant = collaboration_mod.grant_role(
+            path, actor_user_id=user["user_id"], user_id=target["id"],
+            role=body.role, task_id=task_id)
+        app.state.review_workflow.latch_team(task_id, user)
     tasks_mod.register_screener(task_id, target["username"], DATA_DIR)
     notify_tasks_changed(target["id"], "invited", _task_or_404(task_id).display_name)
     return {"grant": {**grant, "username": target["username"]}}
@@ -1241,9 +1245,11 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
         raise HTTPException(400, {"error_code": "collaborator_not_found",
                                   "message_key": "coding.collaborator_not_found", "params": {},
                                   "details": "Account ID does not exist", "message": "Account ID does not exist"})
-    grant = collaboration_mod.grant_role(
-        path, actor_user_id=user["user_id"], user_id=body.user_id,
-        role=body.role, task_id=task_id)
+    with app.state.review_workflow.lock(task_id):
+        grant = collaboration_mod.grant_role(
+            path, actor_user_id=user["user_id"], user_id=body.user_id,
+            role=body.role, task_id=task_id)
+        app.state.review_workflow.latch_team(task_id, user)
     notify_tasks_changed(body.user_id, "invited", _task_or_404(task_id).display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
@@ -1253,9 +1259,11 @@ def collaboration_revoke_role(task_id: str, target_user_id: int,
                               role: Literal["coder", "reconciler"],
                               user: dict = Depends(require_user)) -> dict:
     path = _collaboration_owner_store(task_id, user)
-    revoked = collaboration_mod.revoke_role(
-        path, actor_user_id=user["user_id"], user_id=target_user_id,
-        role=role, task_id=task_id)
+    with app.state.review_workflow.lock(task_id):
+        app.state.review_workflow.latch_team(task_id, user)
+        revoked = collaboration_mod.revoke_role(
+            path, actor_user_id=user["user_id"], user_id=target_user_id,
+            role=role, task_id=task_id)
     if revoked:
         notify_tasks_changed(target_user_id, "revoked", _task_or_404(task_id).display_name)
     return {"revoked": revoked}
@@ -1979,7 +1987,10 @@ def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                   user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
+    with app.state.review_workflow.write_guard(task_id, user, "screen", body.zotero_key,
+                                               body.expected_policy_version) as workflow:
+        app.state.review_workflow.check_maybe(workflow, "screen", body.decision)
+        _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": db_mod.get_progress(db)}
 
@@ -2001,7 +2012,10 @@ def save_stage2_decision(task_id: str, body: DecisionIn, screener: str | None = 
                          user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    _save_decision_checked(db, body, save_stage2, trace_context=_trace_context(info, user))
+    with app.state.review_workflow.write_guard(task_id, user, "fulltext", body.zotero_key,
+                                               body.expected_policy_version) as workflow:
+        app.state.review_workflow.check_maybe(workflow, "fulltext", body.decision)
+        _save_decision_checked(db, body, save_stage2, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": get_stage2_progress(db)}
 
@@ -2565,7 +2579,9 @@ def save_coding_value(task_id: str, body: CodingValueIn, screener: str | None = 
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        coding_mod.save_coding_value(db, body.dim_id, body.zotero_key, body.value, trace_context=_trace_context(info, user))
+        with app.state.review_workflow.write_guard(task_id, user, "coding", body.zotero_key,
+                                                   body.expected_policy_version):
+            coding_mod.save_coding_value(db, body.dim_id, body.zotero_key, body.value, trace_context=_trace_context(info, user))
     except ValueError as exc:
         raise _bad(str(exc)) from exc
     except sqlite3.IntegrityError as exc:
@@ -4753,6 +4769,9 @@ def _trace_validate_subject(info, stage, subject_id):
 
 
 from custom_backend.workspace_undo_api import register_workspace_undo_routes
+from custom_backend.review_workflow_api import register_review_workflow_routes
+
+register_review_workflow_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR, _task_visible_to)
 
 register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
 
