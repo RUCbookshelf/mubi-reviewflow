@@ -78,8 +78,8 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                                      canonical_only=True, expected_version=expected_policy_version)
 
     @app.get('/api/tasks/{task_id}/coding/submission-evidence')
-    def submission_queue(task_id: str, user: dict = Depends(require_user)) -> dict:
-        return app.state.review_workflow.submission_evidence_queue(task_id, user)
+    def submission_queue(task_id: str, source_id: str | None = None, user: dict = Depends(require_user)) -> dict:
+        return app.state.review_workflow.submission_evidence_queue(task_id, user, source_id)
 
     @app.get('/api/tasks/{task_id}/coding/submission-evidence/{zotero_key}')
     def submission_item(task_id: str, zotero_key: str, user: dict = Depends(require_user)) -> dict:

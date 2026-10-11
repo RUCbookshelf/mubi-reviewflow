@@ -5620,50 +5620,14 @@ async def living_review_import_update(
     screener: str | None = Query(default=None),
     user: dict = Depends(require_user),
 ) -> dict:
-    """手动导入增量文献文件（第一层核心入口，100% 离线）。
-
-    上传校验（check_text_bytes）→ coscreen.living_review.process_incremental_update
-    （解析/去重/入库/AL 热启动/重跑 Meta/前后对比/变更报告）→ 历史留痕。
-    """
-    from coscreen import living_review as lr_mod
-    from coscreen.parsers import ParseError
-
-    info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
-    db = _screener_db(info, screener_name)
-    _lr_validate_measure(measure)
-
-    name = clean_upload_name(file.filename or "", "update")
-    data = await file.read()
-    check_extension(name, TEXT_EXTENSIONS)
-    check_text_bytes(data)  # 大小 + 可解码 + 无 NUL（先于解析执行）
-
-    tmpdir = Path(tempfile.mkdtemp(prefix="cobook_living_"))
-    try:
-        src = tmpdir / name
-        src.write_bytes(data)
-        try:
-            result = lr_mod.process_incremental_update(
-                str(db), str(src), comparison, outcome, timepoint, measure,
-                al_ranker=_lr_ranker_for_task(info, screener_name),
-            )
-        except ParseError as exc:
-            raise _bad(f"解析失败（{name}）：{exc}") from exc
-        except ValueError as exc:
-            raise _bad(str(exc), 400) from exc
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    entry = _lr_history_entry(result, source="manual", label=name,
-                              comparison=comparison, outcome=outcome,
-                              timepoint=timepoint, measure=measure)
-
-    def _append(state: dict) -> None:
-        state["history"].append(entry)
-
-    _mutate_living_review_state(info, _append)
-    tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
-    return {**result.to_dict(), "history_entry": entry}
+    """Route legacy incremental imports to the protected owner import workflow."""
+    app.state.review_imports.authorize(task_id, user, screener)
+    raise HTTPException(409, {
+        "code": "protected_import_required",
+        "message": "Use protected Import review. Select the original source file there; review metadata and candidates before activation. Living Review history is retained.",
+        "import_url": f"/api/tasks/{task_id}/import",
+        "review_url": f"/api/tasks/{task_id}/import-batches",
+    })
 
 
 @app.get("/api/tasks/{task_id}/living-review/history")
@@ -5699,106 +5663,16 @@ def living_review_enable_auto(task_id: str, body: LivingReviewAutoIn,
 @app.post("/api/tasks/{task_id}/living-review/check-now")
 def living_review_check_now(task_id: str, body: LivingReviewCheckIn | None = None,
                             user: dict = Depends(require_user)) -> dict:
-    """立即执行一次 PubMed 增量拉取（手动触发，非后台自动）。
-
-    前置条件（缺一即 4xx）：用户已显式开启自动监控（task.json
-    living_review_auto.enabled）；已保存 PubMed 检索式。成功 → 拉回的文献直接走
-    增量管线（与手动导入同一条代码路径）；失败（网络不可达/响应不可解析）→
-    200 + 降级提示，离线功能不受影响。本端点是全应用唯一触网入口。
-    """
-    from coscreen import living_review as lr_mod
-    from coscreen.models import Article
-
-    info = _task_or_404(task_id)
-    screener_name = user["username"]
-    db = _screener_db(info, screener_name)
-
-    # 1. 显式开启校验（插件仅在用户开启自动监控后才允许被调用）
-    raw = tasks_mod._read_task_json(info.dir)  # noqa: SLF001  与 update_task 同一条读路径
-    auto = (raw or {}).get("living_review_auto")
-    if not isinstance(auto, dict) or not auto.get("enabled"):
-        raise _bad("自动监控未开启：请先开启自动监控（enable-auto）。", 409)
-
-    # 2. 取 PubMed 检索式与起始日期（检索式记忆）
-    state = _read_living_review_state(info)
-    pubmed_records = [row for row in state["search_records"]
-                      if row.get("database") == "pubmed"
-                      and str(row.get("query_string") or "").strip()]
-    if not pubmed_records:
-        raise _bad("尚未保存 PubMed 检索式：请先保存检索式（save-search）。", 400)
-    record = pubmed_records[-1]
-    query = str(record["query_string"]).strip()
-    since = str(record.get("last_run_date") or "").strip() or (info.created_at or "")[:10]
-
-    # 3. 调用可选插件（延迟导入——main.py 默认导入不含该模块）
-    from custom_backend import living_review_plugin
-
-    try:
-        fetched = living_review_plugin.fetch_pubmed_updates(query, since)
-    except living_review_plugin.PubMedPluginError as exc:
-        logger.warning("living-review check-now degraded: %s", exc)
-        return {
-            "ok": False,
-            "degraded": True,
-            "message": "网络不可达，请手动导出文件后导入。",
-            "error": str(exc),
-        }
-
-    # 4. 拉回的文献走增量管线（与手动导入同一条路径；结局层缺省时跳过 Meta 对比）
-    comparison = (body.comparison if body else "").strip()
-    outcome = (body.outcome if body else "").strip()
-    timepoint = (body.timepoint if body else "").strip()
-    measure = (body.measure if body else "").strip()
-    if measure:
-        _lr_validate_measure(measure)
-    articles = [
-        Article(
-            zotero_key=str(row["zotero_key"]),
-            item_type="JOUR",
-            title=str(row.get("title") or ""),
-            authors=str(row.get("authors") or ""),
-            journal=str(row.get("journal") or ""),
-            year=row.get("year"),
-            doi=str(row.get("doi") or ""),
-            abstract=str(row.get("abstract") or ""),
-            url=str(row.get("url") or ""),
-            source_format=str(row.get("source_format") or "pubmed"),
-            raw={"pmid": row.get("pmid", ""), "source": "pubmed-check-now"},
-        )
-        for row in fetched
-    ]
-    try:
-        if articles:
-            result = lr_mod.process_incremental_articles(
-                str(db), articles, comparison, outcome, timepoint, measure,
-                al_ranker=_lr_ranker_for_task(info, screener_name),
-            )
-        else:
-            result = lr_mod.IncrementalResult(
-                change_report=f"PubMed 无新增文献（检索式自 {since or '开始'} 起）",
-                al_available=False, al_note="无新增文献",
-            )
-    except ValueError as exc:
-        raise _bad(str(exc), 400) from exc
-
-    entry = _lr_history_entry(result, source="pubmed",
-                              label=f"PubMed（自 {since or '开始'}）",
-                              comparison=comparison, outcome=outcome,
-                              timepoint=timepoint, measure=measure)
-    today = datetime.now().date().isoformat()
-
-    def _apply(state: dict) -> None:
-        state["history"].append(entry)
-        for row in state["search_records"]:
-            if (row.get("database") == "pubmed"
-                    and row.get("query_string") == record["query_string"]):
-                row["last_run_date"] = today
-                row["total_hits_last"] = len(fetched)
-
-    _mutate_living_review_state(info, _apply)
-    tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
-    return {"ok": True, "degraded": False, "fetched": len(fetched),
-            **result.to_dict(), "history_entry": entry}
+    """Prevent the legacy fetch-and-write path; retain saved searches and history."""
+    app.state.review_imports.authorize(task_id, user, None)
+    # No fetch, article write, analysis rerun, history mutation or last-run advance.
+    # The original exported database file must enter the protected import service.
+    raise HTTPException(409, {
+        "code": "protected_import_required",
+        "message": "Export the search results and use protected Import review. Select the original source file there; review metadata and candidates before activation. Living Review history is retained.",
+        "import_url": f"/api/tasks/{task_id}/import",
+        "review_url": f"/api/tasks/{task_id}/import-batches",
+    })
 
 
 # ---- Batch W12 endpoints (additive) ----

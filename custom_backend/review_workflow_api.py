@@ -142,7 +142,9 @@ class WorkflowRuntime:
             ctx = self.context(task_id, user)
             context = TraceContext(task_id=task_id, actor_id=user['user_id'])
             can_submit = self.can_submit_coding(ctx)
-            mapped_dimensions = set(coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[0])
+            mapped = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[0]
+            mapped_dimensions = set(mapped)
+            actor_fields = {dim['id']: dim for dim in coding_evidence.field_rows(ctx.actor_db)}
             with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
                 linked = store.has_table(conn, 'workspace_undo') and 'request_id' in {
                     r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
@@ -195,6 +197,27 @@ class WorkflowRuntime:
                             same = workspace_undo.snapshot_matches(conn, stage, key, before, after)
                             actions.update(undo_entry_id=last['entry_id'], can_undo=reason is None and same,
                                            reason=reason or (None if same else 'saved_state_changed'))
+                    # Trace lifecycle UUIDs and workflow field UUIDs are separate namespaces.
+                    # Resolve only this authenticated actor's current, unretired lifecycle.
+                    actions['current_field'] = None
+                    field = event.get('field') or {}
+                    if (can_open and local_event and stage == 'coding' and field.get('field_id')
+                            and str(event.get('actor_id')) == str(user['user_id'])
+                            and store.has_table(conn, 'trace_field_lifecycles')):
+                        lifecycle = conn.execute(
+                            'SELECT legacy_field_id FROM trace_field_lifecycles WHERE task_id=? AND actor_id=? '
+                            'AND field_uuid=? AND deleted_at IS NULL',
+                            (task_id, str(user['user_id']), field['field_id'])).fetchone()
+                        local_id = int(lifecycle[0]) if lifecycle and str(lifecycle[0]).isdecimal() else None
+                        dimension = actor_fields.get(local_id)
+                        historical = {**field, 'dtype': field.get('type')}
+                        definition_keys = ('name', 'dtype', 'options', 'multi_select', 'unit', 'description')
+                        same_definition = dimension and all(k in historical for k in definition_keys) and (
+                            coding_evidence.definition(historical) == coding_evidence.definition(dimension))
+                        if same_definition and (not canonical_access or local_id in mapped):
+                            actions['current_field'] = {'dimension_id': local_id,
+                                'field_id': mapped.get(local_id) if canonical_access else dimension.get('field_id'),
+                                'definition': [dimension[k] for k in definition_keys]}
                     event['actions'] = actions
 
     def notify(self, ctx: WorkflowContext, reason: str) -> None:
@@ -401,7 +424,7 @@ class WorkflowRuntime:
                     "policy_version": state["version"], "allowed_sources": self.allowed_sources(ctx, stage),
                     "paused": state["stages"][stage]["mode"] == "paused"}
 
-    def submission_evidence_queue(self, task_id: str, user: dict) -> dict:
+    def submission_evidence_queue(self, task_id: str, user: dict, source_id: str | None = None) -> dict:
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if not self.can_submit_coding(ctx):
@@ -411,11 +434,18 @@ class WorkflowRuntime:
             # records. Coding source policy applies; actor screening decisions do not.
             canonical, _ = self.eligible(ctx, 'screen')
             rows = self.scoped(ctx, 'coding', canonical)
+            scoped = self.scoped(ctx, 'coding', canonical, source_id)
+            # Evidence completion uses only this actor's private evidence requirements.
+            # It does not read or count personal/shared coding values.
+            def progress(targets):
+                done = sum(self.evidence_state(ctx, row['zotero_key'])['evidence_complete'] for row in targets)
+                return {'total': len(targets), 'completed': done, 'pending': len(targets) - done}
             queue = [{'key': row['zotero_key'], 'zotero_key': row['zotero_key'],
                       **{field: row.get(field) for field in ('title', 'authors', 'journal', 'year', 'doi', 'item_type')}}
-                     for row in rows]
+                     for row in scoped]
             state = store.settings(ctx.owner_db)
-            return {'queue': queue, 'total': len(queue), 'policy_version': state['version'],
+            return {'scope_progress': progress(scoped), 'overall_progress': progress(rows),
+                    'allowed_sources': self.allowed_sources(ctx, 'coding'), 'queue': queue, 'total': len(queue), 'policy_version': state['version'],
                     'paused': state['stages']['coding']['mode'] == 'paused',
                     'submission_evidence': self.submission_evidence_capability(ctx)}
 
