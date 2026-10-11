@@ -126,7 +126,7 @@ class ImportRuntime:
                 plan = store.prepare(snapshot, files, batch_id=bid, history_id=hid, owner_id=user['user_id'],
                     import_type='batch' if batch else 'single', protected=protected, title_groups=self.title_groups,
                     progress_callback=lambda stage, done, total: self.fuzzy_progress(job_id, task_id, user['user_id'], stage, done, total))
-                legacy = self.legacy_plan(snapshot, bid, existing, incoming, batch) if not protected else None
+                legacy = self.legacy_plan(snapshot, bid, existing, incoming, batch, plan['new_record_ids']) if not protected else None
                 self.progress(job_id, task_id, user['user_id'], 'save', 97)
                 with self.workflow.write_guard(task_id, user, 'screen', expected_version=version) as fresh:
                     current = workflow.settings(fresh.owner_db)
@@ -190,10 +190,52 @@ class ImportRuntime:
             copy('workflow_import_candidates', 'id=?', (row[0],))
             copy('workflow_import_candidate_members', 'candidate_id=?', (row[0],))
 
-    def legacy_plan(self, conn, bid, existing, incoming, batch):
-        conflicts = {r[0] for r in conn.execute('''SELECT r.incoming_key FROM workflow_source_records r
-            JOIN workflow_import_members m ON m.record_id=r.id WHERE m.batch_id=? AND r.outcome='identity_conflict' ''', (bid,))}
-        incoming = [a for a in incoming if a.zotero_key not in conflicts]
+    def legacy_plan(self, conn, bid, existing, incoming, batch, new_record_ids):
+        new_ids = set(new_record_ids)
+        batch_rows = conn.execute('''SELECT r.* FROM workflow_import_members m
+            JOIN workflow_source_records r ON r.id=m.record_id
+            WHERE m.batch_id=? ORDER BY m.file_index,r.row_index''', (bid,)).fetchall()
+        if len(batch_rows) != len(incoming):
+            raise ValueError('Import source membership no longer matches the parsed records.')
+        # Newly created, self-contained title/fuzzy candidates retain the legacy
+        # initial review flow. Older staged candidates and identity conflicts
+        # must keep their records outside the active catalogue.
+        transferable = {}
+        for candidate in store.candidate_rows(conn, bid, include_members=False):
+            if candidate['kind'] == 'identity_conflict' or candidate['status'] != 'pending':
+                continue
+            members = {r[0] for r in conn.execute('''SELECT ref_id FROM workflow_import_candidate_members
+                WHERE candidate_id=? AND ref_type='record' ''', (candidate['id'],))}
+            if members and members <= new_ids:
+                transferable[candidate['id']] = members
+        # A title group touching an identity-blocked member must stay staged as
+        # a whole. Removing it from the transferable set can block another group,
+        # so propagate until all remaining legacy groups are self-contained.
+        while True:
+            ignored = set(transferable)
+            excluded = {cid for cid, members in transferable.items()
+                        if any(store.dependency_blocked(conn, rid, ignored_candidates=ignored)
+                               for rid in members)}
+            if not excluded:
+                break
+            for cid in excluded:
+                del transferable[cid]
+        eligible_ids = set()
+        for row in batch_rows:
+            if row['id'] not in new_ids:
+                continue
+            if store.dependency_blocked(conn, row['id'], ignored_candidates=set(transferable)):
+                continue
+            key, root = store.record_target(conn, row['id'])
+            # A prior batch's reviewed but still unactivated root retains its
+            # identity and explicit activation boundary; don't create an alias.
+            if key is None and root not in new_ids:
+                continue
+            eligible_ids.add(row['id'])
+        existing_keys = {a.zotero_key for a in existing}
+        incoming = [article for row, article in zip(batch_rows, incoming)
+                    if row['id'] in eligible_ids or
+                    (row['state'] == 'active' and article.zotero_key in existing_keys)]
         kept, within = find_duplicates(incoming, include_fuzzy=False)
         selected = kept if batch else incoming
         exact, report = find_duplicates(existing + selected, include_fuzzy=False)
@@ -205,30 +247,33 @@ class ImportRuntime:
         all_title_groups = [g for g in find_title_candidate_groups(existing + incoming)
                             if len(g) > 1 and any(a.zotero_key in incoming_keys for a in g)]
         return {'articles': selected, 'pairs': report.exact_pairs, 'groups': groups, 'all_title_groups': all_title_groups,
+                'eligible_record_ids': eligible_ids, 'transfer_candidate_ids': set(transferable),
                 'within': within, 'report': report, 'previous': previous,
                 'fuzzy': fuzzy, 'existing_keys': existing_keys, 'incoming': incoming}
 
     @staticmethod
     def initial_save(conn, db, bid, legacy):
+        # The owner transaction repeats the full dependency check before any
+        # active insert. Only this batch's eligible legacy title groups may be
+        # transferred; unresolved staged dependencies are never bypassed.
+        ignored = legacy['transfer_candidate_ids']
+        for rid in legacy['eligible_record_ids']:
+            if store.dependency_blocked(conn, rid, ignored_candidates=ignored):
+                raise ValueError('A staged import dependency still requires review; retry after reviewing it.')
         canonical_before = conn.execute('SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NULL').fetchone()[0]
         summary = db_mod.upsert_articles(db, legacy['articles'], legacy['pairs'], legacy['groups'], conn=conn, preserve_existing=True)
         linked = 0
         for row in conn.execute('''SELECT DISTINCT r.* FROM workflow_source_records r JOIN workflow_import_members m ON m.record_id=r.id
                 WHERE m.batch_id=? AND r.state='staged' ORDER BY r.created_at,r.row_index''', (bid,)).fetchall():
-            if row['outcome'] == 'identity_conflict':
+            if row['id'] not in legacy['eligible_record_ids']:
                 continue
-            key = row['canonical_key']
+            # Resolve the reviewed root before considering any physical key.
+            # An incoming alias must never replace its staged canonical identity.
+            key, root = store.record_target(conn, row['id'])
             if key is None:
-                if conn.execute('SELECT 1 FROM articles WHERE zotero_key=?', (row['incoming_key'],)).fetchone():
-                    key = store.canonical(conn, row['incoming_key'])
-                else:
-                    # Batch exact removal still keeps the origin linked to the
-                    # final canonical survivor, even if its original key vanished.
-                    key, root = store.record_target(conn, row['id'])
-                    if key is None:
-                        root_row = conn.execute('SELECT incoming_key FROM workflow_source_records WHERE id=?', (root,)).fetchone()
-                        if root_row and conn.execute('SELECT 1 FROM articles WHERE zotero_key=?', (root_row[0],)).fetchone():
-                            key = store.canonical(conn, root_row[0])
+                root_row = conn.execute('SELECT incoming_key FROM workflow_source_records WHERE id=?', (root,)).fetchone()
+                if root_row and conn.execute('SELECT 1 FROM articles WHERE zotero_key=?', (root_row[0],)).fetchone():
+                    key = store.canonical(conn, root_row[0])
             if key is None:
                 continue
             key = store.canonical(conn, key)
@@ -240,14 +285,9 @@ class ImportRuntime:
             workflow.associate_sources(db, [key], [row['source_id']], conn=conn)
             conn.execute("UPDATE workflow_source_records SET state='active' WHERE id=?", (row['id'],))
             linked += 1
-        # Legacy initial title candidates own their existing queue semantics.
-        # Separate import candidates are needed only for identity conflicts in
-        # this initial path; protected batches never enter legacy review tables.
-        cids = [r[0] for r in conn.execute('''SELECT DISTINCT c.id FROM workflow_import_candidates c
-            JOIN workflow_import_candidate_members cm ON cm.candidate_id=c.id
-            JOIN workflow_import_members m ON m.record_id=cm.ref_id AND cm.ref_type='record'
-            WHERE m.batch_id=? AND c.kind!='identity_conflict' ''', (bid,))]
-        for cid in cids:
+        # Delete only the self-contained new candidates transferred to legacy
+        # title review. Older/blocked groups keep every member and decision.
+        for cid in legacy['transfer_candidate_ids']:
             conn.execute('DELETE FROM workflow_import_candidate_members WHERE candidate_id=?', (cid,))
             conn.execute('DELETE FROM workflow_import_candidates WHERE id=?', (cid,))
         workflow.bump_catalog_revision(db, conn=conn)
@@ -279,7 +319,8 @@ class ImportRuntime:
             'title_review_pending': title_pending,
             'title_review_pending_records': title_pending_records,
             'title_review_excess': sum(len(g['members']) - 1 for g in groups),
-            'note': plan['note'], 'screening_ready': not summary['staged'] and title_pending == 0}
+            'note': plan['note'], 'screening_ready': not summary['staged'] and title_pending == 0
+            and summary['pending_candidate_groups'] == 0}
         if legacy:
             metric_report = legacy['within'] if batch else legacy['report']
             incoming_keys = {a.zotero_key for a in legacy['incoming']}

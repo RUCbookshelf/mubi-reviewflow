@@ -167,7 +167,7 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
     pending = [dict(r) for r in conn.execute("SELECT * FROM workflow_source_records ORDER BY created_at,id")]
     pending_keys, pending_dois = {}, {}
     for r in pending:
-        pending_keys.setdefault(r['incoming_key'], r)
+        pending_keys.setdefault(r['incoming_key'], []).append(r)
         doi = _norm_doi(json.loads(r['article_json']).get('doi'))
         if doi:
             pending_dois.setdefault(doi, r)
@@ -189,35 +189,43 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
             key, doi = art.zotero_key, _norm_doi(art.doi)
             match_key, target, outcome = None, None, 'new'
             key_row = by_key.get(key)
-            conflicting = bool(key_row and doi and _norm_doi(key_row['doi']) and doi != _norm_doi(key_row['doi']))
-            if conflicting:
+            key_priors = pending_keys.get(key, [])
+            key_refs = set()
+            conflicting = False
+            if key_row:
+                key_refs.add(('active', canonical(conn, key)))
+                old_doi = _norm_doi(key_row['doi'])
+                conflicting = bool(doi and old_doi and doi != old_doi)
+            # Inspect every retained external-key alias before taking a DOI
+            # shortcut. An alias may already point at an active canonical row
+            # whose physical key differs from the uploaded source key.
+            for prior_row in key_priors:
+                old_doi = _norm_doi(json.loads(prior_row['article_json']).get('doi'))
+                conflicting = conflicting or bool(doi and old_doi and doi != old_doi)
+                prior_key, prior_root = record_target(conn, prior_row['id'])
+                key_refs.add(('active', prior_key) if prior_key else ('record', prior_root))
+            prior = pending_dois.get(doi) if doi else None
+            doi_ref = None
+            if doi and doi in by_doi:
+                doi_ref = ('active', by_doi[doi])
+            elif prior:
+                prior_key, prior_root = record_target(conn, prior['id'])
+                doi_ref = ('active', prior_key) if prior_key else ('record', prior_root)
+            contradictory_refs = key_refs | ({doi_ref} if doi_ref else set())
+            if conflicting or len(contradictory_refs) > 1:
                 outcome = 'identity_conflict'
-                conflicts.append(({('record', rid), ('active', canonical(conn, key))}, 'identity_conflict'))
-            elif doi and doi in by_doi:
-                match_key, outcome = by_doi[doi], 'exact_doi'
-                if key_row and canonical(conn, key) != match_key:
-                    outcome = 'identity_conflict'
-                    conflicts.append(({('record', rid), ('active', match_key), ('active', canonical(conn, key))}, outcome))
-                    match_key = None
-            elif key_row:
-                match_key, outcome = canonical(conn, key), 'exact_key'
-            else:
-                prior = pending_dois.get(doi) if doi else None
-                key_prior = pending_keys.get(key)
-                key_prior_doi = _norm_doi(json.loads(key_prior['article_json']).get('doi')) if key_prior else ''
-                if key_prior and doi and key_prior_doi and key_prior_doi != doi:
-                    prior_key, _ = record_target(conn, key_prior['id'])
-                    prior_ref = ('active', prior_key) if prior_key else ('record', key_prior['id'])
-                    conflicts.append(({('record', rid), prior_ref}, 'identity_conflict'))
-                    outcome = 'identity_conflict'
-                elif prior or key_prior:
-                    target = (prior or key_prior)['id']
-                    resolved_key, _ = record_target(conn, target)
-                    if resolved_key:
-                        match_key, target = resolved_key, None
-                        outcome = 'exact_doi' if prior else 'exact_key'
-                    else:
-                        outcome = 'exact_staged'
+                conflicts.append(({('record', rid)} | contradictory_refs, outcome))
+            elif doi_ref:
+                if doi_ref[0] == 'active':
+                    match_key, outcome = doi_ref[1], 'exact_doi'
+                else:
+                    target, outcome = prior['id'], 'exact_staged'
+            elif key_refs:
+                key_ref = next(iter(key_refs))
+                if key_ref[0] == 'active':
+                    match_key, outcome = key_ref[1], 'exact_key'
+                else:
+                    target, outcome = key_priors[0]['id'], 'exact_staged'
             staged_key = key
             if staged_key in used and match_key is None:
                 staged_key = 'staged-' + hashlib.sha256(f'{sid}:{digest}:{row_index}'.encode()).hexdigest()[:28]
@@ -235,7 +243,7 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
             # Keep aliases even for exact-linked rows: a later row with that
             # source key and a conflicting DOI still needs identity review.
             r = {'id': rid, 'incoming_key': key, 'article_json': dumps(data), 'staged_key': staged_key}
-            pending_keys.setdefault(key, r)
+            pending_keys.setdefault(key, []).append(r)
             if doi:
                 pending_dois.setdefault(doi, r)
     for refs, kind in conflicts:
@@ -280,9 +288,27 @@ def record_target(conn: sqlite3.Connection, rid: str) -> tuple[str | None, str]:
     raise ValueError('Source record target cycle requires review.')
 
 
-def blocked(conn: sqlite3.Connection, rid: str) -> bool:
-    return bool(conn.execute('''SELECT 1 FROM workflow_import_candidate_members m JOIN workflow_import_candidates c ON c.id=m.candidate_id
-        WHERE m.ref_type='record' AND m.ref_id=? AND c.status IN ('pending','undecided') LIMIT 1''', (rid,)).fetchone())
+def blocked(conn: sqlite3.Connection, rid: str, *, ignored_candidates: set[str] | None = None) -> bool:
+    ignored_candidates = ignored_candidates or set()
+    rows = conn.execute('''SELECT c.id FROM workflow_import_candidate_members m JOIN workflow_import_candidates c ON c.id=m.candidate_id
+        WHERE m.ref_type='record' AND m.ref_id=? AND c.status IN ('pending','undecided')''', (rid,))
+    return any(row[0] not in ignored_candidates for row in rows)
+
+
+def dependency_blocked(conn: sqlite3.Connection, rid: str, *, ignored_candidates: set[str] | None = None) -> bool:
+    """Check every staged dependency, including intermediate linked records."""
+    seen = set()
+    while rid is not None:
+        if rid in seen:
+            raise ValueError('Source record target cycle requires review.')
+        seen.add(rid)
+        if blocked(conn, rid, ignored_candidates=ignored_candidates):
+            return True
+        row = conn.execute('SELECT target_record_id FROM workflow_source_records WHERE id=?', (rid,)).fetchone()
+        if row is None:
+            raise ValueError('Missing source record target.')
+        rid = row[0]
+    return False
 
 
 def refresh_statuses(conn: sqlite3.Connection) -> None:
@@ -304,11 +330,9 @@ def activate(conn: sqlite3.Connection, db: Path, batch_id: str) -> dict:
     added = linked = 0
     for record in records:
         rid = record['id']
-        if blocked(conn, rid):
+        if dependency_blocked(conn, rid):
             continue
         key, root = record_target(conn, rid)
-        if blocked(conn, root):
-            continue
         # Cross-batch roots must be explicitly activated in their own batch.
         if key is None:
             if root not in batch_ids:
@@ -366,9 +390,25 @@ def decide_candidate(conn: sqlite3.Connection, batch_id: str, cid: str, status: 
             keeper = conn.execute('SELECT canonical_key,target_record_id FROM workflow_source_records WHERE id=?', (keeper_record_id,)).fetchone()
             if keeper[0] or keeper[1]:
                 raise ValueError('Choose the independent canonical staged representative as keeper.')
+        # Freeze all members (including keepers) of every previous confirmed
+        # duplicate graph. Overlapping reviews may add new links to that graph,
+        # but may not redirect any of its existing nodes through another keeper.
+        frozen = {row[0] for row in conn.execute('''SELECT DISTINCT m.ref_id
+            FROM workflow_import_candidate_members m JOIN workflow_import_candidates c ON c.id=m.candidate_id
+            WHERE m.ref_type='record' AND c.status='duplicate' ''')}
+        changes = []
         for rid in record_ids:
             if rid == keeper_record_id:
                 continue
+            current = conn.execute('SELECT canonical_key,target_record_id FROM workflow_source_records WHERE id=?', (rid,)).fetchone()
+            intended = (keeper_key, keeper_record_id)
+            if tuple(current) == intended:
+                continue
+            if rid in frozen:
+                raise ValueError('This resolution would rewrite a previously confirmed duplicate relationship. Keep its existing keeper or leave this candidate unresolved.')
+            changes.append(rid)
+        # Validate the complete change set before writing any target or proposal.
+        for rid in changes:
             conn.execute('UPDATE workflow_source_records SET canonical_key=?,target_record_id=?,outcome=? WHERE id=?',
                          (keeper_key, keeper_record_id, 'confirmed_duplicate', rid))
             if keeper_key:
