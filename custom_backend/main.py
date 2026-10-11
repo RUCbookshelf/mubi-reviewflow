@@ -4752,6 +4752,10 @@ def _trace_validate_subject(info, stage, subject_id):
     return db_mod.get_article(_coding_owner_db(info), subject_id) is not None
 
 
+from custom_backend.workspace_undo_api import register_workspace_undo_routes
+
+register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
+
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
     ("research_trace_api", "register_research_trace_routes",

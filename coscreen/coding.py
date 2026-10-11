@@ -897,6 +897,8 @@ def save_coding_value(
     """
     with closing(_connect(db)) as conn, conn:
         if trace_context is not None:
+            from coscreen.workspace_undo import begin_save, snapshot, record_save
+            begin_save(conn)
             from coscreen.research_trace import begin_capture_transaction, begin_write_request
 
             begin_capture_transaction(conn, trace_context, "coding")
@@ -906,6 +908,7 @@ def save_coding_value(
             )
             if replay:
                 return None
+            undo_before = snapshot(conn, "coding", key, [dim_id])
         dim = _require_dimension(conn, dim_id)
         stored = _normalize_value(dim, value)
         old = conn.execute(
@@ -920,6 +923,8 @@ def save_coding_value(
             (int(dim_id), key, stored, _now()),
         )
         if trace_context is not None:
+            record_save(conn, trace_context, "coding", key, undo_before,
+                        snapshot(conn, "coding", key, [dim_id]))
             from coscreen.research_trace import capture_event, is_recording
 
             if is_recording(conn, trace_context, "coding"):
@@ -935,6 +940,49 @@ def save_coding_value(
             from coscreen.research_trace import finish_write_request
 
             finish_write_request(conn, trace_context)
+
+
+def save_coding_values_batch(
+    db: StrPath, key: str, values: dict[int, str], *, trace_context: TraceContext,
+) -> None:
+    """Save a whole form atomically, with one Undo entry and existing field traces."""
+    from coscreen.workspace_undo import begin_save, snapshot, record_save
+    from coscreen.research_trace import (
+        begin_capture_transaction, begin_write_request, capture_event,
+        finish_write_request, is_recording,
+    )
+    with closing(_connect(db)) as conn, conn:
+        begin_save(conn)
+        begin_capture_transaction(conn, trace_context, "coding")
+        replay, _ = begin_write_request(
+            conn, trace_context, stage="coding", operation="coding_form_save", subject_id=key,
+            payload={"values": {str(dim): value for dim, value in sorted(values.items())}},
+        )
+        if replay:
+            return
+        prepared = []
+        for dim_id, value in sorted(values.items()):
+            dim = _require_dimension(conn, dim_id)
+            prepared.append((dim, _normalize_value(dim, value)))
+        before = snapshot(conn, "coding", key, list(values))
+        recording = is_recording(conn, trace_context, "coding")
+        for dim, stored in prepared:
+            dim_id = int(dim["id"])
+            old = before["values"][str(dim_id)]
+            conn.execute(
+                "INSERT INTO coding_values(dimension_id,zotero_key,value,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(dimension_id,zotero_key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                (dim_id, key, stored, _now()),
+            )
+            if recording:
+                action = ("coding_value_cleared" if old and old[0] and not stored else
+                          "coding_value_created" if old is None else "coding_value_changed")
+                capture_event(conn, trace_context, stage="coding", action=action, subject_id=key,
+                              before={"value": old[0] or ""} if old else {"value": ""},
+                              after={"value": stored}, field=_trace_dimension(conn, trace_context, dim))
+        record_save(conn, trace_context, "coding", key, before,
+                    snapshot(conn, "coding", key, list(values)))
+        finish_write_request(conn, trace_context)
 
 
 def get_coding_values(db: StrPath, key: str) -> dict[int, str]:

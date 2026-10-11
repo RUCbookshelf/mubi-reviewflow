@@ -2,6 +2,16 @@
 
 ### English
 
+#### Updated 2.0.4 build — Undo saved review operations
+
+- Initial and full-text screening now provide **Undo last save**: restore the state before the last save and reopen that article to revise the decision.
+- Coding Undo restores all fields changed by one complete Save together. Coding form saves are atomic, preventing partially saved forms.
+- Use **Ctrl+Z** on Windows/Linux or **Command+Z** on macOS outside text-entry fields. Normal text-editing undo is preserved inside fields.
+- Undo histories persist separately by task, reviewer and stage. Progress refreshes after restoration, and newer changes or downstream work are protected by conflict checks. PDFs and annotations are preserved.
+- Buttons and messages support all ten interface languages. Undo actions appear in the research trace when recording is enabled.
+- Undo is available for saves made after this update is installed. Earlier decisions have no before-save snapshot and cannot be undone through this feature.
+- Version remains **2.0.4**. These installers replace the previous 2.0.4 files and include the layout updates listed below.
+
 #### Updated 2.0.4 build — reader and workspace layouts
 
 - The sidebar is now a shared floating button that expands into a navigation sheet on every workspace. The same container grows over 360 ms, options appear in staggered groups, and closing reverses the motion. The original product logo remains beside 木笔 ReviewFlow. Keyboard navigation, small screens and reduced-motion preferences are supported.
@@ -34,6 +44,16 @@
 - This release does not include Remote Operation or differential updates. The existing update entry downloads an installer. Keep and back up the existing data directory when upgrading.
 
 ### 中文
+
+#### 2.0.4 更新构建 — 撤销已保存的筛选与编码操作
+
+- 文献初筛与复筛新增 **撤销上次保存**：恢复上次保存前的状态，并返回该文献，供用户重新判断。
+- 编码撤销会一次恢复同一次保存涉及的全部字段；编码表单采用原子保存，避免只保存部分字段。
+- Windows/Linux 使用 **Ctrl+Z**，macOS 使用 **Command+Z**。在输入框内保留正常的文本编辑撤销。
+- 撤销历史按任务、筛选员及阶段独立保存，重启后仍可使用；撤销后刷新进度。较新的修改或后续阶段工作会触发冲突保护，不覆盖较新结果；PDF 与批注保留。
+- 按钮及提示支持全部十种界面语言；启用轨迹记录时，撤销操作会写入研究轨迹。
+- 本功能仅能撤销安装本次更新后进行的保存。更早的决策没有保存前快照，不能通过本功能撤销。
+- 版本号仍为 **2.0.4**，安装包覆盖之前的 2.0.4 文件，并包含下方列出的布局更新。
 
 #### 2.0.4 更新构建 — 阅读与工作区布局
 

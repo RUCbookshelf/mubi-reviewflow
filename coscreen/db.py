@@ -986,6 +986,8 @@ def save_decision(
     with closing(_connect(db_path)) as conn, conn:
         request_result = None
         if trace_context is not None:
+            from coscreen.workspace_undo import begin_save, snapshot, record_save
+            begin_save(conn)
             from coscreen.research_trace import begin_capture_transaction, begin_write_request
 
             begin_capture_transaction(conn, trace_context, "screen")
@@ -997,6 +999,7 @@ def save_decision(
             )
             if replay:
                 return None
+            undo_before = snapshot(conn, "screen", zotero_key)
         old = conn.execute(
             "SELECT decision,exclusion_reason,notes,tags FROM decisions WHERE zotero_key=?",
             (zotero_key,),
@@ -1012,6 +1015,8 @@ def save_decision(
             (zotero_key, decision, exclusion_reason, notes, tags or "", now, now),
         )
         if trace_context is not None:
+            record_save(conn, trace_context, "screen", zotero_key, undo_before,
+                        snapshot(conn, "screen", zotero_key))
             from coscreen.research_trace import capture_event
 
             capture_event(

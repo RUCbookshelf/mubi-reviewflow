@@ -781,6 +781,8 @@ def save_stage2(
     )
     with closing(_connect(db_path)) as conn, conn:
         if trace_context is not None:
+            from coscreen.workspace_undo import begin_save, snapshot, record_save
+            begin_save(conn)
             from coscreen.research_trace import begin_capture_transaction, begin_write_request
 
             begin_capture_transaction(conn, trace_context, "fulltext")
@@ -792,6 +794,7 @@ def save_stage2(
             )
             if replay:
                 return None
+            undo_before = snapshot(conn, "fulltext", zotero_key)
         old = conn.execute(
             "SELECT decision,exclusion_reason,notes,tags FROM stage2_decisions WHERE zotero_key=?",
             (zotero_key,),
@@ -807,6 +810,8 @@ def save_stage2(
             (zotero_key, decision, exclusion_reason, notes, tags or "", now, now),
         )
         if trace_context is not None:
+            record_save(conn, trace_context, "fulltext", zotero_key, undo_before,
+                        snapshot(conn, "fulltext", zotero_key))
             from coscreen.research_trace import capture_event
 
             capture_event(
