@@ -6,16 +6,15 @@
  *     PubMed 记录给「一键打开 PubMed ↗」外链（仅 target=_blank 导航，
  *     本模块不发起任何网络请求）；表单保存/更新检索式（POST save-search，
  *     URL 由后端拼字符串生成）；
- *   - 手动导入更新（第一层，100% 离线）：选择 RIS/CSV 文件 + 结局层四要素
- *     （比较组/结局/时间点/指标，预填分析页当前范围）→ POST import-update
- *     （multipart）→ 展示变更报告；
+ *   - 增量导入与检查：保留入口，明确引导至受保护的 Import 核验；
+ *     原始文件在 Import 页面指定来源、核验候选和元数据后激活，分析单独运行。
  *   - 变更报告：上次更新时间、新增/去重移除/待新筛（AI 热启动队列）数、
  *     合并结果前后对比表（合并效应 / 95%CI / 研究数 / I²）、结论是否翻转
  *     徽章（CI 跨 null 状态变化）、人可读影响评估（change_report）；
  *     历次更新列表可点选回看（GET history，最新在前）；
  *   - 自动监控（可选插件，默认收起且关闭）：显式开关（POST enable-auto 只写
  *     task.json，不启动后台线程）+ 检查间隔天数；开启后才显示「立即检查」
- *     （POST check-now 手动触发；网络不可达时后端返回降级提示，离线功能不受影响）。
+ *     操作现引导到受保护导入；旧 check-now API 不拉取或写入。
  *
  * 事件接入（追加式）：reviewflow:analysis-loaded（刷新检索式与历史）、
  * reviewflow:analysis-core-loaded（结局层预填，用户改过则不打扰）、
@@ -81,7 +80,7 @@
 
     /* ---- 面板骨架（静态文案节点集中持有，语言切换时重填） ---- */
     const heading = el('h3', { text: T('活体综述') });
-    const hint = el('p', { class: 'hint', style: 'margin:2px 0 8px', text: T('保存检索式，导入新检索到的文献，再查看去重与结果变化。PubMed 检查需单独开启；手动导入仍可使用。') });
+    const hint = el('p', { class: 'hint', style: 'margin:2px 0 8px', text: T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') });
 
     /* 检索式管理 */
     const recCaption = el('b', { class: 'sub', text: T('检索式管理') });
@@ -120,8 +119,8 @@
     const outInput = el('input', { class: 'input', placeholder: T('结局'), 'aria-label': T('结局') });
     const tpInput = el('input', { class: 'input', placeholder: T('时间点'), 'aria-label': T('时间点') });
     const msrInput = el('input', { class: 'input', placeholder: T('指标代码（如 MD、OR）'), 'aria-label': T('指标代码') });
-    const importBtn = el('button', { class: 'btn b-inc', type: 'button', text: T('导入并评估影响') });
-    const importHint = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('结局层四要素用于重跑合并分析并对比前后结论；文件先经安全校验，与库内文献自动去重。') });
+    const importBtn = el('button', { class: 'btn b-inc', type: 'button', text: T('Open import review') });
+    const importHint = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') });
     const importForm = el('div', { class: 'rf-lr-form' },
       el('label', {}, el('span', { text: T('增量文献文件') }), fileInput),
       el('label', {}, el('span', { text: T('比较组') }), cmpInput),
@@ -133,7 +132,7 @@
 
     /* 变更报告 */
     const reportCaption = el('b', { class: 'sub', text: T('变更报告') });
-    const reportEmpty = el('p', { class: 'hint', text: T('尚无更新记录——导入一次增量文献或运行一次检查后，这里展示前后对比与影响评估。') });
+    const reportEmpty = el('p', { class: 'hint', text: T('No records yet.') });
     const reportBox = el('div', { class: 'rf-lr-report' });
     const histDetails = disclosure('rfLivingHistory', '历次更新');
     const histBox = el('div', { class: 'rf-lr-hist' });
@@ -146,8 +145,8 @@
       autoCheck, el('span', { text: T('开启自动监控（PubMed 插件，显式开启）') }));
     const intervalInput = el('input', { class: 'input', type: 'number', min: '1', max: '3650', value: '30',
       style: 'max-width:110px', 'aria-label': T('检查间隔（天）') });
-    const checkBtn = el('button', { class: 'btn b-out', type: 'button', text: T('立即检查'), hidden: '' });
-    const autoNote = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('开关只写入任务设置，不启动后台线程；「立即检查」为手动触发的 PubMed 增量拉取（本应用唯一联网入口），失败时自动降级为手动导入模式。') });
+    const checkBtn = el('button', { class: 'btn b-out', type: 'button', text: T('Open import review'), hidden: '' });
+    const autoNote = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') });
     autoDetails.lastElementChild.append(
       autoLabel,
       el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
@@ -230,44 +229,19 @@
 
     /* ---- 手动导入更新（multipart：文件 + 结局层四要素） ---- */
     importBtn.addEventListener('click', safe(importUpdate));
-    async function importUpdate() {
-      let ticket;
-      try {
-        if (typeof api !== 'function' || typeof taskApi !== 'function') return;
-        if (!guardTask()) return;
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) { statusLine.textContent = T('请先选择增量文献文件（RIS/CSV）。'); return; }
-        const layer = outcomeLayer();
-        for (const [name, value] of [['比较组', layer.comparison], ['结局', layer.outcome], ['时间点', layer.timepoint], ['指标代码', layer.measure]]) {
-          if (!value) { statusLine.textContent = T('请填写结局层的「{0}」（重跑合并分析需要）。', name); return; }
-        }
-        const form = new FormData();
-        form.append('file', file, file.name);
-        form.append('comparison', layer.comparison);
-        form.append('outcome', layer.outcome);
-        form.append('timepoint', layer.timepoint);
-        form.append('measure', layer.measure);
-        ticket = ++version;
-        importBtn.disabled = true;
-        importBtn.dataset.requestTicket = String(ticket);
-        statusLine.textContent = T('正在导入并重算…（去重、机器学习热启动、重跑合并分析）');
-        try {
-          const d = await api(taskApi() + '/living-review/import-update', { method: 'POST', form });
-          if (ticket !== version) return;
-          applyResult(d, 'manual', file.name);
-          statusLine.textContent = T('✓ 增量导入完成。');
-          if (typeof toast === 'function') toast(T('✓ 增量导入完成：新增 {0} 篇，去重移除 {1} 篇',
-            String((d && d.new_articles || []).length), String((d && d.duplicates_removed) || 0)), 'inc');
-        } finally {
-          if (importBtn.dataset.requestTicket === String(ticket)) importBtn.disabled = false;
-        }
-        if (ticket === version) await refreshLists();
-      } catch (e) {
-        if (ticket !== undefined && ticket !== version) return;
-        statusLine.textContent = T('导入失败：') + ((e && e.message) || '');
-        if (typeof toast === 'function') toast(T('导入失败：') + ((e && e.message) || ''), 'warn');
+    async function protectedImportRoute() {
+      if (!guardTask()) return;
+      await WorkflowControls.refresh('entry', false);
+      if (!WorkflowControls.settings()?.can_manage) {
+        statusLine.textContent = T('Only the task owner can import sources.');
+        return;
       }
+      statusLine.replaceChildren(el('span', {text:T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.')}),
+        el('button', {type:'button', class:'btn b-out sm', text:T('Open import review'), onclick:async()=>{
+          if (await go('import')) await WorkflowImports.list();
+        }}));
     }
+    async function importUpdate() { try { await protectedImportRoute(); } catch (error) { WorkflowControls.error(error); } }
 
     function outcomeLayer() {
       return {
@@ -424,7 +398,7 @@
         ticket = ++version;
         await api(taskApi() + '/living-review/enable-auto', { method: 'POST', body });
         if (ticket !== version) return null;
-        if (typeof toast === 'function') toast(enabled ? T('✓ 自动监控已开启（无后台线程，需手动「立即检查」）') : T('自动监控已关闭'), 'inc');
+        if (typeof toast === 'function') toast(enabled ? T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') : T('自动监控已关闭'), 'inc');
         return true;
       } catch (e) {
         if (ticket !== undefined && ticket !== version) return null;
@@ -444,42 +418,9 @@
       if (autoCheck.checked) await enableAuto(true);   // 间隔变化即时写回设置
     }));
 
-    /* ---- 立即检查（手动触发 PubMed 增量拉取；失败返回降级提示） ---- */
+    /* ---- Legacy check action routes to protected import review ---- */
     checkBtn.addEventListener('click', safe(checkNow));
-    async function checkNow() {
-      let ticket;
-      try {
-        if (typeof api !== 'function' || typeof taskApi !== 'function') return;
-        if (!guardTask()) return;
-        const layer = outcomeLayer();
-        const complete = layer.comparison && layer.outcome && layer.timepoint && layer.measure;
-        const opts = { method: 'POST' };
-        if (complete) opts.body = layer;   // 结局层完整才带（缺省跳过 Meta 对比）
-        ticket = ++version;
-        checkBtn.disabled = true;
-        checkBtn.dataset.requestTicket = String(ticket);
-        statusLine.textContent = T('正在通过 PubMed 插件拉取增量…');
-        try {
-          const d = await api(taskApi() + '/living-review/check-now', opts);
-          if (ticket !== version) return;
-          if (d && d.degraded) {
-            statusLine.textContent = T('网络不可达，请手动导出文件后导入。') + ((d.error ? '（' + d.error + '）' : ''));
-            if (typeof toast === 'function') toast(T('网络不可达，请手动导出文件后导入。'), 'warn');
-            return;
-          }
-          applyResult(d, 'pubmed', '');
-          statusLine.textContent = T('✓ 检查完成：PubMed 拉回 {0} 篇。', String(d && d.fetched != null ? d.fetched : ''));
-          if (typeof toast === 'function') toast(T('✓ 检查完成'), 'inc');
-        } finally {
-          if (checkBtn.dataset.requestTicket === String(ticket)) checkBtn.disabled = false;
-        }
-        if (ticket === version) await refreshLists();
-      } catch (e) {
-        if (ticket !== undefined && ticket !== version) return;
-        statusLine.textContent = T('检查失败：') + ((e && e.message) || '');
-        if (typeof toast === 'function') toast(T('检查失败：') + ((e && e.message) || ''), 'warn');
-      }
-    }
+    async function checkNow() { try { await protectedImportRoute(); } catch (error) { WorkflowControls.error(error); } }
 
     /* ---- 结局层预填：跟随分析页当前范围（用户改过则不打扰） ---- */
     function syncLayerFromAnalysis() {
@@ -500,7 +441,7 @@
     function refreshLang() {
       try {
         heading.textContent = T('活体综述');
-        hint.textContent = T('保存检索式，导入新检索到的文献，再查看去重与结果变化。PubMed 检查需单独开启；手动导入仍可使用。');
+        hint.textContent = T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.');
         recCaption.textContent = T('检索式管理');
         recEmpty.textContent = T('尚未保存检索式。');
         saveDetails.querySelector(':scope > button').textContent = T('保存 / 更新检索式');
@@ -513,16 +454,16 @@
         hitsInput.setAttribute('aria-label', T('上次命中数（可选）'));
         saveBtn.textContent = T('保存检索式');
         importCaption.textContent = T('手动导入更新（离线）');
-        importBtn.textContent = T('导入并评估影响');
-        importHint.textContent = T('结局层四要素用于重跑合并分析并对比前后结论；文件先经安全校验，与库内文献自动去重。');
+        importBtn.textContent = T('Open import review');
+        importHint.textContent = T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.');
         reportCaption.textContent = T('变更报告');
-        reportEmpty.textContent = T('尚无更新记录——导入一次增量文献或运行一次检查后，这里展示前后对比与影响评估。');
+        reportEmpty.textContent = T('No records yet.');
         histDetails.querySelector(':scope > button').textContent = T('历次更新');
         autoDetails.querySelector(':scope > button').textContent = T('自动监控（可选，默认关闭）');
         autoLabel.querySelector('span').textContent = T('开启自动监控（PubMed 插件，显式开启）');
         intervalInput.setAttribute('aria-label', T('检查间隔（天）'));
-        checkBtn.textContent = T('立即检查');
-        autoNote.textContent = T('开关只写入任务设置，不启动后台线程；「立即检查」为手动触发的 PubMed 增量拉取（本应用唯一联网入口），失败时自动降级为手动导入模式。');
+        checkBtn.textContent = T('Open import review');
+        autoNote.textContent = T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.');
         panel.setAttribute('aria-label', T('活体综述'));
         renderRecords();
         renderEntry();

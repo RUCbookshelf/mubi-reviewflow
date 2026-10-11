@@ -27,16 +27,14 @@
   async function switchMode(next){if(!await W.guard())return;mode=next;await loadBench();}
   E.queue=async()=>{
     readOnlyKey=null;
-    const scopeTools=document.querySelector('section[data-p="bench"] .wf-queue-tools');scopeTools.querySelector('select').disabled=mode==='canonical';
     if(mode!=='canonical')return W.queue('coding');
+    const requested=W.scope();
     await W.refresh('entry',false);
-    if(!discovery?.available){mode='personal';scopeTools.querySelector('select').disabled=false;return W.queue('coding');}
-    scopeTools.querySelector('select').replaceChildren(node('option','All permitted sources',{value:''}));
-    const result=await api(discovery.queue_url);
-    scopeTools.querySelector('.wf-scope-progress').textContent=T('Canonical evidence targets: {0}',result.total);
-    scopeTools.querySelector('.wf-readonly').textContent=T('All canonical targets permitted by the owner coding policy.');
-    return result;
+    if(requested!==W.scope())throw Error(T('The task changed. Reload the queue.'));
+    if(!discovery?.available){mode='personal';return W.queue('coding');}
+    return W.queue('coding',{url:discovery.queue_url,evidenceOnly:true});
   };
+
   E.revalidate=async()=>{
     if(!current)return;
     const scope=identity(),key=S.cbQueue[S.cbIdx]?.zotero_key;
@@ -116,7 +114,7 @@
       if(!item.writable)forms.append(node('p','Read-only: current policy or source scope does not allow saving.',{class:'wf-readonly'}),node('p',W.reason(item.reason)));
       for(const d of dims){
         const dim=String(d.id),saved=item.evidence?.[dim]||{},value=item.saved?.[dim]||'',writable=item.writable&&(mode!=='canonical'||d.writable);
-        const card=node('div',null,{class:'card','data-field-id':d.field_id||'',id:'wf-field-'+dim,style:'margin-bottom:10px'});card.append(literal('b',d.name),node('span',d.multi_select?'多选':d.dtype==='text'?'填空':'单选',{class:'chip'}));
+        const card=node('div',null,{class:'card','data-field-id':d.field_id||'','data-field-definition':JSON.stringify(['name','dtype','options','multi_select','unit','description'].map(key=>d[key])),id:'wf-field-'+dim,style:'margin-bottom:10px'});card.append(literal('b',d.name),node('span',d.multi_select?'多选':d.dtype==='text'?'填空':'单选',{class:'chip'}));
         if(mode!=='canonical'){
           const row=node('div',null,{class:'row'});
           if(d.dtype==='choice'&&d.multi_select){for(const option of d.options){const c=el('input',{type:'checkbox',class:'cb-v','data-dim':dim,value:option});c.checked=String(value).split('|').includes(option);row.append(el('label',{},c,literal('span',option)));}}
@@ -158,6 +156,7 @@
       document.dispatchEvent(new CustomEvent('reviewflow:coding-form-saved',{detail:key}));
       await E.render();
       if(mode==='personal')await W.updateProgress('coding');
+      else await W.queue('coding',{url:discovery.queue_url,evidenceOnly:true});
       $('#cbStatus').textContent=T(mode==='canonical'?'Evidence saved':result.complete?'Saved — complete':'Saved as draft — required values or evidence are missing');
       toast($('#cbStatus').textContent,'inc');return true;
     }catch(error){if(scope===identity())W.error(error);return false;}finally{saving=false;WorkspaceUndo?.endSave('coding');updateBusy();}

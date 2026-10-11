@@ -5039,8 +5039,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   });
 })();
 </script>
-<script src="./analysis_locale.js?v=20261012-workflow3"></script>
-<script src="./interface_locale.js?v=20261012-workflow3"></script>
+<script src="./analysis_locale.js?v=20261012-workflow5"></script>
+<script src="./interface_locale.js?v=20261012-workflow5"></script>
 <script src="./research_trace_locale.js?v=20261011-layouts1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
@@ -5154,7 +5154,7 @@ async function apiRequest(path, opts = {}) {
     }
     const error = new ApiError(r.status, detail);
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-      error.code = payload.code; error.reasons = payload.reasons || [];
+      error.code = payload.code; error.workflowSettings = payload.workflow_settings; error.reasons = payload.reasons || [];
     }
     return error;
   }
@@ -5625,7 +5625,7 @@ function renderScreenerSel() {
   sel.disabled = true;
 }
 $('#taskSel').addEventListener('change', async e => {
-  pickTask(e.target.value);
+  if (!await pickTask(e.target.value)) return;
   toast(T('已切换任务：《{0}》', S.task ? S.task.name : ''), 'info');
 });
 $('#screenerSel').addEventListener('change', async e => {
@@ -8013,7 +8013,7 @@ async function loadBench() {
     const d = await WorkflowEvidence.queue();
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion || !WorkflowControls.renderAllowed()) return;
     S.cbQueue = d.queue;
-    if (d.overall_progress) applyCodingProgress({total:d.overall_progress.total,coded:d.overall_progress.completed,remaining:d.overall_progress.pending});
+    if (WorkflowEvidence.context()==='personal' && d.overall_progress) applyCodingProgress({total:d.overall_progress.total,coded:d.overall_progress.completed,remaining:d.overall_progress.pending});
     if (d.progress) applyCodingProgress(d.progress);  // 复筛纳入后切页即同步进度
     await Promise.all([loadDims()]);
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion || !WorkflowControls.renderAllowed()) return;
@@ -8877,34 +8877,34 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_dta_exploratory_lr.js?v=20260929-ui3"></script>
 <script src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
 <script src="./analysis_navigation.js?v=20261002-ui1"></script>
-<script src="./workspace_shell.js?v=20261012-workflow3"></script>
+<script src="./workspace_shell.js?v=20261012-workflow5"></script>
 <script src="./sidebar_sheet.js?v=20261011-sheet2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261012-workflow3"></script>
-<script src="./research_trace.js?v=20261012-workflow3"></script>
-<script src="./import_guide.js?v=20261012-workflow3"></script>
-<script src="./import_history.js?v=20261012-workflow3"></script>
+<script src="./workflow_locale.js?v=20261012-workflow5"></script>
+<script src="./research_trace.js?v=20261012-workflow5"></script>
+<script src="./import_guide.js?v=20261012-workflow5"></script>
+<script src="./import_history.js?v=20261012-workflow5"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
-<script src="./al_profile_selector.js?v=20261012-workflow3"></script>
+<script src="./al_profile_selector.js?v=20261012-workflow5"></script>
 <script src="./al_stop_panel.js?v=20261011-reader2"></script>
-<script src="./al_blind_mode.js?v=20261012-workflow3"></script>
+<script src="./al_blind_mode.js?v=20261012-workflow5"></script>
 <script src="./screen_reader.js?v=20261011-reader2"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
-<script src="./extraction_workbench.js?v=20261012-workflow3"></script>
-<script src="./workspace_layouts.js?v=20261012-workflow3"></script>
-<link rel="stylesheet" href="./workflow_controls.css?v=20261012-workflow4">
-<script src="./workflow_controls.js?v=20261012-workflow3"></script>
-<script src="./workflow_evidence.js?v=20261012-workflow3"></script>
-<script src="./workflow_imports.js?v=20261012-workflow3"></script>
-<script src="./workspace_undo.js?v=20261012-workflow3"></script>
+<script src="./extraction_workbench.js?v=20261012-workflow5"></script>
+<script src="./workspace_layouts.js?v=20261012-workflow5"></script>
+<link rel="stylesheet" href="./workflow_controls.css?v=20261012-workflow5">
+<script src="./workflow_controls.js?v=20261012-workflow5"></script>
+<script src="./workflow_evidence.js?v=20261012-workflow5"></script>
+<script src="./workflow_imports.js?v=20261012-workflow5"></script>
+<script src="./workspace_undo.js?v=20261012-workflow5"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
-<script src="./living_review.js?v=20261012-workflow3"></script>
+<script src="./living_review.js?v=20261012-workflow5"></script>
 <script src="./evidence_mapper.js?v=20261002-release1"></script>
 </body>
 </html>

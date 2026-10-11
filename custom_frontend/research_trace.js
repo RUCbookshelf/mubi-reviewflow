@@ -73,7 +73,7 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
       const stage=resolved.stage,key=resolved.subject_id,access=resolved.actions.access_context||'personal';
       const expected=taskApi()+(access==='coding_submission_evidence'?'/coding/submission-evidence/':'/work-items/'+stage+'/')+encodeURIComponent(key);
       if(resolved.actions.work_item_url&&resolved.actions.work_item_url!==expected)throw Error(T('This history record cannot be linked to the current task.'));
-      if(await window.WorkspaceUndo?.reopenCurrent(stage,key,access,resolved.field))document.querySelector('.trace-drawer')?.remove();
+      if(await window.WorkspaceUndo?.reopenCurrent(stage,key,access,resolved.field ? (resolved.actions.current_field || {}) : null))document.querySelector('.trace-drawer')?.remove();
     });
     if(resolved.actions?.can_undo&&resolved.actions.undo_entry_id!=null)action('Undo this save',async()=>{await window.WorkspaceUndo?.undoEntry(resolved.stage,resolved.actions.undo_entry_id);if(S.page!=='trace')document.querySelector('.trace-drawer')?.remove();});
   }
