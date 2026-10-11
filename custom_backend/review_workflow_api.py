@@ -102,13 +102,24 @@ class WorkflowRuntime:
                                  catalog_revision=store.catalog_revision(ctx.owner_db))
 
     @staticmethod
-    def article_rows(db: Path) -> list[dict]:
+    def article_rows(db: Path, *, compact: bool = False) -> list[dict]:
         if not db.is_file():
             return []
         with closing(store.connect(db, read_only=True)) as conn:
             if not store.has_table(conn, "articles"):
                 return []
-            return [dict(row) for row in conn.execute("SELECT * FROM articles ORDER BY import_order,zotero_key")]
+            columns = "zotero_key,title,authors,journal,year,doi,item_type,is_duplicate_of,import_order" if compact else "*"
+            return [dict(row) for row in conn.execute(f"SELECT {columns} FROM articles ORDER BY import_order,zotero_key")]
+
+    @staticmethod
+    def article_row(db: Path, key: str) -> dict | None:
+        if not db.is_file():
+            return None
+        with closing(store.connect(db, read_only=True)) as conn:
+            if not store.has_table(conn, "articles"):
+                return None
+            row = conn.execute("SELECT * FROM articles WHERE zotero_key=?", (key,)).fetchone()
+            return dict(row) if row else None
 
     @staticmethod
     def saved_rows(db: Path, stage: str) -> dict:
@@ -125,8 +136,22 @@ class WorkflowRuntime:
                 return result
             return {row["zotero_key"]: dict(row) for row in conn.execute(f"SELECT * FROM {table}")}
 
+    @staticmethod
+    def saved_item(db: Path, stage: str, key: str) -> dict | None:
+        table = {"screen": "decisions", "fulltext": "stage2_decisions", "coding": "coding_values"}[stage]
+        if not db.is_file():
+            return None
+        with closing(store.connect(db, read_only=True)) as conn:
+            if not store.has_table(conn, table):
+                return None
+            if stage == "coding":
+                return {row[0]: row[1] for row in conn.execute(
+                    "SELECT dimension_id,value FROM coding_values WHERE zotero_key=?", (key,))}
+            row = conn.execute(f"SELECT * FROM {table} WHERE zotero_key=?", (key,)).fetchone()
+            return dict(row) if row else None
+
     def eligible(self, ctx: WorkflowContext, stage: str) -> tuple[list[dict], dict]:
-        rows = [row for row in self.article_rows(ctx.owner_db) if row.get("is_duplicate_of") is None]
+        rows = [row for row in self.article_rows(ctx.owner_db, compact=True) if row.get("is_duplicate_of") is None]
         # Owner's per-key title review status is authoritative for every reviewer.
         if ctx.owner_db.is_file():
             with closing(store.connect(ctx.owner_db, read_only=True)) as conn:
@@ -167,11 +192,30 @@ class WorkflowRuntime:
             return "task_read_only"
         if store.settings(ctx.owner_db)["stages"][stage]["mode"] == "paused":
             return "stage_paused"
-        rows, _ = self.eligible(ctx, "screen" if canonical_only else stage)
-        eligible = {row["zotero_key"] for row in rows}
-        if key not in eligible:
+        row = self.article_row(ctx.owner_db, key)
+        if row is None or row.get("is_duplicate_of") is not None:
             return "article_not_eligible"
-        if key not in {row["zotero_key"] for row in self.scoped(ctx, stage, rows)}:
+        with closing(store.connect(ctx.owner_db, read_only=True)) as conn:
+            if store.has_table(conn, "title_duplicate_members") and conn.execute(
+                    "SELECT 1 FROM title_duplicate_members m JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+                    "WHERE m.zotero_key=? AND m.imported_in_batch=1 AND r.status IN ('pending','undecided') LIMIT 1", (key,)).fetchone():
+                return "article_not_eligible"
+            links = {entry[0] for entry in conn.execute("SELECT source_id FROM workflow_article_sources WHERE zotero_key=?", (key,))} if store.has_table(conn, "workflow_article_sources") else set()
+        if not canonical_only and stage != "screen":
+            initial = self.saved_item(ctx.actor_db, "screen", key) or {}
+            if stage == "fulltext" and initial.get("decision") not in {"include", "maybe"}:
+                return "article_not_eligible"
+            if stage == "coding":
+                second = self.saved_item(ctx.actor_db, "fulltext", key) or {}
+                any_second_include = False
+                if ctx.actor_db.is_file():
+                    with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
+                        if store.has_table(conn, "stage2_decisions"):
+                            any_second_include = bool(conn.execute("SELECT 1 FROM stage2_decisions WHERE decision='include' LIMIT 1").fetchone())
+                if (any_second_include and second.get("decision") != "include") or (
+                        not any_second_include and (initial.get("decision") != "include" or second.get("decision") == "maybe")):
+                    return "article_not_eligible"
+        if not (links or {store.UNASSIGNED}) & set(self.allowed_sources(ctx, stage)):
             return "article_outside_scope"
         return None
 
@@ -249,10 +293,10 @@ class WorkflowRuntime:
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             self.sync_catalog(ctx)
-            row = next((row for row in self.article_rows(ctx.owner_db) if row["zotero_key"] == key), None)
+            row = self.article_row(ctx.owner_db, key)
             if row is None:
                 # An actor's own historical active record remains readable.
-                row = next((row for row in self.article_rows(ctx.actor_db) if row["zotero_key"] == key), None)
+                row = self.article_row(ctx.actor_db, key)
             if row is None:
                 raise HTTPException(404, "Article not found.")
             reason = self.writable_reason(ctx, stage, key)
@@ -262,7 +306,7 @@ class WorkflowRuntime:
                 raw = {}
             article = Article.from_dict({**row, "raw": raw}).to_dict()
             article["raw"] = json.loads(article.pop("raw_json") or "{}")
-            return {"article": article, "saved": self.saved_rows(ctx.actor_db, stage).get(key),
+            return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
                     "writable": reason is None, "reason": reason,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 
