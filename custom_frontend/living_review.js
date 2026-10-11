@@ -250,7 +250,7 @@
         ticket = ++version;
         importBtn.disabled = true;
         importBtn.dataset.requestTicket = String(ticket);
-        statusLine.textContent = T('正在导入并重算…（去重、AI 热启动、重跑合并分析）');
+        statusLine.textContent = T('正在导入并重算…（去重、机器学习热启动、重跑合并分析）');
         try {
           const d = await api(taskApi() + '/living-review/import-update', { method: 'POST', form });
           if (ticket !== version) return;
@@ -327,11 +327,11 @@
       const stats = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px' },
         el('span', { class: 'chip', text: T('新增 {0} 篇', String(e.n_new)) }),
         el('span', { class: 'chip', text: T('去重移除 {0} 篇', String(e.duplicates_removed)) }));
-      if (e.n_screen != null) stats.append(el('span', { class: 'chip', text: T('待新筛 {0} 篇（AI 热启动排序）', String(e.n_screen)) }));
-      else if (e.al_available === false) stats.append(el('span', { class: 'chip', text: T('AI 排序不可用') }));
+      if (e.n_screen != null) stats.append(el('span', { class: 'chip', text: T('待新筛 {0} 篇（机器学习热启动排序）', String(e.n_screen)) }));
+      else if (e.al_available === false) stats.append(el('span', { class: 'chip', text: T('机器学习排序不可用') }));
       reportBox.append(stats);
       if (e.al_available === false && e.al_note) {
-        reportBox.append(el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('AI 排序不可用：') + String(e.al_note) }));
+        reportBox.append(el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('机器学习排序不可用：') + String(e.al_note) }));
       }
 
       if (e.comparison || e.outcome || e.timepoint || e.measure) {

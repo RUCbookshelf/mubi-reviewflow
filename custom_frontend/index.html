@@ -332,7 +332,7 @@ tbody tr:hover{background:var(--primary-light)}
 @keyframes shakeX{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
 .shake{animation:shakeX .12s 3}
 
-/* ---------- 主动学习（AI 排序） ---------- */
+/* ---------- 主动学习（机器学习排序） ---------- */
 .al-mode{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
 .al-mode button{border:1px solid var(--border);background:var(--surface);color:var(--muted);padding:5px 14px;border-radius:999px;cursor:pointer;font-size:.82rem;font-family:var(--font-body);transition:background .15s ease,color .15s ease,border-color .15s ease}
 .al-mode button:hover{background:var(--primary-light)}
@@ -983,7 +983,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <h3 style="margin:16px 0 8px">功能一览</h3>
   <div class="steps">
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m0 0-3.2-3.2M12 12l3.2-3.2M4.5 16.5v3a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-3"/></svg><b>导入文献</b><span>把 Zotero 导出的同一份 CSV/RIS 发给每位筛选员，拖拽上传、自动去重</span></div>
-    <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 13.6 9l4.4 1.6-4.4 1.6L12 16.7l-1.6-4.5L6 10.6 10.4 9Z"/><path d="M18.5 3.5v3M17 5h3M6.5 16.5v3M5.5 18h2"/></svg><b>AI 智能排序</b><span>根据已有筛选决策调整待筛文献的顺序，最终决定仍由筛选员作出</span></div>
+    <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 13.6 9l4.4 1.6-4.4 1.6L12 16.7l-1.6-4.5L6 10.6 10.4 9Z"/><path d="M18.5 3.5v3M17 5h3M6.5 16.5v3M5.5 18h2"/></svg><b>机器学习排序</b><span>根据已有筛选决策调整待筛文献的顺序，最终决定仍由筛选员作出</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5.5 5.5"/></svg><b>独立筛选</b><span>逐篇阅读题目与摘要，纳入 / 待定 / 排除（键盘 1/2/3），决策实时入库</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5c2.4-1.1 4.8-1.1 8 0 3.2-1.1 5.6-1.1 8 0v13c-2.4-1.1-4.8-1.1-8 0-3.2-1.1-5.6-1.1-8 0Z"/><path d="M12 5.5v13"/></svg><b>全文复筛</b><span>阅读 PDF 原文做二次筛选，荧光笔高亮与批注实时保存，吸底决策条</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16.5" rx="2"/><path d="m8.5 11 2 2 4-4.5M8.5 17h7"/></svg><b>数据提取与编码</b><span>自定义编码维度（单选 / 多选 / 填空），左侧同步阅读 PDF，逐篇填写保存</span></div>
@@ -1010,7 +1010,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <p class="hint" style="margin:6px 0 0">偏好仅存本机浏览器；文献、决策与编码数据保存在服务端任务数据库（每位筛选员独立一库，双盲）。</p>
   </div>
 
-  <h3 style="margin:16px 0 8px">AI 排序设置</h3>
+  <h3 style="margin:16px 0 8px">机器学习排序设置</h3>
   <div class="card">
     <div class="row al-settings-grid">
       <div><label class="lbl" for="alStrategy">排序策略</label>
@@ -1027,7 +1027,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <input class="input" id="alMinLabeled" type="number" min="1" max="1000" value="5"></div>
     </div>
     <div class="row" style="margin-bottom:0">
-      <button class="btn b-inc" id="alSaveSettings">保存 AI 排序设置</button>
+      <button class="btn b-inc" id="alSaveSettings">保存 机器学习排序设置</button>
       <span class="hint" style="margin:0" id="alSettingsInfo"></span>
     </div>
     <p class="hint" style="margin:6px 0 0">模型用于预测文献相关性，排序策略决定先呈现哪些文献。模型按任务保存，排序策略按任务与筛选员保存；首页与初筛使用同一设置。</p>
@@ -1083,7 +1083,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <h2>文献初筛</h2><p class="hint">键盘：<kbd>1</kbd> 纳入 · <kbd>2</kbd> 待定 · <kbd>3</kbd> 排除（排除必填理由）· 每次决策实时保存到服务器</p>
   <div class="al-mode">
     <button id="alModeImport" class="on" title="按 Zotero 导入顺序逐篇筛选"><svg class="al-import-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M7 10h1m3 0h6M7 14h1m3 0h6M7 18h1m3 0h6"/></svg><span>导入顺序</span></button>
-    <button id="alModeAI" title="AI 排序：基于你的筛选决策，按当前策略排列待筛文献"><svg class="rf-pearl-companion" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><g class="rf-pearl-motion"><path class="rf-pearl-shell" d="M24 3C12 3 3.5 11.2 3.5 23.5S10.4 44 24 44s20.5-8.2 20.5-20.5S36 3 24 3Z"/><path class="rf-pearl-shine" d="M10 16c2-5.8 6.6-9 12-9"/><g class="rf-pearl-cheeks"><ellipse cx="12" cy="29" rx="2.2" ry="1.15"/><ellipse cx="36" cy="29" rx="2.2" ry="1.15"/></g><g class="rf-pearl-face calm"><g class="rf-pearl-eyes"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><ellipse cx="31.5" cy="24" rx="2.4" ry="3.25"/></g><path d="M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face happy"><path d="M13 24q3-5 6 0m10 0q3-5 6 0M21 28.5q3 5 6 0"/></g><g class="rf-pearl-face wink"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><path d="M29 24q3-3 6 0M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face curious"><ellipse cx="16.5" cy="25" rx="2.4" ry="3.1"/><ellipse cx="31.5" cy="22.5" rx="2.4" ry="3.7"/><path d="M22 30q2.8 2.2 5-.7"/></g></g></svg><span>AI 排序</span></button>
+    <button id="alModeAI" title="机器学习排序：基于你的筛选决策，按当前策略排列待筛文献"><svg class="rf-pearl-companion" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><g class="rf-pearl-motion"><path class="rf-pearl-shell" d="M24 3C12 3 3.5 11.2 3.5 23.5S10.4 44 24 44s20.5-8.2 20.5-20.5S36 3 24 3Z"/><path class="rf-pearl-shine" d="M10 16c2-5.8 6.6-9 12-9"/><g class="rf-pearl-cheeks"><ellipse cx="12" cy="29" rx="2.2" ry="1.15"/><ellipse cx="36" cy="29" rx="2.2" ry="1.15"/></g><g class="rf-pearl-face calm"><g class="rf-pearl-eyes"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><ellipse cx="31.5" cy="24" rx="2.4" ry="3.25"/></g><path d="M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face happy"><path d="M13 24q3-5 6 0m10 0q3-5 6 0M21 28.5q3 5 6 0"/></g><g class="rf-pearl-face wink"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><path d="M29 24q3-3 6 0M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face curious"><ellipse cx="16.5" cy="25" rx="2.4" ry="3.1"/><ellipse cx="31.5" cy="22.5" rx="2.4" ry="3.7"/><path d="M22 30q2.8 2.2 5-.7"/></g></g></svg><span>机器学习排序</span></button>
     <span class="chip al-trained" id="alBadge" style="display:none"></span>
     <span class="hint" id="alHint" style="margin:0"></span>
   </div>
@@ -3920,7 +3920,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["© 2026 木笔ReviewFlow · 协同文献筛选平台","© 2026 Mubi ReviewFlow · Collaborative Literature Screening","© 2026 Mubi ReviewFlow · Screening collaboratif de la littérature","© 2026 Mubi ReviewFlow · Совместный скрининг литературы","© 2026 Mubi ReviewFlow · Cribado colaborativo de literatura","© 2026 木笔ReviewFlow · 協同文献スクリーニング","© 2026 Mubi ReviewFlow · Triagem colaborativa de literatura","© 2026 Mubi ReviewFlow · Kollaboratives Literatur-Screening","© 2026 Mubi ReviewFlow · Колаборативни скрининг литературе", "© 2026 Mubi ReviewFlow · 공동 문헌 선별 플랫폼"],
   ["协同文献筛选 · 离线双盲 · 初筛 → 复筛 → 编码 → PRISMA（数据经鉴权 API 存入任务数据库）","Collaborative screening · offline double-blind · screening → full-text → coding → PRISMA (data saved to the task database via authenticated API)","Sélection collaborative · double aveugle hors ligne · sélection → plein texte → codage → PRISMA (données enregistrées dans la base de la tâche via API authentifiée)","Совместный отбор · двойное ослепление в офлайн-режиме · первичный отбор → полнотекстовый отбор → кодирование → PRISMA (данные сохраняются в базу задачи через аутентифицированный API)","Cribado colaborativo · doble ciego sin conexión · cribado → texto completo → codificación → PRISMA (los datos se guardan en la base de la tarea vía API autenticada)","共同スクリーニング · オフライン二重盲検 · スクリーニング → 全文 → コーディング → PRISMA（データは認証付き API でタスクDBへ保存）","Triagem colaborativa · duplo-cego offline · triagem → texto completo → codificação → PRISMA (dados salvos no banco da tarefa via API autenticada)","Gemeinsames Screening · Offline-Doppelblind · Screening → Volltext → Kodierung → PRISMA (Daten über authentifizierte API in der Aufgaben-DB gespeichert)","Заједнички одабир · офлајн двоструко слепо · одабир → пун текст → кодирање → PRISMA (подаци се чувају у базу задатка аутентификованим API-јем)", "공동 선별 · 오프라인 이중 눈가림 · 1차 선별 → 전문 → 코딩 → PRISMA(인증 API로 작업 DB에 저장)"],
   ["把 Zotero 导出的同一份 CSV/RIS 发给每位筛选员，拖拽上传、自动去重","Send the same Zotero-exported CSV/RIS to every screener; drag-and-drop upload with automatic deduplication","Envoyez à chaque évaluateur le même fichier CSV/RIS exporté de Zotero ; dépôt par glisser-déposer et dédoublonnage automatique.","Отправляйте всем отборщикам один и тот же CSV/RIS из Zotero; загрузка перетаскиванием с автоудалением дубликатов","Envíe a cada revisor el mismo archivo CSV/RIS exportado de Zotero; carga mediante arrastrar y soltar y deduplicación automática.","Zotero から書き出した同一の CSV/RIS を各スクリーナーへ。ドラッグ＆ドロップでアップロード、自動重複除去","Envie o mesmo arquivo CSV/RIS exportado do Zotero a cada revisor; carregue por arrastar e soltar, com deduplicação automática.","Dieselbe Zotero-CSV/RIS an alle Screener senden; Drag-and-Drop-Upload mit automatischer Deduplizierung","Пошаљите исту CSV/RIS датотеку извезену из Zotero-а сваком члану тима за одабир; отпремите је превлачењем, уз аутоматско уклањање дупликата.", "동일한 Zotero CSV/RIS를 각 검토자에게 배포하고 드래그로 업로드하여 자동 중복 제거"],
-  ["AI 智能排序","AI smart ranking","Classement intelligent par IA","Умная сортировка на основе ИИ","Ordenación inteligente con IA","AIスマート順序付け","Ordenação inteligente por IA","KI-gestütztes Ranking","Паметно рангирање помоћу AI", "AI 순위 지정"],
+  ["机器学习排序", "Machine Learning ranking", "Classement par apprentissage automatique", "Умная сортировка на основе машинного обучения", "Ordenación con aprendizaje automático", "機械学習スマート順序付け", "Ordenação por aprendizado de máquina", "Durch maschinelles Lernen gestütztes Ranking", "Паметно рангирање машинским учењем", "머신러닝 순위 지정"],
   ["根据已有筛选决策调整待筛文献的顺序，最终决定仍由筛选员作出","Reorders unscreened records from your earlier decisions. Screeners still make every decision.","Réordonne les références à examiner selon les décisions précédentes. Les décisions restent prises par les évaluateurs.","Меняет порядок непроверенных записей с учетом прежних решений. Окончательное решение принимает эксперт.","Reordena los registros pendientes según las decisiones previas. La decisión final sigue siendo del revisor.","これまでの判定をもとに未選別文献の順序を変えます。最終判断は選別担当者が行います。","Reordena os registros pendentes com base nas decisões anteriores. A decisão final continua com o triador.","Ordnet noch nicht geprüfte Einträge nach bisherigen Entscheidungen. Die Entscheidung trifft weiterhin der Screener.","Мења редослед непрегледаних записа на основу ранијих одлука. Коначну одлуку и даље доноси члан тима за одабир.","이전 선별 결정을 바탕으로 미검토 문헌의 순서를 조정합니다. 최종 결정은 검토자가 합니다."],
   ["独立筛选","Independent screening","Sélection indépendante","Независимый отбор","Cribado independiente","独立スクリーニング","Triagem independente","Unabhängiges Screening","Независно одабирање", "독립 선별"],
   ["逐篇阅读题目与摘要，纳入 / 待定 / 排除（键盘 1/2/3），决策实时入库","Read titles and abstracts one by one; include / maybe / exclude (keys 1/2/3); decisions saved in real time","Lisez titres et résumés un à un ; inclure / à décider / exclure (touches 1/2/3) ; décisions enregistrées en temps réel","Читайте названия и аннотации по очереди: включить / возможно / исключить (клавиши 1/2/3); решения сохраняются в реальном времени","Lea títulos y resúmenes uno a uno; incluir / pendiente / excluir (teclas 1/2/3); decisiones guardadas en tiempo real","タイトルと要約を1件ずつ読み、採用／保留／除外（キーボード 1/2/3）。判定は即時に保存されます","Leia títulos e resumos um a um; incluir / talvez / excluir (teclas 1/2/3); decisões salvas em tempo real","Titel und Abstracts einzeln lesen; einschließen / vielleicht / ausschließen (Tasten 1/2/3); Entscheidungen werden in Echtzeit gespeichert","Читајте наслове и апстракте један по један; укључи / неодлучено / искључи (тастери 1/2/3); одлуке се чувају у реалном времену", "제목·초록을 읽고 포함/보류/제외(키 1/2/3), 판정 즉시 저장"],
@@ -3945,7 +3945,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["浅色","Light","Clair","Светлая","Claro","ライト","Claro","Hell","Светла", "밝게"],
   ["暗色","Dark","Sombre","Тёмная","Oscuro","ダーク","Escuro","Dunkel","Тамна", "어둡게"],
   ["偏好仅存本机浏览器；文献、决策与编码数据保存在服务端任务数据库（每位筛选员独立一库，双盲）。","Preferences stay in this browser only; references, decisions and coding data live in the server-side task database (one independent database per screener, double-blind).","Les préférences restent dans ce navigateur ; les références, décisions et données de codage sont stockées dans la base de données de la tâche sur le serveur (une base indépendante par évaluateur, en double aveugle).","Настройки хранятся только в этом браузере; публикации, решения и кодирование — в серверной базе задачи (у каждого отборщика отдельная база данных, отбор проходит двойным слепым методом).","Las preferencias se guardan solo en este navegador; las referencias, decisiones y datos de codificación se almacenan en la base de datos de la tarea en el servidor (una base independiente por revisor, con doble ciego).","設定はこのブラウザのみに保存。文献・判定・コーディングデータはサーバー側のタスクDBに保存（スクリーナーごとに独立・二重盲検）。","As preferências ficam apenas neste navegador; as referências, decisões e dados de codificação ficam na base de dados da tarefa no servidor (uma base independente por revisor, em duplo-cego).","Einstellungen bleiben nur in diesem Browser; Literatur, Entscheidungen und Kodierung liegen in der serverseitigen Aufgaben-DB (eine unabhängige DB pro Screener, doppelblind).","Поставке остају само у овом прегледачу; литература, одлуке и кодирање чувају се у серверској бази задатка (засебна независна база за сваког члана тима за одабир, двоструко слепи одабир).", "설정은 브라우저에 저장됩니다. 문헌·판정·코딩 데이터는 서버의 작업 데이터베이스에 저장됩니다(선별자별로 분리되고 이중 눈가림 처리)."],
-  ["AI 排序设置","AI ranking settings","Réglages du classement IA","Настройки ИИ-сортировки","Ajustes de ordenación por IA","AI順序付け設定","Configurações de ordenação por IA","KI-Ranking-Einstellungen","Подешавања AI рангирања", "AI 순위 설정"],
+  ["机器学习排序设置", "Machine Learning ranking settings", "Réglages du classement par apprentissage automatique", "Настройки сортировки на основе машинного обучения", "Ajustes de ordenación por aprendizaje automático", "機械学習順序付け設定", "Configurações de ordenação por aprendizado de máquina", "ML-Ranking-Einstellungen", "Подешавања рангирања машинским учењем", "머신러닝 순위 설정"],
   ["排序策略","Ranking strategy","Stratégie de classement","Стратегия сортировки","Estrategia de ordenación","順序付け戦略","Estratégia de ordenação","Ranking-Strategie","Стратегија рангирања", "순위 전략"],
   ["相关度优先 (max)","Relevance first (max)","Pertinence d'abord (max)","Сначала релевантные (max)","Relevancia primero (max)","関連度優先 (max)","Relevância primeiro (max)","Relevanz zuerst (max)","Прво релевантне (max)", "관련성 우선 (max)"],
   ["混合探索 (mixed)","Mixed exploration (mixed)","Exploration mixte (mixed)","Смешанное исследование (mixed)","Exploración mixta (mixed)","混合探索 (mixed)","Exploração mista (mixed)","Gemischte Erkundung (mixed)","Мешовито истраживање (mixed)", "혼합 탐색 (mixed)"],
@@ -3953,7 +3953,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["停止建议阈值（连续排除 N 条，0=关闭）","Stop-suggestion threshold (N consecutive exclusions, 0 = off)","Seuil de suggestion d'arrêt (N exclusions consécutives, 0 = désactivé)","Порог предложения остановки (N исключений подряд, 0 = выкл.)","Umbral de sugerencia de parada (N exclusiones consecutivas, 0 = desactivado)","停止提案のしきい値（連続除外 N 件、0=無効）","Limiar de sugestão de parada (N exclusões seguidas, 0 = desligado)","Stopp-Vorschlag-Schwelle (N aufeinanderfolgende Ausschlüsse, 0 = aus)","Праг предлога за заустављање (N узастопних искључења, 0 = искључено)", "중단 제안 임계값(N건 연속 제외, 0=끔)"],
   ["随机种子（seed）","Random seed","Graine aléatoire","Случайное зерно (seed)","Semilla aleatoria (seed)","乱数シード（seed）","Semente aleatória (seed)","Zufalls-Seed","Семе генератора случајних бројева (seed)", "난수 시드 (seed)"],
   ["开始训练最少标签数","Minimum labels to start training","Nombre minimal d'étiquettes pour l'entraînement","Минимум меток для начала обучения","Mínimo de etiquetas para empezar el entrenamiento","訓練開始に必要な最小ラベル数","Mínimo de rótulos para iniciar o treino","Minimale Labels für Trainingsstart","Минимални број ознака за почетак обуке", "학습 최소 라벨 수"],
-  ["保存 AI 排序设置","Save AI ranking settings","Enregistrer les réglages du classement IA","Сохранить настройки ИИ-сортировки","Guardar ajustes de ordenación por IA","AI順序付け設定を保存","Salvar configurações de ordenação por IA","KI-Ranking-Einstellungen speichern","Сачувај подешавања AI рангирања", "AI 순위 설정 저장"],
+  ["保存 机器学习排序设置", "Save Machine Learning ranking settings", "Enregistrer les réglages du classement par apprentissage automatique", "Сохранить настройки сортировки на основе машинного обучения", "Guardar ajustes de ordenación por aprendizaje automático", "機械学習順序付け設定を保存", "Salvar configurações de ordenação por aprendizado de máquina", "ML-Ranking-Einstellungen speichern", "Сачувај подешавања рангирања машинским учењем", "머신러닝 순위 설정 저장"],
   ["模型用于预测文献相关性，排序策略决定先呈现哪些文献。模型按任务保存，排序策略按任务与筛选员保存；首页与初筛使用同一设置。", "The model predicts relevance; the ranking strategy chooses which references appear first. Models are saved per task, strategies per task and reviewer. Home and screening use the same settings.", "Le modèle prédit la pertinence ; la stratégie détermine les références présentées en premier. Le modèle est enregistré par tâche, la stratégie par tâche et évaluateur. Accueil et sélection partagent ces réglages.", "Модель прогнозирует релевантность, стратегия определяет порядок показа. Модель сохраняется для задачи, стратегия — для задачи и рецензента. Главная страница и скрининг используют одинаковые настройки.", "El modelo predice la relevancia; la estrategia decide qué referencias aparecen primero. El modelo se guarda por tarea y la estrategia por tarea y revisor. Inicio y cribado comparten ajustes.", "モデルが関連性を予測し、並べ替え方針が表示順を決めます。モデルはタスクごと、方針はタスクと担当者ごとに保存されます。ホームと初期選別は同じ設定を使います。", "O modelo prevê a relevância; a estratégia determina quais referências aparecem primeiro. O modelo é salvo por tarefa e a estratégia por tarefa e revisor. Início e triagem usam as mesmas configurações.", "Das Modell sagt Relevanz voraus; die Sortierstrategie bestimmt die Reihenfolge. Modelle werden je Aufgabe, Strategien je Aufgabe und Prüfer gespeichert. Startseite und Screening verwenden dieselben Einstellungen.", "Модел предвиђа релевантност, а стратегија одређује које ће се референце прво приказати. Модел се чува по задатку, а стратегија по задатку и члану тима за одабир. Почетна страница и примарни одабир користе иста подешавања.", "모델은 관련성을 예측하고 정렬 전략은 표시 순서를 정합니다. 모델은 작업별로, 전략은 작업과 검토자별로 저장됩니다. 홈과 초기 선별은 같은 설정을 사용합니다."],
   ["上传 Zotero CSV / RIS → 解析与去重 → 写入当前任务、当前筛选员的数据库。支持","Upload Zotero CSV / RIS → parse & deduplicate → write into the current task's database for the current screener. Supports","Importez un CSV/RIS Zotero → analyse et dédoublonnage → enregistrement dans la base de données de la tâche et de l’évaluateur actuels. Prend en charge","Загрузите Zotero CSV / RIS → разбор и дедупликация → запись в базу текущей задачи для текущего отборщика. Поддерживается","Suba el CSV/RIS de Zotero → análisis y deduplicación → se guarda en la base de datos de la tarea y del revisor actuales. Admite","Zotero CSV / RIS をアップロード → 解析と重複除去 → 現在のタスク・スクリーナーのDBへ書き込み。対応：","Envie o CSV/RIS do Zotero → análise e deduplicação → gravação na base de dados da tarefa e do revisor atuais. Compatível com","Zotero CSV / RIS hochladen → parsen & deduplizieren → in die DB der aktuellen Aufgabe und des aktuellen Screeners schreiben. Unterstützt","Отпремите Zotero CSV / RIS → анализа и дедупликација → упис у базу текућег задатка и прегледача. Подржава", "Zotero CSV / RIS 업로드 → 분석 및 중복 제거 → 현재 작업과 선별자의 데이터베이스에 저장합니다."],
   ["一次选择多个文件","selecting multiple files at once","la sélection simultanée de plusieurs fichiers","одновременный выбор нескольких файлов","seleccionar varios archivos a la vez","複数ファイルの一括選択","selecionar vários arquivos de uma vez","die gleichzeitige Auswahl mehrerer Dateien","једновремени избор више датотека", "여러 파일을 한 번에 선택"],
@@ -3997,7 +3997,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["待定 ·","maybe ·","à décider ·","возможно ·","pendiente ·","保留 ·","talvez ·","vielleicht ·","неодлучено ·", "보류 ·"],
   ["排除（排除必填理由）· 每次决策实时保存到服务器","exclude (reason required) · every decision is saved to the server in real time","exclure (motif obligatoire) · chaque décision est enregistrée sur le serveur en temps réel","исключить (обязателен мотив) · каждое решение сохраняется на сервере в реальном времени","excluir (motivo obligatorio) · cada decisión se guarda en el servidor en tiempo real","除外（理由必須）· 判定は毎回リアルタイムでサーバーに保存","excluir (motivo obrigatório) · cada decisão é salva no servidor em tempo real","ausschließen (Grund erforderlich) · jede Entscheidung wird in Echtzeit auf dem Server gespeichert","искључи (разлог је обавезан) · свака одлука се чува на серверу у реалном времену", "제외(사유 필수) · 판정 즉시 서버 저장"],
   ["导入顺序","Import order","Ordre d'import","Порядок импорта","Orden de importación","取り込み順","Ordem de importação","Importreihenfolge","Ред увоза", "가져온 순서"],
-  ["AI 排序", "AI ranking", "Classement IA", "ИИ-сортировка", "Ordenación IA", "AI 並べ替え", "Ordenação IA", "KI-Sortierung", "AI рангирање", "AI 정렬"],
+  ["机器学习排序", "Machine Learning ranking", "Classement par apprentissage automatique", "Сортировка на основе машинного обучения", "Ordenación con aprendizaje automático", "機械学習 並べ替え", "Ordenação por aprendizado de máquina", "ML-Sortierung", "Рангирање машинским учењем", "머신러닝 정렬"],
   ["决策历史：","Decision history:","Historique des décisions :","История решений:","Historial de decisiones:","判定履歴：","Histórico de decisões:","Entscheidungsverlauf:","Историја одлука:", "결정 이력:"],
   ["请先在首页选择或创建任务。","Pick or create a task on the Home page first.","Choisissez ou créez d'abord une tâche dans l'accueil.","Сначала выберите или создайте задачу на главной.","Elija o cree primero una tarea en Inicio.","先にホームでタスクを選択または作成してください。","Escolha ou crie uma tarefa na Início primeiro.","Wählen oder erstellen Sie zuerst eine Aufgabe auf der Startseite.","Прво изаберите или направите задатак на почетној.", "먼저 홈에서 작업을 선택하거나 만들어 주세요."],
   ["正在载入文献队列…","Loading the screening queue…","Chargement de la file de sélection…","Загрузка очереди отбора…","Cargando la cola de cribado…","スクリーニングキューを読み込み中…","Carregando a fila de triagem…","Screening-Warteschlange wird geladen…","Учитавање реда за одабир…", "문헌 대기열 불러오는 중…"],
@@ -4061,23 +4061,23 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["已创建任务《{0}》，你已登记为筛选员","Task “{0}” created; you are registered as a screener","Tâche « {0} » créée ; vous êtes inscrit comme évaluateur.","Задача «{0}» создана; вы зарегистрированы как отборщик","Tarea “{0}” creada; usted figura como revisor.","タスク「{0}」を作成しました。あなたはスクリーナーとして登録されています","Tarefa “{0}” criada; você está registrado como revisor.","Aufgabe „{0}“ erstellt; Sie sind als Screener registriert","Задатак „{0}“ је направљен; заведени сте као члан тима за одабир", "«{0}» 작업이 생성되었으며 선별자로 등록되었습니다"],
   ["任务名不能为空","Task name cannot be empty","Le nom de la tâche ne peut pas être vide","Название задачи не может быть пустым","El nombre de la tarea no puede estar vacío","タスク名は空にできません","O nome da tarefa não pode ficar vazio","Aufgabenname darf nicht leer sein","Назив задатка не сме бити празан", "작업 이름 필수"],
   ["（已归档）"," (archived)"," (archivée)"," (в архиве)"," (archivada)","（アーカイブ済み）"," (arquivada)"," (archiviert)"," (архивиран)", "(보관됨)"],
-  ["AI 排序获取失败：","Failed to fetch AI ranking: ","Échec de la récupération du classement IA : ","Не удалось получить ИИ-сортировку: ","Error al obtener la ordenación por IA: ","AI順序の取得に失敗：","Falha ao obter ordenação por IA: ","KI-Ranking konnte nicht geladen werden: ","Није успело преузимање AI рангирања: ", "AI 정렬 불러오기 실패:"],
+  ["机器学习排序获取失败：", "Failed to fetch Machine Learning ranking: ", "Échec de la récupération du classement par apprentissage automatique : ", "Не удалось получить сортировку на основе машинного обучения: ", "Error al obtener la ordenación por aprendizaje automático: ", "機械学習順序の取得に失敗：", "Falha ao obter ordenação por aprendizado de máquina: ", "ML-Ranking konnte nicht geladen werden: ", "Није успело преузимање рангирања машинским учењем: ", "머신러닝 정렬 불러오기 실패:"],
   ["已训练于 {0} 条标签","Trained on {0} labels","Entraîné sur {0} étiquettes","Обучено на {0} метках","Entrenado con {0} etiquetas","{0} 件のラベルで訓練済み","Treinado com {0} rótulos","Trainiert auf {0} Labels","Обучено на {0} ознака", "라벨 {0}개로 학습됨"],
   ["可用标签不足（{0} / 最少 {1}），暂按导入顺序展示","Not enough labels ({0} / min {1}) — showing import order for now","Étiquettes insuffisantes ({0} / min {1}) — ordre d'import pour l'instant","Меток недостаточно ({0} / мин {1}) — пока в порядке импорта","Etiquetas insuficientes ({0} / mín {1}) — de momento en orden de importación","ラベルが不足しています（{0} / 最少 {1}）。当面は取り込み順で表示","Rótulos insuficientes ({0} / mín {1}) — exibindo ordem de importação","Zu wenig Labels ({0} / min {1}) — vorerst Importreihenfolge","Нема довољно ознака ({0} / мин {1}) — привремено по реду увоза", "사용 가능한 라벨 부족 ({0} / 최소 {1}). 당분간 가져온 순서로 표시합니다"],
   ["⚠️ 已连续排除 {0} 条 — 建议暂停，复查最近决策或调整检索策略","⚠️ {0} consecutive exclusions — consider pausing to review recent decisions or adjust the search strategy","⚠️ {0} exclusions consécutives — pensez à faire une pause, relire vos décisions ou ajuster la stratégie de recherche","⚠️ {0} исключений подряд — стоит приостановиться, перепроверить решения или скорректировать стратегию поиска","⚠️ {0} exclusiones consecutivas — conviene pausar, revisar las últimas decisiones o ajustar la estrategia de búsqueda","⚠️ 連続 {0} 件の除外 — 一時停止して最近の判定を見直すか検索戦略を調整してください","⚠️ {0} exclusões seguidas — considere pausar e revisar decisões ou ajustar a estratégia de busca","⚠️ {0} Ausschlüsse in Folge — Pause empfohlen: letzte Entscheidungen prüfen oder Suchstrategie anpassen","⚠️ {0} узастопних искључења — размислите о паузи, прегледајте одлуке или прилагодите стратегију претраге", "⚠️ {0}편을 연속 제외했습니다 — 잠시 멈추고 최근 결정을 검토하거나 검색 전략을 조정해 보세요"],
-  ["AI 排序：{0}（seed {1}）· 连续排除 {2} 条","AI ranking: {0} (seed {1}) · {2} consecutive exclusions","Classement IA : {0} (graine {1}) · {2} exclusions consécutives","ИИ-сортировка: {0} (seed {1}) · {2} исключений подряд","Ordenación por IA: {0} (semilla {1}) · {2} exclusiones consecutivas","AI順序付け：{0}（seed {1}）· 連続除外 {2} 件","Ordenação por IA: {0} (semente {1}) · {2} exclusões seguidas","KI-Ranking: {0} (Seed {1}) · {2} Ausschlüsse in Folge","AI рангирање: {0} (seed {1}) · {2} узастопних искључења", "AI 정렬: {0} (seed {1}) · 연속 제외 {2}편"],
-  ["AI 排序已开启：按当前策略重排，每次决策后自动刷新", "AI ranking is on: the current strategy reorders the queue and refreshes after each decision", "Classement IA activé : la stratégie actuelle réordonne la file après chaque décision", "ИИ-сортировка включена: текущая стратегия обновляет порядок после каждого решения", "Ordenación IA activada: la estrategia actual reordena la cola tras cada decisión", "AI 並べ替えを有効化：現在の方針で並べ替え、判定ごとに更新します", "Ordenação IA ativada: a estratégia atual reordena a fila após cada decisão", "KI-Sortierung aktiv: Die aktuelle Strategie ordnet die Liste nach jeder Entscheidung neu", "AI рангирање је укључено: тренутна стратегија мења редослед после сваке одлуке", "AI 정렬 활성화: 현재 전략으로 정렬하며 판정 후 갱신합니다"],
+  ["机器学习排序：{0}（seed {1}）· 连续排除 {2} 条", "Machine Learning ranking: {0} (seed {1}) · {2} consecutive exclusions", "Classement par apprentissage automatique : {0} (graine {1}) · {2} exclusions consécutives", "Сортировка на основе машинного обучения: {0} (seed {1}) · {2} исключений подряд", "Ordenación por aprendizaje automático: {0} (semilla {1}) · {2} exclusiones consecutivas", "機械学習順序付け：{0}（seed {1}）· 連続除外 {2} 件", "Ordenação por aprendizado de máquina: {0} (semente {1}) · {2} exclusões seguidas", "ML-Ranking: {0} (Seed {1}) · {2} Ausschlüsse in Folge", "Рангирање машинским учењем: {0} (seed {1}) · {2} узастопних искључења", "머신러닝 정렬: {0} (seed {1}) · 연속 제외 {2}편"],
+  ["机器学习排序已开启：按当前策略重排，每次决策后自动刷新", "Machine Learning ranking is on: the current strategy reorders the queue and refreshes after each decision", "Classement par apprentissage automatique activé : la stratégie actuelle réordonne la file après chaque décision", "Сортировка на основе машинного обучения включена: текущая стратегия обновляет порядок после каждого решения", "Ordenación con aprendizaje automático activada: la estrategia actual reordena la cola tras cada decisión", "機械学習 並べ替えを有効化：現在の方針で並べ替え、判定ごとに更新します", "Ordenação por aprendizado de máquina ativada: a estratégia atual reordena a fila após cada decisão", "ML-Sortierung aktiv: Die aktuelle Strategie ordnet die Liste nach jeder Entscheidung neu", "Рангирање машинским учењем је укључено: тренутна стратегија мења редослед после сваке одлуке", "머신러닝 정렬 활성화: 현재 전략으로 정렬하며 판정 후 갱신합니다"],
   ["当前：{0} · seed {1} · 阈值 {2} · 最少标签 {3}","Current: {0} · seed {1} · threshold {2} · min labels {3}","Actuel : {0} · graine {1} · seuil {2} · étiquettes min. {3}","Текущее: {0} · seed {1} · порог {2} · мин. меток {3}","Actual: {0} · semilla {1} · umbral {2} · mín. etiquetas {3}","現在：{0} · seed {1} · しきい値 {2} · 最少ラベル {3}","Atual: {0} · semente {1} · limiar {2} · mín. rótulos {3}","Aktuell: {0} · Seed {1} · Schwelle {2} · min. Labels {3}","Тренутно: {0} · seed {1} · праг {2} · мин. ознака {3}", "현재: {0} · seed {1} · 임계값 {2} · 최소 라벨 수 {3}"],
   ["已保存：{0} · seed {1} · 阈值 {2} · 最少标签 {3}","Saved: {0} · seed {1} · threshold {2} · min labels {3}","Enregistré : {0} · graine {1} · seuil {2} · étiquettes min. {3}","Сохранено: {0} · seed {1} · порог {2} · мин. меток {3}","Guardado: {0} · semilla {1} · umbral {2} · mín. etiquetas {3}","保存済み：{0} · seed {1} · しきい値 {2} · 最少ラベル {3}","Salvo: {0} · semente {1} · limiar {2} · mín. rótulos {3}","Gespeichert: {0} · Seed {1} · Schwelle {2} · min. Labels {3}","Сачувано: {0} · seed {1} · праг {2} · мин. ознака {3}", "저장됨: {0} · seed {1} · 임계값 {2} · 최소 라벨 수 {3}"],
-  ["AI 排序设置已保存","AI ranking settings saved","Réglages du classement IA enregistrés","Настройки ИИ-сортировки сохранены","Ajustes de ordenación por IA guardados","AI順序付け設定を保存しました","Configurações de ordenação por IA salvas","KI-Ranking-Einstellungen gespeichert","Подешавања AI рангирања су сачувана", "AI 설정 저장됨"],
+  ["机器学习排序设置已保存", "Machine Learning ranking settings saved", "Réglages du classement par apprentissage automatique enregistrés", "Настройки сортировки на основе машинного обучения сохранены", "Ajustes de ordenación por aprendizaje automático guardados", "機械学習順序付け設定を保存しました", "Configurações de ordenação por aprendizado de máquina salvas", "ML-Ranking-Einstellungen gespeichert", "Подешавања рангирања машинским учењем су сачувана", "머신러닝 설정 저장됨"],
   ["加载中…", "Loading…", "Chargement…", "Загрузка…", "Cargando…", "読み込み中…", "Carregando…", "Wird geladen…", "Учитавање…", "불러오는 중…"],
   ["暂不可用", "Currently unavailable", "Actuellement indisponible", "Временно недоступно", "No disponible temporalmente", "現在利用できません", "Temporariamente indisponível", "Derzeit nicht verfügbar", "Тренутно недоступно", "현재 사용할 수 없음"],
   ["收起侧边栏", "Collapse sidebar", "Replier la barre latérale", "Свернуть боковую панель", "Contraer barra lateral", "サイドバーを折りたたむ", "Recolher barra lateral", "Seitenleiste einklappen", "Скупи бочну траку", "사이드바 접기"],
   ["展开侧边栏", "Expand sidebar", "Déplier la barre latérale", "Развернуть боковую панель", "Expandir barra lateral", "サイドバーを展開", "Expandir barra lateral", "Seitenleiste ausklappen", "Прошири бочну траку", "사이드바 펼치기"],
   ["请先选择任务","Pick a task first","Choisissez d'abord une tâche","Сначала выберите задачу","Elija primero una tarea","先にタスクを選択してください","Escolha uma tarefa primeiro","Bitte zuerst eine Aufgabe wählen","Прво изаберите задатак", "작업을 선택하세요"],
-  ["AI 相关度 {0}%","AI relevance {0}%","Pertinence IA {0} %","ИИ-релевантность {0} %","Relevancia IA {0} %","AI 関連度 {0}%","Relevância por IA {0}%","KI-Relevanz {0} %","AI релевантност {0}%", "AI 관련성 {0}%"],
-  ["AI 排序：本篇按模型预测的纳入概率排在该队列前列","AI ranking: this item is placed near the front by predicted inclusion probability","Classement IA : placé en tête selon la probabilité d'inclusion prédite","ИИ-сортировка: запись впереди по предсказанной вероятности включения","Ordenación por IA: este ítem va al frente según la probabilidad prevista de inclusión","AI順序付け：予測採用確率により上位に配置","Ordenação por IA: posicionado à frente pela probabilidade prevista de inclusão","KI-Ranking: nach vorhergesagter Einschlusswahrscheinlichkeit vorne platziert","AI рангирање: стављено напред по предвиђеној вероватноћи укључења", "AI: 예측 포함 확률에 따라 상위 배치"],
-  ["AI 相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练","AI relevance = model-predicted inclusion probability P(include ∈ [0,1]), trained on your screening decisions so far","Pertinence IA = probabilité d'inclusion prédite par le modèle P(include ∈ [0,1]), entraînée sur vos décisions","ИИ-релевантность = предсказанная вероятность включения P(include ∈ [0,1]), обучена на ваших решениях","Relevancia IA = probabilidad prevista de inclusión P(include ∈ [0,1]), entrenada con sus decisiones de cribado","AI 関連度＝モデルが予測する採用確率 P(include ∈ [0,1])。あなたの判定から訓練","Relevância por IA = probabilidade prevista de inclusão P(include ∈ [0,1]), treinada com suas decisões","KI-Relevanz = vorhergesagte Einschlusswahrscheinlichkeit P(include ∈ [0,1]), trainiert auf Ihren Entscheidungen","AI релевантност = предвиђена вероватноћа укључења P(include ∈ [0,1]), обучена на вашим одлукама", "AI 관련도=본인 판정으로 학습한 포함 확률 P(include ∈ [0,1])"],
+  ["机器学习相关度 {0}%", "Machine Learning relevance {0}%", "Pertinence par apprentissage automatique {0} %", "Релевантность по модели машинного обучения {0} %", "Relevancia con aprendizaje automático {0} %", "機械学習 関連度 {0}%", "Relevância por aprendizado de máquina {0}%", "ML-Relevanz {0} %", "Релевантност по моделу машинског учења {0}%", "머신러닝 관련성 {0}%"],
+  ["机器学习排序：本篇按模型预测的纳入概率排在该队列前列", "Machine Learning ranking: this item is placed near the front by predicted inclusion probability", "Classement par apprentissage automatique : placé en tête selon la probabilité d'inclusion prédite", "Сортировка на основе машинного обучения: запись впереди по предсказанной вероятности включения", "Ordenación por aprendizaje automático: este ítem va al frente según la probabilidad prevista de inclusión", "機械学習順序付け：予測採用確率により上位に配置", "Ordenação por aprendizado de máquina: posicionado à frente pela probabilidade prevista de inclusão", "ML-Ranking: nach vorhergesagter Einschlusswahrscheinlichkeit vorne platziert", "Рангирање машинским учењем: стављено напред по предвиђеној вероватноћи укључења", "머신러닝: 예측 포함 확률에 따라 상위 배치"],
+  ["机器学习相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练", "Machine Learning relevance = model-predicted inclusion probability P(include ∈ [0,1]), trained on your screening decisions so far", "Pertinence par apprentissage automatique = probabilité d'inclusion prédite par le modèle P(include ∈ [0,1]), entraînée sur vos décisions", "Релевантность по модели машинного обучения = предсказанная вероятность включения P(include ∈ [0,1]), обучена на ваших решениях", "Relevancia con aprendizaje automático = probabilidad prevista de inclusión P(include ∈ [0,1]), entrenada con sus decisiones de cribado", "機械学習 関連度＝モデルが予測する採用確率 P(include ∈ [0,1])。あなたの判定から訓練", "Relevância por aprendizado de máquina = probabilidade prevista de inclusão P(include ∈ [0,1]), treinada com suas decisões", "ML-Relevanz = vorhergesagte Einschlusswahrscheinlichkeit P(include ∈ [0,1]), trainiert auf Ihren Entscheidungen", "Релевантност по моделу машинског учења = предвиђена вероватноћа укључења P(include ∈ [0,1]), обучена на вашим одлукама", "머신러닝 관련도=본인 판정으로 학습한 포함 확률 P(include ∈ [0,1])"],
   ["双盲 · PDF 标注 · 实时入库","Double-blind · PDF annotation · saved in real time","Double aveugle · annotations PDF · enregistrement en direct","Двойное слепое · PDF-аннотации · сохранение в реальном времени","Doble ciego · anotación en PDF · guardado en tiempo real","二重盲検 · PDF 注釈 · 即時保存","Duplo-cego · anotações em PDF · salvamento em tempo real","Doppelblind · PDF-Anmerkungen · Echtzeit-Speicherung","Двоструко слепо · PDF белешке · чување у реалном времену", "이중 눈가림 · PDF 주석 · 실시간 저장"],
   ["未决","Undecided","À décider","Не решено","Pendiente","未決","Pendente","Offen","Неодлучено", "미결정"],
   ["✎ 批注","✎ Notes","✎ Annotations","✎ Заметки","✎ Anotaciones","✎ 注釈","✎ Anotações","✎ Anmerkungen","✎ Белешке", "✎ 주석"],
@@ -4808,7 +4808,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["© 2026 木笔 ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 木笔 ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 Mubi ReviewFlow", "© 2026 Mubi ReviewFlow"],
   ["木笔ReviewFlow · 协同文献筛选", "Mubi ReviewFlow · Collaborative screening", "Mubi ReviewFlow · Sélection collaborative", "Mubi ReviewFlow · Совместный отбор", "Mubi ReviewFlow · Cribado colaborativo", "木笔ReviewFlow · 協同スクリーニング", "Mubi ReviewFlow · Triagem colaborativa", "Mubi ReviewFlow · Kollaboratives Screening", "Mubi ReviewFlow · Колаборативни одабир", "Mubi ReviewFlow · 공동 문헌 선별"],
   ["木笔WriteLab 图标", "Mubi WriteLab icon", "Icône Mubi WriteLab", "Значок Mubi WriteLab", "Icono de Mubi WriteLab", "木笔WriteLab アイコン", "Ícone Mubi WriteLab", "Mubi WriteLab-Symbol", "Икона Mubi WriteLab", "Mubi WriteLab 아이콘"],
-  ["AI 排序：基于你的筛选决策，按当前策略排列待筛文献", "AI ranking: uses your screening decisions and the current strategy to order unscreened references", "Classement IA : utilise vos décisions et la stratégie actuelle pour ordonner les références à examiner", "ИИ-сортировка: упорядочивает непроверенные работы по вашим решениям и текущей стратегии", "Ordenación IA: utiliza tus decisiones y la estrategia actual para ordenar las referencias pendientes", "AI 並べ替え：あなたの判定と現在の方針で未選別の文献を並べます", "Ordenação IA: usa suas decisões e a estratégia atual para ordenar referências pendentes", "KI-Sortierung: ordnet ungeprüfte Literatur anhand Ihrer Entscheidungen und der aktuellen Strategie", "AI рангирање: користи ваше одлуке и тренутну стратегију за редослед непрегледаних радова", "AI 정렬: 본인 판정과 현재 전략으로 미검토 문헌을 정렬합니다"],
+  ["机器学习排序：基于你的筛选决策，按当前策略排列待筛文献", "Machine Learning ranking: uses your screening decisions and the current strategy to order unscreened references", "Classement par apprentissage automatique : utilise vos décisions et la stratégie actuelle pour ordonner les références à examiner", "Сортировка на основе машинного обучения: упорядочивает непроверенные работы по вашим решениям и текущей стратегии", "Ordenación con aprendizaje automático: utiliza tus decisiones y la estrategia actual para ordenar las referencias pendientes", "機械学習 並べ替え：あなたの判定と現在の方針で未選別の文献を並べます", "Ordenação por aprendizado de máquina: usa suas decisões e a estratégia atual para ordenar referências pendentes", "ML-Sortierung: ordnet ungeprüfte Literatur anhand Ihrer Entscheidungen und der aktuellen Strategie", "Рангирање машинским учењем: користи ваше одлуке и тренутну стратегију за редослед непрегледаних радова", "머신러닝 정렬: 본인 판정과 현재 전략으로 미검토 문헌을 정렬합니다"],
   ["PDF 原文", "Original PDF", "PDF original", "Исходный PDF", "PDF original", "PDF 原文", "PDF original", "PDF-Original", "Оригинални PDF", "원문 PDF"],
   ["关闭本次提示", "Dismiss this notice", "Masquer cette notification", "Скрыть это уведомление", "Descartar este aviso", "この通知を閉じる", "Fechar este aviso", "Hinweis schließen", "Затвори ово обавештење", "이 알림 닫기"],
   ["按 Zotero 导入顺序逐篇筛选", "Screen one by one in Zotero import order", "Sélectionner un par un dans l'ordre d'import Zotero", "Проводите скрининг записей по одной в порядке импорта Zotero", "Cribar uno a uno en el orden de importación de Zotero", "Zotero の取り込み順に 1 件ずつスクリーニング", "Triar um a um na ordem de importação do Zotero", "Eintrag für Eintrag in Zotero-Importreihenfolge sichten", "Одабирати један по један у редоследу Zotero увоза", "Zotero 가져온 순서로 선별"],
@@ -5039,8 +5039,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   });
 })();
 </script>
-<script src="./analysis_locale.js?v=20261002-language-wrap-final1"></script>
-<script src="./interface_locale.js?v=20261011-undo1"></script>
+<script src="./analysis_locale.js?v=20261012-workflow3"></script>
+<script src="./interface_locale.js?v=20261012-workflow3"></script>
 <script src="./research_trace_locale.js?v=20261011-layouts1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
@@ -5203,7 +5203,7 @@ const S = {
   ftQueue: [], ftIdx: 0, pdfUrl: null,        /* 复筛 */
   dims: [], cbQueue: [], cbIdx: 0, cbHl: [],   /* 编码（cbHl = 当前篇已入库高亮，切篇即重拉） */
   prLast: null,                               /* PRISMA 最近一次生成结果 */
-  al: {                                       /* 主动学习（AI 排序） */
+  al: {                                       /* 主动学习（机器学习排序） */
     mode: 'import',        /* 'import' 导入顺序 | 'ai' 相关度优先 */
     available: false, nLabeled: 0, minLabeled: 5,
     strategy: 'max', seed: 42,
@@ -5797,17 +5797,17 @@ function renderImportReport(d) {
   if (isBatch) {
     const fb = $('#batchFilesBody'); fb.textContent = '';
     d.files.forEach(f => fb.append(el('tr', {},
-      el('td', { text: f.name }),
+      el('td', { translate: 'no', text: f.name }),
       el('td', {}, el('b', { text: String(f.parsed) })),
       el('td', { text: String(f.duplicates_within) }))));
   }
   if (isBatch && cross.length) {
     const cb = $('#crossDupBody'); cb.textContent = '';
     cross.forEach(x => cb.append(el('tr', {},
-      el('td', { text: x.kept_from || '—' }),
-      el('td', { text: x.dup_from || '—' }),
+      el('td', { translate: 'no', text: x.kept_from || '—' }),
+      el('td', { translate: 'no', text: x.dup_from || '—' }),
       el('td', { text: DUP_METHOD_LABEL[x.method] || x.method }),
-      el('td', { text: x.title || '—', style: 'max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }))));
+      el('td', { translate:'no', text: x.title || '—', style: 'max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }))));
   }
   const body = $('#reportBody'); body.textContent = '';
   const rows = d.batch_id ? [
@@ -5952,7 +5952,7 @@ dz.addEventListener('drop', e => {
 });
 $('#goScreenBtn').addEventListener('click', () => go('screen'));
 
-/* ---------- 主动学习（AI 排序） ---------- */
+/* ---------- 主动学习（机器学习排序） ---------- */
 /* 队列状态：S.articlesBase 恒为导入顺序基准；AI 模式下 S.articles 被
    applyAIOrder() 重排为「已决（导入序）+ 待筛（模型相关度序）」，
    关闭 AI 即还原基准顺序。全部数据经 /al/rank · /al/settings 端点。 */
@@ -5964,7 +5964,7 @@ async function refreshALRank() {
   try { d = await api(taskApi() + '/al/rank' + scrQ()); }
   catch (e) {
     if (ticket !== alRankVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return;
-    if (e.status !== 401) toast(T('AI 排序获取失败：') + e.message, 'warn');
+    if (e.status !== 401) toast(T('机器学习排序获取失败：') + e.message, 'warn');
     S.al.available = false; S.al.orderKeys = []; S.al.scores = {};
     renderALChrome();
     if (S.al.mode === 'ai') await applyAIOrder();
@@ -6027,8 +6027,8 @@ function renderALChrome() {
   if (ai) {
     side.style.display = '';
     const strategyLabel = alStrategyLabel(S.al.strategy);
-    side.textContent = (S.al.profileLabel ? T('AI 模型') + '：' + T(S.al.profileLabel) + ' · ' : '')
-      + T('AI 排序：{0}（seed {1}）· 连续排除 {2} 条', strategyLabel, S.al.seed, S.al.streak);
+    side.textContent = (S.al.profileLabel ? T('机器学习模型') + '：' + T(S.al.profileLabel) + ' · ' : '')
+      + T('机器学习排序：{0}（seed {1}）· 连续排除 {2} 条', strategyLabel, S.al.seed, S.al.streak);
   } else side.style.display = 'none';
 }
 async function setALMode(mode) {
@@ -6038,7 +6038,7 @@ async function setALMode(mode) {
   S.al.dismissStreak = -1;
   if (!S.task) { renderALChrome(); return; }
   if (mode === 'ai') {
-    toast(T('AI 排序已开启：按当前策略重排，每次决策后自动刷新'), 'inc');
+    toast(T('机器学习排序已开启：按当前策略重排，每次决策后自动刷新'), 'inc');
     await refreshALRank();
   } else {
     S.articles = S.articlesBase ? S.articlesBase.slice() : S.articles;
@@ -6090,7 +6090,7 @@ async function saveALSettings() {
     S.al.strategy = st.strategy; S.al.seed = st.seed; S.al.minLabeled = st.min_labeled;
     renderALChrome();
     if (S.al.mode === 'ai') await refreshALRank();
-    toast(T('AI 排序设置已保存'), 'inc');
+    toast(T('机器学习排序设置已保存'), 'inc');
     if (submittedDraftVersion === alSettingsDraftVersion) document.dispatchEvent(new Event('reviewflow:al-settings-saved'));
     return submittedDraftVersion === alSettingsDraftVersion;
   } catch (e) { if (ticket === alSettingsVersion && S.task?.task_id === taskId && S.screener === screener) toast(T('保存失败：') + e.message, 'warn'); }
@@ -6145,7 +6145,7 @@ function screenTitle(article, score) {
   const text = el('span', {class:'scr-title-text', tabindex:'0', 'aria-describedby':'scrTitleFull', 'data-rf-verbatim':'', text:fullTitle});
   const tip = el('div', {id:'scrTitleFull', class:'scr-title-full', role:'tooltip', hidden:'', 'data-rf-verbatim':'', text:fullTitle});
   const heading = el('h3', {class:'scr-title'}, text,
-    typeof score === 'number' ? el('span', {class:'al-tag', title:'AI 排序：本篇按模型预测的纳入概率排在该队列前列', text:'AI'}) : null);
+    typeof score === 'number' ? el('span', {class:'al-tag', title:'机器学习排序：本篇按模型预测的纳入概率排在该队列前列', text:T('Machine Learning')}) : null);
   const wrap = el('div', {class:'scr-title-wrap'}, heading, tip);
   const show = () => { tip.hidden = !(text.scrollHeight > text.clientHeight + 1 || text.scrollWidth > text.clientWidth + 1); };
   wrap.addEventListener('mouseenter', show);
@@ -6215,9 +6215,9 @@ async function renderScreen() {
       r.year != null && r.year !== '' ? el('span', { class: 'chip scr-year', title:String(r.year), text: String(r.year) }) : null,
       el('span', { class: 'chip scr-type', title:nz(r.item_type), text: nz(r.item_type) || '—' }),
       nz(r.doi) ? el('span', { class: 'chip scr-doi', title:'DOI ' + nz(r.doi), text: 'DOI ' + nz(r.doi) }) : null),
-    typeof score === 'number' ? el('div', { class: 'al-score', title: 'AI 相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练' },
+    typeof score === 'number' ? el('div', { class: 'al-score', title: '机器学习相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练' },
       el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(score * 100) + '%' })),
-      el('span', { class: 'num', text: T('AI 相关度 {0}%', (score * 100).toFixed(1)) })) : null,
+      el('span', { class: 'num', text: T('机器学习相关度 {0}%', (score * 100).toFixed(1)) })) : null,
     el('div', { class: 'absbox', text: nz(r.abstract) ? T('摘要：') + nz(r.abstract) : T('（无摘要）') }),
     el('div', { class: 'row scr-decisions', style: 'margin-bottom:0' },
       el('button', { class: 'btn b-inc', id: 'btnInc', text: '1 纳入', onclick: () => screenDecide('include') }),
@@ -8877,34 +8877,34 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_dta_exploratory_lr.js?v=20260929-ui3"></script>
 <script src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
 <script src="./analysis_navigation.js?v=20261002-ui1"></script>
-<script src="./workspace_shell.js?v=20261012-workflow1"></script>
+<script src="./workspace_shell.js?v=20261012-workflow3"></script>
 <script src="./sidebar_sheet.js?v=20261011-sheet2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261012-workflow2"></script>
-<script src="./research_trace.js?v=20261012-workflow2"></script>
-<script src="./import_guide.js?v=20261012-workflow1"></script>
-<script src="./import_history.js?v=20261012-workflow2"></script>
+<script src="./workflow_locale.js?v=20261012-workflow3"></script>
+<script src="./research_trace.js?v=20261012-workflow3"></script>
+<script src="./import_guide.js?v=20261012-workflow3"></script>
+<script src="./import_history.js?v=20261012-workflow3"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
-<script src="./al_profile_selector.js?v=20261005-placeholder1"></script>
+<script src="./al_profile_selector.js?v=20261012-workflow3"></script>
 <script src="./al_stop_panel.js?v=20261011-reader2"></script>
-<script src="./al_blind_mode.js?v=20260930-al1"></script>
+<script src="./al_blind_mode.js?v=20261012-workflow3"></script>
 <script src="./screen_reader.js?v=20261011-reader2"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
-<script src="./extraction_workbench.js?v=20261012-workflow2"></script>
-<script src="./workspace_layouts.js?v=20261012-workflow1"></script>
-<link rel="stylesheet" href="./workflow_controls.css?v=20261012-workflow1">
-<script src="./workflow_controls.js?v=20261012-workflow2"></script>
-<script src="./workflow_evidence.js?v=20261012-workflow2"></script>
-<script src="./workflow_imports.js?v=20261012-workflow2"></script>
-<script src="./workspace_undo.js?v=20261012-workflow1"></script>
+<script src="./extraction_workbench.js?v=20261012-workflow3"></script>
+<script src="./workspace_layouts.js?v=20261012-workflow3"></script>
+<link rel="stylesheet" href="./workflow_controls.css?v=20261012-workflow3">
+<script src="./workflow_controls.js?v=20261012-workflow3"></script>
+<script src="./workflow_evidence.js?v=20261012-workflow3"></script>
+<script src="./workflow_imports.js?v=20261012-workflow3"></script>
+<script src="./workspace_undo.js?v=20261012-workflow3"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
-<script src="./living_review.js?v=20261002-ui1"></script>
+<script src="./living_review.js?v=20261012-workflow3"></script>
 <script src="./evidence_mapper.js?v=20261002-release1"></script>
 </body>
 </html>

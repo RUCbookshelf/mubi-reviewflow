@@ -1,9 +1,9 @@
 /* ReviewFlow · AL 模型预设选择器（规格书 docs/handoff/2026-09-30-al-model-upgrade-spec.md §7.1）。
  *
- * 筛选页「AI 模型」设置区（位于 🧠 AI 开关旁）：
+ * 筛选页「机器学习模型」设置区（位于 🧠 AI 开关旁）：
  *   - 下拉列出 GET /api/tasks/{id}/al/profiles 返回的预设（默认「经典模式」=
  *     响应的 default 字段）；选项文案/描述来自后端 profiles.py，经 T() 走字典。
- *   - 切换时必须弹确认框：「切换模型将重置 AI 排序，已有的筛选标签不受影响。」
+ *   - 切换时必须弹确认框：「切换模型将重置 机器学习排序，已有的筛选标签不受影响。」
  *     （§10 不变量 6：模型切换不得静默变更）；取消则回退下拉框、不发请求。
  *   - 确认后 PUT /api/tasks/{id}/al/profile（W11 路由，写 task.json 的 al_profile）。
  *
@@ -46,13 +46,13 @@
     (document.head || document.documentElement).appendChild(style);
 
     /* ---- 控件（XSS 安全：全部 el()/textContent 构造） ---- */
-    const cap = el('span', { class: 'al-profile-cap', text: T('AI 模型') });
-    const select = el('select', { id: 'alProfileSel', class: 'input', disabled: '', 'aria-label': T('AI 模型') });
-    const wrap = el('label', { class: 'al-profile-picker', for: 'alProfileSel', title: T('AI 模型预设：切换需确认，已有的筛选标签不受影响') },
+    const cap = el('span', { class: 'al-profile-cap', text: T('机器学习模型') });
+    const select = el('select', { id: 'alProfileSel', class: 'input', disabled: '', 'aria-label': T('机器学习模型') });
+    const wrap = el('label', { class: 'al-profile-picker', for: 'alProfileSel', title: T('机器学习模型预设：切换需确认，已有的筛选标签不受影响') },
       cap, select);
     anchor.after(wrap);
-    const homeSelect = el('select', {id:'alHomeProfileSel',class:'input',disabled:'','aria-label':T('AI 模型')});
-    const homeCap = el('span', {class:'lbl',text:T('AI 模型')});
+    const homeSelect = el('select', {id:'alHomeProfileSel',class:'input',disabled:'','aria-label':T('机器学习模型')});
+    const homeCap = el('span', {class:'lbl',text:T('机器学习模型')});
     const homeField = el('label', {for:'alHomeProfileSel'}, homeCap, homeSelect);
     document.getElementById('alStrategy').closest('.row').prepend(homeField);
     const selectors = [select, homeSelect];
@@ -117,7 +117,7 @@
         const next = select.value;
         if (next === effective || !next) return;
         const info = profiles[next] || {};
-        const ok = confirm(T('切换模型将重置 AI 排序，已有的筛选标签不受影响。'));
+        const ok = confirm(T('切换模型将重置 机器学习排序，已有的筛选标签不受影响。'));
         if (!ok) { select.value = effective; return; }
         const taskId = (typeof S !== 'undefined' && S.task) ? S.task.task_id : null;
         if (!taskId || typeof api !== 'function' || typeof taskApi !== 'function') { select.value = effective; return; }
@@ -130,7 +130,7 @@
           renderOptions();
           if (typeof refreshALRank === 'function') refreshALRank();
           const label = (d && d.label) || info.label || next;
-          if (typeof toast === 'function') toast(T('AI 模型已切换：{0}', T(label)), 'inc');
+          if (typeof toast === 'function') toast(T('机器学习模型已切换：{0}', T(label)), 'inc');
         }).catch(e => {
           if (!active()) return;
           select.value = effective;
@@ -144,10 +144,10 @@
     document.addEventListener('reviewflow:task-context-changed', e => { try { onTask(e && e.detail); } catch (e2) {} });
     document.addEventListener('reviewflow:language-changed', () => {
       try {
-        cap.textContent = T('AI 模型');
-        homeCap.textContent = T('AI 模型');
-        homeSelect.setAttribute('aria-label', T('AI 模型'));
-        wrap.title = T('AI 模型预设：切换需确认，已有的筛选标签不受影响');
+        cap.textContent = T('机器学习模型');
+        homeCap.textContent = T('机器学习模型');
+        homeSelect.setAttribute('aria-label', T('机器学习模型'));
+        wrap.title = T('机器学习模型预设：切换需确认，已有的筛选标签不受影响');
         renderOptions();
       } catch (e2) {}
     });

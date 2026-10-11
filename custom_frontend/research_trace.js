@@ -12,7 +12,7 @@
  function dataNode(tag,value,attrs={}){const n=node(tag,null,{translate:'no',...attrs});n.textContent=String(value??'');return n;}
  function button(text,fn,cls='btn b-out'){const n=node('button',text,{type:'button',class:cls});n.addEventListener('click',fn);return n;}
  function time(value){if(!value)return '—';const d=new Date(value);return Number.isNaN(d.getTime())?value:d.toLocaleString(RFLang.get());}
- function error(e){let n=root.querySelector('.trace-error');if(!n){n=node('p',null,{class:'trace-error',role:'alert'});root.prepend(n);}n.textContent=e.message||String(e);}
+ function error(e){let n=root.querySelector('.trace-error');if(!n){n=node('p',null,{class:'trace-error',role:'alert'});root.prepend(n);}n.textContent=window.WorkflowControls?.errorText(e)||e.message||String(e);}
  function base(){return taskApi()+'/trace';}
  const actorScope=()=>[S.task?.task_id,S.user?.user_id,S.screener].join('|');
  let detailTicket=0;

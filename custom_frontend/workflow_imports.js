@@ -8,6 +8,8 @@
   const n=(tag,text,attrs={})=>el(tag,{...attrs,...(text==null?{}:{text:T(text)})});
   const b=(text,fn)=>n('button',text,{type:'button',class:'btn b-out sm',onclick:()=>Promise.resolve().then(fn).catch(W.error)});
   const literal=(tag,text)=>el(tag,{text:String(text??''),translate:'no'});
+  const statusLabels={active:'Active',partially_active:'Partially active',staged:'Staged',preparing:'Preparing',failed:'Failed',pending:'Pending review',undecided:'Undecided',duplicate:'Duplicate confirmed',confirmed_duplicate:'Duplicate confirmed',not_duplicate:'Not duplicates',new:'New record',identity_conflict:'Identity conflict',exact_doi:'Exact DOI match',exact_key:'Exact identifier match',exact_staged:'Exact staged match',title:'Title candidate',fuzzy:'Fuzzy candidate',record:'Source record',keep_existing:'Keep existing metadata',accept_incoming:'Accept incoming metadata'};
+  const status=value=>T(statusLabels[value]||value||'');
   const reports=new Map();
   I.remember=result=>{if(result?.batch_id)reports.set(result.batch_id,result);};
   I.active=()=>!!active;
@@ -23,8 +25,8 @@
         dialog.append(n('h3','Assign a source to each file'),n('p','Choose an existing source, create one, or leave Unassigned. File names do not determine sources.'));
         const rows=[],created=new Map();
         for(const file of files){
-          const row=n('div',null,{class:'row'}),select=n('select',null,{class:'input','aria-label':T('Source')}),name=el('input',{class:'input',placeholder:T('New source name'),translate:'no',hidden:''});
-          for(const source of settings.sources||[])select.append(el('option',{value:source.id,text:source.name,translate:'no'}));
+          const row=n('div',null,{class:'row'}),select=n('select',null,{class:'input','aria-label':T('Source')}),name=el('input',{class:'input',maxlength:'200',placeholder:T('New source name'),'aria-label':T('New source name'),'data-wf-placeholder':'New source name',translate:'no',hidden:''});
+          for(const source of settings.sources||[])select.append(el('option',{value:source.id,text:W.sourceLabel(source),translate:source.reserved?'yes':'no'}));
           select.value='00000000-0000-0000-0000-000000000000';select.append(n('option','Create new source',{value:'__new__'}));
           select.addEventListener('change',()=>{name.hidden=select.value!=='__new__';});row.append(literal('span',file.name),select,name);dialog.append(row);rows.push({select,name});
         }
@@ -69,9 +71,9 @@
     try{
       const result=await api(taskApi()+'/import-batches?limit=20&offset='+listOffset);if(t!==ticket||current!==W.scope())return;
       host.replaceChildren(n('h3','Source batches'),n('p','Parsing, activation and screening are separate steps. Unresolved affected records remain staged.'));
-      for(const batch of result.batches){const row=n('section',null,{class:'wf-import-record'});row.append(literal('b',batch.batch_id||batch.id),literal('span',' · '+batch.status),counts(batch));for(const file of batch.files||[])row.append(literal('p',file.filename));row.append(b('Review / resume',()=>{offset=0;candidateOffset=0;return I.open(batch.batch_id||batch.id);}));host.append(row);}
+      for(const batch of result.batches){const row=n('section',null,{class:'wf-import-record'});row.append(literal('b',batch.batch_id||batch.id),n('span',' · ',{'aria-hidden':'true'}),n('span',status(batch.status)),counts(batch));for(const file of batch.files||[])row.append(literal('p',file.filename));row.append(b('Review / resume',()=>{offset=0;candidateOffset=0;return I.open(batch.batch_id||batch.id);}));host.append(row);}
       const previous=b('Previous page',()=>{listOffset=Math.max(0,listOffset-20);return I.list();}),next=b('Next page',()=>{listOffset=result.next_offset;return I.list();});previous.disabled=listOffset===0;next.disabled=result.next_offset==null;host.append(previous,next);
-    }catch(error){if(t===ticket&&current===W.scope())host.replaceChildren(n('p',error.message),b('Retry / refresh',I.list));}
+    }catch(error){if(t===ticket&&current===W.scope())host.replaceChildren(n('p',W.errorText(error)),b('Retry / refresh',I.list));}
   };
   async function mutate(path,body){
     const current=W.scope(),id=active;
@@ -96,23 +98,23 @@
       host.append(n('h4','Metadata and source records'));
       for(const record of batch.records||[]){
         const row=n('section',null,{class:'wf-import-record'}),article=record.article||record.staged_article||record.original||{};
-        row.append(literal('b',article.title||record.incoming_key||record.record_id),literal('p',[record.filename,record.row_locator,record.state,record.outcome].filter(Boolean).join(' · ')));
+        row.append(literal('b',article.title||record.incoming_key||record.record_id),literal('p',[record.filename,record.row_locator].filter(Boolean).join(' · ')),n('span',status(record.state)),n('span',' · ',{'aria-hidden':'true'}),n('span',status(record.outcome)));
         const original=n('details');original.append(n('summary','View original source record'),literal('pre',JSON.stringify(record.original,null,2)));row.append(original);
         const metadata=record.metadata;
         if(metadata){row.append(n('h4','Metadata proposal'),n('b','Keep existing'),literal('pre',JSON.stringify(metadata.before,null,2)),n('b','Incoming metadata'),literal('pre',JSON.stringify(metadata.incoming,null,2)));
           if(batch.can_manage&&(!metadata.action||metadata.action==='pending'))row.append(b('Keep existing metadata',()=>mutate('/metadata/'+encodeURIComponent(record.record_id),{action:'keep_existing'})),b('Accept incoming metadata',()=>mutate('/metadata/'+encodeURIComponent(record.record_id),{action:'accept_incoming'})));
-          else row.append(literal('p',metadata.action));
+          else row.append(n('p',status(metadata.action)));
         }
         host.append(row);
       }
       const prev=b('Previous records',()=>{offset=Math.max(0,offset-20);return I.open(id);}),next=b('Next records',()=>{offset=batch.next_offset;return I.open(id);});prev.disabled=offset===0;next.disabled=batch.next_offset==null;host.append(prev,next,n('h4','Candidate review'));
       for(const candidate of review.candidates||[]){
         const row=n('section',null,{class:'wf-import-candidate'}),keeper=n('select',null,{class:'input','aria-label':T('Retained record')});
-        row.append(literal('b',candidate.kind+' · '+candidate.status));
+        row.append(n('b',status(candidate.kind)),n('span',' · ',{'aria-hidden':'true'}),n('span',status(candidate.status)));
         const members=candidate.members||[],activeMembers=members.filter(m=>m.ref_type==='active');
         for(const member of members){
           const article=member.article||member.record?.article||member.record?.original||{};
-          row.append(literal('p',(article.title||member.ref_id)+' · '+member.ref_type));
+          row.append(literal('p',article.title||member.ref_id),n('span',status(member.ref_type)));
           const detail=n('details');detail.append(n('summary','View candidate record'),literal('pre',JSON.stringify(member,null,2)));row.append(detail);
           if(!activeMembers.length||member.ref_type==='active')keeper.append(el('option',{value:member.ref_type+':'+member.ref_id,text:article.title||member.ref_id,translate:'no'}));
         }
@@ -125,7 +127,7 @@
         host.append(row);
       }
       const cp=b('Previous candidates',()=>{candidateOffset=Math.max(0,candidateOffset-20);return I.open(id);}),cn=b('Next candidates',()=>{candidateOffset=review.next_offset;return I.open(id);});cp.disabled=candidateOffset===0;cn.disabled=review.next_offset==null;host.append(cp,cn);
-    }catch(error){if(t===ticket&&current===W.scope())host.replaceChildren(n('p',error.message),b('Retry / refresh',()=>I.open(id)),b('All batches',I.list));}
+    }catch(error){if(t===ticket&&current===W.scope())host.replaceChildren(n('p',W.errorText(error)),b('Retry / refresh',()=>I.open(id)),b('All batches',I.list));}
   };
   document.addEventListener('reviewflow:workspace-changed',event=>{if(event.detail==='import')Promise.resolve(active?I.open(active):I.list()).catch(W.error);if(event.detail==='home')I.notice().catch(W.error);});
   document.addEventListener('reviewflow:task-context-changed',()=>{if(context===W.scope())return;context=W.scope();ticket++;active=null;reports.clear();offset=0;candidateOffset=0;listOffset=0;host.replaceChildren();if(S.task)I.notice().catch(W.error);});

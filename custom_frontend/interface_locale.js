@@ -4328,42 +4328,9 @@
     "Извези праг SVG",
     "임계값 SVG 내보내기"
   ],
-  [
-    "AI 模型",
-    "AI model",
-    "Modèle d’IA",
-    "Модель ИИ",
-    "Modelo de IA",
-    "AI モデル",
-    "Modelo de IA",
-    "KI-Modell",
-    "ИА модел",
-    "AI 모델"
-  ],
-  [
-    "AI 模型已切换：{0}",
-    "AI model switched: {0}",
-    "Modèle d’IA changé : {0}",
-    "Модель ИИ переключена: {0}",
-    "Modelo de IA cambiado: {0}",
-    "AI モデルを切り替えました：{0}",
-    "Modelo de IA alterado: {0}",
-    "KI-Modell gewechselt: {0}",
-    "ИА модел је промењен: {0}",
-    "AI 모델 전환됨: {0}"
-  ],
-  [
-    "AI 模型预设：切换需确认，已有的筛选标签不受影响",
-    "AI model preset: switching requires confirmation; existing screening labels are unaffected",
-    "Préréglage du modèle d’IA : le changement exige une confirmation ; les étiquettes de sélection existantes ne sont pas modifiées",
-    "Пресет модели ИИ: переключение требует подтверждения; существующие метки отбора не затрагиваются",
-    "Preajuste del modelo de IA: el cambio requiere confirmación; las etiquetas de cribado existentes no se ven afectadas",
-    "AI モデル プリセット：切り替えには確認が必要です。既存のスクリーニングラベルには影響しません",
-    "Predefinição do modelo de IA: a troca exige confirmação; as etiquetas de triagem existentes não são afetadas",
-    "KI-Modellvorgabe: Der Wechsel erfordert eine Bestätigung; vorhandene Screening-Markierungen bleiben unverändert",
-    "Пресет ИА модела: промена захтева потврду; постојеће ознаке скрининга остају нетакнуте",
-    "AI 모델 사전 설정: 전환 시 확인이 필요하며 기존 선별 라벨은 영향을 받지 않습니다"
-  ],
+  ["机器学习模型", "Machine Learning model", "Modèle d’apprentissage automatique", "Модель машинного обучения", "Modelo de aprendizaje automático", "機械学習 モデル", "Modelo de aprendizado de máquina", "ML-Modell", "Модел машинског учења", "머신러닝 모델"],
+  ["机器学习模型已切换：{0}", "Machine Learning model switched: {0}", "Modèle d’apprentissage automatique changé : {0}", "Модель машинного обучения переключена: {0}", "Modelo de aprendizaje automático cambiado: {0}", "機械学習 モデルを切り替えました：{0}", "Modelo de aprendizado de máquina alterado: {0}", "ML-Modell gewechselt: {0}", "Модел машинског учења је промењен: {0}", "머신러닝 모델 전환됨: {0}"],
+  ["机器学习模型预设：切换需确认，已有的筛选标签不受影响", "Machine Learning model preset: switching requires confirmation; existing screening labels are unaffected", "Préréglage du modèle d’apprentissage automatique : le changement exige une confirmation ; les étiquettes de sélection existantes ne sont pas modifiées", "Пресет модели машинного обучения: переключение требует подтверждения; существующие метки отбора не затрагиваются", "Preajuste del modelo de aprendizaje automático: el cambio requiere confirmación; las etiquetas de cribado existentes no se ven afectadas", "機械学習 モデル プリセット：切り替えには確認が必要です。既存のスクリーニングラベルには影響しません", "Predefinição do modelo de aprendizado de máquina: a troca exige confirmação; as etiquetas de triagem existentes não são afetadas", "ML-Modellvorgabe: Der Wechsel erfordert eine Bestätigung; vorhandene Screening-Markierungen bleiben unverändert", "Пресет модела машинског учења: промена захтева потврду; постојеће ознаке скрининга остају нетакнуте", "머신러닝 모델 사전 설정: 전환 시 확인이 필요하며 기존 선별 라벨은 영향을 받지 않습니다"],
   [
     "暂不可用",
     "Temporarily unavailable",
@@ -4376,18 +4343,7 @@
     "Привремено недоступно",
     "일시적으로 사용할 수 없음"
   ],
-  [
-    "切换模型将重置 AI 排序，已有的筛选标签不受影响。",
-    "Switching the model resets the AI ranking; existing screening labels are unaffected.",
-    "Changer de modèle réinitialise le classement par IA ; les étiquettes de sélection existantes ne sont pas modifiées.",
-    "Переключение модели сбрасывает ИИ-ранжирование; существующие метки отбора не затрагиваются.",
-    "Cambiar de modelo reinicia el orden por IA; las etiquetas de cribado existentes no se ven afectadas.",
-    "モデルを切り替えると AI ランキングがリセットされます。既存のスクリーニングラベルには影響しません。",
-    "Trocar o modelo reinicia a ordenação por IA; as etiquetas de triagem existentes não são afetadas.",
-    "Der Modellwechsel setzt die KI-Sortierung zurück; vorhandene Screening-Markierungen bleiben unverändert.",
-    "Промена модела ресетује ИА рангирање; постојеће ознаке скрининга остају нетакнуте.",
-    "모델을 전환하면 AI 정렬이 초기화됩니다. 기존 선별 라벨은 영향을 받지 않습니다."
-  ],
+  ["切换模型将重置 机器学习排序，已有的筛选标签不受影响。", "Switching the model resets the Machine Learning ranking; existing screening labels are unaffected.", "Changer de modèle réinitialise le classement par apprentissage automatique ; les étiquettes de sélection existantes ne sont pas modifiées.", "Переключение модели сбрасывает ранжирование на основе машинного обучения; существующие метки отбора не затрагиваются.", "Cambiar de modelo reinicia el orden por aprendizaje automático; las etiquetas de cribado existentes no se ven afectadas.", "モデルを切り替えると 機械学習 ランキングがリセットされます。既存のスクリーニングラベルには影響しません。", "Trocar o modelo reinicia a ordenação por aprendizado de máquina; as etiquetas de triagem existentes não são afetadas.", "Der Modellwechsel setzt die ML-Sortierung zurück; vorhandene Screening-Markierungen bleiben unverändert.", "Промена модела ресетује рангирање машинским учењем; постојеће ознаке скрининга остају нетакнуте.", "모델을 전환하면 머신러닝 정렬이 초기화됩니다. 기존 선별 라벨은 영향을 받지 않습니다."],
   [
     "经典模式",
     "Classic mode",
@@ -4652,30 +4608,8 @@
     "Режим слепог скрининга (подразумевано укључен)",
     "눈가림 선별 모드(기본 켜짐)"
   ],
-  [
-    "开启时初筛界面不显示 AI 相关度分数与徽标（文献仍按 AI 排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。",
-    "When on, the screening view hides AI relevance scores and badges (references are still AI-ordered); when off, scores are shown with a for-reference-only note. The preference is stored in this browser only.",
-    "Activé, la vue de sélection masque les scores de pertinence IA et les badges (les références restent ordonnées par l’IA) ; désactivé, les scores s’affichent avec la mention « à titre indicatif ». La préférence n’est conservée que dans ce navigateur.",
-    "Во включённом режиме экран отбора скрывает оценки релевантности ИИ и значки (порядок публикаций остаётся ИИ-ранжированным); в выключенном — оценки показываются с пометкой «только для справки». Настройка хранится только в этом браузере.",
-    "Activado, la vista de cribado oculta las puntuaciones y las insignias de relevancia de la IA (las referencias siguen ordenadas por la IA); desactivado, se muestran las puntuaciones con la nota de que son solo orientativas. La preferencia se guarda solo en este navegador.",
-    "オンの場合、スクリーニング画面に AI の関連度スコアとバッジを表示しません（文献は引き続き AI 順で並びます）。オフの場合はスコアを表示し、参考値である旨を注記します。設定はこのブラウザーにのみ保存されます。",
-    "Ativado, a visão de triagem oculta as pontuações e os emblemas de relevância da IA (as referências continuam ordenadas pela IA); desativado, as pontuações aparecem com a nota de uso apenas orientativo. A preferência fica guardada somente neste navegador.",
-    "Wenn aktiviert, verbirgt die Screening-Ansicht KI-Relevanzwerte und Badges (die Referenzen bleiben KI-sortiert); wenn deaktiviert, werden die Werte mit dem Hinweis „nur zur Orientierung“ gezeigt. Die Einstellung wird nur in diesem Browser gespeichert.",
-    "Када је укључено, екран скрининга скрива ИА оцене релевантности и значке (референце остају поређане по ИА); када је искључено, оцене се приказују уз напомену да су само оријентационе. Подешавање се чува само у овом прегледачу.",
-    "켜면 선별 화면에서 AI 관련도 점수와 배지를 숨깁니다(문헌 순서는 여전히 AI 정렬). 끄면 점수를 표시하고 참고용임을 밝힙니다. 설정은 이 브라우저에만 저장됩니다."
-  ],
-  [
-    "AI 分数仅供参考，不应影响判断",
-    "AI scores are for reference only and should not influence your judgement",
-    "Les scores IA sont donnés à titre indicatif et ne doivent pas influencer votre jugement",
-    "Оценки ИИ приведены только для справки и не должны влиять на ваше суждение",
-    "Las puntuaciones de la IA son solo orientativas y no deben influir en su juicio",
-    "AI スコアは参考値であり、判断に影響を与えるものではありません",
-    "As pontuações da IA são apenas orientativas e não devem influenciar seu julgamento",
-    "KI-Werte sind nur zur Orientierung und sollten Ihr Urteil nicht beeinflussen",
-    "ИА оцене су само оријентационе и не треба да утичу на вашу оцену",
-    "AI 점수는 참고용이며 판단에 영향을 주어서는 안 됩니다"
-  ],
+  ["开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。", "When on, the screening view hides Machine Learning relevance scores and badges (references are still Machine Learning-ordered); when off, scores are shown with a for-reference-only note. The preference is stored in this browser only.", "Activé, la vue de sélection masque les scores de pertinence par apprentissage automatique et les badges (les références restent ordonnées par l’apprentissage automatique) ; désactivé, les scores s’affichent avec la mention « à titre indicatif ». La préférence n’est conservée que dans ce navigateur.", "Во включённом режиме экран отбора скрывает оценки релевантности машинного обучения и значки (порядок публикаций остаётся определённым машинным обучением); в выключенном — оценки показываются с пометкой «только для справки». Настройка хранится только в этом браузере.", "Activado, la vista de cribado oculta las puntuaciones y las insignias de relevancia del aprendizaje automático (las referencias siguen ordenadas por aprendizaje automático); desactivado, se muestran las puntuaciones con la nota de que son solo orientativas. La preferencia se guarda solo en este navegador.", "オンの場合、スクリーニング画面に 機械学習 の関連度スコアとバッジを表示しません（文献は引き続き 機械学習 順で並びます）。オフの場合はスコアを表示し、参考値である旨を注記します。設定はこのブラウザーにのみ保存されます。", "Ativado, a visão de triagem oculta as pontuações e os emblemas de relevância do aprendizado de máquina (as referências continuam ordenadas pelo aprendizado de máquina); desativado, as pontuações aparecem com a nota de uso apenas orientativo. A preferência fica guardada somente neste navegador.", "Wenn aktiviert, verbirgt die Screening-Ansicht ML-Relevanzwerte und Badges (die Referenzen bleiben ML-sortiert); wenn deaktiviert, werden die Werte mit dem Hinweis „nur zur Orientierung“ gezeigt. Die Einstellung wird nur in diesem Browser gespeichert.", "Када је укључено, екран скрининга скрива Оцене Релевантност по моделу машинског учењаи и значке (референце остају поређане машинским учењем); када је искључено, оцене се приказују уз напомену да су само оријентационе. Подешавање се чува само у овом прегледачу.", "켜면 선별 화면에서 머신러닝 관련도 점수와 배지를 숨깁니다(문헌 순서는 여전히 머신러닝 정렬). 끄면 점수를 표시하고 참고용임을 밝힙니다. 설정은 이 브라우저에만 저장됩니다."],
+  ["机器学习分数仅供参考，不应影响判断", "Machine Learning scores are for reference only and should not influence your judgement", "Les scores par apprentissage automatique sont donnés à titre indicatif et ne doivent pas influencer votre jugement", "Оценки машинного обучения приведены только для справки и не должны влиять на ваше суждение", "Las puntuaciones del aprendizaje automático son solo orientativas y no deben influir en su juicio", "機械学習 スコアは参考値であり、判断に影響を与えるものではありません", "As pontuações do aprendizado de máquina são apenas orientativas e não devem influenciar seu julgamento", "ML-Werte sind nur zur Orientierung und sollten Ihr Urteil nicht beeinflussen", "Оцене машинског учења су само оријентационе и не треба да утичу на вашу оцену", "머신러닝 점수는 참고용이며 판단에 영향을 주어서는 안 됩니다"],
   [
     "人群（P）", "Population (P)", "Population (P)", "Популяция (P)", "Población (P)", "人群（P）", "População (P)", "Population (P)", "Популација (P)", "대상 집단(P)"
   ],

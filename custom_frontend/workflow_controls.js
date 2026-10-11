@@ -19,6 +19,7 @@
   const button = (text, fn) => n('button', text, {type:'button', class:'btn b-out sm', onclick:fn});
   const literal = (tag, text) => el(tag, {text:String(text ?? ''), translate:'no'});
   const run = fn => Promise.resolve().then(fn).catch(error => W.error(error));
+  document.addEventListener('reviewflow:language-changed',()=>{for(const input of document.querySelectorAll('[data-wf-aria]'))input.setAttribute('aria-label',T(input.dataset.wfAria));for(const input of document.querySelectorAll('[data-wf-placeholder]')){input.placeholder=T(input.dataset.wfPlaceholder);input.setAttribute('aria-label',input.placeholder);}});
   W.scope = scope;
   W.settings = () => settings;
   W.version = () => settings?.version;
@@ -46,8 +47,12 @@
     finally{autoReload=null;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
   }
 
+  const reasonLabels={task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.'};
+  W.reason = value => T(reasonLabels[value] || value || '');
+  W.errorText = error => error.code&&reasonLabels[error.code]?W.reason(error.code):!error.status?T(error.message):T(error.status===403?'You do not have permission for this action.':'The request could not be completed. Your draft is retained. Review the details and retry.')+' '+error.message;
+  W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Unassigned') : source.name;
   W.error = error => {
-    toast(error.status === 409 ? T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.') + ' ' + error.message : error.message, 'warn');
+    toast(W.errorText(error), 'warn');
     if (error.status === 409) run(() => W.refresh('conflict'));
   };
   const home = document.querySelector('section.page[data-p="home"]');
@@ -158,7 +163,7 @@
       for(const source of settings.sources||[]) {
         const check=n('input',null,{type:'checkbox',value:source.id});check.checked=draft.stages[stage].source_ids.includes(source.id);check.disabled=!settings.can_manage;
         check.addEventListener('change',()=>{draft.stages[stage].source_ids=[...sourceList.querySelectorAll('input:checked')].map(c=>c.value);settingsDirty=true;});
-        sourceList.append(el('label',{},check,literal('span',source.name)));
+        sourceList.append(el('label',{},check,source.reserved?n('span','Unassigned'):literal('span',source.name)));
       }
       sourceList.hidden=select.value!=='selected';select.addEventListener('change',()=>{draft.stages[stage].mode=select.value;sourceList.hidden=select.value!=='selected';settingsDirty=true;});
       row.append(select,sourceList);host.append(row);
@@ -199,9 +204,9 @@
   function sourceEditor() {
     const host=$('#wf-sources');host.replaceChildren(n('h3','Sources'));
     for(const source of settings.sources||[]) {
-      const row=n('div',null,{class:'row'}),name=el('input',{class:'input',value:source.name,translate:'no',maxlength:'2000'});name.disabled=!settings.can_manage||source.reserved;
+      const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.disabled=!settings.can_manage||source.reserved;
       name.addEventListener('input',()=>editLibrary(name));
-      row.append(name);
+      if(source.reserved)row.append(n('span','Unassigned',{class:'input'}));else row.append(name);
       if(!name.disabled) {
         name.wfSave=async()=>{const sent=name.value;await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:sent,active:source.active,expected_version:settings.version}});if(name.value===sent)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};
         row.append(button('Save source',()=>run(name.wfSave)),button(source.active?'Pause source':'Activate source',()=>run(async()=>{await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:source.name,active:!source.active,expected_version:settings.version}});await W.refresh('source');})));
@@ -209,7 +214,7 @@
       host.append(row);
     }
     if(settings.can_manage) {
-      const name=el('input',{class:'input',placeholder:T('New source name'),translate:'no'});name.addEventListener('input',()=>editLibrary(name));
+      const name=el('input',{class:'input',maxlength:'200',placeholder:T('New source name'),'aria-label':T('New source name'),'data-wf-placeholder':'New source name',translate:'no'});name.addEventListener('input',()=>editLibrary(name));
       name.wfSave=async()=>{const sent=name.value;await api(taskApi()+'/sources',{method:'POST',body:{name:sent,active:true,expected_version:settings.version}});if(name.value===sent)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};
       host.append(name,button('Create source',()=>run(name.wfSave)));
     }
@@ -224,12 +229,12 @@
       ['screen','fulltext'].forEach((stage,i)=>{
         host.append(n('h4',stage==='screen'?'Screening':'Full text'));
         for(const entry of reasons[stage]) {
-          const row=n('div',null,{class:'row'}),text=el('input',{class:'input',value:entry.text,maxlength:'2000',translate:'no'});text.disabled=!results[i].can_manage;text.addEventListener('input',()=>editLibrary(text));row.append(text);
+          const row=n('div',null,{class:'row'}),text=el('input',{class:'input',value:entry.text,'aria-label':T('Reusable exclusion reasons'),'data-wf-aria':'Reusable exclusion reasons',maxlength:'2000',translate:'no'});text.disabled=!results[i].can_manage;text.addEventListener('input',()=>editLibrary(text));row.append(text);
           text.wfSave=()=>mutateReason(stage,'PUT',entry.id,text.value,text);
           if(results[i].can_manage)row.append(button('Save reason',()=>mutateReason(stage,'PUT',entry.id,text.value,text)),button('Delete reason',()=>mutateReason(stage,'DELETE',entry.id,undefined,text)));
           host.append(row);
         }
-        if(results[i].can_manage){const text=el('input',{class:'input',maxlength:'2000',placeholder:T('New reusable reason'),translate:'no'});text.addEventListener('input',()=>editLibrary(text));text.wfSave=()=>mutateReason(stage,'POST',null,text.value,text);host.append(text,button('Add reason',()=>mutateReason(stage,'POST',null,text.value,text)));}
+        if(results[i].can_manage){const text=el('input',{class:'input',maxlength:'2000',placeholder:T('New reusable reason'),'aria-label':T('New reusable reason'),'data-wf-placeholder':'New reusable reason',translate:'no'});text.addEventListener('input',()=>editLibrary(text));text.wfSave=()=>mutateReason(stage,'POST',null,text.value,text);host.append(text,button('Add reason',()=>mutateReason(stage,'POST',null,text.value,text)));}
       });
     }
     W.decorateReasons('screen'); W.decorateReasons('fulltext');
@@ -265,13 +270,13 @@
       if(current!==scope()||ticket!==tickets[stage]||!W.renderAllowed())throw Error(T('The task changed. Reload the queue.'));
       queues[stage]=result;delete items[stage];delete readOnlyKeys[stage];
       const select=host.querySelector('select');select.replaceChildren(n('option','All permitted sources',{value:''}));
-      for(const id of result.allowed_sources||[]){const source=settings.sources.find(source=>source.id===id);if(source)select.append(el('option',{value:source.id,text:source.name,translate:'no'}));}
+      for(const id of result.allowed_sources||[]){const source=settings.sources.find(source=>source.id===id);if(source)select.append(el('option',{value:source.id,text:W.sourceLabel(source),translate:source.reserved?'yes':'no'}));}
       if(selected[stage]&&![...select.options].some(o=>o.value===selected[stage])){selected[stage]='';return W.queue(stage);}
       select.value=selected[stage];
       const p=result.scope_progress;host.querySelector('.wf-scope-progress').textContent=T('Scope: {0} / {1} complete',p.completed,p.total);
       host.querySelector('.wf-readonly').textContent=result.paused?T('Paused — saved work is read-only.'):'';
       return result;
-    } catch(error){if(current===scope())host.querySelector('.wf-scope-progress').textContent=T('Queue unavailable. Use Retry / refresh.')+' '+error.message;throw error;}
+    } catch(error){if(current===scope())host.querySelector('.wf-scope-progress').textContent=T('Queue unavailable. Use Retry / refresh.')+' '+W.errorText(error);throw error;}
   };
   W.item=async(stage,key)=>{
     const current=scope(),ticket=++tickets[stage];
@@ -294,7 +299,7 @@
     const ids=stage==='screen'?['btnInc','btnMay','btnExc']:stage==='fulltext'?['ftInc','ftMay','ftExc']:['cbSave'];
     for(const id of ids){const b=$('#'+id);if(b)b.disabled=!writable;}
     const maybe=$(stage==='screen'?'#btnMay':'#ftMay');if(stage!=='coding'&&maybe){maybe.hidden=!W.maybe(stage);maybe.disabled=!writable||!W.maybe(stage);}
-    const notice=tools(stage).querySelector('.wf-readonly');notice.textContent=item?.key===key&&!item.writable?T('Read-only: current policy or source scope does not allow saving.')+' '+(item.reason||''):'';
+    const notice=tools(stage).querySelector('.wf-readonly');notice.replaceChildren();if(item?.key===key&&!item.writable)notice.append(n('span','Read-only: current policy or source scope does not allow saving.'),document.createTextNode(' '),n('span',W.reason(item.reason)));
     if(stage!=='coding')W.decorateReasons(stage);
   };
   W.canSave=(stage,decision)=>{

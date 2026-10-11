@@ -47,7 +47,7 @@
     updateGaps();updateBusy();
   };
   async function imageURL(image,scope,t){
-    try{const blob=await api(image.url||image.preview_url,{blob:true});if(scope!==identity()||t!==ticket)return null;const url=URL.createObjectURL(blob);urls.add(url);return url;}catch(error){if(scope===identity()&&t===ticket)toast(T('Image preview unavailable. Retry by reopening this article.')+' '+error.message,'warn');return null;}
+    try{const blob=await api(image.url||image.preview_url,{blob:true});if(scope!==identity()||t!==ticket)return null;const url=URL.createObjectURL(blob);urls.add(url);return url;}catch(error){if(scope===identity()&&t===ticket)toast(T('Image preview unavailable. Retry by reopening this article.')+' '+W.errorText(error),'warn');return null;}
   }
   function updateGaps(){
     if(!current)return;
@@ -113,7 +113,7 @@
       if(readOnlyKey===cur.zotero_key)item.writable=false;
       current=item;const dims=mode==='canonical'?item.dimensions:S.dims;
       if(!dims.length){forms.append(node('p','方案为空 —— 请先到「编码方案」添加维度。'));return;}
-      if(!item.writable)forms.append(node('p','Read-only: current policy or source scope does not allow saving.',{class:'wf-readonly'}),literal('p',item.reason));
+      if(!item.writable)forms.append(node('p','Read-only: current policy or source scope does not allow saving.',{class:'wf-readonly'}),node('p',W.reason(item.reason)));
       for(const d of dims){
         const dim=String(d.id),saved=item.evidence?.[dim]||{},value=item.saved?.[dim]||'',writable=item.writable&&(mode!=='canonical'||d.writable);
         const card=node('div',null,{class:'card','data-field-id':d.field_id||'',id:'wf-field-'+dim,style:'margin-bottom:10px'});card.append(literal('b',d.name),node('span',d.multi_select?'多选':d.dtype==='text'?'填空':'单选',{class:'chip'}));
@@ -126,7 +126,7 @@
         const required=!!(saved.required||d.required),details=node('details',null,{class:'wf-evidence','data-dim':dim,'data-required':String(required)});
         details.open=!!saved.text||!!saved.images?.length||required||localStorage.getItem('rf_evidence_display')==='all';
         details.append(node('summary',required?'Notes & evidence · Required':'Notes & evidence'));
-        const text=el('textarea',{class:'input wf-note','data-dim':dim,translate:'no','aria-label':T('Notes & evidence')});text.value=saved.text||'';text.disabled=!writable;text.dataset.wfReadonly=String(!writable);text.addEventListener('input',updateGaps);
+        const text=el('textarea',{class:'input wf-note','data-dim':dim,translate:'no','data-wf-aria':'Notes & evidence','aria-label':T('Notes & evidence')});text.value=saved.text||'';text.disabled=!writable;text.dataset.wfReadonly=String(!writable);text.addEventListener('input',updateGaps);
         details.append(text,node('p',null,{class:'wf-evidence-gap',role:'status'}));
         const host=node('div',null,{class:'wf-evidence-images'});images.set(dim,[...(saved.images||[])]);details.append(host);drawImages(dim,host,scope,t,writable);
         if(writable){const file=el('input',{type:'file',accept:'image/png,image/jpeg,image/webp',multiple:'','aria-label':T('Upload evidence images')});file.addEventListener('change',()=>{upload([...file.files],dim,host,writable);file.value='';});details.append(file);text.addEventListener('paste',event=>{const files=[...event.clipboardData?.files||[]].filter(f=>f.type.startsWith('image/'));if(files.length){event.preventDefault();upload(files,dim,host,writable);}});}
@@ -136,7 +136,7 @@
       if(item.mapping_issues?.length)forms.append(node('p','Evidence field mapping needs owner review. Existing values are preserved.',{class:'wf-evidence-gap'}));
       S.codingFormReady=true;baseline=signature();updateGaps();updateBusy();
       document.dispatchEvent(new Event('reviewflow:coding-form-loaded'));
-    }catch(error){if(t!==ticket||scope!==identity()||!W.renderAllowed())return;forms.append(node('p',error.message),btn('Retry / refresh',()=>E.render()));$('#cbStatus').textContent=T('Load failed');}
+    }catch(error){if(t!==ticket||scope!==identity()||!W.renderAllowed())return;forms.append(node('p',W.errorText(error)),btn('Retry / refresh',()=>E.render()));$('#cbStatus').textContent=T('Load failed');}
   };
   E.save=async()=>{
     if(W.refreshing()||!current?.writable||current?.policy_version!==W.version()||pending||saving||window.WorkspaceUndo?.isBusy()||!S.codingFormReady)return false;

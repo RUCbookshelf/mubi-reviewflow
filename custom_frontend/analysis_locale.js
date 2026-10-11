@@ -2693,18 +2693,7 @@
     "Попуните поље исхода „{0}“ (потребно за поновно покретање обједињене анализе).",
     "결과층의 “{0}”을(를) 입력하세요(통합 분석 재실행에 필요)."
   ],
-  [
-    "正在导入并重算…（去重、AI 热启动、重跑合并分析）",
-    "Importing and recomputing… (dedup, AI warm start, re-running the pooled analysis)",
-    "Import et recalcul… (déduplication, démarrage à chaud de l’IA, nouvelle analyse poolée)",
-    "Импорт и пересчёт… (дедупликация, тёплый старт ИИ, повторный объединённый анализ)",
-    "Importando y recalculando… (deduplicación, arranque en caliente de la IA, reejecución del análisis combinado)",
-    "インポートして再計算中…（重複排除、AI ウォームスタート、合併分析の再実行）",
-    "Importando e recalculando… (deduplicação, warm start de IA, reexecução da análise combinada)",
-    "Import und Neuberechnung… (Deduplizierung, KI-Warmstart, erneute Poolanalyse)",
-    "Увоз и поновни рачун… (дедупликација, ИА топли старт, поновна обједињена анализа)",
-    "가져오고 재계산하는 중…(중복 제거, AI 웜스타트, 통합 분석 재실행)"
-  ],
+  ["正在导入并重算…（去重、机器学习热启动、重跑合并分析）", "Importing and recomputing… (dedup, Machine Learning warm start, re-running the pooled analysis)", "Import et recalcul… (déduplication, démarrage à chaud de l’apprentissage automatique, nouvelle analyse poolée)", "Импорт и пересчёт… (дедупликация, тёплый старт машинного обучения, повторный объединённый анализ)", "Importando y recalculando… (deduplicación, arranque en caliente del aprendizaje automático, reejecución del análisis combinado)", "インポートして再計算中…（重複排除、機械学習 ウォームスタート、合併分析の再実行）", "Importando e recalculando… (deduplicação, warm start de aprendizado de máquina, reexecução da análise combinada)", "Import und Neuberechnung… (Deduplizierung, ML-Warmstart, erneute Poolanalyse)", "Увоз и поновни рачун… (дедупликација, топли старт машинског учења, поновна обједињена анализа)", "가져오고 재계산하는 중…(중복 제거, 머신러닝 웜스타트, 통합 분석 재실행)"],
   [
     "✓ 增量导入完成。",
     "✓ Incremental import complete.",
@@ -2777,42 +2766,9 @@
     "{0} уклоњено као дупликати",
     "중복으로 제거 {0}건"
   ],
-  [
-    "待新筛 {0} 篇（AI 热启动排序）",
-    "{0} awaiting screening (AI warm-start ranking)",
-    "{0} en attente de sélection (classement par IA avec initialisation à chaud)",
-    "{0} ожидают отбора (ИИ-ранжирование с тёплым стартом)",
-    "{0} pendientes de cribado (orden por IA con arranque en caliente)",
-    "未スクリーニング {0} 件（AI ウォームスタート順）",
-    "{0} aguardando triagem (ordenação por IA com warm start)",
-    "{0} warten auf das Screening (KI-Warmstart-Rangfolge)",
-    "{0} чека скрининг (ИА рангирање са топлим стартом)",
-    "선별 대기 {0}건(AI 웜스타트 정렬)"
-  ],
-  [
-    "AI 排序不可用",
-    "AI ranking unavailable",
-    "Classement IA indisponible",
-    "ИИ-ранжирование недоступно",
-    "Orden por IA no disponible",
-    "AI ランキング利用不可",
-    "Ordenação por IA indisponível",
-    "KI-Rangfolge nicht verfügbar",
-    "ИА рангирање недоступно",
-    "AI 정렬 사용 불가"
-  ],
-  [
-    "AI 排序不可用：",
-    "AI ranking unavailable: ",
-    "Classement IA indisponible : ",
-    "ИИ-ранжирование недоступно: ",
-    "Orden por IA no disponible: ",
-    "AI ランキング利用不可：",
-    "Ordenação por IA indisponível: ",
-    "KI-Rangfolge nicht verfügbar: ",
-    "ИА рангирање недоступно: ",
-    "AI 정렬 사용 불가: "
-  ],
+  ["待新筛 {0} 篇（机器学习热启动排序）", "{0} awaiting screening (Machine Learning warm-start ranking)", "{0} en attente de sélection (classement par apprentissage automatique avec initialisation à chaud)", "{0} ожидают отбора (ранжирование на основе машинного обучения с тёплым стартом)", "{0} pendientes de cribado (orden por aprendizaje automático con arranque en caliente)", "未スクリーニング {0} 件（機械学習 ウォームスタート順）", "{0} aguardando triagem (ordenação por aprendizado de máquina com warm start)", "{0} warten auf das Screening (ML-Warmstart-Rangfolge)", "{0} чека скрининг (рангирање машинским учењем са топлим стартом)", "선별 대기 {0}건(머신러닝 웜스타트 정렬)"],
+  ["机器学习排序不可用", "Machine Learning ranking unavailable", "Classement par apprentissage automatique indisponible", "ранжирование на основе машинного обучения недоступно", "Orden por aprendizaje automático no disponible", "機械学習 ランキング利用不可", "Ordenação por aprendizado de máquina indisponível", "ML-Rangfolge nicht verfügbar", "Рангирање машинским учењем недоступно", "머신러닝 정렬 사용 불가"],
+  ["机器学习排序不可用：", "Machine Learning ranking unavailable: ", "Classement par apprentissage automatique indisponible : ", "ранжирование на основе машинного обучения недоступно: ", "Orden por aprendizaje automático no disponible: ", "機械学習 ランキング利用不可：", "Ordenação por aprendizado de máquina indisponível: ", "ML-Rangfolge nicht verfügbar: ", "Рангирање машинским учењем недоступно: ", "머신러닝 정렬 사용 불가: "],
   [
     "结局层",
     "Outcome layer",

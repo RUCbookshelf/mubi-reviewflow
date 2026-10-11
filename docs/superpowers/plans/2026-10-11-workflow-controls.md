@@ -48,3 +48,20 @@ Approved by the user on 2026-10-11. Base: 56cf864. Branch: codex/workflow-contro
 ## Progress
 
 - Setup complete: managed isolated worktree, branch created, main checkout unchanged.
+- Tasks 1–3 backend and Task 4 frontend implementation/review fixes are committed locally through `de878a1`. This is implementation status, not blanket runtime acceptance.
+- Task 5 delivery: 188 complete workflow vocabulary rows in Chinese, English, French, Russian, Spanish, Japanese, Portuguese, German, Serbian and Korean; 22 existing Machine Learning display rows updated in their existing catalogs. Language autonyms and authored content remain literal.
+- Task 5 static checks: 16 branch-changed Python files parsed as AST; 25 standalone scripts (all changed scripts plus every language pack) passed Node syntax checking; 2 inline scripts compiled without execution. Branch-changed script/style cache references use `20261012-workflow3`. No automated tests or runtime calls were run by the delivery implementer.
+- Migration/API/private-image/packaging/maintenance rollback documentation is in [WORKFLOW_CONTROLS.md](../../WORKFLOW_CONTROLS.md). Migration execution and rollback-on-copy acceptance remain pending.
+- Controller reported the Task 4 suspected missing Trace actions resolved after refreshing stale frontend cache; the current event-detail response exposed authorized canonical evidence actions. This observation does not validate all Task 5 assets.
+- Remaining minor review observation: a rejected task-selector change can invalidate an automatic refresh render transaction. Retained in the final review ledger; not changed by Task 5.
+
+## Delivery checks completed; manual acceptance pending
+
+- [x] Complete ten-language workflow dictionary, placeholder parity, runtime-call vocabulary review and Machine Learning display terminology.
+- [x] Preserve source names, reasons, article metadata, notes, quotes and raw payloads as authored content.
+- [x] Synchronize cache versions for every branch-modified external script/style, including import guide and import history.
+- [x] Document exact versioned API payloads, numbered migrations/backups, isolated launch, actor-private images and non-destructive maintenance rollback.
+- [x] Inspect packaging inclusion paths for new modules/assets; no package build claimed.
+- [x] Perform source-only Python/JavaScript/inline syntax and diff checks; no automated tests.
+- [ ] Controller acceptance of final assets in all ten languages, keyboard/responsive/dark/reduced-motion modes and all workflow scenarios above.
+- [ ] Disposable-data migration/idempotence/restore and packaged launch acceptance as separately authorized.

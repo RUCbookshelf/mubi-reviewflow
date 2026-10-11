@@ -1,16 +1,16 @@
 /* ReviewFlow · 盲筛模式（规格书 docs/handoff/2026-09-30-al-model-upgrade-spec.md §7.3）。
  *
  * 「盲筛模式」开关（默认开启）：
- *   - 开启：初筛界面不显示 AI 相关度分数与徽标（#scrBody 内 .al-score 分数条
+ *   - 开启：初筛界面不显示 机器学习相关度分数与徽标（#scrBody 内 .al-score 分数条
  *     与 .al-tag「AI」徽标，主应用 renderScreen 每次重绘都渲染它们），文献仍按
- *     AI 排序呈现——顺序是模型输出，分数/徽标是其可视化，隐藏后者不改变队列；
- *   - 关闭：分数照常显示，并紧随分数条标注「AI 分数仅供参考，不应影响判断」。
+ *     机器学习排序呈现——顺序是模型输出，分数/徽标是其可视化，隐藏后者不改变队列；
+ *   - 关闭：分数照常显示，并紧随分数条标注「机器学习分数仅供参考，不应影响判断」。
  *     标注经 MutationObserver 在每次重绘后重挂（#scrBody 由 renderScreen 清空
  *     重建，见主应用 index.html renderScreen()），幂等：已在位则只同步文案。
  *   - 筛后审计：本开关只隐藏「初筛进行中」的分数展示，不改动任何数据；分析/
  *     导出页现有功能不受影响（分数数据仍在 /al/rank 响应与 S.al.scores 中）。
  *
- * 开关位置：设置（首页）「AI 排序设置」卡片内、保存按钮行之后。属界面偏好，
+ * 开关位置：设置（首页）「机器学习排序设置」卡片内、保存按钮行之后。属界面偏好，
  * 仅存本机浏览器 localStorage（与排版方案/主题同一模式：rfpb_density/rfpb_theme），
  * 不写服务端——规格 §6 未定义对应端点，盲筛是个人显示偏好而非任务级设置。
  *
@@ -29,7 +29,7 @@
     if (typeof document === 'undefined' || typeof T !== 'function' || typeof el !== 'function') return;
 
     const KEY = 'rf_al_blind';           // 与 rfpb_theme/rfpb_density 同一 localStorage 命名族
-    const NOTE = 'AI 分数仅供参考，不应影响判断';
+    const NOTE = '机器学习分数仅供参考，不应影响判断';
 
     function readBlind() {
       /* 默认开（规格 §7.3）：仅显式存过 '0' 才关闭；隐私模式等读取失败也回落默认 */
@@ -73,7 +73,7 @@
       if (!blind) annotate();
     }
 
-    /* ---- 设置开关（注入「AI 排序设置」卡片；卡片缺失不致命：隐藏仍生效） ---- */
+    /* ---- 设置开关（注入「机器学习排序设置」卡片；卡片缺失不致命：隐藏仍生效） ---- */
     const saveBtn = document.getElementById('alSaveSettings');
     const anchorRow = saveBtn ? (saveBtn.closest('.row') || saveBtn.parentElement) : null;
     if (anchorRow) {
@@ -82,7 +82,7 @@
         el('span', { text: T('盲筛模式（默认开启）') }));
       const hint = el('span', {
         class: 'hint', style: 'margin:0;flex:1;min-width:220px',
-        text: T('开启时初筛界面不显示 AI 相关度分数与徽标（文献仍按 AI 排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。'),
+        text: T('开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。'),
       });
       anchorRow.after(el('div', { class: 'row al-blind-row' }, cap, hint));
       box.checked = blind;
@@ -110,7 +110,7 @@
         const label = document.querySelector('.al-blind-row label[for="alBlindMode"] > span');
         if (label) label.textContent = T('盲筛模式（默认开启）');
         const hint = document.querySelector('.al-blind-row .hint');
-        if (hint) hint.textContent = T('开启时初筛界面不显示 AI 相关度分数与徽标（文献仍按 AI 排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。');
+        if (hint) hint.textContent = T('开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。');
         if (!blind) annotate();
       } catch (e) { /* 单点故障 */ }
     });
