@@ -38,7 +38,7 @@ The existing source audit expectations were updated to 190 rows and common workf
 
 ## Bounded manual evidence
 
-The controller's detailed session ledger is [manual-acceptance.md](../.superpowers/sdd/2026-10-11-workflow-controls/manual-acceptance.md). It is local review scratch rather than a packaged acceptance certificate. This discoverable document preserves the bounds even if that scratch is absent in a later checkout.
+The controller's detailed session ledger is local review scratch rather than a packaged acceptance certificate. The observations and limitations below preserve the review bounds in this repository without depending on local scratch files.
 
 Before the final repair wave, the controller recorded these particular fictional-data examples:
 
@@ -65,3 +65,11 @@ For authorized maintenance, stop writers, preserve a current consistent copy of 
 
 
 Final-wave continuation: the controller found that clearing the initial-screen reader removes its dynamically rendered decision buttons before the reset loop disables them. The reset now checks for each control before disabling it, so missing stage controls cannot interrupt policy readiness. The scoped reviewer also found a duplicated Serbian conjunction; the duplicate was removed. The common asset cache version is workflow6. These two source corrections received Node syntax and diff checks; their runtime acceptance belongs to the controller's subsequent check.
+
+## 2.0.5 release preparation — 12 October 2026
+
+The approved feature branch is integrated into the main checkout for version 2.0.5. Later refinements group each coding dimension with its evidence, add dividers, label screening order, add a Random SVG, and clarify Home/stage terminology in all ten languages. The workflow vocabulary now contains 211 complete ten-language rows. Newly changed assets use feature-specific cache versions rather than the historical common workflow6 value above.
+
+Source checks revalidate changed Python files, changed standalone JavaScript and all locale packs, both HTML inline scripts, locale placeholders, preserved control IDs and diff whitespace. Later browser observations on fictional data confirm the Home tabs, Maybe/source/evidence labels, notes-display choices, four model preset names and score-visibility caption across all ten languages. The preset identifier and score-visibility preference remained unchanged. Original Chinese language was restored. These later wording checks do not establish additional decision, migration, retention, race or native-language acceptance coverage.
+
+GitHub Actions builds Windows, Linux and macOS packages from the release commit. Build results and assets are recorded on the [Actions page](https://github.com/RUCbookshelf/mubi-reviewflow/actions/workflows/release.yml) and [2.0.5 release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.0.5). Those runtime and maintenance limits remain applicable after a successful build. The local installed application and real research data are not changed as part of publication.

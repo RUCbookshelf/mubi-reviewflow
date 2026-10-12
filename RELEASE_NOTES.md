@@ -1,87 +1,83 @@
-## 木笔 ReviewFlow 2.0.4
+# 木笔 ReviewFlow 2.0.5
 
-### English
+## English
 
-#### Updated 2.0.4 build — Undo saved review operations
+### Workflow settings and screening
 
-- Initial and full-text screening now provide **Undo last save**: restore the state before the last save and reopen that article to revise the decision.
-- Coding Undo restores all fields changed by one complete Save together. Coding form saves are atomic, preventing partially saved forms.
-- Use **Ctrl+Z** on Windows/Linux or **Command+Z** on macOS outside text-entry fields. Normal text-editing undo is preserved inside fields.
-- Undo histories persist separately by task, reviewer and stage. Progress refreshes after restoration, and newer changes or downstream work are protected by conflict checks. PDFs and annotations are preserved.
-- Buttons and messages support all ten interface languages. Undo actions appear in the research trace when recording is enabled.
-- Undo is available for saves made after this update is installed. Earlier decisions have no before-save snapshot and cannot be undone through this feature.
-- Version remains **2.0.4**. These installers replace the previous 2.0.4 files and include the layout updates listed below.
+- Home & Settings groups controls into six tabs with an elastic indicator: Overview, Tasks & team, Screening settings, Machine Learning, Data extraction & coding, and Appearance & storage. Keyboard navigation and reduced motion are supported.
+- Save reusable exclusion reasons separately for title-and-abstract and full-text screening. Personal tasks use account-owned reasons; team tasks use owner-managed reasons. Library edits preserve earlier decision text.
+- Configure Maybe independently for both screening stages. The owner controls team settings, enforced by the backend. Disabling Maybe preserves historical decisions.
+- Initial Include and Maybe both enter full-text screening without converting the initial decision. Full-text Maybe remains unresolved and does not, by itself, qualify a report for coding. Progress counts saved decisions, including Maybe, separately from undecided work.
+- Choose **Import / Machine Learning / Random** screening order. Random order persists per reviewer, task and source scope. Newly activated work appends without reshuffling; an explicit action reshuffles remaining eligible records.
 
-#### Updated 2.0.4 build — reader and workspace layouts
+### Import sources and protection of existing work
 
-- The sidebar is now a shared floating button that expands into a navigation sheet on every workspace. The same container grows over 360 ms, options appear in staggered groups, and closing reverses the motion. The original product logo remains beside 木笔 ReviewFlow. Keyboard navigation, small screens and reduced-motion preferences are supported.
-- Title/abstract screening prioritizes the article reader with a compact toolbar, a details panel, full-width decision controls and a Focus mode. Stopping guidance opens as a compact floating card with Pearl Companion, freeing the space below the article.
-- Full-text screening uses a compact document toolbar, Focus mode and an annotation panel docked beside the PDF. Existing PDF navigation, highlights, uploads and screening decisions are retained.
-- **Data extraction & coding** replaces the inconsistent Literature coding / Reference coding labels across all ten interface languages. The PDF/form split is adjustable by dragging or arrow keys, coding dimensions can be folded individually, and the existing Save/Next controls sit beside the form. The structured extraction panel remains available.
-- PRISMA inputs are arranged in collapsible sections beside a larger diagram preview. Import, validation, citation selection and all export formats are retained. The existing PRISMA engine, reporting fields, template structures and consistency checks are unchanged; concept sample content is not included in the application.
-- These layout changes do not change the backend, database schema or saved research decisions. Version remains **2.0.4**; the new installers replace the earlier assets under the same release tag.
+- Filter screening and coding by explicitly assigned, stable import sources. Sources are not inferred from filenames. Multi-source articles appear once overall and retain the same saved result across source views.
+- Owners permit All sources, Selected sources, or pause each stage. Members work within that scope. Paused stages remain readable; scoped and overall progress are separate.
+- Additional imports made after saved research work enter protected staging. Review duplicate candidates and metadata differences, then activate resolved records. Existing article identities, decisions, coding and evidence are retained.
+- Original import receipts and provenance are preserved. Reimporting the same file within the same source does not create duplicate work.
+- Living Review incremental import actions lead to protected import review. Export or select the original source file, review it and activate resolved records; run analysis separately afterward.
 
-#### Team collaboration
+### Coding evidence and Trace backtracking
 
-- Server task lists refresh through real-time SSE notifications after invitations and role changes, with polling every 30 seconds while the page is visible as a fallback.
-- Owners can manage non-owner members through a per-member **···** menu: change the role to **Coder / Reconciler**, or remove the member with confirmation. Team management stays expanded.
-- Member-management controls and notifications support all ten interface languages; role names are unified as Coder / Reconciler.
-- Entry pages require cache validation; other static assets use a one-day cache. Updated language-pack references load the latest translations.
+- Each dimension and its Notes & evidence form one visual unit, with dividers between units.
+- Add text, quotations, page references, and PNG/JPEG/WebP images through file selection or screenshot paste. Image content/type and the 10 MB per-image limit are validated.
+- Owners can require evidence for selected dimensions. Nonblank notes or an image satisfy the requirement. Incomplete work can be saved as a draft and is not counted as complete.
+- Values, notes and attachment changes save atomically and participate in the same guarded Undo operation. Unsaved forms offer Save / Discard / Stay before navigation.
+- Applicable Trace records provide **View change**, **Open article to correct**, and **Undo this save** when linked to the actor's latest eligible save. Reopening loads current saved values; historical records are retained. Out-of-scope articles open read-only.
+- Policy and source changes use live notifications with visible-page polling as a fallback. Dirty forms are retained when policies change.
 
-#### Screening and interface
+### Interface and terminology
 
-- Decision history stays compact: numbered entries and Included / Pending / Excluded counts leave room for the article content.
-- Long titles and metadata are truncated in the screening layout. Hovering over or focusing a truncated title reveals the full title.
-- The original **Pearl Companion** SVG replaces the AI ranking ball, with calm, happy, winking and curious expressions, gentle breathing, blinks and pastel cheek accents.
-- The import guide and its collapsed capsule display a still Pearl Companion. The avatar works in light and dark themes and respects reduced-motion preferences.
-- Import order uses an SVG icon.
-- Trace status appears beside the current task: green for recording and grey for inactive. Clicking the status opens Trace; redundant workspace shortcuts are removed.
+- Screening order has an explicit label and Random uses an SVG icon.
+- Full-text queue positions use **Full-text report**. Decision history distinguishes saved **Maybe** from undecided work.
+- Home labels and explanations are clarified in all ten supported languages, including evidence requirements, source permissions, browser preferences and separate Save actions.
+- Model presets use neutral configuration names and descriptions. **Hide Machine Learning scores** accurately names the display preference. Model parameters and selected identifiers are preserved.
 
-#### Documentation and downloads
+### Downloads and upgrade
 
-- README introductions and linked guides cover the supported languages, with restored link targets and a formatted Ubuntu server deployment guide.
-- Downloads: Windows installer, Linux AppImage and macOS DMG, plus SHA-256 checksums.
-- This release does not include Remote Operation or differential updates. The existing update entry downloads an installer. Keep and back up the existing data directory when upgrading.
+- Windows x64 installer, Linux x86_64 AppImage, macOS DMG, and SHA-256 checksums. Application version is **2.0.5**; macOS bundle metadata also follows VERSION.
+- This update adds workflow storage migrations. Close writers and back up the entire existing data directory before upgrading, including databases, PDFs, imports, images, task metadata and configuration. Automatic database snapshots do not replace a complete backup.
+- Preserve newer research when rolling back; never overwrite it with an old snapshot. See [workflow storage and maintenance](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_CONTROLS.md) and [validation record](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_VALIDATION.md).
+- Source syntax checks and bounded fictional-data preview checks are recorded. A successful package build does not establish every runtime acceptance scenario or independent native-speaker review of every translation.
 
-### 中文
+## 中文
 
-#### 2.0.4 更新构建 — 撤销已保存的筛选与编码操作
+### 流程设置与筛选
 
-- 文献初筛与复筛新增 **撤销上次保存**：恢复上次保存前的状态，并返回该文献，供用户重新判断。
-- 编码撤销会一次恢复同一次保存涉及的全部字段；编码表单采用原子保存，避免只保存部分字段。
-- Windows/Linux 使用 **Ctrl+Z**，macOS 使用 **Command+Z**。在输入框内保留正常的文本编辑撤销。
-- 撤销历史按任务、筛选员及阶段独立保存，重启后仍可使用；撤销后刷新进度。较新的修改或后续阶段工作会触发冲突保护，不覆盖较新结果；PDF 与批注保留。
-- 按钮及提示支持全部十种界面语言；启用轨迹记录时，撤销操作会写入研究轨迹。
-- 本功能仅能撤销安装本次更新后进行的保存。更早的决策没有保存前快照，不能通过本功能撤销。
-- 版本号仍为 **2.0.4**，安装包覆盖之前的 2.0.4 文件，并包含下方列出的布局更新。
+- 首页整理为六个标签页：概览、任务与团队、筛选设置、机器学习、数据提取与编码、外观与存储。弹性指示器支持键盘操作与减少动态效果偏好。
+- 初筛与全文筛选分别保存常用排除原因。个人任务使用账户原因库；团队任务使用负责人管理的原因库。修改原因库不改写历史决定文本。
+- 两个筛选阶段分别设置是否提供待定，团队由负责人管理并由后端限制；关闭后保留历史待定决定。
+- 初筛纳入与待定均进入全文筛选，原决定保留。全文待定仍需后续处理，其本身不使文献进入编码。进度统计已保存决定（包含待定），与尚未决定的工作区分。
+- 筛选顺序支持 **导入 / 机器学习 / 随机**。随机顺序按筛选员、任务与来源范围保存；新增激活记录追加，不打乱剩余顺序；可主动重新随机排列。
 
-#### 2.0.4 更新构建 — 阅读与工作区布局
+### 来源与既有研究保护
 
-- 所有工作区使用统一的悬浮侧边栏：同一容器在 360 毫秒内从按钮展开为导航面板，选项分组依次出现，关闭时沿原路径逆向收回；「木笔 ReviewFlow」前保留产品原有 logo。支持键盘操作、小屏幕及系统减少动态效果的偏好。
-- 文献初筛以阅读区为中心，工具栏更紧凑，详情可按需展开，决策按钮占满整行，并提供专注阅读。停止建议改为带 Pearl Companion 的悬浮卡片，不再占用文献下方空间。
-- 文献复筛采用紧凑的文献工具栏和专注阅读；批注面板在开启时停靠 PDF 旁。原有 PDF 导航、高亮、上传及筛选决策功能保留。
-- 文献编码名称统一为 **数据提取与编码**，同步十种界面语言。PDF 与表单的宽度可通过拖动或方向键调整，各编码维度可独立折叠，原有保存及下一篇按钮移至表单旁；结构化数据提取区域保留。
-- PRISMA 输入区改为可折叠分区，与更大的流程图预览并排显示。保留导入、校验、引文格式及全部导出格式；现有 PRISMA 引擎、报告字段、模板结构和数量一致性校验不变，概念稿的示例内容未写入产品。
-- 本次布局更新不修改后端、数据库结构或已保存的研究决策。版本号仍为 **2.0.4**，新安装包覆盖同一发布标签下的原有文件。
+- 初筛、全文筛选、编码支持按明确指定的稳定来源筛选，不依据文件名推断来源。多来源文献在总体队列中只出现一次，各来源视图使用同一保存结果。
+- 负责人可为各阶段设置全部来源、指定来源或暂停；成员在允许范围内工作，暂停后仍可阅读。当前范围进度与总体进度分别显示。
+- 已有保存的研究工作后，追加导入先进入暂存区。核验重复候选与元数据差异后激活已解决记录，保留既有文献标识、决定、编码及证据。
+- 保留导入原始记录与来源；同一文件在同一来源下重新导入，不产生重复工作。
+- Living Review 增量导入入口引导至受保护的导入核验：导出或选择原始文件，核验并激活已解决记录，之后单独运行分析。
 
-#### 团队协作
+### 编码证据与轨迹回溯
 
-- 服务器模式通过 SSE 实时通知更新邀请及权限变更后的任务列表；页面可见时每 30 秒轮询作为补充。
-- 任务所有者可通过成员右侧的 **···** 菜单，将非所有者成员的角色改为 **Coder / Reconciler**，或确认后移除成员；团队管理区域保持展开。
-- 成员管理操作及提示支持十种界面语言，角色名称统一为 Coder / Reconciler。
-- 入口页面每次使用前进行缓存校验，其他静态资源缓存一天；语言包引用版本同步更新。
+- 每个维度与笔记、证据作为一个界面单元，单元之间增加分隔。
+- 支持文字、引文、页码，以及选择文件或粘贴截图添加 PNG/JPEG/WebP 图片；校验图片内容、格式及每张 10 MB 上限。
+- 负责人可指定需要证据的维度，非空笔记或一张图片可满足要求。缺少证据可保存为草稿，不计为完成。
+- 编码值、笔记和附件变更原子保存，由同一次受保护的撤销恢复。未保存内容在导航前提供保存、丢弃、停留选项。
+- 可关联的轨迹记录提供查看变更、打开文献修改，以及满足最近保存条件时撤销此保存。打开时载入当前结果，历史轨迹保留；范围外的文献只读打开。
+- 流程与来源变更通过实时通知及页面可见时的轮询同步，策略变更时保留未保存表单。
 
-#### 筛选与界面
+### 界面与术语
 
-- 决策历史使用紧凑编号及纳入、待定、排除统计，保留文献阅读空间。
-- 过长标题及元数据在筛选界面截断；悬停或键盘聚焦被截断的标题可查看完整标题。
-- AI 排序图标改为原创 **Pearl Companion** SVG，包含平静、开心、眨眼及好奇表情，以及轻微呼吸、眨眼和柔和色彩的脸颊变化。
-- 导入引导卡片及收起后的胶囊增加静态 Pearl Companion；支持浅深色主题，并遵循减少动态效果的系统偏好。
-- 导入顺序改用 SVG 图标。
-- 轨迹状态移至当前任务旁，绿色表示记录中，灰色表示未记录；点击状态即可查看轨迹，移除工作区内重复入口。
+- 筛选顺序增加明确标签，随机排序使用 SVG 图标。
+- 全文队列位置使用全文文献；决策历史区分已保存待定与尚未决定的工作。
+- 十种语言同步澄清首页标签及说明，包括证据要求、来源权限、浏览器偏好和保存按钮作用。
+- 模型预设使用中性的配置名称与说明；隐藏机器学习分数准确表达显示偏好的用途。模型参数与选择标识保持不变。
 
-#### 文档与安装包
+### 下载与升级
 
-- README 介绍及关联指南支持产品对应语言，补全失效链接，并整理 Ubuntu 服务器部署指南。
-- 提供 Windows 安装程序、Linux AppImage、macOS DMG 及 SHA-256 校验文件。
-- 本版本不包含远程控制或差分更新；当前更新入口仍下载安装包。升级时保留并备份现有数据目录。
+- 提供 Windows x64 安装程序、Linux x86_64 AppImage、macOS DMG 及 SHA-256 校验文件。版本为 **2.0.5**，macOS 应用包版本同步读取 VERSION。
+- 本次增加流程存储迁移。升级既有数据前，关闭写入程序并备份整个目录，包含数据库、PDF、导入原件、图片、任务元数据及配置。自动数据库快照不能替代完整备份。
+- 回滚须保留更新后研究数据，不以旧快照覆盖。参见[流程存储与维护说明](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_CONTROLS.md)和[验证记录](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_VALIDATION.md)。
+- 已记录源码语法检查与虚构数据的有限预览检查；构建成功不代表所有运行场景均已验收，也不代表每项翻译均经母语审校。
