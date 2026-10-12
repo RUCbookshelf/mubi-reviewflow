@@ -628,7 +628,8 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
 
     @app.post("/api/tasks/{task_id}/sources", status_code=201)
     def create_source(task_id: str, body: SourceIn, user: dict = Depends(require_user)) -> dict:
-        return save_source(task_id, user, body, None)
+        with runtime.write_guard(task_id,user,'screen',expected_version=body.expected_version):
+            raise HTTPException(400, 'Import sources are created by importing files.')
 
     @app.put("/api/tasks/{task_id}/sources/{source_id}")
     def update_source(task_id: str, source_id: str, body: SourceIn, user: dict = Depends(require_user)) -> dict:

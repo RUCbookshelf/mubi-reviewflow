@@ -4,6 +4,8 @@
 
 ### Replacement build — screening and source fixes
 
+This replaces the earlier 2.0.5.2 installers. Clients already reporting 2.0.5.2 should download the replacement directly; an unchanged version number does not trigger an update reminder.
+
 - Keep Include / Not Sure Now / Exclude, exclusion-reason selection, custom reason and reusable-reason Save on one adaptive horizontal row in both screening stages.
 - Rename Needs review to **Not Sure Now** in all ten interface languages. Stored `maybe` decisions remain distinct and unchanged.
 - Offer optional second, third, fourth and further title-and-abstract rounds for remaining uncertain articles. Rounds persist per reviewer; active-round uncertain articles are held from that reviewer's full-text queue until they choose **Proceed to full-text screening**. Articles already assessed in full text are not reopened automatically. Undo restores round eligibility.
@@ -33,6 +35,8 @@ Build success does not establish every runtime scenario on every OS. E:/ReviewFl
 ## 中文
 
 ### 替换构建：筛选与来源修复
+
+本构建替换此前的 2.0.5.2 安装包。已显示 2.0.5.2 的客户端请直接下载替换包，版本号相同不会触发更新提醒。
 
 - 初筛和全文筛选的纳入、暂不确定、排除、原因选择、自定义原因及保存常用原因保持在同一自适应水平行。
 - 十种界面语言同步将“需复核”改为“暂不确定”（Not Sure Now），底层 `maybe` 决定保持独立且不转换。
