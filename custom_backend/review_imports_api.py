@@ -19,7 +19,7 @@ from fastapi import Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from coscreen import db as db_mod, import_history, review_imports as store, review_workflow as workflow
+from coscreen import db as db_mod, import_history, import_sources, review_imports as store, review_workflow as workflow
 from coscreen.dedup import find_duplicates, find_title_candidate_groups
 from coscreen.models import Article
 
@@ -63,7 +63,7 @@ class ImportRuntime:
                      source_ids: list[str] | None, job_id: str | None, screener: str | None) -> dict:
         if not files or len(files) > 20:
             raise HTTPException(400, 'Choose between 1 and 20 import files.')
-        source_ids = source_ids if source_ids is not None else [workflow.UNASSIGNED] * len(files)
+        source_ids = source_ids if source_ids is not None else ['auto'] * len(files)
         if len(source_ids) != len(files) or any(not isinstance(s, str) or not s for s in source_ids):
             raise HTTPException(400, 'source_ids must be a JSON array aligned with uploaded files.')
         # Synchronous worker authorization: never hold a threading.RLock across await.
@@ -78,7 +78,7 @@ class ImportRuntime:
                 for article in articles:
                     article.raw['source_file'] = name
                 parsed.append({'name': name, 'articles': articles, 'originals': originals,
-                               'raw_path': path, 'source_id': source_ids[i],
+                               'raw_path': path, 'source_id': None if source_ids[i] == 'auto' else source_ids[i],
                                'digest': hashlib.sha256(path.read_bytes()).hexdigest()})
                 self.progress(job_id, task_id, user['user_id'], 'parse', min(9, 2 + 7 * (i + 1) // len(files)))
             result = await asyncio.to_thread(self.process, task_id, user, parsed, batch, job_id, screener)
@@ -100,8 +100,8 @@ class ImportRuntime:
                 if ctx.info.degraded:
                     raise HTTPException(409, 'Task is read-only.')
                 store.migrate(ctx.owner_db)
-                valid_sources = {s['id'] for s in workflow.sources(ctx.owner_db)}
-                if any(f['source_id'] not in valid_sources for f in files):
+                valid_sources = {s['id'] for s in workflow.sources(ctx.owner_db)} | {workflow.UNASSIGNED}
+                if any(f['source_id'] and f['source_id'] not in valid_sources for f in files):
                     raise HTTPException(400, 'Unknown source ID. Create or select a task source before importing.')
                 with closing(workflow.connect(ctx.owner_db)) as conn, conn:
                     protected = store.has_research(ctx.info.dir, conn)
@@ -115,6 +115,7 @@ class ImportRuntime:
             incoming = [article for f in files for article in f['articles']]
             self.stabilize(existing, incoming)
             bid = uuid.uuid4().hex
+            import_sources.prepare_files(snapshot, files)
             # The original bytes commit first. Failed/stale jobs remain explicitly
             # failed/prepared in history; no active rows exist before this succeeds.
             hid = import_history.save_import(self.history_path(info), task_id=task_id, screener=owner_name,
@@ -177,6 +178,8 @@ class ImportRuntime:
             rows = snapshot.execute(f'SELECT * FROM {table} WHERE {where}', params).fetchall()
             for row in rows:
                 conn.execute(f'INSERT OR IGNORE INTO {table} VALUES({",".join("?" for _ in row)})', tuple(row))
+        copy('workflow_sources', '1=1', ())
+        copy('workflow_source_details', '1=1', ())
         copy('workflow_import_batches', 'id=?', (bid,))
         copy('workflow_import_files', 'batch_id=?', (bid,))
         # New rows appear in parse order; target records always precede links.

@@ -57,6 +57,8 @@ class WorkflowRuntime:
         with self.lock(task_id):
             owner_db = self.screener_db(info, owner["owner_username"])
             store.migrate(owner_db)
+            from coscreen import import_sources
+            import_sources.migrate(owner_db)
             coding_evidence.ensure_fields(owner_db)
             grants = task_collaboration.list_role_grants(collab, actor_user_id=owner["owner_user_id"], task_id=task_id)
             if any(grant["user_id"] != owner["owner_user_id"] for grant in grants):
@@ -506,6 +508,7 @@ class SourceIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     active: bool = True
     expected_version: int | None = Field(default=None, ge=1)
+    source_type: Literal['database', 'register', 'website', 'organisation', 'citation_searching', 'other'] | None = None
 
 
 class ReasonIn(BaseModel):
@@ -576,6 +579,10 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                         if not conn.execute("SELECT 1 FROM workflow_sources WHERE id=?", (sid,)).fetchone():
                             raise HTTPException(404, "Source not found.")
                         conn.execute("UPDATE workflow_sources SET name=?,normalized_name=?,active=? WHERE id=?", (text, norm, body.active, sid))
+                        if body.source_type is not None:
+                            conn.execute('''INSERT INTO workflow_source_details VALUES(?, 'confirmed', ?, '', '', '{}', ?)
+                                ON CONFLICT(source_id) DO UPDATE SET identification='confirmed',source_type=excluded.source_type''',
+                                         (sid, body.source_type, 'confirmed:' + sid))
                     else:
                         conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,?,datetime('now'))", (sid, text, norm, body.active))
                     runtime.bump_version(conn)

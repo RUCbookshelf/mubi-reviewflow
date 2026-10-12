@@ -930,7 +930,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <p class="hint">数据保存在此服务器</p>
       <ol>
         <li>每位成员先在同一服务器注册账号。</li>
-        <li>任务属主按用户名添加成员，授予 Coder 或 Reconciler 权限。</li>
+        <li>任务属主按用户名添加成员，授予 筛选与编码员 或 裁决员 权限。</li>
         <li>属主导入文献，成员打开文献列表时会取得同一文献目录。</li>
         <li>团队进度只显示完成数量，个人决策由本人账号保存。</li>
         <li>可从最近的仲裁记录导出 JSON。</li>
@@ -975,7 +975,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <div class="team-list" id="teamList" aria-live="polite"></div>
     <div class="row" id="teamInvite" hidden style="margin-top:14px">
       <input class="input" id="teamInviteName" placeholder="已注册用户的用户名" aria-label="已注册用户的用户名" style="max-width:220px">
-      <select class="input" id="teamInviteRole" aria-label="协作权限" style="width:230px;max-width:100%"><option value="coder">Coder</option><option value="reconciler">Reconciler</option></select>
+      <select class="input" id="teamInviteRole" aria-label="协作权限" style="width:230px;max-width:100%"><option value="coder">Coder</option><option value="reconciler">Adjudicator</option></select>
       <button class="btn b-out" id="teamInviteBtn" type="button">添加成员</button>
     </div>
     <p class="hint" id="teamMessage" role="status"></p>
@@ -1230,9 +1230,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <h2>PRISMA 2020</h2><p class="hint">官方结构流程图向导 · 逐项一致性核对 · 生成出版级流程图，可导出 SVG / PNG（300 DPI）/ PDF / DOT</p>
   <div class="card">
     <div class="row" style="margin:0">
-      <button class="btn b-inc" id="prImport"><svg class="bic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m0 0-3.2-3.2M12 12l3.2-3.2M4.5 16.5v3a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-3"/></svg>从项目导入</button>
+      <button class="btn b-inc" id="prImport"><svg class="bic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m0 0-3.2-3.2M12 12l3.2-3.2M4.5 16.5v3a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-3"/></svg>导入任务指标</button>
       <button class="btn b-out" id="prAutoFill" title="按勾稽规则自动推算：进入初筛、报告检索、全文评估、纳入数等带「自动」标记的字段会随上游数字自动更新"><svg class="bic" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 4.5 15 8.5l4 1.5-4 1.5-1.5 4L12 11.5 8 10l4-1.5Z"/><path d="M18.5 14.5v4M16.5 16.5h4M6 15l3.5 3.5M9.5 15 6 18.5"/></svg>自动填充可推导字段</button>
-      <span class="hint" style="margin:0;flex:1;min-width:220px">一键把当前任务、当前筛选员的实际筛选数据填入下方各环节；带「自动」的字段会随上游数字自动更新（手动覆盖后标「手动」，可点「恢复自动」还原）</span>
+      <span class="hint" style="margin:0;flex:1;min-width:220px">手动输入或选择性导入任务指标；自动计算字段可手动覆盖。</span>
       <span class="chip c-may" id="prImportCap" style="display:none;margin:0"></span>
     </div>
   </div>
@@ -1282,7 +1282,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div class="card">
     <b>④ 纳入</b>
     <div class="row">
-      <div><label class="lbl">纳入研究数</label><input class="input prn" id="prIncluded" type="number" min="0" value="0" style="max-width:130px"></div>
+      <div><label class="lbl">纳入研究数</label><input class="input prn" id="prIncluded" type="number" min="0" placeholder="确认的研究数" style="max-width:130px"></div>
       <div><label class="lbl">纳入报告数</label><input class="input prn" id="prIncludedReports" type="number" min="0" value="0" style="max-width:130px"></div>
       <div><label class="lbl">纳入 Meta 分析研究数（DTA 选填）</label><input class="input prn" id="prMetaN" type="number" min="0" value="0" style="max-width:130px"></div>
     </div>
@@ -2228,6 +2228,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <div id="toasts"></div>
 
 <script src="./prisma_citations.js?v=20260929-ui3"></script>
+<script src="./team_roles.js?v=20261012-team1"></script>
 <script>
 'use strict';
 /* =====================================================================
@@ -5010,6 +5011,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         const row = languages.map((_, index) => entry[index] || previous?.[index] || en);
         for (const value of row) if (value) dictionary.set(value, row);
         dictionary.set(zh, row); dictionary.set(en, row);
+        for (const alias of entry.aliases || []) dictionary.set(alias, row);
       }
       reverseLanguage = -1;  // 字典已变：反查索引作废，按需重建
       observer.disconnect(); translateTree(document.body); observe();
@@ -5047,7 +5049,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
-<script src="./help_locale.js?v=20261011-roles1"></script>
+<script src="./help_locale.js?v=20261012-team-prisma5"></script>
 <script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./navigation_registry.js?v=20261011-layouts2"></script>
 
@@ -5392,10 +5394,10 @@ function teamMemberActions(taskId, member, grants, isOwner) {
       text:T('更改角色'), 'aria-expanded':'false', 'aria-controls':menuId + '-roles'});
     const choices = el('div', {id:menuId + '-roles', class:'team-role-options', role:'group', 'aria-label':T('更改角色')});
     choices.hidden = true;
-    for (const [role, label] of [['coder','Coder'], ['reconciler','Reconciler']]) {
+    for (const [role, label] of [['coder','Coder'], ['reconciler','Adjudicator']]) {
       const selected = roles.length === 1 && roles[0] === role;
       const choice = el('button', {type:'button', role:'menuitemradio', 'data-role':role,
-        'aria-checked':String(selected), text:label});
+        'aria-checked':String(selected), text:T(label)});
       choice.addEventListener('click', () => {
         closeTeamMemberMenus();
         if (!selected) changeTeamMemberRole(taskId, member, role);
@@ -5495,7 +5497,7 @@ async function refreshTeam() {
         el('b', {text: `${stage.completed} / ${stage.total}`}),
         el('small', {text: label}));
       const row = el('div', {class:data.can_manage ? 'team-member can-manage' : 'team-member'},
-        el('strong', {text: member.username, translate:'no'}),
+        teamMemberIdentity(member, data.owner_user_id),
         count(member.stage1, T('文献初筛')), count(member.stage2, T('文献复筛')),
         count(member.coding, T('数据提取与编码')));
       if (data.can_manage) row.append(teamMemberActions(taskId, member, data.grants || [], member.user_id === data.owner_user_id));
@@ -5532,7 +5534,7 @@ async function changeTeamMemberRole(taskId, member, role) {
     for (const oldRole of roles.filter(value => value !== role)) {
       await api(path + '/collaboration/roles/' + encodeURIComponent(member.user_id) + '/' + oldRole, {method:'DELETE'});
     }
-  }, T('已将 {0} 的角色更改为 {1}', member.username, role === 'coder' ? 'Coder' : 'Reconciler'));
+  }, T('已将 {0} 的角色更改为 {1}', member.username, T(role === 'coder' ? 'Coder' : 'Adjudicator')));
 }
 async function mutateTeamMember(taskId, action, successMessage) {
   if (teamMutationTaskId || S.task?.task_id !== taskId) return;
@@ -7069,8 +7071,7 @@ const PR_CHAIN = [
   { id: 'prExcScreen', label: '初筛排除总数', derive: v => v.rsnScr },
   { id: 'prSought', label: '报告检索数', derive: v => v.prScreened - v.prExcScreen },
   { id: 'prAssessed', label: '评估报告数', derive: v => v.prSought - v.prNotRetrieved },
-  { id: 'prIncludedReports', label: '纳入报告数', derive: v => v.prAssessed - v.rsnFull },
-  { id: 'prIncluded', label: '纳入研究数', derive: v => v.prAssessed - v.rsnFull }
+  { id: 'prIncludedReports', label: '纳入报告数', derive: v => v.prAssessed - v.rsnFull }
 ];
 const PR_AUTO = { manual: new Set() };   /* 被用户手动覆盖的链上字段 id */
 function prNum(id) { const n = $('#' + id); return Math.max(0, parseInt(n && n.value, 10) || 0); }
@@ -7232,82 +7233,8 @@ function prFriendlyMsg(text) {
   return custom;
 }
 
-/* ---------- PRISMA：从项目导入真实筛选数据 ----------
-   数据源（当前任务 + 当前筛选员，双盲口径）：
-   - /progress      → 初筛/复筛各决策计数
-   - /articles      → 非重复文献数（识别数）；与 include_duplicates=true 之差 → 去重去除数
-   - /stage2/queue  → 复筛队列（初筛纳入数）→ 报告检索数
-   - /decisions、/stage2/decisions → 聚合排除理由分布
-   只做「填充」，导入后所有字段仍可手工修改。 */
-$('#prImport').addEventListener('click', async () => {
-  if (!S.task) { toast('请先选择任务', 'warn'); return; }
-  const btn = $('#prImport');
-  btn.disabled = true;
-  try {
-    const scr = scrQ();
-    const prog = await api(taskApi() + '/progress' + scr);
-    const [nonDup, all, d1, d2] = await Promise.all([
-      api(taskApi() + '/articles' + scr),
-      api(taskApi() + '/articles?include_duplicates=true' + scr.replace('?', '&')),
-      api(taskApi() + '/decisions' + scr),
-      api(taskApi() + '/stage2/decisions' + scr)
-    ]);
-    if (Number(all.title_review_progress?.pending_groups || 0) > 0) {
-      toast(T('请先完成标题重复核验，再导入 PRISMA 计数。'), 'warn');
-      return;
-    }
-    const s1 = prog.stage1 || {}, s2 = prog.stage2 || {};
-    const nonDupTotal = nonDup.total != null ? nonDup.total : nonDup.articles.length;
-    const allTotal = all.total != null ? all.total : all.articles.length;
-    const dedup = Math.max(0, allTotal - nonDupTotal);
-    const assessed = s2.screened || 0;
-    const setNum = (id, v) => { const n = $('#' + id); if (n) n.value = String(Math.max(0, Math.floor(Number(v) || 0))); };
-    /* 识别总数（含重复，PRISMA 口径：识别在去重之前）填入第一个「数据库/注册库」
-       来源行（无则自动新建）；进入初筛 = 识别 − 去重交给自动推导链计算 */
-    let row = $('#prRowsDb').firstElementChild;
-    if (!row) { row = prIdentifiedRow('db', ['database', 'register']); $('#prRowsDb').append(row); }
-    const cnt = row.querySelector('input.prn');
-    const nm = row.querySelector('input.input:not(.prn)');
-    if (cnt) cnt.value = String(allTotal);
-    if (nm && !nm.value.trim()) nm.value = T('Zotero 导入');
-    setNum('prDedup', dedup);                                   /* 去重去除数 */
-    setNum('prExcScreen', s1.exclude || 0);                     /* 初筛排除总数 */
-    PR_AUTO.manual.clear();                                     /* 导入后整链回到 ✨ 自动 */
-    prAutoCalc();                                               /* → 进入初筛 / 报告检索 */
-    setNum('prNotRetrieved', Math.max(0, prNum('prSought') - assessed));   /* 未获取 = 检索 − 已评估 */
-    prAutoCalc();                                               /* → 全文评估 */
-    /* 排除理由分布：按决策记录聚合（含未填理由的归并为一行） */
-    const fillReasons = (host, decisions) => {
-      host.textContent = '';
-      const tally = {}; let blank = 0;
-      for (const r of decisions) {
-        if (r.decision !== 'exclude') continue;
-        const rs = (r.exclusion_reason || '').trim();
-        if (rs) tally[rs] = (tally[rs] || 0) + 1; else blank++;
-      }
-      for (const [reason, n] of Object.entries(tally)) {
-        const rr = prReasonRow(); host.append(rr);
-        const ins = rr.querySelectorAll('input');
-        ins[0].value = reason; ins[1].value = String(n);
-      }
-      if (blank) {
-        const rr = prReasonRow(); host.append(rr);
-        const ins = rr.querySelectorAll('input');
-        ins[0].value = T('未填写理由'); ins[1].value = String(blank);
-      }
-      return Object.keys(tally).length + (blank ? 1 : 0);
-    };
-    let n = 9;   /* 识别 + 去重 + 进入初筛 + 初筛排除 + 检索 + 未获取 + 评估 + 纳入×2 */
-    n += fillReasons($('#prReasonsScreen'), d1.decisions || []);
-    n += fillReasons($('#prReasonsFull'), d2.decisions || []);
-    prAutoCalc();                                               /* → 纳入研究 / 纳入报告 */
-    const cap = $('#prImportCap');
-    cap.style.display = '';
-    cap.textContent = T('数据来源：当前任务的实际筛选结果（「自动」字段已按勾稽规则填充）');
-    toast(T('已从项目导入 {0} 项数据，可推导字段已自动填充', n), 'inc');
-  } catch (e) { toast(T('导入失败：') + e.message, 'warn'); }
-  finally { btn.disabled = false; }
-});
+/* Optional task metric review; manual form generation remains independent. */
+$('#prImport').addEventListener('click', () => window.PrismaTaskUI?.importMetrics());
 
 $('#prGenerate').addEventListener('click', async () => {
   const num = id => Math.max(0, parseInt($('#' + id).value, 10) || 0);
@@ -7332,16 +7259,10 @@ $('#prGenerate').addEventListener('click', async () => {
     reports_of_included_studies: num('prIncludedReports')
   };
   if ($('#prMode').value === 'dta') form.studies_included_meta_analysis = num('prMetaN');
-  /* 更新综述：与引擎向导同口径，末两级自动派生（新纳入 = 纳入；总数 = 纳入），
-     R7 的 total = previous + new 在未追踪上一版时按「全部为新」自洽 */
-  if (form.review_mode === 'updated') {
-    form.new_studies = form.studies_included;
-    form.new_reports = form.reports_of_included_studies;
-    form.total_studies = form.studies_included;
-    form.total_reports = form.reports_of_included_studies;
-  }
+  if (window.PrismaTaskUI && !PrismaTaskUI.completeForm(form)) return;
   try {
     const d = await api('/api/prisma/generate', { method: 'POST', body: { form } });
+    d.json = JSON.stringify({...JSON.parse(d.json), _provenance:{generated_at:new Date().toISOString(),...(window.PrismaTaskUI?.provenance || {metric_mode:'manual'}),manual_overrides:[...PR_AUTO.manual]}},null,2);
     S.prLast = d;
     prRenderResult();
     toast(d.ok ? T('流程图已生成（勾稽一致）') : T('校验未通过：存在 {0} 处勾稽错误', (d.errors || []).length), d.ok ? 'inc' : 'warn');
@@ -8896,10 +8817,12 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
 <script src="./extraction_workbench.js?v=20261012-workflow6"></script>
 <script src="./workspace_layouts.js?v=20261012-workflow6"></script>
-<link rel="stylesheet" href="./workflow_controls.css?v=20261012-evidence-units1">
-<script src="./workflow_controls.js?v=20261012-home-wording3"></script>
+<link rel="stylesheet" href="./workflow_controls.css?v=20261012-team-prisma5">
+<script src="./workflow_controls.js?v=20261012-team-prisma5"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
-<script src="./workflow_imports.js?v=20261012-workflow6"></script>
+<script src="./workflow_imports.js?v=20261012-team-prisma5"></script>
+<script src="./team_prisma_locale.js?v=20261012-team-prisma5"></script>
+<script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261012-workflow6"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->

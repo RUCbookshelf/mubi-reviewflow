@@ -23,3 +23,17 @@
 .trace-drawer .wf-trace-menu [role=menu]{left:0;right:auto;top:100%;min-width:0;width:min(260px,100%);box-sizing:border-box}
 .trace-drawer .wf-trace-menu [role=menu] button{white-space:normal;overflow-wrap:anywhere;box-sizing:border-box}
 @media(prefers-reduced-motion:reduce){.wf-tab-indicator{animation:none!important;transition:none!important}}
+/* Team workflow sections share one container and use dividers for hierarchy. */
+.wf-team-management>section{padding:18px 0;border-top:1px solid var(--border);margin:0;background:transparent;box-shadow:none}
+.wf-team-management h4{margin:0 0 10px;font-size:1rem}
+.wf-team-management .wf-policy-stage{margin:12px 0}
+.team-identity{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}
+.team-identity>strong{flex-basis:100%}
+.team-role-badge{display:inline-flex;align-items:center;gap:5px;font-size:.75rem;color:var(--primary)}
+.team-role-badge svg{padding:3px;border:1px solid currentColor;border-radius:50%;box-sizing:content-box}
+.team-role-badge.role-owner{color:var(--amber,#927343)}
+.team-role-badge.role-reconciler{color:var(--muted)}
+.wf-source-checks[hidden],.wf-team-management [hidden]{display:none!important}
+#prOtherAssessment[hidden],#prUpdatedCounts[hidden]{display:none!important}
+.pr-task-metrics{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.pr-task-metrics .input{max-width:100%}

@@ -15,40 +15,12 @@
   I.active=()=>!!active;
   I.assign=async files=>{
     if(assigning)return null;
-    assigning=true;
+    assigning=true;const current=W.scope();
     try{
       await W.refresh('import',false);
-      const current=W.scope(),settings=W.settings();
-      if(!settings?.can_manage)throw Error(T('Only the task owner can import sources.'));
-      return await new Promise(resolve=>{
-        const dialog=n('dialog',null,{class:'wf-source-dialog','aria-label':T('Assign a source to each file')});
-        dialog.append(n('h3','Assign a source to each file'),n('p','Choose an existing source, create one, or leave Unassigned. File names do not determine sources.'));
-        const rows=[],created=new Map();
-        for(const file of files){
-          const row=n('div',null,{class:'row'}),select=n('select',null,{class:'input','aria-label':T('Source')}),name=el('input',{class:'input',maxlength:'200',placeholder:T('New source name'),'aria-label':T('New source name'),'data-wf-placeholder':'New source name',translate:'no',hidden:''});
-          for(const source of settings.sources||[])select.append(el('option',{value:source.id,text:W.sourceLabel(source),translate:source.reserved?'yes':'no'}));
-          select.value='00000000-0000-0000-0000-000000000000';select.append(n('option','Create new source',{value:'__new__'}));
-          select.addEventListener('change',()=>{name.hidden=select.value!=='__new__';});row.append(literal('span',file.name),select,name);dialog.append(row);rows.push({select,name});
-        }
-        const finish=value=>{dialog.close();dialog.remove();resolve(value);};
-        const submit=b('Import with these sources',async()=>{
-          submit.disabled=true;
-          try{
-            if(current!==W.scope())throw Error(T('The task changed. Reload the queue.'));
-            const ids=[],base=taskApi();
-            for(const row of rows){
-              if(row.select.value!=='__new__'){ids.push(row.select.value);continue;}
-              const name=row.name.value.trim(),normalized=name.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g,' ');
-              if(!name)throw Error(T('Enter a source name.'));
-              if(!created.has(normalized)){const result=await api(base+'/sources',{method:'POST',body:{name,active:true}});created.set(normalized,result.source.id);for(const other of rows)other.select.append(el('option',{value:result.source.id,text:name,translate:'no'}));row.select.value=result.source.id;}
-              ids.push(created.get(normalized));
-            }
-            if(current!==W.scope())throw Error(T('The task changed. Reload the queue.'));
-            finish(ids);
-          }finally{submit.disabled=false;}
-        });
-        dialog.append(submit,b('Cancel',()=>finish(null)));dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});document.body.append(dialog);dialog.showModal();
-      });
+      if(current!==W.scope())throw Error(T('The task changed. Reload the queue.'));
+      if(!W.settings()?.can_manage)throw Error(T('Only the task owner can import sources.'));
+      return files.map(()=> 'auto');
     }finally{assigning=false;}
   };
   async function download(url,name){const blob=await api(url,{blob:true}),object=URL.createObjectURL(blob),a=document.createElement('a');a.href=object;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(object),1000);}

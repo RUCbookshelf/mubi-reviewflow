@@ -53,7 +53,7 @@
   const reasonLabels={task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.'};
   W.reason = value => T(reasonLabels[value] || value || '');
   W.errorText = error => error.code&&reasonLabels[error.code]?W.reason(error.code):!error.status?T(error.message):T(error.status===403?'You do not have permission for this action.':'The request could not be completed. Your draft is retained. Review the details and retry.')+' '+error.message;
-  W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Unassigned') : source.name;
+  W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Source not recorded') : source.name;
   W.error = error => {
     toast(W.errorText(error), 'warn');
     if (error.status === 409 && (error.workflowSettings || ['workflow_version_conflict','stage_paused','article_outside_scope','maybe_disabled'].includes(error.code))) run(() => W.refresh('conflict'));
@@ -106,10 +106,15 @@
     notePref.addEventListener('change',()=>localStorage.setItem('rf_evidence_display',notePref.value));
     panels.coding.append(n('label','Notes & evidence display'),notePref);
     const policy = n('section',null,{id:'wf-policy',class:'card'});
-    panels.tasks.append(policy);
+    const teamBox=n('section',null,{id:'wf-team-management',class:'card wf-team-management'});
+    teamBox.append(n('h3','Team Management',{id:'wf-team-title'}));
+    const existingTeam=document.getElementById('teamPanel');
+    if(existingTeam){existingTeam.classList.remove('card');teamBox.append(existingTeam);}
+    policy.classList.remove('card');teamBox.append(policy,n('section',null,{id:'wf-team-decisions'}));
+    panels.tasks.append(teamBox);
     panels.screening.append(n('div',null,{id:'wf-personal-maybe',class:'card'}),n('section',null,{id:'wf-reasons',class:'card'}));
     panels.coding.append(n('section',null,{id:'wf-requirements',class:'card'}));
-    panels.tasks.append(n('section',null,{id:'wf-sources',class:'card'}));
+    teamBox.append(n('section',null,{id:'wf-sources'}));
     const savebar=n('div',null,{class:'wf-settings-save'});
     savebar.append(button('Save current task workflow settings',()=>run(W.saveSettings)),button('Reload current task workflow settings',()=>run(async()=>{if(await W.guard()) {settingsDirty=false; await W.refresh('reload');}})),n('span',null,{id:'wf-settings-notice',role:'status'}));
     home.append(n('p',"This button saves this task\u2019s stage sources, Maybe options and evidence requirements. Reasons, source names and Machine Learning settings have their own Save buttons. Display preferences save automatically in this browser.",{class:'hint'}),savebar);
@@ -155,8 +160,13 @@
   function policyEditor() {
     if(!settings || W.settingsDirty()) return;
     draft=structuredClone(settings);
-    const host=$('#wf-policy');host.replaceChildren(n('h3','Permitted sources by stage'),n('p',"Sources are databases or other origins assigned at import, not inferred from filenames. Team members can save work only within the owner\u2019s permitted sources.",{class:'hint'}));
-    const personal=$('#wf-personal-maybe');personal.replaceChildren(n('h3','Maybe option settings'),n('p',"Disabling Maybe prevents new Maybe decisions; saved decisions remain. Initial Include and Maybe both proceed to full-text screening. Full-text Maybe still needs follow-up.",{class:'hint'}));
+    $('#wf-team-title').textContent=T(settings.task_kind==='team'?'Team Management':'Task workflow');
+    $('#teamTitle').textContent=T('Members & progress');
+    const host=$('#wf-policy');host.replaceChildren(n('h4','Sources available by stage'),n('p','Imported sources are discovered automatically. Selected sources limits work; Paused retains read-only access.',{class:'hint'}));
+    const personal=$('#wf-personal-maybe'),team=$('#wf-team-decisions');
+    const decisions=settings.task_kind==='personal'?personal:team;
+    personal.replaceChildren();team.replaceChildren();team.hidden=settings.task_kind==='personal';
+    decisions.append(n('h4','Screening decision options'));
     for(const stage of stages) {
       const row=n('fieldset',null,{class:'wf-policy-stage'});row.append(n('legend',stage==='screen'?'Title-and-abstract screening':stage==='fulltext'?'Full-text screening':'Coding'));
       const select=n('select',null,{class:'input','aria-label':T('Permitted sources by stage')});
@@ -166,17 +176,18 @@
       for(const source of settings.sources||[]) {
         const check=n('input',null,{type:'checkbox',value:source.id});check.checked=draft.stages[stage].source_ids.includes(source.id);check.disabled=!settings.can_manage;
         check.addEventListener('change',()=>{draft.stages[stage].source_ids=[...sourceList.querySelectorAll('input:checked')].map(c=>c.value);settingsDirty=true;});
-        sourceList.append(el('label',{},check,source.reserved?n('span','Unassigned'):literal('span',source.name)));
+        sourceList.append(el('label',{},check,source.reserved?n('span','Source not recorded'):literal('span',source.name)));
       }
       sourceList.hidden=select.value!=='selected';select.addEventListener('change',()=>{draft.stages[stage].mode=select.value;sourceList.hidden=select.value!=='selected';settingsDirty=true;});
       row.append(select,sourceList);host.append(row);
       if(stage!=='coding') {
         const check=n('input',null,{type:'checkbox'});check.checked=draft.stages[stage].show_maybe;check.disabled=!settings.can_manage;
         check.addEventListener('change',()=>{draft.stages[stage].show_maybe=check.checked;settingsDirty=true;});
-        (settings.task_kind==='personal'?personal:row).append(el('label',{},check,n('span',stage==='screen'?'Show Maybe in title-and-abstract screening':'Show Maybe in full-text screening')));
+        decisions.append(el('label',{class:'wf-field-option'},check,n('span',stage==='screen'?'Allow uncertain decisions during title-and-abstract screening':'Allow deferred eligibility decisions during full-text assessment')),
+          n('p',stage==='screen'?'Include and Needs review records proceed to full-text assessment.':'Needs review leaves eligibility unresolved; it does not qualify a report for coding.',{class:'hint'}));
       }
     }
-    if(settings.task_kind!=='personal')personal.append(n('p','The owner chooses whether Maybe is available at each screening stage for the team. See the current settings in Tasks & team.'));
+    if(settings.task_kind!=='personal')personal.append(n('p','The owner manages screening decision options in Tasks & team.'));
     const fields=$('#wf-requirements');fields.replaceChildren(n('h3','Coding dimensions requiring evidence'),n('p',"Select dimensions that require evidence, not required coding values. Nonblank notes or one image satisfy the evidence requirement. Missing evidence can be saved as a draft but does not count as complete.",{class:'hint'}));
     const known=new Set();
     for(const field of settings.evidence_fields||[]) {
@@ -205,21 +216,23 @@
     await W.refresh('saved');return !settingsDirty;
   };
   function sourceEditor() {
-    const host=$('#wf-sources');host.replaceChildren(n('h3','Import sources'));
+    const host=$('#wf-sources');host.replaceChildren(n('h4','Imported sources'));
+    if(!settings.sources?.length)host.append(n('p','Sources appear automatically after an import.',{class:'hint'}));
     for(const source of settings.sources||[]) {
       const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.disabled=!settings.can_manage||source.reserved;
       name.addEventListener('input',()=>editLibrary(name));
-      if(source.reserved)row.append(n('span','Unassigned',{class:'input'}));else row.append(name);
+      if(source.reserved)row.append(n('span','Source not recorded',{class:'input'}));else row.append(name);
+      row.append(n('span',({metadata:'Database identified from RIS',confirmed:'Confirmed source',inferred:'Suggested database — review identification',file:'Database not specified — file source',legacy:'Legacy source'})[source.identification],{class:'hint'}),el('span',{text:T('Retained import records: {0} · Active articles: {1}',source.record_count||0,source.linked_count||0)}),literal('small',(source.files||[]).join(', ')));
       if(!name.disabled) {
-        name.wfSave=async()=>{const sent=name.value;await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:sent,active:source.active,expected_version:settings.version}});if(name.value===sent)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};
-        row.append(button('Save source',()=>run(name.wfSave)),button(source.active?'Pause source':'Activate source',()=>run(async()=>{await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:source.name,active:!source.active,expected_version:settings.version}});await W.refresh('source');})));
+        const type=n('select',null,{class:'input','aria-label':T('Source type')});
+        type.append(n('option','Needs confirmation',{value:''}));
+        for(const value of ['database','register','website','organisation','citation_searching','other'])type.append(n('option',{database:'Database',register:'Register',website:'Website',organisation:'Organisation',citation_searching:'Citation searching',other:'Other'}[value],{value}));
+        type.value=source.source_type||'';type.addEventListener('change',()=>editLibrary(name));
+        name.wfSave=async()=>{const sent=name.value,selected=type.value;await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:sent,active:source.active,expected_version:settings.version,...(selected?{source_type:selected}:{})}});if(name.value===sent&&type.value===selected)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};
+        row.append(type,button('Confirm source identification',()=>run(name.wfSave)),button(source.active?'Pause source':'Activate source',()=>run(async()=>{await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:source.name,active:!source.active,expected_version:settings.version}});await W.refresh('source');})));
+        if(source.suggestion)row.append(literal('small',source.suggestion));
       }
       host.append(row);
-    }
-    if(settings.can_manage) {
-      const name=el('input',{class:'input',maxlength:'200',placeholder:T('New source name'),'aria-label':T('New source name'),'data-wf-placeholder':'New source name',translate:'no'});name.addEventListener('input',()=>editLibrary(name));
-      name.wfSave=async()=>{const sent=name.value;await api(taskApi()+'/sources',{method:'POST',body:{name:sent,active:true,expected_version:settings.version}});if(name.value===sent)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};
-      host.append(name,button('Create source',()=>run(name.wfSave)));
     }
   }
   async function loadReasons(refresh=null) {

@@ -336,9 +336,9 @@ def expected_auto(form: PrismaFormData, field: str) -> int | None:
     - records_screened ← Σ识别 − 筛前移除（R2）
     - reports_sought_db ← 进入筛选 − 题摘排除（R3）
     - reports_assessed_db ← 寻求获取 − 未获取（R4）
-    - new/dta：reports_of_included_studies = studies_included ← 评估 − Σ理由（R5）
-    - updated：new_studies = new_reports ← 评估 − Σ理由（R5，向导不给新纳入输入框，
-      两行同源自动带出）；total_studies/total_reports ← previous + new（R7）；
+    - new/dta：reports_of_included_studies ← 评估 − Σ理由（R5）；研究数须单独确认。
+    - updated：new_reports ← 评估 − Σ理由（R5）；new_studies 须单独确认；
+      total_studies/total_reports ← previous + new（R7）；
       studies_included/reports_of_included_studies ← Total（末框一致性口径）。
 
     纯数学口径：不做非负截断（负期望交由 R9/R2 等规则暴露）。
@@ -352,7 +352,7 @@ def expected_auto(form: PrismaFormData, field: str) -> int | None:
     if field == "reports_assessed_db":
         return form.reports_sought_db - form.reports_not_retrieved_db
     if field == "new_studies":
-        return expected_included_reports(form) if is_updated else None
+        return None  # A study count requires grouping or explicit user confirmation.
     if field == "new_reports":
         return expected_included_reports(form) if is_updated else None
     if field == "total_studies":
@@ -362,7 +362,7 @@ def expected_auto(form: PrismaFormData, field: str) -> int | None:
     if field == "reports_of_included_studies":
         return form.total_reports if is_updated else expected_included_reports(form)
     if field == "studies_included":
-        return form.total_studies if is_updated else expected_included_reports(form)
+        return form.total_studies if is_updated else None
     return None
 
 

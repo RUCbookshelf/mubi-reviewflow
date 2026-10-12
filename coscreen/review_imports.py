@@ -175,8 +175,10 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
     used = set(by_key) | {r['staged_key'] for r in pending}
     for file_index, file in enumerate(files):
         sid, digest = file['source_id'], file['digest']
+        source_ids = file.get('source_ids') or [sid] * len(file['articles'])
         conn.execute('INSERT INTO workflow_import_files VALUES(?,?,?,?,?)', (batch_id, file_index, file['name'], digest, sid))
         for row_index, art in enumerate(file['articles'], 1):
+            sid = source_ids[row_index - 1]
             original = file['originals'][row_index - 1]
             existing = conn.execute('SELECT id FROM workflow_source_records WHERE source_id=? AND digest=? AND row_index=?',
                                     (sid, digest, row_index)).fetchone()

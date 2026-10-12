@@ -111,8 +111,10 @@ def sources(db: str | Path) -> list[dict]:
     if Path(db).is_file():
         with closing(connect(db, read_only=True)) as conn:
             if has_table(conn, "workflow_sources"):
-                return [{**dict(row), "active": bool(row["active"]), "reserved": row["id"] == UNASSIGNED}
+                from coscreen.import_sources import decorate
+                rows = [{**dict(row), "active": bool(row["active"]), "reserved": row["id"] == UNASSIGNED}
                         for row in conn.execute("SELECT id,name,active FROM workflow_sources ORDER BY created_at,id")]
+                return decorate(conn, rows)
     return [{"id": UNASSIGNED, "name": "Unassigned", "active": True, "reserved": True}]
 
 

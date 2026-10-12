@@ -1230,11 +1230,12 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
     members = list_team_progress(task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
-    return {"members": [{**member, "user_id": user_ids[member["username"]]}
+    grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=task_id)
+    return {"members": [{**member, "user_id": user_ids[member["username"]],
+                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member['username']]})}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
-            "grants": collaboration_mod.list_role_grants(
-                store, actor_user_id=user["user_id"], task_id=task_id) if can_manage else []}
+            "grants": grants if can_manage else []}
 
 
 @app.post("/api/tasks/{task_id}/collaboration/roles", status_code=201)
@@ -4611,6 +4612,8 @@ from custom_backend.workspace_undo_api import register_workspace_undo_routes
 from custom_backend.review_workflow_api import register_review_workflow_routes
 
 register_review_workflow_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR, _task_visible_to)
+from custom_backend.prisma_task_metrics import register_prisma_task_metrics
+register_prisma_task_metrics(app, require_user)
 
 from custom_backend.review_imports_api import register_review_import_routes
 
