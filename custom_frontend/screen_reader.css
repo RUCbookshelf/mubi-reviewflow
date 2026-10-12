@@ -105,3 +105,15 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
  .rf-reader-page .scr-decisions>.btn,.rf-reader-page .scr-decisions>.input,.rf-reader-page .wf-custom-reason-row>*{min-height:44px}
  .rf-reader-page .al-profile-picker .input,.rf-reader-page .scr-decisions>.input,.rf-reader-page .wf-custom-reason-row>.input{font-size:16px}
 }
+
+/* Full-text decisions use the same bounded horizontal strip as initial screening. */
+.ft-decide>.row{display:flex;flex-wrap:nowrap;align-items:stretch;gap:clamp(3px,.6vw,8px);min-width:0;width:100%;margin:0;box-sizing:border-box}
+.ft-decide>.row>.btn{flex:1 1 0;min-width:0;padding:6px 5px;justify-content:center;white-space:normal;overflow-wrap:anywhere}
+.ft-decide>.row>.input,.ft-decide .wf-custom-reason-row>.input{flex:1.6 1 0;width:0;min-width:0;max-width:none!important;box-sizing:border-box;font-size:12px;padding:6px}
+.ft-decide .wf-custom-reason-row{display:contents}
+.ft-decide .wf-custom-reason-row>.btn{flex:0 0 38px;min-width:0;display:flex;justify-content:center;align-items:center;padding:6px}
+.ft-decide .wf-reason-save-label,.ft-decide>.row>.hint{display:none}
+.ft-decide .wf-reason-save-icon{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.wf-round-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:12px}
+.wf-round-controls[hidden]{display:none}
+.ft-decide [hidden],.scr-decisions [hidden]{display:none!important}

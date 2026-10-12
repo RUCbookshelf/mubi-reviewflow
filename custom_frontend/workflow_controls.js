@@ -25,6 +25,7 @@
   W.settings = () => settings;
   W.version = () => settings?.version;
   W.order = () => order;
+  W.selectedSource = stage => selected[stage];
   W.activeItem = stage => items[stage];
   W.maybe = stage => settings?.stages?.[stage]?.show_maybe !== false;
   W.settingsDirty = () => settingsDirty || libraryDirty || alDirty;
@@ -50,7 +51,7 @@
     finally{autoReload=null;for(const [control,disabled] of contextControls)control.disabled=disabled;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
   }
 
-  const reasonLabels={task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.'};
+  const reasonLabels={article_pending_round:'This article is in a repeat screening round. Finish the round or proceed to full-text screening first.',task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.'};
   W.reason = value => T(reasonLabels[value] || value || '');
   W.errorText = error => error.code&&reasonLabels[error.code]?W.reason(error.code):!error.status?T(error.message):T(error.status===403?'You do not have permission for this action.':'The request could not be completed. Your draft is retained. Review the details and retry.')+' '+error.message;
   W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Source not recorded') : source.name;
@@ -219,11 +220,11 @@
     const host=$('#wf-sources');host.replaceChildren(n('h4','Imported sources'));
     if(!settings.sources?.length)host.append(n('p','Sources appear automatically after an import.',{class:'hint'}));
     for(const source of settings.sources||[]) {
-      const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.disabled=!settings.can_manage||source.reserved;
+      const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.readOnly=true;name.disabled=source.reserved;
       name.addEventListener('input',()=>editLibrary(name));
       if(source.reserved)row.append(n('span','Source not recorded',{class:'input'}));else row.append(name);
-      row.append(n('span',({metadata:'Database identified from RIS',confirmed:'Confirmed source',inferred:'Suggested database — review identification',file:'Database not specified — file source',legacy:'Legacy source'})[source.identification],{class:'hint'}),el('span',{text:T('Retained import records: {0} · Active articles: {1}',source.record_count||0,source.linked_count||0)}),literal('small',(source.files||[]).join(', ')));
-      if(!name.disabled) {
+      row.append(n('span',({metadata:'Database identified from RIS',confirmed:'Confirmed source',inferred:'Suggested database — review identification',file:'Source named from imported filename',legacy:'Legacy source'})[source.identification],{class:'hint'}),el('span',{text:T('Retained import records: {0} · Active articles: {1}',source.record_count||0,source.linked_count||0)}),literal('small',(source.files||[]).join(', ')));
+      if(settings.can_manage&&!source.reserved) {
         const type=n('select',null,{class:'input','aria-label':T('Source type')});
         type.append(n('option','Needs confirmation',{value:''}));
         for(const value of ['database','register','website','organisation','citation_searching','other'])type.append(n('option',{database:'Database',register:'Register',website:'Website',organisation:'Organisation',citation_searching:'Citation searching',other:'Other'}[value],{value}));
@@ -265,7 +266,7 @@
     else if(value){select.value='__custom__';custom.value=value;custom.hidden=false;}
     const id='wf-save-reason-'+stage;
     if(!document.getElementById(id)&&settings?.can_manage){const b=button('Save as reusable reason',()=>mutateReason(stage,'POST',null,select.value==='__custom__'?custom.value:select.value));b.id=id;select.parentElement.append(b);}
-    if(stage==='screen'&&custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
+    if(custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
       const save=document.getElementById(id);
       if(save){
         const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');
@@ -305,10 +306,11 @@
         return W.queue(stage,{url,evidenceOnly,attempt:attempt+1});
       }
       queues[stage]=result;delete items[stage];delete readOnlyKeys[stage];
+      if(stage==='screen'){window.ScreeningRounds?.ingest(result);if(result.screening_round)selected[stage]=result.screening_round.source_id||'';}
       const select=host.querySelector('select');select.disabled=false;select.replaceChildren(n('option','All permitted sources',{value:''}));
       for(const id of result.allowed_sources||[]){const source=policy.sources.find(source=>source.id===id);if(source)select.append(el('option',{value:source.id,text:W.sourceLabel(source),translate:source.reserved?'yes':'no'}));}
       if(selected[stage]&&![...select.options].some(o=>o.value===selected[stage])){selected[stage]='';return W.queue(stage,{url,evidenceOnly,attempt});}
-      select.value=selected[stage];
+      select.value=selected[stage];select.disabled=stage==='screen'&&!!result.screening_round;
       const p=result.scope_progress;host.querySelector('.wf-scope-progress').textContent=T(evidenceOnly?'Evidence scope: {0} / {1} requirements complete':'Scope: {0} / {1} complete',p.completed,p.total);
       host.querySelector('.wf-readonly').textContent=result.paused?T('Paused — saved work is read-only.'):'';
       W.clearRecovery();

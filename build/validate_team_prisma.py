@@ -47,16 +47,21 @@ duplicate_task=call('POST','/api/tasks',json={'name':'Duplicate count validation
 dupbase='/api/tasks/'+duplicate_task['task_id']
 dupris=ris('d1','Same record from two searches','WOS','10.1234/same')+ris('d2','Same record from two searches','Scopus','10.1234/same')+ris('d3','Completely different research topic','Scopus','10.1234/unique')
 call('POST',dupbase+'/import',files={'file':('duplicates.ris',dupris.encode(),'application/x-research-info-systems')})
+ds=call('GET',dupbase+'/workflow-settings');
+for source in ds['sources']:
+    call('PUT',dupbase+'/sources/'+source['id'],json={'name':source['name'],'source_type':'database','expected_version':ds['version']});ds=call('GET',dupbase+'/workflow-settings')
 dupmetrics=call('GET',dupbase+'/prisma-metrics')
 assert dupmetrics['fields']['duplicates_removed']==1,dupmetrics
 assert sum(r['n'] for r in dupmetrics['fields']['identified_rows_db'])==3
-assert sum(s['linked_count'] for s in dupmetrics['sources'])==3 # overlapping source totals are not overall totals
+assert sum(s['linked_count'] for s in dupmetrics['sources'])==2 # one file source contains two canonical articles
 
 first=ris('one','Language acquisition in context','WOS','10.1234/one')+ris('two','Clinical trial reporting outcomes','Scopus','10.1234/two')
 result=call('POST',base+'/import',files={'file':('mixed.ris',first.encode(),'application/x-research-info-systems')})
 settings=call('GET',base+'/workflow-settings')
 names={s['name'] for s in settings['sources']}
-assert names=={'Web of Science','Scopus'},names
+assert names=={'mixed.ris'},names
+for source in settings['sources']:
+    call('PUT',base+'/sources/'+source['id'],json={'name':source['name'],'source_type':'database','expected_version':settings['version']});settings=call('GET',base+'/workflow-settings')
 metrics=call('GET',base+'/prisma-metrics')
 assert sum(r['n'] for r in metrics['fields']['identified_rows_db'])==2
 assert metrics['fields']['duplicates_removed']==0
@@ -72,7 +77,7 @@ settings=call('GET',base+'/workflow-settings')
 assert any(s['identification']=='file' for s in settings['sources'])
 assert not any(s['reserved'] for s in settings['sources'])
 unknown=next(s for s in settings['sources'] if s['identification']=='file')
-call('PUT',base+'/sources/'+unknown['id'],json={'name':'Confirmed website search','source_type':'website','active':True,'expected_version':settings['version']})
+call('PUT',base+'/sources/'+unknown['id'],json={'name':unknown['name'],'source_type':'website','active':True,'expected_version':settings['version']})
 call('POST',base+'/import',files={'file':('unknown.ris',ris('three','Forest biodiversity restoration').encode(),'application/x-research-info-systems')})
 confirmed=next(s for s in call('GET',base+'/workflow-settings')['sources'] if s['id']==unknown['id'])
 assert confirmed['identification']=='confirmed' and confirmed['source_type']=='website' and confirmed['record_count']==1
@@ -126,12 +131,12 @@ with review_workflow.connect(legacy) as conn:
 import_sources.migrate(legacy);version=review_workflow.settings(legacy)['version'];import_sources.migrate(legacy)
 assert review_workflow.settings(legacy)['version']==version
 assert legacy.with_name('legacy.db.pre-source-v4.bak').is_file()
-assert {s['name'] for s in review_workflow.sources(legacy)}=={'Web of Science'}
+assert {s['name'] for s in review_workflow.sources(legacy)}=={'old.ris'}
 assert review_workflow.UNASSIGNED not in review_workflow.settings(legacy)['stages']['screen']['source_ids']
 with review_workflow.connect(legacy) as conn:
     assert before=={t:[tuple(r) for r in conn.execute('SELECT * FROM '+t)] for t in before}
 assert import_sources.detect({'raw':{'database_provider':'Elsevier'}},'export.ris','x')['source_type'] is None
-assert import_sources.detect({'raw':{}},'2026_WOS.ris','x')['identification']=='inferred'
+assert import_sources.detect({'raw':{}},'2026_WOS.ris','x')['identification']=='file'
 manual_legacy=DATA/'manual-legacy.db';db.init_db(manual_legacy)
 db.upsert_articles(manual_legacy,[Article(zotero_key='old',title='Old source record',raw={'name_of_database':['WOS']})],[])
 review_workflow.migrate(manual_legacy)
@@ -139,9 +144,9 @@ with review_workflow.connect(manual_legacy) as conn:
     conn.execute("INSERT INTO workflow_sources VALUES('legacy-source','WOS','wos',1,'2026-01-01')")
     review_workflow.associate_sources(manual_legacy,['old'],['legacy-source'],conn=conn)
 import_sources.migrate(manual_legacy)
-assert review_workflow.sources(manual_legacy)[0]['source_type']=='database'
+assert review_workflow.sources(manual_legacy)[0]['identification']=='legacy'
 with review_workflow.connect(manual_legacy) as conn:
-    assert import_sources.ensure(conn,import_sources.detect({'raw':{'name_of_database':'WOS'}},'new.ris','new'))=='legacy-source'
+    assert import_sources.ensure(conn,import_sources.detect({'raw':{'name_of_database':'WOS'}},'new.ris','new'))!='legacy-source'
     empty_file={'name':'empty.ris','digest':'empty','articles':[],'originals':[],'source_id':None}
     import_sources.prepare_files(conn,[empty_file])
     assert empty_file['source_ids']==[] and empty_file['source_id']

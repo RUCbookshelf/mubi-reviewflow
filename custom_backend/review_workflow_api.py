@@ -14,7 +14,7 @@ from urllib.parse import quote
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from coscreen import coding, coding_evidence, review_workflow as store, task_collaboration, tasks
+from coscreen import screening_rounds, coding, coding_evidence, review_workflow as store, task_collaboration, tasks
 from coscreen.models import Article
 from custom_backend.events import BUS
 
@@ -66,6 +66,7 @@ class WorkflowRuntime:
             kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
             actor_db = self.screener_db(info, user["username"])
             store.migrate(actor_db)
+            screening_rounds.migrate(actor_db)
             if actor_db.resolve() != owner_db.resolve():
                 coding_evidence.ensure_fields(actor_db)
             return WorkflowContext(info, user, owner, owner_db, actor_db,
@@ -86,6 +87,7 @@ class WorkflowRuntime:
         data = store.settings(ctx.owner_db)
         return {key: data[key] for key in ("version", "stages", "evidence_required_field_ids")} | {
             "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": store.sources(ctx.owner_db),
+            "screening_round_marker":screening_rounds.marker(ctx.actor_db),
             "evidence_fields": [{**d, "dimension_id": d['id']}
                                 for d in coding_evidence.field_rows(ctx.owner_db)],
             "mapping_issues": coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1],
@@ -304,7 +306,10 @@ class WorkflowRuntime:
         saved = self.saved_rows(ctx.actor_db, stage)
         if stage == "fulltext":
             initial = self.saved_rows(ctx.actor_db, "screen")
-            rows = [row for row in rows if initial.get(row["zotero_key"], {}).get("decision") in {"include", "maybe"}]
+            round_state = screening_rounds.current(ctx.actor_db, initial)
+            held = set(round_state['keys']) if round_state else set()
+            rows = [row for row in rows if initial.get(row['zotero_key'], {}).get('decision') == 'include'
+                    or (initial.get(row['zotero_key'], {}).get('decision') == 'maybe' and row['zotero_key'] not in held)]
         elif stage == "coding":
             initial = self.saved_rows(ctx.actor_db, "screen")
             second = self.saved_rows(ctx.actor_db, "fulltext")
@@ -345,6 +350,10 @@ class WorkflowRuntime:
             links = {entry[0] for entry in conn.execute("SELECT source_id FROM workflow_article_sources WHERE zotero_key=?", (key,))} if store.has_table(conn, "workflow_article_sources") else set()
         if not canonical_only and stage != "screen":
             initial = self.saved_item(ctx.actor_db, "screen", key) or {}
+            if stage == 'fulltext' and initial.get('decision') == 'maybe':
+                active = screening_rounds.current(ctx.actor_db, self.saved_rows(ctx.actor_db,'screen'))
+                if active and key in active['keys']:
+                    return 'article_pending_round'
             if stage == "fulltext" and initial.get("decision") not in {"include", "maybe"}:
                 return "article_not_eligible"
             if stage == "coding":
@@ -402,14 +411,27 @@ class WorkflowRuntime:
             ctx = self.context(task_id, user)
             self.sync_catalog(ctx)
             rows, saved = self.eligible(ctx, stage)
+            active_round = screening_rounds.current(ctx.actor_db, saved) if stage == 'screen' else None
+            if active_round:
+                source_id = active_round['source_id']
             scoped = self.scoped(ctx, stage, rows, source_id)
+            overall = {'total':len(rows),'completed':sum(bool(saved.get(row['zotero_key'])) for row in rows)}
+            overall['pending']=overall['total']-overall['completed']
             completed_coding = coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db,
                 [row['zotero_key'] for row in rows]) if stage == 'coding' else set()
             def complete(key: str) -> bool:
+                if stage == 'screen' and active_round:
+                    return key not in active_round['pending_keys']
                 return bool(saved.get(key)) if stage != "coding" else key in completed_coding
             def progress(items: list[dict]) -> dict:
                 done = sum(complete(row["zotero_key"]) for row in items)
                 return {"total": len(items), "completed": done, "pending": len(items) - done}
+            round_state = screening_rounds.current(ctx.actor_db, saved) if stage == 'screen' else None
+            if round_state and round_state['source_id'] == source_id:
+                round_keys = set(round_state['keys'])
+                scoped = [row for row in scoped if row['zotero_key'] in round_keys]
+            else:
+                round_state = None
             keys = [row["zotero_key"] for row in scoped]
             if order == "random" and ctx.owner is not None:
                 # UI selection identifies the journal; the current policy only
@@ -421,8 +443,10 @@ class WorkflowRuntime:
             queue = [{"key": key, "zotero_key": key, **{name: by_key[key].get(name) for name in
                       ("title", "authors", "journal", "year", "doi", "item_type")}} for key in keys]
             state = store.settings(ctx.owner_db)
-            return {"queue": queue, "total": len(queue), "pending": progress(scoped)["pending"],
-                    "scope_progress": progress(scoped), "overall_progress": progress(rows),
+            second = self.saved_rows(ctx.actor_db, 'fulltext') if stage == 'screen' else {}
+            remaining = sum(saved.get(row['zotero_key'],{}).get('decision')=='maybe' and row['zotero_key'] not in second for row in scoped) if stage=='screen' else 0
+            return {"remaining_uncertain":remaining, "screening_round": round_state, "queue": queue, "total": len(queue), "pending": progress(scoped)["pending"],
+                    "scope_progress": progress(scoped), "overall_progress": overall if stage == "screen" else progress(rows),
                     "policy_version": state["version"], "allowed_sources": self.allowed_sources(ctx, stage),
                     "paused": state["stages"][stage]["mode"] == "paused"}
 
@@ -504,8 +528,14 @@ class SettingsIn(BaseModel):
     evidence_required_field_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
+class RoundIn(BaseModel):
+    action: Literal['start','finish']
+    source_id: str | None = None
+    expected_policy_version: int = Field(ge=1)
+
+
 class SourceIn(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=255)
     active: bool = True
     expected_version: int | None = Field(default=None, ge=1)
     source_type: Literal['database', 'register', 'website', 'organisation', 'citation_searching', 'other'] | None = None
@@ -578,6 +608,11 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                     if source_id:
                         if not conn.execute("SELECT 1 FROM workflow_sources WHERE id=?", (sid,)).fetchone():
                             raise HTTPException(404, "Source not found.")
+                        detail = conn.execute('SELECT identity FROM workflow_source_details WHERE source_id=?',(sid,)).fetchone()
+                        if detail and detail[0].startswith('filename:'):
+                            filename = conn.execute('SELECT name FROM workflow_sources WHERE id=?',(sid,)).fetchone()[0]
+                            if text != filename:
+                                raise HTTPException(400, 'Imported source names follow their filenames.')
                         conn.execute("UPDATE workflow_sources SET name=?,normalized_name=?,active=? WHERE id=?", (text, norm, body.active, sid))
                         if body.source_type is not None:
                             conn.execute('''INSERT INTO workflow_source_details VALUES(?, 'confirmed', ?, '', '', '{}', ?)
@@ -652,6 +687,41 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
     @app.get("/api/tasks/{task_id}/work-queue/{stage}")
     def queue(task_id: str, stage: Stage, source_id: str | None = None, order: Literal["import", "random"] = "import", user: dict = Depends(require_user)) -> dict:
         return runtime.queue(task_id, user, stage, source_id, order)
+
+    @app.post("/api/tasks/{task_id}/screening-rounds")
+    def change_round(task_id: str, body: RoundIn, user: dict = Depends(require_user)) -> dict:
+        with runtime.lock(task_id):
+            ctx = runtime.context(task_id, user)
+            if ctx.owner is None or ctx.info.degraded:
+                raise HTTPException(403, 'Task is read-only.')
+            policy = store.settings(ctx.owner_db)
+            if body.expected_policy_version != policy['version']:
+                raise HTTPException(409, 'Workflow policy changed. Refresh and retry.')
+            runtime.sync_catalog(ctx)
+            rows, saved = runtime.eligible(ctx, 'screen')
+            source_id = body.source_id or None
+            rows = runtime.scoped(ctx, 'screen', rows, source_id)
+            action = body.action
+            if action == 'finish':
+                screening_rounds.finish(ctx.actor_db)
+            elif action == 'start':
+                active = screening_rounds.current(ctx.actor_db, saved)
+                if active and active['pending_keys']:
+                    raise HTTPException(409, 'Finish the current round or proceed to full-text screening first.')
+                if any(not saved.get(row['zotero_key']) for row in rows):
+                    raise HTTPException(409, 'Complete the current title-and-abstract queue first.')
+                second = runtime.saved_rows(ctx.actor_db, 'fulltext')
+                keys = [row['zotero_key'] for row in rows
+                        if saved.get(row['zotero_key'],{}).get('decision') == 'maybe'
+                        and row['zotero_key'] not in second
+                        and not runtime.writable_reason(ctx,'screen',row['zotero_key'])]
+                if not keys:
+                    raise HTTPException(409, 'No unresolved articles are available for another round.')
+                screening_rounds.start(ctx.actor_db, source_id, saved, keys)
+            else:
+                raise HTTPException(400, 'Choose start or finish.')
+            BUS.publish(user['user_id'], {'type':'task-workflow-changed','task_id':task_id,'reason':'screening-round-changed'})
+            return runtime.queue(task_id,user,'screen',source_id)
 
     @app.post("/api/tasks/{task_id}/work-queue/screen/shuffle")
     def shuffle(task_id: str, source_id: str | None = None, user: dict = Depends(require_user)) -> dict:

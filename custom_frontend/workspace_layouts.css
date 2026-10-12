@@ -12,7 +12,7 @@
 .rf-fulltext-reader .pdfstage{min-width:0}
 .rf-fulltext-reader .rf-notes-open .pdfstage{border-radius:12px 0 0 12px}
 .rf-fulltext-reader .ft-decide{padding:10px 0 0;margin-top:0;border:0;box-shadow:none;background:transparent}
-.rf-fulltext-reader .ft-decide>.row{display:grid;grid-template-columns:1fr 1fr 1fr 1.6fr;gap:9px}
+.rf-fulltext-reader .ft-decide>.row{display:flex;flex-wrap:nowrap;gap:clamp(3px,.6vw,8px)}
 .rf-fulltext-reader .ft-decide .btn{width:100%;min-height:42px;justify-content:center}
 .rf-fulltext-reader #ftReason{max-width:none!important;width:100%;min-width:0}
 .rf-fulltext-reader #ftCustomReason{grid-column:1/-1;max-width:none!important}

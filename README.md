@@ -34,9 +34,9 @@
 ### 流程控制与研究依据
 
 - **首页与设置：** 六个标签页集中管理概览、任务与团队、筛选设置、机器学习、数据提取与编码、外观与存储。初筛顺序可选导入、机器学习或随机；随机顺序按用户、任务与来源范围保存。
-- **导入来源与去重：** 从 RIS 数据库元数据自动识别来源；缺失信息或文件名建议仍需确认。精确匹配与待人工核验的标题/模糊候选分开处理。按来源筛选或编码时，多来源文献在总体队列中只出现一次。
+- **导入来源与去重：** 来源名称直接使用导入文件的完整文件名（例如 `01-Wiley.ris`），不再从 RIS 数据库元数据推断。精确匹配与待人工核验的标题/模糊候选分开处理。按来源筛选或编码时，多来源文献在总体队列中只出现一次。
 - **保护既有工作：** 已有保存决定或编码后，追加导入的新记录先暂存，负责人核验重复及元数据差异后激活；保留既有标识、决定与证据。
-- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。两阶段分别设置是否提供需复核；初筛纳入或需复核均进入全文筛选，全文需复核仍待解决，不因该决定进入编码。
+- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。两阶段分别设置是否提供暂不确定；初筛纳入或暂不确定均进入全文筛选，全文暂不确定仍待解决，不因该决定进入编码。 可选择第 2、3、4 或更多轮初筛，仅复核仍暂不确定的文献；不继续复核时进入全文筛选。
 - **数据提取与编码：** 每个维度可添加文字、页码和 PNG/JPEG/WebP 图片证据。负责人可要求指定维度提供证据；不完整内容可保存为草稿，不计为完成。
 - **撤销与轨迹回溯：** 初筛、全文筛选、编码支持受保护的撤销。可从轨迹打开文献修改当前结果；只有满足条件的最近保存可直接撤销，不能任意恢复旧快照。
 - **团队管理：** 在同一区域管理成员与进度、阶段来源权限、筛选选项及导入来源。任务负责人、筛选与编码员、裁决员有角色标识与成员操作菜单；负责人可为各阶段设置全部来源、指定来源或暂停，成员列表及任务变更自动刷新。
@@ -149,9 +149,9 @@ Implementation does not establish validation for every study design. Consult the
 ### Workflow controls and research evidence
 
 - **Home & Settings:** six tabs organize Overview, Tasks & team, Screening settings, Machine Learning, Data extraction & coding, and Appearance & storage. Initial-screening order offers Import / Machine Learning / Random; random order persists per user, task and source scope.
-- **Sources and deduplication:** recognize sources from RIS database metadata; missing information and filename suggestions need confirmation. Exact matches are separate from title/fuzzy candidates requiring human review. Multi-source articles appear once in the overall queue when screening or coding by source.
+- **Sources and deduplication:** Source names use the complete imported filename (for example, `01-Wiley.ris`), without inferring names from RIS database metadata. Exact matches are separate from title/fuzzy candidates requiring human review. Multi-source articles appear once in the overall queue when screening or coding by source.
 - **Protect existing work:** once decisions or coding have been saved, additional new records are staged for owner review of duplicates and metadata differences before activation. Existing identities, decisions and evidence are retained.
-- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Needs review is configurable independently for both stages. Initial Include and Needs review advance to full-text screening; full-text Needs review remains unresolved and does not qualify an article for coding.
+- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Not Sure Now is configurable independently for both stages. Initial Include and Not Sure Now advance to full-text screening; full-text Not Sure Now remains unresolved and does not qualify an article for coding. Optional second, third, fourth or further title-and-abstract rounds revisit only remaining Not Sure Now articles; stopping releases them to full-text screening.
 - **Data extraction & coding:** add text, page references and PNG/JPEG/WebP evidence per dimension. Owners may require evidence for selected dimensions; incomplete work can be saved as a draft and is not counted as complete.
 - **Undo and Trace:** guarded Undo is available in initial screening, full-text screening and coding. Open linked articles from Trace to correct current results; only an eligible latest save can be undone directly, rather than restoring arbitrary historical snapshots.
 - **Team management:** one panel contains members/progress, stage source permissions, screening options and imported sources. Task owner / Coder / Adjudicator badges and member action menus identify responsibilities. Owners choose All / Selected / Paused per stage; membership and task lists refresh automatically.
@@ -242,9 +242,9 @@ La disponibilidad de un método no significa que esté validado para todos los d
 ### Controles del flujo de trabajo y evidencia
 
 - **Inicio y configuración:** seis pestañas reúnen Resumen, Tareas y equipo, Cribado, Aprendizaje automático, Extracción y codificación de datos, Apariencia y almacenamiento. Orden inicial: Importación / Aprendizaje automático / Aleatorio; el orden aleatorio persiste por usuario, tarea y conjunto de fuentes.
-- **Fuentes y duplicados:** reconocimiento mediante metadatos de bases de datos RIS; información ausente y sugerencias del nombre de archivo requieren confirmación. Las coincidencias exactas se separan de candidatos por título/similitud para revisión humana. Una referencia de varias fuentes aparece una sola vez en la cola global.
+- **Fuentes y duplicados:** Las fuentes usan el nombre completo del archivo importado (por ejemplo, `01-Wiley.ris`), sin inferirlo de metadatos RIS. Las coincidencias exactas se separan de candidatos por título/similitud para revisión humana. Una referencia de varias fuentes aparece una sola vez en la cola global.
 - **Trabajo existente:** tras guardar decisiones o codificación, los nuevos registros de importaciones adicionales quedan pendientes de revisión de duplicados y diferencias de metadatos por el propietario antes de activarse. Se conservan identidades, decisiones y evidencia.
-- **Decisiones y motivos:** bibliotecas de motivos reutilizables separadas para ambos cribados. Por revisar se configura por etapa. Incluir y Por revisar iniciales avanzan al texto completo; la incertidumbre en texto completo queda sin resolver y no permite pasar a codificación.
+- **Decisiones y motivos:** bibliotecas de motivos reutilizables separadas para ambos cribados. No estoy seguro aún se configura por etapa. Incluir y No estoy seguro aún iniciales avanzan al texto completo; la incertidumbre en texto completo queda sin resolver y no permite pasar a codificación. Las rondas opcionales 2, 3, 4 o posteriores revisan solo registros aún inciertos; al detenerlas pasan al texto completo.
 - **Extracción y codificación:** texto, páginas e imágenes PNG/JPEG/WebP por dimensión. El propietario puede exigir evidencia; un borrador incompleto se guarda sin contarse como finalizado.
 - **Deshacer y trazabilidad:** deshacer protegido en las tres etapas; abrir un artículo vinculado desde el registro para corregir sus valores actuales. Solo se deshace directamente el último guardado admisible, no cualquier instantánea histórica.
 - **Equipo:** un panel integra miembros/progreso, fuentes permitidas por etapa, opciones de cribado y fuentes importadas. Insignias Responsable de la tarea / Revisor y codificador / Adjudicador y menús de miembros indican responsabilidades. El propietario elige Todas / Seleccionadas / En pausa; miembros y tareas se actualizan automáticamente.
@@ -280,9 +280,9 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 ### ワークフロー管理と研究の根拠
 
 - **ホームと設定：** 概要、タスクとチーム、スクリーニング、機械学習、データ抽出とコーディング、外観と保存先の6タブ。初期スクリーニング順は取り込み順／機械学習／ランダムで、ランダム順はユーザー・タスク・対象ソースごとに保持します。
-- **ソースと重複：** RISのデータベースメタデータから認識します。不明情報やファイル名による候補は確認が必要です。完全一致と、手動確認が必要なタイトル・類似候補を区別し、複数ソースの文献は全体キューに一度だけ表示します。
+- **ソースと重複：** ソース名は取り込んだファイル名全体（例：`01-Wiley.ris`）を使用し、RISのデータベースメタデータから推測しません。完全一致と、手動確認が必要なタイトル・類似候補を区別し、複数ソースの文献は全体キューに一度だけ表示します。
 - **既存作業の保護：** 判断やコーディングを保存した後の追加取り込みは、新規記録を一時保留し、所有者が重複・メタデータ差異を確認して有効化します。識別子、判断、根拠は保持します。
-- **判断と除外理由：** 初期／全文の理由ライブラリを別々に保存します。要再検討は各段階で設定できます。初期の採用・要再検討は全文へ進み、全文の要再検討は未解決のままでコーディング対象にはなりません。
+- **判断と除外理由：** 初期／全文の理由ライブラリを別々に保存します。今は判断できないは各段階で設定できます。初期の採用・今は判断できないは全文へ進み、全文の今は判断できないは未解決のままでコーディング対象にはなりません。 第2、第3、第4以降の選別を任意で行い、判断できない文献だけを再確認できます。続けない場合は全文選別へ進みます。
 - **データ抽出とコーディング：** 各項目に文章、ページ、PNG/JPEG/WebP画像を添付できます。所有者は根拠を必須にでき、不完全な内容は下書きとして保存し、完了には数えません。
 - **取り消しと履歴：** 3段階で保護付き取り消しを利用できます。履歴から文献を開いて現在値を修正できますが、直接取り消せるのは条件を満たす直近の保存のみです。
 - **チーム：** メンバーと進捗、段階別ソース、判断設定、取り込み済みソースを一つのパネルにまとめます。タスク所有者／スクリーニング・コーディング担当／判定担当者のバッジと操作メニューを表示し、所有者は全ソース／選択／一時停止を設定します。メンバーとタスク一覧は自動更新します。
@@ -318,9 +318,9 @@ A implementação de um método não comprova sua validação para todos os deli
 ### Controles do fluxo de trabalho e evidências
 
 - **Início e configurações:** seis abas organizam Visão geral, Tarefas e equipe, Triagem, Aprendizado de máquina, Extração e codificação de dados, Aparência e armazenamento. Ordem inicial: Importação / Aprendizado de máquina / Aleatória; a ordem aleatória persiste por usuário, tarefa e conjunto de fontes.
-- **Fontes e duplicatas:** reconhecimento por metadados de bases RIS; dados ausentes e sugestões de nomes de arquivos exigem confirmação. Correspondências exatas são separadas de candidatos por título/similaridade para revisão humana. Um artigo de várias fontes aparece uma vez na fila global.
+- **Fontes e duplicatas:** Os nomes das fontes usam o nome completo do arquivo importado (por exemplo, `01-Wiley.ris`), sem inferência pelos metadados RIS. Correspondências exatas são separadas de candidatos por título/similaridade para revisão humana. Um artigo de várias fontes aparece uma vez na fila global.
 - **Trabalho existente:** após salvar decisões ou codificação, novos registros de importações adicionais ficam aguardando revisão de duplicatas e diferenças de metadados pelo proprietário antes da ativação. Identidades, decisões e evidências são mantidas.
-- **Decisões e motivos:** bibliotecas reutilizáveis separadas para triagem inicial e texto completo. Revisão necessária é configurável por etapa. Incluir e Revisão necessária iniciais avançam ao texto completo; a incerteza no texto completo continua pendente e não autoriza codificação.
+- **Decisões e motivos:** bibliotecas reutilizáveis separadas para triagem inicial e texto completo. Ainda não tenho certeza é configurável por etapa. Incluir e Ainda não tenho certeza iniciais avançam ao texto completo; a incerteza no texto completo continua pendente e não autoriza codificação. Rodadas opcionais 2, 3, 4 ou posteriores revisam apenas os registros ainda incertos; ao parar, seguem para o texto completo.
 - **Extração e codificação:** texto, páginas e imagens PNG/JPEG/WebP por dimensão. O proprietário pode exigir evidências; rascunhos incompletos são salvos sem contar como concluídos.
 - **Desfazer e histórico:** desfazer protegido nas três etapas; abrir artigos vinculados ao histórico para corrigir valores atuais. Apenas o último salvamento elegível pode ser desfeito diretamente, sem restaurar instantâneos históricos arbitrários.
 - **Equipe:** um painel reúne membros/progresso, fontes por etapa, opções de triagem e fontes importadas. Insígnias Responsável pela tarefa / Revisor e codificador / Adjudicador e menus de membros indicam responsabilidades. O proprietário escolhe Todas / Selecionadas / Pausada; membros e tarefas atualizam automaticamente.
@@ -356,9 +356,9 @@ Eine implementierte Methode ist nicht automatisch für jedes Studiendesign valid
 ### Workflow-Steuerung und Forschungsbelege
 
 - **Startseite und Einstellungen:** sechs Register für Übersicht, Aufgaben und Team, Screening, Maschinelles Lernen, Datenextraktion und Kodierung, Darstellung und Speicherung. Erstscreening-Reihenfolge: Import / Maschinelles Lernen / Zufällig; die Zufallsreihenfolge bleibt je Nutzer, Aufgabe und Quellenumfang erhalten.
-- **Quellen und Duplikate:** Erkennung anhand der RIS-Datenbankmetadaten; fehlende Angaben und Dateinamen-Vorschläge erfordern Bestätigung. Exakte Treffer werden von manuell zu prüfenden Titel-/Ähnlichkeitskandidaten getrennt. Artikel mit mehreren Quellen erscheinen einmal in der Gesamtwarteschlange.
+- **Quellen und Duplikate:** Quellennamen entsprechen dem vollständigen importierten Dateinamen (z. B. `01-Wiley.ris`), ohne Ableitung aus RIS-Metadaten. Exakte Treffer werden von manuell zu prüfenden Titel-/Ähnlichkeitskandidaten getrennt. Artikel mit mehreren Quellen erscheinen einmal in der Gesamtwarteschlange.
 - **Bestehende Arbeit:** nach gespeicherten Entscheidungen oder Kodierungen bleiben neue zusätzliche Importdatensätze zunächst vorgemerkt. Der Eigentümer prüft Duplikate und Metadatenunterschiede vor der Aktivierung; Identitäten, Entscheidungen und Belege bleiben erhalten.
-- **Entscheidungen und Gründe:** getrennte wiederverwendbare Ausschlussgründe für Erst- und Volltextscreening. Zu prüfen ist je Phase konfigurierbar. Einschluss und Zu prüfen im Erstscreening führen zum Volltext; Zu prüfen im Volltext bleibt ungeklärt und berechtigt nicht zur Kodierung.
+- **Entscheidungen und Gründe:** getrennte wiederverwendbare Ausschlussgründe für Erst- und Volltextscreening. Im Moment unsicher ist je Phase konfigurierbar. Einschluss und Im Moment unsicher im Erstscreening führen zum Volltext; Im Moment unsicher im Volltext bleibt ungeklärt und berechtigt nicht zur Kodierung. Optionale zweite, dritte, vierte und weitere Runden prüfen nur verbleibende unsichere Datensätze; beim Beenden gehen diese zum Volltext-Screening.
 - **Datenextraktion und Kodierung:** Text, Seitenangaben und PNG/JPEG/WebP-Bilder je Dimension. Der Eigentümer kann Belege verlangen; unvollständige Entwürfe sind speicherbar, zählen aber nicht als abgeschlossen.
 - **Rückgängig und Protokoll:** geschütztes Rückgängigmachen in allen drei Phasen; verknüpfte Artikel aus dem Protokoll zur Korrektur aktueller Werte öffnen. Nur die letzte zulässige Speicherung lässt sich direkt rückgängig machen, kein beliebiger historischer Stand.
 - **Team:** ein Bereich enthält Mitglieder/Fortschritt, Quellen je Phase, Screening-Optionen und importierte Quellen. Aufgabeninhaber / Screening- und Kodierperson / Entscheidungsperson werden durch Symbole und Mitgliedermenüs gekennzeichnet. Der Eigentümer wählt Alle / Ausgewählte / Pausiert; Mitglieder- und Aufgabenlisten aktualisieren sich automatisch.
@@ -394,9 +394,9 @@ Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. 
 ### Kontrole toka rada i istraživački dokazi
 
 - **Početna i podešavanja:** šest kartica — Pregled, Zadaci i tim, Skrining, Mašinsko učenje, Ekstrakcija i kodiranje podataka, Izgled i skladištenje. Početni redosled: Uvoz / Mašinsko učenje / Nasumično; nasumični redosled se čuva po korisniku, zadatku i skupu izvora.
-- **Izvori i duplikati:** prepoznavanje preko RIS metapodataka o bazi; nedostajuće informacije i predlozi iz naziva datoteka zahtevaju potvrdu. Tačna podudaranja se odvajaju od kandidata po naslovu/sličnosti za ljudsku proveru. Članak iz više izvora pojavljuje se jednom u ukupnom redu.
+- **Izvori i duplikati:** Izvori koriste puno ime uvezene datoteke (npr. `01-Wiley.ris`), bez zaključivanja iz RIS metapodataka. Tačna podudaranja se odvajaju od kandidata po naslovu/sličnosti za ljudsku proveru. Članak iz više izvora pojavljuje se jednom u ukupnom redu.
 - **Postojeći rad:** posle sačuvanih odluka ili kodiranja, novi zapisi dodatnog uvoza čekaju vlasničku proveru duplikata i razlika metapodataka pre aktiviranja. Identiteti, odluke i dokazi se čuvaju.
-- **Odluke i razlozi:** odvojene biblioteke čestih razloga za oba skrininga. Potrebna provera se podešava po fazi. Uključiti i Potrebna provera u početnoj fazi vode ka punom tekstu; neizvesnost u punom tekstu ostaje nerešena i ne omogućava kodiranje.
+- **Odluke i razlozi:** odvojene biblioteke čestih razloga za oba skrininga. Trenutno nisam siguran se podešava po fazi. Uključiti i Trenutno nisam siguran u početnoj fazi vode ka punom tekstu; neizvesnost u punom tekstu ostaje nerešena i ne omogućava kodiranje. Opcioni drugi, treći, četvrti i naredni krugovi obrađuju samo preostale neizvesne zapise; prekid vodi na puni tekst.
 - **Ekstrakcija i kodiranje:** tekst, stranice i PNG/JPEG/WebP slike po dimenziji. Vlasnik može zahtevati dokaze; nepotpun nacrt se čuva, ali ne računa kao završen.
 - **Opoziv i trag:** zaštićeni opoziv u tri faze; otvaranje povezanog članka iz traga radi ispravke trenutnih vrednosti. Direktno se opoziva samo poslednje dozvoljeno čuvanje, ne proizvoljan istorijski snimak.
 - **Tim:** jedan panel sadrži članove/napredak, izvore po fazama, opcije skrininga i uvezene izvore. Oznake Vlasnik zadatka / Pregledač i koder / Arbitar i meniji članova prikazuju uloge. Vlasnik bira Svi / Izabrani / Pauzirano; članstvo i liste zadataka se automatski osvežavaju.
@@ -432,9 +432,9 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 ### 워크플로 제어와 연구 근거
 
 - **홈 및 설정:** 개요, 작업 및 팀, 선별, 머신러닝, 데이터 추출 및 코딩, 화면 및 저장소의 6개 탭으로 구성됩니다. 초기 선별 순서는 가져오기 / 머신러닝 / 무작위이며, 무작위 순서는 사용자·작업·출처 범위별로 유지됩니다.
-- **출처와 중복:** RIS 데이터베이스 메타데이터로 출처를 인식합니다. 누락 정보와 파일명 제안은 확인이 필요합니다. 정확한 일치와 사람이 검토할 제목·유사 후보를 구분하며, 여러 출처의 문헌도 전체 대기열에는 한 번만 나타납니다.
+- **출처와 중복:** 출처 이름은 가져온 파일명 전체(예: `01-Wiley.ris`)를 사용하며 RIS 데이터베이스 메타데이터에서 추론하지 않습니다. 정확한 일치와 사람이 검토할 제목·유사 후보를 구분하며, 여러 출처의 문헌도 전체 대기열에는 한 번만 나타납니다.
 - **기존 작업 보호:** 판단이나 코딩을 저장한 뒤의 추가 가져오기는 신규 기록을 임시 보관합니다. 소유자가 중복·메타데이터 차이를 검토한 후 활성화하며, 식별자·판단·근거는 유지됩니다.
-- **판단과 사유:** 초기·전문 선별의 재사용 제외 사유를 각각 저장합니다. 검토 필요는 단계별로 설정합니다. 초기 포함·검토 필요는 전문 선별로 진행하며, 전문의 검토 필요는 미해결 상태로 코딩 대상이 되지 않습니다.
+- **판단과 사유:** 초기·전문 선별의 재사용 제외 사유를 각각 저장합니다. 아직 확신 없음는 단계별로 설정합니다. 초기 포함·아직 확신 없음는 전문 선별로 진행하며, 전문의 아직 확신 없음는 미해결 상태로 코딩 대상이 되지 않습니다. 선택적으로 2·3·4차 이상의 초기 선별을 진행해 불확실한 문헌만 다시 검토하며, 중단하면 전문 선별로 진행합니다.
 - **데이터 추출 및 코딩:** 차원별로 텍스트, 페이지, PNG/JPEG/WebP 이미지를 첨부합니다. 소유자는 근거를 필수로 설정할 수 있고, 불완전한 내용은 초안으로 저장하되 완료로 계산하지 않습니다.
 - **실행 취소 및 기록:** 세 단계에 보호된 실행 취소를 제공합니다. 기록에서 연결 문헌을 열어 현재 값을 수정할 수 있지만 직접 취소는 조건을 충족하는 최근 저장만 가능합니다.
 - **팀:** 구성원·진행률, 단계별 출처, 선별 옵션, 가져온 출처를 한 패널에 모읍니다. 작업 소유자 / 선별 및 코딩 담당자 / 판정자 표시와 구성원 메뉴로 역할을 구분합니다. 소유자는 전체 / 선택 / 일시 중지를 설정하며 구성원과 작업 목록은 자동 갱신됩니다.
@@ -477,9 +477,9 @@ ReviewFlow — рабочая среда для систематических �
 ### Управление процессом и подтверждающие материалы
 
 - **Главная и настройки:** шесть вкладок — Обзор, Задачи и команда, Отбор, Машинное обучение, Извлечение и кодирование данных, Оформление и хранение. Порядок первичного отбора: Импорт / Машинное обучение / Случайный; случайный порядок сохраняется для пользователя, задачи и набора источников.
-- **Источники и дубликаты:** базы распознаются по метаданным RIS; отсутствующие сведения и предположения по имени файла требуют подтверждения. Точные совпадения отделены от кандидатов по названию/сходству для ручной проверки. Запись из нескольких источников появляется один раз в общей очереди.
+- **Источники и дубликаты:** Название источника — полное имя импортированного файла (например, `01-Wiley.ris`), без вывода из метаданных RIS. Точные совпадения отделены от кандидатов по названию/сходству для ручной проверки. Запись из нескольких источников появляется один раз в общей очереди.
 - **Сохранность работы:** после сохранения решений или кодирования новые записи дополнительных импортов ожидают проверки владельцем дубликатов и различий метаданных перед активацией. Идентификаторы, решения и материалы сохраняются.
-- **Решения и причины:** отдельные библиотеки повторно используемых причин исключения для двух этапов. Требует повторного рассмотрения включается отдельно для каждого этапа. Включить и Требует повторного рассмотрения на первом этапе ведут к полному тексту; неопределённость при полном тексте остаётся нерешённой и не допускает запись к кодированию.
+- **Решения и причины:** отдельные библиотеки повторно используемых причин исключения для двух этапов. Пока не уверен включается отдельно для каждого этапа. Включить и Пока не уверен на первом этапе ведут к полному тексту; неопределённость при полном тексте остаётся нерешённой и не допускает запись к кодированию. Дополнительные второй, третий, четвёртый и последующие раунды пересматривают только неопределённые записи; при остановке они переходят к полному тексту.
 - **Извлечение и кодирование:** текст, страницы и изображения PNG/JPEG/WebP для каждого поля. Владелец может требовать подтверждение отдельных полей; неполный черновик сохраняется, но не считается завершённым.
 - **Отмена и журнал:** защищённая отмена в трёх этапах; открытие связанной записи из журнала для исправления текущих значений. Напрямую отменяется только последнее допустимое сохранение, а не произвольный старый снимок.
 - **Команда:** общая панель участников/прогресса, источников по этапам, вариантов решений и импортированных источников. Значки Владелец задачи / Специалист по отбору и кодированию / Арбитр и меню участников показывают роли. Владелец выбирает Все / Выбранные / Приостановлено; состав и списки задач обновляются автоматически.
@@ -576,9 +576,9 @@ La présence d'une méthode ne signifie pas qu'elle a été entièrement validé
 ### Contrôles du flux de travail et éléments justificatifs
 
 - **Accueil et paramètres :** six onglets regroupent Vue d’ensemble, Tâches et équipe, Sélection, Apprentissage automatique, Extraction et codage des données, Apparence et stockage. L’ordre initial propose Importation / Apprentissage automatique / Aléatoire ; l’ordre aléatoire est conservé par utilisateur, tâche et périmètre de sources.
-- **Sources et doublons :** les métadonnées de base de données RIS permettent la reconnaissance automatique. Les informations manquantes et suggestions tirées des noms de fichiers nécessitent confirmation. Les correspondances exactes sont distinguées des candidats par titre/similarité à vérifier manuellement ; une référence multisource apparaît une seule fois dans la file globale.
+- **Sources et doublons :** Le nom de source est le nom complet du fichier importé (par exemple `01-Wiley.ris`), sans déduction à partir des métadonnées RIS. Les correspondances exactes sont distinguées des candidats par titre/similarité à vérifier manuellement ; une référence multisource apparaît une seule fois dans la file globale.
 - **Travail existant :** après un enregistrement de décisions ou de codage, les nouveaux imports restent en attente. Le propriétaire vérifie doublons et différences de métadonnées avant activation ; identités, décisions et justificatifs sont conservés.
-- **Décisions et motifs :** conserver des motifs d’exclusion réutilisables séparés pour les deux étapes. L’option À revoir est configurable par étape. Inclure et À revoir au premier tri conduisent au texte intégral ; À revoir au texte intégral reste non résolu et ne donne pas accès au codage.
+- **Décisions et motifs :** conserver des motifs d’exclusion réutilisables séparés pour les deux étapes. L’option Incertain pour l’instant est configurable par étape. Inclure et Incertain pour l’instant au premier tri conduisent au texte intégral ; Incertain pour l’instant au texte intégral reste non résolu et ne donne pas accès au codage. Les cycles facultatifs 2, 3, 4 et suivants réévaluent seulement les notices encore incertaines ; arrêter les cycles les dirige vers le texte intégral.
 - **Extraction et codage :** notes, pages et images PNG/JPEG/WebP par dimension ; le propriétaire peut exiger des justificatifs. Un brouillon incomplet peut être enregistré sans être compté comme terminé.
 - **Annulation et traçabilité :** annulation protégée dans les trois étapes ; ouvrir une référence liée au journal pour corriger sa valeur actuelle. Seul le dernier enregistrement admissible peut être annulé directement, sans restauration arbitraire d’anciens instantanés.
 - **Équipe :** un panneau réunit membres/progression, sources autorisées par étape, options de sélection et sources importées. Les badges Responsable de la tâche / Responsable du dépistage et du codage / Arbitre et menus des membres précisent les rôles. Le propriétaire choisit Toutes / Sélectionnées / En pause ; listes et adhésions sont actualisées automatiquement.

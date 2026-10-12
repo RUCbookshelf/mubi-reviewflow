@@ -721,9 +721,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./research_trace.css?v=20261011-trace-topbar2">
 <link rel="stylesheet" href="./update_check.css?v=20261005-update1">
 <link rel="stylesheet" href="./import_guide.css?v=20261011-pearl1">
-<link rel="stylesheet" href="./screen_reader.css?v=20261012-decision-row2">
+<link rel="stylesheet" href="./screen_reader.css?v=20261012-rounds1">
 <link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
-<link rel="stylesheet" href="./workspace_layouts.css?v=20261011-layouts3">
+<link rel="stylesheet" href="./workspace_layouts.css?v=20261012-rounds1">
 </head>
 <body>
 
@@ -5996,8 +5996,8 @@ async function refreshALRank() {
 async function applyAIOrder() {
   if (S.al.mode !== 'ai' || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return;
   const base = S.articlesBase || [];
-  const done = base.filter(a => S.decisions[a.zotero_key]);
-  const pending = new Map(base.filter(a => !S.decisions[a.zotero_key]).map(a => [a.zotero_key, a]));
+  const done = base.filter(a => !ScreeningRounds.pending(a.zotero_key));
+  const pending = new Map(base.filter(a => ScreeningRounds.pending(a.zotero_key)).map(a => [a.zotero_key, a]));
   const ranked = [];
   for (const key of S.al.orderKeys) {
     if (pending.has(key)) { ranked.push(pending.get(key)); pending.delete(key); }
@@ -6120,7 +6120,7 @@ function nzArticle(a) {
   return a;
 }
 function nextUndecided() {
-  for (let i = 0; i < S.articles.length; i++) if (!S.decisions[S.articles[i].zotero_key]) return i;
+  for (let i = 0; i < S.articles.length; i++) if (ScreeningRounds.pending(S.articles[i].zotero_key)) return i;
   return -1;
 }
 function renderScreenHist() {
@@ -6160,9 +6160,10 @@ function screenTitle(article, score) {
 async function renderScreen() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   renderScreenHist();
+  ScreeningRounds.render();
   let i = S.scrIdx;
   const cur = S.articles[i];
-  if (!cur || (S.decisions[cur.zotero_key] && S.screenEditingKey !== cur.zotero_key)) S.scrIdx = i = nextUndecided();
+  if (!cur || (!ScreeningRounds.pending(cur.zotero_key) && S.screenEditingKey !== cur.zotero_key)) S.scrIdx = i = nextUndecided();
   $('#scrPos').textContent = '#' + (i < 0 ? S.articles.length : i + 1) + ' / ' + S.articles.length;
   const body = $('#scrBody');
   body.textContent = '';
@@ -6272,7 +6273,7 @@ async function screenDecide(decision) {
   const ticket = screenRequestVersion, taskId = S.task.task_id, screener = S.screener;
   const i = S.scrIdx;
   const r = S.articles[i];
-  if (!r || (S.decisions[r.zotero_key] && S.screenEditingKey !== r.zotero_key)) { toast('本批文献已全部完成', 'info'); return; }
+  if (!r || (!ScreeningRounds.pending(r.zotero_key) && S.screenEditingKey !== r.zotero_key)) { toast('本批文献已全部完成', 'info'); return; }
   const rsn = $('#excReason');
   let reason = '';
   if (decision === 'exclude') {
@@ -6298,6 +6299,7 @@ async function screenDecide(decision) {
       return;
     }
     S.decisions[r.zotero_key] = { ...savedDecision, decision, reason };
+    ScreeningRounds.saved(r.zotero_key);
     WorkflowControls.markDecisionClean('screen');
     WorkflowControls.updateProgress('screen').catch(WorkflowControls.error);
     S.screenEditingKey = null;
@@ -8820,11 +8822,12 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./extraction_workbench.js?v=20261012-workflow6"></script>
 <script src="./workspace_layouts.js?v=20261012-workflow6"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=20261012-team-prisma5">
-<script src="./workflow_controls.js?v=20261012-decision-row2"></script>
+<script src="./screening_rounds.js?v=20261012-rounds1"></script>
+<script src="./workflow_controls.js?v=20261012-rounds1"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
 <link rel="stylesheet" href="./import_review.css?v=20261012-review1">
 <script src="./workflow_imports.js?v=20261012-review1"></script>
-<script src="./team_prisma_locale.js?v=20261012-team-prisma5"></script>
+<script src="./team_prisma_locale.js?v=20261012-rounds1-20261012-team-prisma5"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261012-workflow6"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>

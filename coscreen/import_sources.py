@@ -28,49 +28,22 @@ def first(raw: dict, *keys: str) -> str:
 
 
 def detect(original: dict, filename: str, digest: str) -> dict:
-    raw = original.get('raw', original.get('raw_json', original))
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except (TypeError, ValueError):
-            raw = {}
-    raw = raw if isinstance(raw, dict) else {}
-    database = first(raw, 'name_of_database', 'DB')
-    provider = first(raw, 'database_provider', 'DP')
-    if database:
-        name = ALIASES.get(workflow.normalized(database), database)
-        return {'name': name, 'identity': 'database:' + workflow.normalized(name),
-                'identification': 'metadata', 'source_type': 'database', 'provider': provider,
-                'suggestion': '', 'evidence': {'field': 'DB', 'value': database}}
-    # Filename matches are suggestions, never verified database provenance.
-    stem = re.sub(r'[_\-.]+', ' ', Path(filename).stem).casefold()
-    suggestion = next((label for alias, label in ALIASES.items()
-                       if re.search(r'(?<!\w)' + re.escape(alias) + r'(?!\w)', stem)), '')
-    return {'name': filename[:200], 'identity': 'file:' + digest,
-            'identification': 'inferred' if suggestion else 'file', 'source_type': None,
-            'provider': provider, 'suggestion': suggestion, 'evidence': {'filename': filename}}
+    # Source identity is the complete uploaded filename, never RIS DB/DP metadata.
+    name = Path(filename.replace('\\', '/')).name or 'Source not recorded'
+    return {'name': name, 'identity': 'filename:' + workflow.normalized(name),
+            'identification': 'file', 'source_type': None, 'provider': '',
+            'suggestion': '', 'evidence': {'filename': name}}
 
 
 def ensure(conn: sqlite3.Connection, detected: dict) -> str:
     known = conn.execute('SELECT source_id FROM workflow_source_details WHERE identity=? ORDER BY source_id LIMIT 1', (detected['identity'],)).fetchone()
-    if known:
-        return known[0]
-    sid = str(uuid.uuid5(uuid.NAMESPACE_URL, 'reviewflow:source:' + detected['identity']))
-    if conn.execute('SELECT 1 FROM workflow_sources WHERE id=?', (sid,)).fetchone():
-        return sid
-    # Reuse earlier explicitly named database sources; otherwise keep file identities separate.
-    old = conn.execute('SELECT id FROM workflow_sources WHERE normalized_name=?',
-                       (workflow.normalized(detected['name']),)).fetchone()
-    if old and detected['identification'] == 'metadata':
-        sid = old[0]
-    elif not old:
-        conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,1,datetime('now'))",
-                     (sid, detected['name'], workflow.normalized(detected['name'])))
-    else:
-        name = detected['name'][:180] + ' · ' + sid[:8]
-        conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,1,datetime('now'))",
-                     (sid, name, workflow.normalized(name)))
-    conn.execute('INSERT OR IGNORE INTO workflow_source_details VALUES(?,?,?,?,?,?,?)',
+    named = conn.execute('SELECT id FROM workflow_sources WHERE normalized_name=?', (workflow.normalized(detected['name']),)).fetchone()
+    sid = known[0] if known else named[0] if named else str(uuid.uuid5(uuid.NAMESPACE_URL, 'reviewflow:source:' + detected['identity']))
+    conn.execute("INSERT OR IGNORE INTO workflow_sources VALUES(?,?,?,1,datetime('now'))",(sid,detected['name'],workflow.normalized(detected['name'])))
+    conn.execute('UPDATE workflow_sources SET name=?,normalized_name=? WHERE id=?',(detected['name'],workflow.normalized(detected['name']),sid))
+    conn.execute("""INSERT INTO workflow_source_details VALUES(?,?,?,?,?,?,?)
+                 ON CONFLICT(source_id) DO UPDATE SET identification=CASE WHEN identity=excluded.identity AND identification='confirmed' THEN 'confirmed' ELSE 'file' END,identity=excluded.identity,
+                 evidence_json=excluded.evidence_json,provider='',suggestion='' """,
                  (sid, detected['identification'], detected['source_type'], detected['provider'],
                   detected['suggestion'], json.dumps(detected['evidence'], ensure_ascii=False), detected['identity']))
     return sid
@@ -78,16 +51,12 @@ def ensure(conn: sqlite3.Connection, detected: dict) -> str:
 
 def prepare_files(conn: sqlite3.Connection, files: list[dict]) -> None:
     for file in files:
-        if file.get('source_id'):
-            file['source_ids'] = [file['source_id']] * len(file['articles'])
-        else:
-            file['source_ids'] = [ensure(conn, detect(original, file['name'], file['digest']))
-                                  for original in file['originals']]
-            file['source_id'] = (file['source_ids'][0] if file['source_ids'] else
-                                 ensure(conn, detect({}, file['name'], file['digest'])))
+        sid=ensure(conn,detect({},file['name'],file['digest']))
+        file['source_ids']=[sid]*len(file['articles'])
+        file['source_id']=sid
 
 
-def migrate(db: str | Path) -> None:
+def _migrate_v4(db: str | Path) -> None:
     workflow.migrate(db)
     with closing(workflow.connect(db, read_only=True)) as conn:
         if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (VERSION,)).fetchone():
@@ -137,7 +106,7 @@ def migrate(db: str | Path) -> None:
                 except (TypeError, ValueError):
                     continue
                 filename = first(raw, 'source_file')
-                if not filename and not first(raw, 'name_of_database', 'DB'):
+                if not filename:
                     continue
                 digest = hashlib.sha256(('legacy-file:' + filename).encode()).hexdigest()
                 sid = ensure(conn, detect({'raw': raw}, filename or 'Legacy import', digest))
@@ -191,7 +160,7 @@ def decorate(conn: sqlite3.Connection, sources: list[dict]) -> list[dict]:
     referenced = {sid for stage in policies.values() for sid in stage['source_ids']}
     for source in sources:
         sid = source['id']
-        links = conn.execute('SELECT COUNT(*) FROM workflow_article_sources WHERE source_id=?', (sid,)).fetchone()[0]
+        links = conn.execute('SELECT COUNT(*) FROM workflow_article_sources s JOIN articles a ON a.zotero_key=s.zotero_key WHERE s.source_id=? AND a.is_duplicate_of IS NULL', (sid,)).fetchone()[0] if workflow.has_table(conn,'articles') else conn.execute('SELECT COUNT(*) FROM workflow_article_sources WHERE source_id=?',(sid,)).fetchone()[0]
         originals, filenames = 0, set()
         if workflow.has_table(conn, 'workflow_source_records'):
             rows = conn.execute('SELECT filename FROM workflow_source_records WHERE source_id=?', (sid,)).fetchall()
@@ -206,3 +175,86 @@ def decorate(conn: sqlite3.Connection, sources: list[dict]) -> list[dict]:
                        'record_count': originals, 'linked_count': active_links, 'files': sorted(filenames),
                        'identification': detail['identification'] if detail else 'legacy'})
     return result
+
+
+def migrate(db: str | Path) -> None:
+    """Upgrade filename associations without rewriting original records or research."""
+    _migrate_v4(db)
+    with closing(workflow.connect(db, read_only=True)) as conn:
+        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=5').fetchone():
+            return
+        backup = Path(db).with_name(Path(db).name + '.pre-filename-v5.bak')
+        if not backup.exists():
+            with closing(sqlite3.connect(backup)) as target:
+                conn.backup(target)
+    with closing(workflow.connect(db)) as conn, conn:
+        conn.execute('BEGIN IMMEDIATE')
+        mapping, source_status = {}, {}
+        if workflow.has_table(conn, 'workflow_source_records'):
+            for row in conn.execute('SELECT * FROM workflow_source_records').fetchall():
+                if not row['filename']:
+                    continue
+                old = row['source_id']
+                sid = ensure(conn, detect({}, row['filename'], row['digest']))
+                mapping.setdefault(old, set()).add(sid)
+                status=conn.execute('SELECT active FROM workflow_sources WHERE id=?',(old,)).fetchone()
+                source_status[sid]=max(source_status.get(sid,0),status[0] if status else 1)
+                collision = conn.execute('SELECT id FROM workflow_source_records WHERE source_id=? AND digest=? AND row_index=? AND id<>?',
+                                         (sid, row['digest'], row['row_index'], row['id'])).fetchone()
+                # Keep immutable originals and IDs if a legacy collision cannot be reassociated.
+                if collision:
+                    mapping[old].add(old)
+                    continue
+                conn.execute('UPDATE workflow_source_records SET source_id=? WHERE id=?', (sid, row['id']))
+                if row['state'] == 'active' and row['canonical_key']:
+                    key, seen = row['canonical_key'], set()
+                    while key and key not in seen:
+                        seen.add(key)
+                        article = conn.execute('SELECT is_duplicate_of FROM articles WHERE zotero_key=?', (key,)).fetchone()
+                        if article is None:
+                            break
+                        if article[0] is None:
+                            workflow.associate_sources(db, [key], [sid], conn=conn)
+                            # Remove only this proven obsolete source association.
+                            if old != sid:
+                                remaining = conn.execute('SELECT 1 FROM workflow_source_records WHERE source_id=? AND canonical_key=? AND state=? LIMIT 1', (old,key,'active')).fetchone()
+                                if not remaining:
+                                    conn.execute('DELETE FROM workflow_article_sources WHERE zotero_key=? AND source_id=?',(key,old))
+                            break
+                        key = article[0]
+            conn.execute("""UPDATE workflow_import_files SET source_id=COALESCE((
+                SELECT r.source_id FROM workflow_import_members m JOIN workflow_source_records r ON r.id=m.record_id
+                WHERE m.batch_id=workflow_import_files.batch_id AND m.file_index=workflow_import_files.file_index
+                ORDER BY r.row_index LIMIT 1),source_id)""")
+        # Older catalogs may retain only source_file in article raw metadata.
+        if workflow.has_table(conn,'articles'):
+            for article in conn.execute('SELECT zotero_key,raw_json FROM articles WHERE is_duplicate_of IS NULL').fetchall():
+                try:
+                    filename=first(json.loads(article['raw_json'] or '{}'),'source_file')
+                except (TypeError,ValueError):
+                    continue
+                if not filename:
+                    continue
+                if conn.execute('SELECT 1 FROM workflow_source_records WHERE canonical_key=? LIMIT 1',(article['zotero_key'],)).fetchone() if workflow.has_table(conn,'workflow_source_records') else False:
+                    continue
+                old_ids=[r[0] for r in conn.execute('SELECT source_id FROM workflow_article_sources WHERE zotero_key=?',(article['zotero_key'],))]
+                sid=ensure(conn,detect({},filename,''))
+                workflow.associate_sources(db,[article['zotero_key']],[sid],conn=conn)
+                for old in old_ids:
+                    mapping.setdefault(old,set()).add(sid)
+                    status=conn.execute('SELECT active FROM workflow_sources WHERE id=?',(old,)).fetchone()
+                    source_status[sid]=max(source_status.get(sid,0),status[0] if status else 1)
+                    if old!=sid:
+                        conn.execute('DELETE FROM workflow_article_sources WHERE zotero_key=? AND source_id=?',(article['zotero_key'],old))
+        for sid, active in source_status.items():
+            conn.execute('UPDATE workflow_sources SET active=? WHERE id=?',(active,sid))
+        policy = json.loads(conn.execute('SELECT stages_json FROM workflow_state WHERE singleton=1').fetchone()[0])
+        for stage in policy.values():
+            ids = set()
+            for old in stage['source_ids']:
+                ids.update(mapping.get(old, {old}))
+                if conn.execute('SELECT 1 FROM workflow_article_sources WHERE source_id=? LIMIT 1',(old,)).fetchone():
+                    ids.add(old)
+            stage['source_ids'] = sorted(ids)
+        conn.execute('UPDATE workflow_state SET stages_json=?,version=version+1,catalog_revision=catalog_revision+1 WHERE singleton=1',(json.dumps(policy),))
+        conn.execute("INSERT INTO workflow_migrations VALUES(5,datetime('now'))")
