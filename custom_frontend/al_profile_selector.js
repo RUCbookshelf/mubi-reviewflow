@@ -24,6 +24,9 @@
     /* 展示顺序：规格 §7.1 的列表顺序（经典/优化/中文优化/SVM）；
        后端将来新增的预设按响应键序追加在末尾。 */
     const PREFERRED_ORDER = ['legacy', 'tuned', 'cjk', 'svm'];
+    // Display vocabulary only; identifiers and backend profile parameters are unchanged.
+    const PRESET_LABELS = {"legacy": "经典预设", "tuned": "优化朴素贝叶斯预设", "cjk": "中日韩文本 SVM 预设", "svm": "线性 SVM 预设"};
+    const PRESET_DESCRIPTIONS = {"legacy": "保留原有朴素贝叶斯配置，用于兼容旧任务。", "tuned": "调整文本特征、朴素贝叶斯参数和类别平衡；效果取决于当前任务的数据与标签。", "cjk": "线性 SVM，包含中日韩文本的字符二元组特征；效果取决于当前任务的数据与标签。", "svm": "线性 SVM，使用文本特征与类别平衡；效果取决于当前任务的数据与标签。"};
     let version = 0;            // 异步票据：任务切换后丢弃过期响应
     let handledTaskId;          // 已初始化下拉的任务（重复 task-loaded 去重）
     let current = null;         // 会话内经确认生效的预设（null=未设置→显示默认）
@@ -46,13 +49,13 @@
     (document.head || document.documentElement).appendChild(style);
 
     /* ---- 控件（XSS 安全：全部 el()/textContent 构造） ---- */
-    const cap = el('span', { class: 'al-profile-cap', text: T('机器学习模型') });
-    const select = el('select', { id: 'alProfileSel', class: 'input', disabled: '', 'aria-label': T('机器学习模型') });
+    const cap = el('span', { class: 'al-profile-cap', text: T('机器学习模型预设') });
+    const select = el('select', { id: 'alProfileSel', class: 'input', disabled: '', 'aria-label': T('机器学习模型预设') });
     const wrap = el('label', { class: 'al-profile-picker', for: 'alProfileSel', title: T('机器学习模型预设：切换需确认，已有的筛选标签不受影响') },
       cap, select);
     anchor.after(wrap);
-    const homeSelect = el('select', {id:'alHomeProfileSel',class:'input',disabled:'','aria-label':T('机器学习模型')});
-    const homeCap = el('span', {class:'lbl',text:T('机器学习模型')});
+    const homeSelect = el('select', {id:'alHomeProfileSel',class:'input',disabled:'','aria-label':T('机器学习模型预设')});
+    const homeCap = el('span', {class:'lbl',text:T('机器学习模型预设')});
     const homeField = el('label', {for:'alHomeProfileSel'}, homeCap, homeSelect);
     document.getElementById('alStrategy').closest('.row').prepend(homeField);
     const selectors = [select, homeSelect];
@@ -71,14 +74,14 @@
       select.textContent = '';
       for (const name of orderedNames()) {
         const p = profiles[name] || {};   // 防御：预设项缺失/为 null 时仍可渲染
-        select.append(el('option', { value: name, text: T(p.label || name), title: T(p.description || '') }));
+        select.append(el('option', { value: name, text: T(PRESET_LABELS[name] || p.label || name), title: T(PRESET_DESCRIPTIONS[name] || p.description || '') }));
       }
       if (!select.options.length) select.append(el('option', { value: '', text: T(placeholder) }));
       else select.value = selected;
       const info = profiles[selected];
-      select.title = info ? T(info.description || '') : '';
+      select.title = info ? T(PRESET_DESCRIPTIONS[selected] || info.description || '') : '';
       }
-      S.al.profileLabel = profiles[selected]?.label || '';
+      S.al.profileLabel = profiles[selected] ? (PRESET_LABELS[selected] || profiles[selected].label || '') : '';
       renderALChrome();
     }
 
@@ -129,7 +132,7 @@
           current = (d && d.al_profile) || next;
           renderOptions();
           if (typeof refreshALRank === 'function') refreshALRank();
-          const label = (d && d.label) || info.label || next;
+          const label = PRESET_LABELS[current] || (d && d.label) || info.label || next;
           if (typeof toast === 'function') toast(T('机器学习模型已切换：{0}', T(label)), 'inc');
         }).catch(e => {
           if (!active()) return;
@@ -144,9 +147,9 @@
     document.addEventListener('reviewflow:task-context-changed', e => { try { onTask(e && e.detail); } catch (e2) {} });
     document.addEventListener('reviewflow:language-changed', () => {
       try {
-        cap.textContent = T('机器学习模型');
-        homeCap.textContent = T('机器学习模型');
-        homeSelect.setAttribute('aria-label', T('机器学习模型'));
+        cap.textContent = T('机器学习模型预设');
+        homeCap.textContent = T('机器学习模型预设');
+        homeSelect.setAttribute('aria-label', T('机器学习模型预设'));
         wrap.title = T('机器学习模型预设：切换需确认，已有的筛选标签不受影响');
         renderOptions();
       } catch (e2) {}

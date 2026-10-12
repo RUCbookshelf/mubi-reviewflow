@@ -1,7 +1,8 @@
 /* Reader-first initial screening. All rules are scoped to this workspace. */
 .rf-reader-page>h2{display:none}
 .rf-reader-page>.al-mode{gap:8px;margin:0 0 8px;flex-shrink:0}
-.rf-reader-page .rf-screen-order{display:flex;gap:3px;padding:3px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.rf-reader-page .rf-screen-order{display:flex;align-items:center;flex-wrap:wrap;gap:3px;padding:3px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.rf-reader-page .rf-screen-order-label{padding:4px 7px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}
 .rf-reader-page .rf-screen-order button{border:0;border-radius:9px;padding:4px 10px;min-height:32px;font-size:12px}
 .rf-reader-page .rf-screen-order .rf-pearl-companion{width:23px;height:23px}
 .rf-reader-page .al-profile-picker{font-size:12px}

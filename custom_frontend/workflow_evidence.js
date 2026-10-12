@@ -114,7 +114,7 @@
       if(!item.writable)forms.append(node('p','Read-only: current policy or source scope does not allow saving.',{class:'wf-readonly'}),node('p',W.reason(item.reason)));
       for(const d of dims){
         const dim=String(d.id),saved=item.evidence?.[dim]||{},value=item.saved?.[dim]||'',writable=item.writable&&(mode!=='canonical'||d.writable);
-        const card=node('div',null,{class:'card','data-field-id':d.field_id||'','data-field-definition':JSON.stringify(['name','dtype','options','multi_select','unit','description'].map(key=>d[key])),id:'wf-field-'+dim,style:'margin-bottom:10px'});card.append(literal('b',d.name),node('span',d.multi_select?'多选':d.dtype==='text'?'填空':'单选',{class:'chip'}));
+        const card=node('div',null,{class:'card wf-coding-unit','data-field-id':d.field_id||'','data-field-definition':JSON.stringify(['name','dtype','options','multi_select','unit','description'].map(key=>d[key])),id:'wf-field-'+dim});card.append(literal('b',d.name),node('span',d.multi_select?'多选':d.dtype==='text'?'填空':'单选',{class:'chip'}));
         if(mode!=='canonical'){
           const row=node('div',null,{class:'row'});
           if(d.dtype==='choice'&&d.multi_select){for(const option of d.options){const c=el('input',{type:'checkbox',class:'cb-v','data-dim':dim,value:option});c.checked=String(value).split('|').includes(option);row.append(el('label',{},c,literal('span',option)));}}
@@ -128,7 +128,9 @@
         details.append(text,node('p',null,{class:'wf-evidence-gap',role:'status'}));
         const host=node('div',null,{class:'wf-evidence-images'});images.set(dim,[...(saved.images||[])]);details.append(host);drawImages(dim,host,scope,t,writable);
         if(writable){const file=el('input',{type:'file',accept:'image/png,image/jpeg,image/webp',multiple:'','aria-label':T('Upload evidence images')});file.addEventListener('change',()=>{upload([...file.files],dim,host,writable);file.value='';});details.append(file);text.addEventListener('paste',event=>{const files=[...event.clipboardData?.files||[]].filter(f=>f.type.startsWith('image/'));if(files.length){event.preventDefault();upload(files,dim,host,writable);}});}
-        card.append(details);forms.append(card);
+        card.append(details);
+        if(forms.querySelector(':scope>.wf-coding-unit'))forms.append(node('hr',null,{class:'wf-coding-unit-divider','aria-hidden':'true'}));
+        forms.append(card);
         for(const c of card.querySelectorAll('input,select,button')){c.disabled=!writable;c.dataset.wfReadonly=String(!writable);}
       }
       if(item.mapping_issues?.length)forms.append(node('p','Evidence field mapping needs owner review. Existing values are preserved.',{class:'wf-evidence-gap'}));

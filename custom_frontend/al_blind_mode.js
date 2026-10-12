@@ -77,9 +77,9 @@
     const saveBtn = document.getElementById('alSaveSettings');
     const anchorRow = saveBtn ? (saveBtn.closest('.row') || saveBtn.parentElement) : null;
     if (anchorRow) {
-      const box = el('input', { type: 'checkbox', id: 'alBlindMode', 'aria-label': T('盲筛模式') });
+      const box = el('input', { type: 'checkbox', id: 'alBlindMode', 'aria-label': T('隐藏机器学习分数') });
       const cap = el('label', { class: 'lbl', for: 'alBlindMode' }, box,
-        el('span', { text: T('盲筛模式（默认开启）') }));
+        el('span', { text: T('隐藏机器学习分数（默认开启）') }));
       const hint = el('span', {
         class: 'hint', style: 'margin:0;flex:1;min-width:220px',
         text: T('开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。'),
@@ -106,9 +106,9 @@
     document.addEventListener('reviewflow:language-changed', () => {
       try {
         const box = document.getElementById('alBlindMode');
-        if (box) box.setAttribute('aria-label', T('盲筛模式'));
+        if (box) box.setAttribute('aria-label', T('隐藏机器学习分数'));
         const label = document.querySelector('.al-blind-row label[for="alBlindMode"] > span');
-        if (label) label.textContent = T('盲筛模式（默认开启）');
+        if (label) label.textContent = T('隐藏机器学习分数（默认开启）');
         const hint = document.querySelector('.al-blind-row .hint');
         if (hint) hint.textContent = T('开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。');
         if (!blind) annotate();

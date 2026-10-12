@@ -64,7 +64,7 @@
     const original = [...home.children];
     const tabs = n('div', null, {class:'wf-tabs', role:'tablist', 'aria-label':T('Home settings')});
     const indicator = n('i', null, {class:'wf-tab-indicator', 'aria-hidden':'true'});
-    const labels = [['overview','Overview'],['tasks','Tasks & team'],['screening','Screening'],['ml','Machine Learning'],['coding','Coding'],['appearance','Appearance']];
+    const labels = [['overview','Overview'],['tasks','Tasks & team'],['screening','Screening settings'],['ml','Machine Learning'],['coding','数据提取与编码'],['appearance','Appearance & storage']];
     for (const [key,label] of labels) {
       const tab = button(label, () => activate(key));
       tab.id = 'wf-tab-' + key; tab.dataset.wfLabel = label;
@@ -96,23 +96,23 @@
     for (const [value,label] of [['zh-CN','简体中文'],['en','English'],['fr','Français'],['ru','Русский'],['es','Español'],['ja','日本語'],['pt','Português'],['de','Deutsch'],['sr','Српски'],['ko','한국어']]) lang.append(el('option',{value,text:label,translate:'no'}));
     lang.value=RFLang.get(); lang.addEventListener('change',()=>RFLang.set(lang.value));
     panels.appearance.prepend(n('label','Language'),lang);
-    const defaultOrder = n('select',null,{class:'input','aria-label':T('Default screening order')});
+    const defaultOrder = n('select',null,{class:'input','aria-label':T('Default title-and-abstract screening order')});
     for (const [value,label] of [['import','Import'],['ai','Machine Learning'],['random','Random']]) defaultOrder.append(n('option',label,{value}));
     defaultOrder.value=order; defaultOrder.addEventListener('change',()=>{order=defaultOrder.value;localStorage.setItem('rf_workflow_order',order);});
-    panels.ml.append(n('label','Default screening order'),defaultOrder);
-    const notePref=n('select',null,{class:'input','aria-label':T('Notes display')});
-    for(const [value,label] of [['content','Expand saved evidence'],['all','Expand all notes']]) notePref.append(n('option',label,{value}));
+    panels.ml.append(n('label','Default title-and-abstract screening order'),defaultOrder);
+    const notePref=n('select',null,{class:'input','aria-label':T('Notes & evidence display')});
+    for(const [value,label] of [['content','Expand populated or required notes'],['all','Expand all notes']]) notePref.append(n('option',label,{value}));
     notePref.value=localStorage.getItem('rf_evidence_display')||'content';
     notePref.addEventListener('change',()=>localStorage.setItem('rf_evidence_display',notePref.value));
-    panels.coding.append(n('label','Notes display'),notePref);
+    panels.coding.append(n('label','Notes & evidence display'),notePref);
     const policy = n('section',null,{id:'wf-policy',class:'card'});
     panels.tasks.append(policy);
     panels.screening.append(n('div',null,{id:'wf-personal-maybe',class:'card'}),n('section',null,{id:'wf-reasons',class:'card'}));
     panels.coding.append(n('section',null,{id:'wf-requirements',class:'card'}));
     panels.tasks.append(n('section',null,{id:'wf-sources',class:'card'}));
     const savebar=n('div',null,{class:'wf-settings-save'});
-    savebar.append(button('Save workflow settings',()=>run(W.saveSettings)),button('Reload policy',()=>run(async()=>{if(await W.guard()) {settingsDirty=false; await W.refresh('reload');}})),n('span',null,{id:'wf-settings-notice',role:'status'}));
-    home.append(savebar);
+    savebar.append(button('Save current task workflow settings',()=>run(W.saveSettings)),button('Reload current task workflow settings',()=>run(async()=>{if(await W.guard()) {settingsDirty=false; await W.refresh('reload');}})),n('span',null,{id:'wf-settings-notice',role:'status'}));
+    home.append(n('p',"This button saves this task\u2019s stage sources, Maybe options and evidence requirements. Reasons, source names and Machine Learning settings have their own Save buttons. Display preferences save automatically in this browser.",{class:'hint'}),savebar);
     const recovery=n('div',null,{id:'wf-policy-recovery',class:'card',hidden:'',role:'status'});
     recovery.append(n('p','Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'),button('Review current policy',()=>{const details=n('dialog',null,{class:'wf-source-dialog','aria-label':T('Current workflow policy')});details.append(n('h3','Current workflow policy'),literal('pre',JSON.stringify(settings,null,2)),button('Apply current policy version to retained draft',()=>run(async()=>{if(draft)draft.version=settings.version;await window.WorkflowEvidence?.revalidate();if(['screen','fulltext'].includes(S.page)){const stage=S.page,key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:curFt()?.zotero_key;if(key){await W.item(stage,key);W.decorateStage(stage);}}details.close();details.remove();recovery.hidden=true;})),button('Stay',()=>{details.close();details.remove();}));document.body.append(details);details.showModal();}));
     document.querySelector('#appMain').prepend(recovery);
@@ -155,12 +155,12 @@
   function policyEditor() {
     if(!settings || W.settingsDirty()) return;
     draft=structuredClone(settings);
-    const host=$('#wf-policy');host.replaceChildren(n('h3','Stage source policies'));
-    const personal=$('#wf-personal-maybe');personal.replaceChildren(n('h3','Maybe decisions'));
+    const host=$('#wf-policy');host.replaceChildren(n('h3','Permitted sources by stage'),n('p',"Sources are databases or other origins assigned at import, not inferred from filenames. Team members can save work only within the owner\u2019s permitted sources.",{class:'hint'}));
+    const personal=$('#wf-personal-maybe');personal.replaceChildren(n('h3','Maybe option settings'),n('p',"Disabling Maybe prevents new Maybe decisions; saved decisions remain. Initial Include and Maybe both proceed to full-text screening. Full-text Maybe still needs follow-up.",{class:'hint'}));
     for(const stage of stages) {
-      const row=n('fieldset',null,{class:'wf-policy-stage'});row.append(n('legend',stage==='screen'?'Screening':stage==='fulltext'?'Full text':'Coding'));
-      const select=n('select',null,{class:'input','aria-label':T('Stage source policies')});
-      for(const value of ['all','selected','paused'])select.append(n('option',{all:'All',selected:'Selected',paused:'Paused'}[value],{value}));
+      const row=n('fieldset',null,{class:'wf-policy-stage'});row.append(n('legend',stage==='screen'?'Title-and-abstract screening':stage==='fulltext'?'Full-text screening':'Coding'));
+      const select=n('select',null,{class:'input','aria-label':T('Permitted sources by stage')});
+      for(const value of ['all','selected','paused'])select.append(n('option',{all:'All sources',selected:'Selected sources',paused:'Paused (read-only)'}[value],{value}));
       select.value=draft.stages[stage].mode;select.disabled=!settings.can_manage;
       const sourceList=n('div',null,{class:'wf-source-checks'});
       for(const source of settings.sources||[]) {
@@ -173,11 +173,11 @@
       if(stage!=='coding') {
         const check=n('input',null,{type:'checkbox'});check.checked=draft.stages[stage].show_maybe;check.disabled=!settings.can_manage;
         check.addEventListener('change',()=>{draft.stages[stage].show_maybe=check.checked;settingsDirty=true;});
-        (settings.task_kind==='personal'?personal:row).append(el('label',{},check,n('span',stage==='screen'?'Allow Maybe in screening':'Allow Maybe in full text')));
+        (settings.task_kind==='personal'?personal:row).append(el('label',{},check,n('span',stage==='screen'?'Show Maybe in title-and-abstract screening':'Show Maybe in full-text screening')));
       }
     }
-    if(settings.task_kind!=='personal')personal.append(n('p','The task owner controls Maybe decisions. Effective policy is shown in Tasks & team.'));
-    const fields=$('#wf-requirements');fields.replaceChildren(n('h3','Required evidence fields'));
+    if(settings.task_kind!=='personal')personal.append(n('p','The owner chooses whether Maybe is available at each screening stage for the team. See the current settings in Tasks & team.'));
+    const fields=$('#wf-requirements');fields.replaceChildren(n('h3','Coding dimensions requiring evidence'),n('p',"Select dimensions that require evidence, not required coding values. Nonblank notes or one image satisfy the evidence requirement. Missing evidence can be saved as a draft but does not count as complete.",{class:'hint'}));
     const known=new Set();
     for(const field of settings.evidence_fields||[]) {
       known.add(field.field_id);
@@ -205,7 +205,7 @@
     await W.refresh('saved');return !settingsDirty;
   };
   function sourceEditor() {
-    const host=$('#wf-sources');host.replaceChildren(n('h3','Sources'));
+    const host=$('#wf-sources');host.replaceChildren(n('h3','Import sources'));
     for(const source of settings.sources||[]) {
       const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.disabled=!settings.can_manage||source.reserved;
       name.addEventListener('input',()=>editLibrary(name));
@@ -228,9 +228,9 @@
     if(current!==scope()||ticket!==reasonsTicket||(refresh!=null&&refresh!==refreshTicket))return;
     for(let i=0;i<2;i++)reasons[['screen','fulltext'][i]]=results[i].entries||[];
     if(!libraryDirty) {
-      const host=$('#wf-reasons');host.replaceChildren(n('h3','Reusable exclusion reasons'),n('p',results[0].task_kind==='personal'?'Personal reusable reasons':'Team reusable reasons',{class:'hint'}));
+      const host=$('#wf-reasons');host.replaceChildren(n('h3','Reusable exclusion reasons'),n('p',results[0].task_kind==='personal'?'Personal exclusion reasons':'Team exclusion reasons',{class:'hint'}));
       ['screen','fulltext'].forEach((stage,i)=>{
-        host.append(n('h4',stage==='screen'?'Screening':'Full text'));
+        host.append(n('h4',stage==='screen'?'Title-and-abstract screening':'Full-text screening'));
         for(const entry of reasons[stage]) {
           const row=n('div',null,{class:'row'}),text=el('input',{class:'input',value:entry.text,'aria-label':T('Reusable exclusion reasons'),'data-wf-aria':'Reusable exclusion reasons',maxlength:'2000',translate:'no'});text.disabled=!results[i].can_manage;text.addEventListener('input',()=>editLibrary(text));row.append(text);
           text.wfSave=()=>mutateReason(stage,'PUT',entry.id,text.value,text);
@@ -371,7 +371,7 @@
     if(!W.settingsDirty())policyEditor();
     await loadReasons(ticket); // Libraries can change without a policy version increment.
     if(current!==scope()||ticket!==refreshTicket)return;
-    $('#wf-current-task').replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue screening',()=>go('screen')),button('Continue coding',()=>go('bench')));
+    $('#wf-current-task').replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue title-and-abstract screening',()=>go('screen')),button('Continue data extraction & coding',()=>go('bench')));
     window.WorkflowEvidence?.discovery(result.submission_evidence);
     window.WorkspaceUndo?.sync();
     if(S.page==='home'&&window.WorkflowImports)await WorkflowImports.notice();
@@ -426,7 +426,10 @@
   homeTabs();stages.forEach(tools);
   const overallLabels=()=>{for(const id of ['capScreen','capFull','capCode'])$('#'+id)?.setAttribute('data-wf-overall-label',T('Overall'));};overallLabels();
   document.addEventListener('reviewflow:language-changed',overallLabels);
-  const random=button('Random',()=>run(()=>W.setOrder('random')));random.id='alModeRandom';$('#alModeAI').after(random,button('Shuffle remaining again',()=>run(async()=>{if(!await W.guard())return;const q=selected.screen?'?source_id='+encodeURIComponent(selected.screen):'';await api(taskApi()+'/work-queue/screen/shuffle'+q,{method:'POST'});order='random';S.al.mode='import';await loadScreen();})));
+  const random=button('Random',()=>run(()=>W.setOrder('random')));random.id='alModeRandom';
+  const shuffleIcon=document.createElementNS('http://www.w3.org/2000/svg','svg');shuffleIcon.setAttribute('viewBox','0 0 24 24');shuffleIcon.setAttribute('class','al-import-icon');shuffleIcon.setAttribute('aria-hidden','true');shuffleIcon.setAttribute('focusable','false');
+  const shufflePath=document.createElementNS(shuffleIcon.namespaceURI,'path');shufflePath.setAttribute('d','M3 6h3c5 0 7 12 12 12h3m-4-4 4 4-4 4M3 18h3c2 0 3-2 4-4m4-4c1-2 2-4 4-4h3m-4-4 4 4-4 4');shuffleIcon.append(shufflePath);random.replaceChildren(shuffleIcon,n('span','Random'));
+  $('#alModeAI').after(random,button('Shuffle remaining again',()=>run(async()=>{if(!await W.guard())return;const q=selected.screen?'?source_id='+encodeURIComponent(selected.screen):'';await api(taskApi()+'/work-queue/screen/shuffle'+q,{method:'POST'});order='random';S.al.mode='import';await loadScreen();})));
   $('#alModeAI').querySelector('span').textContent=T('Machine Learning');
   $('#alModeImport').querySelector('span').textContent=T('Import');
   for(const id of ['alStrategy','alSeed','alMinLabeled','alStopThreshold'])$('#'+id).addEventListener('input',()=>alDirty=true);

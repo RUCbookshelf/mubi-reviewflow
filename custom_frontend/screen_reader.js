@@ -10,7 +10,8 @@
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('class','rf-screen-icon');svg.setAttribute('aria-hidden','true');
     const line=document.createElementNS(svg.namespaceURI,'path');line.setAttribute('d',path);svg.append(line);return svg;
   }
-  const order=el('div',{class:'rf-screen-order',role:'group'});mode.prepend(order);order.append(importButton,aiButton);
+  const orderLabel=el('span',{class:'rf-screen-order-label'});
+  const order=el('div',{class:'rf-screen-order',role:'group'});mode.prepend(order);order.append(orderLabel,importButton,aiButton);
   const focusLabel=el('span'),focusButton=el('button',{type:'button',id:'rfScreenFocus'},icon('M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5'),focusLabel);
   const helpButton=el('button',{type:'button',id:'rfScreenHelp','aria-expanded':'false','aria-controls':'rfScreenHelpPanel'},icon('M5 12h.01M12 12h.01M19 12h.01'));
   const tools=el('div',{class:'rf-screen-tools'},focusButton,helpButton);mode.append(tools);
@@ -38,7 +39,7 @@
   function refreshText(){
     focusLabel.textContent=T('专注阅读');exitLabel.textContent=T('退出专注');helpTitle.textContent=T('阅读帮助');escapeHint.textContent=T('按 Esc 退出专注阅读');
     helpButton.setAttribute('aria-label',T('阅读帮助'));helpClose.setAttribute('aria-label',T('关闭'));
-    order.setAttribute('aria-label',T('文献显示顺序'));syncMode();syncPosition();
+    orderLabel.textContent=T('Screening order');order.setAttribute('aria-label',T('Screening order'));syncMode();syncPosition();
   }
   function enhanceMetadata(){
     const meta=body.querySelector('.scr-meta');if(!meta||meta.querySelector('.rf-screen-details'))return;
