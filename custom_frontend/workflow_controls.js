@@ -265,6 +265,10 @@
     else if(value){select.value='__custom__';custom.value=value;custom.hidden=false;}
     const id='wf-save-reason-'+stage;
     if(!document.getElementById(id)&&settings?.can_manage){const b=button('Save as reusable reason',()=>mutateReason(stage,'POST',null,select.value==='__custom__'?custom.value:select.value));b.id=id;select.parentElement.append(b);}
+    if(stage==='screen'&&custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
+      const save=document.getElementById(id);
+      if(save){const row=n('div',null,{class:'wf-custom-reason-row'});select.parentElement.append(row);row.append(custom,save);}
+    }
   };
   function tools(stage) {
     const page=document.querySelector('section[data-p="'+stagePage[stage]+'"]');

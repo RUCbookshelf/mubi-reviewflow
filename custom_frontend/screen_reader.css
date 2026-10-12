@@ -26,10 +26,14 @@
 .rf-reader-page .rf-screen-metadata{padding:10px 12px;margin:0 0 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);font-size:12px;overflow-wrap:anywhere}
 .rf-reader-page .rf-screen-metadata p{margin:3px 0;line-height:1.6}
 .rf-reader-page #scrBody .absbox{border:0;background:transparent;padding:8px 0 18px;border-radius:0;font-size:var(--fs-view);line-height:1.8;white-space:pre-wrap}
-.rf-reader-page .scr-decisions{display:grid;grid-template-columns:1fr 1fr 1fr 1.45fr;gap:9px;align-items:stretch;border-top:1px solid var(--border);padding:14px 0;margin:0!important}
-.rf-reader-page .scr-decisions>.btn{width:100%;min-height:44px;padding:10px;font-size:14px;justify-content:center}
-.rf-reader-page .scr-decisions>.input{width:100%;min-width:0;max-width:none!important;min-height:44px;font-size:12px}
+.rf-reader-page .scr-decisions{display:grid;grid-template-columns:1fr 1fr 1fr 1.45fr;gap:8px;align-items:stretch;border-top:1px solid var(--border);padding:10px 0;margin:0!important}
+.rf-reader-page .scr-decisions:has(#btnMay[hidden]){grid-template-columns:1fr 1fr 1.45fr}
+.rf-reader-page .scr-decisions>.btn{width:100%;min-height:40px;padding:8px 10px;font-size:14px;justify-content:center}
+.rf-reader-page .scr-decisions>.input{width:100%;min-width:0;max-width:none!important;min-height:40px;font-size:12px}
 .rf-reader-page #excCustomReason{grid-column:1/-1}
+.rf-reader-page .wf-custom-reason-row{grid-column:1/-1;display:flex;align-items:stretch;justify-content:flex-end;gap:8px;min-width:0}
+.rf-reader-page .wf-custom-reason-row>.input{flex:1;min-width:0;max-width:none!important;width:100%;min-height:40px;font-size:12px}
+.rf-reader-page .wf-custom-reason-row>.btn{flex:0 0 auto;min-height:40px;padding:6px 12px;font-size:12px;white-space:normal;max-width:40%}
 .rf-reader-page .rf-focus-strip{display:none;align-items:center;gap:10px;justify-content:space-between;flex-shrink:0;margin:0 0 12px;font-size:12px;color:var(--muted)}
 .rf-reader-page .rf-focus-strip button{display:inline-flex;align-items:center;gap:6px;font-size:12px;min-height:34px}
 .rf-stop-anchor{margin-left:auto;flex-shrink:0;max-width:100%}
@@ -78,6 +82,7 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
 @media(max-width:760px){
  .rf-reader-page #scrCard{padding:16px 16px 0}
  .rf-reader-page .scr-decisions{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+ .rf-reader-page .scr-decisions:has(#btnMay[hidden]){grid-template-columns:repeat(2,minmax(0,1fr))}
  .rf-reader-page .scr-decisions>.input{grid-column:1/-1}
  .rf-reader-page .scr-decisions>.btn{font-size:13px;padding:9px 5px}
  .rf-reader-page .scr-meta .scr-journal{max-width:70%}
@@ -87,8 +92,14 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
  body.fp-screen .rf-reader-page #scrBody .absbox{max-height:55vh;min-height:200px;overflow:auto}
  .rf-reader-page .scr-title{font-size:20px}
 }
+@media(max-width:560px){
+ .rf-reader-page .wf-custom-reason-row{flex-wrap:wrap}
+ .rf-reader-page .wf-custom-reason-row>.input{flex-basis:100%}
+ .rf-reader-page .wf-custom-reason-row>.btn{max-width:100%}
+}
 @media(pointer:coarse){
  .rf-reader-page .al-mode button,.rf-reader-page .rf-screen-details,.rf-screen-help>header button{min-height:44px}
  .rf-stop-summary,#alStopPanel .rf-stop-collapse{min-height:44px}
- .rf-reader-page .al-profile-picker .input,.rf-reader-page .scr-decisions>.input{font-size:16px}
+ .rf-reader-page .scr-decisions>.btn,.rf-reader-page .scr-decisions>.input,.rf-reader-page .wf-custom-reason-row>*{min-height:44px}
+ .rf-reader-page .al-profile-picker .input,.rf-reader-page .scr-decisions>.input,.rf-reader-page .wf-custom-reason-row>.input{font-size:16px}
 }

@@ -137,3 +137,18 @@ To revert the isolated implementation, stop its preview process and return to th
 For a maintenance data rollback, stop the service and preserve the entire current data directory first. Do not restore an old backup over post-upgrade work. Export/reconcile newer imports, source policies and research records before any database restore. The pre-upgrade backup is a recovery artifact, not a safe automatic downgrade mechanism.
 
 Main checkout and installed application were left untouched; this branch has not been merged, pushed or released.
+
+## Follow-up: compact screening decision controls
+
+On 2026-10-12, refined only the initial-screening decision area:
+
+- Grouped the existing custom-reason input and reusable-reason button on one desktop row; retained their IDs, event handlers and text.
+- Reduced desktop control heights to 40 px, spacing to 8 px and vertical padding to 10 px. Touch controls retain a 44 px minimum.
+- Removed the unused decision column when Needs review is disabled; narrow layouts stack the reason input and save action.
+- Updated the two affected asset references to avoid stale browser caches.
+
+Changed product files: `screen_reader.css`, `workflow_controls.js` (four presentation-only lines), and `index.html` (two cache references). Backend logic, full-text screening and saved decisions were not changed.
+
+Validation: JavaScript/inline-script/language-pack syntax checks and diff review passed. Actual browser checks covered custom and built-in reasons, light/dark themes and a 390 px layout without horizontal page overflow. The desktop decision area measured 178.7 px before and 108.7 px after, approximately 39% shorter. No screening decisions or reason-library writes were submitted. The original tab's unsaved custom-reason draft was retained; verification used a separate disposable preview tab.
+
+Screenshot: `screen-decision-spacing-detail.jpg` in the external visualization workspace. No main merge, push, release or installed-client replacement.
