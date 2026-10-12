@@ -921,13 +921,13 @@ def get_stage2_progress(db_path: StrPath) -> dict:
     with closing(_connect(db_path)) as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM articles a "
-            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
             "WHERE a.is_duplicate_of IS NULL"
         ).fetchone()[0]
         for decision, cnt in conn.execute(
             "SELECT s.decision, COUNT(*) FROM stage2_decisions s "
             "JOIN articles a ON a.zotero_key = s.zotero_key "
-            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
             "WHERE a.is_duplicate_of IS NULL "
             "GROUP BY s.decision"
         ):
@@ -955,7 +955,7 @@ def stage2_queue(
 ) -> list[str]:
     """构造复筛队列（zotero_key 列表，按文献导入顺序、确定性）。
 
-    - mode="own"（默认）：本人初筛 decisions 中 decision == "include" 的键
+    - mode="own"（默认）：本人初筛 decisions 中 Include 或 Maybe 的键
       （双盲：只用本人数据库）；
     - mode="arbitrated":外部传入的双方一致纳入键列表（UI 上传合并明细
       CSV 后经 :func:`parse_merged_includes` 提取），只保留存在于本人库
@@ -967,7 +967,7 @@ def stage2_queue(
         return [
             d["zotero_key"]
             for d in list_decisions(db_path)
-            if d["decision"] == "include"
+            if d["decision"] in {"include", "maybe"}
         ]
     if mode == "arbitrated":
         if arbitrated_keys is None:

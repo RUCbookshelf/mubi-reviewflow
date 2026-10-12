@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
 DIST="$BUILD/dist"
 APP_NAME="ReviewFlow"
+APP_VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
 
 cd "$ROOT"
 rm -rf "$BUILD/work-macos" "$DIST"
@@ -40,6 +41,10 @@ iconutil -c icns "$ICONSET" -o "$BUILD/work-macos/ReviewFlow.icns"
 
 APP="$DIST/$APP_NAME.app"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier edu.ruc.bookshelf.reviewflow" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$APP/Contents/Info.plist" || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$APP/Contents/Info.plist" || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$APP/Contents/Info.plist"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format UDZO "$DIST/$APP_NAME.dmg"

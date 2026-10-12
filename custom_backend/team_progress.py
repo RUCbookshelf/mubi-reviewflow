@@ -59,21 +59,23 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 def _screen_progress(conn: sqlite3.Connection, table: str) -> dict[str, object]:
     if not _has_table(conn, "articles"):
         return {"completed": 0, "total": 0, "updated_at": None}
+    scope = (" AND EXISTS(SELECT 1 FROM decisions initial WHERE initial.zotero_key=a.zotero_key "
+             "AND initial.decision IN ('include','maybe'))") if table == 'stage2_decisions' and _has_table(conn, 'decisions') else ''
     total = int(conn.execute(
-        "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NULL"
+        "SELECT COUNT(*) FROM articles a WHERE is_duplicate_of IS NULL" + scope
     ).fetchone()[0])
     if not _has_table(conn, table):
         return {"completed": 0, "total": total, "updated_at": None}
     completed, updated_at = conn.execute(
         f"SELECT COUNT(*), MAX(d.updated_at) FROM {table} d "
         "JOIN articles a ON a.zotero_key=d.zotero_key "
-        "WHERE a.is_duplicate_of IS NULL AND d.decision IN (?, ?, ?)",
+        "WHERE a.is_duplicate_of IS NULL AND d.decision IN (?, ?, ?)" + scope,
         tuple(config.DECISIONS),
     ).fetchone()
     return {"completed": int(completed), "total": total, "updated_at": updated_at}
 
 
-def _coding_progress(conn: sqlite3.Connection) -> dict[str, object]:
+def _coding_progress(conn: sqlite3.Connection, actor_db: Path, owner_db: Path) -> dict[str, object]:
     if not all(_has_table(conn, name) for name in ("articles", "decisions")):
         return {"completed": 0, "total": 0, "updated_at": None}
 
@@ -91,6 +93,9 @@ def _coding_progress(conn: sqlite3.Connection) -> dict[str, object]:
             "LEFT JOIN articles a ON a.zotero_key=d.zotero_key "
             "WHERE d.decision='include' ORDER BY a.import_order, d.zotero_key"
         )]
+        if _has_table(conn, 'stage2_decisions'):
+            maybe = {r[0] for r in conn.execute("SELECT zotero_key FROM stage2_decisions WHERE decision='maybe'")}
+            queue = [key for key in queue if key not in maybe]
     total = len(queue)
     dimensions = ([row[0] for row in conn.execute("SELECT id FROM coding_dimensions")]
                   if _has_table(conn, "coding_dimensions") else [])
@@ -100,18 +105,8 @@ def _coding_progress(conn: sqlite3.Connection) -> dict[str, object]:
                       if has_values else None)
         return {"completed": 0, "total": total, "updated_at": updated_at}
 
-    queue_set = set(queue)
-    filled: dict[int, set[str]] = {}
-    for dimension_id, key in conn.execute(
-        "SELECT dimension_id, zotero_key FROM coding_values "
-        "WHERE TRIM(COALESCE(value, '')) <> ''"
-    ):
-        if key in queue_set:
-            filled.setdefault(int(dimension_id), set()).add(key)
-    completed = sum(
-        all(key in filled.get(int(dimension_id), set()) for dimension_id in dimensions)
-        for key in queue
-    )
+    from coscreen.coding_evidence import complete_keys
+    completed = len(complete_keys(actor_db, owner_db, queue))
     updated_at = conn.execute("SELECT MAX(updated_at) FROM coding_values").fetchone()[0]
     return {"completed": completed, "total": total, "updated_at": updated_at}
 
@@ -120,6 +115,7 @@ def list_team_progress(
     task_id: str,
     authorized_usernames: Iterable[str],
     data_dir: str | Path = "data",
+    *, owner_db: Path | None = None,
 ) -> list[dict[str, object]]:
     """List counts and timestamps for caller-authorized task users.
 
@@ -153,6 +149,6 @@ def list_team_progress(
                 "username": username,
                 "stage1": _screen_progress(conn, "decisions"),
                 "stage2": _screen_progress(conn, "stage2_decisions"),
-                "coding": _coding_progress(conn),
+                "coding": _coding_progress(conn, resolved, owner_db or resolved),
             })
     return result

@@ -33,6 +33,7 @@ async def _body_within_limit(request: Request) -> None:
 
 
 class RaterRecordIn(_Input):
+    expected_policy_version: int | None = Field(default=None, ge=1)
     item_key: str = Field(min_length=1, max_length=300)
     field_key: str = Field(min_length=1, max_length=200)
     value: Any
@@ -92,16 +93,25 @@ def register_coding_consensus_routes(
     @app.post("/api/tasks/{task_id}/coding/records", status_code=201, dependencies=[Depends(_body_within_limit)])
     def append_rater_record(task_id: str, body: RaterRecordIn, user: dict = Depends(require_user)):
         info, path, actor_id = context(task_id, user, "coding:submit", body.item_key, body.field_key)
-        field = validate_value(info, body.field_key, body.value) if validate_value else None
-        if validate_value and not isinstance(field, dict):
-            raise HTTPException(400, "Value does not match the canonical coding field.")
         try:
-            return coding_consensus.append_rater_record(
-                path, item_key=body.item_key, field_key=body.field_key, rater_id=actor_id,
-                value=body.value, source={**body.source, "_reviewflow_field": field} if field else body.source,
-                rationale=body.rationale,
-                trace_context=trace_context_factory(info, user) if trace_context_factory else None,
-            )
+            with app.state.review_workflow.write_guard(task_id, user, "coding", body.item_key,
+                                                       body.expected_policy_version, canonical_only=True) as ctx:
+                if validate_target(info, body.item_key, body.field_key) is not True:
+                    raise HTTPException(400, 'Coding item or field does not belong to this task.')
+                field = validate_value(info, body.field_key, body.value) if validate_value else None
+                if validate_value and not isinstance(field, dict):
+                    raise HTTPException(400, 'Value does not match the canonical coding field.')
+                evidence = app.state.review_workflow.evidence_state(ctx, body.item_key)
+                if not evidence['evidence_complete']:
+                    raise HTTPException(409, {'code': 'coding_evidence_required',
+                        'missing_evidence': evidence['missing_evidence'], 'mapping_issues': evidence['mapping_issues'],
+                        'workflow_settings': app.state.review_workflow.settings(ctx)})
+                return coding_consensus.append_rater_record(
+                    path, item_key=body.item_key, field_key=body.field_key, rater_id=actor_id,
+                    value=body.value, source={**body.source, "_reviewflow_field": field} if field else body.source,
+                    rationale=body.rationale,
+                    trace_context=trace_context_factory(info, user) if trace_context_factory else None,
+                )
         except ValueError as exc:
             raise bad(str(exc)) from exc
 

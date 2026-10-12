@@ -135,16 +135,20 @@
     const target=route.page==='analysis'?(route.tool?document.getElementById(['entry','synthesis'].includes(registry.tool(route.tool)?.view)?'anJumpEffects':registry.tool(route.tool)?.view):document.getElementById('anMethodCatalog')):main.querySelector('section.page.on');
     if(target){if(!target.hasAttribute('tabindex'))target.tabIndex=-1;target.focus({preventScroll:true});}
   }
-  function navigate(value,options={}){
+  async function navigate(value,options={}){
     const candidate=typeof value==='string'?{page:value}:value;
     if(!candidate?.page)return;
     const parsed=registry.parse(registry.href(candidate));if(!parsed)return;
     const route={...parsed,...(candidate.anchor?{anchor:candidate.anchor}:{})};
+    if(window.WorkflowControls && !await WorkflowControls.guard()) {
+      if(options.history===false&&S.page)history.replaceState({workspace:S.page},'',registry.href(currentRoute()));
+      return;
+    }
     close();setMobileNav(false);navigating=true;
     try{
       const destination=registry.href(route);
       if(options.history!==false&&location.hash!==destination)history.pushState({workspace:route.page},'',destination);
-      if(getPage().id!==route.page||!S.page)go(route.page);
+      if(getPage().id!==route.page||!S.page)await go(route.page,{guarded:true});
       else if(route.page!=='analysis'&&!options.restoreScroll)main.querySelector('.view').scrollTop=0;
       if(route.page==='analysis')window.RFAnalysisWorkspace?.applyRoute(route,options);
       const stage=registry.page(route.page).stage;if(stage)stageLast[stage]=route.page;

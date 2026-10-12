@@ -211,7 +211,7 @@ def _current_progress(paths: dict[str, Any], actor_id: int | str) -> dict[str, A
         try:
             coding_progress = {**coding.coding_progress(personal), "available": True,
                                "scope": "personal current coding values",
-                               "completion_rule": "Existing coding_progress rule: every current queue paper has a non-empty value in every coding dimension; an empty scheme reports coded=0."}
+                               "completion_rule": "Every current queue paper needs non-empty values and evidence for the current owner-required fields; mapping gaps remain incomplete; an empty scheme reports coded=0."}
         except (OSError, sqlite3.Error, ValueError):
             coding_progress = dict(unavailable)
     shared = paths.get("shared")
@@ -1159,6 +1159,7 @@ def register_research_trace_routes(
             positions[name] = event["sequence"]
             result_rows.append({**event, "partition": name})
         _attach_subject_titles(paths, result_rows)
+        app.state.review_workflow.trace_actions(task_id, user, result_rows)
         has_more = len(all_rows) > len(selected) or any(page["has_more"] for page in fetched.values())
         next_cursor = None
         if has_more:
@@ -1176,6 +1177,7 @@ def register_research_trace_routes(
             if event is not None:
                 row = {**event, "partition": name}
                 _attach_subject_titles(paths, [row])
+                app.state.review_workflow.trace_actions(task_id, user, [row])
                 return row
         raise HTTPException(404, "Trace event not found.")
 

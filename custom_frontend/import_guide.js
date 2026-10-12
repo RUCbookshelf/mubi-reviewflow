@@ -8,7 +8,7 @@
  summary.append(title,count,chevron);
  const body=el('div',{class:'rf-guide-body'}),list=el('ol',{}),message=el('p',{class:'rf-guide-message',role:'status'});
  body.append(list,message);card.append(summary,body);main.append(card);card.hidden=true;
- let context='',ticket=0,progress=null,imported=false,error=false;
+ let context='',ticket=0,progress=null,imported=false,error=false,staged=false;
  const session=new Map();
  function key(){return S.user&&S.task?JSON.stringify([S.user.username,S.task.task_id,S.screener||S.user.username]):'';}
  function saved(){if(!context)return {};try{return JSON.parse(localStorage.getItem('rf_import_guide:'+context)||'{}');}catch(_){return session.get(context)||{};}}
@@ -26,7 +26,7 @@
  function visitTrace(){if(!context)return;save({...saved(),traceVisited:true});render();}
  function render(){
   const state=saved(),total=Number(progress?.candidate_groups||0),pending=Number(progress?.pending_groups||0),checked=Math.max(0,total-pending);
-  const reviewed=imported&&progress!==null&&!error&&pending===0;
+  const reviewed=imported&&progress!==null&&!error&&pending===0&&!staged;
   card.hidden=!S.user||!S.task||S.page!=='import'||(imported&&reviewed&&state.traceVisited);
   if(card.hidden)return;
   title.textContent=T('引导-导入文献');card.setAttribute('aria-label',T('引导-导入文献'));
@@ -34,19 +34,20 @@
   summary.title=T(card.open?'收起为胶囊':'展开引导');chevron.textContent=card.open?'⌃':'⌄';
   list.replaceChildren();
   row(T('导入文献'),imported,()=>focusArea('dropZone'));
-  row(progress===null?T('人工核验：等待导入'):T('人工核验：{0}/{1} 组',checked,total),reviewed,()=>focusArea('titleDupWrap'));
+  row(staged?T('Review staged records and activate resolved imports'):progress===null?T('人工核验：等待导入'):T('人工核验：{0}/{1} 组',checked,total),reviewed,()=>focusArea(staged?'wf-import-review':'titleDupWrap'));
   row(T('检查轨迹是否开启'),!!state.traceVisited,()=>{visitTrace();go('trace');});
-  message.textContent=error?T('引导进度加载失败，请点击重试。'):!imported?T('导入后自动显示待核验组数。'):total===0&&progress!==null?T('没有需要人工核验的候选组。'):T('完成所有待办后，引导卡片自动关闭。');
+  message.textContent=error?T('引导进度加载失败，请点击重试。'):staged?T('导入已暂存，等待核验与激活。'):!imported?T('导入后自动显示待核验组数。'):total===0&&progress!==null?T('没有需要人工核验的候选组。'):T('完成所有待办后，引导卡片自动关闭。');
   message.classList.toggle('rf-guide-error',error);position();
  }
  async function load(){
-  const next=key();if(next!==context){context=next;progress=null;imported=false;error=false;card.open=!saved().collapsed;}
+  const next=key();if(next!==context){context=next;progress=null;imported=false;error=false;staged=false;card.open=!saved().collapsed;}
   const active=++ticket;render();if(!context||S.page!=='import')return;
   const base=taskApi(),query=scrQ();
   try{
    const [reviews,history,stages]=await Promise.all([api(base+'/title-duplicate-reviews'+query+(query?'&':'?')+'limit=1&offset=0'),api(base+'/import-history'+query+(query?'&':'?')+'limit=1&offset=0'),api(base+'/progress'+query)]);
    if(active!==ticket||key()!==context)return;
-   progress=reviews.progress||{};imported=history.imports?.some(batch=>Number(batch.result?.imported??batch.result?.n_imported??0)>0)||Number(stages.stage1?.total||0)>0||Number(progress.candidate_groups||0)>0;
+   staged=Number(history.pending_import_records||0)>0||history.imports?.some(batch=>batch.result?.staged)||false;
+   progress=reviews.progress||{};imported=staged||history.imports?.some(batch=>Number(batch.result?.imported??batch.result?.n_imported??0)>0)||Number(stages.stage1?.total||0)>0||Number(progress.candidate_groups||0)>0;
    error=false;render();
   }catch(_){if(active!==ticket||key()!==context)return;error=true;render();}
  }

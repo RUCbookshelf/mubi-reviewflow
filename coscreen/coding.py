@@ -614,12 +614,9 @@ def _cascade_delete_dimensions(
 
 
 def _remove_assets(paths: Iterable[str]) -> None:
-    """best-effort 删除磁盘图片（文件已丢失/无权限时静默跳过）。"""
-    for raw in paths:
-        try:
-            Path(raw).unlink(missing_ok=True)
-        except OSError:
-            continue
+    """Retain binaries because historical Undo entries may still reference them."""
+    # Associations are removed transactionally; binaries remain recoverable by Undo.
+    return
 
 
 def delete_dimension(
@@ -647,6 +644,8 @@ def delete_dimension(
         dim = _fetch_dimension(conn, dim_id)
         if dim is None:
             raise ValueError(f"维度不存在: id={dim_id}")
+        if conn.execute("SELECT 1 FROM coding_values WHERE dimension_id=? UNION ALL SELECT 1 FROM coding_notes WHERE dimension_id=? LIMIT 1", (dim_id, dim_id)).fetchone():
+            raise ValueError("This field contains saved research. Preserve it and add a new field instead.")
         field = None
         if trace_context is not None:
             from coscreen.research_trace import is_recording
@@ -667,6 +666,9 @@ def delete_dimension(
             trace_fields={int(dim_id): field} if field is not None else None,
         )
         conn.execute("DELETE FROM coding_dimensions WHERE id = ?", (int(dim_id),))
+        from coscreen.review_workflow import has_table
+        if has_table(conn, 'workflow_coding_fields'):
+            conn.execute('DELETE FROM workflow_coding_fields WHERE dimension_id=?', (dim_id,))
         if trace_context is not None:
             from coscreen.research_trace import finish_write_request
 
@@ -702,9 +704,10 @@ def export_scheme(db: StrPath) -> dict:
     - 落盘时建议 ``json.dumps(scheme, ensure_ascii=False, indent=2, sort_keys=True)``
       以获得字节级确定的文件。
     """
+    from coscreen.coding_evidence import field_rows
     return {
         "version": SCHEME_VERSION,
-        "dimensions": [_scheme_entry(d) for d in list_dimensions(db)],
+        "dimensions": [{**_scheme_entry(d), **({"field_id": d["field_id"]} if d.get("field_id") else {})} for d in field_rows(db)],
     }
 
 
@@ -743,6 +746,14 @@ def _validated_scheme_entries(data: Any) -> list[dict]:
                 f"维度 {fields['name']!r} 的 position 必须为整数: {raw_position!r}"
             ) from exc
         fields["position"] = position
+        if raw.get('field_id') is not None:
+            import uuid
+            try:
+                fields['field_id'] = str(uuid.UUID(str(raw['field_id'])))
+            except (ValueError, TypeError) as exc:
+                raise ValueError('field_id must be a UUID.') from exc
+            if fields['field_id'] in {e.get('field_id') for e in entries}:
+                raise ValueError('Scheme field IDs must be unique.')
         entries.append(fields)
     return entries
 
@@ -754,88 +765,76 @@ def import_scheme(
     *,
     trace_context: TraceContext | None = None,
 ) -> int:
-    """导入方案 JSON，返回导入的维度数。
+    """Import atomically, retaining numeric IDs and research for exact matching fields.
 
-    - 载荷校验（版本 / dimensions 列表 / 逐条目字段）**先全部完成**再落库：
-      任一条目不合法则整个导入不生效（all-or-nothing），原方案不受影响；
-    - ``replace=True``（默认）整体替换：原有维度连同其 values / notes / images
-      一起级联清空（磁盘图片 best-effort 删除），position 按载荷原样还原
-      （保证 "导出 -> 导入" 往返一致）；``replace=False`` 追加：重名维度
-      -> ValueError，新维度 position 顺延到既有最大值之后（保持相对顺序）；
-    - 方案版本仅支持 :data:`SCHEME_VERSION`（缺省视为 1）。
+    Explicit stable UUIDs travel with exports. Legacy entries only match exact
+    unique semantic definitions. Replacement may remove unused fields, but
+    refuses removal or automatic reinterpretation of saved research.
     """
+    from coscreen import coding_evidence as evidence
+    from coscreen.research_trace import begin_capture_transaction, begin_write_request, capture_event, finish_write_request
+    from coscreen.review_workflow import settings
+    import uuid
     entries = _validated_scheme_entries(data)
+    evidence.migrate(db)
+    existing = evidence.field_rows(db)
+    required = set(settings(db)['evidence_required_field_ids'])
     with closing(_connect(db)) as conn, conn:
+        conn.execute('BEGIN IMMEDIATE')
         if trace_context is not None:
-            from coscreen.research_trace import begin_capture_transaction, begin_write_request
-
-            begin_capture_transaction(conn, trace_context, "coding")
-            replay, result = begin_write_request(
-                conn, trace_context, stage="coding", operation="coding_scheme_import",
-                subject_id="scheme",
-                payload={"replace": bool(replace), "dimensions": entries},
-            )
+            begin_capture_transaction(conn, trace_context, 'coding')
+            replay, result = begin_write_request(conn, trace_context, stage='coding', operation='coding_scheme_import',
+                subject_id='scheme', payload={'replace': bool(replace), 'dimensions': entries})
             if replay:
                 return int(result)
-        removed_paths: list[str] = []
-        trace_schema = False
-        if trace_context is not None:
-            from coscreen.research_trace import is_recording
-
-            trace_schema = is_recording(conn, trace_context, "coding")
-        if replace:
-            existing = [int(r[0]) for r in conn.execute("SELECT id FROM coding_dimensions")]
-            old_fields = {}
-            if trace_schema:
-                for old_id in existing:
-                    old_fields[old_id] = _trace_dimension(conn, trace_context, _require_dimension(conn, old_id))
-                from coscreen.research_trace import capture_event, retire_field_lifecycle
-
-                for old_id, field in old_fields.items():
-                    capture_event(
-                        conn, trace_context, stage="coding", action="field_definition_deleted",
-                        subject_id=field["field_id"], before=field, after=None, field=field,
-                    )
-                    retire_field_lifecycle(conn, trace_context, old_id)
-            removed_paths = _cascade_delete_dimensions(
-                conn, existing, trace_context=trace_context if trace_schema else None,
-                trace_fields=old_fields if trace_schema else None,
-            )
-            conn.execute("DELETE FROM coding_dimensions")
-            offset = 0
-        else:
-            for entry in entries:
-                _ensure_name_free(conn, entry["name"])
-            row = conn.execute(
-                "SELECT COALESCE(MAX(position), -1) FROM coding_dimensions"
-            ).fetchone()
-            offset = int(row[0]) + 1
+        retained = set()
+        matches = []
         for entry in entries:
-            cur = conn.execute(
-                "INSERT INTO coding_dimensions "
-                "(name, dtype, options_json, multi_select, unit, description, "
-                "section, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    entry["name"], entry["dtype"], _options_json(entry["options"]),
-                    int(entry["multi_select"]), entry["unit"],
-                    entry["description"], entry["section"],
-                    entry["position"] + offset if not replace else entry["position"],
-                    _now(),
-                ),
-            )
-            if trace_schema:
-                from coscreen.research_trace import capture_event
-
-                field = _trace_dimension(conn, trace_context, _require_dimension(conn, int(cur.lastrowid)))
-                capture_event(
-                    conn, trace_context, stage="coding", action="field_definition_created",
-                    subject_id=field["field_id"], before=None, after=field, field=field,
-                )
-        if trace_context is not None:
-            from coscreen.research_trace import finish_write_request
-
+            explicit = [d for d in existing if entry.get('field_id') and d.get('field_id') == entry['field_id']]
+            exact = [d for d in existing if evidence.definition(d) == evidence.definition(entry)]
+            candidates = explicit or exact
+            if len(candidates) > 1 or (candidates and evidence.definition(candidates[0]) != evidence.definition(entry)):
+                raise ValueError('Scheme field mapping is ambiguous or its definition changed. Review the field before import.')
+            old = candidates[0] if candidates else None
+            if old:
+                if not replace:
+                    raise ValueError('Append import cannot replace an existing field.')
+                retained.add(old['id'])
+                if old.get('field_id') in required and entry.get('field_id', old.get('field_id')) != old.get('field_id'):
+                    raise ValueError('A required field identity cannot be replaced by scheme import.')
+            elif any(d['name'] == entry['name'] for d in existing):
+                raise ValueError('A same-name field has a different definition; saved values cannot be remapped.')
+            matches.append((entry, old))
+        removed = [d for d in existing if replace and d['id'] not in retained]
+        for old in removed:
+            if conn.execute('SELECT 1 FROM coding_values WHERE dimension_id=? UNION ALL SELECT 1 FROM coding_notes WHERE dimension_id=? LIMIT 1', (old['id'], old['id'])).fetchone():
+                raise ValueError('Scheme replacement would remove saved research. Preserve its fields.')
+        for old in removed:
+            conn.execute('DELETE FROM coding_dimensions WHERE id=?', (old['id'],))
+            conn.execute('DELETE FROM workflow_coding_fields WHERE dimension_id=?', (old['id'],))
+            if trace_context:
+                capture_event(conn, trace_context, stage='coding', action='field_definition_deleted', subject_id=old.get('field_id', str(old['id'])), before=old, after=None)
+        offset = int(conn.execute('SELECT COALESCE(MAX(position),-1)+1 FROM coding_dimensions').fetchone()[0])
+        for entry, old in matches:
+            if old:
+                did = old['id']
+                conn.execute('UPDATE coding_dimensions SET description=?,section=?,position=? WHERE id=?',
+                    (entry['description'], entry['section'], entry['position'], did))
+            else:
+                # Never recycle a deleted numeric dimension ID retained by Undo/mappings.
+                ceiling = max([d['id'] for d in existing] + [int(r[0]) for r in conn.execute("SELECT seq FROM sqlite_sequence WHERE name='coding_dimensions'")] + [0])
+                current = conn.execute('SELECT COALESCE(MAX(id),0) FROM coding_dimensions').fetchone()[0]
+                did = max(ceiling, current) + 1
+                conn.execute('INSERT INTO coding_dimensions(id,name,dtype,options_json,multi_select,unit,description,section,position,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (did, entry['name'], entry['dtype'], _options_json(entry['options']), int(entry['multi_select']), entry['unit'], entry['description'], entry['section'], entry['position'] if replace else entry['position']+offset, _now()))
+            fid = entry.get('field_id') or (old or {}).get('field_id') or str(uuid.uuid4())
+            conn.execute('INSERT INTO workflow_coding_fields VALUES(?,?,?) ON CONFLICT(dimension_id) DO UPDATE SET field_id=excluded.field_id,definition_json=excluded.definition_json',
+                (did, fid, evidence.definition(entry)))
+            if trace_context:
+                capture_event(conn, trace_context, stage='coding', action='field_definition_changed' if old else 'field_definition_created',
+                    subject_id=fid, before=_scheme_entry(old) if old else None, after=_scheme_entry(entry), field=_trace_dimension(conn, trace_context, _require_dimension(conn, did)))
+        if trace_context:
             finish_write_request(conn, trace_context, len(entries))
-    _remove_assets(removed_paths)
     return len(entries)
 
 
@@ -1106,15 +1105,9 @@ def list_coding_notes(db: StrPath) -> list[dict]:
 
 
 def coding_assets_dir(db: StrPath) -> Path:
-    """（追加式工具）编码图片资产目录：``{db 所在目录}/coding_assets``。
-
-    与 SPEC §15.1 的 ``data/coding_assets/`` 一致（db 在 ``data/`` 下时即
-    得到 ``data/coding_assets``）；db 路径为内存库（``:memory:``）时退化为
-    当前目录下的 ``coding_assets``。
-    """
-    db_file = Path(str(db))
-    parent = db_file.parent if str(db_file.parent) not in ("", ".") else Path(".")
-    return parent / CODING_ASSETS_DIRNAME
+    """Return the actor-private assets directory derived from the database identity."""
+    from coscreen.coding_evidence import assets_dir
+    return assets_dir(db)
 
 
 def _detect_image_extension(data: bytes) -> str | None:
@@ -1151,9 +1144,8 @@ def add_note_image(
     if not isinstance(data, (bytes, bytearray)) or not data:
         raise ValueError("图片数据不能为空")
     raw = bytes(data)
-    extension = _detect_image_extension(raw)
-    if extension is None:
-        raise ValueError("不支持的图片格式（仅支持 PNG / JPEG / WebP）")
+    from coscreen.coding_evidence import validate_image
+    extension = validate_image(raw)
     digest = hashlib.sha256(raw).hexdigest()
     directory = Path(assets_dir) if assets_dir else coding_assets_dir(db)
     # 安全加固 §4：文件名 = note{id}_{sha 前缀}.{ext}（id 已 int 化、digest 为
@@ -1339,10 +1331,11 @@ def coding_queue(db: StrPath, mode: str | None = None) -> list[str]:
     stage2_keys = _include_keys(list_stage2_decisions(db))
     if stage2_keys:
         return stage2_keys
-    return _include_keys(list_decisions(db))
+    stage2_maybe = {row["zotero_key"] for row in list_stage2_decisions(db) if row["decision"] == "maybe"}
+    return [key for key in _include_keys(list_decisions(db)) if key not in stage2_maybe]
 
 
-def coding_progress(db: StrPath) -> dict:
+def coding_progress(db: StrPath, *, owner_db: StrPath | None = None) -> dict:
     """编码进度（相对当前队列与当前方案）：
 
     - ``total``：队列篇数（:func:`coding_queue`，含回退逻辑）；
@@ -1368,14 +1361,8 @@ def coding_progress(db: StrPath) -> dict:
             filled.setdefault(int(dim_id), set()).add(key)
 
     per_dimension = {dim_id: len(filled.get(dim_id, set())) for dim_id in dim_ids}
-    if dim_ids:
-        coded = sum(
-            1
-            for key in queue
-            if all(key in filled.get(dim_id, set()) for dim_id in dim_ids)
-        )
-    else:
-        coded = 0
+    from coscreen.coding_evidence import complete_keys, current_owner_db
+    coded = len(complete_keys(db, owner_db or current_owner_db(db), queue))
     return {
         "total": len(queue),
         "coded": coded,

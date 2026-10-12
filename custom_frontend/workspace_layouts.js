@@ -80,7 +80,7 @@
   setShare(40);
   function foldDimensions() {
     for (const card of forms.children) {
-      if (!card.matches('.card') || !card.querySelector('.cb-v') || card.querySelector('details')) continue;
+      if (!card.matches('.card') || !card.querySelector('.cb-v') || card.querySelector(':scope>details:not(.wf-evidence)')) continue;
       const heading = card.querySelector(':scope>b');
       if (!heading) continue;
       const details = el('details', {}), summary = el('summary', {});

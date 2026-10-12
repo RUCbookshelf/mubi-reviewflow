@@ -342,6 +342,7 @@ class TaskUpdateIn(BaseModel):
 
 
 class DecisionIn(BaseModel):
+    expected_policy_version: int | None = Field(default=None, ge=1)
     zotero_key: str = Field(min_length=1, max_length=300)
     decision: str = Field(pattern="^(include|exclude|maybe)$")
     reason: str = Field(default="", max_length=2000)
@@ -376,6 +377,8 @@ class DimensionUpdateIn(BaseModel):
 
 
 class CodingValueIn(BaseModel):
+    draft: bool = False
+    expected_policy_version: int | None = Field(default=None, ge=1)
     dim_id: int = Field(ge=1, le=10**9)
     zotero_key: str = Field(min_length=1, max_length=300)
     value: str = Field(default="", max_length=4000)
@@ -1197,9 +1200,11 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
     target = auth.get_user(body.username)
     if target is None:
         raise HTTPException(404, "该账号不存在。请对方先在此服务器注册。")
-    grant = collaboration_mod.grant_role(
-        path, actor_user_id=user["user_id"], user_id=target["id"],
-        role=body.role, task_id=task_id)
+    with app.state.review_workflow.lock(task_id):
+        grant = collaboration_mod.grant_role(
+            path, actor_user_id=user["user_id"], user_id=target["id"],
+            role=body.role, task_id=task_id)
+        app.state.review_workflow.latch_team(task_id, user)
     tasks_mod.register_screener(task_id, target["username"], DATA_DIR)
     notify_tasks_changed(target["id"], "invited", _task_or_404(task_id).display_name)
     return {"grant": {**grant, "username": target["username"]}}
@@ -1224,7 +1229,7 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
-    members = list_team_progress(task_id, list(user_ids), DATA_DIR)
+    members = list_team_progress(task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
     return {"members": [{**member, "user_id": user_ids[member["username"]]}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
@@ -1241,9 +1246,11 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
         raise HTTPException(400, {"error_code": "collaborator_not_found",
                                   "message_key": "coding.collaborator_not_found", "params": {},
                                   "details": "Account ID does not exist", "message": "Account ID does not exist"})
-    grant = collaboration_mod.grant_role(
-        path, actor_user_id=user["user_id"], user_id=body.user_id,
-        role=body.role, task_id=task_id)
+    with app.state.review_workflow.lock(task_id):
+        grant = collaboration_mod.grant_role(
+            path, actor_user_id=user["user_id"], user_id=body.user_id,
+            role=body.role, task_id=task_id)
+        app.state.review_workflow.latch_team(task_id, user)
     notify_tasks_changed(body.user_id, "invited", _task_or_404(task_id).display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
@@ -1253,9 +1260,11 @@ def collaboration_revoke_role(task_id: str, target_user_id: int,
                               role: Literal["coder", "reconciler"],
                               user: dict = Depends(require_user)) -> dict:
     path = _collaboration_owner_store(task_id, user)
-    revoked = collaboration_mod.revoke_role(
-        path, actor_user_id=user["user_id"], user_id=target_user_id,
-        role=role, task_id=task_id)
+    with app.state.review_workflow.lock(task_id):
+        app.state.review_workflow.latch_team(task_id, user)
+        revoked = collaboration_mod.revoke_role(
+            path, actor_user_id=user["user_id"], user_id=target_user_id,
+            role=role, task_id=task_id)
     if revoked:
         notify_tasks_changed(target_user_id, "revoked", _task_or_404(task_id).display_name)
     return {"revoked": revoked}
@@ -1532,239 +1541,28 @@ def _count_title_groups_with_incoming(groups: list[list], incoming_keys: set) ->
 
 @app.post("/api/tasks/{task_id}/import")
 async def import_articles(
-    task_id: str,
-    file: UploadFile = File(...),
-    job_id: str | None = Form(default=None),
-    screener: str | None = None,
+    task_id: str, file: UploadFile = File(...), job_id: str | None = Form(default=None),
+    source_id: str | None = Form(default=None), screener: str | None = None,
     user: dict = Depends(require_user),
 ) -> dict:
-    info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
-    db = _screener_db(info, screener_name)
-    tmpdir = Path(tempfile.mkdtemp(prefix="cobook_import_"))
-    try:
-        _set_import_progress(job_id, task_id, user["user_id"], "parse", 2)
-        name, articles, raw_path = await _parse_upload_to_articles(file, tmpdir, 0)
-        for article in articles:
-            article.raw["source_file"] = name
-
-        # 与库中已有文献合并后统一去重：修复"先导 A 再导 B 时，B 不与 A 的文献去重"的缺口。
-        existing = db_mod.list_articles(db, include_duplicates=True)
-        _stabilize_generated_import_keys(existing, articles)
-        combined = existing + articles
-        title_groups_all = find_title_candidate_groups(combined)
-        exact_survivors, exact_report = await asyncio.to_thread(
-            find_duplicates, combined, include_fuzzy=False
-        )
-        _, previous_exact_report = find_duplicates(existing, include_fuzzy=False)
-        _set_import_progress(job_id, task_id, user["user_id"], "fuzzy", 10,
-                             completed=0, total=len(exact_survivors))
-        _, report = await asyncio.to_thread(
-            find_duplicates, combined,
-            progress_callback=lambda stage, done, total: _fuzzy_progress(
-                job_id, task_id, user["user_id"], stage, done, total
-            ),
-        )
-
-        # DOI/Key 精确匹配仍自动标记；模糊匹配只进入核验清单，用户确认后才排除。
-        pairs = report.exact_pairs
-        new_keys = _keys_of(articles)
-        existing_keys = _keys_of(existing)
-        duplicates_against_db = sum(
-            1 for p in pairs if p.dup_key in new_keys and p.kept_key in existing_keys
-        )
-        title_groups = _title_review_groups(
-            exact_survivors,
-            new_keys - existing_keys,
-            report.fuzzy_pairs,
-        )
-        _set_import_progress(job_id, task_id, user["user_id"], "save", 97)
-        summary = db_mod.upsert_articles(db, articles, pairs, title_groups)
-        review_progress = db_mod.title_duplicate_review_progress(db)
-        db_mod.set_meta(db, "task", info.display_name)
-        db_mod.set_meta(db, "screener", screener_name)
-        db_mod.set_meta(db, "source_file", name)
-        tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
-        result = {
-            "n_parsed": len(articles),
-            "n_imported": summary.n_imported,
-            "n_duplicates": summary.n_duplicates,
-            "n_new": summary.n_new,
-            "n_existing": summary.n_existing,
-            "unique_after_exact_dedup": max(
-                0, len(articles) - max(0, exact_report.total - exact_report.unique
-                                       - (previous_exact_report.total - previous_exact_report.unique))
-            ),
-            "fuzzy_candidate_excess": sum(
-                1 for pair in report.fuzzy_pairs if pair.dup_key in new_keys
-            ),
-            "duplicates_against_db": duplicates_against_db,
-            **_exact_duplicate_metrics(exact_report, new_keys, previous_exact_report),
-            "title_candidate_groups_including_exact": _count_title_groups_with_incoming(title_groups_all, new_keys)[0],
-            "title_candidate_excess_including_exact": _count_title_groups_with_incoming(title_groups_all, new_keys)[1],
-            "title_review_groups": len(title_groups),
-            "title_review_pending": review_progress["pending_groups"],
-            "title_review_pending_records": review_progress["pending_records"],
-            "title_review_excess": sum(len(g["members"]) - 1 for g in title_groups),
-            "note": report.note,
-            "progress": db_mod.get_progress(db),
-        }
-        result["import_id"] = import_history_mod.save_import(
-            _import_history_db(info), task_id=task_id, screener=screener_name,
-            import_type="single", stats=result, files=[(name, raw_path)],
-        )
-        _set_import_progress(job_id, task_id, user["user_id"], "complete", 100)
-        return result
-    except Exception as exc:
-        _set_import_progress(job_id, task_id, user["user_id"], "error", 100,
-                             error=str(exc))
-        raise
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    return await app.state.review_imports.upload(task_id, user, [file], batch=False,
+        source_ids=[source_id] if source_id else None, job_id=job_id, screener=screener)
 
 
 @app.post("/api/tasks/{task_id}/import-batch")
 async def import_articles_batch(
-    task_id: str,
-    files: list[UploadFile] = File(...),
-    job_id: str | None = Form(default=None),
-    screener: str | None = None,
+    task_id: str, files: list[UploadFile] = File(...), job_id: str | None = Form(default=None),
+    source_ids: str | None = Form(default=None), screener: str | None = None,
     user: dict = Depends(require_user),
 ) -> dict:
-    """多文件批量导入 + 跨文件全局去重（系统综述合并多数据库导出的场景）。
-
-    所有文件一起解析 → 合并为一个列表（每条打上 source_file 标签）→
-    对合并列表跑 find_duplicates（天然得到跨文件去重）→ upsert 去重后的保留条目
-    → 返回逐文件统计 + 跨文件重复明细。
-    """
-    info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
-    db = _screener_db(info, screener_name)
-    if not files:
-        raise _bad("请至少选择一个文件。", 400)
-    if len(files) > 20:
-        raise _bad(f"批量导入一次最多 20 个文件（收到 {len(files)} 个），请分批上传。", 400)
-
-    tmpdir = Path(tempfile.mkdtemp(prefix="cobook_import_"))
     try:
-        _set_import_progress(job_id, task_id, user["user_id"], "parse", 2)
-        per_file: list[dict] = []  # {"name", "parsed", "articles", "raw_path"}
-        combined: list = []
-        for i, f in enumerate(files):
-            name, articles, raw_path = await _parse_upload_to_articles(f, tmpdir, i)
-            for a in articles:
-                a.raw["source_file"] = name  # 来源文件标签（随 raw_json 入库）
-            combined.extend(articles)
-            per_file.append({"name": name, "parsed": len(articles), "articles": articles,
-                             "raw_path": raw_path})
-            _set_import_progress(job_id, task_id, user["user_id"], "parse",
-                                 min(9, 2 + int(7 * (i + 1) / len(files))),
-                                 completed=i + 1, total=len(files))
-
-        existing = db_mod.list_articles(db, include_duplicates=True)
-        _stabilize_generated_import_keys(existing, combined)
-        title_groups_all = find_title_candidate_groups(existing + combined)
-        title_groups_with_incoming = _count_title_groups_with_incoming(title_groups_all, _keys_of(combined))
-        exact_survivors, exact_report = await asyncio.to_thread(
-            find_duplicates, combined, include_fuzzy=False
-        )
-        kept = exact_survivors
-        pairs = exact_report.exact_pairs
-
-        # key -> 来源文件 / 标题（用于逐文件重复计数与跨文件重复明细）
-        source_of: dict[str, str] = {}
-        title_of: dict[str, str] = {}
-        for a in combined:
-            source_of.setdefault(a.zotero_key, a.raw.get("source_file", ""))
-            title_of.setdefault(a.zotero_key, a.title)
-
-        dup_within: dict[str, int] = {pf["name"]: 0 for pf in per_file}
-        cross_file_duplicates: list[dict] = []
-        for p in pairs:
-            kept_src, dup_src = source_of.get(p.kept_key, ""), source_of.get(p.dup_key, "")
-            if kept_src and kept_src == dup_src:
-                dup_within[kept_src] = dup_within.get(kept_src, 0) + 1
-            else:
-                cross_file_duplicates.append({
-                    "kept_from": kept_src,
-                    "dup_from": dup_src,
-                    "method": p.method,
-                    "title": title_of.get(p.dup_key, ""),
-                })
-
-        # 与库内已有文献做第二次精确匹配；模糊命中保留为人工核验候选。
-        existing_keys = _keys_of(existing)
-        global_articles = existing + kept
-        global_exact_survivors, global_exact_report = await asyncio.to_thread(
-            find_duplicates, global_articles, include_fuzzy=False
-        )
-        _set_import_progress(job_id, task_id, user["user_id"], "fuzzy", 10,
-                             completed=0, total=global_exact_report.unique)
-        _, global_fuzzy_report = await asyncio.to_thread(
-            find_duplicates, global_articles,
-            progress_callback=lambda stage, done, total: _fuzzy_progress(
-                job_id, task_id, user["user_id"], stage, done, total,
-                start=10, span=85,
-            ),
-        )
-        global_pairs = global_exact_report.exact_pairs
-        kept_keys = _keys_of(kept)
-        duplicates_against_db = sum(
-            1 for p in global_pairs
-            if p.dup_key in kept_keys and p.kept_key in existing_keys and p.kept_key not in kept_keys
-        )
-
-        title_groups = _title_review_groups(
-            global_exact_survivors,
-            kept_keys - existing_keys,
-            global_fuzzy_report.fuzzy_pairs,
-        )
-        _set_import_progress(job_id, task_id, user["user_id"], "save", 97)
-        summary = db_mod.upsert_articles(db, kept, global_pairs, title_groups)
-        review_progress = db_mod.title_duplicate_review_progress(db)
-        db_mod.set_meta(db, "task", info.display_name)
-        db_mod.set_meta(db, "screener", screener_name)
-        tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
-        result = {
-            "files": [
-                {"name": pf["name"], "parsed": pf["parsed"], "duplicates_within": dup_within.get(pf["name"], 0)}
-                for pf in per_file
-            ],
-            "total_parsed": exact_report.total,
-            "cross_file_duplicates": cross_file_duplicates,
-            "exact_duplicates": exact_report.total - exact_report.unique,
-            **_exact_duplicate_metrics(exact_report),
-            "fuzzy_candidate_excess": sum(
-                1 for pair in global_fuzzy_report.fuzzy_pairs
-                if pair.dup_key in _keys_of(combined)
-            ),
-            "unique_after_dedup": exact_report.unique,
-            "imported": summary.n_imported,
-            "new": summary.n_new,
-            "existing": summary.n_existing,
-            "duplicates_against_db": duplicates_against_db,
-            "title_candidate_groups_including_exact": title_groups_with_incoming[0],
-            "title_candidate_excess_including_exact": title_groups_with_incoming[1],
-            "title_review_groups": len(title_groups),
-            "title_review_pending": review_progress["pending_groups"],
-            "title_review_pending_records": review_progress["pending_records"],
-            "title_review_excess": sum(len(g["members"]) - 1 for g in title_groups),
-            "note": exact_report.note or global_fuzzy_report.note,
-            "progress": db_mod.get_progress(db),
-        }
-        result["import_id"] = import_history_mod.save_import(
-            _import_history_db(info), task_id=task_id, screener=screener_name,
-            import_type="batch", stats=result,
-            files=[(pf["name"], pf["raw_path"]) for pf in per_file],
-        )
-        _set_import_progress(job_id, task_id, user["user_id"], "complete", 100)
-        return result
-    except Exception as exc:
-        _set_import_progress(job_id, task_id, user["user_id"], "error", 100,
-                             error=str(exc))
-        raise
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        selected_sources = json.loads(source_ids) if source_ids is not None else None
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "source_ids must be a JSON array aligned with files.") from exc
+    if selected_sources is not None and not isinstance(selected_sources, list):
+        raise HTTPException(400, "source_ids must be a JSON array aligned with files.")
+    return await app.state.review_imports.upload(task_id, user, files, batch=True,
+        source_ids=selected_sources, job_id=job_id, screener=screener)
 
 
 @app.get("/api/tasks/{task_id}/import-progress/{job_id}")
@@ -1884,7 +1682,28 @@ def list_import_history(
         screener=screener or user["username"],
         limit=limit, offset=offset,
     )
-    return {"imports": imports, "next_offset": next_offset}
+    # Original-file history remains durable; batch state comes from the owner
+    # transaction so partial activation and crash-recovered imports stay honest.
+    from contextlib import closing
+    from coscreen import review_imports, review_workflow
+    ctx = app.state.review_workflow.context(task_id, user)
+    pending_import_records = 0
+    if ctx.owner is not None:
+        with closing(review_workflow.connect(ctx.owner_db, read_only=True)) as conn:
+            if review_workflow.has_table(conn, "workflow_import_batches"):
+                pending_import_records = conn.execute("SELECT COUNT(*) FROM workflow_source_records WHERE state='staged'").fetchone()[0]
+                for item in imports:
+                    bid = item["result"].get("batch_id")
+                    if bid:
+                        try:
+                            summary = review_imports.batch_summary(conn, bid)
+                            summary["source_files"] = summary.pop("files")
+                            item["result"].update(summary)
+                            legacy_pending = conn.execute("SELECT 1 FROM title_duplicate_reviews WHERE status IN ('pending','undecided') LIMIT 1").fetchone()
+                            item["result"]["screening_ready"] = not summary["staged"] and not summary["pending_candidate_groups"] and not legacy_pending
+                        except KeyError:
+                            item["result"].update(status="failed", screening_ready=False)
+    return {"imports": imports, "next_offset": next_offset, "pending_import_records": pending_import_records}
 
 
 @app.get("/api/tasks/{task_id}/import-history/{batch_id}/files/{file_id}")
@@ -1921,7 +1740,7 @@ def progress(task_id: str, screener: str | None = None, user: dict = Depends(req
     return {
         "stage1": db_mod.get_progress(db),
         "stage2": get_stage2_progress(db),
-        "coding": coding_mod.coding_progress(db),
+        "coding": coding_mod.coding_progress(db, owner_db=_coding_owner_db(info) or db),
     }
 
 
@@ -1946,7 +1765,7 @@ def _trace_context(info, user, source="manual"):
             except sqlite3.Error as db_exc:
                 raise HTTPException(503, "本次修改尚未保存。无法确认轨迹记录状态。") from db_exc
         return None
-    return TraceContext(task_id=info.task_id, actor_id=user["user_id"], source=source, request_id=user.get("_trace_request_id"))
+    return TraceContext(task_id=info.task_id, actor_id=user["user_id"], source=source, request_id=user.get("_trace_request_id") or str(uuid.uuid4()))
 
 
 def _save_decision_checked(db: Path, body: DecisionIn, saver, *, trace_context=None) -> None:
@@ -1979,7 +1798,10 @@ def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                   user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
+    with app.state.review_workflow.write_guard(task_id, user, "screen", body.zotero_key,
+                                               body.expected_policy_version) as workflow:
+        app.state.review_workflow.check_maybe(workflow, "screen", body.decision)
+        _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": db_mod.get_progress(db)}
 
@@ -2001,7 +1823,10 @@ def save_stage2_decision(task_id: str, body: DecisionIn, screener: str | None = 
                          user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    _save_decision_checked(db, body, save_stage2, trace_context=_trace_context(info, user))
+    with app.state.review_workflow.write_guard(task_id, user, "fulltext", body.zotero_key,
+                                               body.expected_policy_version) as workflow:
+        app.state.review_workflow.check_maybe(workflow, "fulltext", body.decision)
+        _save_decision_checked(db, body, save_stage2, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": get_stage2_progress(db)}
 
@@ -2512,7 +2337,11 @@ def coding_dimensions(task_id: str, screener: str | None = None,
                       user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    return {"dimensions": coding_mod.list_dimensions(db)}
+    with app.state.review_workflow.lock(task_id):
+        ctx = app.state.review_workflow.context(task_id, user)
+        from coscreen import coding_evidence
+        mapped, issues, required = coding_evidence.mapping(db, ctx.owner_db)
+        return {"dimensions": [{**d, "field_id": mapped.get(d["id"], d.get("field_id")), "required": mapped.get(d["id"]) in required} for d in coding_evidence.field_rows(db)], "mapping_issues": issues}
 
 
 @app.post("/api/tasks/{task_id}/coding/dimensions", status_code=201)
@@ -2521,15 +2350,16 @@ def add_dimension(task_id: str, body: DimensionIn, screener: str | None = None,
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        dim_id = coding_mod.add_dimension(
-            db, body.name, body.dtype, body.options,
-            multi_select=body.multi_select, unit=body.unit,
-            description=body.description, section=body.section,
-            trace_context=_trace_context(info, user),
-        )
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            dim_id = coding_mod.add_dimension(
+                db, body.name, body.dtype, body.options,
+                multi_select=body.multi_select, unit=body.unit,
+                description=body.description, section=body.section,
+                trace_context=_trace_context(info, user),
+            )
     except ValueError as exc:
         raise _bad(str(exc)) from exc
-    return {"id": dim_id, "dimensions": coding_mod.list_dimensions(db)}
+    return {"id": dim_id, **coding_dimensions(task_id, screener, user)}
 
 
 @app.put("/api/tasks/{task_id}/coding/dimensions/{dim_id}")
@@ -2541,10 +2371,11 @@ def update_dimension_ep(task_id: str, dim_id: int, body: DimensionUpdateIn,
     if not fields:
         raise _bad("没有需要更新的字段。")
     try:
-        coding_mod.update_dimension(db, dim_id, trace_context=_trace_context(info, user), **fields)
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            coding_mod.update_dimension(db, dim_id, trace_context=_trace_context(info, user), **fields)
     except ValueError as exc:
         raise _dim_error(exc) from exc
-    return {"updated": True, "dimensions": coding_mod.list_dimensions(db)}
+    return {"updated": True, **coding_dimensions(task_id, screener, user)}
 
 
 @app.delete("/api/tasks/{task_id}/coding/dimensions/{dim_id}")
@@ -2553,10 +2384,11 @@ def delete_dimension_ep(task_id: str, dim_id: int, screener: str | None = None,
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        coding_mod.delete_dimension(db, dim_id, trace_context=_trace_context(info, user))
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            coding_mod.delete_dimension(db, dim_id, trace_context=_trace_context(info, user))
     except ValueError as exc:
         raise _dim_error(exc) from exc
-    return {"deleted": True, "dimensions": coding_mod.list_dimensions(db)}
+    return {"deleted": True, **coding_dimensions(task_id, screener, user)}
 
 
 @app.post("/api/tasks/{task_id}/coding/values")
@@ -2565,13 +2397,22 @@ def save_coding_value(task_id: str, body: CodingValueIn, screener: str | None = 
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        coding_mod.save_coding_value(db, body.dim_id, body.zotero_key, body.value, trace_context=_trace_context(info, user))
+        with app.state.review_workflow.write_guard(task_id, user, "coding", body.zotero_key,
+                                                   body.expected_policy_version) as ctx:
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Coding is limited to your own workspace.")
+            from coscreen import coding_evidence
+            context = _trace_context(info, user)
+            if context is None:
+                raise HTTPException(503, "Undo is unavailable. Please try again.")
+            coding_evidence.save_form(db, body.zotero_key, {body.dim_id: body.value}, notes=None, evidence=None, trace_context=context)
+            result = app.state.review_workflow.coding_result(ctx, body.zotero_key, body.draft)
     except ValueError as exc:
         raise _bad(str(exc)) from exc
     except sqlite3.IntegrityError as exc:
         raise _bad("维度或文献不存在（请确认后重试）。", 400) from exc
     tasks_mod.touch_task(info.task_id, DATA_DIR)
-    return {"saved": True, "progress": coding_mod.coding_progress(db)}
+    return result
 
 
 @app.get("/api/tasks/{task_id}/coding/values/{zotero_key}")
@@ -2587,7 +2428,10 @@ def coding_values_for(task_id: str, zotero_key: str, screener: str | None = None
         note = coding_mod.get_coding_note(db, int(dim["id"]), zotero_key)
         if note and (note.get("text") or "").strip():
             note_map[str(int(dim["id"]))] = note.get("text") or ""
-    return {"values": values, "notes": note_map}
+    ctx = app.state.review_workflow.context(task_id, user)
+    if ctx.actor_db.resolve() != db.resolve():
+        raise HTTPException(403, "Coding evidence is limited to your own workspace.")
+    return {"values": values, "notes": note_map, **app.state.review_workflow.evidence_state(ctx, zotero_key)}
 
 
 @app.get("/api/tasks/{task_id}/coding/queue")
@@ -2604,7 +2448,7 @@ def coding_queue_ep(task_id: str, screener: str | None = None,
         {"zotero_key": k, "title": by_key[k].title, "year": by_key[k].year}
         for k in keys if k in by_key
     ]
-    return {"queue": items, "total": len(items), "progress": coding_mod.coding_progress(db)}
+    return {"queue": items, "total": len(items), "progress": coding_mod.coding_progress(db, owner_db=_coding_owner_db(info) or db)}
 
 
 @app.get("/api/tasks/{task_id}/coding/scheme")
@@ -2612,7 +2456,17 @@ def export_scheme_ep(task_id: str, screener: str | None = None,
                      user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    return coding_mod.export_scheme(db)
+    from coscreen import coding_evidence
+    runtime = app.state.review_workflow
+    with runtime.lock(task_id):
+        ctx = runtime.context(task_id, user)
+        mapping, _, _ = coding_evidence.mapping(db, ctx.owner_db)
+        dims = coding_evidence.field_rows(db)
+        scheme = coding_mod.export_scheme(db)
+        for item, dim in zip(scheme['dimensions'], dims):
+            if dim['id'] in mapping:
+                item['field_id'] = mapping[dim['id']]
+        return scheme
 
 
 @app.post("/api/tasks/{task_id}/coding/scheme")
@@ -2621,10 +2475,11 @@ def import_scheme_ep(task_id: str, body: SchemeImportIn, screener: str | None = 
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        n = coding_mod.import_scheme(db, body.scheme, replace=body.replace, trace_context=_trace_context(info, user, "import"))
+        with app.state.review_workflow.schema_guard(task_id, user, db):
+            n = coding_mod.import_scheme(db, body.scheme, replace=body.replace, trace_context=_trace_context(info, user, "import"))
     except ValueError as exc:
         raise _bad(str(exc)) from exc
-    return {"imported": n, "dimensions": coding_mod.list_dimensions(db)}
+    return {"imported": n, **coding_dimensions(task_id, screener, user)}
 
 
 # ---------------------------------------------------------------------------
@@ -4753,6 +4608,17 @@ def _trace_validate_subject(info, stage, subject_id):
 
 
 from custom_backend.workspace_undo_api import register_workspace_undo_routes
+from custom_backend.review_workflow_api import register_review_workflow_routes
+
+register_review_workflow_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR, _task_visible_to)
+
+from custom_backend.review_imports_api import register_review_import_routes
+
+register_review_import_routes(app, require_user, parse_upload=_parse_upload_to_articles,
+    progress=_set_import_progress, fuzzy_progress=_fuzzy_progress, stabilize=_stabilize_generated_import_keys,
+    title_groups=_title_review_groups, history_path=_import_history_db,
+    touch=lambda info: tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0))
+
 
 register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
 
@@ -5754,50 +5620,14 @@ async def living_review_import_update(
     screener: str | None = Query(default=None),
     user: dict = Depends(require_user),
 ) -> dict:
-    """手动导入增量文献文件（第一层核心入口，100% 离线）。
-
-    上传校验（check_text_bytes）→ coscreen.living_review.process_incremental_update
-    （解析/去重/入库/AL 热启动/重跑 Meta/前后对比/变更报告）→ 历史留痕。
-    """
-    from coscreen import living_review as lr_mod
-    from coscreen.parsers import ParseError
-
-    info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
-    db = _screener_db(info, screener_name)
-    _lr_validate_measure(measure)
-
-    name = clean_upload_name(file.filename or "", "update")
-    data = await file.read()
-    check_extension(name, TEXT_EXTENSIONS)
-    check_text_bytes(data)  # 大小 + 可解码 + 无 NUL（先于解析执行）
-
-    tmpdir = Path(tempfile.mkdtemp(prefix="cobook_living_"))
-    try:
-        src = tmpdir / name
-        src.write_bytes(data)
-        try:
-            result = lr_mod.process_incremental_update(
-                str(db), str(src), comparison, outcome, timepoint, measure,
-                al_ranker=_lr_ranker_for_task(info, screener_name),
-            )
-        except ParseError as exc:
-            raise _bad(f"解析失败（{name}）：{exc}") from exc
-        except ValueError as exc:
-            raise _bad(str(exc), 400) from exc
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    entry = _lr_history_entry(result, source="manual", label=name,
-                              comparison=comparison, outcome=outcome,
-                              timepoint=timepoint, measure=measure)
-
-    def _append(state: dict) -> None:
-        state["history"].append(entry)
-
-    _mutate_living_review_state(info, _append)
-    tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
-    return {**result.to_dict(), "history_entry": entry}
+    """Route legacy incremental imports to the protected owner import workflow."""
+    app.state.review_imports.authorize(task_id, user, screener)
+    raise HTTPException(409, {
+        "code": "protected_import_required",
+        "message": "Use protected Import review. Select the original source file there; review metadata and candidates before activation. Living Review history is retained.",
+        "import_url": f"/api/tasks/{task_id}/import",
+        "review_url": f"/api/tasks/{task_id}/import-batches",
+    })
 
 
 @app.get("/api/tasks/{task_id}/living-review/history")
@@ -5833,106 +5663,16 @@ def living_review_enable_auto(task_id: str, body: LivingReviewAutoIn,
 @app.post("/api/tasks/{task_id}/living-review/check-now")
 def living_review_check_now(task_id: str, body: LivingReviewCheckIn | None = None,
                             user: dict = Depends(require_user)) -> dict:
-    """立即执行一次 PubMed 增量拉取（手动触发，非后台自动）。
-
-    前置条件（缺一即 4xx）：用户已显式开启自动监控（task.json
-    living_review_auto.enabled）；已保存 PubMed 检索式。成功 → 拉回的文献直接走
-    增量管线（与手动导入同一条代码路径）；失败（网络不可达/响应不可解析）→
-    200 + 降级提示，离线功能不受影响。本端点是全应用唯一触网入口。
-    """
-    from coscreen import living_review as lr_mod
-    from coscreen.models import Article
-
-    info = _task_or_404(task_id)
-    screener_name = user["username"]
-    db = _screener_db(info, screener_name)
-
-    # 1. 显式开启校验（插件仅在用户开启自动监控后才允许被调用）
-    raw = tasks_mod._read_task_json(info.dir)  # noqa: SLF001  与 update_task 同一条读路径
-    auto = (raw or {}).get("living_review_auto")
-    if not isinstance(auto, dict) or not auto.get("enabled"):
-        raise _bad("自动监控未开启：请先开启自动监控（enable-auto）。", 409)
-
-    # 2. 取 PubMed 检索式与起始日期（检索式记忆）
-    state = _read_living_review_state(info)
-    pubmed_records = [row for row in state["search_records"]
-                      if row.get("database") == "pubmed"
-                      and str(row.get("query_string") or "").strip()]
-    if not pubmed_records:
-        raise _bad("尚未保存 PubMed 检索式：请先保存检索式（save-search）。", 400)
-    record = pubmed_records[-1]
-    query = str(record["query_string"]).strip()
-    since = str(record.get("last_run_date") or "").strip() or (info.created_at or "")[:10]
-
-    # 3. 调用可选插件（延迟导入——main.py 默认导入不含该模块）
-    from custom_backend import living_review_plugin
-
-    try:
-        fetched = living_review_plugin.fetch_pubmed_updates(query, since)
-    except living_review_plugin.PubMedPluginError as exc:
-        logger.warning("living-review check-now degraded: %s", exc)
-        return {
-            "ok": False,
-            "degraded": True,
-            "message": "网络不可达，请手动导出文件后导入。",
-            "error": str(exc),
-        }
-
-    # 4. 拉回的文献走增量管线（与手动导入同一条路径；结局层缺省时跳过 Meta 对比）
-    comparison = (body.comparison if body else "").strip()
-    outcome = (body.outcome if body else "").strip()
-    timepoint = (body.timepoint if body else "").strip()
-    measure = (body.measure if body else "").strip()
-    if measure:
-        _lr_validate_measure(measure)
-    articles = [
-        Article(
-            zotero_key=str(row["zotero_key"]),
-            item_type="JOUR",
-            title=str(row.get("title") or ""),
-            authors=str(row.get("authors") or ""),
-            journal=str(row.get("journal") or ""),
-            year=row.get("year"),
-            doi=str(row.get("doi") or ""),
-            abstract=str(row.get("abstract") or ""),
-            url=str(row.get("url") or ""),
-            source_format=str(row.get("source_format") or "pubmed"),
-            raw={"pmid": row.get("pmid", ""), "source": "pubmed-check-now"},
-        )
-        for row in fetched
-    ]
-    try:
-        if articles:
-            result = lr_mod.process_incremental_articles(
-                str(db), articles, comparison, outcome, timepoint, measure,
-                al_ranker=_lr_ranker_for_task(info, screener_name),
-            )
-        else:
-            result = lr_mod.IncrementalResult(
-                change_report=f"PubMed 无新增文献（检索式自 {since or '开始'} 起）",
-                al_available=False, al_note="无新增文献",
-            )
-    except ValueError as exc:
-        raise _bad(str(exc), 400) from exc
-
-    entry = _lr_history_entry(result, source="pubmed",
-                              label=f"PubMed（自 {since or '开始'}）",
-                              comparison=comparison, outcome=outcome,
-                              timepoint=timepoint, measure=measure)
-    today = datetime.now().date().isoformat()
-
-    def _apply(state: dict) -> None:
-        state["history"].append(entry)
-        for row in state["search_records"]:
-            if (row.get("database") == "pubmed"
-                    and row.get("query_string") == record["query_string"]):
-                row["last_run_date"] = today
-                row["total_hits_last"] = len(fetched)
-
-    _mutate_living_review_state(info, _apply)
-    tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0)
-    return {"ok": True, "degraded": False, "fetched": len(fetched),
-            **result.to_dict(), "history_entry": entry}
+    """Prevent the legacy fetch-and-write path; retain saved searches and history."""
+    app.state.review_imports.authorize(task_id, user, None)
+    # No fetch, article write, analysis rerun, history mutation or last-run advance.
+    # The original exported database file must enter the protected import service.
+    raise HTTPException(409, {
+        "code": "protected_import_required",
+        "message": "Export the search results and use protected Import review. Select the original source file there; review metadata and candidates before activation. Living Review history is retained.",
+        "import_url": f"/api/tasks/{task_id}/import",
+        "review_url": f"/api/tasks/{task_id}/import-batches",
+    })
 
 
 # ---- Batch W12 endpoints (additive) ----
