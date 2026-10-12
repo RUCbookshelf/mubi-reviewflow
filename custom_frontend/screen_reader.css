@@ -15,7 +15,7 @@
 .rf-reader-page #scrHistCap{display:none}
 .rf-reader-page #scrHistCounts{font-size:12px;white-space:normal;overflow:visible}
 .rf-reader-page #scrPos{font-size:12px;margin:0}
-.rf-reader-page #scrCard{padding:20px 24px 0;overflow:visible}
+.rf-reader-page #scrCard{padding:20px 24px 0;overflow:visible;container-type:inline-size;container-name:screen-reader}
 .rf-reader-page .scr-title{font-size:clamp(20px,1.7vw,27px);line-height:1.32;margin:0 0 8px;text-wrap:pretty}
 .rf-reader-page #scrBody .scr-meta{flex-wrap:wrap;gap:6px;margin-bottom:10px;overflow:visible;white-space:normal;font-size:12px}
 .rf-reader-page .scr-meta .scr-authors{flex:0 0 100%;max-width:100%;order:-1;line-height:1.5}
@@ -26,14 +26,15 @@
 .rf-reader-page .rf-screen-metadata{padding:10px 12px;margin:0 0 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);font-size:12px;overflow-wrap:anywhere}
 .rf-reader-page .rf-screen-metadata p{margin:3px 0;line-height:1.6}
 .rf-reader-page #scrBody .absbox{border:0;background:transparent;padding:8px 0 18px;border-radius:0;font-size:var(--fs-view);line-height:1.8;white-space:pre-wrap}
-.rf-reader-page .scr-decisions{display:grid;grid-template-columns:1fr 1fr 1fr 1.45fr;gap:8px;align-items:stretch;border-top:1px solid var(--border);padding:10px 0;margin:0!important}
-.rf-reader-page .scr-decisions:has(#btnMay[hidden]){grid-template-columns:1fr 1fr 1.45fr}
-.rf-reader-page .scr-decisions>.btn{width:100%;min-height:40px;padding:8px 10px;font-size:14px;justify-content:center}
-.rf-reader-page .scr-decisions>.input{width:100%;min-width:0;max-width:none!important;min-height:40px;font-size:12px}
-.rf-reader-page #excCustomReason{grid-column:1/-1}
-.rf-reader-page .wf-custom-reason-row{grid-column:1/-1;display:flex;align-items:stretch;justify-content:flex-end;gap:8px;min-width:0}
-.rf-reader-page .wf-custom-reason-row>.input{flex:1;min-width:0;max-width:none!important;width:100%;min-height:40px;font-size:12px}
-.rf-reader-page .wf-custom-reason-row>.btn{flex:0 0 auto;min-height:40px;padding:6px 12px;font-size:12px;white-space:normal;max-width:40%}
+/* All decision/reason controls share one bounded row, including custom input. */
+.rf-reader-page .scr-decisions{display:flex;flex-wrap:nowrap;gap:clamp(3px,.8cqi,8px);align-items:stretch;border-top:1px solid var(--border);padding:10px 0;margin:0!important;width:100%;min-width:0;box-sizing:border-box}
+.rf-reader-page .scr-decisions>.btn{flex:1 1 0;width:auto;min-width:0;min-height:40px;padding:6px clamp(3px,1cqi,10px);font-size:13px;white-space:normal;overflow-wrap:anywhere;justify-content:center}
+.rf-reader-page .scr-decisions>.input,.rf-reader-page .wf-custom-reason-row>.input{flex:1.7 1 0;width:0;min-width:0;max-width:none!important;min-height:40px;padding:6px 8px;font-size:12px;box-sizing:border-box}
+.rf-reader-page #excCustomReason{flex-grow:2.2}
+.rf-reader-page .wf-custom-reason-row{display:contents}
+.rf-reader-page .wf-custom-reason-row>.btn{display:flex;align-items:center;justify-content:center;gap:6px;flex:1.4 1 0;min-width:0;min-height:40px;padding:6px 8px;font-size:12px}
+.rf-reader-page .wf-reason-save-icon{width:16px;height:16px;flex:0 0 16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.rf-reader-page .wf-reason-save-label{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rf-reader-page .rf-focus-strip{display:none;align-items:center;gap:10px;justify-content:space-between;flex-shrink:0;margin:0 0 12px;font-size:12px;color:var(--muted)}
 .rf-reader-page .rf-focus-strip button{display:inline-flex;align-items:center;gap:6px;font-size:12px;min-height:34px}
 .rf-stop-anchor{margin-left:auto;flex-shrink:0;max-width:100%}
@@ -81,10 +82,6 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
 }
 @media(max-width:760px){
  .rf-reader-page #scrCard{padding:16px 16px 0}
- .rf-reader-page .scr-decisions{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
- .rf-reader-page .scr-decisions:has(#btnMay[hidden]){grid-template-columns:repeat(2,minmax(0,1fr))}
- .rf-reader-page .scr-decisions>.input{grid-column:1/-1}
- .rf-reader-page .scr-decisions>.btn{font-size:13px;padding:9px 5px}
  .rf-reader-page .scr-meta .scr-journal{max-width:70%}
  .rf-reader-page .al-profile-picker .input{max-width:170px}
 }
@@ -92,10 +89,15 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
  body.fp-screen .rf-reader-page #scrBody .absbox{max-height:55vh;min-height:200px;overflow:auto}
  .rf-reader-page .scr-title{font-size:20px}
 }
-@media(max-width:560px){
- .rf-reader-page .wf-custom-reason-row{flex-wrap:wrap}
- .rf-reader-page .wf-custom-reason-row>.input{flex-basis:100%}
- .rf-reader-page .wf-custom-reason-row>.btn{max-width:100%}
+@container screen-reader (max-width:720px){
+ .rf-reader-page .wf-reason-save-label{display:none}
+ .rf-reader-page .wf-custom-reason-row>.btn{flex:0 0 34px;padding:6px}
+ .rf-reader-page .scr-decisions>.btn{font-size:12px}
+}
+@container screen-reader (max-width:420px){
+ .rf-reader-page .scr-decisions{gap:3px}
+ .rf-reader-page .scr-decisions>.input,.rf-reader-page .wf-custom-reason-row>.input{padding:6px 4px;font-size:11px}
+ .rf-reader-page .scr-decisions>.btn{font-size:11px;padding:6px 3px}
 }
 @media(pointer:coarse){
  .rf-reader-page .al-mode button,.rf-reader-page .rf-screen-details,.rf-screen-help>header button{min-height:44px}

@@ -152,3 +152,16 @@ Changed product files: `screen_reader.css`, `workflow_controls.js` (four present
 Validation: JavaScript/inline-script/language-pack syntax checks and diff review passed. Actual browser checks covered custom and built-in reasons, light/dark themes and a 390 px layout without horizontal page overflow. The desktop decision area measured 178.7 px before and 108.7 px after, approximately 39% shorter. No screening decisions or reason-library writes were submitted. The original tab's unsaved custom-reason draft was retained; verification used a separate disposable preview tab.
 
 Screenshot: `screen-decision-spacing-detail.jpg` in the external visualization workspace. No main merge, push, release or installed-client replacement.
+
+### Confirmed refinement: one horizontal row
+
+The user subsequently confirmed that decision buttons, reason selection, custom reason value and reusable-reason saver must all stay on one horizontal row. This supersedes the earlier two-row/stacking layout.
+
+- A non-wrapping flex row shares the reader width among all visible controls, with zero minimum content widths and adaptive gaps. Hiding Needs review or the custom input automatically redistributes space.
+- The existing custom-reason wrapper uses `display: contents`, preserving IDs and handlers while placing its controls in the same visual row.
+- Below a 720 px reader width, the save action uses an original bookmark-plus SVG. Its full localized label remains in the tooltip and accessible name. Longer labels are clipped within their own control.
+- Container queries respond to the actual reader width, including sidebar changes. No separate horizontal scroll area is introduced.
+
+Validation: actual browser measurements at default desktop, 390 px and 320 px widths showed every visible control at the same vertical position and no row/page horizontal overflow. Default desktop row height was 60.7 px including its padding and border. Syntax and diff checks passed. No decisions, reason-library records or owner policies were saved. The original tab's draft remains untouched. Viewport overrides were reset.
+
+Artifacts: `screen-decision-single-row.jpg` and `screen-decision-single-row-checks.json` in the external visualization workspace. Scope remains limited to three frontend files and this record.

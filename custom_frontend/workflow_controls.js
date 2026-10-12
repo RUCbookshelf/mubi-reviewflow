@@ -267,7 +267,14 @@
     if(!document.getElementById(id)&&settings?.can_manage){const b=button('Save as reusable reason',()=>mutateReason(stage,'POST',null,select.value==='__custom__'?custom.value:select.value));b.id=id;select.parentElement.append(b);}
     if(stage==='screen'&&custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
       const save=document.getElementById(id);
-      if(save){const row=n('div',null,{class:'wf-custom-reason-row'});select.parentElement.append(row);row.append(custom,save);}
+      if(save){
+        const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');
+        icon.setAttribute('viewBox','0 0 24 24');icon.setAttribute('class','wf-reason-save-icon');icon.setAttribute('aria-hidden','true');
+        const path=document.createElementNS(icon.namespaceURI,'path');path.setAttribute('d','M6 3h12v18l-6-4-6 4V3Zm6 4v6m-3-3h6');icon.append(path);
+        save.replaceChildren(icon,n('span','Save as reusable reason',{class:'wf-reason-save-label'}));
+        save.setAttribute('title',T('Save as reusable reason'));save.setAttribute('aria-label',T('Save as reusable reason'));
+        const row=n('div',null,{class:'wf-custom-reason-row'});select.parentElement.append(row);row.append(custom,save);
+      }
     }
   };
   function tools(stage) {
