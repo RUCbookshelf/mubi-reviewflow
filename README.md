@@ -19,8 +19,8 @@
 | --- | --- |
 | 文献导入 | RIS 导入、重复记录处理、导入历史与原始数据追溯 |
 | 文献筛选 | 标题/摘要初筛、PDF 全文复筛、常用与自定义排除理由 |
-| AI 排序 | 辅助安排阅读顺序；纳入、待定和排除由用户决定 |
-| 文献编码 | 提取研究信息、记录编码内容与全文依据 |
+| 机器学习排序 | 辅助安排阅读顺序；纳入、需复核和排除由用户决定 |
+| 数据提取与编码 | 提取研究信息、记录编码内容与全文依据 |
 | 数据分析 | 效应量计算、固定与随机效应合并、异质性、亚组、Meta 回归、敏感性与小研究效应分析 |
 | 扩展分析 | 诊断准确性、网络 Meta 分析、剂量反应、IPD、贝叶斯与多层模型等模块；使用前请确认各模块的输入与适用条件 |
 | 偏倚风险 | 记录 RoB 2、ROBINS-I、QUADAS-2 等工具的人工判断 |
@@ -30,6 +30,19 @@
 | 研究材料导出 | PRISMA 流程图，以及对应模块提供的 DOCX、PPTX、LaTeX 等材料 |
 
 分析模块的实现不代表所有研究设计均已充分验证。方法前提、验证范围和限制见[分析能力评估](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#zh-cn)。发表时请核对方法来源并引用相应文献；软件结果仍需研究者检查。
+
+### 流程控制与研究依据
+
+- **首页与设置：** 六个标签页集中管理概览、任务与团队、筛选设置、机器学习、数据提取与编码、外观与存储。初筛顺序可选导入、机器学习或随机；随机顺序按用户、任务与来源范围保存。
+- **导入来源与去重：** 从 RIS 数据库元数据自动识别来源；缺失信息或文件名建议仍需确认。精确匹配与待人工核验的标题/模糊候选分开处理。按来源筛选或编码时，多来源文献在总体队列中只出现一次。
+- **保护既有工作：** 已有保存决定或编码后，追加导入的新记录先暂存，负责人核验重复及元数据差异后激活；保留既有标识、决定与证据。
+- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。两阶段分别设置是否提供需复核；初筛纳入或需复核均进入全文筛选，全文需复核仍待解决，不因该决定进入编码。
+- **数据提取与编码：** 每个维度可添加文字、页码和 PNG/JPEG/WebP 图片证据。负责人可要求指定维度提供证据；不完整内容可保存为草稿，不计为完成。
+- **撤销与轨迹回溯：** 初筛、全文筛选、编码支持受保护的撤销。可从轨迹打开文献修改当前结果；只有满足条件的最近保存可直接撤销，不能任意恢复旧快照。
+- **团队管理：** 在同一区域管理成员与进度、阶段来源权限、筛选选项及导入来源。任务负责人、筛选与编码员、裁决员有角色标识与成员操作菜单；负责人可为各阶段设置全部来源、指定来源或暂停，成员列表及任务变更自动刷新。
+- **PRISMA：** 保留独立手动填数与选择性导入任务指标，支持更新综述和其他来源分支及指标依据 CSV。未知数值需要确认；研究数与报告数独立，“每份报告对应一项研究”须主动选择。
+
+**升级：** 从 [最新 Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) 获取安装包，升级前备份整个数据目录。2.0.5 客户端可能不自动提示 2.0.5.1，请直接下载该维护版本；新版本支持四段版本比较。
 
 ### 快速开始
 
@@ -61,7 +74,7 @@ python build/launcher.py
 | macOS 安装版 | `~/Library/Application Support/ReviewFlow` |
 | Linux 安装版 | `~/.local/share/ReviewFlow`，或 `XDG_DATA_HOME` 下的 `ReviewFlow` |
 
-上传的 PDF 位于数据目录中的 `tasks/<任务标识>/pdfs`，占用磁盘空间。安装版可在「首页 & 设置 → 数据存放位置」迁移到其他目录，**重启应用后生效**。迁移完成前保留原数据；确认新目录正常后再使用清理功能。卸载保留个人研究数据。请另行备份重要材料。
+上传的 PDF 位于数据目录中的 `tasks/<任务标识>/pdfs`，占用磁盘空间。安装版可在「首页 & 设置 → 外观与存储 → 数据存放位置」迁移到其他目录，**重启应用后生效**。迁移完成前保留原数据；确认新目录正常后再使用清理功能。卸载保留个人研究数据。请另行备份重要材料。
 
 本机使用的数据保存在本机。启用在线 AI/API 时，相应请求会发往配置的服务。服务器模式将任务数据持久保存到服务器；同一服务器的任务成员能查看彼此进度，但不能修改他人的个人筛选决定。
 
@@ -75,7 +88,7 @@ python build/launcher.py
 | --- | --- | --- |
 | Windows 10/11 x64 | 安装 Inno Setup 6/7 或 NSIS 3，运行 `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
+| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。
 
@@ -121,8 +134,8 @@ The application uses FastAPI, a browser interface and Python calculation modules
 
 - **Reference import:** RIS files, duplicate handling, import history and original import data.
 - **Screening:** title/abstract and PDF full-text screening, with standard or custom exclusion reasons.
-- **AI ranking:** assistance with reading order; inclusion, uncertainty and exclusion remain user decisions.
-- **Coding:** study information extraction and supporting full-text evidence.
+- **Machine Learning:** assistance with reading order; inclusion, uncertainty and exclusion remain user decisions.
+- **Data extraction & coding:** study information extraction and supporting full-text evidence.
 - **Analysis:** effect sizes, fixed and random effects, heterogeneity, subgroups, meta-regression, sensitivity and small-study effects.
 - **Extended methods:** diagnostic accuracy, network meta-analysis, dose–response, IPD, Bayesian and multilevel modules, each with its own input requirements.
 - **Risk of bias:** manual assessments using tools such as RoB 2, ROBINS-I and QUADAS-2.
@@ -132,6 +145,19 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Exports:** PRISMA diagrams and module-specific DOCX, PPTX and LaTeX materials.
 
 Implementation does not establish validation for every study design. Consult the [analysis assessment](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#en) for assumptions and validation limits. Check results and cite the original methods when publishing.
+
+### Workflow controls and research evidence
+
+- **Home & Settings:** six tabs organize Overview, Tasks & team, Screening settings, Machine Learning, Data extraction & coding, and Appearance & storage. Initial-screening order offers Import / Machine Learning / Random; random order persists per user, task and source scope.
+- **Sources and deduplication:** recognize sources from RIS database metadata; missing information and filename suggestions need confirmation. Exact matches are separate from title/fuzzy candidates requiring human review. Multi-source articles appear once in the overall queue when screening or coding by source.
+- **Protect existing work:** once decisions or coding have been saved, additional new records are staged for owner review of duplicates and metadata differences before activation. Existing identities, decisions and evidence are retained.
+- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Needs review is configurable independently for both stages. Initial Include and Needs review advance to full-text screening; full-text Needs review remains unresolved and does not qualify an article for coding.
+- **Data extraction & coding:** add text, page references and PNG/JPEG/WebP evidence per dimension. Owners may require evidence for selected dimensions; incomplete work can be saved as a draft and is not counted as complete.
+- **Undo and Trace:** guarded Undo is available in initial screening, full-text screening and coding. Open linked articles from Trace to correct current results; only an eligible latest save can be undone directly, rather than restoring arbitrary historical snapshots.
+- **Team management:** one panel contains members/progress, stage source permissions, screening options and imported sources. Task owner / Coder / Adjudicator badges and member action menus identify responsibilities. Owners choose All / Selected / Paused per stage; membership and task lists refresh automatically.
+- **PRISMA:** preserve standalone manual entry and selective task-metric import, with updated-review and other-source branches and metric-provenance CSV. Unknown values need confirmation. Study and report counts are independent; one report per study is an explicit shortcut.
+
+**Upgrading:** download from the [latest Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) and back up the complete data directory first. Existing 2.0.5 clients may not automatically prompt for 2.0.5.1; download this hotfix directly. The corrected checker supports four-part versions.
 
 ### Getting started
 
@@ -158,7 +184,7 @@ Source runs use the repository's `data/` folder. Installed applications default 
 - macOS: `~/Library/Application Support/ReviewFlow`
 - Linux: `~/.local/share/ReviewFlow`, or `ReviewFlow` under `XDG_DATA_HOME`.
 
-Uploaded PDFs are stored under `tasks/<task-id>/pdfs` inside the data folder. In installed applications, use **Home & Settings → Data location** to migrate data. **Restart the application to apply the change.** The original data is retained until you confirm the new location and use the cleanup option. Uninstalling retains personal research data; keep separate backups.
+Uploaded PDFs are stored under `tasks/<task-id>/pdfs` inside the data folder. In installed applications, use **Home & Settings → Appearance & storage → Data location** to migrate data. **Restart the application to apply the change.** The original data is retained until you confirm the new location and use the cleanup option. Uninstalling retains personal research data; keep separate backups.
 
 Local mode stores research data locally. Online AI/API features send relevant requests to the configured service. Server mode persists task data on the server. Task members can see each other's progress without changing another reviewer's personal decisions.
 
@@ -172,7 +198,7 @@ Build on the target operating system with an internet connection.
 | --- | --- | --- |
 | Windows 10/11 x64 | Install Inno Setup 6/7 or NSIS 3; run `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
+| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Build Intel and Apple Silicon macOS packages separately on the corresponding architecture. Check release dates and versions: a build script does not imply that an up-to-date binary is published. See the [Windows build guide](build/WINDOWS_TRANSFER.md#en).
 
@@ -206,12 +232,25 @@ ReviewFlow reúne la importación de referencias, el cribado, la codificación, 
 
 - Importación RIS, detección y gestión de duplicados, historial y trazabilidad de los archivos originales.
 - Cribado de título/resumen y de texto completo en PDF; motivos de exclusión estándar o personalizados.
-- Ordenación asistida por IA; las decisiones de inclusión, duda y exclusión siguen correspondiendo al usuario.
+- Ordenación asistida por aprendizaje automático; las decisiones de inclusión, duda y exclusión siguen correspondiendo al usuario.
 - Codificación de estudios con evidencia del texto completo; análisis de tamaños del efecto, heterogeneidad, subgrupos, metarregresión y sensibilidad.
 - Evaluación manual del riesgo de sesgo, bibliometría, mapas de evidencia, colaboración y diagramas PRISMA.
 - Registro de investigación opcional y exportación de materiales, según el módulo, a DOCX, PPTX o LaTeX.
 
 La disponibilidad de un método no significa que esté validado para todos los diseños. Consulte la [evaluación de análisis](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#es), compruebe los resultados y cite las fuentes metodológicas.
+
+### Controles del flujo de trabajo y evidencia
+
+- **Inicio y configuración:** seis pestañas reúnen Resumen, Tareas y equipo, Cribado, Aprendizaje automático, Extracción y codificación de datos, Apariencia y almacenamiento. Orden inicial: Importación / Aprendizaje automático / Aleatorio; el orden aleatorio persiste por usuario, tarea y conjunto de fuentes.
+- **Fuentes y duplicados:** reconocimiento mediante metadatos de bases de datos RIS; información ausente y sugerencias del nombre de archivo requieren confirmación. Las coincidencias exactas se separan de candidatos por título/similitud para revisión humana. Una referencia de varias fuentes aparece una sola vez en la cola global.
+- **Trabajo existente:** tras guardar decisiones o codificación, los nuevos registros de importaciones adicionales quedan pendientes de revisión de duplicados y diferencias de metadatos por el propietario antes de activarse. Se conservan identidades, decisiones y evidencia.
+- **Decisiones y motivos:** bibliotecas de motivos reutilizables separadas para ambos cribados. Por revisar se configura por etapa. Incluir y Por revisar iniciales avanzan al texto completo; la incertidumbre en texto completo queda sin resolver y no permite pasar a codificación.
+- **Extracción y codificación:** texto, páginas e imágenes PNG/JPEG/WebP por dimensión. El propietario puede exigir evidencia; un borrador incompleto se guarda sin contarse como finalizado.
+- **Deshacer y trazabilidad:** deshacer protegido en las tres etapas; abrir un artículo vinculado desde el registro para corregir sus valores actuales. Solo se deshace directamente el último guardado admisible, no cualquier instantánea histórica.
+- **Equipo:** un panel integra miembros/progreso, fuentes permitidas por etapa, opciones de cribado y fuentes importadas. Insignias Responsable de la tarea / Revisor y codificador / Adjudicador y menús de miembros indican responsabilidades. El propietario elige Todas / Seleccionadas / En pausa; miembros y tareas se actualizan automáticamente.
+- **PRISMA:** entrada manual independiente o importación selectiva de métricas, revisiones actualizadas/otras fuentes y CSV de procedencia. Los valores desconocidos necesitan confirmación; estudios e informes son independientes, con un atajo explícito de un informe por estudio.
+
+**Actualización:** descargue la [última versión](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) y respalde toda la carpeta de datos. El cliente 2.0.5 puede no avisar de 2.0.5.1; descargue el parche directamente. El comprobador corregido admite versiones de cuatro componentes.
 
 ### Inicio y datos
 
@@ -231,12 +270,25 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 
 - RIS取り込み、重複候補の確認、インポート履歴、元ファイルの追跡。
 - タイトル／抄録スクリーニング、PDF全文スクリーニング、標準またはカスタムの除外理由。
-- AIによる閲覧順の補助。採用・保留・除外の判断はユーザーが行います。
+- 機械学習による閲覧順の補助。採用・保留・除外の判断はユーザーが行います。
 - 全文根拠を伴う研究情報のコーディング、効果量、異質性、サブグループ、メタ回帰、感度分析。
 - バイアスリスクの評価、文献計量、エビデンスマップ、チーム共同作業、PRISMAフロー図。
 - 研究履歴の記録と、各モジュールに応じたDOCX／PPTX／LaTeX出力。
 
 機能が実装されていることは、すべての研究デザインで妥当性が確認されたことを意味しません。[分析機能の評価](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#ja)を確認し、結果を検証して方法論の原典を引用してください。
+
+### ワークフロー管理と研究の根拠
+
+- **ホームと設定：** 概要、タスクとチーム、スクリーニング、機械学習、データ抽出とコーディング、外観と保存先の6タブ。初期スクリーニング順は取り込み順／機械学習／ランダムで、ランダム順はユーザー・タスク・対象ソースごとに保持します。
+- **ソースと重複：** RISのデータベースメタデータから認識します。不明情報やファイル名による候補は確認が必要です。完全一致と、手動確認が必要なタイトル・類似候補を区別し、複数ソースの文献は全体キューに一度だけ表示します。
+- **既存作業の保護：** 判断やコーディングを保存した後の追加取り込みは、新規記録を一時保留し、所有者が重複・メタデータ差異を確認して有効化します。識別子、判断、根拠は保持します。
+- **判断と除外理由：** 初期／全文の理由ライブラリを別々に保存します。要再検討は各段階で設定できます。初期の採用・要再検討は全文へ進み、全文の要再検討は未解決のままでコーディング対象にはなりません。
+- **データ抽出とコーディング：** 各項目に文章、ページ、PNG/JPEG/WebP画像を添付できます。所有者は根拠を必須にでき、不完全な内容は下書きとして保存し、完了には数えません。
+- **取り消しと履歴：** 3段階で保護付き取り消しを利用できます。履歴から文献を開いて現在値を修正できますが、直接取り消せるのは条件を満たす直近の保存のみです。
+- **チーム：** メンバーと進捗、段階別ソース、判断設定、取り込み済みソースを一つのパネルにまとめます。タスク所有者／スクリーニング・コーディング担当／判定担当者のバッジと操作メニューを表示し、所有者は全ソース／選択／一時停止を設定します。メンバーとタスク一覧は自動更新します。
+- **PRISMA：** 独立した手入力と選択的なタスク指標取り込みを維持し、更新レビュー・その他ソースと指標の由来CSVに対応します。不明値は確認が必要です。研究数と報告数は独立し、1報告＝1研究は明示的に選択します。
+
+**更新：** データフォルダー全体をバックアップしてから[最新版](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest)を取得してください。2.0.5は2.0.5.1を自動通知しない場合があるため、直接ダウンロードしてください。修正版は4要素のバージョンに対応します。
 
 ### はじめに・データ保存
 
@@ -256,12 +308,25 @@ O ReviewFlow reúne importação de referências, triagem, codificação, análi
 
 - Importação RIS, identificação e revisão de duplicatas, histórico e rastreabilidade dos arquivos originais.
 - Triagem de título/resumo e de texto completo em PDF, com motivos de exclusão padrão ou personalizados.
-- Ordenação de leitura assistida por IA; as decisões de incluir, deixar em dúvida ou excluir pertencem ao usuário.
+- Ordenação de leitura assistida por aprendizado de máquina; as decisões de incluir, deixar em dúvida ou excluir pertencem ao usuário.
 - Codificação de estudos com evidências do texto completo; tamanhos de efeito, heterogeneidade, subgrupos, meta-regressão e análises de sensibilidade.
 - Avaliação manual de risco de viés, bibliometria, mapas de evidências, colaboração e diagramas PRISMA.
 - Registro da pesquisa e exportação, conforme o módulo, para DOCX, PPTX ou LaTeX.
 
 A implementação de um método não comprova sua validação para todos os delineamentos. Consulte a [avaliação dos recursos de análise](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#pt), confira os resultados e cite as fontes metodológicas.
+
+### Controles do fluxo de trabalho e evidências
+
+- **Início e configurações:** seis abas organizam Visão geral, Tarefas e equipe, Triagem, Aprendizado de máquina, Extração e codificação de dados, Aparência e armazenamento. Ordem inicial: Importação / Aprendizado de máquina / Aleatória; a ordem aleatória persiste por usuário, tarefa e conjunto de fontes.
+- **Fontes e duplicatas:** reconhecimento por metadados de bases RIS; dados ausentes e sugestões de nomes de arquivos exigem confirmação. Correspondências exatas são separadas de candidatos por título/similaridade para revisão humana. Um artigo de várias fontes aparece uma vez na fila global.
+- **Trabalho existente:** após salvar decisões ou codificação, novos registros de importações adicionais ficam aguardando revisão de duplicatas e diferenças de metadados pelo proprietário antes da ativação. Identidades, decisões e evidências são mantidas.
+- **Decisões e motivos:** bibliotecas reutilizáveis separadas para triagem inicial e texto completo. Revisão necessária é configurável por etapa. Incluir e Revisão necessária iniciais avançam ao texto completo; a incerteza no texto completo continua pendente e não autoriza codificação.
+- **Extração e codificação:** texto, páginas e imagens PNG/JPEG/WebP por dimensão. O proprietário pode exigir evidências; rascunhos incompletos são salvos sem contar como concluídos.
+- **Desfazer e histórico:** desfazer protegido nas três etapas; abrir artigos vinculados ao histórico para corrigir valores atuais. Apenas o último salvamento elegível pode ser desfeito diretamente, sem restaurar instantâneos históricos arbitrários.
+- **Equipe:** um painel reúne membros/progresso, fontes por etapa, opções de triagem e fontes importadas. Insígnias Responsável pela tarefa / Revisor e codificador / Adjudicador e menus de membros indicam responsabilidades. O proprietário escolhe Todas / Selecionadas / Pausada; membros e tarefas atualizam automaticamente.
+- **PRISMA:** entrada manual independente ou importação seletiva de métricas, revisões atualizadas/outras fontes e CSV de procedência. Valores desconhecidos exigem confirmação; estudos e relatórios são independentes, com atalho explícito de um relatório por estudo.
+
+**Atualização:** baixe a [versão mais recente](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) e faça backup de toda a pasta de dados. O cliente 2.0.5 pode não avisar sobre 2.0.5.1; baixe o corretivo diretamente. A verificação corrigida aceita versões com quatro componentes.
 
 ### Como começar e onde ficam os dados
 
@@ -281,12 +346,25 @@ ReviewFlow bündelt Literaturimport, Screening, Kodierung, Analyse und die Dokum
 
 - RIS-Import, Erkennung und Prüfung von Duplikaten, Importverlauf und Rückverfolgbarkeit der Originaldateien.
 - Titel-/Abstract-Screening und PDF-Volltextscreening mit standardisierten oder eigenen Ausschlussgründen.
-- KI-gestützte Lesereihenfolge; über Einschluss, Unsicherheit und Ausschluss entscheidet weiterhin der Nutzer.
+- Lesereihenfolge mit maschinellem Lernen; über Einschluss, Unsicherheit und Ausschluss entscheidet weiterhin der Nutzer.
 - Studienkodierung mit Volltextbelegen; Effektgrößen, Heterogenität, Subgruppen, Metaregression und Sensitivitätsanalysen.
 - Manuelle Bewertung des Verzerrungsrisikos, Bibliometrie, Evidenzkarten, Zusammenarbeit und PRISMA-Flussdiagramme.
 - Forschungsprotokoll und je nach Modul Export als DOCX, PPTX oder LaTeX.
 
 Eine implementierte Methode ist nicht automatisch für jedes Studiendesign validiert. Lesen Sie die [Bewertung der Analysefunktionen](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#de), prüfen Sie die Ergebnisse und zitieren Sie die methodischen Originalquellen.
+
+### Workflow-Steuerung und Forschungsbelege
+
+- **Startseite und Einstellungen:** sechs Register für Übersicht, Aufgaben und Team, Screening, Maschinelles Lernen, Datenextraktion und Kodierung, Darstellung und Speicherung. Erstscreening-Reihenfolge: Import / Maschinelles Lernen / Zufällig; die Zufallsreihenfolge bleibt je Nutzer, Aufgabe und Quellenumfang erhalten.
+- **Quellen und Duplikate:** Erkennung anhand der RIS-Datenbankmetadaten; fehlende Angaben und Dateinamen-Vorschläge erfordern Bestätigung. Exakte Treffer werden von manuell zu prüfenden Titel-/Ähnlichkeitskandidaten getrennt. Artikel mit mehreren Quellen erscheinen einmal in der Gesamtwarteschlange.
+- **Bestehende Arbeit:** nach gespeicherten Entscheidungen oder Kodierungen bleiben neue zusätzliche Importdatensätze zunächst vorgemerkt. Der Eigentümer prüft Duplikate und Metadatenunterschiede vor der Aktivierung; Identitäten, Entscheidungen und Belege bleiben erhalten.
+- **Entscheidungen und Gründe:** getrennte wiederverwendbare Ausschlussgründe für Erst- und Volltextscreening. Zu prüfen ist je Phase konfigurierbar. Einschluss und Zu prüfen im Erstscreening führen zum Volltext; Zu prüfen im Volltext bleibt ungeklärt und berechtigt nicht zur Kodierung.
+- **Datenextraktion und Kodierung:** Text, Seitenangaben und PNG/JPEG/WebP-Bilder je Dimension. Der Eigentümer kann Belege verlangen; unvollständige Entwürfe sind speicherbar, zählen aber nicht als abgeschlossen.
+- **Rückgängig und Protokoll:** geschütztes Rückgängigmachen in allen drei Phasen; verknüpfte Artikel aus dem Protokoll zur Korrektur aktueller Werte öffnen. Nur die letzte zulässige Speicherung lässt sich direkt rückgängig machen, kein beliebiger historischer Stand.
+- **Team:** ein Bereich enthält Mitglieder/Fortschritt, Quellen je Phase, Screening-Optionen und importierte Quellen. Aufgabeninhaber / Screening- und Kodierperson / Entscheidungsperson werden durch Symbole und Mitgliedermenüs gekennzeichnet. Der Eigentümer wählt Alle / Ausgewählte / Pausiert; Mitglieder- und Aufgabenlisten aktualisieren sich automatisch.
+- **PRISMA:** unabhängige manuelle Eingabe oder selektiver Kennzahlenimport, aktualisierte Reviews/andere Quellen und Herkunfts-CSV. Unbekannte Werte müssen bestätigt werden; Studien und Berichte werden getrennt gezählt, ein Bericht pro Studie ist eine ausdrückliche Auswahl.
+
+**Aktualisierung:** laden Sie die [neueste Version](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) und sichern Sie vorher den gesamten Datenordner. Version 2.0.5 meldet 2.0.5.1 möglicherweise nicht automatisch; laden Sie den Hotfix direkt. Die korrigierte Prüfung unterstützt vierteilige Versionen.
 
 ### Einstieg und Datenspeicherung
 
@@ -306,12 +384,25 @@ ReviewFlow objedinjuje uvoz literature, skrining, kodiranje, analizu i beleženj
 
 - RIS uvoz, otkrivanje i provera duplikata, istorija uvoza i praćenje izvornih datoteka.
 - Skrining naslova/apstrakta i punog teksta PDF-a, uz standardne ili prilagođene razloge za isključivanje.
-- AI pomoć pri određivanju redosleda čitanja; korisnik donosi odluke o uključivanju, neizvesnosti ili isključivanju.
+- Mašinsko učenje za pomoć pri određivanju redosleda čitanja; korisnik donosi odluke o uključivanju, neizvesnosti ili isključivanju.
 - Kodiranje studija uz dokaze iz punog teksta; veličine efekta, heterogenost, podgrupe, meta-regresija i analize osetljivosti.
 - Ručna procena rizika od pristrasnosti, bibliometrija, mape dokaza, saradnja i PRISMA dijagrami toka.
 - Beleženje istraživačkog procesa i izvoz u DOCX, PPTX ili LaTeX, u zavisnosti od modula.
 
 Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. Pogledajte [procenu analitičkih mogućnosti](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#sr), proverite rezultate i citirajte izvorne metodološke radove.
+
+### Kontrole toka rada i istraživački dokazi
+
+- **Početna i podešavanja:** šest kartica — Pregled, Zadaci i tim, Skrining, Mašinsko učenje, Ekstrakcija i kodiranje podataka, Izgled i skladištenje. Početni redosled: Uvoz / Mašinsko učenje / Nasumično; nasumični redosled se čuva po korisniku, zadatku i skupu izvora.
+- **Izvori i duplikati:** prepoznavanje preko RIS metapodataka o bazi; nedostajuće informacije i predlozi iz naziva datoteka zahtevaju potvrdu. Tačna podudaranja se odvajaju od kandidata po naslovu/sličnosti za ljudsku proveru. Članak iz više izvora pojavljuje se jednom u ukupnom redu.
+- **Postojeći rad:** posle sačuvanih odluka ili kodiranja, novi zapisi dodatnog uvoza čekaju vlasničku proveru duplikata i razlika metapodataka pre aktiviranja. Identiteti, odluke i dokazi se čuvaju.
+- **Odluke i razlozi:** odvojene biblioteke čestih razloga za oba skrininga. Potrebna provera se podešava po fazi. Uključiti i Potrebna provera u početnoj fazi vode ka punom tekstu; neizvesnost u punom tekstu ostaje nerešena i ne omogućava kodiranje.
+- **Ekstrakcija i kodiranje:** tekst, stranice i PNG/JPEG/WebP slike po dimenziji. Vlasnik može zahtevati dokaze; nepotpun nacrt se čuva, ali ne računa kao završen.
+- **Opoziv i trag:** zaštićeni opoziv u tri faze; otvaranje povezanog članka iz traga radi ispravke trenutnih vrednosti. Direktno se opoziva samo poslednje dozvoljeno čuvanje, ne proizvoljan istorijski snimak.
+- **Tim:** jedan panel sadrži članove/napredak, izvore po fazama, opcije skrininga i uvezene izvore. Oznake Vlasnik zadatka / Pregledač i koder / Arbitar i meniji članova prikazuju uloge. Vlasnik bira Svi / Izabrani / Pauzirano; članstvo i liste zadataka se automatski osvežavaju.
+- **PRISMA:** samostalan ručni unos ili selektivan uvoz pokazatelja, ažurirani pregledi/drugi izvori i CSV porekla. Nepoznate vrednosti zahtevaju potvrdu; studije i izveštaji se broje odvojeno, jedan izveštaj po studiji je izričit izbor.
+
+**Ažuriranje:** preuzmite [najnovije izdanje](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) i prvo kopirajte ceo direktorijum podataka. Klijent 2.0.5 možda neće automatski najaviti 2.0.5.1; preuzmite ispravku direktno. Ispravljena provera podržava četiri dela verzije.
 
 ### Početak rada i čuvanje podataka
 
@@ -331,12 +422,25 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 
 - RIS 가져오기, 중복 탐지 및 검토, 가져오기 기록과 원본 파일 추적.
 - 제목/초록 선별 및 PDF 전문 선별, 기본 또는 사용자 지정 제외 사유.
-- AI 읽기 순서 지원. 포함·보류·제외 결정은 사용자가 내립니다.
+- 머신러닝 읽기 순서 지원. 포함·보류·제외 결정은 사용자가 내립니다.
 - 전문 근거를 포함한 연구 코딩, 효과크기, 이질성, 하위그룹, 메타회귀 및 민감도 분석.
 - 비뚤림 위험 수동 평가, 서지계량, 근거 지도, 팀 협업 및 PRISMA 흐름도.
 - 연구 과정 기록과 모듈별 DOCX, PPTX, LaTeX 내보내기.
 
 기능이 구현되어 있다고 해서 모든 연구 설계에서 검증되었다는 뜻은 아닙니다. [분석 기능 평가](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#ko)를 확인하고 결과를 검토하며 방법론 원문을 인용하세요.
+
+### 워크플로 제어와 연구 근거
+
+- **홈 및 설정:** 개요, 작업 및 팀, 선별, 머신러닝, 데이터 추출 및 코딩, 화면 및 저장소의 6개 탭으로 구성됩니다. 초기 선별 순서는 가져오기 / 머신러닝 / 무작위이며, 무작위 순서는 사용자·작업·출처 범위별로 유지됩니다.
+- **출처와 중복:** RIS 데이터베이스 메타데이터로 출처를 인식합니다. 누락 정보와 파일명 제안은 확인이 필요합니다. 정확한 일치와 사람이 검토할 제목·유사 후보를 구분하며, 여러 출처의 문헌도 전체 대기열에는 한 번만 나타납니다.
+- **기존 작업 보호:** 판단이나 코딩을 저장한 뒤의 추가 가져오기는 신규 기록을 임시 보관합니다. 소유자가 중복·메타데이터 차이를 검토한 후 활성화하며, 식별자·판단·근거는 유지됩니다.
+- **판단과 사유:** 초기·전문 선별의 재사용 제외 사유를 각각 저장합니다. 검토 필요는 단계별로 설정합니다. 초기 포함·검토 필요는 전문 선별로 진행하며, 전문의 검토 필요는 미해결 상태로 코딩 대상이 되지 않습니다.
+- **데이터 추출 및 코딩:** 차원별로 텍스트, 페이지, PNG/JPEG/WebP 이미지를 첨부합니다. 소유자는 근거를 필수로 설정할 수 있고, 불완전한 내용은 초안으로 저장하되 완료로 계산하지 않습니다.
+- **실행 취소 및 기록:** 세 단계에 보호된 실행 취소를 제공합니다. 기록에서 연결 문헌을 열어 현재 값을 수정할 수 있지만 직접 취소는 조건을 충족하는 최근 저장만 가능합니다.
+- **팀:** 구성원·진행률, 단계별 출처, 선별 옵션, 가져온 출처를 한 패널에 모읍니다. 작업 소유자 / 선별 및 코딩 담당자 / 판정자 표시와 구성원 메뉴로 역할을 구분합니다. 소유자는 전체 / 선택 / 일시 중지를 설정하며 구성원과 작업 목록은 자동 갱신됩니다.
+- **PRISMA:** 독립 수동 입력과 선택적 작업 지표 가져오기, 갱신 고찰·기타 출처 분기, 지표 출처 CSV를 지원합니다. 미상 값은 확인해야 합니다. 연구 수와 보고서 수는 별개이며 보고서 1개당 연구 1개는 명시적으로 선택합니다.
+
+**업데이트:** 전체 데이터 폴더를 백업한 뒤 [최신 릴리스](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest)를 받으세요. 2.0.5는 2.0.5.1을 자동 알리지 않을 수 있으므로 직접 내려받으세요. 수정된 검사기는 네 부분 버전을 지원합니다.
 
 ### 시작하기와 데이터 저장
 
@@ -352,13 +456,13 @@ Windows, macOS, Linux 빌드 방법은 [Building packages](#building-packages)�
 
 ReviewFlow — рабочая среда для систематических обзоров и метаанализа: импорт литературы, отбор, кодирование, анализ и регистрация исследовательского процесса. Можно работать локально без интернета или развернуть приложение на сервере для команды. Участники видят общую литературу и прогресс, а решения каждого рецензента сохраняются отдельно.
 
-Приложение использует FastAPI, интерфейс в браузере и вычислительные модули Python. Установочные пакеты содержат Python и зависимости; пользователям не нужно устанавливать Python или WSL. Текущая версия установщика Windows — **2.0**.
+Приложение использует FastAPI, интерфейс в браузере и вычислительные модули Python. Установочные пакеты содержат Python и зависимости; пользователям не нужно устанавливать Python или WSL. Актуальные версии и установочные пакеты доступны в [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest).
 
 ### Возможности
 
 - Импорт RIS, обработка дубликатов, история импорта и сохранение исходных данных.
 - Отбор по заголовку/аннотации и полному тексту PDF; стандартные и собственные причины исключения.
-- Ранжирование с помощью ИИ для определения порядка чтения; решения принимает пользователь.
+- Машинное обучение для определения порядка чтения; решения принимает пользователь.
 - Кодирование характеристик исследований с опорой на полный текст.
 - Размеры эффекта, модели фиксированного и случайных эффектов, гетерогенность, подгруппы, метарегрессия, анализ чувствительности и эффектов малых исследований.
 - Модули диагностической точности, сетевого метаанализа, зависимости «доза–ответ», IPD, байесовских и многоуровневых моделей.
@@ -369,6 +473,19 @@ ReviewFlow — рабочая среда для систематических �
 - Диаграммы PRISMA и экспорт DOCX, PPTX, LaTeX в соответствующих модулях.
 
 Наличие метода в программе не означает его полную проверку для всех дизайнов исследований. Условия применения и границы проверки описаны в [оценке аналитических возможностей](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#ru). Проверяйте результаты и цитируйте первоисточники методов при публикации.
+
+### Управление процессом и подтверждающие материалы
+
+- **Главная и настройки:** шесть вкладок — Обзор, Задачи и команда, Отбор, Машинное обучение, Извлечение и кодирование данных, Оформление и хранение. Порядок первичного отбора: Импорт / Машинное обучение / Случайный; случайный порядок сохраняется для пользователя, задачи и набора источников.
+- **Источники и дубликаты:** базы распознаются по метаданным RIS; отсутствующие сведения и предположения по имени файла требуют подтверждения. Точные совпадения отделены от кандидатов по названию/сходству для ручной проверки. Запись из нескольких источников появляется один раз в общей очереди.
+- **Сохранность работы:** после сохранения решений или кодирования новые записи дополнительных импортов ожидают проверки владельцем дубликатов и различий метаданных перед активацией. Идентификаторы, решения и материалы сохраняются.
+- **Решения и причины:** отдельные библиотеки повторно используемых причин исключения для двух этапов. Требует повторного рассмотрения включается отдельно для каждого этапа. Включить и Требует повторного рассмотрения на первом этапе ведут к полному тексту; неопределённость при полном тексте остаётся нерешённой и не допускает запись к кодированию.
+- **Извлечение и кодирование:** текст, страницы и изображения PNG/JPEG/WebP для каждого поля. Владелец может требовать подтверждение отдельных полей; неполный черновик сохраняется, но не считается завершённым.
+- **Отмена и журнал:** защищённая отмена в трёх этапах; открытие связанной записи из журнала для исправления текущих значений. Напрямую отменяется только последнее допустимое сохранение, а не произвольный старый снимок.
+- **Команда:** общая панель участников/прогресса, источников по этапам, вариантов решений и импортированных источников. Значки Владелец задачи / Специалист по отбору и кодированию / Арбитр и меню участников показывают роли. Владелец выбирает Все / Выбранные / Приостановлено; состав и списки задач обновляются автоматически.
+- **PRISMA:** независимый ручной ввод и выборочный импорт показателей задачи, обновлённые обзоры/другие источники и CSV происхождения показателей. Неизвестные значения требуют подтверждения; исследования и отчёты считаются отдельно, «один отчёт на исследование» — явный выбор.
+
+**Обновление:** скачайте [последний выпуск](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest), предварительно скопировав весь каталог данных. Клиент 2.0.5 может не сообщить о 2.0.5.1 автоматически; скачайте исправление напрямую. Исправленная проверка поддерживает четыре компонента версии.
 
 ### Начало работы
 
@@ -395,7 +512,7 @@ python build/launcher.py
 - macOS: `~/Library/Application Support/ReviewFlow`
 - Linux: `~/.local/share/ReviewFlow` или каталог `ReviewFlow` в `XDG_DATA_HOME`.
 
-PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога данных. Перенос можно настроить на главной странице в разделе настроек хранения. **Изменение применяется после перезапуска приложения.** Исходные данные сохраняются до проверки нового каталога и запуска очистки. Удаление приложения сохраняет исследовательские данные; создавайте отдельные резервные копии.
+PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога данных. Перенос доступен в Главная и настройки → Оформление и хранение → Расположение данных. **Изменение применяется после перезапуска приложения.** Исходные данные сохраняются до проверки нового каталога и запуска очистки. Удаление приложения сохраняет исследовательские данные; создавайте отдельные резервные копии.
 
 При локальной работе данные остаются на компьютере. Онлайн-функции ИИ/API отправляют соответствующие запросы настроенному сервису. В серверном режиме данные задач постоянно хранятся на сервере. Участники задачи видят прогресс друг друга, но не могут изменять личные решения другого участника.
 
@@ -409,7 +526,7 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 | --- | --- | --- |
 | Windows 10/11 x64 | Установить Inno Setup 6/7 или NSIS 3; запустить `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
+| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Пакеты macOS для Intel и Apple Silicon собираются отдельно на соответствующей архитектуре. Проверяйте дату и версию выпуска: наличие скрипта сборки не означает наличие актуального опубликованного пакета. Подробнее: [сборка для Windows](build/WINDOWS_TRANSFER.md#ru).
 
@@ -438,13 +555,13 @@ python -m pytest
 
 ReviewFlow est un espace de travail pour les revues systématiques et les méta-analyses : importation des références, sélection, codage, analyse et suivi du processus de recherche. Il peut être utilisé localement hors ligne ou déployé sur un serveur pour une équipe. Les membres partagent les références et consultent leur progression, tout en conservant leurs décisions individuelles.
 
-L'application repose sur FastAPI, une interface dans le navigateur et des modules de calcul Python. Les paquets de bureau incluent Python et les dépendances nécessaires ; les utilisateurs n'ont pas besoin d'installer Python ou WSL. La version actuelle de l'installateur Windows est **2.0**.
+L'application repose sur FastAPI, une interface dans le navigateur et des modules de calcul Python. Les paquets de bureau incluent Python et les dépendances nécessaires ; les utilisateurs n'ont pas besoin d'installer Python ou WSL. Les versions et paquets actuels sont disponibles dans [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest).
 
 ### Fonctionnalités
 
 - Importation RIS, traitement des doublons, historique des imports et données originales.
 - Sélection sur titre/résumé et texte intégral PDF, avec motifs d'exclusion prédéfinis ou personnalisés.
-- Classement assisté par IA pour organiser la lecture ; les décisions restent celles de l'utilisateur.
+- Apprentissage automatique pour organiser la lecture ; les décisions restent celles de l'utilisateur.
 - Codage des caractéristiques des études et enregistrement des éléments du texte intégral qui les justifient.
 - Tailles d'effet, modèles à effets fixes et aléatoires, hétérogénéité, sous-groupes, méta-régression, analyses de sensibilité et effets liés aux petites études.
 - Modules de précision diagnostique, méta-analyse en réseau, dose–réponse, IPD, modèles bayésiens et multiniveaux.
@@ -455,6 +572,19 @@ L'application repose sur FastAPI, une interface dans le navigateur et des module
 - Diagrammes PRISMA et documents DOCX, PPTX ou LaTeX selon le module.
 
 La présence d'une méthode ne signifie pas qu'elle a été entièrement validée pour tous les plans d'étude. Consultez l'[évaluation des analyses](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#fr) pour les hypothèses et limites de validation. Vérifiez les résultats et citez les sources des méthodes lors de la publication.
+
+### Contrôles du flux de travail et éléments justificatifs
+
+- **Accueil et paramètres :** six onglets regroupent Vue d’ensemble, Tâches et équipe, Sélection, Apprentissage automatique, Extraction et codage des données, Apparence et stockage. L’ordre initial propose Importation / Apprentissage automatique / Aléatoire ; l’ordre aléatoire est conservé par utilisateur, tâche et périmètre de sources.
+- **Sources et doublons :** les métadonnées de base de données RIS permettent la reconnaissance automatique. Les informations manquantes et suggestions tirées des noms de fichiers nécessitent confirmation. Les correspondances exactes sont distinguées des candidats par titre/similarité à vérifier manuellement ; une référence multisource apparaît une seule fois dans la file globale.
+- **Travail existant :** après un enregistrement de décisions ou de codage, les nouveaux imports restent en attente. Le propriétaire vérifie doublons et différences de métadonnées avant activation ; identités, décisions et justificatifs sont conservés.
+- **Décisions et motifs :** conserver des motifs d’exclusion réutilisables séparés pour les deux étapes. L’option À revoir est configurable par étape. Inclure et À revoir au premier tri conduisent au texte intégral ; À revoir au texte intégral reste non résolu et ne donne pas accès au codage.
+- **Extraction et codage :** notes, pages et images PNG/JPEG/WebP par dimension ; le propriétaire peut exiger des justificatifs. Un brouillon incomplet peut être enregistré sans être compté comme terminé.
+- **Annulation et traçabilité :** annulation protégée dans les trois étapes ; ouvrir une référence liée au journal pour corriger sa valeur actuelle. Seul le dernier enregistrement admissible peut être annulé directement, sans restauration arbitraire d’anciens instantanés.
+- **Équipe :** un panneau réunit membres/progression, sources autorisées par étape, options de sélection et sources importées. Les badges Responsable de la tâche / Responsable du dépistage et du codage / Arbitre et menus des membres précisent les rôles. Le propriétaire choisit Toutes / Sélectionnées / En pause ; listes et adhésions sont actualisées automatiquement.
+- **PRISMA :** saisie manuelle indépendante ou import sélectif des indicateurs d’une tâche, branches de revue actualisée/autres sources et CSV de provenance. Les valeurs inconnues doivent être confirmées ; études et rapports sont distincts, avec un raccourci explicite « un rapport par étude ».
+
+**Mise à niveau :** utilisez la [dernière version](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) et sauvegardez tout le dossier de données. Le client 2.0.5 peut ne pas signaler automatiquement 2.0.5.1 ; téléchargez ce correctif directement. La vérification corrigée prend en charge quatre composantes.
 
 ### Prise en main
 
@@ -481,7 +611,7 @@ Depuis les sources, les données sont dans `data/` à la racine du dépôt. Pour
 - macOS : `~/Library/Application Support/ReviewFlow`
 - Linux : `~/.local/share/ReviewFlow`, ou `ReviewFlow` dans `XDG_DATA_HOME`.
 
-Les PDF sont stockés dans `tasks/<task-id>/pdfs` sous le dossier de données. La page d'accueil et les paramètres permettent de migrer ce dossier. **Redémarrez l'application pour appliquer le changement.** Les données originales restent disponibles jusqu'à la vérification du nouveau dossier et l'utilisation de l'option de nettoyage. La désinstallation conserve les données de recherche ; prévoyez des sauvegardes séparées.
+Les PDF sont stockés dans `tasks/<task-id>/pdfs` sous le dossier de données. Dans Accueil et paramètres → Apparence et stockage → Emplacement des données, vous pouvez migrer ce dossier. **Redémarrez l'application pour appliquer le changement.** Les données originales restent disponibles jusqu'à la vérification du nouveau dossier et l'utilisation de l'option de nettoyage. La désinstallation conserve les données de recherche ; prévoyez des sauvegardes séparées.
 
 En mode local, les données restent sur l'ordinateur. Les fonctions IA/API en ligne envoient les requêtes correspondantes au service configuré. En mode serveur, les données des tâches sont conservées sur le serveur. Les membres voient leur progression respective sans pouvoir modifier les décisions personnelles d'un autre membre.
 
@@ -495,7 +625,7 @@ Compilez sur le système cible avec une connexion Internet.
 | --- | --- | --- |
 | Windows 10/11 x64 | Installer Inno Setup 6/7 ou NSIS 3 ; lancer `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/ReviewFlow-x86_64.AppImage` |
+| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur l'architecture correspondante. Vérifiez la date et la version : un script de compilation ne garantit pas l'existence d'un paquet publié à jour. Voir le [guide Windows](build/WINDOWS_TRANSFER.md#fr).
 
