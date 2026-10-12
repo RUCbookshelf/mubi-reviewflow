@@ -31,7 +31,7 @@ not used for mutations. Main remained at `17d83f5` throughout this work.
 - A dynamic review headline, file/date identity and an expandable internal reference.
 - Duplicate candidates first, followed by metadata differences, dependencies and
   records ready for activation. Counts cover the whole batch before pagination.
-- Eight bibliographic fields compared side by side: title, abstract, authors,
+- Pending proposals use current information; reviewed proposals retain the decision-time comparison. Eight bibliographic fields compared side by side: title, abstract, authors,
   year, journal, DOI, record type and URL. Changed fields are labeled; long values
   expand and all imported text is rendered literally.
 - Keep/Accept buttons describe their effect and reference that explanation with
@@ -81,7 +81,7 @@ httpx installation. No dependency or database migration is added.
 
 | Validation | Result |
 |---|---|
-| Presentation-model and locale tests | 6 passed |
+| Presentation-model and locale tests | 7 passed |
 | Read-only Python projection tests | 6 passed |
 | Existing team/source/PRISMA acceptance checks | All 26 passed |
 | New API checks | Five batches, including 359-record fixture; attention/completed pagination, 28 candidate groups, default payload compatibility, owner/member/outsider permissions, current metadata, unchanged read snapshots |

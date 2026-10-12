@@ -25,7 +25,9 @@
     return {attention,ready,needs_review:attention,completed:Number(batch.active_records||0)};
   }
   function comparison(metadata){
-    const current=metadata.current||metadata.before||{},incoming=metadata.incoming||{};
+    const current=(metadata.action==='accept_incoming'?metadata.before:
+      metadata.action==='keep_existing'?(metadata.accepted||metadata.before):
+      (metadata.current||metadata.before))||{},incoming=metadata.incoming||{};
     const value=v=>v==null?'':Array.isArray(v)?v.join('; '):String(v);
     return fields.map(([key,label])=>({key,label,before:value(current[key]),incoming:value(incoming[key]),
       changed:value(current[key])!==value(incoming[key])}));
