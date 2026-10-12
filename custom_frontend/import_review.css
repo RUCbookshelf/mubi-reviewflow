@@ -1,0 +1,61 @@
+/* Import review: focused work first, provenance and completed work secondary. */
+.wf-import-review{overflow:visible}
+.wf-import-header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:start}
+.wf-import-header h3{margin:0;font-size:clamp(1.2rem,2vw,1.65rem)}
+.wf-import-header>p,.wf-import-header h3{grid-column:1;margin:0;overflow-wrap:anywhere}
+.wf-import-header .wf-import-eyebrow{font:600 .75rem var(--font-body);letter-spacing:.05em;color:var(--primary);text-transform:uppercase}
+.wf-import-identity{grid-column:2;grid-row:1/4;max-width:220px;font-size:.75rem;color:var(--muted)}
+.wf-import-identity code{overflow-wrap:anywhere}
+.wf-import-review summary{cursor:pointer;padding:8px 0;font-weight:600}
+.wf-import-review .wf-import-summary{margin:16px 0 10px;padding:10px 14px;border-left:3px solid var(--primary);background:var(--primary-light);border-radius:0 8px 8px 0;font-size:.9rem}
+.wf-import-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.wf-import-actions .input{flex:1;min-width:160px;max-width:100%}
+.wf-import-review .wf-import-activate{background:var(--primary);color:var(--surface);border:1px solid var(--primary);margin-left:auto}
+.wf-import-review .wf-action-explanation{font-size:.8rem;color:var(--muted);margin:8px 0 14px}
+.wf-import-counts{font-size:.8rem;color:var(--muted);border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:18px}
+.wf-import-counts dl{display:grid;grid-template-columns:minmax(100px,160px) minmax(0,1fr);gap:10px 14px;margin:4px 0 14px}
+.wf-import-counts dt{font-weight:600;color:var(--ink)}
+.wf-import-counts dd{margin:0;overflow-wrap:anywhere}
+.wf-import-review h4{margin:12px 0;font-size:1.1rem}
+.wf-import-review h5{font:700 .95rem var(--font-body);margin:10px 0;overflow-wrap:anywhere}
+.wf-import-review .wf-import-record,.wf-import-review .wf-import-candidate{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0;background:var(--surface);min-width:0}
+.wf-import-review .wf-import-record>p,.wf-import-review .wf-import-candidate>p{font-size:.8rem;overflow-wrap:anywhere;color:var(--muted);margin:6px 0 10px}
+.wf-import-badge{display:inline-block;font:600 .75rem var(--font-body);padding:4px 8px;border-radius:5px;background:var(--primary-light);color:var(--primary-dark)}
+.wf-metadata-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:.85rem;margin:12px 0}
+.wf-metadata-table th,.wf-metadata-table td{vertical-align:top;padding:10px 12px;border:1px solid var(--border);text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
+.wf-metadata-table th:first-child{width:17%}
+.wf-metadata-table thead th{background:var(--bg);font-weight:700}
+.wf-metadata-table tr[data-changed=true] td{background:var(--primary-light)}
+.wf-metadata-table small.wf-change-tag{display:block;font-size:.68rem;font-weight:400;color:var(--primary-dark);margin-top:4px}
+.wf-metadata-table details{font-size:.75rem}
+.wf-metadata-table details p{font-size:.85rem;margin:0}
+.wf-metadata-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.wf-metadata-actions>div{border:1px solid var(--border);padding:12px;border-radius:8px}
+.wf-metadata-actions p{font-size:.8rem;color:var(--muted);margin:8px 0 0}
+.wf-metadata-actions button{white-space:normal;text-align:left}
+.wf-import-warning{color:var(--danger);font-size:.85rem}
+.wf-source-original{font-size:.8rem;margin-top:12px;color:var(--muted)}
+.wf-import-success{padding:14px;background:var(--primary-light);color:var(--primary-dark);border-radius:8px}
+.wf-import-completed{margin-top:22px;border-top:1px solid var(--border);padding-top:10px}
+.wf-import-completed>summary{color:var(--primary-dark)}
+.wf-import-completed>p{font-size:.8rem;color:var(--muted)}
+.wf-import-pager{display:flex;justify-content:space-between;gap:10px;align-items:center;margin:12px 0;font-size:.8rem}
+.wf-import-review :focus-visible{outline:2px solid var(--primary);outline-offset:3px;border-radius:4px}
+.wf-import-review [hidden]{display:none!important}
+#wf-import-review,#wf-import-attention{scroll-margin-top:84px}
+@media(max-width:760px){
+ .wf-import-header{grid-template-columns:minmax(0,1fr)}
+ .wf-import-identity{grid-column:1;grid-row:auto;max-width:none}
+ .wf-import-review .wf-import-activate{margin-left:0}
+ .wf-import-review .wf-import-record,.wf-import-review .wf-import-candidate{padding:12px}
+ .wf-metadata-table th,.wf-metadata-table td{padding:8px 6px;font-size:.8rem}
+ .wf-metadata-actions{grid-template-columns:minmax(0,1fr)}
+}
+@media(prefers-reduced-motion:reduce){.wf-import-review *{scroll-behavior:auto!important}}
+
+/* Keep the checklist beside review work on desktop, in flow on tablets. */
+@media(min-width:1101px){.rf-import-guide-open [data-p="import"]{padding-right:340px}}
+@media(max-width:1100px){#rfImportGuide{position:static;top:auto!important;right:auto;width:100%;max-width:none;margin-bottom:18px;box-shadow:none}#rfImportGuide:not([open]){width:max-content;max-width:100%}}
+#wf-import-activation{scroll-margin-top:84px}
+
+#rfImportGuide .rf-guide-detail{display:block;margin-top:3px;font-size:11px;color:var(--muted)}

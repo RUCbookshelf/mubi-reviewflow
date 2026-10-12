@@ -5853,7 +5853,7 @@ function renderImportReport(d) {
     ['精确去重后唯一记录数', d.unique_after_exact_dedup],
     ['进入筛选（非重复总数）', d.progress && d.progress.total],
   ];
-  if (d.batch_id) rows.push(['Counts reflect the current batch state. Activation totals are cumulative; screening total covers the current task.', d.batch_id]);
+  if (d.batch_id) rows.push(['Counts reflect the current batch state. Activation totals are cumulative; screening total covers the current task.', '']);
   if (d.batch_id) {
     const parsed = [
       ['精确匹配命中次数', d.exact_match_hits], ['精确重复组数', d.exact_duplicate_groups],
@@ -8803,7 +8803,9 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
 <script src="./workflow_locale.js?v=20261012-home-wording5"></script>
 <script src="./research_trace.js?v=20261012-workflow6"></script>
-<script src="./import_guide.js?v=20261012-workflow6"></script>
+<script src="./import_review_locale.js?v=20261012-review1"></script>
+<script src="./import_review_model.js?v=20261012-review1"></script>
+<script src="./import_guide.js?v=20261012-review1"></script>
 <script src="./import_history.js?v=20261012-workflow6"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>
@@ -8820,7 +8822,8 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <link rel="stylesheet" href="./workflow_controls.css?v=20261012-team-prisma5">
 <script src="./workflow_controls.js?v=20261012-decision-row2"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
-<script src="./workflow_imports.js?v=20261012-team-prisma5"></script>
+<link rel="stylesheet" href="./import_review.css?v=20261012-review1">
+<script src="./workflow_imports.js?v=20261012-review1"></script>
 <script src="./team_prisma_locale.js?v=20261012-team-prisma5"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261012-workflow6"></script>

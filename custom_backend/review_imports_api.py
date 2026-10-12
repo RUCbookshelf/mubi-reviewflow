@@ -377,6 +377,19 @@ def register_review_import_routes(app, require_user, **dependencies):
             raise HTTPException(404, str(exc)) from exc
         raise HTTPException(409, str(exc)) from exc
 
+    @app.get('/api/tasks/{task_id}/import-review-summary')
+    def review_summary(task_id: str, user: dict = Depends(require_user)):
+        """Distinct task-wide checklist counts; reimports do not double count."""
+        ctx = read_context(task_id,user)
+        with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
+            source = conn.execute('SELECT COUNT(*) FROM workflow_source_records').fetchone()[0]
+            staged = conn.execute("SELECT COUNT(*) FROM workflow_source_records WHERE state='staged'").fetchone()[0]
+            metadata = conn.execute('SELECT COUNT(*) FROM workflow_import_metadata WHERE action IS NULL').fetchone()[0]
+            candidates = conn.execute("SELECT COUNT(*) FROM workflow_import_candidates WHERE status IN ('pending','undecided')").fetchone()[0]
+            return {'source_records':source, 'pending_records':staged,
+                    'metadata_review_count':metadata, 'pending_candidate_groups':candidates,
+                    'can_manage':ctx.can_manage}
+
     @app.get('/api/tasks/{task_id}/import-batches')
     def batches(task_id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), user: dict = Depends(require_user)):
         ctx = read_context(task_id, user)
@@ -387,30 +400,40 @@ def register_review_import_routes(app, require_user, **dependencies):
                     'next_offset': offset+limit if offset+limit<total else None, 'can_manage':ctx.can_manage}
 
     @app.get('/api/tasks/{task_id}/import-batches/{batch_id}')
-    def detail(task_id: str, batch_id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0,ge=0), user: dict = Depends(require_user)):
+    def detail(task_id: str, batch_id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0,ge=0),
+               view: Literal['all','attention','completed'] = Query('all'), user: dict = Depends(require_user)):
+        from custom_backend.import_review_presentation import review_projection, present_record
         ctx = read_context(task_id,user)
         with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
             try:
                 result = store.batch_summary(conn,batch_id)
             except KeyError as exc:
                 translate(exc)
-            rows = conn.execute('''SELECT DISTINCT r.* FROM workflow_source_records r JOIN workflow_import_members m ON m.record_id=r.id
-                WHERE m.batch_id=? ORDER BY r.created_at,r.row_index,r.id LIMIT ? OFFSET ?''', (batch_id,limit,offset)).fetchall()
-            result['records'] = [store.public_record(conn,dict(r)) for r in rows]
-            result['next_offset'] = offset+limit if offset+limit<result['raw_source_records'] else None
+            projection = review_projection(conn, batch_id)
+            rows = projection[view]
+            result['records'] = [present_record(conn,r,projection['classification'][r['id']]) for r in rows[offset:offset+limit]]
+            result['review_counts'] = projection['review_counts']
+            result['view'] = view
+            result['view_total'] = len(rows)
+            result['next_offset'] = offset+limit if offset+limit<len(rows) else None
             result['can_manage'] = ctx.can_manage
             return result
 
     @app.get('/api/tasks/{task_id}/import-batches/{batch_id}/candidates')
-    def candidates(task_id: str, batch_id: str, limit: int = Query(50,ge=1,le=200), offset: int = Query(0,ge=0), user: dict = Depends(require_user)):
+    def candidates(task_id: str, batch_id: str, limit: int = Query(50,ge=1,le=200), offset: int = Query(0,ge=0),
+                   view: Literal['all','attention','completed'] = Query('all'), user: dict = Depends(require_user)):
         ctx=read_context(task_id,user)
         with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
             try:
                 store.batch_summary(conn,batch_id)
             except KeyError as exc:
                 translate(exc)
-            total=len(store.candidate_rows(conn,batch_id,include_members=False))
-            rows=store.candidate_rows(conn,batch_id,limit=limit,offset=offset)
+            selected=store.candidate_rows(conn,batch_id,include_members=False)
+            if view!='all':
+                selected=[c for c in selected if (c['status'] in ('pending','undecided'))==(view=='attention')]
+            total=len(selected)
+            from custom_backend.import_review_presentation import present_candidates
+            rows=present_candidates(conn,selected[offset:offset+limit])
             return {'candidates':rows, 'total':total, 'next_offset':offset+limit if offset+limit<total else None}
 
     def mutate(task_id, batch_id, user, body, operation, reason):
