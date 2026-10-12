@@ -30,14 +30,14 @@ def current_version() -> str:
             value = path.read_text(encoding="ascii").strip()
         except OSError:
             continue
-        if re.fullmatch(r"\d+\.\d+\.\d+", value):
+        if re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", value):
             return value
     return "0.0.0"
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value)
-    return tuple(map(int, match.groups())) if match else (0, 0, 0)
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?", value.strip())
+    return tuple(int(part or 0) for part in match.groups()) if match else (0, 0, 0, 0)
 
 
 def _platform_asset(assets: list[dict]) -> dict | None:

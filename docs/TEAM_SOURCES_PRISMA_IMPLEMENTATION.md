@@ -165,3 +165,17 @@ The user subsequently confirmed that decision buttons, reason selection, custom 
 Validation: actual browser measurements at default desktop, 390 px and 320 px widths showed every visible control at the same vertical position and no row/page horizontal overflow. Default desktop row height was 60.7 px including its padding and border. Syntax and diff checks passed. No decisions, reason-library records or owner policies were saved. The original tab's draft remains untouched. Viewport overrides were reset.
 
 Artifacts: `screen-decision-single-row.jpg` and `screen-decision-single-row-checks.json` in the external visualization workspace. Scope remains limited to three frontend files and this record.
+
+## Delivery: 2.0.5.1
+
+On 2026-10-12, the user authorized integration into `E:/mubi-reviewflow/main` and publication as 2.0.5.1. The three approved implementation commits were fast-forwarded into main, preserving their history. Earlier isolation statements above describe the development checkpoints; publication is now authorized. The installed `E:/ReviewFlow` application remains untouched.
+
+Release preparation updates VERSION and release notes, accepts four-part hotfix versions in the update checker, and maps macOS native metadata to the three-part version 2.0.5/build 2.0.501 while preserving the full ReviewFlowVersion 2.0.5.1. Subsequent three-part versions map their native build patch to patch × 100, so 2.0.6 has build 2.0.600 and sorts after this hotfix.
+
+Validation repeated from the integrated main checkout: all 26 disposable-data scenarios passed in `reviewflow-team-prisma-validation-6tk8lbba`; ten changed Python files parsed; seven required/changed JavaScript files, two inline scripts and 13 locale files parsed; 95 new ten-language rows passed nonblank/placeholder checks; hotfix version ordering and the common-secret scan passed. Diff review found no whitespace errors. No real-data operations were performed.
+
+The macOS build script passed Bash syntax checking; version mapping was evaluated for 2.0.5, 2.0.5.1 and 2.0.6 and returned builds 2.0.500, 2.0.501 and 2.0.600 respectively.
+
+Existing 2.0.5 clients compare only three version components and may not show an automatic update reminder for 2.0.5.1. Download this hotfix from its GitHub Release; the corrected checker bundled here supports four-part versions for future updates.
+
+The source migration remains additive and idempotent, with a pre-upgrade database backup. Close writers and preserve the complete data directory before upgrading. Reverting code leaves additive tables in place; do not replace newer research with an old database backup.

@@ -1,83 +1,83 @@
-# 木笔 ReviewFlow 2.0.5
+# 木笔 ReviewFlow 2.0.5.1
 
 ## English
 
-### Workflow settings and screening
+This maintenance release includes the approved fixes on top of 2.0.5.
 
-- Home & Settings groups controls into six tabs with an elastic indicator: Overview, Tasks & team, Screening settings, Machine Learning, Data extraction & coding, and Appearance & storage. Keyboard navigation and reduced motion are supported.
-- Save reusable exclusion reasons separately for title-and-abstract and full-text screening. Personal tasks use account-owned reasons; team tasks use owner-managed reasons. Library edits preserve earlier decision text.
-- Configure Maybe independently for both screening stages. The owner controls team settings, enforced by the backend. Disabling Maybe preserves historical decisions.
-- Initial Include and Maybe both enter full-text screening without converting the initial decision. Full-text Maybe remains unresolved and does not, by itself, qualify a report for coding. Progress counts saved decisions, including Maybe, separately from undecided work.
-- Choose **Import / Machine Learning / Random** screening order. Random order persists per reviewer, task and source scope. Newly activated work appends without reshuffling; an explicit action reshuffles remaining eligible records.
+### Import sources and existing research
 
-### Import sources and protection of existing work
+- Automatically recognize database names from each RIS record's database metadata, including mixed-database files. Normalize known aliases without treating the export provider as a database.
+- Populate Imported sources from actual imports. Remove manual source creation; owners can correct names and confirm database/register/other-source classification.
+- Recover reliable legacy provenance while preserving stable source IDs, permitted-source policies, article identities, decisions, coding and evidence. Hide empty Unassigned entries; genuinely unknown provenance appears as **Source not recorded**.
+- Distinguish original source-record counts from unique active articles. Additional imports retain protected staging and explicit activation; reimports retain confirmed source corrections.
 
-- Filter screening and coding by explicitly assigned, stable import sources. Sources are not inferred from filenames. Multi-source articles appear once overall and retain the same saved result across source views.
-- Owners permit All sources, Selected sources, or pause each stage. Members work within that scope. Paused stages remain readable; scoped and overall progress are separate.
-- Additional imports made after saved research work enter protected staging. Review duplicate candidates and metadata differences, then activate resolved records. Existing article identities, decisions, coding and evidence are retained.
-- Original import receipts and provenance are preserved. Reimporting the same file within the same source does not create duplicate work.
-- Living Review incremental import actions lead to protected import review. Export or select the original source file, review it and activate resolved records; run analysis separately afterward.
+### Team management and terminology
 
-### Coding evidence and Trace backtracking
+- Group **Members & progress**, **Sources available by stage**, **Screening decision options**, and **Imported sources** within one Team Management panel.
+- Add original SVG role badges for **Task owner / Coder / Adjudicator**, retaining member action menus and authorization identifiers.
+- Clarify **Needs review**: initial-screening uncertainty advances to full-text review; full-text uncertainty remains unresolved. Stored decisions and Kappa/adjudication rules are unchanged.
+- Update relevant interface/help wording in all ten supported languages.
 
-- Each dimension and its Notes & evidence form one visual unit, with dividers between units.
-- Add text, quotations, page references, and PNG/JPEG/WebP images through file selection or screenshot paste. Image content/type and the 10 MB per-image limit are validated.
-- Owners can require evidence for selected dimensions. Nonblank notes or an image satisfy the requirement. Incomplete work can be saved as a draft and is not counted as complete.
-- Values, notes and attachment changes save atomically and participate in the same guarded Undo operation. Unsaved forms offer Save / Discard / Stay before navigation.
-- Applicable Trace records provide **View change**, **Open article to correct**, and **Undo this save** when linked to the actor's latest eligible save. Reopening loads current saved values; historical records are retained. Out-of-scope articles open read-only.
-- Policy and source changes use live notifications with visible-page polling as a fallback. Dirty forms are retained when policies change.
+### PRISMA flow diagrams
 
-### Interface and terminology
+- Preserve standalone manual entry and optional selective import from task metrics. Fields the user chooses to retain are not overwritten.
+- Import original source counts, confirmed duplicate excess and supported screening/full-text outcomes, explicitly identifying unresolved or unavailable values. Staged imports are excluded.
+- Complete existing updated-review and other-source fields while retaining new-review and diagnostic-review modes and existing diagram/export functions.
+- Require an independent study count or confirmed study grouping. **One report per study** is an explicit shortcut; study counts are no longer silently equated with report counts.
+- Export metric provenance as CSV. Do not infer retrieval failure from an unassessed report or expose another reviewer's private notes.
 
-- Screening order has an explicit label and Random uses an SVG icon.
-- Full-text queue positions use **Full-text report**. Decision history distinguishes saved **Maybe** from undecided work.
-- Home labels and explanations are clarified in all ten supported languages, including evidence requirements, source permissions, browser preferences and separate Save actions.
-- Model presets use neutral configuration names and descriptions. **Hide Machine Learning scores** accurately names the display preference. Model parameters and selected identifiers are preserved.
+### Screening controls and version handling
 
-### Downloads and upgrade
+- Keep decision buttons, reason selection, custom reason and reusable-reason Save on one adaptive horizontal row within the reader. Narrow readers use a Save SVG with a translated tooltip and accessible label.
+- Refresh affected asset references to avoid stale caches.
+- Support four-part hotfix versions in the application version reader and update comparison. The app and release identify as **2.0.5.1**.
+- Existing 2.0.5 clients may not show an automatic reminder for this four-part hotfix; download it from this Release. The corrected checker here handles future hotfix versions.
+- macOS native metadata uses version **2.0.5**, build **2.0.501**, and complete ReviewFlowVersion **2.0.5.1**, following Apple's [three-component bundle-version format](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring).
 
-- Windows x64 installer, Linux x86_64 AppImage, macOS DMG, and SHA-256 checksums. Application version is **2.0.5**; macOS bundle metadata also follows VERSION.
-- This update adds workflow storage migrations. Close writers and back up the entire existing data directory before upgrading, including databases, PDFs, imports, images, task metadata and configuration. Automatic database snapshots do not replace a complete backup.
-- Preserve newer research when rolling back; never overwrite it with an old snapshot. See [workflow storage and maintenance](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_CONTROLS.md) and [validation record](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_VALIDATION.md).
-- Source syntax checks and bounded fictional-data preview checks are recorded. A successful package build does not establish every runtime acceptance scenario or independent native-speaker review of every translation.
+### Downloads, validation and maintenance
+
+- Windows x64 installer, Linux x86_64 AppImage, macOS DMG, and SHA256SUMS.txt.
+- Disposable-data checks cover sources, reimports, staging, authorization, PRISMA metrics, migration preservation and original input modes. See the [implementation and validation record](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5.1/docs/TEAM_SOURCES_PRISMA_IMPLEMENTATION.md).
+- Source migration v4 is additive and creates a pre-upgrade database backup. Close writers and back up the complete data directory before upgrading; rollback must preserve newer research.
+- Successful builds do not establish every runtime scenario on every operating system. No real research decisions were changed during validation. The developer's installed E:/ReviewFlow was not replaced.
 
 ## 中文
 
-### 流程设置与筛选
+本维护版本在 2.0.5 基础上，包含已确认的来源、团队管理、PRISMA 与筛选界面修复。
 
-- 首页整理为六个标签页：概览、任务与团队、筛选设置、机器学习、数据提取与编码、外观与存储。弹性指示器支持键盘操作与减少动态效果偏好。
-- 初筛与全文筛选分别保存常用排除原因。个人任务使用账户原因库；团队任务使用负责人管理的原因库。修改原因库不改写历史决定文本。
-- 两个筛选阶段分别设置是否提供待定，团队由负责人管理并由后端限制；关闭后保留历史待定决定。
-- 初筛纳入与待定均进入全文筛选，原决定保留。全文待定仍需后续处理，其本身不使文献进入编码。进度统计已保存决定（包含待定），与尚未决定的工作区分。
-- 筛选顺序支持 **导入 / 机器学习 / 随机**。随机顺序按筛选员、任务与来源范围保存；新增激活记录追加，不打乱剩余顺序；可主动重新随机排列。
+### 导入来源与既有研究保护
 
-### 来源与既有研究保护
+- 根据每条 RIS 记录的数据库元数据自动识别来源，支持单文件多个数据库；统一已知别名，不将导出平台直接认定为数据库。
+- 来源由实际导入产生，移除手动新增入口；负责人可以校正名称并确认数据库、注册库或其他来源类型。
+- 恢复可靠历史来源，保留稳定来源 ID、来源权限、文献标识、决定、编码和证据。隐藏空的“未分配”，真正未知的信息显示为“来源未记录”。
+- 区分来源原始记录数与激活后的唯一文献数；追加导入保留暂存与主动激活，重复导入保留已确认的来源校正。
 
-- 初筛、全文筛选、编码支持按明确指定的稳定来源筛选，不依据文件名推断来源。多来源文献在总体队列中只出现一次，各来源视图使用同一保存结果。
-- 负责人可为各阶段设置全部来源、指定来源或暂停；成员在允许范围内工作，暂停后仍可阅读。当前范围进度与总体进度分别显示。
-- 已有保存的研究工作后，追加导入先进入暂存区。核验重复候选与元数据差异后激活已解决记录，保留既有文献标识、决定、编码及证据。
-- 保留导入原始记录与来源；同一文件在同一来源下重新导入，不产生重复工作。
-- Living Review 增量导入入口引导至受保护的导入核验：导出或选择原始文件，核验并激活已解决记录，之后单独运行分析。
+### 团队管理与术语
 
-### 编码证据与轨迹回溯
+- 成员与进度、各阶段可用来源、筛选决定选项、已导入来源统一放入团队管理区域。
+- 为任务负责人、编码员、仲裁员增加原创 SVG 角色标识，保留成员操作菜单和既有权限标识。
+- 澄清“待核查”：初筛待核查进入全文筛选，全文待核查仍待解决。已保存决定与 Kappa、仲裁规则不变。
+- 十种受支持语言同步更新相关界面及帮助文字。
 
-- 每个维度与笔记、证据作为一个界面单元，单元之间增加分隔。
-- 支持文字、引文、页码，以及选择文件或粘贴截图添加 PNG/JPEG/WebP 图片；校验图片内容、格式及每张 10 MB 上限。
-- 负责人可指定需要证据的维度，非空笔记或一张图片可满足要求。缺少证据可保存为草稿，不计为完成。
-- 编码值、笔记和附件变更原子保存，由同一次受保护的撤销恢复。未保存内容在导航前提供保存、丢弃、停留选项。
-- 可关联的轨迹记录提供查看变更、打开文献修改，以及满足最近保存条件时撤销此保存。打开时载入当前结果，历史轨迹保留；范围外的文献只读打开。
-- 流程与来源变更通过实时通知及页面可见时的轮询同步，策略变更时保留未保存表单。
+### PRISMA 流程图
 
-### 界面与术语
+- 保留独立手动填数与选择性任务数据导入两种模式，用户选择保留的字段不会被覆盖。
+- 导入来源原始记录数、确认去重多余数及可靠筛选结果；标明未解决或未知值，暂存导入不计入激活任务指标。
+- 补全更新综述与其他来源分支字段，保留新综述、诊断综述模式及原有图形、导出功能。
+- 研究数须独立填写或来自确认分组；“每份报告对应一项研究”为主动快捷操作，不再静默令研究数等于报告数。
+- 导出逐记录、逐来源指标依据 CSV；不将未评估文献推断为未获取全文，不暴露他人私人笔记。
 
-- 筛选顺序增加明确标签，随机排序使用 SVG 图标。
-- 全文队列位置使用全文文献；决策历史区分已保存待定与尚未决定的工作。
-- 十种语言同步澄清首页标签及说明，包括证据要求、来源权限、浏览器偏好和保存按钮作用。
-- 模型预设使用中性的配置名称与说明；隐藏机器学习分数准确表达显示偏好的用途。模型参数与选择标识保持不变。
+### 筛选界面与版本
 
-### 下载与升级
+- 决定按钮、原因选择、自定义原因及保存常用原因保持在阅读器内同一水平行，自适应分配空间；窄界面使用保存 SVG，保留翻译提示和无障碍标签。
+- 刷新相关资源版本以避免旧缓存。
+- 版本读取和更新比较支持四段维护版本，软件与 Release 均为 **2.0.5.1**。
+- 既有 2.0.5 客户端可能不会自动提示此四段维护版本，请从本 Release 下载；本次修正后的更新检查支持后续维护版本。
+- macOS 原生版本 **2.0.5**、构建号 **2.0.501**，保留完整 ReviewFlowVersion **2.0.5.1**。
 
-- 提供 Windows x64 安装程序、Linux x86_64 AppImage、macOS DMG 及 SHA-256 校验文件。版本为 **2.0.5**，macOS 应用包版本同步读取 VERSION。
-- 本次增加流程存储迁移。升级既有数据前，关闭写入程序并备份整个目录，包含数据库、PDF、导入原件、图片、任务元数据及配置。自动数据库快照不能替代完整备份。
-- 回滚须保留更新后研究数据，不以旧快照覆盖。参见[流程存储与维护说明](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_CONTROLS.md)和[验证记录](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5/docs/WORKFLOW_VALIDATION.md)。
-- 已记录源码语法检查与虚构数据的有限预览检查；构建成功不代表所有运行场景均已验收，也不代表每项翻译均经母语审校。
+### 下载、验证与维护
+
+- 提供 Windows x64 安装程序、Linux x86_64 AppImage、macOS DMG 及 SHA-256 校验文件。
+- 使用独立虚构数据验证来源、重复导入、暂存、权限、PRISMA、迁移保留及原有模式，详见[实施与验证记录](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5.1/docs/TEAM_SOURCES_PRISMA_IMPLEMENTATION.md)。
+- 来源迁移 v4 为增量迁移并创建数据库备份。升级前关闭写入程序，备份整个数据目录；回滚须保留新研究数据。
+- 构建成功不代表每个系统上的所有运行场景均已验收。验证未修改真实研究决定，开发者本地 E:/ReviewFlow 安装版未替换。

@@ -6,6 +6,14 @@ BUILD="$ROOT/build"
 DIST="$BUILD/dist"
 APP_NAME="ReviewFlow"
 APP_VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
+# Apple bundle fields accept at most three components. Keep the complete
+# application version in VERSION and ReviewFlowVersion for hotfix releases.
+IFS='.' read -r VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_HOTFIX <<< "$APP_VERSION"
+BUNDLE_VERSION="$APP_VERSION"
+BUNDLE_BUILD="$VERSION_MAJOR.$VERSION_MINOR.$((10#$VERSION_PATCH * 100 + 10#${VERSION_HOTFIX:-0}))"
+if [ -n "${VERSION_HOTFIX:-}" ]; then
+  BUNDLE_VERSION="$VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH"
+fi
 
 cd "$ROOT"
 rm -rf "$BUILD/work-macos" "$DIST"
@@ -41,10 +49,11 @@ iconutil -c icns "$ICONSET" -o "$BUILD/work-macos/ReviewFlow.icns"
 
 APP="$DIST/$APP_NAME.app"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier edu.ruc.bookshelf.reviewflow" "$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$APP/Contents/Info.plist" || \
-  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$APP/Contents/Info.plist" || \
-  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $APP_VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUNDLE_VERSION" "$APP/Contents/Info.plist" || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $BUNDLE_VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUNDLE_BUILD" "$APP/Contents/Info.plist" || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUNDLE_BUILD" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :ReviewFlowVersion string $APP_VERSION" "$APP/Contents/Info.plist"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format UDZO "$DIST/$APP_NAME.dmg"
