@@ -973,7 +973,7 @@ def health() -> dict:
 
 @app.get("/api/runtime")
 def runtime() -> dict:
-    return {"mode": "server" if _server_mode() else "desktop",
+    return {"version": current_version(), "mode": "server" if _server_mode() else "desktop",
             "storage": "server" if _server_mode() else "local",
             "restart_supported": not _server_mode() and _desktop_restart_callback is not None,
             "instance_id": _desktop_instance_id}
@@ -1589,11 +1589,12 @@ def list_title_duplicate_reviews(
     screener: str | None = None,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    view: str = Query(default="attention", pattern="^(attention|all)$"),
     user: dict = Depends(require_user),
 ) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    groups, total = db_mod.list_title_duplicate_reviews(db, limit=limit, offset=offset)
+    groups, total = db_mod.list_title_duplicate_reviews(db, status=None if view == "all" else "pending", limit=limit, offset=offset)
     return {"groups": groups, "total": total, "offset": offset,
             "progress": db_mod.title_duplicate_review_progress(db),
             "undo_available": db_mod.title_duplicate_undo_available(db, user["username"])}

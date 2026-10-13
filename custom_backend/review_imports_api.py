@@ -20,6 +20,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from coscreen import db as db_mod, import_history, import_sources, review_imports as store, review_workflow as workflow
+from coscreen import import_review_undo as review_undo
 from coscreen.dedup import find_duplicates, find_title_candidate_groups
 from coscreen.models import Article
 
@@ -370,6 +371,7 @@ def register_review_import_routes(app, require_user, **dependencies):
             raise HTTPException(403, 'Import provenance requires verified task ownership.')
         with runtime.workflow.lock(task_id):
             store.migrate(ctx.owner_db)
+            review_undo.migrate(ctx.owner_db)
         return ctx
 
     def translate(exc):
@@ -417,6 +419,10 @@ def register_review_import_routes(app, require_user, **dependencies):
             result['view_total'] = len(rows)
             result['next_offset'] = offset+limit if offset+limit<len(rows) else None
             result['can_manage'] = ctx.can_manage
+            result['undo'] = review_undo.available(conn, batch_id, str(user['user_id'])) if ctx.can_manage else {'available': False}
+            last_review = conn.execute('SELECT after_json FROM workflow_import_undo ORDER BY id DESC LIMIT 1').fetchone()
+            legacy_seq = conn.execute('SELECT COALESCE(MAX(seq),0) FROM title_duplicate_undo').fetchone()[0]
+            result['legacy_undo_allowed'] = not last_review or legacy_seq > json.loads(last_review[0]).get('legacy_seq',0)
             return result
 
     @app.get('/api/tasks/{task_id}/import-batches/{batch_id}/candidates')
@@ -436,15 +442,17 @@ def register_review_import_routes(app, require_user, **dependencies):
             rows=present_candidates(conn,selected[offset:offset+limit])
             return {'candidates':rows, 'total':total, 'next_offset':offset+limit if offset+limit<total else None}
 
-    def mutate(task_id, batch_id, user, body, operation, reason):
+    def mutate(task_id, batch_id, user, body, operation, reason, undo_kind=None, subject=None):
         with runtime.workflow.write_guard(task_id,user,'screen',expected_version=body.expected_policy_version) as ctx:
             if ctx.info.degraded:
                 raise HTTPException(409,'Task is read-only.')
             store.migrate(ctx.owner_db)
+            review_undo.migrate(ctx.owner_db)
             try:
                 with closing(workflow.connect(ctx.owner_db)) as conn, conn:
                     conn.execute('BEGIN IMMEDIATE')
                     store.batch_summary(conn,batch_id)
+                    snapshot = review_undo.snapshot(conn, undo_kind, subject) if undo_kind else None
                     before_changes = conn.total_changes
                     extra=operation(conn,ctx) or {}
                     changed = conn.total_changes != before_changes
@@ -452,6 +460,10 @@ def register_review_import_routes(app, require_user, **dependencies):
                         conn.execute('UPDATE workflow_state SET version=version+1 WHERE singleton=1')
                     result={**store.batch_summary(conn,batch_id),**extra}
                     result['policy_version']=conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
+                    if changed and undo_kind:
+                        review_undo.remember(conn,batch_id,str(user['user_id']),undo_kind,subject,snapshot,result['policy_version'])
+                    if reason == 'import-activated':
+                        conn.execute("UPDATE workflow_import_undo SET state='activated' WHERE state='available'")
             except (ValueError,KeyError) as exc:
                 translate(exc)
             if changed:
@@ -461,12 +473,16 @@ def register_review_import_routes(app, require_user, **dependencies):
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/candidates/{review_id}')
     def decide(task_id: str, batch_id: str, review_id: str, body: CandidateBody, user: dict=Depends(require_user)):
         return mutate(task_id,batch_id,user,body,lambda conn,ctx:store.decide_candidate(conn,batch_id,review_id,body.status,
-            str(user['user_id']),body.keeper_key,body.keeper_record_id),'import-candidate-reviewed')
+            str(user['user_id']),body.keeper_key,body.keeper_record_id),'import-candidate-reviewed','candidate',review_id)
 
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/metadata/{record_id}')
     def metadata(task_id: str,batch_id: str,record_id: str,body: MetadataBody,user: dict=Depends(require_user)):
         return mutate(task_id,batch_id,user,body,lambda conn,ctx:store.decide_metadata(conn,batch_id,record_id,body.action,
-            str(user['user_id'])),'import-metadata-reviewed')
+            str(user['user_id'])),'import-metadata-reviewed','metadata',record_id)
+
+    @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/undo')
+    def undo(task_id: str,batch_id: str,body: VersionBody,user: dict=Depends(require_user)):
+        return mutate(task_id,batch_id,user,body,lambda conn,ctx:review_undo.restore(conn,batch_id,str(user['user_id'])),'import-review-undone')
 
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/activate')
     def activate(task_id: str,batch_id: str,body: VersionBody,user: dict=Depends(require_user)):

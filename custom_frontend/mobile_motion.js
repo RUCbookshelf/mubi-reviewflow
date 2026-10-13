@@ -65,7 +65,7 @@
       for(const [id,key] of [['screening','Screening'],['coding','Coding'],['appearance','Appearance']]){const tab=q('#wf-tab-'+id);if(tab&&tab.textContent!==tr(key))tab.textContent=tr(key);}
       search(q('.page[data-p=help]'),'.rf-mobile-help-topic',q('.rf-mobile-help-search'));
       search(q('#researchTracePage'),'.trace-table tbody tr',q('#researchTracePage .trace-filters input[type=search]'));
-      search(q('.page[data-p=import]'),'.wf-import-record,.rf-mobile-report,.import-history .card');
+      if(!q('.rf-import-page'))search(q('.page[data-p=import]'),'.wf-import-record,.rf-mobile-report,.import-history .card');
       search(q('#wf-panel-tasks'),'.team-member,.rf-mobile-task');
       for(const r of searches.values()){
         r.open.setAttribute('aria-label',tr('Search'));r.close.setAttribute('aria-label',tr('Close search'));const searchLabel=r.remote?T('文献标题或标识'):tr('Search this page');r.input.placeholder=searchLabel;r.input.setAttribute('aria-label',searchLabel);

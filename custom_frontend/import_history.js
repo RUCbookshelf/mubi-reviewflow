@@ -11,7 +11,7 @@
   const taskId=S.task.task_id,screener=S.screener,url=taskApi()+'/import-history',query=scrQ(),historyQuery=query+(query?'&':'?')+'limit=20&offset='+offset;body.textContent=T('正在加载…');
   try{const result=await api(url+historyQuery);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;body.replaceChildren();
    for(const batch of result.imports||[])window.WorkflowImports?.remember(batch.result);
-   if(offset===0&&!window.WorkflowImports?.active()&&result.imports?.length){const latest=result.imports[0].result||{};renderImportReport(latest);$('#goScreenBtn').style.display=latest.staged||latest.screening_ready===false?'none':'';}
+   if(offset===0&&!window.WorkflowImports?.active()&&result.imports?.length){const latest=result.imports[0].result||{};renderImportReport(latest);$('#goScreenBtn').style.display='';}
    if(!result.imports?.length){body.textContent=T('尚无导入历史');
     if(offset===0&&!window.WorkflowImports?.active()){const progress=await api(taskApi()+'/progress'+query);if(ticket!==version||S.task?.task_id!==taskId||S.screener!==screener)return;
      if(progress.stage1?.total>0){$('#reportBody').replaceChildren(el('tr',{},el('td',{text:T('进入筛选（非重复总数）')}),el('td',{},el('b',{text:String(progress.stage1.total)}))));$('#repHint').textContent=T('当前任务')+' · '+T('尚无导入历史');$('#goScreenBtn').style.display='';}else $('#repHint').textContent=T('尚未导入 —— 选择当前任务与筛选员后，点击上方上传区开始。');}

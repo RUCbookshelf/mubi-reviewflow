@@ -20,6 +20,8 @@
   const expected=key();
   if(S.page!=='import'&&!(await go('import')))return;
   if(key()!==expected)return;
+  if(id==='dropZone')window.ImportExportWorkspace?.showImport('report');
+  if(['wf-import-attention','wf-import-activation','titleDupWrap'].includes(id))window.ImportExportWorkspace?.showImport('review');
   const target=document.getElementById(id)||(['wf-import-attention','wf-import-activation'].includes(id)?document.getElementById('wf-import-review'):null);if(!target)return;
   const area=target.getClientRects().length?target:document.querySelector('[data-p="import"]');
   area.setAttribute('tabindex','-1');area.scrollIntoView({block:'start',behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});area.focus({preventScroll:true});
@@ -41,6 +43,7 @@
    }
    return focusArea(activation?'wf-import-activation':'wf-import-attention');
   }
+  if(window.WorkflowImports){await WorkflowImports.open(null);return focusArea('wf-import-attention');}
   return focusArea('titleDupWrap');
  }
  function visitTrace(){if(!context)return;save({...saved(),traceVisited:true});render();}
@@ -52,15 +55,16 @@
   card.hidden=!S.user||!S.task||S.page!=='import'||workflow.complete;
   document.body.classList.toggle('rf-import-guide-open',!card.hidden&&card.open);
   if(card.hidden)return;
-  title.textContent=T('引导-导入文献');card.setAttribute('aria-label',T('引导-导入文献'));
+  const taskLabels=[T('导入文献'),T('Review: {0} duplicate groups · {1} metadata changes',workflow.groups,workflow.metadata),T('Activate reviewed imports: {0} waiting',workflow.waiting),T('检查轨迹是否开启')];
+  title.textContent=card.open?T('Import checklist'):taskLabels[workflow.done.findIndex(done=>!done)];card.setAttribute('aria-label',T('Import checklist'));
   count.textContent=T('{0}/4 completed',workflow.completed);
-  summary.title=T(card.open?'收起为胶囊':'展开引导');chevron.textContent=card.open?'⌃':'⌄';
+  summary.title=T(card.open?'收起为胶囊':'展开引导');chevron.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
   list.replaceChildren();
   row(T('导入文献'),imported,()=>focusArea('dropZone'));
   row(workflow.known?T('Review: {0} duplicate groups · {1} metadata changes',workflow.groups,workflow.metadata):T('Checking review progress…'),reviewed,()=>focusReview().catch(()=>{error=true;render();}),Number(progress?.candidate_groups||0)>0?T('Title checks: {0}/{1} groups resolved',Math.max(0,Number(progress.candidate_groups)-Number(progress.pending_groups||0)),progress.candidate_groups):null);
   row(workflow.known?T('Activate reviewed imports: {0} waiting',workflow.waiting):T('Checking activation progress…'),workflow.done[2],()=>focusReview(true).catch(()=>{error=true;render();}));
   row(T('检查轨迹是否开启'),!!state.traceVisited,async()=>{if(await go('trace'))visitTrace();});
-  message.textContent=error?T('引导进度加载失败，请点击重试。'):staged?T('导入已暂存，等待核验与激活。'):!imported?T('导入后自动显示待核验组数。'):T('完成所有待办后，引导卡片自动关闭。');
+  message.textContent=error?T('引导进度加载失败，请点击重试。'):T('Click to collapse into a capsule. Completed checklist items disappear automatically.');
   message.classList.toggle('rf-guide-error',error);position();
  }
  async function load(){

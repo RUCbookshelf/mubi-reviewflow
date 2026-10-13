@@ -53,9 +53,6 @@
 }
 @media(prefers-reduced-motion:reduce){.wf-import-review *{scroll-behavior:auto!important}}
 
-/* Keep the checklist beside review work on desktop, in flow on tablets. */
-@media(min-width:1101px){.rf-import-guide-open [data-p="import"]{padding-right:340px}}
-@media(max-width:1100px){#rfImportGuide{position:static;top:auto!important;right:auto;width:100%;max-width:none;margin-bottom:18px;box-shadow:none}#rfImportGuide:not([open]){width:max-content;max-width:100%}}
 #wf-import-activation{scroll-margin-top:84px}
 
 #rfImportGuide .rf-guide-detail{display:block;margin-top:3px;font-size:11px;color:var(--muted)}

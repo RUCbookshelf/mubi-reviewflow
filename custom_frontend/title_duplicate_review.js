@@ -26,7 +26,7 @@
   }
   document.addEventListener('keydown',event=>{
     const mac=/Mac|iPhone|iPad/.test(navigator.platform);
-    if(S.page!=='import'||!S.user||loading||!undoAvailable||event.repeat||event.isComposing||event.altKey||event.shiftKey||event.key.toLowerCase()!=='z'||!(mac?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey))return;
+    if(window.ImportExportWorkspace||S.page!=='import'||!S.user||loading||!undoAvailable||event.repeat||event.isComposing||event.altKey||event.shiftKey||event.key.toLowerCase()!=='z'||!(mac?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey))return;
     if(event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"]'))return;
     event.preventDefault();undo();
   });
@@ -81,6 +81,7 @@
   }
 
   async function load(report) {
+    if(window.ImportExportWorkspace)return;
     const wrap = $('#titleDupWrap');
     if (!wrap || !S.task) return;
     if (currentTask !== S.task.task_id) {

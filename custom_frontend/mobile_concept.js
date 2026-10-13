@@ -125,6 +125,7 @@
       const save=block(host,'rf-mobile-coding-footer');move(q('.rf-coding-savebar',host),save);}
   }
   function imports(){
+    if(page('import')?.classList.contains('rf-import-page'))return;
     const host=page('import'),upload=q('#dropZone')?.closest('.card');if(!upload)return;
     if(!q('.rf-mobile-upload-title',upload))add(node('h3','rf-mobile-upload-title','Import metadata'),upload,upload.firstChild);
     const guide=q('#rfImportGuide');if(guide&&!guide.parentElement.classList.contains('rf-mobile-guide-slot')){const slot=add(node('div','rf-mobile-guide-slot'),host,upload.nextSibling);move(guide,slot);}
@@ -132,6 +133,7 @@
     if(report&&!report.parentElement.closest('.rf-mobile-report')){const d=disclosure(report,'导入报告','rf-mobile-report');d.open=true;}
   }
   function exports(){
+    if(page('export')?.classList.contains('rf-export-page'))return;
     const host=page('export');if(q('.rf-mobile-export-card',host))return;
     for(const [key,ids] of [['Screening decisions',['dlDecisions','dlDecisions2']],['Included literature',['dlRis','dlRis2']],['Coding & evidence',['dlMatrix','dlHighlights','dlScheme']]]){
       const c=add(node('section','card rf-mobile-export-card'),host);c.append(node('h3','',key));for(const id of ids)move(q('#'+id),c);}

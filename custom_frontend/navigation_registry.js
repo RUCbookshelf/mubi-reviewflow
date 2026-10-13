@@ -8,7 +8,7 @@
     {id:'screen',label:'文献初筛',stage:'screening'},
     {id:'fulltext',label:'文献复筛',stage:'screening'},
     {id:'merge',label:'合并仲裁',stage:'screening'},
-    {id:'export',label:'导出决策',stage:'screening'},
+    {id:'export',label:'导出结果',stage:'screening'},
     {id:'prisma',label:'PRISMA 流程图',stage:'screening'},
     {id:'scheme',label:'编码方案',stage:'coding'},
     {id:'bench',label:'数据提取与编码',stage:'coding'},

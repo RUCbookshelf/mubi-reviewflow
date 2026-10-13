@@ -6,6 +6,8 @@
   <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
 </div>
 
+**2.1.1:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.1) · [更新说明 / Release notes](RELEASE_NOTES.md)
+
 ## 中文
 
 木笔 ReviewFlow 将文献导入、筛选、编码、数据分析与研究过程记录放在同一个工作台中，避免来回调动软件。
@@ -30,6 +32,13 @@
 | 研究材料导出 | PRISMA 流程图，以及对应模块提供的 DOCX、PPTX、LaTeX 等材料 |
 
 分析模块的实现不代表所有研究设计均已充分验证。方法前提、验证范围和限制见[分析能力评估](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#zh-cn)。发表时请核对方法来源并引用相应文献；软件结果仍需研究者检查。
+
+### 2.1.1 导入与导出工作区
+
+- 导入与报告、导入核验和导入历史统一组织；选中文件后明确确认导入。
+- 重复候选、信息差异、待启用、已完成和稍后处理使用同一核验区域；处理后保持页面位置，启用前支持受保护的上次核验撤销。
+- 悬浮待办可缩为显示当前事项的胶囊，全部完成后自动隐藏。
+- 筛选结果、编码数据和全文高亮笔记按用途分组，保留七种原有导出；文件卡片说明格式、内容和下载状态。
 
 ### 流程控制与研究依据
 
@@ -145,6 +154,13 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Exports:** PRISMA diagrams and module-specific DOCX, PPTX and LaTeX materials.
 
 Implementation does not establish validation for every study design. Consult the [analysis assessment](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#en) for assumptions and validation limits. Check results and cite the original methods when publishing.
+
+### Import and export workspace in 2.1.1
+
+- Upload and report, review, and history tabs; explicitly confirm selected files before importing.
+- One review area for duplicate candidates, information differences, ready, completed and deferred records. Preserve the page position and undo the last eligible review before activation.
+- A floating checklist collapses to the current item and hides when complete.
+- Screening results, coding data and full-text highlight notes use file cards that explain formats, contents and download status; all seven existing exports remain available.
 
 ### Workflow controls and research evidence
 

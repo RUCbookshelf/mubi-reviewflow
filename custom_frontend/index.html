@@ -838,7 +838,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <button type="button" data-nav="import"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M12 3v8m0 0-3-3m3 3 3-3M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="2"/></svg> 导入文献</button>
     <button type="button" data-nav="screen"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><circle cx="10.5" cy="10.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15 15 5 5" stroke="currentColor" stroke-width="2"/></svg> 文献初筛</button>
     <button type="button" data-nav="fulltext"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M4 5c2.5-1.2 5-1.2 8 0v13c-3-1.2-5.5-1.2-8 0V5zm8 0c2.5-1.2 5-1.2 8 0v13c-3-1.2-5.5-1.2-8 0V5z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg> 文献复筛</button>
-    <button type="button" data-nav="export"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M12 15V4m0 0 3 3m-3-3-3 3M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="2"/></svg> 导出决策</button>
+    <button type="button" data-nav="export"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M12 15V4m0 0 3 3m-3-3-3 3M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="2"/></svg> 导出结果</button>
     <button type="button" data-nav="merge"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0"><path d="M12 3v18M5 6h4l7 7M19 6h-4l-2 2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg> 合并仲裁</button>
     <button type="button" data-nav="prisma"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="flex-shrink:0"><rect x="4" y="3.5" width="7.5" height="6" rx="1.5"/><rect x="12.5" y="14.5" width="7.5" height="6" rx="1.5"/><path d="M7.75 9.5v5h8.5"/></svg> PRISMA</button>
   </nav>
@@ -923,7 +923,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <li>逐条选择仲裁结论并保存</li>
         <li>原始个人决策不会改变。</li>
       </ol>
-      <div class="help-actions"><button class="btn b-out" type="button" data-nav="export">打开导出决策</button><button class="btn b-out" type="button" data-nav="merge">打开合并仲裁</button></div>
+      <div class="help-actions"><button class="btn b-out" type="button" data-nav="export">打开导出结果</button><button class="btn b-out" type="button" data-nav="merge">打开合并仲裁</button></div>
     </article>
     <article class="help-card" id="helpServer">
       <h3>服务器协作</h3>
@@ -1035,7 +1035,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 </section>
 
 <!-- ============ 导入文献 ============ -->
-<section class="page" data-p="import">
+<section class="page rf-import-page" data-p="import">
   <h2>导入文献</h2><p class="hint">上传 Zotero CSV / RIS → 解析与去重 → 写入当前任务、当前筛选员的数据库。支持<b>一次选择多个文件</b>；其他数据库的记录请先导出为标准 RIS，系统会跨文件去重。</p>
   <div class="card">
     <div class="dz" id="dropZone" role="button" tabindex="0" aria-label="选择 Zotero CSV 或 RIS 文献文件">
@@ -1174,9 +1174,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   </div>
 </section>
 
-<!-- ============ 导出决策 ============ -->
-<section class="page" data-p="export">
-  <h2>导出决策</h2><p class="hint">从当前任务、当前筛选员的数据库实时生成（utf-8-sig，Excel 可直接打开）</p>
+<!-- ============ 导出结果 ============ -->
+<section class="page rf-export-page" data-p="export">
+  <h2>导出结果</h2><p class="hint">从当前任务、当前筛选员的数据库实时生成（utf-8-sig，Excel 可直接打开）</p>
   <div class="card">
     <b>本任务导出</b>
     <div class="row">
@@ -3908,7 +3908,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["导入文献","Import literature","Importer les publications","Импорт публикаций","Importar literatura","文献のインポート","Importar literatura","Literatur importieren","Увоз литературе", "문헌 가져오기"],
   ["文献初筛","Title/Abstract screening","Sélection titre/résumé","Отбор по названию и аннотации","Cribado título/resumen","タイトル・要約スクリーニング","Triagem título/resumo","Titel/Abstract-Screening","Одабир наслова и апстракта", "제목·초록 선별"],
   ["文献复筛","Full-text screening","Sélection plein texte","Отбор полных текстов","Cribado de texto completo","全文スクリーニング","Triagem de texto completo","Volltext-Screening","Одабир пуног текста", "전문 선별"],
-  ["导出决策","Export decisions","Exporter les décisions","Экспорт решений","Exportar decisiones","判定のエクスポート","Exportar decisões","Entscheidungen exportieren","Извоз одлука", "판정 내보내기"],
+  ["导出结果","Export results","Exporter les résultats","Экспорт результатов","Exportar resultados","結果のエクスポート","Exportar resultados","Ergebnisse exportieren","Извоз резултата", "결과 내보내기"],
   ["合并仲裁","Merge & adjudicate","Fusion et arbitrage","Объединение и разрешение разногласий","Fusión y arbitraje","マージと仲裁","Mesclar e arbitrar","Zusammenführen und Schlichten","Обједињавање и решавање неслагања", "병합 및 조정"],
   ["编码方案","Coding scheme","Schéma de codage","Схема кодирования","Esquema de codificación","コーディング設計","Esquema de codificação","Kodierschema","Шема кодирања", "코딩 체계"],
   ["数据提取与编码","Data extraction & coding","Extraction et codage des données","Извлечение и кодирование данных","Extracción y codificación de datos","データ抽出・コーディング","Extração e codificação de dados","Datenextraktion und Kodierung","Екстракција и кодирање података", "데이터 추출 및 코딩"],
@@ -5049,9 +5049,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
-<script src="./help_locale.js?v=20261012-team-prisma5"></script>
+<script src="./help_locale.js?v=2.1.1.8"></script>
 <script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
-<script src="./navigation_registry.js?v=20261011-layouts2"></script>
+<script src="./navigation_registry.js?v=2.1.1.8"></script>
 
 <script>
 'use strict';
@@ -5876,7 +5876,7 @@ function resetImportUI() {
   $('#fileList').replaceChildren(); $('#fileList').style.display = 'none';
   $('#dzBar').style.display = 'none'; $('#dzBarI').style.width = '0';
   $('#dropZone').classList.remove('done', 'drag');
-  $('#dzInner').innerHTML = importPromptHtml;
+  $('#dzInner').innerHTML = importPromptHtml; window.ImportExportWorkspace?.resetPrompt();
   $('#repHint').textContent = '尚未导入 —— 选择当前任务与筛选员后，点击上方上传区开始。';
   $('#batchFilesWrap').style.display = 'none'; $('#crossDupWrap').style.display = 'none';
   $('#titleDupWrap').style.display = 'none';
@@ -5923,10 +5923,11 @@ async function realImport(files) {
     $('#dzInner').textContent = '';
     $('#dzInner').append(T('✓ 已接收 '), el('b', { text: files.map(f => f.name).join('、') }));
     renderImportReport(d);
+    window.ImportExportWorkspace?.clearQueue();
     await window.WorkflowImports?.received(d);
     if (ticket !== importVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     document.dispatchEvent(new CustomEvent('reviewflow:import-completed'));
-    $('#goScreenBtn').style.display = d.staged || d.screening_ready === false ? 'none' : '';
+    $('#goScreenBtn').style.display = ''; // Existing active records remain available while additions are staged.
     setImportBusy(false);
     await refreshProgress();
     toast(d.staged ? T('导入已暂存，等待核验与激活。') : Number(d.title_review_pending || 0) > 0
@@ -5946,14 +5947,14 @@ dz.addEventListener('click', () => $('#importFile').click());
 dz.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#importFile').click(); }
 });
-$('#importFile').addEventListener('change', e => { const fs = [...e.target.files]; if (fs.length) realImport(fs); e.target.value = ''; });
+$('#importFile').addEventListener('change', e => { const fs = [...e.target.files]; if (fs.length) window.ImportExportWorkspace?.queue(fs); e.target.value = ''; });
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
 dz.addEventListener('dragenter', e => { e.preventDefault(); dz.classList.add('drag'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
 dz.addEventListener('drop', e => {
   e.preventDefault(); dz.classList.remove('drag');
   const fs = (e.dataTransfer && e.dataTransfer.files) ? [...e.dataTransfer.files] : [];
-  if (fs.length) realImport(fs);
+  if (fs.length) window.ImportExportWorkspace?.queue(fs);
 });
 $('#goScreenBtn').addEventListener('click', () => go('screen'));
 
@@ -6850,7 +6851,7 @@ async function download(path, filename, doneBtn, isCurrent = () => true) {
     if (doneBtn) {
       doneBtn.disabled = true;
       const started = performance.now();
-      const progress = () => { if (sameTask()) doneBtn.textContent = T('正在下载…已等待 {0} 秒。', ((performance.now()-started)/1000).toFixed(1)); };
+      const progress = () => { if (sameTask()) { if (doneBtn.dataset.ioAction) ImportExportWorkspace.exportFeedback(doneBtn,'busy'); else doneBtn.textContent = T('正在下载…已等待 {0} 秒。', ((performance.now()-started)/1000).toFixed(1)); } };
       progress(); timer = setInterval(progress, 500);
     }
     const blob = await api(path, { blob: true });
@@ -6861,9 +6862,9 @@ async function download(path, filename, doneBtn, isCurrent = () => true) {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     toast(T('✓ 已下载：') + filename, 'inc');
-    if (doneBtn) { doneBtn.classList.add('done'); setTimeout(() => doneBtn.classList.remove('done'), 1200); }
-  } catch (e) { if (sameTask() && isCurrent()) toast(T('导出失败：') + e.message, 'warn'); }
-  finally { clearInterval(timer); if (doneBtn) { doneBtn.textContent = label; doneBtn.disabled = !isCurrent(); } }
+    if (doneBtn) { window.ImportExportWorkspace?.exportFeedback(doneBtn,'done'); doneBtn.classList.add('done'); setTimeout(() => doneBtn.classList.remove('done'), 1200); }
+  } catch (e) { if (sameTask() && isCurrent()) { window.ImportExportWorkspace?.exportFeedback(doneBtn,'error',e); toast(T('导出失败：') + e.message, 'warn'); } }
+  finally { clearInterval(timer); if (doneBtn) { if (doneBtn.dataset.ioAction) ImportExportWorkspace.exportFeedback(doneBtn,'idle'); else doneBtn.textContent = label; doneBtn.disabled = !isCurrent(); } }
 }
 function refreshExportButtons() { /* 按钮常可用：服务端实时生成 */ }
 $('#dlDecisions').addEventListener('click', e => { if (S.task) download(taskApi() + '/export/decisions' + scrQ(), `stage1-${S.user.username}.csv`, e.currentTarget); else toast('请先选择任务', 'warn'); });
@@ -6875,11 +6876,15 @@ $('#dlMatrix').addEventListener('click', e => { if (S.task) download(taskApi() +
 $('#cbExport').addEventListener('click', e => { if (S.task) download(taskApi() + '/export/matrix' + scrQ(), 'coding_matrix.csv', e.currentTarget); else toast(T('请先选择任务'), 'warn'); });
 $('#dlScheme').addEventListener('click', async e => {
   if (!S.task) { toast('请先选择任务', 'warn'); return; }
+  const button=e.currentTarget,taskId=S.task.task_id;button.disabled=true;window.ImportExportWorkspace?.exportFeedback(button,'busy');
   try {
     const scheme = await api(taskApi() + '/coding/scheme' + scrQ());
+    if(S.task?.task_id!==taskId)return;
     saveJson('coding_scheme.json', scheme);
+    window.ImportExportWorkspace?.exportFeedback(button,'done');
     toast(T('✓ 已下载：') + 'coding_scheme.json', 'inc');
-  } catch (err) { toast('导出失败：' + err.message, 'warn'); }
+  } catch (err) { window.ImportExportWorkspace?.exportFeedback(button,'error',err);toast(T('导出失败：') + err.message, 'warn'); }
+  finally {button.disabled=false;window.ImportExportWorkspace?.exportFeedback(button,'idle');}
 });
 function saveJson(name, obj) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
@@ -8753,7 +8758,7 @@ $('#auTheme').addEventListener('click', () => setTheme(document.documentElement.
 $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.togglePaused(); });
 </script>
 <script src="./import_guide_locale.js?v=20261005-guide4"></script>
-<script src="./title_duplicate_review.js?v=20261005-guide4"></script>
+<script src="./title_duplicate_review.js?v=2.1.1.8"></script>
 <script src="./analysis_runner.js?v=20260930-p0p1"></script>
 <script src="./analysis_forest.js?v=20261002-language-wrap-final1"></script>
 <script src="./analysis_dose_nonlinear.js?v=20261002-language-wrap-final1"></script><script src="./analysis_ipd_survival.js?v=20260929-ui3"></script>
@@ -8811,8 +8816,8 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./research_trace.js?v=20261013-title-search2"></script>
 <script src="./import_review_locale.js?v=20261012-review1"></script>
 <script src="./import_review_model.js?v=20261012-review1"></script>
-<script src="./import_guide.js?v=20261012-review1"></script>
-<script src="./import_history.js?v=20261012-workflow6"></script>
+<script src="./import_guide.js?v=2.1.1.8"></script>
+<script src="./import_history.js?v=2.1.1.8"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
@@ -8829,8 +8834,11 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./screening_rounds.js?v=20261012-rounds1"></script>
 <script src="./workflow_controls.js?v=20261013-empty-guard2"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
-<link rel="stylesheet" href="./import_review.css?v=20261012-review1">
-<script src="./workflow_imports.js?v=20261012-review1"></script>
+<link rel="stylesheet" href="./import_review.css?v=2.1.1.8">
+<script src="./import_export_locale.js?v=2.1.1.8"></script>
+<script src="./import_export_help_locale.js?v=2.1.1.8"></script>
+<script src="./import_export_workspace.js?v=2.1.1.8"></script>
+<script src="./unified_import_workspace.js?v=2.1.1.8"></script>
 <script src="./team_prisma_locale.js?v=20261012-rounds1-20261012-team-prisma5"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261013-keyguard1"></script>
@@ -8841,9 +8849,10 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./evidence_mapper.js?v=20261002-release1"></script>
 <link rel="stylesheet" href="./mobile_concept.css?v=20261013-disclosure5">
 <script src="./mobile_concept_locale.js?v=20261013-motion13"></script>
-<script src="./mobile_concept.js?v=20261013-disclosure5"></script>
+<script src="./mobile_concept.js?v=2.1.1.8"></script>
 <link rel="stylesheet" href="./mobile_motion.css?v=20261013-motion13">
 <link rel="stylesheet" href="./disclosure_controls.css?v=20261013-svg2">
-<script src="./mobile_motion.js?v=20261013-title-search1"></script>
+<script src="./mobile_motion.js?v=2.1.1.8"></script>
+<link rel="stylesheet" href="import_export_workspace.css?v=2.1.1.8">
 </body>
 </html>
