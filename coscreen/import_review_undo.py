@@ -34,6 +34,13 @@ def migrate(path: Path) -> None:
 
 
 def snapshot(conn, kind: str, subject: str) -> dict:
+    if kind == 'bulk':
+        parts = [snapshot(conn, action['kind'], action['id']) for action in json.loads(subject)]
+        result = {'legacy_seq': parts[0]['legacy_seq']}
+        for field, key in [('candidates', 'id'), ('records', 'id'), ('proposals', 'record_id'),
+                           ('articles', 'zotero_key'), ('acceptances', 'zotero_key')]:
+            result[field] = list({row[key]: row for part in parts for row in part[field]}.values())
+        return result
     if kind == 'candidate':
         ids = [r[0] for r in conn.execute(
             "SELECT ref_id FROM workflow_import_candidate_members WHERE candidate_id=? AND ref_type='record'",
@@ -122,6 +129,7 @@ def restore(conn, batch: str, actor: str) -> dict:
         # receive the correction; never roll their screening/coding back.
         conn.execute('''INSERT INTO workflow_metadata_acceptances VALUES(?,?,?,?) ON CONFLICT(zotero_key)
             DO UPDATE SET revision=excluded.revision,metadata_json=excluded.metadata_json,record_id=excluded.record_id''',
-            (article['zotero_key'], revision, imports.dumps(imports.metadata(article)), row['subject_id']))
+            (article['zotero_key'], revision, imports.dumps(imports.metadata(article)),
+             next((p['record_id'] for p in before['proposals'] if p['canonical_key'] == article['zotero_key']), row['subject_id'])))
     conn.execute("UPDATE workflow_import_undo SET state='undone' WHERE id=?", (row['id'],))
     return {'undone': True, 'subject_id': row['subject_id'], 'kind': row['kind']}

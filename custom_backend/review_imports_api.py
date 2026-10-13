@@ -17,7 +17,7 @@ from typing import Literal
 
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from coscreen import db as db_mod, import_history, import_sources, review_imports as store, review_workflow as workflow
 from coscreen import import_review_undo as review_undo
@@ -39,6 +39,17 @@ class CandidateBody(VersionBody):
 
 class MetadataBody(VersionBody):
     action: Literal['keep_existing', 'accept_incoming']
+
+
+class BulkItem(BaseModel):
+    kind: Literal['candidate', 'metadata']
+    id: str = Field(min_length=1, max_length=128)
+    keeper_key: str | None = None
+    keeper_record_id: str | None = None
+
+
+class BulkBody(VersionBody):
+    actions: list[BulkItem] = Field(min_length=1, max_length=100)
 
 
 class ImportRuntime:
@@ -464,6 +475,19 @@ def register_review_import_routes(app, require_user, **dependencies):
                         review_undo.remember(conn,batch_id,str(user['user_id']),undo_kind,subject,snapshot,result['policy_version'])
                     if reason == 'import-activated':
                         conn.execute("UPDATE workflow_import_undo SET state='activated' WHERE state='available'")
+                    from custom_backend.import_review_actions import review_updates
+                    if undo_kind:
+                        actions = json.loads(subject) if undo_kind == 'bulk' else [{'kind': undo_kind, 'id': subject}]
+                        result['review_updates'] = review_updates(conn, batch_id, actions)
+                    elif reason == 'import-review-undone':
+                        kind, subject_id = extra['kind'], extra['subject_id']
+                        actions = json.loads(subject_id) if kind == 'bulk' else [{'kind': kind, 'id': subject_id}]
+                        result['review_updates'] = review_updates(conn, batch_id, actions)
+                    result['can_manage'] = ctx.can_manage
+                    result['undo'] = review_undo.available(conn,batch_id,str(user['user_id']))
+                    last_review = conn.execute('SELECT after_json FROM workflow_import_undo ORDER BY id DESC LIMIT 1').fetchone()
+                    legacy_seq = conn.execute('SELECT COALESCE(MAX(seq),0) FROM title_duplicate_undo').fetchone()[0]
+                    result['legacy_undo_allowed'] = not last_review or legacy_seq > json.loads(last_review[0]).get('legacy_seq',0)
             except (ValueError,KeyError) as exc:
                 translate(exc)
             if changed:
@@ -483,6 +507,13 @@ def register_review_import_routes(app, require_user, **dependencies):
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/undo')
     def undo(task_id: str,batch_id: str,body: VersionBody,user: dict=Depends(require_user)):
         return mutate(task_id,batch_id,user,body,lambda conn,ctx:review_undo.restore(conn,batch_id,str(user['user_id'])),'import-review-undone')
+
+    @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/bulk-review')
+    def bulk_review(task_id: str,batch_id: str,body: BulkBody,user: dict=Depends(require_user)):
+        from custom_backend.import_review_actions import apply_bulk, bulk_subject
+        actions = [a.model_dump() for a in body.actions]
+        return mutate(task_id,batch_id,user,body,lambda conn,ctx:apply_bulk(conn,batch_id,actions,str(user['user_id'])),
+                      'import-bulk-reviewed','bulk',bulk_subject(actions))
 
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/activate')
     def activate(task_id: str,batch_id: str,body: VersionBody,user: dict=Depends(require_user)):

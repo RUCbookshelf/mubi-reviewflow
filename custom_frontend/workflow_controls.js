@@ -24,6 +24,11 @@
   W.scope = scope;
   W.settings = () => settings;
   W.version = () => settings?.version;
+  W.acceptImportVersion = (version, requestedScope) => {
+    if(requestedScope!==scope()||!settings||!Number.isInteger(version)||version<settings.version)return;
+    settings.version=version;
+    if(draft&&!settingsDirty)draft.version=version;
+  };
   W.order = () => order;
   W.selectedSource = stage => selected[stage];
   W.activeItem = stage => items[stage];

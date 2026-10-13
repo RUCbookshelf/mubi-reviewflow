@@ -3,7 +3,7 @@
  const UI=window.ImportExportWorkspace={},q=s=>document.querySelector(s);
  const n=(tag,key,attrs={})=>{const node=el(tag,{...attrs,...(key==null?{}:{text:T(key),'data-io-text':key})});for(const name of ['hidden','disabled','checked'])if(name in attrs)node[name]=!!attrs[name];return node;};
  const literal=(tag,value,attrs={})=>el(tag,{...attrs,text:String(value??''),translate:'no'});
- const paths={file:'M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6',download:'M12 3v12m-4-4 4 4 4-4M5 17v4h14v-4',chevron:'m9 5 7 7-7 7',upload:'M12 16V3m-4 4 4-4 4 4M4 14v7h16v-7',undo:'M9 4 4 9l5 5M4 9h9a7 7 0 0 1 0 14',check:'m5 12 4 4L19 6',shield:'m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6',loader:'M20 12a8 8 0 1 1-8-8'};
+ const paths={info:'M12 11v6M12 7h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',file:'M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6',download:'M12 3v12m-4-4 4 4 4-4M5 17v4h14v-4',chevron:'m9 5 7 7-7 7',upload:'M12 16V3m-4 4 4-4 4 4M4 14v7h16v-7',undo:'M9 4 4 9l5 5M4 9h9a7 7 0 0 1 0 14',check:'m5 12 4 4L19 6',shield:'m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6',loader:'M20 12a8 8 0 1 1-8-8'};
  UI.icon=name=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',paths[name]||paths.file);svg.append(path);return svg;};
  UI.node=n;UI.literal=literal;
  UI.button=(key,fn,cls='soft')=>n('button',key,{type:'button',class:cls,onclick:()=>Promise.resolve().then(fn).catch(error=>WorkflowControls.error(error))});

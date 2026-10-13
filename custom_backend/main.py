@@ -1617,7 +1617,8 @@ def decide_title_duplicate_review(
         raise _bad("标题候选组不存在。", 404)
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"progress": db_mod.title_duplicate_review_progress(db),
-            "screening": db_mod.get_progress(db)}
+            "screening": db_mod.get_progress(db),
+            "undo_available": db_mod.title_duplicate_undo_available(db, user["username"])}
 
 
 @app.post("/api/tasks/{task_id}/title-duplicate-undo")

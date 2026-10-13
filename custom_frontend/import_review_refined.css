@@ -1,0 +1,80 @@
+/* Approved compact review reader, scoped to this import subpage. */
+#wf-import-review .compact-header{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;margin:0 0 6px}
+#wf-import-review .compact-header label{font-size:.85rem;font-weight:600;white-space:nowrap}
+#wf-import-review .compact-header select{width:100%;max-width:370px;min-width:0;min-height:36px;margin:0;padding:7px 10px;font-size:.85rem;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:9px}
+#wf-import-review .compact-header .load-state{margin:0;padding:0;border:0;background:none;gap:6px;font-size:.75rem;white-space:nowrap}
+#wf-import-review .compact-header .load-copy{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#wf-import-review .compact-header .load-state svg{width:20px;height:20px}
+#wf-import-review .compact-files{display:flex;align-items:center;gap:12px;min-height:25px;margin-bottom:6px;color:var(--muted);font-size:.75rem}
+#wf-import-review .compact-progress{display:flex;gap:5px;white-space:nowrap}
+#wf-import-review .compact-files>button{margin-left:auto;padding:2px 0;min-height:28px;border:0;background:transparent;color:var(--primary);font-size:.75rem}
+#wf-import-review .sources-detail{position:relative;min-width:0}
+#wf-import-review .sources-detail>summary{display:flex;align-items:center;gap:4px;cursor:pointer;list-style:none;border:0;padding:0;font-size:.75rem}
+#wf-import-review .sources-detail>summary::-webkit-details-marker{display:none}
+#wf-import-review .sources-detail>summary svg{width:13px;height:13px;transition:transform .2s}
+#wf-import-review .sources-detail[open]>summary svg{transform:rotate(90deg)}
+#wf-import-review .sources-detail>div{position:absolute;z-index:7;top:28px;left:0;min-width:240px;max-width:300px;display:flex;flex-direction:column;gap:5px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px #0002;padding:10px}
+#wf-import-review .sources-detail .file{overflow-wrap:anywhere;white-space:normal;font-size:.75rem}
+#wf-import-review .compact-tools{display:flex;align-items:center;gap:8px;min-height:30px;margin:3px 0 6px}
+#wf-import-review .compact-tools button{min-height:34px;padding:5px 10px;font-size:.75rem}
+#wf-import-review .compact-tools .undo{margin-left:auto}
+#wf-import-review .status-message{font-size:.75rem;min-height:20px;margin:4px 0;color:var(--primary)}
+#wf-import-review .status-message:empty{display:none}
+#wf-import-review .tabs-wrap{margin-top:5px;min-width:0;overflow:hidden}
+#wf-import-review .tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;width:100%;min-width:0}
+#wf-import-review .tabs .tab{display:flex;gap:3px;justify-content:center;align-items:center;min-width:0;padding:9px 4px;font-size:.8rem;white-space:normal;line-height:1.4}
+#wf-import-review .tabs .count{font-size:.7rem;margin:0;flex:none}
+#wf-import-review .review-space{display:grid;margin-top:12px;gap:12px;grid-template-columns:230px minmax(0,1fr);align-items:stretch;min-height:470px}
+#wf-import-review .queue-item{display:block;min-width:0;max-width:none;width:100%;min-height:60px;padding:12px}
+#wf-import-review .queue-item .qtitle{font-size:.8rem;line-height:1.5}
+#wf-import-review .queue{display:block;max-height:470px;overflow:auto}
+#wf-import-review .main-panel{min-width:0}
+#wf-import-review .main-panel>.card{height:auto;min-height:470px;display:flex;flex-direction:column}
+#wf-import-review .main-panel>.card .card-head{flex:0 0 auto;min-height:0;max-height:none;overflow:visible;padding:16px 18px 10px}
+#wf-import-review .card-head h3{font-size:1.1rem;line-height:1.45;margin:4px 0}
+#wf-import-review .card-body{flex:1;min-height:0;max-height:360px;overflow:auto;padding:12px 18px}
+#wf-import-review .card-actions{display:flex;flex-wrap:wrap;margin-top:auto;padding:12px 18px;min-height:66px;border-top:1px solid var(--border);gap:8px}
+#wf-import-review .card-actions button{font-size:.8rem;min-width:0}
+#wf-import-review .compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#wf-import-review .record{padding:13px}
+#wf-import-review .record h3{font-size:.85rem;line-height:1.5}
+#wf-import-review .record dl{font-size:.75rem;gap:5px 10px}
+#wf-import-review .result-help{font-size:.75rem;padding:6px 18px}
+#wf-import-review .result-help[hidden]{display:none}
+#wf-import-review .footer-bar{border:0;padding:10px 0;margin-top:12px;border-top:1px solid var(--border);background:none}
+#wf-import-review .footer-bar button{margin-left:auto;min-height:36px;font-size:.8rem}
+#wf-import-review .record-nav{display:none}
+#wf-import-review .bulk-list{max-height:250px;overflow:auto;padding:0 12px;border:1px solid var(--border);border-radius:10px}
+#wf-import-review .bulk-list p{padding:10px 0;margin:0;border-bottom:1px solid var(--border);font-size:.8rem}
+#wf-import-review .bulk-list small{display:block;color:var(--muted)}
+#wf-import-review dialog{max-width:560px;width:calc(100% - 32px)}
+@media(max-width:760px){
+ #wf-import-review .compact-header{grid-template-columns:auto minmax(0,1fr);gap:5px 8px}
+ #wf-import-review .compact-header select{max-width:none;font-size:.75rem;min-height:34px;padding:6px 8px}
+ #wf-import-review .compact-header .load-state{grid-column:1/-1;justify-content:flex-start;min-height:22px;font-size:.75rem}
+ #wf-import-review .compact-files{gap:9px;min-height:24px;margin-bottom:4px}
+ #wf-import-review .compact-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+ #wf-import-review .compact-tools button{min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:.65rem;line-height:1.3;min-height:31px;padding:4px;margin:0}
+ #wf-import-review .tabs .tab{font-size:.65rem;padding:7px 1px;min-height:37px}
+ #wf-import-review .tabs .count{font-size:.6rem;padding:0 3px}
+ #wf-import-review .review-space{display:flex;flex-direction:column;gap:7px;margin-top:7px;min-height:0}
+ #wf-import-review .queue-side{display:none}
+ #wf-import-review .record-nav{display:flex;gap:5px;align-items:center;width:100%;min-width:0}
+ #wf-import-review .record-nav button{width:30px;min-height:30px;padding:0}
+ #wf-import-review .record-nav .previous svg{transform:rotate(180deg)}
+ #wf-import-review .record-nav select{flex:1;min-width:0;width:0;min-height:30px;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:7px;padding:6px;font-size:.7rem}
+ #wf-import-review .main-panel{width:100%}
+ #wf-import-review .main-panel>.card{min-height:0;height:auto}
+ #wf-import-review .main-panel>.card .card-head{flex:0 0 auto;padding:10px 12px}
+ #wf-import-review .card-head h3{font-size:.95rem}
+ #wf-import-review .card-body{flex:initial;max-height:none;overflow:visible;padding:10px 12px}
+ #wf-import-review .card-actions{position:sticky;bottom:0;z-index:2;background:var(--surface);margin:0;min-height:0;padding:10px;gap:5px}
+ #wf-import-review .card-actions button{flex:1;min-width:90px;font-size:.7rem;min-height:36px}
+ #wf-import-review .compare{grid-template-columns:1fr;gap:7px}
+ #wf-import-review .record{padding:10px}
+ #wf-import-review .sources-detail>div{left:auto;right:-45px;min-width:230px;max-width:250px}
+}
+
+/* Override shared disclosure spacing for this compact source dropdown only. */
+#appMain #wf-import-review .sources-detail{padding:0;margin:0;border:0;background:transparent;box-shadow:none}
+#appMain #wf-import-review .sources-detail>summary{min-height:24px;padding:0!important;margin:0;border:0;font-size:.75rem;font-weight:400}
