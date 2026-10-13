@@ -262,6 +262,21 @@ def _current_progress(paths: dict[str, Any], actor_id: int | str) -> dict[str, A
             "coding": coding_progress, "coding_rater_records": rater_progress}
 
 
+def _matching_subject_ids(paths: dict[str, Any], search: str) -> list[str]:
+    """Match current catalog titles across personal/shared stores before pagination."""
+    matched: set[str] = set()
+    title_paths = {name: paths.get(name) for name in ("shared", "personal") if paths.get(name) is not None}
+    for _name, path in _unique_paths(title_paths):
+        with closing(db._connect(path)) as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles'").fetchone() is None:
+                continue
+            conn.create_function("trace_casefold", 1, lambda value: str(value or "").casefold())
+            rows = conn.execute("SELECT zotero_key FROM articles WHERE instr(trace_casefold(title),?)>0",
+                                (search.casefold(),)).fetchall()
+            matched.update(str(row[0]) for row in rows)
+    return sorted(matched)
+
+
 def _attach_subject_titles(paths: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Attach corpus titles with at most one bounded IN query per physical store."""
     subject_ids = list(dict.fromkeys(
@@ -1122,6 +1137,7 @@ def register_research_trace_routes(
         stage: str | None = Query(default=None, max_length=40),
         action: str | None = Query(default=None, max_length=80),
         subject_id: str | None = Query(default=None, max_length=500),
+        q: str | None = Query(default=None, max_length=500),
         since: str | None = Query(default=None, max_length=80),
         until: str | None = Query(default=None, max_length=80),
         user: dict = Depends(require_user),
@@ -1131,6 +1147,10 @@ def register_research_trace_routes(
             raise HTTPException(400, "Unknown trace stage.")
         filters = _canonical_filters({"stage": stage, "action": action, "subject_id": subject_id,
                                       "since": since, "until": until})
+        search = (q or "").strip()
+        if search:
+            filters["q"] = search
+        matching_subject_ids = _matching_subject_ids(paths, search) if search else []
         decoded = _decode_cursor(cursor, filters, task_id=str(info.task_id), actor_id=str(actor_id))
         unique = _unique_paths(paths)
         expected_parts = [name for name, _ in unique]
@@ -1146,6 +1166,7 @@ def register_research_trace_routes(
                 page = research_trace.list_events(
                     conn, str(info.task_id), actor_id, limit=limit, cursor=positions.get(name),
                     stage=stage, action=action, subject_id=subject_id, since=since, until=until,
+                    search=search, matching_subject_ids=matching_subject_ids,
                     snapshot_sequence=cutoffs.get(name),
                 )
             fetched[name] = page

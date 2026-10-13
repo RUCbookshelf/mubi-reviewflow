@@ -1,0 +1,322 @@
+/* Presentation transplanted from the approved mobile concept.
+   All overrides end at 760px; desktop CSS and application logic stay unchanged. */
+@media(max-width:760px){
+  :root{--bg:#f3f7f5;--surface:#fff;--ink:#233c3b;--muted:#607772;--border:#d8e5e0;--primary:#2f6f6a;--primary-dark:#2f6f6a;--soft:#e5f1ed;--accent:#bd9b60;--danger:#ae513d}
+  :root[data-theme=dark]{--bg:#0D1117;--surface:#161B22;--ink:#E6EDF3;--muted:#9DB0BE;--border:#3A4553;--primary:#62A29D;--primary-dark:#8FC3BD;--soft:#163330;--accent:#D2AE84;--danger:#E99A85}
+  html{scroll-padding-top:76px}
+  body{min-width:0;font:15px/1.55 'Segoe UI','Microsoft YaHei',sans-serif}
+  #appMain .view{padding:18px 16px 28px;display:block;overflow:auto;scrollbar-gutter:auto;overscroll-behavior:contain}
+  #appMain .page{min-width:0;max-width:100%;overflow-wrap:anywhere}
+  #appMain .page.on{animation:none}
+  #appMain .view :is(.rf-reader-page,.rf-fulltext-reader,.rf-coding-reader).on{display:block;flex:none;height:auto;min-height:0}
+  #appMain :is(.btn,button,input,select,textarea){box-sizing:border-box;max-width:100%}
+  #appMain .btn,#appMain select.input,#appMain input.input{min-height:48px;border-radius:12px;padding:10px 13px;font:600 14px/1.4 'Segoe UI','Microsoft YaHei',sans-serif}
+  #appMain :is(input,select,textarea).input{font-size:16px;font-weight:400;width:100%;min-width:0}
+  #appMain textarea{min-height:100px;padding:12px;border-radius:12px}
+  #appMain :is(.card,.trace-panel,.an-panel){padding:16px;border:1px solid var(--border);border-radius:17px;background:var(--surface);min-width:0;max-width:100%}
+  #appMain .card+.card{margin-top:12px}
+  #appMain h2{font:600 23px/1.25 Georgia,'Microsoft YaHei',serif}
+  #appMain h3{font:600 16px/1.25 'Segoe UI','Microsoft YaHei',sans-serif;margin:0 0 8px}
+  #appMain .hint{font-size:13px;line-height:1.55;color:var(--muted)}
+  #appMain .row{gap:8px;min-width:0;flex-wrap:wrap}
+  #appMain .row>*{min-width:0;max-width:100%}
+  body>.footer{display:none}
+  /* The concept app bar: separate menu, title/task, Trace, globe, moon. */
+  body.rf-navigation-sheet #appMain>.top{display:grid;grid-template-columns:44px minmax(0,1fr) 20px auto;grid-template-rows:25px 20px;gap:0 5px;padding:9px 10px 10px;min-height:72px;border-bottom:1px solid var(--border);background:var(--surface)}
+  #rfMobileNavigation{grid-column:1;grid-row:1/3;width:44px;height:48px;padding:11px;border:0;background:transparent;color:var(--ink);border-radius:14px;cursor:pointer}
+  #rfMobileNavigation svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round}
+  #rfMobilePageTitle{grid-column:2;grid-row:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 14px/25px 'Segoe UI','Microsoft YaHei',sans-serif}
+  #appMain .top #rfTaskContext{grid-column:2;grid-row:2;margin:0;padding:0;min-height:20px;min-width:0;max-width:none;border:0;display:flex;justify-content:flex-start;color:var(--muted)}
+  #appMain .top .rf-task-label{display:none}
+  #appMain .top #rfCurrentTask{font-size:11px;max-width:100%;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #appMain .top>div:last-child{grid-column:4;grid-row:1/3;gap:5px!important;margin:0}
+  #appMain .top :is(#themeBtn,#rf-app-language-button,#rf-restart-button){width:44px;min-width:44px;min-height:48px;padding:10px;border-radius:14px;justify-content:center}
+  #themeBtnText,#rf-app-language-current,#rf-app-language-button>.caret,#rf-restart-button>span{display:none}
+  body[data-workspace=analysis] #themeBtn .icon{display:block}
+  #appMain .top .trace-shortcut-status{grid-column:3;grid-row:1/3;width:20px;min-width:20px;padding:0;font-size:0;overflow:hidden;align-self:center}
+  #appMain .top .trace-shortcut-status:before{margin:0}
+  body.rf-navigation-sheet #appMain>.top .rf-breadcrumb{display:none}
+  #rfNavigationSheet{top:auto!important;left:0;bottom:0;width:100%!important;height:82dvh!important;border-radius:24px 24px 0 0!important}
+  #rfNavigationSheet:has(#rfSidebarToggle[aria-expanded=false]){visibility:hidden}
+  #rfNavigationSheet:has(#rfSidebarToggle[aria-expanded=true]){animation:rf-mobile-sheet-in 360ms cubic-bezier(.2,.8,.2,1)}
+  #rfNavigationSheet .rf-sheet-header{width:100%!important;height:62px;border-bottom:1px solid var(--border)}
+  #rfNavigationSheet #rfSheetContent{top:62px;width:100%!important;height:calc(82dvh - 62px)!important}
+  #rfNavigationSheet .lockup{left:20px;top:15px}
+  #rfNavigationSheet #rfSidebarToggle{left:auto;right:12px;top:8px;width:44px;height:44px;color:var(--ink)}
+  #rfNavigationSheet #rfSidebarToggle svg{display:none}
+  #rfNavigationSheet #rfSidebarToggle:after{content:'×';font:28px/1 sans-serif}
+  body.rf-navigation-sheet.mobile-nav-open #mobileNavBackdrop{background:rgba(0,0,0,.45)}
+  #rfNavigationSheet #appShell .nav button{min-height:48px;border-radius:12px;font-size:14px}
+  #rfNavigationSheet #appShell .fld{grid-template-columns:1fr}
+  #rfNavigationSheet #appShell select{height:48px;font-size:16px}
+  #rf-app-language-menu{position:fixed;left:12px;right:12px;top:72px;width:auto;max-width:none;max-height:70dvh;overflow:auto;z-index:90}
+  #rf-app-language-menu button{min-height:48px}
+  /* Concept reusable units. */
+  #appMain :is(.rf-mobile-disclosure,.rf-mobile-help-topic,.rf-mobile-document,.rf-mobile-settings-footer){border:0;border-bottom:1px solid var(--border);padding:5px 0;margin:12px 0}
+  #appMain summary{min-height:48px;padding:12px 0;font-size:14px;font-weight:600;cursor:pointer}
+  #appMain .rf-mobile-full{width:100%}
+  #appMain .rf-mobile-link{display:flex;width:100%;align-items:center;justify-content:space-between;text-align:left;margin-top:8px}
+  .rf-mobile-arrow{color:var(--muted);font-size:20px;font-weight:400}
+  .rf-mobile-task-badge{border-radius:30px;background:var(--soft);color:var(--primary-dark);font-size:12px;padding:6px 12px;justify-self:start}
+  .rf-mobile-progress{height:5px;border-radius:8px;background:var(--border);overflow:hidden;margin:12px 0 7px}
+  .rf-mobile-progress i{display:block;height:100%;background:var(--primary)}
+  #appMain .rf-mobile-sheet{position:fixed;inset:auto 0 0;width:100%;max-width:none;max-height:88dvh;margin:0;overflow:auto;padding:18px 20px 24px;border:1px solid var(--border);border-radius:24px 24px 0 0;background:var(--surface);color:var(--ink);box-shadow:0 -10px 40px #0002}
+  #appMain .rf-mobile-sheet[open]{animation:rf-mobile-sheet-in 360ms cubic-bezier(.2,.8,.2,1)}
+  .rf-mobile-sheet::backdrop{background:rgba(0,0,0,.45)}
+  .rf-mobile-sheet>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+  #appMain .rf-mobile-sheet h2{font-size:21px;margin:0}
+  #appMain .rf-mobile-sheet>button{display:block;width:100%;margin:8px 0}
+  #appMain .rf-mobile-sheet .row{flex-wrap:wrap}
+  #appMain .rf-mobile-sheet .rf-screen-order-label{display:none}
+  /* Home: current review, shortcuts and card-based settings. */
+  .page[data-p=home]>.rf-page-title{display:none}
+  .page[data-p=home]:has(#wf-tab-overview[aria-selected=true])>.rf-mobile-settings-footer{display:none}
+  .wf-tabs,.trace-tabs{display:flex;flex-wrap:nowrap;overflow:auto;margin:0 -16px 16px;padding:0 16px 9px;gap:6px;border-bottom:1px solid var(--border);scrollbar-width:none}
+  #appMain .wf-tabs [role=tab],#appMain .trace-tabs [role=tab]{flex:none;min-height:48px;padding:8px 12px;border:0;border-radius:0;background:transparent;font-size:13px;white-space:nowrap}
+  #appMain .wf-tabs [aria-selected=true],.trace-tabs [aria-selected=true]{color:var(--primary-dark)}
+  #wf-current-task{display:grid;gap:8px}
+  #wf-current-task>p{font:600 23px/1.35 Georgia,'Microsoft YaHei',serif;margin:0}
+  #wf-current-task>.btn{width:100%;white-space:normal}
+  #wf-current-task>.btn:first-of-type{background:var(--primary);color:var(--surface);border-color:var(--primary)}
+  #wf-current-task>.btn:nth-of-type(2){display:none}
+  [data-theme=dark] #wf-current-task>.btn:first-of-type{color:#102621}
+  #appMain .rf-mobile-shortcuts{margin-top:12px}
+  .rf-mobile-metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}
+  .rf-mobile-metrics>div{padding:13px;border-radius:12px;background:var(--soft)}
+  .rf-mobile-metrics b{display:block;font-size:23px}
+  .rf-mobile-metrics span{font-size:12px;color:var(--muted)}
+  #appMain .rf-mobile-disclosure .steps{display:block;background:transparent;border:0;padding:0}
+  #appMain .rf-mobile-disclosure .step{display:grid;grid-template-columns:24px 1fr;gap:6px 10px;padding:12px 0;border:0;border-bottom:1px solid var(--border);background:none;text-align:left}
+  #appMain .rf-mobile-disclosure .step span{grid-column:2;font-size:13px;color:var(--muted)}
+  #appMain .rf-mobile-disclosure .step svg{width:24px;height:24px}
+  #appMain .wf-panel :is(.card>.row,.wf-settings-save){display:flex;flex-direction:column;align-items:stretch}
+  #appMain .wf-panel .row>.input{width:100%;max-width:none!important;flex:none}
+  #appMain .wf-panel .row>.btn{width:100%;white-space:normal}
+  #appMain .wf-panel label{font-size:13px;color:var(--muted)}
+  #appMain .wf-panel input[type=checkbox]{width:20px;height:20px;min-height:20px;flex:none;accent-color:var(--primary)}
+  #appMain .wf-panel label:has(>input[type=checkbox]){display:flex;align-items:center;gap:10px;min-height:44px;margin:9px 0}
+  .rf-mobile-stage{border-bottom:1px solid var(--border)}
+  #appMain .rf-mobile-stage .wf-policy-stage{border:0;margin:0;padding:0 0 12px}
+  .rf-mobile-stage legend{display:none}
+  #appMain .team-identity{font-size:14px;min-width:0;overflow-wrap:anywhere}
+  #appMain .team-member{border:0;border-bottom:1px solid var(--border);border-radius:0;padding:10px 0}
+  #appMain .team-member{position:relative;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  #appMain .team-member>.team-identity{grid-column:1/-1;padding-right:44px}
+  #appMain .team-member>.team-member-actions{position:absolute;top:10px;right:0}
+  #appMain .team-member>span{font-size:12px;padding:0}
+  #appMain .team-member>span small{font-size:10px;white-space:normal}
+  #appMain .team-member .team-more{width:44px;min-height:44px}
+  .rf-mobile-task{border-bottom:1px solid var(--border);padding:5px 0}
+  .rf-mobile-task .hubcard{border:0;padding:0;box-shadow:none}
+  .rf-mobile-task .hubcard>h3{display:none}
+  #appMain .wf-source-checks{display:block}
+  #appMain .wf-policy-stage>.input{max-width:none}
+  .rf-mobile-settings-card label{display:block;margin:12px 0 5px}
+  .wf-settings-save .btn{width:100%;white-space:normal;margin:8px 0}
+  /* Reader: three order segments, source + stopping, compact actions, article. */
+  .rf-reader-page>h2,.rf-fulltext-reader>.page-cap,.rf-coding-reader>.page-cap{display:none}
+  .rf-reader-page>.al-mode,.rf-reader-page>.wf-queue-tools,.rf-document-toolbar{display:none!important}
+  .rf-mobile-queue{display:grid;gap:8px;margin-bottom:14px}
+  #appMain .rf-screen-order{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px;width:100%;border:1px solid var(--border);border-radius:13px;padding:3px;background:var(--surface)}
+  .rf-screen-order-label{grid-column:1/-1;font-size:12px;font-weight:600;padding:0 4px 6px}
+  #appMain .rf-screen-order>button{display:flex;align-items:center;border:0;min-height:48px;min-width:0;padding:8px 5px;border-radius:10px;background:transparent;font-size:12px;line-height:1.3;white-space:normal;justify-content:center;gap:5px;box-shadow:none}
+  #appMain .rf-screen-order>button.on{background:var(--soft);color:var(--primary-dark)}
+  #appMain .rf-screen-order svg{width:20px;height:20px;flex:none}
+  .rf-mobile-source{display:flex;align-items:start;gap:8px;margin:0 0 8px;min-width:0}
+  #appMain .rf-mobile-source>.wf-queue-tools{display:grid;grid-template-columns:minmax(0,1fr);flex:1;min-width:0;margin:0;padding:0;gap:5px}
+  .rf-mobile-source .wf-queue-tools>label{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden}
+  #appMain .rf-mobile-source .wf-queue-tools>select{width:100%;max-width:none}
+  #appMain .rf-mobile-source .wf-queue-tools>button,.rf-mobile-source .wf-queue-tools>.hint{display:none}
+  #appMain .wf-scope-progress{font-size:12px;color:var(--muted)}
+  #appMain .wf-readonly{font-size:13px;color:var(--danger)}
+  .rf-mobile-source .rf-stop-anchor{margin:0;flex:none;align-self:start}
+  #appMain .rf-mobile-source .rf-stop-summary{width:48px;min-height:48px;padding:10px;font-size:0;justify-content:center}
+  .rf-mobile-source .rf-stop-summary:after{display:none}
+  .rf-mobile-source .rf-stop-summary>*{display:none}
+  .rf-mobile-source .rf-stop-summary>.rf-mobile-stop-icon{display:block;width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .rf-mobile-screen-actions,.rf-mobile-document-actions,.rf-mobile-document-status{display:flex;align-items:center;gap:6px;justify-content:space-between;margin:12px 0;min-width:0}
+  #appMain .rf-mobile-screen-actions .btn,#appMain .rf-mobile-document-actions .btn{min-height:44px;font-size:12px;padding:8px 10px;white-space:normal}
+  .rf-mobile-document-status .chip,.rf-mobile-screen-actions .chip{font-size:12px;white-space:normal;border-radius:30px;padding:6px 12px}
+  #appMain .rf-mobile-sheet .scr-status{display:block;margin:12px 0}
+  .rf-mobile-sheet #scrHist{display:flex;flex-wrap:wrap;gap:4px;margin:10px 0}
+  .rf-mobile-sheet #scrHistCounts{display:block;font-size:13px}
+  #appMain #scrCard{padding:17px 16px 0;margin-bottom:14px;min-height:0;height:auto;overflow:visible}
+  #scrBody{display:block!important;overflow:visible!important}
+  #appMain .scr-title{font:600 23px/1.35 Georgia,'Microsoft YaHei',serif;margin:12px 0;max-width:100%;white-space:normal}
+  #appMain .scr-title-text{display:block;-webkit-line-clamp:unset;overflow:visible}
+  #appMain .scr-meta{display:block;font-size:12px;line-height:1.6;margin:8px 0 16px;color:var(--muted)}
+  #appMain .scr-meta .scr-authors{display:block;max-width:100%;white-space:normal}
+  #appMain .scr-meta .scr-journal{display:block;max-width:100%;background:none;padding:0;margin:3px 0;font-size:12px;white-space:normal}
+  .scr-meta :is(.scr-type,.scr-doi,.rf-screen-details){display:none!important}
+  #appMain #scrBody .absbox{background:transparent;border:0;padding:12px 0 18px;max-height:none;min-height:0;overflow:visible;font:16px/1.85 'Segoe UI','Microsoft YaHei',sans-serif}
+  .rf-mobile-article-details{border-bottom:1px solid var(--border);margin-bottom:12px}
+  #appMain .rf-screen-metadata{position:static;max-width:100%;width:100%;background:none;border:0;box-shadow:none;padding:0;font-size:12px}
+  #appMain .scr-decisions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;position:sticky;bottom:-28px;padding:12px 0 18px;background:var(--surface);border-top:1px solid var(--border);z-index:4}
+  #appMain .scr-decisions>.btn{min-height:52px;font-size:13px;padding:8px 4px;white-space:normal}
+  #appMain #excReason{grid-column:1/-1;max-width:none!important;width:100%;margin-top:2px}
+  #appMain .wf-custom-reason-row{grid-column:1/-1;display:flex;gap:8px;min-width:0;width:100%}
+  #appMain .wf-custom-reason-row>.input{flex:1;min-width:0;width:0}
+  #appMain .wf-custom-reason-row>.btn{flex:none;width:48px;min-height:48px;padding:10px}
+  .wf-reason-save-label{display:none}
+  .wf-custom-reason-row:has(input[hidden]){display:none!important}
+  /* Full text and coding. Real PDF viewer, annotations and evidence retained. */
+  #appMain :is(#ftDocTitle,#cbTitle){display:block;white-space:normal!important;overflow-wrap:anywhere;font:600 23px/1.35 Georgia,'Microsoft YaHei',serif!important;margin:12px 0;max-width:100%}
+  .rf-fulltext-reader .ft-layout{display:block;flex:none;height:auto;min-height:0}
+  .rf-fulltext-reader .pdfstage{height:60dvh;min-height:350px;max-width:100%;border-radius:12px;overflow:hidden}
+  .pdf-toolbar{flex-wrap:wrap;gap:4px;height:auto;min-height:56px;padding:6px 8px;overflow-x:visible}
+  .pdf-toolbar .pdfbtn{min-height:44px;min-width:44px}
+  /* PDF.js needs an absolute scroll container. Its mobile offset follows the
+     real wrapped toolbar height, measured by the presentation observer. */
+  .pdfwrap .pdf-container{top:var(--rf-mobile-pdf-toolbar-height,104px)}
+  #appMain .ft-decide{position:static;margin-top:12px;background:var(--surface);border-top:1px solid var(--border);padding:12px 0 18px}
+  #appMain .ft-decide>.row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+  #appMain .ft-decide>.row>.btn{min-height:52px;font-size:13px;padding:8px 4px;white-space:normal;width:100%}
+  #appMain #ftReason{grid-column:1/-1;width:100%!important;max-width:none!important}
+  #appMain .ft-side.open{position:fixed;inset:auto 0 0!important;max-height:80dvh;width:100%;max-width:none;padding:20px;z-index:80;border-radius:24px 24px 0 0;background:var(--surface);box-shadow:var(--shadow)}
+  #appMain .bench-layout{display:flex;flex-direction:column;gap:12px;flex:none;min-height:0}
+  .rf-mobile-document{width:100%}
+  .rf-mobile-document>summary{color:var(--primary-dark)}
+  #appMain .rf-mobile-document .bench-pdf{display:flex!important;width:100%;height:55dvh;min-height:280px;flex:none}
+  #appMain .bench-form{border:1px solid var(--border);border-radius:17px;width:100%;max-width:none;min-width:0;max-height:none;overflow:visible;padding:16px;background:var(--surface);flex:none}
+  #appMain #cbForms{padding:0;overflow:visible!important;flex:none!important}
+  #appMain .wf-coding-unit{border:0;padding:0;margin:0 0 16px;border-radius:0;box-shadow:none}
+  #appMain .rf-coding-reader #cbForms>.card.wf-coding-unit{padding:0;border:0;border-radius:0;margin:0!important}
+  #appMain .rf-coding-reader #cbForms>.wf-coding-unit:first-child{margin-top:12px!important}
+  #appMain .rf-coding-reader #cbForms .wf-coding-unit .wf-evidence{border:0;background:transparent;padding:0;margin:0}
+  #appMain .rf-coding-reader #cbForms>.wf-coding-unit-divider{margin:16px 0}
+  #appMain .rf-coding-reader #cbForms>.wf-coding-unit-divider:after{display:none}
+  #appMain .rf-coding-reader #cbForms .wf-coding-unit>details>summary:after{display:none}
+  #appMain .rf-coding-reader .rf-coding-header{padding:0 0 12px;font-weight:600;font-size:16px;border:0}
+  .rf-coding-header>span:nth-child(2){display:none}
+  #appMain .wf-coding-unit>details{border:0}
+  #appMain .wf-coding-unit>details>summary{padding:0 0 12px;min-height:0;list-style:none}
+  #appMain .wf-coding-unit>details>summary::marker{content:''}
+  #appMain .wf-coding-unit .row{margin:8px 0}
+  #appMain .wf-coding-unit input,#appMain .wf-coding-unit select{width:100%;min-height:48px}
+  #appMain .wf-coding-unit input[type=checkbox]{width:20px;min-height:20px;height:20px}
+  .wf-coding-unit-divider{border:0;border-top:1px solid var(--border);margin:16px 0}
+  #appMain .wf-evidence{border:0;padding:0}
+  .wf-evidence>summary{font-size:13px!important;color:var(--primary-dark)}
+  .wf-evidence input[type=file]{font-size:12px!important;width:100%;white-space:normal}
+  .wf-evidence-images figure{max-width:calc(50% - 12px)}
+  .wf-evidence-images img{max-width:100%}
+  #appMain .rf-mobile-coding-footer .rf-coding-savebar{position:static;background:var(--surface);padding:12px 0 18px;border:0;box-shadow:none}
+  #appMain .rf-mobile-coding-footer .row{display:flex;flex-wrap:wrap;gap:7px}
+  #appMain .rf-mobile-coding-footer #cbSave{flex:1}
+  #appMain .rf-mobile-sheet #wf-coding-entry{display:grid;gap:8px}
+  #appMain .rf-mobile-sheet #wf-coding-entry>.hint{margin:0}
+  #appMain .rf-mobile-sheet #cbPdfToggle{display:none}
+  .rf-coding-divider{display:none}
+  /* Imports: upload, inline guide, report and activation review. */
+  .rf-mobile-guide-slot #rfImportGuide{position:static!important;inset:auto!important;width:100%;max-width:none;max-height:none;background:var(--soft);box-shadow:none;margin:12px 0}
+  #appMain .page[data-p=import] .dz{padding:18px 12px;min-height:140px;font-size:15px}
+  .page[data-p=import] .dz .big{font-size:30px}
+  .rf-mobile-report{border:1px solid var(--border);border-radius:17px;background:var(--surface);padding:0 16px;margin:12px 0}
+  #appMain .rf-mobile-report>.card{border:0;padding:0 0 16px}
+  .rf-mobile-report>.card>b{display:none}
+  .page[data-p=import] .card{overflow-x:auto}
+  #titleDupGroups .row{flex-wrap:wrap}
+  #titleDupGroups .btn{flex:1 1 120px;white-space:normal}
+  /* Card exports and dimension/conflict records, not desktop tables. */
+  .rf-mobile-export-card .btn{width:100%;margin-top:8px;text-align:left;justify-content:flex-start;white-space:normal}
+  #appMain .page[data-p=scheme] .row,#appMain .page[data-p=merge] .card>.row{flex-direction:column;align-items:stretch}
+  #appMain .page[data-p=scheme] .row>.input,#appMain .page[data-p=merge] .row>.input{max-width:none!important;width:100%!important;flex:none}
+  #appMain .page[data-p=scheme] .row>.btn,#appMain .page[data-p=merge] .row>.btn{width:100%;white-space:normal}
+  .page[data-p=scheme] table,.page[data-p=merge] table{display:block;width:100%;min-width:0}
+  .page[data-p=scheme] table thead,.page[data-p=merge] table thead,.trace-table thead{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden}
+  .page[data-p=scheme] table tbody,.page[data-p=merge] table tbody{display:block}
+  .page[data-p=scheme] table tr,.page[data-p=merge] table tr{display:block;padding:16px;border:1px solid var(--border);border-radius:17px;background:var(--surface);margin-bottom:12px}
+  .page[data-p=scheme] table td,.page[data-p=merge] table td{display:block;padding:8px 0;border:0;overflow-wrap:anywhere}
+  .page[data-p=scheme] table td:before,.page[data-p=merge] table td:before{content:attr(data-mobile-column);display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  .page[data-p=scheme] table tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;padding:14px}
+  .page[data-p=scheme] table td{padding:0;font-size:13px}
+  .page[data-p=scheme] table td:first-child{grid-column:1/-1}
+  .page[data-p=scheme] table td:first-child:before,.page[data-p=scheme] table td:last-child:before{display:none}
+  .page[data-p=scheme] table td:last-child{grid-column:2;grid-row:2/4;align-self:center}
+  .page[data-p=scheme] table td:nth-child(2),.page[data-p=scheme] table td:nth-child(3){grid-column:1;color:var(--muted)}
+  .page[data-p=scheme] table td:nth-child(2):before,.page[data-p=scheme] table td:nth-child(3):before{display:inline;margin-right:6px}
+  /* PRISMA keeps every manual/task-import field in progressive disclosures. */
+  .rf-prisma-layout{display:block}
+  .rf-prisma-preview{position:static;margin-top:12px}
+  #appMain .rf-mobile-flow-counts>.card{border:0;padding:0;border-radius:0;background:none}
+  #appMain .rf-mobile-flow-counts .rf-prisma-section{border:0;border-bottom:1px solid var(--border);border-radius:0;padding:5px 0}
+  #appMain .rf-prisma-section .row{display:block}
+  #appMain .rf-prisma-section .row>div{min-width:0!important;margin:12px 0}
+  #appMain .rf-prisma-section input,#appMain .rf-prisma-section select{max-width:none!important;width:100%}
+  .rf-prisma-preview #prView{overflow:auto}
+  .rf-prisma-preview #prView svg{min-width:570px;max-width:none}
+  #appMain .rf-prisma-toolbar>.row{display:grid;gap:8px}
+  .rf-prisma-toolbar .btn{width:100%;white-space:normal}
+  #appMain .rf-prisma-inputs :is(#prImport,#prGenerate){width:100%;margin:12px 0;white-space:normal}
+  #appMain .rf-mobile-repeated-heading{display:none!important}
+  #appMain .rf-mobile-export-note{border:0;background:none;box-shadow:none;padding:0;margin-bottom:16px}
+  #appMain .rf-mobile-export-note>.row:empty{display:none}
+  #appMain .rf-mobile-scheme-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+  #appMain .rf-mobile-scheme-tools>.btn{min-width:0;white-space:normal;justify-content:center}
+  /* Analysis uses the concept category tabs with ALL existing product methods. */
+  .page[data-p=analysis] .an-layout{display:block}
+  #appMain .an-page-header{display:none}
+  .an-intro-note{font-size:13px}
+  #appMain .an-jump{display:block!important;position:static;inset:auto;width:100%;max-height:none;max-width:none;padding:0;border:0;background:none;margin-bottom:16px;transform:none;box-shadow:none;overflow:visible}
+  #appMain .an-jump-categories{display:flex;flex-wrap:nowrap;overflow:auto;gap:6px;margin:0 -16px 16px;padding:0 16px 9px;border-bottom:1px solid var(--border);scrollbar-width:none}
+  #appMain .an-jump-categories::-webkit-scrollbar{display:none}
+  #appMain .an-category-node{flex:none;min-width:0;max-width:100%}
+  #appMain .an-jump-categories button{font-size:13px;min-height:48px;white-space:nowrap;border:0;border-radius:0;background:none;padding:8px 12px}
+  /* Keep each method group under its category for the original navigation service.
+     The existing catalog renders the selected category below these mobile tabs. */
+  #appMain .an-jump-group{display:none}
+  #appMain .an-grid,#appMain .an-results-grid,#appMain .an-catalog-methods{grid-template-columns:minmax(0,1fr)}
+  .an-panel,.an-card{min-width:0;overflow-x:auto}
+  .an-catalog-search{display:none}
+  .an-catalog-search input{width:100%;min-height:48px}
+  .an-catalog-group{padding:16px;margin:12px 0;border:1px solid var(--border);border-radius:17px;background:var(--surface)}
+  /* Trace timeline retains filters, safe Undo, overview and exports. */
+  .trace-heading{display:flex;flex-direction:column;gap:12px}
+  .trace-heading h1{display:none}
+  .trace-actions{display:flex;flex-wrap:wrap;gap:8px}
+  .trace-layout{grid-template-columns:minmax(0,1fr)}
+  .rf-mobile-trace-panel{border-bottom:1px solid var(--border);margin:12px 0}
+  #appMain .rf-mobile-trace-panel>.trace-panel{border:0;padding:0;background:none}
+  .rf-mobile-trace-panel>.trace-panel>h2{display:none}
+  .trace-timeline{grid-template-columns:90px repeat(28,minmax(24px,1fr))}
+  .trace-metrics>div{padding:0 8px;border:0}
+  .trace-metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px}
+  .trace-filters{display:grid;grid-template-columns:1fr}
+  .trace-table,.trace-table tbody{display:block;width:100%;min-width:0}
+  .trace-table tbody tr{position:relative;display:block;padding:0 0 22px 24px;margin-left:6px;border-left:2px solid var(--border)}
+  .trace-table tbody tr:before{content:'';position:absolute;left:-6px;top:12px;width:9px;height:9px;border-radius:50%;background:var(--primary);border:2px solid var(--surface)}
+  .trace-table td{display:block;padding:5px 0;border:0;white-space:normal;overflow-wrap:anywhere}
+  .trace-table td:first-child,.trace-table td:nth-child(2){font-size:12px;color:var(--muted)}
+  .trace-table td:nth-child(3){font-size:14px;font-weight:600}
+  .trace-panel{overflow:auto}
+  .trace-drawer{inset:auto 0 0;width:auto;max-width:none;max-height:85dvh;border-radius:24px 24px 0 0;padding:20px}
+  /* Help and login follow the concept; auth remains the existing form. */
+  .help-layout,.help-grid{display:block}
+  .help-heading h2{display:none}
+  #appMain .rf-mobile-help-topic{border-bottom:1px solid var(--border);margin:0;padding:5px 0}
+  #appMain .rf-mobile-help-topic .help-card{border:0;background:none;padding:0;margin:0;font-size:14px;line-height:1.65}
+  .rf-mobile-help-topic .help-card>h3{display:none}
+  .help-contents{position:static;border:0;padding:0}
+  .rf-mobile-help-search{margin-bottom:16px}
+  #authScreen{padding:82px 16px 24px;overflow:auto;background:var(--page);--page:#f3f7f5;--surface:#fff;--ink:#233c3b;--muted:#607772;--border:#d8e5e0;--input:#fff;--primary:#2f6f6a;--primary-dark:#2f6f6a}
+  #authScreen>.auth-brand{width:100%;max-width:420px;margin:10px auto 24px;flex:none}
+  #authScreen .site-header{top:16px;left:16px;right:16px;justify-content:flex-end}
+  #authScreen :is(#auMotion,#motionText,#themeText,#rf-language-current){display:none}
+  #authScreen .control{padding:12px;width:48px}
+  #authScreen #rf-language-button{width:48px;padding:12px}
+  #authScreen #rf-language-button span{display:none}
+  #authCard{width:100%;max-width:420px;margin:0 auto;padding:24px 20px;border-radius:17px;box-shadow:none;background:var(--surface);border:1px solid var(--border);flex:none}
+  #authCard:before{display:none}
+  #authCard .rf-mobile-auth-title{font:600 23px/1.3 Georgia,'Microsoft YaHei',serif;margin:0 0 20px}
+  #authScreen .submit{letter-spacing:normal;font-size:14px}
+  #authCard input{font-size:16px;min-height:48px}
+  #authCard button{min-height:48px;border-radius:12px}
+  #authScreen .login-bg,#authScreen .card-aura,#authScreen .masthead,#authScreen .flow-caption{display:none}
+  #authScreen .controls{gap:5px}
+  #authScreen .control{min-height:48px;min-width:48px;border-radius:14px}
+  [data-theme=dark] #authScreen{--page:#0D1117;--surface:#161B22;--ink:#E6EDF3;--muted:#9DB0BE;--border:#3A4553;--primary:#62A29D;--primary-dark:#8FC3BD;background:var(--page)}
+  .wf-dirty-dialog,.wf-source-dialog{width:calc(100% - 24px);max-width:none;max-height:85dvh;border-radius:24px;padding:20px}
+  #alStopPanel,.rf-screen-help{left:12px!important;right:12px;top:auto!important;bottom:12px;width:auto!important;max-width:none;max-height:75dvh;border-radius:24px}
+  @keyframes rf-mobile-sheet-in{from{transform:translateY(100%);opacity:.5}to{transform:translateY(0);opacity:1}}
+}
+@media(max-width:760px) and (prefers-reduced-motion:reduce){.rf-mobile-sheet,.trace-drawer,#rfNavigationSheet{animation:none!important;transition:none!important}}

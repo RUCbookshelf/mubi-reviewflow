@@ -1,6 +1,7 @@
 /* Shared interface vocabulary. Display strings only: never API enum values or user content. */
 (function(){ 'use strict';
  const rows = [
+["PRISMA 数据填写说明", "How to enter PRISMA data", "Comment saisir les données PRISMA", "Как вводить данные PRISMA", "Cómo introducir datos PRISMA", "PRISMA データの入力方法", "Como inserir dados PRISMA", "PRISMA-Daten eingeben", "Како унети PRISMA податке", "PRISMA 데이터 입력 방법"],
 ["撤销上次保存", "Undo last save", "Annuler le dernier enregistrement", "Отменить последнее сохранение", "Deshacer el último guardado", "最後の保存を取り消す", "Desfazer o último salvamento", "Letztes Speichern rückgängig machen", "Поништи последње чување", "마지막 저장 실행 취소"],
 ["正在撤销…", "Undoing…", "Annulation…", "Отмена…", "Deshaciendo…", "取り消し中…", "Desfazendo…", "Wird rückgängig gemacht…", "Поништавање…", "실행 취소 중…"],
 ["恢复上次保存前的状态并返回该文献", "Restore the state before the last save and reopen that article", "Rétablir l’état avant le dernier enregistrement et rouvrir cet article", "Восстановить состояние до последнего сохранения и открыть эту статью", "Restaurar el estado anterior al último guardado y volver a abrir ese artículo", "最後の保存前の状態に戻し、その文献を開く", "Restaurar o estado anterior ao último salvamento e reabrir o artigo", "Zustand vor dem letzten Speichern wiederherstellen und den Artikel öffnen", "Врати стање пре последњег чувања и поново отвори тај чланак", "마지막 저장 이전 상태를 복원하고 해당 문헌 다시 열기"],

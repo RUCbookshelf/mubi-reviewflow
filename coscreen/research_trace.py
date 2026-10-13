@@ -953,6 +953,8 @@ def list_events(
     stage: str | None = None,
     action: str | None = None,
     subject_id: str | None = None,
+    search: str | None = None,
+    matching_subject_ids: list[str] | None = None,
     since: str | None = None,
     until: str | None = None,
     snapshot_sequence: int | None = None,
@@ -977,6 +979,16 @@ def list_events(
         if value is not None:
             clauses.append(f"{column}=?")
             args.append(value)
+    if search:
+        # Temporary lookup avoids SQLite's parameter limit for large corpora.
+        # It does not change research records or persist a schema migration.
+        conn.create_function("trace_casefold", 1, lambda value: str(value or "").casefold())
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS trace_search_subjects (subject_id TEXT PRIMARY KEY)")
+        conn.execute("DELETE FROM trace_search_subjects")
+        conn.executemany("INSERT OR IGNORE INTO trace_search_subjects VALUES(?)",
+                         ((key,) for key in matching_subject_ids or []))
+        clauses.append("(instr(trace_casefold(subject_id),?)>0 OR subject_id IN (SELECT subject_id FROM trace_search_subjects))")
+        args.append(search.casefold())
     if since is not None:
         clauses.append("recorded_at>=?")
         args.append(since)

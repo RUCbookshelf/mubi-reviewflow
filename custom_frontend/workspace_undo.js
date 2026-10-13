@@ -108,7 +108,7 @@
   document.addEventListener('keydown', event=>{
     const stage = stages[S.page];
     if (!stage || !S.user || event.repeat || event.isComposing || event.altKey || event.shiftKey ||
-        (event.code !== 'KeyZ' && event.key.toLowerCase() !== 'z') || !(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return;
+        (event.code !== 'KeyZ' && (typeof event.key !== 'string' || event.key.toLowerCase() !== 'z')) || !(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return;
     if (event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"]')) return;
     if (buttons.find(b=>b.dataset.undoStage===stage)?.disabled || apiPendingWrites) return;
     event.preventDefault(); undo(stage);

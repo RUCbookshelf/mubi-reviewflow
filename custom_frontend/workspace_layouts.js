@@ -100,7 +100,7 @@
     toolbar.querySelector('.row').append(byId('prGenerate'));
     const instructions = toolbar.querySelector('.hint');
     if (instructions) {
-      const help = el('details', {class:'rf-prisma-instructions'}, el('summary', {}, label('详情')));
+      const help = el('details', {class:'rf-prisma-instructions'}, el('summary', {}, label('PRISMA 数据填写说明')));
       help.append(instructions); toolbar.querySelector('.row').insertBefore(help, byId('prImportCap'));
     }
     const importCaption = byId('prImportCap');

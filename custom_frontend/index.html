@@ -5042,8 +5042,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261012-workflow6"></script>
-<script src="./interface_locale.js?v=20261012-home-wording1"></script>
-<script src="./research_trace_locale.js?v=20261011-layouts1"></script>
+<script src="./interface_locale.js?v=20261013-disclosure5"></script>
+<script src="./research_trace_locale.js?v=20261013-title-search1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
@@ -5110,7 +5110,10 @@ class ApiError extends Error {
 async function api(path, opts = {}) {
   const isWrite = (opts.method || 'GET').toUpperCase() !== 'GET';
   if (isWrite) apiPendingWrites++;
-  try { return await apiRequest(path, opts); }
+  // Optional mobile presentation observer; it never changes requests or results.
+  const mobileWrite = isWrite ? window.RFMobileMotion?.beginWrite(path, opts) : null;
+  try { const result = await apiRequest(path, opts); mobileWrite?.finish(true, result); return result; }
+  catch (error) { mobileWrite?.finish(false, error); throw error; }
   finally { if (isWrite) apiPendingWrites = Math.max(0, apiPendingWrites - 1); }
 }
 
@@ -8804,7 +8807,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./sidebar_sheet.js?v=20261013-mobile2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
 <script src="./workflow_locale.js?v=20261012-home-wording5"></script>
-<script src="./research_trace.js?v=20261012-workflow6"></script>
+<script src="./research_trace.js?v=20261013-title-search1"></script>
 <script src="./import_review_locale.js?v=20261012-review1"></script>
 <script src="./import_review_model.js?v=20261012-review1"></script>
 <script src="./import_guide.js?v=20261012-review1"></script>
@@ -8820,7 +8823,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
 <script src="./extraction_workbench.js?v=20261012-workflow6"></script>
-<script src="./workspace_layouts.js?v=20261012-workflow6"></script>
+<script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=20261012-team-prisma5">
 <script src="./screening_rounds.js?v=20261012-rounds1"></script>
 <script src="./workflow_controls.js?v=20261013-empty-guard1"></script>
@@ -8829,13 +8832,17 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workflow_imports.js?v=20261012-review1"></script>
 <script src="./team_prisma_locale.js?v=20261012-rounds1-20261012-team-prisma5"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
-<script src="./workspace_undo.js?v=20261012-workflow6"></script>
+<script src="./workspace_undo.js?v=20261013-keyguard1"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
 <script src="./living_review.js?v=20261012-workflow6"></script>
 <script src="./evidence_mapper.js?v=20261002-release1"></script>
-<link rel="stylesheet" href="./mobile_workspace.css?v=20261013-mobile2">
-<script src="./mobile_workspace.js?v=20261013-mobile2"></script>
+<link rel="stylesheet" href="./mobile_concept.css?v=20261013-disclosure5">
+<script src="./mobile_concept_locale.js?v=20261013-motion13"></script>
+<script src="./mobile_concept.js?v=20261013-disclosure5"></script>
+<link rel="stylesheet" href="./mobile_motion.css?v=20261013-motion13">
+<link rel="stylesheet" href="./disclosure_controls.css?v=20261013-svg2">
+<script src="./mobile_motion.js?v=20261013-title-search1"></script>
 </body>
 </html>

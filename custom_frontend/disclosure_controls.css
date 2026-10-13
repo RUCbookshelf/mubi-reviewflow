@@ -1,0 +1,44 @@
+/* Shared disclosure affordance; native details/summary behavior is retained. */
+#appMain :is(.page,.rf-mobile-sheet) details>summary {
+  position:relative;
+  list-style:none;
+  padding-inline-end:28px!important;
+  cursor:pointer;
+}
+#appMain :is(.page,.rf-mobile-sheet) details>summary::marker {content:''}
+#appMain :is(.page,.rf-mobile-sheet) details>summary::-webkit-details-marker {display:none}
+#appMain :is(.page,.rf-mobile-sheet) details>summary::before {content:none!important}
+#appMain :is(.page,.rf-mobile-sheet) details>summary::after {
+  content:''!important;
+  display:block!important;
+  position:absolute;
+  inset-inline-end:2px;
+  top:50%;
+  width:18px;
+  height:18px;
+  margin:0!important;
+  background:currentColor;
+  -webkit-mask:url('./icons/disclosure-chevron.svg') center/contain no-repeat;
+  mask:url('./icons/disclosure-chevron.svg') center/contain no-repeat;
+  color:var(--muted);
+  transform:translateY(-50%);
+  transition:transform 180ms ease,color 180ms ease;
+  pointer-events:none;
+}
+#appMain :is(.page,.rf-mobile-sheet) details[open]>summary::after {
+  transform:translateY(-50%) rotate(90deg);
+  color:var(--primary-dark);
+}
+#appMain :is(.page,.rf-mobile-sheet) details>summary:focus-visible {
+  outline:2px solid var(--primary);
+  outline-offset:3px;
+  border-radius:4px;
+}
+/* These controls already supplied their own affordance before the shared icon. */
+#appMain #rfImportGuide>summary>.rf-guide-chevron {display:none}
+#appMain #rfImportGuide>summary::after {inset-inline-end:12px}
+#appMain .page details.rf-prisma-extra-exports>summary {padding-inline-end:8px!important}
+#appMain .page details.rf-prisma-extra-exports>summary::after {content:none!important;display:none!important}
+@media(prefers-reduced-motion:reduce){
+  #appMain :is(.page,.rf-mobile-sheet) details>summary::after {transition:none}
+}
