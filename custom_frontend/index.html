@@ -6171,6 +6171,7 @@ async function renderScreen() {
   const body = $('#scrBody');
   body.textContent = '';
   if (i < 0) {
+    WorkflowControls.markDecisionClean('screen');
     $('#scrCard').classList.remove('ai-active');
     if (!S.articles.length) {
       body.append(el('h3', { text:T('当前任务还没有文献。导入后即可开始初筛。') }),
@@ -8826,7 +8827,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=20261012-team-prisma5">
 <script src="./screening_rounds.js?v=20261012-rounds1"></script>
-<script src="./workflow_controls.js?v=20261013-empty-guard1"></script>
+<script src="./workflow_controls.js?v=20261013-empty-guard2"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
 <link rel="stylesheet" href="./import_review.css?v=20261012-review1">
 <script src="./workflow_imports.js?v=20261012-review1"></script>

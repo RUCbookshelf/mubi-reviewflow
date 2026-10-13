@@ -30,9 +30,21 @@
   W.maybe = stage => settings?.stages?.[stage]?.show_maybe !== false;
   W.settingsDirty = () => settingsDirty || libraryDirty || alDirty;
   const decisionBaselines={};
-  const reasonSignature=stage=>JSON.stringify([$(stage==='screen'?'#excReason':'#ftReason')?.value||'',$(stage==='screen'?'#excCustomReason':'#ftCustomReason')?.value||'']);
+  const reasonSignature=stage=>{
+    const article=stage==='screen'?S.articles[S.scrIdx]:curFt();
+    const select=$(stage==='screen'?'#excReason':'#ftReason');
+    const custom=$(stage==='screen'?'#excCustomReason':'#ftCustomReason');
+    // A completed/loading queue has no editable article. Missing controls are
+    // not an empty reason draft, even if the preceding save had a reason.
+    if(!article||!select)return null;
+    return JSON.stringify([scope(),article.zotero_key,select.value||'',custom?.value||'']);
+  };
   W.markDecisionClean=stage=>{decisionBaselines[stage]=reasonSignature(stage);};
-  W.decisionDirty=()=>['screen','fulltext'].some(stage=>S.page===stage&&decisionBaselines[stage]!=null&&decisionBaselines[stage]!==reasonSignature(stage));
+  W.decisionDirty=()=>['screen','fulltext'].some(stage=>{
+    if(S.page!==stage||decisionBaselines[stage]==null)return false;
+    const signature=reasonSignature(stage);
+    return signature!=null&&decisionBaselines[stage]!==signature;
+  });
   W.anyDirty=()=>W.settingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
   const pendingWork=()=>apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving();
   const retainDraft=()=>{$('#wf-settings-notice').textContent=T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.');$('#wf-policy-recovery').hidden=false;};
