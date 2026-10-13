@@ -3,7 +3,7 @@
 ## English
 
 - Mobile presentation now follows the approved concept: compact navigation, separate language and theme controls, animated search, sheets and disclosures. Original desktop controls, research logic, permissions and data remain shared.
-- Trace search accepts a partial article title or identifier across matching history, with date/stage/action filters and reviewer isolation. Redundant headings were removed; disclosure indicators now use SVG.
+- Trace search accepts a partial article title or identifier across matching history, with date/stage/action filters and reviewer isolation. Selected Trace exports retain the same search filter. Redundant headings were removed; disclosure indicators now use SVG.
 
 ## 中文
 

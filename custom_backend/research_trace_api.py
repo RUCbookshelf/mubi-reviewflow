@@ -69,6 +69,7 @@ class TraceExportFilters(_Input):
     stage: Literal["screen", "fulltext", "coding", "control"] | None = None
     action: str | None = Field(default=None, max_length=80)
     subject_id: str | None = Field(default=None, max_length=500)
+    q: str | None = Field(default=None, max_length=500)
     since: str | None = Field(default=None, max_length=80)
     until: str | None = Field(default=None, max_length=80)
 
@@ -702,6 +703,8 @@ def _summary_payload(info: Any, actor_id: int | str, paths: dict[str, Any]) -> d
 def _snapshot(info: Any, actor_id: int | str, paths: dict[str, Any],
               filters: TraceExportFilters | None = None) -> dict[str, Any]:
     filter_values = filters.model_dump(exclude_none=True) if filters else {}
+    search = str(filter_values.get("q") or "").strip()
+    matching_subject_ids = _matching_subject_ids(paths, search) if search else []
     stores = []
     seen_paths: set[str] = set()
     for name, path in paths.items():
@@ -753,6 +756,7 @@ def _snapshot(info: Any, actor_id: int | str, paths: dict[str, Any],
                     stage=filter_values.get("stage"), action=filter_values.get("action"),
                     subject_id=filter_values.get("subject_id"), since=filter_values.get("since"),
                     until=filter_values.get("until"),
+                    search=search, matching_subject_ids=matching_subject_ids,
                 )
                 events = list(page["events"])
                 while page["has_more"]:
@@ -763,6 +767,7 @@ def _snapshot(info: Any, actor_id: int | str, paths: dict[str, Any],
                         snapshot_sequence=cutoff, stage=filter_values.get("stage"),
                         action=filter_values.get("action"), subject_id=filter_values.get("subject_id"),
                         since=filter_values.get("since"), until=filter_values.get("until"),
+                        search=search, matching_subject_ids=matching_subject_ids,
                     )
                     events.extend(page["events"])
                     if len(events) > MAX_EVENTS:

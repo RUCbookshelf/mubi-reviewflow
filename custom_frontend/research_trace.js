@@ -162,7 +162,7 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
   const prepare=button('预览导出内容',async()=>{
    invalidate('正在准备导出预览…');const ticket=previewTicket;prepare.disabled=true;
    try{
-    const result=await api(base()+'/exports/preview',{method:'POST',body:{preset:select.value,language:language.value,included_private_fields:Array.from(privateOptions.querySelectorAll('[name=tracePrivate]:checked'),n=>n.value),filters:subset.checked?{stage:state.stage||null,action:state.action||null,subject_id:state.query||null,since:state.since?state.since+'T00:00:00Z':null,until:state.until?state.until+'T23:59:59Z':null}:{}}});
+    const result=await api(base()+'/exports/preview',{method:'POST',body:{preset:select.value,language:language.value,included_private_fields:Array.from(privateOptions.querySelectorAll('[name=tracePrivate]:checked'),n=>n.value),filters:subset.checked?{stage:state.stage||null,action:state.action||null,q:state.query||null,since:state.since?state.since+'T00:00:00Z':null,until:state.until?state.until+'T23:59:59Z':null}:{}}});
     if(ticket!==previewTicket||!panel.isConnected)return;
     exportPreview=result;exportPreviewContent(result,previewArea);
     downloadCondition(result.event_count?'预览已准备好，可以下载。':'所选范围没有记录。请调整筛选条件后重试。',result.event_count>0);
