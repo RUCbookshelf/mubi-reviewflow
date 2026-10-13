@@ -1,0 +1,149 @@
+/* Mobile presentation only. Reuse desktop theme tokens, DOM and save handlers.
+   Every rule is bounded by viewport width; no desktop overrides. */
+@media (max-width:760px) {
+  html {scroll-padding-top:80px}
+  body {min-width:0}
+  #appMain .view {padding:14px 12px calc(24px + env(safe-area-inset-bottom));scrollbar-gutter:auto}
+  #appMain .page {min-width:0;max-width:100%;overflow-wrap:anywhere}
+  #appMain .card,.trace-panel {border-radius:16px;padding:16px;min-width:0}
+  #appMain .btn,#appMain button:not(.pdfswatch),#appMain summary {min-height:44px}
+  #appMain :is(input,select,textarea).input,#appMain textarea,#appMain .ta {font-size:16px;max-width:100%;box-sizing:border-box}
+  #appMain .row {gap:8px;min-width:0}
+  #appMain .row>* {min-width:0;max-width:100%}
+  #appMain .row>.input {flex:1 1 160px}
+  #appMain .hint {line-height:1.65}
+  #appMain h2 {font-size:23px}
+  #appMain h3 {font-size:18px}
+  body>.footer {display:none}
+  /* Approved concept header: hamburger, page/task, status, language, theme. */
+  body.rf-navigation-sheet #appMain>.top {display:grid;grid-template-columns:44px minmax(0,1fr) 20px auto;grid-template-rows:26px 22px;padding:8px 10px;gap:0 6px;min-height:72px}
+  #rfMobileNavigation {grid-column:1;grid-row:1/3;border:0;background:transparent;color:var(--ink);width:44px;height:48px;padding:12px;cursor:pointer;border-radius:14px}
+  #rfMobileNavigation svg {width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round}
+  #rfMobilePageTitle {grid-column:2;grid-row:1;font:600 16px/26px var(--font-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  #appMain .top #rfTaskContext {grid-column:2;grid-row:2;margin:0;max-width:none;min-width:0;padding:0;min-height:22px;display:flex;justify-content:flex-start;border:0;font-size:12px;color:var(--muted)}
+  #appMain .top .rf-task-label {display:none}
+  #appMain .top #rfCurrentTask {color:var(--muted);max-width:100%;font-size:12px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+  #appMain .top>div:last-child {grid-column:4;grid-row:1/3;gap:5px!important;margin-left:0}
+  #appMain .top :is(#themeBtn,#rf-app-language-button,#rf-restart-button) {width:44px;min-width:44px;min-height:48px;padding:10px;border-radius:14px;justify-content:center}
+  body[data-workspace="analysis"] #themeBtn .icon {display:block}
+  #themeBtnText,#rf-app-language-current,#rf-app-language-button>.caret,#rf-restart-button>span {display:none}
+  #appMain .top .trace-shortcut-status {grid-column:3;grid-row:1/3;width:20px;min-width:20px;overflow:hidden;white-space:nowrap;font-size:0;padding:0;align-self:center}
+  #appMain .top .trace-shortcut-status:before {margin:0}
+  body.rf-navigation-sheet #appMain>.top .rf-breadcrumb {display:none}
+  #rfNavigationSheet {top:auto!important;left:12px;bottom:12px;border-radius:24px!important}
+  #rfNavigationSheet:has(#rfSidebarToggle[aria-expanded="false"]) {visibility:hidden}
+  #rfNavigationSheet #rfSidebarToggle {color:var(--ink)}
+  #rfNavigationSheet .rf-sheet-header {border-bottom:1px solid var(--border)}
+  .rf-breadcrumb-list {min-width:0;max-width:100%;flex-wrap:wrap}
+  #rf-app-language-menu {position:fixed;left:12px;right:12px;top:68px;max-width:none;width:auto;max-height:70dvh;overflow:auto;z-index:80}
+  #rf-app-language-menu button {min-height:44px}
+  /* Navigation keeps the existing reversible 360ms sheet and keyboard behavior. */
+  #rfNavigationSheet #appShell .nav button {min-height:44px;border-radius:10px;font-size:14px}
+  #rfNavigationSheet #appShell .fld {grid-template-columns:1fr}
+  #rfNavigationSheet #appShell .fld select {height:44px;font-size:16px}
+  .page[data-p=home]>h2 {display:none}
+  .wf-tabs,.trace-tabs {flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;gap:4px;max-width:100%;padding-bottom:8px}
+  .wf-tabs [role=tab],.trace-tabs [role=tab] {flex:none;padding:10px 12px}
+  .wf-panel,.wf-team-management,.wf-policy-stage {min-width:0}
+  .wf-source-checks {gap:8px 16px}
+  .wf-source-checks label {min-height:44px;display:flex;align-items:center}
+  .team-identity {overflow-wrap:anywhere}
+  .wf-queue-tools {gap:8px;font-size:12px;padding:6px 0 10px}
+  .wf-queue-tools .input {max-width:none;flex:1 1 100%}
+  .wf-queue-tools .btn {font-size:12px}
+  /* Initial screening: reader first, three actions then a full-width reason. */
+  body.fp-screen .view:has(.rf-reader-page) {display:block;overflow:auto}
+  body.fp-screen .rf-reader-page.on {display:block}
+  .rf-reader-page>.al-mode {flex-wrap:wrap;gap:8px}
+  .rf-reader-page .rf-screen-order {width:100%;gap:3px;flex-wrap:wrap}
+  .rf-reader-page .rf-screen-order-label {flex-basis:100%;font-size:12px}
+  .rf-reader-page .rf-screen-order button {flex:1;min-width:0;min-height:44px;font-size:12px;padding:6px 3px;white-space:normal}
+  .rf-reader-page .rf-screen-tools {margin-left:auto}
+  .rf-reader-page .scr-status {flex-wrap:wrap;gap:7px}
+  .rf-reader-page #scrHistCounts {flex-basis:100%;font-size:12px}
+  .rf-reader-page #scrCard {padding:16px 14px 0;display:block;border-radius:16px}
+  .rf-reader-page #scrBody {display:block}
+  .rf-reader-page .scr-title {font-size:22px;line-height:1.4;overflow-wrap:anywhere}
+  .rf-reader-page #scrBody .absbox {max-height:50dvh;min-height:160px;overflow:auto;font-size:16px;line-height:1.85;padding-bottom:18px}
+  .rf-reader-page .scr-decisions {position:static;background:var(--surface);z-index:4;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding:10px 0 calc(10px + env(safe-area-inset-bottom))}
+  .rf-reader-page .scr-decisions>.btn {flex:1 1 0;min-height:48px;font-size:13px;padding:8px 4px}
+  .rf-reader-page #excReason {grid-column:1/-1;max-width:none!important;width:100%;min-height:44px;font-size:16px}
+  .rf-reader-page .wf-custom-reason-row {grid-column:1/-1;display:flex;flex:1 1 100%;gap:8px;min-width:0}
+  .rf-reader-page .wf-custom-reason-row>.input {flex:1;min-width:0;width:0;font-size:16px;min-height:44px}
+  .rf-reader-page .wf-custom-reason-row>.btn {flex:0 0 44px;min-height:44px;padding:8px}
+  .rf-reader-page .wf-reason-save-label {display:none}
+  .wf-custom-reason-row:has(input[hidden]) {display:none!important}
+  /* Full text/coding: preserve PDF zoom; stack document and evidence instead of squeezing. */
+  body.fp-fulltext .view,body.fp-bench .view {overflow:auto}
+  body.fp-fulltext .rf-fulltext-reader.on,body.fp-bench .rf-coding-reader.on {display:block;flex:none}
+  .rf-document-toolbar {flex-wrap:wrap}
+  .rf-document-toolbar :is(#ftDocTitle,#cbTitle) {flex:1 1 100%;order:2;white-space:normal;font-size:14px!important}
+  .rf-fulltext-reader .ft-layout {display:flex;flex-direction:column;height:auto;min-height:0}
+  .rf-fulltext-reader .pdfstage {height:60dvh;min-height:300px;flex:none;border-radius:16px;overflow:hidden}
+  .rf-fulltext-reader .ft-side {width:100%;max-width:none;max-height:45dvh;flex:none;border-radius:16px;margin-top:10px}
+  .pdf-toolbar {flex-wrap:wrap;gap:4px}
+  .pdf-toolbar .pdfbtn {min-height:40px;min-width:36px}
+  .rf-fulltext-reader .ft-decide {position:sticky;bottom:0;background:var(--surface);z-index:6;padding:10px 0 calc(10px + env(safe-area-inset-bottom));margin-top:12px}
+  .rf-fulltext-reader .ft-decide>.row {display:flex;flex-wrap:wrap;gap:7px}
+  .rf-fulltext-reader .ft-decide>.row>.btn {flex:1 1 0;width:auto;min-width:0;min-height:48px;font-size:13px;padding:8px 3px}
+  .rf-fulltext-reader #ftReason {flex:1 1 100%!important;width:100%!important;font-size:16px}
+  .rf-fulltext-reader .ft-decide>.row>.input {flex:1 1 100%;width:100%;font-size:16px}
+  .rf-fulltext-reader .wf-custom-reason-row {display:flex;flex:1 1 100%;min-width:0;gap:8px}
+  .rf-fulltext-reader .wf-custom-reason-row>.input {flex:1;width:0;min-width:0}
+  .rf-fulltext-reader .wf-custom-reason-row>.btn {width:44px;flex:0 0 44px}
+  .rf-fulltext-reader .wf-reason-save-label {display:none}
+  .rf-coding-reader .bench-layout {display:flex;flex-direction:column;gap:12px;flex:none;min-height:0}
+  .rf-coding-reader .bench-pdf {height:55dvh;min-height:280px;flex:none}
+  .rf-coding-reader .bench-form {width:100%;max-width:none;min-width:0;max-height:none;overflow:visible;flex:none;border-radius:16px}
+  .rf-coding-reader #cbForms {overflow:visible!important;flex:none!important;padding:0 12px 12px}
+  .rf-coding-divider {display:none}
+  .rf-coding-reader .rf-extract {max-height:none}
+  .rf-coding-savebar {position:sticky;bottom:0;background:var(--surface);z-index:5;padding-bottom:calc(10px + env(safe-area-inset-bottom));border-radius:0 0 16px 16px}
+  .wf-evidence-images {gap:8px}
+  .wf-evidence-images figure {max-width:calc(50% - 12px)}
+  .wf-evidence-images img {max-width:100%}
+  /* Source reports and adjudication tables scroll locally, never the entire page. */
+  .page[data-p=merge] .card,.page[data-p=import] .card,.page[data-p=scheme] .card {overflow-x:auto}
+  #titleDupGroups .row {flex-wrap:wrap}
+  #titleDupGroups .btn {flex:1 1 110px}
+  .page[data-p=export] .card>.row {display:grid;grid-template-columns:1fr}
+  .page[data-p=export] .btn {width:100%;white-space:normal;text-align:left;justify-content:flex-start}
+  .rf-prisma-section .row {flex-wrap:wrap}
+  .rf-prisma-section .row>div {flex:1 1 140px;min-width:0!important}
+  .rf-prisma-section input {box-sizing:border-box}
+  .rf-prisma-layout {grid-template-columns:minmax(0,1fr)}
+  .rf-prisma-preview {position:static}
+  .rf-prisma-preview #prView {overflow:auto}
+  .rf-prisma-preview #prView svg {min-width:580px;max-width:none}
+  .rf-prisma-toolbar>.row {flex-wrap:wrap}
+  .page[data-p=analysis] .an-layout {grid-template-columns:minmax(0,1fr)}
+  .page[data-p=analysis] :is(.an-grid,.an-results-grid) {grid-template-columns:minmax(0,1fr)}
+  .an-panel,.an-card {min-width:0;max-width:100%;overflow-x:auto;border-radius:16px}
+  .an-page-header,.trace-heading {flex-direction:column;gap:12px}
+  .trace-layout {grid-template-columns:minmax(0,1fr)}
+  .trace-metrics {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px;gap:14px;border-radius:16px}
+  .trace-metrics>div {padding:0 8px;border:0}
+  .trace-panel {overflow-x:auto}
+  .trace-filters>* {max-width:100%;min-width:0}
+  .trace-drawer {inset:auto 0 0;width:auto;max-width:none;max-height:85dvh;border-radius:24px 24px 0 0;padding:20px;animation:rf-mobile-sheet 360ms cubic-bezier(.22,1,.36,1)}
+  .help-layout,.help-grid {display:grid;grid-template-columns:minmax(0,1fr)}
+  .help-contents {position:static;max-height:none;display:flex;flex-wrap:wrap;gap:8px}
+  /* Existing accessible dialogs/popovers become sheets on small screens. */
+  .wf-dirty-dialog,.wf-source-dialog {width:calc(100% - 24px);max-width:none;padding:20px;border-radius:24px;max-height:85dvh}
+  #alStopPanel,.rf-screen-help {left:12px!important;right:12px;top:auto!important;bottom:calc(12px + env(safe-area-inset-bottom));width:auto;max-width:none;max-height:75dvh;border-radius:24px;animation:rf-mobile-sheet 360ms cubic-bezier(.22,1,.36,1)}
+  #rfImportGuide {right:12px;max-width:calc(100vw - 24px);max-height:65dvh;overflow:auto}
+  #rfImportGuide:not([open]) {width:auto;border-radius:24px}
+  /* Login retains its own logo, language menu and theme control. */
+  #authScreen {padding:82px 16px 24px;overflow:auto}
+  #authCard {width:100%;max-width:420px;margin:auto;padding:24px 20px;border-radius:24px}
+  #authCard input {font-size:16px}
+  #authCard button {min-height:44px}
+  #authScreen .controls {gap:6px}
+  #authScreen .control {min-height:44px;min-width:44px;border-radius:14px}
+  #authScreen .masthead,#authScreen .flow-caption {display:none}
+  #authScreen .language-menu {max-height:70dvh;overflow:auto}
+  @keyframes rf-mobile-sheet {from{opacity:.5;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+}
+@media(max-width:760px) and (prefers-reduced-motion:reduce) {
+  #alStopPanel,.rf-screen-help,.trace-drawer {animation:none}
+}

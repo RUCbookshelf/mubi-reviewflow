@@ -2024,7 +2024,8 @@ def export_decisions_ep(task_id: str, screener: str | None = None,
                         user: dict = Depends(require_user)) -> Response:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    data = _run_export(lambda out: export_decisions(db, out), ".csv")
+    source_db = app.state.review_workflow.context(task_id, user).owner_db
+    data = _run_export(lambda out: export_decisions(db, out, source_db=source_db), ".csv")
     return _file_response(data, "text/csv; charset=utf-8", "decisions.csv")
 
 
@@ -2033,7 +2034,8 @@ def export_stage2_ep(task_id: str, screener: str | None = None,
                      user: dict = Depends(require_user)) -> Response:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    data = _run_export(lambda out: export_stage2_decisions(db, out), ".csv")
+    source_db = app.state.review_workflow.context(task_id, user).owner_db
+    data = _run_export(lambda out: export_stage2_decisions(db, out, source_db=source_db), ".csv")
     return _file_response(data, "text/csv; charset=utf-8", "decisions2.csv")
 
 

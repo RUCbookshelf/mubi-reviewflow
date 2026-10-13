@@ -647,3 +647,59 @@ Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API
 Ce projet est distribué sous licence MIT ; voir le fichier [`LICENSE`](LICENSE) à la racine. Les composants tiers conservent leurs licences respectives. Voir les [mentions tierces](THIRD_PARTY_NOTICES.md) et la [préparation de publication](OPEN_SOURCE_RELEASE.md#fr).
 
 Auteur : **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
+
+## Mobile interface · 2.0.5.3
+
+Responsive layouts are available at widths up to 760 CSS pixels. Desktop layouts remain unchanged. Language and theme controls stay separate; all ten interface languages and the desktop light/dark palettes are supported. Phone use requires access to a configured server; this update does not add remote pairing or tunneling. [Mobile interface details](docs/MOBILE_INTERFACE.md).
+
+移动端适配支持十种界面语言，语言与浅色/深色按钮独立，沿用电脑端配色，电脑布局保持不变。手机使用需连接已配置的服务器，本次不新增远程控制或内网穿透。
+
+### Español · 2.0.5.3
+
+- Interfaz móvil en todas las páginas; diseño de escritorio conservado, diez idiomas y controles separados de idioma y tema.
+- Lectura, formularios, paneles y controles táctiles mejorados. Corrección de la carga de colas vacías.
+- Los CSV de ambas fases de cribado añaden DOI, Journal y Author(s). Sin nueva migración ni acceso remoto automático. Haga una copia de seguridad antes de actualizar.
+
+### 日本語 · 2.0.5.3
+
+- 全ページのモバイル表示を改善。デスクトップ表示、10言語、独立した言語・テーマ操作を維持。
+- 文献閲覧、フォーム、タッチ操作を改善し、空のキューでの読み込みエラーを修正。
+- 両スクリーニング段階のCSVにDOI、Journal、Author(s)を追加。新しいデータ移行や自動リモートアクセスはありません。更新前にバックアップしてください。
+
+### Français · 2.0.5.3
+
+- Présentation mobile sur toutes les pages, avec le bureau préservé, dix langues et des commandes distinctes pour la langue et le thème.
+- Lecture, formulaires et commandes tactiles améliorés; correction du chargement des files vides.
+- Ajout de DOI, Journal et Author(s) aux deux exports CSV de sélection. Aucune nouvelle migration ni connexion distante automatique. Sauvegardez avant la mise à jour.
+
+### Русский · 2.0.5.3
+
+- Мобильный интерфейс для всех страниц; сохранены настольный интерфейс, десять языков и отдельные кнопки языка и темы.
+- Улучшены чтение, формы и сенсорные элементы; исправлена загрузка пустой очереди.
+- В CSV обоих этапов отбора добавлены DOI, Journal и Author(s). Новых миграций и автоматического удалённого доступа нет. Перед обновлением создайте резервную копию.
+
+### Português · 2.0.5.3
+
+- Interface móvel em todas as páginas, mantendo o layout de computador, dez idiomas e controles separados de idioma e tema.
+- Melhorias na leitura, nos formulários e nos controles de toque; correção do carregamento de filas vazias.
+- Os CSV das duas etapas de triagem incluem DOI, Journal e Author(s). Sem nova migração ou acesso remoto automático. Faça backup antes de atualizar.
+
+### Deutsch · 2.0.5.3
+
+- Mobile Darstellung für alle Seiten; Desktoplayout, zehn Sprachen und getrennte Sprach- und Themensteuerung bleiben erhalten.
+- Verbesserte Leseflächen, Formulare und Touchbedienung; Fehler beim Laden leerer Warteschlangen behoben.
+- Beide Screening-CSV-Exporte enthalten zusätzlich DOI, Journal und Author(s). Keine neue Migration und kein automatischer Fernzugriff. Vor dem Update eine Sicherung erstellen.
+
+### Српски · 2.0.5.3
+
+- Мобилни приказ свих страница; задржани су приказ на рачунару, десет језика и одвојене контроле језика и теме.
+- Побољшани су читање, обрасци и додирне контроле; исправљено је учитавање празног реда.
+- CSV извози обе фазе селекције додају DOI, Journal и Author(s). Нема нове миграције ни аутоматског удаљеног приступа. Направите резервну копију пре ажурирања.
+
+### 한국어 · 2.0.5.3
+
+- 모든 페이지의 모바일 화면을 개선했습니다. 데스크톱 레이아웃, 10개 언어, 별도의 언어 및 테마 버튼을 유지합니다.
+- 문헌 읽기, 입력 양식, 터치 조작을 개선하고 빈 대기열의 로딩 오류를 수정했습니다.
+- 두 선별 단계의 CSV에 DOI, Journal, Author(s) 열을 추가했습니다. 새로운 데이터베이스 마이그레이션이나 자동 원격 접속은 없습니다. 업데이트 전에 전체 데이터를 백업하세요.
+
+Screening CSV exports also include DOI, Journal, Author(s), and **Imported source file(s)**. Multiple activated source filenames are retained in one cell; unknown legacy provenance is left blank.

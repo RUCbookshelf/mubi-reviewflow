@@ -334,11 +334,11 @@
   };
   W.decorateStage=stage=>{
     const item=items[stage],key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:stage==='fulltext'?curFt()?.zotero_key:S.cbQueue[S.cbIdx]?.zotero_key;
-    const writable=item?.key===key&&item.writable&&settings?.stages?.[stage]?.mode!=='paused'&&item.policy_version===settings?.version;
+    const writable=item && item.key===key&&item.writable&&settings?.stages?.[stage]?.mode!=='paused'&&item.policy_version===settings?.version;
     const ids=stage==='screen'?['btnInc','btnMay','btnExc']:stage==='fulltext'?['ftInc','ftMay','ftExc']:['cbSave'];
     for(const id of ids){const b=$('#'+id);if(b)b.disabled=!writable;}
     const maybe=$(stage==='screen'?'#btnMay':'#ftMay');if(stage!=='coding'&&maybe){maybe.hidden=!W.maybe(stage);maybe.disabled=!writable||!W.maybe(stage);}
-    const notice=tools(stage).querySelector('.wf-readonly');notice.replaceChildren();if(item?.key===key&&!item.writable)notice.append(n('span','Read-only: current policy or source scope does not allow saving.'),document.createTextNode(' '),n('span',W.reason(item.reason)));
+    const notice=tools(stage).querySelector('.wf-readonly');notice.replaceChildren();if(item && item.key===key&&!item.writable)notice.append(n('span','Read-only: current policy or source scope does not allow saving.'),document.createTextNode(' '),n('span',W.reason(item.reason)));
     if(stage!=='coding')W.decorateReasons(stage);
   };
   W.canSave=(stage,decision)=>{

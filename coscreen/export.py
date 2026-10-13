@@ -7,7 +7,7 @@
 - 回导兼容旧 6 列文件（缺 tags 列按 "" 处理）与 7 列新文件（tags 原样还原）；
 - export_articles_ris 把按决策筛选后的文献写为标准 RIS（Zotero 可再导入）；
 - 复筛扩展（SPEC §14，additive）：export_stage2_decisions 导出复筛决策 CSV
-  （7 列同初筛）、export_highlights_markdown 导出高亮笔记 Markdown、
+  （同初筛，附 DOI、Journal、Author(s)）、export_highlights_markdown 导出高亮笔记 Markdown、
   export_articles_ris 以 decision_source="stage2" 导出复筛纳入 RIS。
 - 编码扩展（SPEC §15.3，additive）：export_coding_matrix 导出「文献 × 维度」
   矩阵 CSV、export_coding_long 导出长表 CSV、export_coding_notes_markdown
@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import re
+import json
+import sqlite3
+from contextlib import closing
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -39,23 +42,70 @@ DECISION_COLUMNS = [
     "notes",
     "tags",
     "screened_at",
+    "DOI",
+    "Journal",
+    "Author(s)",
+    "Imported source file(s)",
 ]
 
 
-def export_decisions(db_path: StrPath, out_csv: StrPath) -> Path:
+def _article_export_metadata(article: Article | None) -> dict[str, str]:
+    """Bibliographic fields are additive; missing metadata stays blank."""
+    return {
+        "DOI": (article.doi or "") if article else "",
+        "Journal": (article.journal or "") if article else "",
+        "Author(s)": (article.authors or "") if article else "",
+    }
+
+
+def _imported_source_files(db_path: StrPath) -> dict[str, str]:
+    """Read actual activated filenames, including overlapping source records.
+
+    Never infer a filename from a provider label. Legacy raw provenance is a
+    fallback; missing provenance stays blank. No database writes or migrations.
+    """
+    names: dict[str, set[str]] = {}
+    with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "workflow_source_records" in tables:
+            for key, filename in conn.execute(
+                "SELECT canonical_key,filename FROM workflow_source_records "
+                "WHERE state='active' AND canonical_key IS NOT NULL"
+            ):
+                if filename:
+                    names.setdefault(key, set()).add(filename)
+        if "articles" in tables:
+            for key, raw in conn.execute("SELECT zotero_key,raw_json FROM articles"):
+                if key in names:
+                    continue
+                try:
+                    data = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    continue
+                filename = data.get("source_file") if isinstance(data, dict) else None
+                if isinstance(filename, str) and filename.strip():
+                    names.setdefault(key, set()).add(filename)
+    return {key: "; ".join(sorted(values, key=lambda value: (value.casefold(), value)))
+            for key, values in names.items()}
+
+
+def export_decisions(db_path: StrPath, out_csv: StrPath, *, source_db: StrPath | None = None) -> Path:
     """把 decisions 表导出为 CSV（按文献导入顺序）；返回写入路径。"""
     decisions = db_mod.list_decisions(db_path)  # 已按 import_order 排序
-    titles = {a.zotero_key: a.title for a in db_mod.list_articles(db_path, include_duplicates=True)}
+    articles = {a.zotero_key: a for a in db_mod.list_articles(db_path, include_duplicates=True)}
+    sources = _imported_source_files(source_db or db_path)
     df = pd.DataFrame(
         [
             {
                 "zotero_key": d["zotero_key"],
-                "title": titles.get(d["zotero_key"], ""),
+                "title": articles[d["zotero_key"]].title if d["zotero_key"] in articles else "",
                 "decision": d["decision"],
                 "exclusion_reason": d.get("exclusion_reason", "") or "",
                 "notes": d.get("notes", "") or "",
                 "tags": d.get("tags", "") or "",
                 "screened_at": d["screened_at"],
+                **_article_export_metadata(articles.get(d["zotero_key"])),
+                "Imported source file(s)": sources.get(d["zotero_key"], ""),
             }
             for d in decisions
         ],
@@ -67,26 +117,29 @@ def export_decisions(db_path: StrPath, out_csv: StrPath) -> Path:
     return out
 
 
-def export_stage2_decisions(db_path: StrPath, out_csv: StrPath) -> Path:
+def export_stage2_decisions(db_path: StrPath, out_csv: StrPath, *, source_db: StrPath | None = None) -> Path:
     """把复筛决策（stage2_decisions，SPEC §14）导出为 CSV；列与初筛完全相同。
 
     按文献导入顺序排序（确定性）；返回写入路径。
     """
     decisions = list_stage2_decisions(db_path)  # 已按 import_order 排序
-    titles = {
-        a.zotero_key: a.title
+    sources = _imported_source_files(source_db or db_path)
+    articles = {
+        a.zotero_key: a
         for a in db_mod.list_articles(db_path, include_duplicates=True)
     }
     df = pd.DataFrame(
         [
             {
                 "zotero_key": d["zotero_key"],
-                "title": titles.get(d["zotero_key"], ""),
+                "title": articles[d["zotero_key"]].title if d["zotero_key"] in articles else "",
                 "decision": d["decision"],
                 "exclusion_reason": d.get("exclusion_reason", "") or "",
                 "notes": d.get("notes", "") or "",
                 "tags": d.get("tags", "") or "",
                 "screened_at": d["screened_at"],
+                **_article_export_metadata(articles.get(d["zotero_key"])),
+                "Imported source file(s)": sources.get(d["zotero_key"], ""),
             }
             for d in decisions
         ],

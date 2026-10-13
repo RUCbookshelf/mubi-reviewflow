@@ -61,9 +61,9 @@
   }
   function rebuild(){
     const ratio=total?time/total:0;animations.forEach(animation=>animation.cancel());animations=[];
-    const width=Math.max(44,Math.min(264,window.innerWidth-24));
+    const width=Math.max(44,Math.min(mobile.matches ? window.innerWidth-24 : 264,window.innerWidth-24));
     header.style.width=width+'px';content.style.width=width+'px';content.style.height='auto';
-    const height=Math.max(44,Math.min(46+shell.scrollHeight+2,window.innerHeight-24));
+    const height=Math.max(44,Math.min(46+shell.scrollHeight+2,mobile.matches ? window.innerHeight*.82 : window.innerHeight-24));
     dimensions={width,height};content.style.height=Math.max(0,height-46)+'px';
     total=360+(revealGroups.length-1)*(1000/60)*4+150;
     if(sheet.animate){

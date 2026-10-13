@@ -1,65 +1,87 @@
-# 木笔 ReviewFlow 2.0.5.2
+# 木笔 ReviewFlow 2.0.5.3
 
 ## English
 
-### Replacement build — screening and source fixes
+- Apply the approved mobile presentation across login, Home & Settings, import, title-and-abstract screening, full-text screening, coding, team management, reconciliation, exports, PRISMA, analysis, Trace and help.
+- Retain the desktop layout above 760 CSS pixels. Mobile uses the desktop light/dark palettes and all ten existing interface languages, with separate language and theme controls.
+- Improve touch targets, reader space, bounded decision/reason rows, vertically stacked PDF/evidence panels, settings tabs, local table scrolling and sheet-style details. Preserve existing save, Undo, authorization and confirmation handlers.
+- Fix an empty-queue frontend error that could leave workflow loading unfinished.
+- Append **DOI**, **Journal** and **Author(s)** and **Imported source file(s)** to both screening-result CSV exports. Existing decision columns and research records are preserved.
+- No new database migration or Remote Operation feature. Phone access still requires a reachable, configured server.
 
-This replaces the earlier 2.0.5.2 installers. Clients already reporting 2.0.5.2 should download the replacement directly; an unchanged version number does not trigger an update reminder.
+Windows x64 installer, Linux x86_64 AppImage, macOS DMG and SHA256SUMS.txt are built by GitHub Actions. Back up the full data directory and close ReviewFlow before upgrading. Full application version: 2.0.5.3; macOS native version: 2.0.5, build 2.0.503.
 
-- Keep Include / Not Sure Now / Exclude, exclusion-reason selection, custom reason and reusable-reason Save on one adaptive horizontal row in both screening stages.
-- Rename Needs review to **Not Sure Now** in all ten interface languages. Stored `maybe` decisions remain distinct and unchanged.
-- Offer optional second, third, fourth and further title-and-abstract rounds for remaining uncertain articles. Rounds persist per reviewer; active-round uncertain articles are held from that reviewer's full-text queue until they choose **Proceed to full-text screening**. Articles already assessed in full text are not reopened automatically. Undo restores round eligibility.
-- Use the complete imported filename, such as **01-Wiley.ris**, as the source name and identity. RIS database metadata no longer controls naming. Reimports under the same filename retain the source; a different filename is a different source.
-- Migrate reliable recorded filenames while preserving research records and source permissions. Source-type confirmation remains available for PRISMA classification; no database type is silently inferred from the filename. Truly unrecorded legacy provenance remains identified as such.
-- Add backed-up, idempotent migrations v5 (source associations) and v6 (reviewer round snapshots). Back up the complete data directory before upgrading; never overwrite newer research with an old backup.
-
-
-This maintenance release improves protected import review and its onboarding guide, on top of 2.0.5.1.
-
-- Prioritize outstanding duplicate candidates, metadata reviews, blocked records and ready records. Completed records are collapsed by default, with separate pagination.
-- Explain source-record, staged, ready, activated, metadata-review and candidate counts. Show filenames and dates; place technical batch IDs under details.
-- Compare eight bibliographic fields side by side. Explain Keep/Accept effects and preserve decision-time comparison snapshots after review.
-- Display the ready count before activation. Unresolved records remain staged; repeated activation creates no duplicate work.
-- Update Guide — Import literature with separate review/activation steps, direct navigation, task-wide counts and accurate completion states.
-- Improve keyboard access, tablet layouts, light/dark themes, reduced motion and all ten interface languages. Refresh changed asset versions.
-- Preserve article identities, screening decisions, coding, evidence, original records and CSV exports. The original import-review presentation APIs remain read-only; the replacement build additionally stores repeat-round snapshots and migrates filename source associations.
-
-### Validation and downloads
-
-Passed seven JavaScript unit checks, six Python projection checks, 26 existing regression scenarios, additional disposable-data API/activation checks and browser checks covering ten languages, four widths and both themes. No real research decisions were changed. See the [validation record](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5.2/docs/IMPORT_REVIEW_PRESENTATION.md).
-
-Windows x64 installer, Linux x86_64 AppImage, macOS DMG and SHA256SUMS.txt are provided. Close ReviewFlow and back up the complete data directory before upgrading. Existing 2.0.5 clients may not detect four-part maintenance releases automatically; download directly from GitHub. macOS native version is 2.0.5, build 2.0.502, with full application version 2.0.5.2.
-
-Build success does not establish every runtime scenario on every OS. E:/ReviewFlow was not replaced.
+See [mobile interface details](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5.3/docs/MOBILE_INTERFACE.md). The installed copy at E:/ReviewFlow was not replaced.
 
 ## 中文
 
-### 替换构建：筛选与来源修复
+- 筛选 CSV 新增 Imported source file(s) 列，记录原始 RIS 文件名；多来源文献保留全部已激活文件名。
 
-本构建替换此前的 2.0.5.2 安装包。已显示 2.0.5.2 的客户端请直接下载替换包，版本号相同不会触发更新提醒。
+- 全页面增加移动端适配，保留电脑布局、十种语言和电脑端浅色/深色配色；语言与主题按钮保持独立。
+- 优化触控尺寸、文献阅读、决策与排除理由、PDF 与编码依据布局、设置标签页、局部表格滚动和详情面板。
+- 修复空队列可能导致加载停滞的前端错误；初筛和复筛 CSV 新增 DOI、Journal、Author(s) 列。
+- 无新增数据库迁移，不包含远程控制或内网穿透。升级前关闭程序并备份完整数据目录。
 
-- 初筛和全文筛选的纳入、暂不确定、排除、原因选择、自定义原因及保存常用原因保持在同一自适应水平行。
-- 十种界面语言同步将“需复核”改为“暂不确定”（Not Sure Now），底层 `maybe` 决定保持独立且不转换。
-- 对仍暂不确定的文献，支持可选的第 2、3、4 及更多轮标题摘要筛选，按筛选员持久保存。再次初筛期间，本轮暂不确定文献暂不进入该筛选员的全文队列；选择“继续全文筛选”后释放。已有全文评估的文献不会自动重开，撤销后恢复本轮待复核状态。
-- 来源名称与标识直接取完整导入文件名（如 **01-Wiley.ris**），不从 RIS 数据库元数据推断。同名文件重复导入沿用来源，不同文件名视为不同来源。
-- 根据可靠的已记录文件名迁移来源关联，保留研究记录和来源权限；PRISMA 来源类型仍由用户确认，不从文件名猜测。历史来源确实未记录时保留说明。
-- 新增自动备份、可重复执行的 v5 来源关联迁移与 v6 筛选轮次快照迁移。升级前备份整个数据目录，勿用旧备份覆盖新研究。
+## Español
 
+- La columna Imported source file(s) conserva los nombres originales de todos los archivos RIS activados asociados al artículo.
 
-本维护版本在 2.0.5.1 基础上优化受保护的导入核验界面与导入引导。
+- Interfaz móvil en todas las páginas; diseño de escritorio conservado, diez idiomas y controles separados de idioma y tema.
+- Lectura, formularios, paneles y controles táctiles mejorados. Corrección de la carga de colas vacías.
+- Los CSV de ambas fases de cribado añaden DOI, Journal y Author(s). Sin nueva migración ni acceso remoto automático. Haga una copia de seguridad antes de actualizar.
 
-- 优先展示待核验重复候选、元数据差异、依赖待处理和可激活记录；已完成记录默认折叠，保留独立分页。
-- 解释来源原始记录、暂存、可激活、已激活、元数据核验及候选数量。显示文件名与日期，技术批次编号收纳在详情中。
-- 并排比较八项书目信息，明确保留现有信息或接受导入信息的效果，保留核验时的比较快照。
-- 激活前显示可激活数量，未解决记录继续暂存，重复激活不会产生重复工作。
-- 导入引导独立跟踪人工核验与激活，支持定位对应区域、任务整体统计和准确的完成状态。
-- 改善键盘操作、平板布局、浅深色主题、减少动态效果设置及十种界面语言，刷新相关资源版本。
-- 保留文献标识、筛选决定、编码、证据、原始记录和 CSV 导出。原有导入核验展示接口保持只读；此次替换构建另增加轮次快照存储和文件名来源关联迁移。
+## 日本語
 
-### 验证与下载
+- Imported source file(s) 列には、文献に関連付けられた有効なRISファイルの元の名前をすべて記録します。
 
-通过 7 项 JavaScript 单元检查、6 项 Python 展示逻辑检查、26 项既有回归场景，以及独立虚构数据接口、激活和浏览器检查。浏览器检查覆盖十种语言、四种宽度和浅深色主题，未修改真实研究决定。详见[验证记录](https://github.com/RUCbookshelf/mubi-reviewflow/blob/v2.0.5.2/docs/IMPORT_REVIEW_PRESENTATION.md)。
+- 全ページのモバイル表示を改善。デスクトップ表示、10言語、独立した言語・テーマ操作を維持。
+- 文献閲覧、フォーム、タッチ操作を改善し、空のキューでの読み込みエラーを修正。
+- 両スクリーニング段階のCSVにDOI、Journal、Author(s)を追加。新しいデータ移行や自動リモートアクセスはありません。更新前にバックアップしてください。
 
-提供 Windows x64 安装程序、Linux x86_64 AppImage、macOS DMG 和 SHA256SUMS.txt。升级前关闭软件并备份整个数据目录。既有 2.0.5 客户端可能不会自动识别四段维护版本，请直接从 GitHub 下载。macOS 原生版本为 2.0.5、构建号 2.0.502，完整软件版本为 2.0.5.2。
+## Français
 
-构建成功不代表所有系统的全部运行场景均已验收；E:/ReviewFlow 安装版未替换。
+- La colonne Imported source file(s) conserve les noms originaux de tous les fichiers RIS activés associés à l’article.
+
+- Présentation mobile sur toutes les pages, avec le bureau préservé, dix langues et des commandes distinctes pour la langue et le thème.
+- Lecture, formulaires et commandes tactiles améliorés; correction du chargement des files vides.
+- Ajout de DOI, Journal et Author(s) aux deux exports CSV de sélection. Aucune nouvelle migration ni connexion distante automatique. Sauvegardez avant la mise à jour.
+
+## Русский
+
+- Столбец Imported source file(s) содержит исходные имена всех активированных RIS-файлов, связанных со статьёй.
+
+- Мобильный интерфейс для всех страниц; сохранены настольный интерфейс, десять языков и отдельные кнопки языка и темы.
+- Улучшены чтение, формы и сенсорные элементы; исправлена загрузка пустой очереди.
+- В CSV обоих этапов отбора добавлены DOI, Journal и Author(s). Новых миграций и автоматического удалённого доступа нет. Перед обновлением создайте резервную копию.
+
+## Português
+
+- A coluna Imported source file(s) preserva os nomes originais de todos os arquivos RIS ativados associados ao artigo.
+
+- Interface móvel em todas as páginas, mantendo o layout de computador, dez idiomas e controles separados de idioma e tema.
+- Melhorias na leitura, nos formulários e nos controles de toque; correção do carregamento de filas vazias.
+- Os CSV das duas etapas de triagem incluem DOI, Journal e Author(s). Sem nova migração ou acesso remoto automático. Faça backup antes de atualizar.
+
+## Deutsch
+
+- Die Spalte Imported source file(s) enthält die ursprünglichen Namen aller aktivierten RIS-Dateien des Artikels.
+
+- Mobile Darstellung für alle Seiten; Desktoplayout, zehn Sprachen und getrennte Sprach- und Themensteuerung bleiben erhalten.
+- Verbesserte Leseflächen, Formulare und Touchbedienung; Fehler beim Laden leerer Warteschlangen behoben.
+- Beide Screening-CSV-Exporte enthalten zusätzlich DOI, Journal und Author(s). Keine neue Migration und kein automatischer Fernzugriff. Vor dem Update eine Sicherung erstellen.
+
+## Српски
+
+- Колона Imported source file(s) чува оригинална имена свих активираних RIS датотека повезаних са чланком.
+
+- Мобилни приказ свих страница; задржани су приказ на рачунару, десет језика и одвојене контроле језика и теме.
+- Побољшани су читање, обрасци и додирне контроле; исправљено је учитавање празног реда.
+- CSV извози обе фазе селекције додају DOI, Journal и Author(s). Нема нове миграције ни аутоматског удаљеног приступа. Направите резервну копију пре ажурирања.
+
+## 한국어
+
+- Imported source file(s) 열에는 문헌과 연결된 활성 RIS 파일의 원래 파일명을 모두 기록합니다.
+
+- 모든 페이지의 모바일 화면을 개선했습니다. 데스크톱 레이아웃, 10개 언어, 별도의 언어 및 테마 버튼을 유지합니다.
+- 문헌 읽기, 입력 양식, 터치 조작을 개선하고 빈 대기열의 로딩 오류를 수정했습니다.
+- 두 선별 단계의 CSV에 DOI, Journal, Author(s) 열을 추가했습니다. 새로운 데이터베이스 마이그레이션이나 자동 원격 접속은 없습니다. 업데이트 전에 전체 데이터를 백업하세요.
