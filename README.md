@@ -6,7 +6,7 @@
   <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
 </div>
 
-**2.1.1:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.1) · [更新说明 / Release notes](RELEASE_NOTES.md)
+**2.1.2:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.2) · [更新说明 / Release notes](RELEASE_NOTES.md)
 
 ## 中文
 
@@ -32,6 +32,12 @@
 | 研究材料导出 | PRISMA 流程图，以及对应模块提供的 DOCX、PPTX、LaTeX 等材料 |
 
 分析模块的实现不代表所有研究设计均已充分验证。方法前提、验证范围和限制见[分析能力评估](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#zh-cn)。发表时请核对方法来源并引用相应文献；软件结果仍需研究者检查。
+
+### 2.1.2 导入核验加载改进
+
+- 首批记录就绪后即可核验，其余记录分批在后台加载。
+- 紧凑圆环显示真实加载数量；中断后保留已加载记录并支持重试。
+- 后台加载保留当前记录、选项、展开内容和滚动位置。
 
 ### 2.1.1 导入与导出工作区
 
@@ -154,6 +160,12 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Exports:** PRISMA diagrams and module-specific DOCX, PPTX and LaTeX materials.
 
 Implementation does not establish validation for every study design. Consult the [analysis assessment](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#en) for assumptions and validation limits. Check results and cite the original methods when publishing.
+
+### Import review loading in 2.1.2
+
+- Review the first available records while remaining records load in small background batches.
+- A compact animated ring shows actual loading counts and supports retry after an interruption.
+- Background loading preserves the current record, choices, expanded details and scroll position.
 
 ### Import and export workspace in 2.1.1
 
