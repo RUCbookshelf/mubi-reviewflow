@@ -6,6 +6,11 @@
 .wf-panel[hidden]{display:none!important}.wf-panel{min-height:180px}.wf-settings-save,.wf-queue-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 0}.wf-queue-tools .input{max-width:230px}.wf-readonly{color:var(--danger)}
 .wf-policy-stage{border:1px solid var(--border);padding:12px;margin:12px 0;border-radius:10px}.wf-source-checks{display:flex;flex-wrap:wrap;gap:14px;padding:8px 0}.wf-field-option{display:block;margin:8px 0}.wf-policy-stage .input{max-width:240px}
 .wf-dirty-dialog,.wf-source-dialog{border:1px solid var(--border);border-radius:14px;max-width:min(760px,90vw);max-height:85vh;overflow:auto;background:var(--surface);color:var(--ink);padding:24px}.wf-dirty-dialog button{margin:8px}.wf-dirty-dialog::backdrop,.wf-source-dialog::backdrop{background:#0005}
+.wf-draft-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0;margin:16px 0}
+.wf-draft-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:.9rem;overflow-wrap:anywhere}.wf-draft-field .input{width:100%;max-width:100%;box-sizing:border-box}
+.wf-draft-policy{display:block}.wf-draft-policy .wf-policy-stage .input{width:100%}
+.wf-draft-error{color:var(--danger);font-size:.9rem;overflow-wrap:anywhere}
+@media(max-width:600px){.wf-draft-fields{grid-template-columns:minmax(0,1fr)}}
 .wf-evidence{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}.wf-evidence summary{cursor:pointer;font-weight:600}.wf-evidence textarea{width:100%;min-height:100px;margin:10px 0;resize:vertical}.wf-evidence-images{display:flex;flex-wrap:wrap;gap:12px}.wf-evidence-images figure{margin:4px;max-width:150px}.wf-evidence-images img{max-width:140px;max-height:120px;object-fit:contain}.wf-evidence-gap{color:var(--danger)}
 /* One dimension and its evidence share a boundary in both coding contexts. */
 .rf-coding-reader #cbForms>.card.wf-coding-unit{border:1px solid var(--border);border-radius:10px;box-shadow:none;padding:0 12px;margin:0!important;background:var(--surface);min-width:0}

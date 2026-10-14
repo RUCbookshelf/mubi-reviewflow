@@ -681,9 +681,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 /* Help is a reading surface: a short index, then one continuous guide. */
 .help-page{max-width:1180px;margin-inline:auto}.help-heading{margin-bottom:32px}.help-heading h2{margin-bottom:8px}.help-layout{display:grid;grid-template-columns:200px minmax(0,1fr);gap:48px;align-items:start}.help-contents{position:sticky;top:24px;display:flex;flex-direction:column;gap:4px;padding-right:20px;border-right:1px solid var(--border)}.help-contents a{display:block;padding:10px 0;color:var(--muted);text-decoration:none;line-height:1.5;overflow-wrap:anywhere}.help-contents a:hover{color:var(--primary);text-decoration:underline;text-underline-offset:4px}.help-contents a:focus-visible{outline:2px solid var(--primary);outline-offset:4px}.help-reading{max-width:75ch;min-width:0}.help-reading .help-grid{display:block}.help-group-title{font-size:.86rem;color:var(--muted);font-weight:500;margin:0 0 12px}.help-reading .help-card{padding:24px 0 32px;border-bottom:1px solid var(--border);scroll-margin-top:24px}.help-reading .help-card:first-child{padding-top:0}.help-reading .help-card h3{font-size:1.2rem;margin-bottom:8px;color:var(--ink)}.help-reading .help-card p{line-height:1.8;margin:12px 0;overflow-wrap:anywhere}.help-reading .help-card ol{line-height:1.8;margin-top:20px}.help-reading .help-card li{margin:12px 0;padding-left:8px}.help-reading .help-card li::marker{color:var(--primary);font-weight:600}.help-reading .help-actions{margin-top:24px}.help-reading .help-deployment{border-bottom:0}.help-reading pre{border-radius:4px;line-height:1.7;max-width:100%;overflow:auto}
 
-.row.al-settings-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px 20px;align-items:start}
+.row.al-settings-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px 20px;align-items:start}
 .al-settings-grid> *{min-width:0;grid-column:span 2}
-.al-settings-grid> :nth-child(-n+2){grid-column:span 3}
+.al-settings-grid> :nth-child(-n+2){grid-column:span 2}
 .al-settings-grid .lbl{display:block;font-size:.82rem;font-weight:400;color:var(--muted);min-height:2.6em;margin:0 0 6px}
 .al-settings-grid .input{width:100%}
 .import-history .row{justify-content:space-between}.import-history h3{margin:0}.import-history-batch{border-top:1px solid var(--border);padding:16px 0}.import-history-batch h4{margin:0 0 8px}.import-history-batch p{margin:4px 0 12px}.import-history-batch ul{padding:0;list-style:none}.import-history-batch li{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}.import-history-batch li>span{flex:1;min-width:180px;overflow-wrap:anywhere}.import-history-batch small{width:100%;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -724,6 +724,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./screen_reader.css?v=20261012-rounds1">
 <link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
 <link rel="stylesheet" href="./workspace_layouts.css?v=20261012-rounds1">
+<link rel="stylesheet" href="./report_evidence.css?v=2.1.3">
 </head>
 <body>
 
@@ -1020,17 +1021,18 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
           <option value="uncertainty">不确定性优先 (uncertainty)</option>
         </select></div>
       <div><label class="lbl" for="alStopThreshold">停止建议阈值（连续排除次数；0 关闭建议）</label>
-        <input class="input" id="alStopThreshold" type="number" min="0" max="10000" value="10"></div>
+        <input class="input" id="alStopThreshold" type="number" min="0" max="10000" step="1" required value="10"></div>
       <div><label class="lbl" for="alSeed">随机种子（seed）</label>
-        <input class="input" id="alSeed" type="number" value="42"></div>
-      <div><label class="lbl" for="alMinLabeled">训练所需最少纳入或排除决定数</label>
-        <input class="input" id="alMinLabeled" type="number" min="1" max="1000" value="5"></div>
+        <input class="input" id="alSeed" type="number" min="-2147483648" max="2147483647" step="1" required value="42"></div>
+      <div><label class="lbl" for="alReorderInterval">排序更新间隔（条）</label>
+        <input class="input" id="alReorderInterval" type="number" min="1" max="1000" step="1" required value="20" aria-describedby="alReorderHelp">
+        <p class="hint" id="alReorderHelp" style="margin:4px 0 0">默认每 20 条决定更新排序；设为 1 则每条更新。</p></div>
     </div>
     <div class="row" style="margin-bottom:0">
       <button class="btn b-inc" id="alSaveSettings">保存 机器学习排序设置</button>
       <span class="hint" style="margin:0" id="alSettingsInfo"></span>
     </div>
-    <p class="hint" style="margin:6px 0 0">模型用于预测文献相关性，排序策略决定先呈现哪些文献。模型按任务保存，排序策略按任务与筛选员保存；首页与初筛使用同一设置。</p>
+    <p class="hint" style="margin:6px 0 0">模型预测相关性，策略决定阅读顺序。模型、策略和排序更新间隔按当前成员保存；首页与初筛使用同一设置。</p>
   </div>
 </section>
 
@@ -1065,7 +1067,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <div id="titleDupWrap" style="display:none">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div><b>重复候选（人工核验）</b><div class="hint" id="titleDupSummary" style="margin:4px 0 0"></div></div>
-        <button class="btn b-out sm" id="titleDupExport">导出核验记录 CSV</button>
+        <button class="btn b-out sm" id="titleDupExport">下载核验记录（CSV）</button>
       </div>
       <div id="titleDupGroups"></div>
       <div class="row" style="justify-content:space-between">
@@ -3955,7 +3957,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["随机种子（seed）","Random seed","Graine aléatoire","Случайное зерно (seed)","Semilla aleatoria (seed)","乱数シード（seed）","Semente aleatória (seed)","Zufalls-Seed","Семе генератора случајних бројева (seed)", "난수 시드 (seed)"],
   ["训练所需最少纳入或排除决定数", "Minimum Include/Exclude decisions for training", "Nombre minimal de décisions Inclure/Exclure pour l’entraînement", "Минимум решений «Включить»/«Исключить» для обучения", "Mínimo de decisiones Incluir/Excluir para entrenar", "学習に必要な採用・除外判定の最小件数", "Mínimo de decisões Incluir/Excluir para treinamento", "Mindestzahl Einschließen/Ausschließen für das Training", "Минимум одлука Укључи/Искључи за обучавање", "학습에 필요한 최소 포함·제외 결정 수"],
   ["保存 机器学习排序设置", "Save Machine Learning ranking settings", "Enregistrer les réglages du classement par apprentissage automatique", "Сохранить настройки сортировки на основе машинного обучения", "Guardar ajustes de ordenación por aprendizaje automático", "機械学習順序付け設定を保存", "Salvar configurações de ordenação por aprendizado de máquina", "ML-Ranking-Einstellungen speichern", "Сачувај подешавања рангирања машинским учењем", "머신러닝 순위 설정 저장"],
-  ["模型用于预测文献相关性，排序策略决定先呈现哪些文献。模型按任务保存，排序策略按任务与筛选员保存；首页与初筛使用同一设置。", "The model predicts relevance; the ranking strategy chooses which references appear first. Models are saved per task, strategies per task and reviewer. Home and screening use the same settings.", "Le modèle prédit la pertinence ; la stratégie détermine les références présentées en premier. Le modèle est enregistré par tâche, la stratégie par tâche et évaluateur. Accueil et sélection partagent ces réglages.", "Модель прогнозирует релевантность, стратегия определяет порядок показа. Модель сохраняется для задачи, стратегия — для задачи и рецензента. Главная страница и скрининг используют одинаковые настройки.", "El modelo predice la relevancia; la estrategia decide qué referencias aparecen primero. El modelo se guarda por tarea y la estrategia por tarea y revisor. Inicio y cribado comparten ajustes.", "モデルが関連性を予測し、並べ替え方針が表示順を決めます。モデルはタスクごと、方針はタスクと担当者ごとに保存されます。ホームと初期選別は同じ設定を使います。", "O modelo prevê a relevância; a estratégia determina quais referências aparecem primeiro. O modelo é salvo por tarefa e a estratégia por tarefa e revisor. Início e triagem usam as mesmas configurações.", "Das Modell sagt Relevanz voraus; die Sortierstrategie bestimmt die Reihenfolge. Modelle werden je Aufgabe, Strategien je Aufgabe und Prüfer gespeichert. Startseite und Screening verwenden dieselben Einstellungen.", "Модел предвиђа релевантност, а стратегија одређује које ће се референце прво приказати. Модел се чува по задатку, а стратегија по задатку и члану тима за одабир. Почетна страница и примарни одабир користе иста подешавања.", "모델은 관련성을 예측하고 정렬 전략은 표시 순서를 정합니다. 모델은 작업별로, 전략은 작업과 검토자별로 저장됩니다. 홈과 초기 선별은 같은 설정을 사용합니다."],
+  ["模型预测相关性，策略决定阅读顺序。模型、策略和排序更新间隔按当前成员保存；首页与初筛使用同一设置。", "Models predict relevance; strategies set reading order. Model, strategy and refresh interval are saved for the current member; Home and screening use the same settings.", "Le modèle prédit la pertinence ; la stratégie fixe l’ordre. Modèle, stratégie et intervalle sont personnels ; accueil et sélection partagent les paramètres.", "Модель прогнозирует релевантность, стратегия задаёт порядок. Модель, стратегия и интервал сохраняются лично; главная и отбор используют одни настройки.", "El modelo predice relevancia y la estrategia ordena. Modelo, estrategia e intervalo se guardan por miembro; inicio y selección comparten ajustes.", "モデルは関連性を予測し、戦略は読書順を決めます。モデル・戦略・更新間隔は個人設定で、ホームと選別で共通です。", "O modelo prevê relevância e a estratégia define a ordem. Modelo, estratégia e intervalo são pessoais; início e triagem usam os mesmos ajustes.", "Das Modell schätzt Relevanz, die Strategie die Reihenfolge. Modell, Strategie und Intervall gelten persönlich; Start und Screening nutzen dieselben Einstellungen.", "Модел предвиђа релевантност, стратегија редослед. Модел, стратегија и интервал су лични; почетна и скрининг користе иста подешавања.", "모델은 관련성을 예측하고 전략은 읽기 순서를 정합니다. 모델·전략·갱신 간격은 개인별 설정이며 홈과 선별에서 공통으로 사용합니다."],
   ["上传 Zotero CSV / RIS → 解析与去重 → 写入当前任务、当前筛选员的数据库。支持","Upload Zotero CSV / RIS → parse & deduplicate → write into the current task's database for the current screener. Supports","Importez un CSV/RIS Zotero → analyse et dédoublonnage → enregistrement dans la base de données de la tâche et de l’évaluateur actuels. Prend en charge","Загрузите Zotero CSV / RIS → разбор и дедупликация → запись в базу текущей задачи для текущего отборщика. Поддерживается","Suba el CSV/RIS de Zotero → análisis y deduplicación → se guarda en la base de datos de la tarea y del revisor actuales. Admite","Zotero CSV / RIS をアップロード → 解析と重複除去 → 現在のタスク・スクリーナーのDBへ書き込み。対応：","Envie o CSV/RIS do Zotero → análise e deduplicação → gravação na base de dados da tarefa e do revisor atuais. Compatível com","Zotero CSV / RIS hochladen → parsen & deduplizieren → in die DB der aktuellen Aufgabe und des aktuellen Screeners schreiben. Unterstützt","Отпремите Zotero CSV / RIS → анализа и дедупликација → упис у базу текућег задатка и прегледача. Подржава", "Zotero CSV / RIS 업로드 → 분석 및 중복 제거 → 현재 작업과 선별자의 데이터베이스에 저장합니다."],
   ["一次选择多个文件","selecting multiple files at once","la sélection simultanée de plusieurs fichiers","одновременный выбор нескольких файлов","seleccionar varios archivos a la vez","複数ファイルの一括選択","selecionar vários arquivos de uma vez","die gleichzeitige Auswahl mehrerer Dateien","једновремени избор више датотека", "여러 파일을 한 번에 선택"],
   ["（如 WOS + Scopus + PubMed 导出），服务端合并后跨文件全局去重。"," (e.g. WOS + Scopus + PubMed exports); the server merges and deduplicates across files."," (ex. exports WOS + Scopus + PubMed) ; le serveur fusionne et dédoublonne entre fichiers."," (напр. выгрузки WOS + Scopus + PubMed); сервер объединяет и удаляет дубликаты между файлами."," (p. ej. exportaciones de WOS + Scopus + PubMed); el servidor fusiona y deduplica entre archivos.","（WOS + Scopus + PubMed の書き出しなど）。サーバー側で統合し、ファイル間の重複を除去します。"," (ex.: exportações WOS + Scopus + PubMed); o servidor mescla e deduplica entre arquivos."," (z. B. WOS + Scopus + PubMed-Exporte); der Server führt zusammen und dedupliziert dateiübergreifend."," (нпр. WOS + Scopus + PubMed извози); сервер спаја и уклања дупликате међу датотекама.", "할 수 있습니다(예: WOS + Scopus + PubMed 내보내기). 서버에서 병합한 후 파일 간 중복을 일괄 제거합니다."],
@@ -4068,8 +4070,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["⚠️ 已连续排除 {0} 条 — 建议暂停，复查最近决策或调整检索策略","⚠️ {0} consecutive exclusions — consider pausing to review recent decisions or adjust the search strategy","⚠️ {0} exclusions consécutives — pensez à faire une pause, relire vos décisions ou ajuster la stratégie de recherche","⚠️ {0} исключений подряд — стоит приостановиться, перепроверить решения или скорректировать стратегию поиска","⚠️ {0} exclusiones consecutivas — conviene pausar, revisar las últimas decisiones o ajustar la estrategia de búsqueda","⚠️ 連続 {0} 件の除外 — 一時停止して最近の判定を見直すか検索戦略を調整してください","⚠️ {0} exclusões seguidas — considere pausar e revisar decisões ou ajustar a estratégia de busca","⚠️ {0} Ausschlüsse in Folge — Pause empfohlen: letzte Entscheidungen prüfen oder Suchstrategie anpassen","⚠️ {0} узастопних искључења — размислите о паузи, прегледајте одлуке или прилагодите стратегију претраге", "⚠️ {0}편을 연속 제외했습니다 — 잠시 멈추고 최근 결정을 검토하거나 검색 전략을 조정해 보세요"],
   ["机器学习排序：{0}（seed {1}）· 连续排除 {2} 条", "Machine Learning ranking: {0} (seed {1}) · {2} consecutive exclusions", "Classement par apprentissage automatique : {0} (graine {1}) · {2} exclusions consécutives", "Сортировка на основе машинного обучения: {0} (seed {1}) · {2} исключений подряд", "Ordenación por aprendizaje automático: {0} (semilla {1}) · {2} exclusiones consecutivas", "機械学習順序付け：{0}（seed {1}）· 連続除外 {2} 件", "Ordenação por aprendizado de máquina: {0} (semente {1}) · {2} exclusões seguidas", "ML-Ranking: {0} (Seed {1}) · {2} Ausschlüsse in Folge", "Рангирање машинским учењем: {0} (seed {1}) · {2} узастопних искључења", "머신러닝 정렬: {0} (seed {1}) · 연속 제외 {2}편"],
   ["机器学习排序已开启：按当前策略重排，每次决策后自动刷新", "Machine Learning ranking is on: the current strategy reorders the queue and refreshes after each decision", "Classement par apprentissage automatique activé : la stratégie actuelle réordonne la file après chaque décision", "Сортировка на основе машинного обучения включена: текущая стратегия обновляет порядок после каждого решения", "Ordenación con aprendizaje automático activada: la estrategia actual reordena la cola tras cada decisión", "機械学習 並べ替えを有効化：現在の方針で並べ替え、判定ごとに更新します", "Ordenação por aprendizado de máquina ativada: a estratégia atual reordena a fila após cada decisão", "ML-Sortierung aktiv: Die aktuelle Strategie ordnet die Liste nach jeder Entscheidung neu", "Рангирање машинским учењем је укључено: тренутна стратегија мења редослед после сваке одлуке", "머신러닝 정렬 활성화: 현재 전략으로 정렬하며 판정 후 갱신합니다"],
-  ["当前：{0} · seed {1} · 阈值 {2} · 最少标签 {3}","Current: {0} · seed {1} · threshold {2} · min labels {3}","Actuel : {0} · graine {1} · seuil {2} · étiquettes min. {3}","Текущее: {0} · seed {1} · порог {2} · мин. меток {3}","Actual: {0} · semilla {1} · umbral {2} · mín. etiquetas {3}","現在：{0} · seed {1} · しきい値 {2} · 最少ラベル {3}","Atual: {0} · semente {1} · limiar {2} · mín. rótulos {3}","Aktuell: {0} · Seed {1} · Schwelle {2} · min. Labels {3}","Тренутно: {0} · seed {1} · праг {2} · мин. ознака {3}", "현재: {0} · seed {1} · 임계값 {2} · 최소 라벨 수 {3}"],
-  ["已保存：{0} · seed {1} · 阈值 {2} · 最少标签 {3}","Saved: {0} · seed {1} · threshold {2} · min labels {3}","Enregistré : {0} · graine {1} · seuil {2} · étiquettes min. {3}","Сохранено: {0} · seed {1} · порог {2} · мин. меток {3}","Guardado: {0} · semilla {1} · umbral {2} · mín. etiquetas {3}","保存済み：{0} · seed {1} · しきい値 {2} · 最少ラベル {3}","Salvo: {0} · semente {1} · limiar {2} · mín. rótulos {3}","Gespeichert: {0} · Seed {1} · Schwelle {2} · min. Labels {3}","Сачувано: {0} · seed {1} · праг {2} · мин. ознака {3}", "저장됨: {0} · seed {1} · 임계값 {2} · 최소 라벨 수 {3}"],
+  ["当前：{0} · seed {1} · 阈值 {2}", "Current: {0} · seed {1} · threshold {2}", "Actuel : {0} · graine {1} · seuil {2}", "Текущее: {0} · seed {1} · порог {2}", "Actual: {0} · semilla {1} · umbral {2}", "現在：{0} · seed {1} · しきい値 {2}", "Atual: {0} · semente {1} · limiar {2}", "Aktuell: {0} · Seed {1} · Schwelle {2}", "Тренутно: {0} · seed {1} · праг {2}", "현재: {0} · seed {1} · 임계값 {2}"],
+  ["已保存：{0} · seed {1} · 阈值 {2}", "Saved: {0} · seed {1} · threshold {2}", "Enregistré : {0} · graine {1} · seuil {2}", "Сохранено: {0} · seed {1} · порог {2}", "Guardado: {0} · semilla {1} · umbral {2}", "保存済み：{0} · seed {1} · しきい値 {2}", "Salvo: {0} · semente {1} · limiar {2}", "Gespeichert: {0} · Seed {1} · Schwelle {2}", "Сачувано: {0} · seed {1} · праг {2}", "저장됨: {0} · seed {1} · 임계값 {2}"],
   ["机器学习排序设置已保存", "Machine Learning ranking settings saved", "Réglages du classement par apprentissage automatique enregistrés", "Настройки сортировки на основе машинного обучения сохранены", "Ajustes de ordenación por aprendizaje automático guardados", "機械学習順序付け設定を保存しました", "Configurações de ordenação por aprendizado de máquina salvas", "ML-Ranking-Einstellungen gespeichert", "Подешавања рангирања машинским учењем су сачувана", "머신러닝 설정 저장됨"],
   ["加载中…", "Loading…", "Chargement…", "Загрузка…", "Cargando…", "読み込み中…", "Carregando…", "Wird geladen…", "Учитавање…", "불러오는 중…"],
   ["暂不可用", "Currently unavailable", "Actuellement indisponible", "Временно недоступно", "No disponible temporalmente", "現在利用できません", "Temporariamente indisponível", "Derzeit nicht verfügbar", "Тренутно недоступно", "현재 사용할 수 없음"],
@@ -5210,8 +5212,9 @@ const S = {
   prLast: null,                               /* PRISMA 最近一次生成结果 */
   al: {                                       /* 主动学习（机器学习排序） */
     mode: 'import',        /* 'import' 导入顺序 | 'ai' 相关度优先 */
-    available: false, nLabeled: 0, minLabeled: 5,
+    available: false, nLabeled: 0, currentLabels: 0, minLabeled: 5,
     strategy: 'max', seed: 42,
+    reorderInterval: 20, pendingKeys: new Set(), rankedDecisions: new Map(), rankRetryAfter: 0,
     orderKeys: [], scores: {},             /* AI 队列（键序）与 P(纳入) 分数 */
     streak: 0, suggestStop: false, dismissStreak: -1
   }
@@ -5963,22 +5966,41 @@ $('#goScreenBtn').addEventListener('click', () => go('screen'));
    applyAIOrder() 重排为「已决（导入序）+ 待筛（模型相关度序）」，
    关闭 AI 即还原基准顺序。全部数据经 /al/rank · /al/settings 端点。 */
 let alRankVersion = 0;
+let alStatusVersion = 0;
+async function refreshALStatus() {
+  if (!S.task || S.al.mode!=='ai') return;
+  const ticket=++alStatusVersion,rankTicket=alRankVersion,screenTicket=screenRequestVersion,taskId=S.task.task_id,screener=S.screener;
+  try {
+    const d=await api(taskApi()+'/al/status'+scrQ());
+    if(ticket!==alStatusVersion||rankTicket!==alRankVersion||screenTicket!==screenRequestVersion||S.task?.task_id!==taskId||S.screener!==screener||S.al.mode!=='ai')return;
+    S.al.currentLabels=d.n_labeled||0;
+    S.al.streak=d.last_streak||0;S.al.suggestStop=!!d.suggest_stop;
+    renderALChrome();
+  } catch (_) { /* Status can retry after the next save; no training or queue reload. */ }
+}
 async function refreshALRank() {
-  if (!S.task) return;
+  if (!S.task) return false;
   const ticket = ++alRankVersion, taskId = S.task.task_id, screener = S.screener;
+  const screenTicket = screenRequestVersion;
+  const decisionsAtRequest = new Map(Object.entries(S.decisions).map(([key,value])=>[key,value.decision]));
   let d;
   try { d = await api(taskApi() + '/al/rank' + scrQ()); }
   catch (e) {
-    if (ticket !== alRankVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return;
+    if (ticket !== alRankVersion || screenTicket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return false;
     if (e.status !== 401) toast(T('机器学习排序获取失败：') + e.message, 'warn');
-    S.al.available = false; S.al.orderKeys = []; S.al.scores = {};
+    // Preserve the previous usable order when a refresh fails.
+    S.al.rankRetryAfter = Date.now() + 30000;
     renderALChrome();
-    if (S.al.mode === 'ai') await applyAIOrder();
-    return;
+    return false;
   }
-  if (ticket !== alRankVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return;
+  if (ticket !== alRankVersion || screenTicket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return false;
   S.al.available = !!d.available;
+  S.al.reorderInterval = d.reorder_interval || 20;
+  S.al.rankedDecisions = decisionsAtRequest;
+  S.al.pendingKeys.clear();
+  S.al.rankRetryAfter = 0;
   S.al.nLabeled = d.n_labeled || 0;
+  S.al.currentLabels = S.al.nLabeled;
   S.al.minLabeled = d.min_labeled || S.al.minLabeled;
   S.al.strategy = d.strategy || S.al.strategy;
   S.al.seed = (d.seed === 0 || d.seed) ? d.seed : S.al.seed;
@@ -5996,6 +6018,21 @@ async function refreshALRank() {
   }
   renderALChrome();
   if (S.al.mode === 'ai') await applyAIOrder();
+  return true;
+}
+function recordALDecision(key, decision) {
+  if (S.al.rankedDecisions.get(key) === decision) S.al.pendingKeys.delete(key);
+  else S.al.pendingKeys.add(key);
+}
+async function advanceALQueue() {
+  const taskId=S.task?.task_id,screener=S.screener,ticket=screenRequestVersion;
+  const labels = Object.values(S.decisions).filter(value=>['include','exclude'].includes(value.decision)).length;
+  const bootstrap = !S.al.available && labels >= S.al.minLabeled;
+  if (Date.now() >= S.al.rankRetryAfter && (bootstrap || S.al.pendingKeys.size >= S.al.reorderInterval) && await refreshALRank()) return;
+  if (ticket!==screenRequestVersion||S.task?.task_id!==taskId||S.screener!==screener||S.al.mode!=='ai'||!WorkflowControls.renderAllowed()) return;
+  // Filter saved articles out locally; retain the relative order of the rest.
+  renderALChrome();
+  await applyAIOrder();
 }
 async function applyAIOrder() {
   if (S.al.mode !== 'ai' || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return;
@@ -6024,7 +6061,7 @@ function renderALChrome() {
     badge.textContent = T('已训练于 {0} 条标签', S.al.nLabeled);
   } else badge.style.display = 'none';
   $('#alHint').textContent = ai && !S.al.available
-    ? T('可用标签不足（{0} / 最少 {1}），暂按导入顺序展示', S.al.nLabeled, S.al.minLabeled)
+    ? T('可用标签不足（{0} / 最少 {1}），暂按导入顺序展示', S.al.currentLabels, S.al.minLabeled)
     : '';
   const showStop = ai && S.al.suggestStop && S.al.dismissStreak !== S.al.streak;
   $('#alStopBanner').style.display = showStop ? '' : 'none';
@@ -6034,7 +6071,8 @@ function renderALChrome() {
     side.style.display = '';
     const strategyLabel = alStrategyLabel(S.al.strategy);
     side.textContent = (S.al.profileLabel ? T('机器学习模型') + '：' + T(S.al.profileLabel) + ' · ' : '')
-      + T('机器学习排序：{0}（seed {1}）· 连续排除 {2} 条', strategyLabel, S.al.seed, S.al.streak);
+      + T('机器学习排序：{0}（seed {1}）· 连续排除 {2} 条', strategyLabel, S.al.seed, S.al.streak)
+      + ' · ' + T('每 {0} 条决定更新排序 · 待更新 {1} 条', S.al.reorderInterval, S.al.pendingKeys.size);
   } else side.style.display = 'none';
 }
 async function setALMode(mode) {
@@ -6044,7 +6082,7 @@ async function setALMode(mode) {
   S.al.dismissStreak = -1;
   if (!S.task) { renderALChrome(); return; }
   if (mode === 'ai') {
-    toast(T('机器学习排序已开启：按当前策略重排，每次决策后自动刷新'), 'inc');
+    toast(T('机器学习排序已开启：按设定间隔更新排序'), 'inc');
     await refreshALRank();
   } else {
     S.articles = S.articlesBase ? S.articlesBase.slice() : S.articles;
@@ -6055,7 +6093,7 @@ async function setALMode(mode) {
 }
 let alSettingsVersion = 0;
 let alSettingsDraftVersion = 0;
-for (const id of ['alStrategy','alSeed','alMinLabeled','alStopThreshold']) {
+for (const id of ['alStrategy','alSeed','alStopThreshold','alReorderInterval']) {
   $('#' + id).addEventListener('input', () => { alSettingsDraftVersion++; });
 }
 let alSettingsSavingTaskId = null;
@@ -6068,36 +6106,45 @@ async function loadALSettingsUI() {
     const st = await api(taskApi() + '/al/settings' + scrQ());
     if (ticket !== alSettingsVersion || draftVersion !== alSettingsDraftVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     S.al.strategy = st.strategy; S.al.seed = st.seed; S.al.minLabeled = st.min_labeled;
+    S.al.reorderInterval = st.reorder_interval || 20;
     renderALChrome();
     $('#alStrategy').value = st.strategy;
     $('#alStopThreshold').value = String(st.stop_threshold);
     $('#alSeed').value = String(st.seed);
-    $('#alMinLabeled').value = String(st.min_labeled);
-    $('#alSettingsInfo').textContent = T('当前：{0} · seed {1} · 阈值 {2} · 最少标签 {3}', alStrategyLabel(st.strategy), st.seed, st.stop_threshold, st.min_labeled);
+    $('#alReorderInterval').value = String(S.al.reorderInterval);
+    $('#alSettingsInfo').textContent = T('当前：{0} · seed {1} · 阈值 {2}', alStrategyLabel(st.strategy), st.seed, st.stop_threshold);
+    document.dispatchEvent(new CustomEvent('reviewflow:al-settings-loaded',{detail:{values:{alStrategy:st.strategy,alSeed:String(st.seed),alStopThreshold:String(st.stop_threshold),alReorderInterval:String(S.al.reorderInterval)}}}));
   } catch (e) { /* 首页静默：设置载入失败不打扰 */ }
 }
 async function saveALSettings() {
   if (!S.task) { toast('请先选择任务', 'warn'); return; }
   if ($('#alSaveSettings').disabled) return;
+  // Validate the actual visible settings (or the guarded dialog's editors)
+  // before submitting; never silently truncate decimals or replace blanks.
+  for(const id of ['alSeed','alStopThreshold','alReorderInterval'])if(!$('#'+id).checkValidity()){
+    if($('#'+id).getClientRects().length)$('#'+id).reportValidity();
+    return false;
+  }
   const taskId = S.task.task_id, screener = S.screener, ticket = ++alSettingsVersion;
   const submittedDraftVersion = alSettingsDraftVersion;
   alSettingsSavingTaskId = taskId;
   $('#alSaveSettings').disabled = true;
   const body = {
     strategy: $('#alStrategy').value,
-    stop_threshold: Math.max(0, parseInt($('#alStopThreshold').value, 10) || 0),
-    seed: parseInt($('#alSeed').value, 10) || 0,
-    min_labeled: Math.max(1, parseInt($('#alMinLabeled').value, 10) || 1)
+    stop_threshold: Number($('#alStopThreshold').value),
+    seed: Number($('#alSeed').value),
+    reorder_interval: Number($('#alReorderInterval').value)
   };
   try {
     const st = await api(taskApi() + '/al/settings' + scrQ(), { method: 'PUT', body });
     if (ticket !== alSettingsVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
-    $('#alSettingsInfo').textContent = T('已保存：{0} · seed {1} · 阈值 {2} · 最少标签 {3}', alStrategyLabel(st.strategy), st.seed, st.stop_threshold, st.min_labeled);
+    $('#alSettingsInfo').textContent = T('已保存：{0} · seed {1} · 阈值 {2}', alStrategyLabel(st.strategy), st.seed, st.stop_threshold);
     S.al.strategy = st.strategy; S.al.seed = st.seed; S.al.minLabeled = st.min_labeled;
+    S.al.reorderInterval = st.reorder_interval || 20;
     renderALChrome();
     if (S.al.mode === 'ai') await refreshALRank();
     toast(T('机器学习排序设置已保存'), 'inc');
-    if (submittedDraftVersion === alSettingsDraftVersion) document.dispatchEvent(new Event('reviewflow:al-settings-saved'));
+    document.dispatchEvent(new CustomEvent('reviewflow:al-settings-saved',{detail:{values:{alStrategy:st.strategy,alSeed:String(st.seed),alStopThreshold:String(st.stop_threshold),alReorderInterval:String(S.al.reorderInterval)}}}));
     return submittedDraftVersion === alSettingsDraftVersion;
   } catch (e) { if (ticket === alSettingsVersion && S.task?.task_id === taskId && S.screener === screener) toast(T('保存失败：') + e.message, 'warn'); }
   finally {
@@ -6257,12 +6304,18 @@ async function loadScreen() {
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
     S.articles = (d.queue || []).map(nzArticle);
     S.articlesBase = S.articles.slice();
+    // A freshly loaded scope gets a new model baseline; no cross-task counters.
+    S.al.available = false; S.al.orderKeys = []; S.al.scores = {};
+    S.al.pendingKeys.clear(); S.al.rankedDecisions.clear();
+    S.al.rankRetryAfter = 0;
     S.decisions = {};
     for (const r of dd.decisions) S.decisions[r.zotero_key] = { ...r, reason: r.exclusion_reason };
     S.screenEditingKey = S.articles.some(article => article.zotero_key === reopenKey) ? reopenKey : null;
     S.scrIdx = S.screenEditingKey ? S.articles.findIndex(article=>article.zotero_key===reopenKey) : nextUndecided();
     S.screenLoadedTask = taskId;
-    if (S.al.mode === 'ai') await refreshALRank();   /* 拉取排名 → 重排 → 渲染 */
+    if (S.al.mode === 'ai') {
+      if (!await refreshALRank() && ticket===screenRequestVersion && S.task?.task_id===taskId && S.screener===screener && WorkflowControls.renderAllowed()) await applyAIOrder();
+    }
     else { renderALChrome(); await renderScreen(); }
     window.WorkspaceUndo?.sync();
   } catch (e) {
@@ -6304,6 +6357,8 @@ async function screenDecide(decision) {
       return;
     }
     S.decisions[r.zotero_key] = { ...savedDecision, decision, reason };
+    if (S.al.mode === 'ai') recordALDecision(r.zotero_key, decision);
+    refreshALStatus(); // Lightweight progress read, never awaited by next-item navigation.
     ScreeningRounds.saved(r.zotero_key);
     WorkflowControls.markDecisionClean('screen');
     WorkflowControls.updateProgress('screen').catch(WorkflowControls.error);
@@ -6313,7 +6368,7 @@ async function screenDecide(decision) {
     $('#scrCard').classList.add('out');
     setTimeout(async () => {
       if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
-      if (S.al.mode === 'ai') await refreshALRank();   /* 决策后重训 → 重排 → 渲染 */
+      if (S.al.mode === 'ai') await advanceALQueue(); /* 批次内沿用排序，到间隔才重训 */
       else S.scrIdx = nextUndecided();
       if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
       $('#scrCard').classList.remove('out');
@@ -8812,8 +8867,8 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workspace_shell.js?v=20261012-workflow6"></script>
 <script src="./sidebar_sheet.js?v=20261013-mobile2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261012-home-wording5"></script>
-<script src="./research_trace.js?v=20261013-title-search2"></script>
+<script src="./workflow_locale.js?v=2.1.3"></script>
+<script src="./research_trace.js?v=2.1.3"></script>
 <script src="./import_review_locale.js?v=20261012-review1"></script>
 <script src="./import_review_model.js?v=20261012-review1"></script>
 <script src="./import_guide.js?v=2.1.2.2"></script>
@@ -8822,7 +8877,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
-<script src="./al_profile_selector.js?v=20261012-home-wording2"></script>
+<script src="./al_profile_selector.js?v=2.1.3"></script>
 <script src="./al_stop_panel.js?v=20261011-reader2"></script>
 <script src="./al_blind_mode.js?v=20261012-home-wording1"></script>
 <script src="./screen_reader.js?v=20261012-order-label1"></script>
@@ -8830,18 +8885,18 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./protocol_designer.js?v=20261002-ui1"></script>
 <script src="./extraction_workbench.js?v=20261012-workflow6"></script>
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
-<link rel="stylesheet" href="./workflow_controls.css?v=20261012-team-prisma5">
+<link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
 <script src="./screening_rounds.js?v=20261012-rounds1"></script>
-<script src="./workflow_controls.js?v=2.1.2.2"></script>
+<script src="./workflow_controls.js?v=2.1.3"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
-<script src="./import_export_locale.js?v=2.1.2.2"></script>
+<script src="./import_export_locale.js?v=2.1.3"></script>
 <script src="./import_export_help_locale.js?v=2.1.2.2"></script>
-<script src="./import_export_workspace.js?v=2.1.2.2"></script>
+<script src="./import_export_workspace.js?v=2.1.3"></script>
 <script src="./import_review_loading.js?v=2.1.2.2"></script>
-<script src="./import_review_refined_locale.js?v=2.1.2.2"></script>
-<script src="./import_review_updates.js?v=2.1.2.2"></script>
-<script src="./unified_import_workspace.js?v=2.1.2.2"></script>
+<script src="./import_review_refined_locale.js?v=2.1.3"></script>
+<script src="./import_review_updates.js?v=2.1.3"></script>
+<script src="./unified_import_workspace.js?v=2.1.3"></script>
 <script src="./team_prisma_locale.js?v=20261012-rounds1-20261012-team-prisma5"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261013-keyguard1"></script>
@@ -8857,6 +8912,8 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <link rel="stylesheet" href="./disclosure_controls.css?v=20261013-svg2">
 <script src="./mobile_motion.js?v=2.1.2.2"></script>
 <link rel="stylesheet" href="import_export_workspace.css?v=2.1.2.2">
-<link rel="stylesheet" href="import_review_refined.css?v=2.1.2.2">
+<link rel="stylesheet" href="import_review_refined.css?v=2.1.3">
+<script src="./report_evidence_locale.js?v=2.1.3"></script>
+<script src="./report_evidence.js?v=2.1.3"></script>
 </body>
 </html>

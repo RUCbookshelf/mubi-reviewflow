@@ -8,9 +8,19 @@
   const queues = {}, items = {}, readOnlyKeys = {}, reasons = {screen:[], fulltext:[]};
   const tickets = {screen:0, fulltext:0, coding:0};
   const dirtyFields = new Set();
-  const editLibrary = field => { dirtyFields.add(field); libraryDirty=true; };
-  const cleanLibrary = field => { if(field)dirtyFields.delete(field); libraryDirty=dirtyFields.size>0; };
+  const trackLibrary = (field,value=()=>field.value.trim()) => {field.wfDraftValue=value;field.wfBaseline=value();};
+  const editLibrary = field => {if(field.wfDraftValue()===field.wfBaseline)dirtyFields.delete(field);else dirtyFields.add(field);libraryDirty=dirtyFields.size>0;};
+  const cleanLibrary = field => {if(field){field.wfBaseline=field.wfDraftValue();dirtyFields.delete(field);}libraryDirty=dirtyFields.size>0;};
   let settings = null, draft = null, settingsDirty = false, libraryDirty = false, alDirty = false;
+  let draftBaseline=null,alBaseline=null,pendingPolicyReview=false;
+  const alIds=['alStrategy','alSeed','alStopThreshold','alReorderInterval'];
+  const alValues=()=>Object.fromEntries(alIds.map(id=>[id,$('#'+id).value]));
+  const alSignature=values=>JSON.stringify(alIds.map(id=>{const value=values[id];return id!=='alStrategy'&&String(value).trim()!==''&&Number.isFinite(Number(value))?Number(value):value;}));
+  const syncALDirty=()=>{alDirty=alBaseline!==null&&alSignature(alValues())!==alSignature(alBaseline);return alDirty;};
+  const draftSignature=value=>JSON.stringify({stages:stages.map(stage=>{const s=value?.stages?.[stage]||{};return[s.mode,[...(s.source_ids||[])].sort(),s.show_maybe];}),evidence:[...(value?.evidence_required_field_ids||[])].sort()});
+  const syncSettingsDirty=()=>{settingsDirty=!!draft&&draftBaseline!==null&&draftSignature(draft)!==draftBaseline;return settingsDirty;};
+  // Catalogue counters and the mutation version are not editable policy changes.
+  const policySignature=value=>JSON.stringify({draft:draftSignature(value),can_manage:value?.can_manage,task_kind:value?.task_kind,sources:(value?.sources||[]).map(s=>[s.id,s.active]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))),fields:value?.evidence_fields,issues:value?.mapping_issues,submission:value?.submission_evidence?.available});
   let editRevision = 0, autoReload = null, deferredRefresh = false, reasonsTicket = 0, pendingPolicyRefresh = false;
   let policyFlight = null;
   let context = '', refreshTicket = 0, activeTab = 'overview', animation = null, dialogPromise = null;
@@ -33,7 +43,7 @@
   W.selectedSource = stage => selected[stage];
   W.activeItem = stage => items[stage];
   W.maybe = stage => settings?.stages?.[stage]?.show_maybe !== false;
-  W.settingsDirty = () => settingsDirty || libraryDirty || alDirty;
+  W.settingsDirty = () => syncSettingsDirty() || libraryDirty || syncALDirty();
   const decisionBaselines={};
   const reasonSignature=stage=>{
     const article=stage==='screen'?S.articles[S.scrIdx]:curFt();
@@ -52,7 +62,8 @@
   });
   W.anyDirty=()=>W.settingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
   const pendingWork=()=>apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving();
-  const retainDraft=()=>{$('#wf-settings-notice').textContent=T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.');$('#wf-policy-recovery').hidden=false;};
+  const policyDraftDirty=()=>syncSettingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
+  const retainDraft=()=>{if(!pendingPolicyReview||!policyDraftDirty())return;$('#wf-settings-notice').textContent=T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.');$('#wf-policy-recovery').hidden=false;};
   for(const event of ['input','change'])document.addEventListener(event,e=>{if(!['taskSel','screenerSel'].includes(e.target.id))editRevision++;},true);
   W.refreshing=()=>!!autoReload;
   W.renderAllowed=()=>!autoReload||(autoReload.scope===scope()&&autoReload.page===S.page&&autoReload.ticket===refreshTicket&&autoReload.revision===editRevision);
@@ -64,7 +75,7 @@
     const contextControls=['taskSel','screenerSel'].map(id=>[document.getElementById(id),document.getElementById(id).disabled]);
     for(const [control] of contextControls)control.disabled=true;
     autoReload=token;page.inert=true;page.setAttribute('aria-busy','true');
-    try{if(W.renderAllowed()){await W.reload(stage);if(W.renderAllowed())pendingPolicyRefresh=false;}}
+    try{if(W.renderAllowed()){await W.reload(stage);if(W.renderAllowed()){pendingPolicyRefresh=false;pendingPolicyReview=false;}}}
     finally{autoReload=null;for(const [control,disabled] of contextControls)control.disabled=disabled;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
   }
 
@@ -178,6 +189,7 @@
   function policyEditor() {
     if(!settings || W.settingsDirty()) return;
     draft=structuredClone(settings);
+    draftBaseline=draftSignature(draft);
     $('#wf-team-title').textContent=T(settings.task_kind==='team'?'Team Management':'Task workflow');
     $('#teamTitle').textContent=T('Members & progress');
     const host=$('#wf-policy');host.replaceChildren(n('h4','Sources available by stage'),n('p','Imported sources are discovered automatically. Selected sources limits work; Paused retains read-only access.',{class:'hint'}));
@@ -229,6 +241,7 @@
     const payload={expected_version:draft.version,stages:structuredClone(draft.stages),evidence_required_field_ids:[...draft.evidence_required_field_ids]};
     const result=await api(taskApi()+'/workflow-settings',{method:'PUT',body:payload});
     if(current!==scope())return false;
+    draftBaseline=draftSignature(payload);
     settingsDirty=JSON.stringify(payload.stages)!==JSON.stringify(draft.stages)||JSON.stringify(payload.evidence_required_field_ids)!==JSON.stringify(draft.evidence_required_field_ids);
     if(result.version!=null)draft.version=result.version;
     await W.refresh('saved');return !settingsDirty;
@@ -238,6 +251,7 @@
     if(!settings.sources?.length)host.append(n('p','Sources appear automatically after an import.',{class:'hint'}));
     for(const source of settings.sources||[]) {
       const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.readOnly=true;name.disabled=source.reserved;
+      trackLibrary(name);
       name.addEventListener('input',()=>editLibrary(name));
       if(source.reserved)row.append(n('span','Source not recorded',{class:'input'}));else row.append(name);
       row.append(n('span',({metadata:'Database identified from RIS',confirmed:'Confirmed source',inferred:'Suggested database — review identification',file:'Source named from imported filename',legacy:'Legacy source'})[source.identification],{class:'hint'}),el('span',{text:T('Retained import records: {0} · Active articles: {1}',source.record_count||0,source.linked_count||0)}),literal('small',(source.files||[]).join(', ')));
@@ -246,6 +260,7 @@
         type.append(n('option','Needs confirmation',{value:''}));
         for(const value of ['database','register','website','organisation','citation_searching','other'])type.append(n('option',{database:'Database',register:'Register',website:'Website',organisation:'Organisation',citation_searching:'Citation searching',other:'Other'}[value],{value}));
         type.value=source.source_type||'';type.addEventListener('change',()=>editLibrary(name));
+        trackLibrary(name,()=>JSON.stringify([name.value,type.value]));name.wfControls=[type];
         name.wfSave=async()=>{const sent=name.value,selected=type.value;await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:sent,active:source.active,expected_version:settings.version,...(selected?{source_type:selected}:{})}});if(name.value===sent&&type.value===selected)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};
         row.append(type,button('Confirm source identification',()=>run(name.wfSave)),button(source.active?'Pause source':'Activate source',()=>run(async()=>{await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:source.name,active:!source.active,expected_version:settings.version}});await W.refresh('source');})));
         if(source.suggestion)row.append(literal('small',source.suggestion));
@@ -264,16 +279,17 @@
         host.append(n('h4',stage==='screen'?'Title-and-abstract screening':'Full-text screening'));
         for(const entry of reasons[stage]) {
           const row=n('div',null,{class:'row'}),text=el('input',{class:'input',value:entry.text,'aria-label':T('Reusable exclusion reasons'),'data-wf-aria':'Reusable exclusion reasons',maxlength:'2000',translate:'no'});text.disabled=!results[i].can_manage;text.addEventListener('input',()=>editLibrary(text));row.append(text);
+          trackLibrary(text);text.wfRestore=()=>{text.value=entry.text;};
           text.wfSave=()=>mutateReason(stage,'PUT',entry.id,text.value,text);
           if(results[i].can_manage)row.append(button('Save reason',()=>mutateReason(stage,'PUT',entry.id,text.value,text)),button('Delete reason',()=>mutateReason(stage,'DELETE',entry.id,undefined,text)));
           host.append(row);
         }
-        if(results[i].can_manage){const text=el('input',{class:'input',maxlength:'2000',placeholder:T('New reusable reason'),'aria-label':T('New reusable reason'),'data-wf-placeholder':'New reusable reason',translate:'no'});text.addEventListener('input',()=>editLibrary(text));text.wfSave=()=>mutateReason(stage,'POST',null,text.value,text);host.append(text,button('Add reason',()=>mutateReason(stage,'POST',null,text.value,text)));}
+        if(results[i].can_manage){const text=el('input',{class:'input',maxlength:'2000',placeholder:T('New reusable reason'),'aria-label':T('New reusable reason'),'data-wf-placeholder':'New reusable reason',translate:'no'});trackLibrary(text);text.wfRestore=()=>{text.value='';};text.addEventListener('input',()=>editLibrary(text));text.wfSave=()=>mutateReason(stage,'POST',null,text.value,text);host.append(text,button('Add reason',()=>mutateReason(stage,'POST',null,text.value,text)));}
       });
     }
     W.decorateReasons('screen'); W.decorateReasons('fulltext');
   }
-  function mutateReason(stage,method,id,text,field=null) {return run(async()=>{if(method!=='DELETE'&&(!text?.trim()||text.trim().length>2000))throw Error(T('A reason must contain 1–2000 characters.'));await api(taskApi()+'/reason-library'+(id?'/'+encodeURIComponent(id):'')+'?stage='+stage,{method,body:method==='DELETE'?undefined:{text:text.trim(),stage}});if(!field||method==='DELETE'||field.value.trim()===text.trim()){cleanLibrary(field);if(field&&method==='POST')field.value='';}await loadReasons();return !field||!dirtyFields.has(field);});}
+  function mutateReason(stage,method,id,text,field=null) {return run(async()=>{if(method!=='DELETE'&&(!text?.trim()||text.trim().length>2000))throw Error(T('A reason must contain 1–2000 characters.'));await api(taskApi()+'/reason-library'+(id?'/'+encodeURIComponent(id):'')+'?stage='+stage,{method,body:method==='DELETE'?undefined:{text:text.trim(),stage}});if(!field||method==='DELETE'||field.value.trim()===text.trim()){if(field&&method==='POST')field.value='';cleanLibrary(field);}await loadReasons();return !field||!dirtyFields.has(field);});}
   W.decorateReasons=stage=>{
     const select=$(stage==='screen'?'#excReason':'#ftReason'),custom=$(stage==='screen'?'#excCustomReason':'#ftCustomReason');if(!select)return;
     const value=select.value;
@@ -306,7 +322,7 @@
     page.insertBefore(host,page.querySelector('.al-mode')||page.children[1]||null);
     return host;
   }
-  W.clearRecovery=()=>{if(!W.anyDirty()){$('#wf-policy-recovery').hidden=true;$('#wf-settings-notice').textContent='';}};
+  W.clearRecovery=()=>{if(!policyDraftDirty()){$('#wf-policy-recovery').hidden=true;$('#wf-settings-notice').textContent='';}};
   W.queue=async(stage,{url=null,evidenceOnly=false,attempt=0}={})=>{
     const requested=scope();
     if(!autoReload)await W.refresh('entry',false);
@@ -403,14 +419,17 @@
     const current=scope(),ticket=++refreshTicket,revision=editRevision,page=S.page;
     const result=await api(taskApi()+'/workflow-settings');
     if(current!==scope()||ticket!==refreshTicket||(settings&&result.version<settings.version))return;
-    pendingPolicyRefresh=!!(pendingPolicyRefresh||(settings&&JSON.stringify(settings)!==JSON.stringify(result)));
+    const policyChanged=!!settings&&policySignature(settings)!==policySignature(result);
+    pendingPolicyReview=pendingPolicyReview||policyChanged;
+    pendingPolicyRefresh=!!(pendingPolicyRefresh||policyChanged||(settings&&(settings.version!==result.version||JSON.stringify(settings.screening_round_marker)!==JSON.stringify(result.screening_round_marker))));
     const changed=pendingPolicyRefresh;
+    if(draft&&!policyChanged)draft.version=result.version;
     settings=result;
     for(const [stage,id] of [['screen','btnMay'],['fulltext','ftMay']]){const maybe=$('#'+id);if(maybe){maybe.hidden=!W.maybe(stage);if(!W.maybe(stage))maybe.disabled=true;}}
     for(const [stage,ids] of [['screen',['btnInc','btnMay','btnExc']],['fulltext',['ftInc','ftMay','ftExc']]])if(result.stages[stage].mode==='paused')for(const id of ids){const control=$('#'+id);if(control)control.disabled=true;}
-    const dirty=W.anyDirty();
-    $('#wf-settings-notice').textContent=changed&&dirty?T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'):'';
-    if(changed&&dirty||reason==='conflict')$('#wf-policy-recovery').hidden=false;
+    W.anyDirty(); // Refresh value-based dirty flags before rendering the policy.
+    $('#wf-settings-notice').textContent=pendingPolicyReview&&policyDraftDirty()?T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'):'';
+    if(pendingPolicyReview&&policyDraftDirty())$('#wf-policy-recovery').hidden=false;else W.clearRecovery();
     if(!W.settingsDirty())policyEditor();
     await loadReasons(ticket); // Libraries can change without a policy version increment.
     if(current!==scope()||ticket!==refreshTicket)return;
@@ -452,8 +471,50 @@
     dialogPromise=new Promise(resolve=>{
       const dialog=n('dialog',null,{class:'wf-dirty-dialog','aria-label':T('Unsaved changes')});
       dialog.append(n('h3','Unsaved changes'),n('p','Save your changes, discard them, or stay here.'));
+      // Hidden home settings must be editable where the user is asked to save.
+      const editors=[];
+      const validationMessage=n('p',null,{class:'wf-draft-error',role:'alert',id:'wf-guard-validation',hidden:true});
+      function bindEditor(field,input,validateReason=false){
+        input.id='wf-guard-field-'+editors.length;input.removeAttribute('name');input.value=field.value;input.checked=field.checked;
+        input.setAttribute('aria-describedby','wf-guard-validation');
+        const sync=()=>{field.value=input.value;if(input.type==='checkbox')field.checked=input.checked;field.dispatchEvent(new Event('input',{bubbles:true}));field.dispatchEvent(new Event('change',{bubbles:true}));input.setCustomValidity('');validationMessage.hidden=true;};
+        input.addEventListener('input',sync);input.addEventListener('change',sync);editors.push({input,validateReason});
+      }
+      function addEditor(field,host,validateReason=false){
+        const input=field.cloneNode(true),label=el('label',{class:'wf-draft-field'});
+        label.append(literal('span',field.id?document.querySelector('label[for="'+field.id+'"]')?.textContent||field.getAttribute('aria-label'):field.getAttribute('aria-label')||field.placeholder),input);host.append(label);
+        bindEditor(field,input,validateReason);
+      }
+      if(settingsDirty){
+        const fields=n('fieldset',null,{class:'wf-draft-fields wf-draft-policy'});fields.append(n('legend','Task workflow'));
+        const decisions=settings.task_kind==='personal'?'#wf-personal-maybe':'#wf-team-decisions';
+        for(const selector of ['#wf-policy',decisions,'#wf-requirements']){
+          const original=$(selector),copy=original.cloneNode(true);copy.removeAttribute('id');copy.hidden=false;
+          const originals=original.querySelectorAll('input,select'),copies=copy.querySelectorAll('input,select');copies.forEach((input,index)=>bindEditor(originals[index],input));
+          for(const stage of copy.querySelectorAll('.wf-policy-stage')){const mode=stage.querySelector('select'),sources=stage.querySelector('.wf-source-checks');mode.addEventListener('change',()=>sources.hidden=mode.value!=='selected');}
+          fields.append(copy);
+        }
+        dialog.append(fields);
+      }
+      if(alDirty){const fields=n('fieldset',null,{class:'wf-draft-fields'});fields.append(n('legend','Machine Learning'));for(const id of alIds)addEditor($('#'+id),fields);dialog.append(fields);}
+      if(libraryDirty)for(const sourceFields of [true,false]){
+        const pending=[...dirtyFields].filter(field=>!!field.wfControls===sourceFields);if(!pending.length)continue;
+        const fields=n('fieldset',null,{class:'wf-draft-fields'});fields.append(n('legend',sourceFields?'Imported sources':'Reusable exclusion reasons'));
+        for(const field of pending){if(sourceFields){for(const control of field.wfControls){addEditor(control,fields);fields.lastElementChild.firstElementChild.textContent=T('Source type')+' · '+field.value;}}else addEditor(field,fields,true);}dialog.append(fields);
+      }
+      dialog.append(validationMessage);
       const finish=value=>{dialog.close();dialog.remove();dialogPromise=null;resolve(value);};
       dialog.append(button('Save',()=>run(async()=>{
+        if(!W.anyDirty()){finish(true);return;}
+        for(const {input,validateReason} of editors){
+          if(validateReason&&(!input.value.trim()||input.value.trim().length>2000))input.setCustomValidity(T('A reason must contain 1–2000 characters.'));
+          if(!input.checkValidity()){
+            const label=input.closest('label')?.querySelector('span')?.textContent||input.getAttribute('aria-label')||'';
+            validationMessage.textContent=label+'：'+(input.type==='number'?T('Enter an integer from {0} to {1}.',input.min,input.max):input.validationMessage);validationMessage.hidden=false;input.focus();return;
+          }
+        }
+        const controls=[...dialog.querySelectorAll('button')];controls.forEach(control=>control.disabled=true);
+        try{
         if(W.decisionDirty()){toast(T('Choose a screening decision to save this reason before leaving.'),'warn');return;}
         if(settingsDirty&&!await W.saveSettings())return;
         for(const field of [...dirtyFields])if(!field.wfSave||!await field.wfSave())return;
@@ -461,8 +522,9 @@
         if(window.WorkflowEvidence?.dirty()&&!await WorkflowEvidence.save())return;
         if(window.WorkflowExtraction?.dirty()&&!await WorkflowExtraction.save())return;
         finish(true);
-      })),button('Discard',()=>{settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);policyEditor();finish(true);}),button('Stay',()=>finish(false)));
-      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});document.body.append(dialog);dialog.showModal();
+        }finally{controls.forEach(control=>control.disabled=false);}
+      })),button('Discard',()=>{settingsDirty=false;for(const field of dirtyFields)field.wfRestore?.();libraryDirty=false;dirtyFields.clear();if(alBaseline)for(const id of alIds)$('#'+id).value=alBaseline[id];alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);draftBaseline=null;policyEditor();W.clearRecovery();finish(true);}),button('Stay',()=>finish(false)));
+      dialog.addEventListener('cancel',event=>{event.preventDefault();if(dialog.querySelector('button')?.disabled)return;finish(false);});document.body.append(dialog);dialog.showModal();
     });
     return dialogPromise;
   };
@@ -475,10 +537,11 @@
   $('#alModeAI').after(random,button('Shuffle remaining again',()=>run(async()=>{if(!await W.guard())return;const q=selected.screen?'?source_id='+encodeURIComponent(selected.screen):'';await api(taskApi()+'/work-queue/screen/shuffle'+q,{method:'POST'});order='random';S.al.mode='import';await loadScreen();})));
   $('#alModeAI').querySelector('span').textContent=T('Machine Learning');
   $('#alModeImport').querySelector('span').textContent=T('Import');
-  for(const id of ['alStrategy','alSeed','alMinLabeled','alStopThreshold'])$('#'+id).addEventListener('input',()=>alDirty=true);
-  document.addEventListener('reviewflow:al-settings-saved',()=>alDirty=false);
+  alBaseline=alValues();
+  for(const id of alIds)for(const event of ['input','change'])$('#'+id).addEventListener(event,syncALDirty);
+  for(const event of ['reviewflow:al-settings-loaded','reviewflow:al-settings-saved'])document.addEventListener(event,e=>{alBaseline=e.detail?.values||alValues();syncALDirty();});
   document.addEventListener('reviewflow:task-context-changed',()=>{
-    if(context===scope())return;context=scope();refreshTicket++;for(const stage of stages){tickets[stage]++;selected[stage]='';delete items[stage];delete queues[stage];delete decisionBaselines[stage];}settings=null;draft=null;policyFlight=null;pendingPolicyRefresh=false;settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;$('#wf-policy-recovery').hidden=true;
+    if(context===scope())return;context=scope();refreshTicket++;for(const stage of stages){tickets[stage]++;selected[stage]='';delete items[stage];delete queues[stage];delete decisionBaselines[stage];}settings=null;draft=null;draftBaseline=null;alBaseline=alValues();policyFlight=null;pendingPolicyRefresh=false;pendingPolicyReview=false;settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;$('#wf-policy-recovery').hidden=true;
     for(const id of ['scrBody','scrHist','scrHistCounts','scrPos','ftDocTitle','ftDocLabel','ftDocChip','cbTitle','cbForms','cbLabel','cbStatus','cbSaveProg','capScreen','capFull','capCode','annList'])document.getElementById(id)?.replaceChildren();
     for(const id of ['wf-current-task','wf-policy','wf-personal-maybe','wf-reasons','wf-requirements','wf-sources'])document.getElementById(id)?.replaceChildren(n('p','Loading scope…'));
     for(const id of ['barScreen','barFull','barCode']){const bar=document.getElementById(id);if(bar)bar.style.width='0%';}

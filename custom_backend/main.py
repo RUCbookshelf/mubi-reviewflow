@@ -787,8 +787,10 @@ class ALSettingsIn(BaseModel):
 
     strategy: str | None = Field(default=None, pattern="^(max|uncertainty|mixed)$")
     seed: int | None = Field(default=None, ge=-(2**31), le=2**31)
-    min_labeled: int | None = Field(default=None, ge=1, le=1000)
+    # Retain the old request field for compatibility; the server default governs training.
+    min_labeled: int | None = Field(default=None, ge=1, le=1000, description="Legacy field; ignored. Training uses the system default.")
     stop_threshold: int | None = Field(default=None, ge=0, le=10000)
+    reorder_interval: int | None = Field(default=None, ge=1, le=1000, strict=True)
 
 
 class PrismaGenerateIn(BaseModel):
@@ -1862,6 +1864,31 @@ def stage2_queue_ep(task_id: str, screener: str | None = None,
 _AL_STRATEGIES = ("max", "uncertainty", "mixed")
 
 
+def _al_actor(screener, user):
+    if screener and screener != user["username"]:
+        raise HTTPException(403, "Machine Learning settings and labels are personal.")
+    return user["username"]
+
+
+def _save_al_settings(info, screener, settings):
+    path = _al_settings_path(info, screener)
+    fd, temp_name = tempfile.mkstemp(prefix="al-settings-", suffix=".json", dir=info.dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(settings, stream, ensure_ascii=False, indent=2)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+
+
+def _personal_al_profile(info, screener):
+    stored = _load_al_settings(info, screener).get("profile")
+    if stored is not None: return stored
+    # Old task-wide preferences apply only to the verified owner until saved personally.
+    owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
+    return _task_al_profile(info) if owner and owner["owner_username"] == screener else None
+
+
 def _al_settings_path(info: tasks_mod.TaskInfo, screener: str) -> Path:
     """任务 + 筛选员 -> ``{task_dir}/al_settings_{slug}.json``（白名单校验）。"""
     slug = tasks_mod.slugify_screener(screener)
@@ -1878,6 +1905,7 @@ def _load_al_settings(info: tasks_mod.TaskInfo, screener: str) -> dict:
         "seed": int(config.AL_SEED),
         "min_labeled": int(config.AL_MIN_LABELED),
         "stop_threshold": int(config.AL_STOP_STREAK_EXCLUDE),
+        "reorder_interval": int(config.AL_REORDER_INTERVAL),
     }
     path = _al_settings_path(info, screener)
     if path.exists():
@@ -1886,16 +1914,18 @@ def _load_al_settings(info: tasks_mod.TaskInfo, screener: str) -> dict:
         except (OSError, ValueError):
             stored = None
         if isinstance(stored, dict):
+            if stored.get("profile") in {"legacy", "tuned", "cjk", "svm"}:
+                settings["profile"] = stored["profile"]
             if stored.get("strategy") in _AL_STRATEGIES:
                 settings["strategy"] = stored["strategy"]
             try:
                 settings["seed"] = int(stored["seed"])
             except (KeyError, TypeError, ValueError):
                 pass
-            try:
-                settings["min_labeled"] = max(1, int(stored["min_labeled"]))
-            except (KeyError, TypeError, ValueError):
-                pass
+            # Training readiness is system-managed, including for legacy tasks.
+            interval = stored.get("reorder_interval")
+            if type(interval) is int and 1 <= interval <= 1000:
+                settings["reorder_interval"] = interval
             try:
                 settings["stop_threshold"] = max(0, int(stored["stop_threshold"]))
             except (KeyError, TypeError, ValueError):
@@ -1927,7 +1957,7 @@ def al_rank(task_id: str, screener: str | None = None,
             user: dict = Depends(require_user)) -> dict:
     """对当前筛选员的待筛队列做主动学习重排（复用 coscreen.al 全套实现）。"""
     info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
+    screener_name = _al_actor(screener, user)
     db = _screener_db(info, screener_name)
     settings = _load_al_settings(info, screener_name)
     articles = db_mod.list_articles(db, include_duplicates=False)
@@ -1935,7 +1965,7 @@ def al_rank(task_id: str, screener: str | None = None,
         r["zotero_key"]: r["decision"] for r in db_mod.list_decisions(db)
     }
     stop_suggestion = _al_stop_payload(db, settings["stop_threshold"])
-    profile = _task_al_profile(info)
+    profile = _personal_al_profile(info, screener_name)
     if profile is not None:
         from coscreen.al.profiles import PROFILES
 
@@ -1952,6 +1982,7 @@ def al_rank(task_id: str, screener: str | None = None,
         return {
             "available": False,
             "reason": "not_enough_labels",
+            "reorder_interval": settings["reorder_interval"],
             "n_labeled": _al_n_labeled(db),
             "min_labeled": int(settings["min_labeled"]),
             "strategy": settings["strategy"],
@@ -1966,6 +1997,7 @@ def al_rank(task_id: str, screener: str | None = None,
     return {
         "available": True,
         "n_labeled": result.n_labeled,
+        "reorder_interval": settings["reorder_interval"],
         "min_labeled": int(settings["min_labeled"]),
         "strategy": result.strategy,
         "seed": result.seed,
@@ -1979,7 +2011,7 @@ def al_status(task_id: str, screener: str | None = None,
               user: dict = Depends(require_user)) -> dict:
     """轻量状态：标签数是否够训练 + 当前连续排除数与停止建议。"""
     info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
+    screener_name = _al_actor(screener, user)
     db = _screener_db(info, screener_name)
     settings = _load_al_settings(info, screener_name)
     stop = _al_stop_payload(db, settings["stop_threshold"])
@@ -1997,7 +2029,7 @@ def al_status(task_id: str, screener: str | None = None,
 def al_get_settings(task_id: str, screener: str | None = None,
                     user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
-    return _load_al_settings(info, screener or user["username"])
+    return _load_al_settings(info, _al_actor(screener, user))
 
 
 @app.put("/api/tasks/{task_id}/al/settings")
@@ -2006,14 +2038,13 @@ def al_update_settings(task_id: str, body: ALSettingsIn,
                        user: dict = Depends(require_user)) -> dict:
     """更新 AL 设置（按任务 + 筛选员存 JSON；未提供的字段保留原值）。"""
     info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
+    screener_name = _al_actor(screener, user)
     path = _al_settings_path(info, screener_name)
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    settings = _load_al_settings(info, screener_name)
-    settings.update(updates)
-    path.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    updates = {k: v for k, v in body.model_dump(exclude={"min_labeled"}).items() if v is not None}
+    with tasks_mod._task_json_lock(info.dir):
+        settings = _load_al_settings(info, screener_name)
+        settings.update(updates)
+        _save_al_settings(info, screener_name, settings)
     return settings
 
 
@@ -4629,6 +4660,9 @@ register_review_import_routes(app, require_user, parse_upload=_parse_upload_to_a
 
 register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
 
+from custom_backend.report_evidence_api import register_report_evidence_routes
+register_report_evidence_routes(app, require_user)
+
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
     ("research_trace_api", "register_research_trace_routes",
@@ -5223,7 +5257,7 @@ def get_al_profiles(task_id: str, user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     return {
         "default": DEFAULT_PROFILE,
-        "al_profile": _task_al_profile(info),
+        "al_profile": _personal_al_profile(info, user["username"]),
         "profiles": {
             name: {"name": p.name, "label": p.label, "description": p.description}
             for name, p in PROFILES.items()
@@ -5247,14 +5281,11 @@ def set_al_profile(task_id: str, body: ALProfileSetIn,
     profile = PROFILES.get(body.profile)
     if profile is None:  # 双保险：Literal 已挡未知名，防 PROFILES 未来漂移
         raise _bad(f"未知的模型预设：{body.profile}", 422)
-    # 读-改-写保留 task.json 既有字段（protocol/screeners/...），仅设置
-    # "al_profile"；与 _mutate_task 同一把路径级互斥锁，避免并发覆盖。
-    with tasks_mod._task_json_lock(info.dir):  # noqa: SLF001  与 _mutate_task 同一把锁
-        raw = tasks_mod._read_task_json(info.dir)  # noqa: SLF001
-        if not raw:
-            raise _bad("任务描述文件已损坏，无法保存模型预设。", 409)
-        raw["al_profile"] = body.profile
-        tasks_mod._write_task_json(info.dir, raw)  # noqa: SLF001  原子写
+    if info.degraded: raise HTTPException(409, "Task is read only.")
+    with tasks_mod._task_json_lock(info.dir):
+        settings = _load_al_settings(info, user["username"])
+        settings["profile"] = body.profile
+        _save_al_settings(info, user["username"], settings)
     return {"al_profile": profile.name, "label": profile.label}
 
 
@@ -5369,7 +5400,12 @@ def get_shared_ranking(
     from coscreen.al.profiles import PROFILES
 
     info = _task_or_404(task_id)
-    screener_name = screener or user["username"]
+    ctx = app.state.review_workflow.context(task_id, user)
+    if not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=task_id):
+        raise HTTPException(403, "Shared ranking requires an adjudicator.")
+    if ctx.task_kind == "team" and any(v["mode"] != "paused" for v in app.state.review_workflow.settings(ctx)["stages"].values()):
+        raise HTTPException(409, "Shared labels cannot be used during independent screening.")
+    screener_name = _al_actor(screener, user)
     db = _screener_db(info, screener_name)
     settings = _load_al_settings(info, screener_name)
     stop_suggestion = _al_stop_payload(db, settings["stop_threshold"])
@@ -5402,7 +5438,7 @@ def get_shared_ranking(
 
     # 2. 任务级模型预设（用户显式设置才生效；被篡改成未知名时显式 409，
     #    不静默回落——§0.4 第 4 条）
-    profile = _task_al_profile(info)
+    profile = _personal_al_profile(info, screener_name)
     if profile is not None and profile not in PROFILES:
         raise _bad(f"任务保存的 AI 模型预设无效：{profile}", 409)
 
@@ -5550,7 +5586,7 @@ def _lr_ranker_for_task(info: tasks_mod.TaskInfo, screener: str) -> ActiveLearni
     from coscreen.al.profiles import PROFILES
 
     settings = _load_al_settings(info, screener)
-    profile = _task_al_profile(info)
+    profile = _personal_al_profile(info, screener)
     if profile is not None and profile not in PROFILES:
         raise _bad(f"任务保存的 AI 模型预设无效：{profile}", 409)
     return ActiveLearningRanker(

@@ -5,7 +5,7 @@
  *     响应的 default 字段）；选项文案/描述来自后端 profiles.py，经 T() 走字典。
  *   - 切换时必须弹确认框：「切换模型将重置 机器学习排序，已有的筛选标签不受影响。」
  *     （§10 不变量 6：模型切换不得静默变更）；取消则回退下拉框、不发请求。
- *   - 确认后 PUT /api/tasks/{id}/al/profile（W11 路由，写 task.json 的 al_profile）。
+ *   - 确认后 PUT /api/tasks/{id}/al/profile（W11 路由，按登录成员保存 al_profile）。
  *
  * 事件接入（追加式，不改任何既有脚本）：
  *   - reviewflow:task-loaded：规格 §7.1 指定的事件名（主应用将来分发时即生效）；
@@ -89,8 +89,9 @@
     function onTask(detail) {
       const taskId = (typeof S !== 'undefined' && S.task) ? S.task.task_id : (detail || null);
       if (!taskId || (typeof S !== 'undefined' && !S.task)) { version++; current = null; profiles = {}; placeholder = '请先选择任务'; disable(true); handledTaskId = null; renderOptions(); return; }
-      if (handledTaskId === taskId) return;   // 同一任务重复事件：保留会话内选择
-      handledTaskId = taskId;
+      const actorTaskKey=taskId+'|'+S.user?.user_id;
+      if (handledTaskId === actorTaskKey) return;   // 同一任务重复事件：保留会话内选择
+      handledTaskId = actorTaskKey;
       current = null;
       S.al.profileLabel = '';
       renderALChrome();

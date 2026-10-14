@@ -6,7 +6,9 @@
   <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
 </div>
 
-**2.1.2:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.2) · [更新说明 / Release notes](RELEASE_NOTES.md)
+**2.1.3:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.3) · [更新说明 / Release notes](RELEASE_NOTES.md)
+
+2.1.3 使用引导：[导入文献](docs/IMPORT_LITERATURE_USER_GUIDE.zh-CN.md) · [报告关联与证据](docs/REPORT_LINKS_AND_EVIDENCE.zh-CN.md)。机器学习设置及排序更新间隔按成员保存。
 
 ## 中文
 

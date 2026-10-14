@@ -1085,7 +1085,7 @@ def snapshot_cutoff(conn: sqlite3.Connection, task_id: str, actor_id: str | int)
 _RESEARCH_ACTION_SQL = (
     "(action LIKE 'decision_%' OR action LIKE 'coding_value_%' OR action LIKE 'coding_note_%' "
     "OR action LIKE 'coding_image_%' OR action LIKE 'coding_note_image_%' "
-    "OR action LIKE 'rater_record_%' OR action LIKE 'fulltext_%' OR action LIKE 'imported_decision_%' "
+    "OR action LIKE 'rater_record_%' OR action LIKE 'fulltext_%' OR action LIKE 'report_evidence_%' OR action LIKE 'imported_decision_%' "
     "OR action LIKE 'imported_fulltext_%' "
     "OR action LIKE 'imported_coding_value_%' OR action LIKE 'imported_coding_note_%' "
     "OR action LIKE 'imported_coding_image_%' OR action LIKE 'imported_coding_note_image_%' "

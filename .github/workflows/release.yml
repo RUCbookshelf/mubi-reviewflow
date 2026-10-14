@@ -68,10 +68,12 @@ jobs:
           else
             cp build/dist/${{ matrix.artifact }} release-assets/
           fi
+      - name: Verify versioned application payload
+        run: python build/verify_release_payload.py ${{ matrix.command }}
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}
-          path: release-assets/${{ matrix.artifact }}
+          path: release-assets/*
           if-no-files-found: error
           retention-days: 7
 

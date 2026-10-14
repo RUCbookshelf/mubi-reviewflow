@@ -426,6 +426,7 @@ def register_review_import_routes(app, require_user, **dependencies):
             rows = projection[view]
             result['records'] = [present_record(conn,r,projection['classification'][r['id']]) for r in rows[offset:offset+limit]]
             result['review_counts'] = projection['review_counts']
+            result['policy_version'] = conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
             result['view'] = view
             result['view_total'] = len(rows)
             result['next_offset'] = offset+limit if offset+limit<len(rows) else None
