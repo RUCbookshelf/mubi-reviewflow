@@ -57,7 +57,7 @@ fs.mkdirSync(artifacts,{recursive:true});
  });
  await check('Empty, decimal and oversized fields stop before any API write',async()=>{
   const {page,state}=await fixture();await page.locator('#alStopThreshold').fill('11');await page.evaluate(()=>WorkflowControls.homeTab('overview'));await navigate(page);await dialog(page).waitFor({state:'visible'});
-  const min=dialog(page).locator('input[max="10000"]'),seed=dialog(page).locator('input[max="2147483648"]'),stop=dialog(page).locator('input[max="10000"]');
+  const min=dialog(page).locator('input[max="10000"]'),seed=dialog(page).locator('input[max="2147483647"]'),stop=dialog(page).locator('input[max="10000"]');
   for(const [field,value]of[[min,''],[min,'5.5'],[min,'-1'],[seed,'2147483649'],[stop,'10001']]){await min.fill('11');await seed.fill('42');await stop.fill('10');await field.fill(value);await save(page).click();assert.equal(state.puts.length,0);assert.equal(await dialog(page).count(),1);}await close(page);
  });
  await check('Valid dialog settings save and finish navigation',async()=>{
