@@ -23,6 +23,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from coscreen import research_trace, task_collaboration, review_workflow
 
 LIMIT = 2_000_000
+# 轨迹写入预算：单条事件增量载荷超过前者、或单次保存累计超过后者时，降级为摘要+哈希，
+# 避免大工作区保存造成轨迹写放大并把导出推过 32MB 上限（摘要契约见 REPORT_LINKS_AND_EVIDENCE 文档）。
+TRACE_EVENT_BYTES_LIMIT = 850_000
+TRACE_SAVE_BYTES_LIMIT = 2_000_000
+# 单次保存按受影响主体记录事件的上限；超出部分补一条显式截断标记，不再静默丢弃。
+TRACE_SUBJECT_LIMIT = 100
+TRACE_STAGES = ("screen", "fulltext", "coding")
 DEFAULT = {"links": [], "drafts": [], "method": "jbi", "review": "quant",
            "interpretations": {}, "confidence": {}, "duplicatePairs": {},
            "question": {}, "appraisals": {}, "appraisalTool": "jbi", "analysisChoices": {}}
@@ -47,13 +54,18 @@ class RelationIn(UndoIn):
     actor_id: str = Field(min_length=1, max_length=100, pattern=r"^[1-9][0-9]*$")
     link_id: str = Field(min_length=1, max_length=100)
     action: Literal["confirm", "unlink"]
+    # 可选：该次裁决动作归属的轨迹阶段；缺省 coding，并随共享撤销栈记录，供撤销复用。
+    stage: Literal["screen", "fulltext", "coding"] = "coding"
 
 
 def connect(path):
     c = sqlite3.connect(path, timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA busy_timeout=15000")
-    c.execute("CREATE TABLE IF NOT EXISTS report_evidence_state (actor TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL, previous TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS report_evidence_state (actor TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL, previous TEXT, previous_stage TEXT)")
+    # 旧库迁移：为撤销栈补记保存时的轨迹阶段，使撤销事件与对应保存落在同一阶段。
+    if "previous_stage" not in {r[1] for r in c.execute("PRAGMA table_info(report_evidence_state)")}:
+        c.execute("ALTER TABLE report_evidence_state ADD COLUMN previous_stage TEXT")
     c.execute("CREATE TABLE IF NOT EXISTS report_evidence_requests (actor TEXT, operation TEXT, digest TEXT NOT NULL, PRIMARY KEY(actor,operation))")
     c.commit()
     return c
@@ -188,26 +200,107 @@ def register_report_evidence_routes(app, require_user):
         if shared and policy[0] and any(v["mode"] != "paused" for v in json.loads(policy[1]).values()):
             raise HTTPException(409, "Independent stages resumed; relationship adjudication is paused.")
 
-    def trace(c, ctx, actor, label, before, after, stage="coding"):
+    def trace(c, ctx, actor, label, before, after, stage="coding", shared=False):
+        """按受影响主体只记录增量条目，替代旧版每事件内嵌完整工作区快照。
+
+        单条事件增量超过 TRACE_EVENT_BYTES_LIMIT、或单次保存累计超过
+        TRACE_SAVE_BYTES_LIMIT 时，降级为摘要+哈希（保持既有文档契约：
+        大工作区轨迹保存摘要与哈希，完整内容通过 JSON 导出检查）。
+        超过 TRACE_SUBJECT_LIMIT 个受影响主体时补一条显式截断标记事件。
+        共享工作区轨迹只记录与该主体相关的条目，且对非本人提案的私有文本
+        （依据/位置）只保留哈希摘要，不把其他成员的个人证据写入裁决人轨迹。
+        """
         tc = research_trace.TraceContext(ctx.info.task_id, actor, source="report_evidence")
         research_trace.ensure_default_recording(c, tc)
-        def bounded_state(value):
-            encoded = json.dumps(value, ensure_ascii=False).encode()
-            if len(encoded) < 850000: return {"value": label, "workspace": value}
-            return {"value": label, "workspace_sha256": hashlib.sha256(encoded).hexdigest(),
-                    "links": len(value.get("links", [])), "findings": len(value.get("drafts", [])),
-                    "note": "Large workspace: export JSON to inspect current details."}
-        changed_keys = set()
+
+        def entry_subjects(entry):
+            return {entry[k] for k in ("a", "b", "key") if k in entry} if entry else set()
+
+        def redact_entry(entry):
+            # 仅共享轨迹脱敏：非本人提案的 evidence/locator 不入库，导出自然不可见。
+            if not shared or str(entry.get("actor_id", actor)) == str(actor):
+                return entry
+            cleaned = dict(entry)
+            for field in ("evidence", "locator"):
+                text = cleaned.get(field)
+                if isinstance(text, str) and text:
+                    cleaned[field] = {"redacted": "other_member_private_text",
+                                      "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                                      "length": len(text)}
+            return cleaned
+
+        # 每个受影响主体只携带自己的 links/drafts 增量条目（删除/修改进 before，新增/修改进 after）。
+        deltas = {}
         for field in ("links", "drafts"):
             old = {x["id"]: x for x in before.get(field, [])}
             new = {x["id"]: x for x in after.get(field, [])}
             for entry_id in set(old) | set(new):
-                if old.get(entry_id) == new.get(entry_id): continue
-                for entry in (old.get(entry_id), new.get(entry_id)):
-                    if entry:
-                        changed_keys.update(entry[k] for k in ("a", "b", "key") if k in entry)
-        for subject in sorted(changed_keys)[:100] or ["report-evidence"]:
-            research_trace.capture_event(c, tc, stage=stage, action="report_evidence_changed", subject_id=subject, before=bounded_state(before), after=bounded_state(after))
+                old_entry, new_entry = old.get(entry_id), new.get(entry_id)
+                if old_entry == new_entry:
+                    continue
+                for subject in entry_subjects(old_entry) | entry_subjects(new_entry):
+                    pair = deltas.setdefault(subject, ({"links": [], "drafts": []}, {"links": [], "drafts": []}))
+                    if old_entry:
+                        pair[0][field].append(redact_entry(old_entry))
+                    if new_entry:
+                        pair[1][field].append(redact_entry(new_entry))
+
+        # 非条目字段（方法/评价/置信度等工作区映射与标量）记录到通用主体的增量里。
+        map_before, map_after = {}, {}
+        for name in ("review", "method", "appraisalTool", "interpretations", "confidence",
+                     "duplicatePairs", "question", "appraisals", "analysisChoices"):
+            old_value, new_value = before.get(name), after.get(name)
+            if old_value == new_value:
+                continue
+            if isinstance(old_value, dict) and isinstance(new_value, dict):
+                for key in set(old_value) | set(new_value):
+                    if old_value.get(key) == new_value.get(key):
+                        continue
+                    map_before.setdefault(name, {})[str(key)] = old_value.get(key)
+                    map_after.setdefault(name, {})[str(key)] = new_value.get(key)
+            else:
+                map_before[name] = old_value
+                map_after[name] = new_value
+
+        digest_cache = {}
+
+        def digest_state(side):
+            if side not in digest_cache:
+                value = after if side == "after" else before
+                encoded = json.dumps(value, ensure_ascii=False).encode()
+                digest_cache[side] = {"value": label, "workspace_sha256": hashlib.sha256(encoded).hexdigest(),
+                                      "links": len(value.get("links", [])), "findings": len(value.get("drafts", [])),
+                                      "note": "Large workspace: export JSON to inspect current details."}
+            return digest_cache[side]
+
+        budget = 0
+
+        def emit(subject, before_payload, after_payload):
+            nonlocal budget
+            size = (len(json.dumps(before_payload, ensure_ascii=False).encode())
+                    + len(json.dumps(after_payload, ensure_ascii=False).encode()))
+            if size > TRACE_EVENT_BYTES_LIMIT or budget + size > TRACE_SAVE_BYTES_LIMIT:
+                before_payload, after_payload = digest_state("before"), digest_state("after")
+                size = (len(json.dumps(before_payload, ensure_ascii=False).encode())
+                        + len(json.dumps(after_payload, ensure_ascii=False).encode()))
+            budget += size
+            research_trace.capture_event(c, tc, stage=stage, action="report_evidence_changed",
+                                         subject_id=subject, before=before_payload, after=after_payload)
+
+        subjects = sorted(deltas)
+        for subject in subjects[:TRACE_SUBJECT_LIMIT]:
+            before_entries, after_entries = deltas[subject]
+            emit(subject, {"value": label, "changes": before_entries}, {"value": label, "changes": after_entries})
+        if map_before or map_after:
+            emit("report-evidence", {"value": label, "changes": map_before}, {"value": label, "changes": map_after})
+        if len(subjects) > TRACE_SUBJECT_LIMIT:
+            # 显式截断标记：不再静默丢弃第 101 位及之后的受影响主体。
+            research_trace.capture_event(
+                c, tc, stage=stage, action="report_evidence_truncated", subject_id="report-evidence", before=None,
+                after={"value": label, "total_subjects": len(subjects),
+                       "truncated_subjects": len(subjects) - TRACE_SUBJECT_LIMIT,
+                       "note": f"Only the first {TRACE_SUBJECT_LIMIT} affected subjects are traced; "
+                               f"{len(subjects) - TRACE_SUBJECT_LIMIT} more changed subjects are omitted."})
 
     @app.get("/api/tasks/{task_id}/report-evidence")
     def get_state(task_id: str, catalogue: bool = Query(False), user: dict = Depends(require_user)):
@@ -234,7 +327,7 @@ def register_report_evidence_routes(app, require_user):
             revision, before, _ = read(c, actor)
             if revision != body.expected_revision: raise HTTPException(409, "Evidence changed in another window. Reload before saving.")
             trace(c, ctx, actor, body.label, before, state, body.stage)
-            c.execute("INSERT INTO report_evidence_state VALUES(?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous", (actor, revision + 1, encoded, json.dumps(before)))
+            c.execute("INSERT INTO report_evidence_state VALUES(?,?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (actor, revision + 1, encoded, json.dumps(before), body.stage))
             c.execute("INSERT INTO report_evidence_requests VALUES(?,?,?)", (actor, str(body.operation_id), digest))
             return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
@@ -246,12 +339,14 @@ def register_report_evidence_routes(app, require_user):
             c.execute("BEGIN IMMEDIATE")
             fresh_permission(c, ctx, user, shared=False)
             revision, before, _ = read(c, actor)
-            row = c.execute("SELECT previous FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
+            row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
             if revision != body.expected_revision: raise HTTPException(409, "Evidence changed. Reload before undo.")
             if not row or not row[0]: raise HTTPException(409, "No personal change is available to undo.")
             restored = validate(json.loads(row[0]), {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")})
-            trace(c, ctx, actor, "撤销报告关联与证据变更", before, restored)
-            c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL WHERE actor=?", (revision + 1, json.dumps(restored), actor))
+            # 撤销与对应保存使用同一轨迹阶段，避免阶段收窄后撤销事件被静默过滤。
+            undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
+            trace(c, ctx, actor, "撤销报告关联与证据变更", before, restored, stage=undo_stage)
+            c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL,previous_stage=NULL WHERE actor=?", (revision + 1, json.dumps(restored), actor))
             return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.post("/api/tasks/{task_id}/report-evidence/relations")
@@ -278,8 +373,8 @@ def register_report_evidence_routes(app, require_user):
                 if not any(l["id"] == body.link_id for l in shared["links"]): raise HTTPException(404, "Confirmed relationship no longer exists.")
                 shared["links"] = [l for l in shared["links"] if l["id"] != body.link_id]
             if shared == before: return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
-            trace(c, ctx, actor, "确认报告关系" if body.action == "confirm" else "解除报告关系", before, shared)
-            c.execute("INSERT INTO report_evidence_state VALUES('*',?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous", (revision + 1, json.dumps(shared), json.dumps(before)))
+            trace(c, ctx, actor, "确认报告关系" if body.action == "confirm" else "解除报告关系", before, shared, stage=body.stage, shared=True)
+            c.execute("INSERT INTO report_evidence_state VALUES('*',?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (revision + 1, json.dumps(shared), json.dumps(before), body.stage))
             return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.post("/api/tasks/{task_id}/report-evidence/relations/undo")
@@ -290,14 +385,16 @@ def register_report_evidence_routes(app, require_user):
             c.execute("BEGIN IMMEDIATE")
             fresh_permission(c, ctx, user, shared=True)
             revision, before, _ = read(c, "*")
-            row = c.execute("SELECT previous FROM report_evidence_state WHERE actor='*'").fetchone()
+            row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor='*'").fetchone()
             if revision != body.expected_revision or not row or not row[0]: raise HTTPException(409, "No current relationship change is available to undo.")
             restored = json.loads(row[0])
             keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
             if any(l["a"] not in keys or l["b"] not in keys for l in restored["links"]):
                 raise HTTPException(409, "A report is no longer active; old relationships cannot be restored.")
-            trace(c, ctx, actor, "撤销报告关系裁决", before, restored)
-            c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL WHERE actor='*'", (revision + 1, json.dumps(restored)))
+            # 撤销与对应裁决动作使用同一轨迹阶段（随共享撤销栈记录）。
+            undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
+            trace(c, ctx, actor, "撤销报告关系裁决", before, restored, stage=undo_stage, shared=True)
+            c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL,previous_stage=NULL WHERE actor='*'", (revision + 1, json.dumps(restored)))
             return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.get("/api/tasks/{task_id}/report-evidence/export")

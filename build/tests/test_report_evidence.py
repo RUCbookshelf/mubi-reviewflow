@@ -3,6 +3,9 @@ import os
 import sys
 import json
 import uuid
+import hashlib
+import io as _io
+import zipfile
 import unittest
 import tempfile
 from contextlib import closing
@@ -15,7 +18,7 @@ os.environ["REVIEWFLOW_MODE"] = "server"
 from fastapi.testclient import TestClient
 from custom_backend.main import app
 from custom_backend.report_evidence_api import DEFAULT
-from coscreen import db, task_collaboration, review_workflow
+from coscreen import db, research_trace, task_collaboration, review_workflow
 from coscreen.models import Article
 
 
@@ -129,6 +132,92 @@ class EvidenceTests(unittest.TestCase):
         r=self.client.get(self.base+'/export',headers=self.auth());self.assertIn('01-Wiley.ris',r.text);self.assertIn("'=not a formula",r.text)
         r=self.client.get(self.base+'/export?format=json',headers=self.auth());self.assertEqual(r.json()['state'],s)
         r=self.client.get(f'/api/tasks/{self.task}/trace/events?limit=50',headers=self.auth());self.assertEqual(r.status_code,200,r.text);self.assertTrue(any(e['action']=='report_evidence_changed' for e in r.json()['events']))
+
+    def trace_changed_events(self,actor=0):
+        r=self.client.get(f'/api/tasks/{self.task}/trace/events?limit=200',headers=self.auth(actor))
+        self.assertEqual(r.status_code,200,r.text)
+        return [e for e in r.json()['events'] if e['action']=='report_evidence_changed']
+
+    def test_trace_increment_entries_and_save_budget(self):
+        # 回归#1 写放大：每事件只记录该主体的增量条目（不再内嵌整份工作区），单次保存轨迹总量受约2MB预算封顶。
+        keys=[f'B{i}' for i in range(6)]
+        db.upsert_articles(self.ctx.owner_db,[Article(zotero_key=k,title=f'Bulk {k}') for k in keys],[])
+        state=self.state()
+        state['drafts']=[{'id':f'{k}-{j}','key':k,'finding':'a'*20000} for k in keys for j in range(10)]
+        self.assertEqual(self.save(state).status_code,200)
+        first=self.trace_changed_events()
+        self.assertEqual(sorted(e['subject_id'] for e in first),sorted(keys))
+        for e in first:
+            self.assertNotIn('workspace',e['after'])
+            entries=e['after']['changes']['drafts']
+            self.assertTrue(entries);self.assertTrue(all(d['key']==e['subject_id'] for d in entries))
+        state['drafts']=[{'id':f'{k}-{j}','key':k,'finding':'b'*20000} for k in keys for j in range(10)]
+        self.assertEqual(self.save(state,revision=1).status_code,200)
+        events=self.trace_changed_events();last=events[len(first):]
+        self.assertEqual(len(last),6)
+        self.assertTrue(any('workspace_sha256' in e['after'] for e in last))
+        total=sum(len(json.dumps(e['before'],ensure_ascii=False))+len(json.dumps(e['after'],ensure_ascii=False)) for e in last)
+        self.assertLess(total,2_100_000)
+
+    def test_trace_subject_truncation_marker(self):
+        # 回归#2 静默截断：一次保存影响超过100个主体时补显式截断标记事件，不再静默丢弃。
+        keys=[f'T{i:03d}' for i in range(105)]
+        db.upsert_articles(self.ctx.owner_db,[Article(zotero_key=k,title=f'Trunc {k}') for k in keys],[])
+        state=self.state()
+        state['drafts']=[{'id':f'd{i}','key':k,'finding':f'Finding {k}'} for i,k in enumerate(keys)]
+        self.assertEqual(self.save(state).status_code,200)
+        r=self.client.get(f'/api/tasks/{self.task}/trace/events?limit=200&action=report_evidence_changed',headers=self.auth())
+        self.assertEqual(r.status_code,200,r.text);changed=r.json()['events']
+        self.assertFalse(r.json()['has_more']);self.assertEqual(len(changed),100)
+        r=self.client.get(f'/api/tasks/{self.task}/trace/events?limit=10&action=report_evidence_truncated',headers=self.auth())
+        self.assertEqual(r.status_code,200,r.text)
+        marker=next(e for e in r.json()['events'])
+        self.assertEqual(marker['after']['total_subjects'],105)
+        self.assertEqual(marker['after']['truncated_subjects'],5)
+        self.assertEqual(marker['stage'],'coding')
+
+    def test_undo_trace_matches_save_stage(self):
+        # 回归#3 撤销阶段：轨迹阶段收窄为 screen 时，保存与撤销都记录在同一阶段，撤销不再被静默过滤。
+        actor=self.users[0]['user_id']
+        with closing(review_workflow.connect(self.ctx.owner_db)) as c,c:
+            current=research_trace.get_settings(c,self.task,actor)
+            research_trace.update_settings(c,research_trace.TraceContext(self.task,actor,source='api'),
+                                           stages=['screen'],status='recording',operation_id='test-narrow-screen',
+                                           expected_version=current['version'])
+        body={'expected_revision':0,'operation_id':str(uuid.uuid4()),'state':self.link(self.state()),'label':'Screen save','stage':'screen'}
+        self.assertEqual(self.client.put(self.base,json=body,headers=self.auth()).status_code,200)
+        self.assertEqual(self.client.post(self.base+'/undo',json={'expected_revision':1},headers=self.auth()).status_code,200)
+        changed=self.trace_changed_events()
+        self.assertEqual(len(changed),4)
+        self.assertTrue(all(e['stage']=='screen' for e in changed))
+
+    def test_confirm_trace_redacts_other_member_private_text(self):
+        # 回归#4 隐私：裁决确认/解除/撤销不把提案人私有依据与位置写入裁决人轨迹，公开导出只含哈希摘要。
+        task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
+        secret='Coder-only field notes quote';proposer=str(self.users[1]['user_id'])
+        s=self.state();s['links']=[{'id':'L1','a':'R1','b':'R2','type':'study','same':True,'evidence':secret,'locator':'p.4','status':'mine'}]
+        self.assertEqual(self.save(s,actor=1).status_code,200)
+        with closing(review_workflow.connect(self.ctx.owner_db)) as c,c:
+            row=c.execute('SELECT stages_json FROM workflow_state').fetchone();stages=json.loads(row[0])
+            for stage in stages.values():stage['mode']='paused'
+            c.execute('UPDATE workflow_state SET stages_json=?',(json.dumps(stages),))
+        body={'expected_revision':0,'actor_id':proposer,'link_id':'L1','action':'confirm'}
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['confirmed'][0]['evidence'],secret)
+        blob=json.dumps(self.trace_changed_events(),ensure_ascii=False)
+        self.assertNotIn(secret,blob);self.assertNotIn('p.4',blob)
+        self.assertIn(hashlib.sha256(secret.encode()).hexdigest(),blob)
+        body.update(expected_revision=1,action='unlink')
+        self.assertEqual(self.client.post(self.base+'/relations',json=body,headers=self.auth()).status_code,200)
+        self.assertEqual(self.client.post(self.base+'/relations/undo',json={'expected_revision':2},headers=self.auth()).status_code,200)
+        blob=json.dumps(self.trace_changed_events(),ensure_ascii=False)
+        self.assertNotIn(secret,blob);self.assertNotIn('p.4',blob)
+        package=self.client.post(f'/api/tasks/{self.task}/trace/exports',json={'preset':'public'},headers=self.auth())
+        self.assertEqual(package.status_code,200,package.text[:200])
+        with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
+            exported=b''.join(z.read(name) for name in z.namelist())
+        self.assertNotIn(secret.encode(),exported)
+        self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),exported)
 
 
 if __name__=='__main__': unittest.main(verbosity=2)
