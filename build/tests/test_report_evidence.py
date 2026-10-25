@@ -272,6 +272,8 @@ class EvidenceTests(unittest.TestCase):
         blob=json.dumps(self.trace_changed_events(),ensure_ascii=False)
         self.assertNotIn(secret,blob);self.assertNotIn('p.4',blob)
         self.assertIn(hashlib.sha256(secret.encode()).hexdigest(),blob)
+        # locator 属低熵文本：哈希可被枚举比对，脱敏后不得以任何形式外带（F19 复核）。
+        self.assertNotIn(hashlib.sha256(b'p.4').hexdigest(),blob)
         entries=[l for e in self.trace_changed_events() for l in e['after'].get('changes',{}).get('links',[])]
         self.assertTrue(entries);self.assertTrue(all(l['id']=='L1' for l in entries))  # 不改写提案 id，不注入提案人 user id
         body.update(expected_revision=1,action='unlink')
@@ -288,6 +290,107 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),exported)
         self.assertNotIn(f'{proposer}-L1'.encode(),exported)  # 提案人 user id 不得以任何拼接形式进入公开导出
         self.assertNotIn(b'"actor_id"',events_jsonl)  # 事件行与链接条目中的 actor_id 键均已脱敏删除
+
+    def test_size_guard_rejects_oversized_request_body(self):
+        # 回归（F05）：超过 2MB 的请求体在进入模型校验前即被守卫 413 拦截。
+        state=self.state();state['drafts']=[{'id':'F1','key':'R1','finding':'x','quote':'y'*2_200_000}]
+        r=self.save(state)
+        self.assertEqual(r.status_code,413,r.text[:200])
+        self.assertIn('Workspace request exceeds 2 MB',r.text)
+
+    def test_request_journal_is_bounded_per_actor(self):
+        # 回归（F03）：幂等去重日志按成员只保留最近若干条；最新操作仍可重放，旧操作自然过期。
+        from custom_backend import report_evidence_api as api_module
+        original=api_module.REQUEST_JOURNAL_LIMIT
+        api_module.REQUEST_JOURNAL_LIMIT=3
+        try:
+            ops=[str(uuid.uuid4()) for _ in range(5)]
+            for i,op in enumerate(ops):
+                self.assertEqual(self.save(self.state(),revision=i,operation=op).status_code,200)
+            with closing(connect(self.ctx.owner_db)) as c:
+                kept=[row[0] for row in c.execute(
+                    'SELECT operation FROM report_evidence_requests WHERE actor=? ORDER BY rowid',
+                    (str(self.users[0]['user_id']),))]
+            self.assertEqual(kept,ops[2:])  # 仅保留最近3条，不再只增不减
+            self.assertEqual(self.save(self.state(),revision=4,operation=ops[4]).status_code,200)  # 最新操作幂等重放
+        finally:
+            api_module.REQUEST_JOURNAL_LIMIT=original
+
+    def test_confirm_rejects_proposal_after_proposer_role_revoked(self):
+        # 回归（F04）：提案人被撤销编码角色后，其遗留提案不得经确认进入共享库；重新授权后可确认。
+        task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
+        self.save(self.link(self.state()),actor=1)
+        with closing(review_workflow.connect(self.ctx.owner_db)) as c,c:
+            row=c.execute('SELECT stages_json FROM workflow_state').fetchone();stages=json.loads(row[0])
+            for s in stages.values():s['mode']='paused'
+            c.execute('UPDATE workflow_state SET stages_json=?',(json.dumps(stages),))
+        self.assertTrue(task_collaboration.revoke_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task))
+        body={'expected_revision':0,'actor_id':str(self.users[1]['user_id']),'link_id':'L1','action':'confirm'}
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth())
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('no longer an active coding member',r.text)
+        self.assertEqual(len(self.client.get(self.base,headers=self.auth()).json()['proposals']),1)  # 提案仍保留在个人工作区
+        task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
+        self.assertEqual(self.client.post(self.base+'/relations',json=body,headers=self.auth()).status_code,200)
+
+    def _insert_legacy_trace_events(self,rows):
+        # 直接预置 2.1.3 形态的全量快照轨迹事件（绕过当前写入路径；载荷每侧须 <1MB 以内可存）。
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            research_trace.ensure_schema(c)
+            store_id=c.execute("SELECT store_id FROM trace_store WHERE singleton=1").fetchone()[0]
+            for actor,subject,before,after in rows:
+                c.execute("INSERT INTO trace_events (event_id,store_id,task_id,actor_id,stage,action,subject_id,"
+                          "before_json,after_json,source,recorded_at,schema_version,app_version) "
+                          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (str(uuid.uuid4()),store_id,self.task,actor,'coding','report_evidence_changed',subject,
+                           json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),
+                           'report_evidence','2026-01-01T00:00:00Z','reviewflow.research-trace/1','2.1.3'))
+            c.commit()
+
+    def test_legacy_full_snapshot_events_compacted_and_redacted_on_export(self):
+        # 回归（F16/F19 存量）：2.1.3 全量快照轨迹事件在导出前被一次性压缩与脱敏，
+        # 导出不再 413；公开导出不含他人 evidence/locator 原文，locator 也不留可枚举哈希。
+        exporter=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
+        secret='LEGACY-SECRET coder evidence'
+        pad={'links':[],'drafts':[{'id':f'pad{i}','key':'R2','finding':'F','quote':'x'*19500} for i in range(40)]}
+        rows=[]
+        for _ in range(22):
+            before={'value':'Save evidence','workspace':json.loads(json.dumps(pad))}
+            after={'value':'Save evidence','workspace':{**json.loads(json.dumps(pad)),'links':[
+                {'id':'L1','a':'R1','b':'R2','type':'study','same':False,'evidence':secret,
+                 'locator':'p.4','status':'agreed','actor_id':coder}]}}
+            rows.append((exporter,'R1',before,after))
+        # 单主体增量超过单条预算的另一组旧事件：迁移应降级为摘要+哈希。
+        big_before={'value':'Big','workspace':{'links':[],'drafts':[{'id':f'd{i}','key':'R1','finding':'F','quote':'a'*19500} for i in range(45)]}}
+        big_after={'value':'Big','workspace':{'links':[],'drafts':[{'id':f'd{i}','key':'R1','finding':'F','quote':'b'*19500} for i in range(45)]}}
+        rows.append((exporter,'R1',big_before,big_after))
+        self._insert_legacy_trace_events(rows)
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            stored=c.execute("SELECT SUM(length(before_json)+length(after_json)) FROM trace_events "
+                             "WHERE action='report_evidence_changed'").fetchone()[0]
+        self.assertGreater(stored,32*1024*1024)  # 未迁移时导出必然超过 32MB 上限
+        package=self.client.post(f'/api/tasks/{self.task}/trace/exports',json={'preset':'public'},headers=self.auth())
+        self.assertEqual(package.status_code,200,package.text[:200])
+        with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
+            exported=b''.join(z.read(name) for name in z.namelist())
+            events_jsonl=z.read('events.jsonl')
+        self.assertLess(len(events_jsonl),1_000_000)  # 压缩后事件数据远小于上限
+        self.assertNotIn(secret.encode(),exported)
+        self.assertNotIn(b'"p.4"',exported)
+        self.assertNotIn(hashlib.sha256(b'p.4').hexdigest().encode(),exported)
+        self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),exported)  # 他人 evidence 保留哈希摘要（既有契约）
+        self.assertNotIn(b'"workspace"',events_jsonl)  # 全量快照已改写为增量/摘要
+        self.assertIn(b'"workspace_sha256"',events_jsonl)  # 超预算主体降级为摘要+哈希（note 键按公开导出私有键规则移除）
+        self.assertIn(b'"findings":45',events_jsonl)
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            remaining=c.execute("SELECT COUNT(*) FROM trace_events WHERE action='report_evidence_changed' "
+                                "AND (before_json LIKE '%\"workspace\"%' OR after_json LIKE '%\"workspace\"%')").fetchone()[0]
+            marker=c.execute("SELECT 1 FROM report_evidence_trace_meta WHERE singleton=1").fetchone()
+            digest_note=c.execute("SELECT COUNT(*) FROM trace_events WHERE before_json LIKE '%Legacy full workspace snapshot compacted%'").fetchone()[0]
+        self.assertEqual(remaining,0)
+        self.assertTrue(marker)
+        self.assertGreaterEqual(digest_note,1)  # 库内超预算主体保留迁移说明
+        # 迁移幂等：第二次导出同样成功。
+        self.assertEqual(self.client.post(f'/api/tasks/{self.task}/trace/exports',json={'preset':'public'},headers=self.auth()).status_code,200)
 
 
 if __name__=='__main__': unittest.main(verbosity=2)

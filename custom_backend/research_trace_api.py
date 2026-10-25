@@ -31,6 +31,7 @@ from coscreen.research_trace_export import (
     research_operations,
     validate_import_package,
 )
+from custom_backend.report_evidence_api import compact_legacy_trace_events
 
 
 MAX_TRACE_BODY_BYTES = MAX_PACKAGE_BYTES + 1024 * 1024
@@ -1211,6 +1212,16 @@ def register_research_trace_routes(
                        included_private_fields: list[str],
                        filters: TraceExportFilters, info: Any,
                        actor_id: int | str, paths: dict[str, Any]) -> bytes:
+        # 导出前对涉及的存储执行 2.1.3 全量快照轨迹事件的一次性压缩/脱敏迁移：
+        # 存量轨迹不再把导出顶过 32MB 上限，公开导出也不再携带他人私有文本。
+        for _name, path in _unique_paths(paths):
+            if path is None:
+                continue
+            try:
+                with closing(db._connect(path)) as conn:
+                    compact_legacy_trace_events(conn)
+            except (OSError, sqlite3.Error):
+                continue  # 迁移失败不阻断导出；旧事件维持原样，由既有大小与脱敏限制兜底
         snapshot = _snapshot(info, actor_id, paths, filters)
         selected_private_fields = sorted(set(included_private_fields)) if preset == "public" else []
         snapshot["selection"]["included_private_fields"] = selected_private_fields
