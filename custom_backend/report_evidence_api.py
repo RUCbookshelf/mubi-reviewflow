@@ -368,7 +368,19 @@ def register_report_evidence_routes(app, require_user):
                 if proposal["a"] not in keys or proposal["b"] not in keys: raise HTTPException(409, "A report is no longer active.")
                 pair = {proposal["a"], proposal["b"]}
                 shared["links"] = [l for l in shared["links"] if {l["a"], l["b"]} != pair]
-                shared["links"].append({**proposal, "status": "agreed", "actor_id": body.actor_id})
+                # 共享库内保证 id 唯一：validate 只保证单个成员工作区内唯一，两成员可用同一 id
+                # 提交不同关系并被先后确认；冲突时把入共享库的 id 改写为带提案人前缀的唯一 id，
+                # 使 unlink 按 id 过滤无歧义。改写仍满足 [A-Za-z0-9_-]{1,100} 的 id 约束。
+                occupied_ids = {l["id"] for l in shared["links"]}
+                confirmed_id = proposal["id"]
+                if confirmed_id in occupied_ids:
+                    stem = f"{body.actor_id}-{proposal['id']}"[:90]
+                    confirmed_id = stem
+                    serial = 1
+                    while confirmed_id in occupied_ids:
+                        serial += 1
+                        confirmed_id = f"{stem}-{serial}"[:100]
+                shared["links"].append({**proposal, "id": confirmed_id, "status": "agreed", "actor_id": body.actor_id})
             else:
                 if not any(l["id"] == body.link_id for l in shared["links"]): raise HTTPException(404, "Confirmed relationship no longer exists.")
                 shared["links"] = [l for l in shared["links"] if l["id"] != body.link_id]

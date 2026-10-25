@@ -5,6 +5,7 @@ import json
 import uuid
 import hashlib
 import io as _io
+import re
 import zipfile
 import unittest
 import tempfile
@@ -137,6 +138,36 @@ class EvidenceTests(unittest.TestCase):
         r=self.client.get(f'/api/tasks/{self.task}/trace/events?limit=200',headers=self.auth(actor))
         self.assertEqual(r.status_code,200,r.text)
         return [e for e in r.json()['events'] if e['action']=='report_evidence_changed']
+
+    def test_shared_link_id_collision_unlinks_only_target(self):
+        # 回归（P1 证据API-2）：两成员用相同 link id 提交不同关系并被先后确认后，unlink 只解除目标关系。
+        task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
+        db.upsert_articles(self.ctx.owner_db,[Article(zotero_key='R3',title='Third')],[])
+        s0=self.state();s0['links']=[{'id':'L1','a':'R1','b':'R3','type':'study','same':False,'evidence':'Owner pair','locator':'p.1','status':'mine'}]
+        self.assertEqual(self.save(s0).status_code,200)
+        s1=self.state();s1['links']=[{'id':'L1','a':'R1','b':'R2','type':'sample','same':True,'evidence':'Coder pair','locator':'p.2','status':'mine'}]
+        self.assertEqual(self.save(s1,actor=1).status_code,200)
+        with closing(review_workflow.connect(self.ctx.owner_db)) as c,c:
+            row=c.execute('SELECT stages_json FROM workflow_state').fetchone();stages=json.loads(row[0])
+            for stage in stages.values():stage['mode']='paused'
+            c.execute('UPDATE workflow_state SET stages_json=?',(json.dumps(stages),))
+        owner=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
+        body={'expected_revision':0,'actor_id':coder,'link_id':'L1','action':'confirm'}
+        self.assertEqual(self.client.post(self.base+'/relations',json=body,headers=self.auth()).status_code,200)
+        body.update(expected_revision=1,actor_id=owner)
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        confirmed=r.json()['confirmed']
+        self.assertEqual(len(confirmed),2)
+        ids=[l['id'] for l in confirmed]
+        self.assertEqual(len(set(ids)),2)  # 共享库内 id 已唯一（冲突方被改写为带提案人前缀）
+        self.assertTrue(all(re.fullmatch(r'[A-Za-z0-9_-]{1,100}',i) for i in ids))
+        kept=next(l for l in confirmed if l['a']=='R1' and l['b']=='R3')
+        dropped=next(l for l in confirmed if l['a']=='R1' and l['b']=='R2')
+        body.update(expected_revision=2,link_id=dropped['id'],actor_id=dropped['actor_id'],action='unlink')
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        rest=r.json()['confirmed']
+        self.assertEqual([l['id'] for l in rest],[kept['id']])  # 只解除目标关系，另一条保留
+        self.assertEqual(rest[0]['a'],'R1');self.assertEqual(rest[0]['b'],'R3')
 
     def test_trace_increment_entries_and_save_budget(self):
         # 回归#1 写放大：每事件只记录该主体的增量条目（不再内嵌整份工作区），单次保存轨迹总量受约2MB预算封顶。
