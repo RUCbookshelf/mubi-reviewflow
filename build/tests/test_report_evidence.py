@@ -5,7 +5,6 @@ import json
 import uuid
 import hashlib
 import io as _io
-import re
 import zipfile
 import unittest
 import tempfile
@@ -18,7 +17,7 @@ os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
 os.environ["REVIEWFLOW_MODE"] = "server"
 from fastapi.testclient import TestClient
 from custom_backend.main import app
-from custom_backend.report_evidence_api import DEFAULT
+from custom_backend.report_evidence_api import DEFAULT, connect
 from coscreen import db, research_trace, task_collaboration, review_workflow
 from coscreen.models import Article
 
@@ -141,6 +140,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_shared_link_id_collision_unlinks_only_target(self):
         # 回归（P1 证据API-2）：两成员用相同 link id 提交不同关系并被先后确认后，unlink 只解除目标关系。
+        # 共享 id 与提案保持一致（不改写、不注入提案人 user id），unlink 按 (id, actor_id) 定位目标。
         task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
         db.upsert_articles(self.ctx.owner_db,[Article(zotero_key='R3',title='Third')],[])
         s0=self.state();s0['links']=[{'id':'L1','a':'R1','b':'R3','type':'study','same':False,'evidence':'Owner pair','locator':'p.1','status':'mine'}]
@@ -158,16 +158,50 @@ class EvidenceTests(unittest.TestCase):
         r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
         confirmed=r.json()['confirmed']
         self.assertEqual(len(confirmed),2)
-        ids=[l['id'] for l in confirmed]
-        self.assertEqual(len(set(ids)),2)  # 共享库内 id 已唯一（冲突方被改写为带提案人前缀）
-        self.assertTrue(all(re.fullmatch(r'[A-Za-z0-9_-]{1,100}',i) for i in ids))
-        kept=next(l for l in confirmed if l['a']=='R1' and l['b']=='R3')
-        dropped=next(l for l in confirmed if l['a']=='R1' and l['b']=='R2')
+        self.assertEqual([l['id'] for l in confirmed],['L1','L1'])  # id 与提案一致，未注入提案人 user id
+        dropped=next(l for l in confirmed if l['actor_id']==coder)
+        kept=next(l for l in confirmed if l['actor_id']==owner)
+        self.assertEqual({dropped['a'],dropped['b']},{'R1','R2'});self.assertEqual({kept['a'],kept['b']},{'R1','R3'})
         body.update(expected_revision=2,link_id=dropped['id'],actor_id=dropped['actor_id'],action='unlink')
         r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
         rest=r.json()['confirmed']
-        self.assertEqual([l['id'] for l in rest],[kept['id']])  # 只解除目标关系，另一条保留
-        self.assertEqual(rest[0]['a'],'R1');self.assertEqual(rest[0]['b'],'R3')
+        self.assertEqual(len(rest),1)  # 只解除目标关系，另一条保留
+        self.assertEqual(rest[0]['id'],'L1');self.assertEqual(rest[0]['actor_id'],owner)
+        self.assertEqual({rest[0]['a'],rest[0]['b']},{'R1','R3'})
+
+    def _preset_shared_links(self,links):
+        # 直接预置 2.1.3 形态的已确认共享关系（不经 confirm），覆盖已落库的重复 shared links。
+        state=json.loads(json.dumps(DEFAULT));state['links']=links
+        with closing(connect(self.ctx.owner_db)) as c:
+            c.execute("INSERT INTO report_evidence_state VALUES('*',0,?,NULL,NULL)",(json.dumps(state),))
+            c.commit()
+
+    def test_preset_duplicate_shared_links_unlink_removes_only_target(self):
+        # 回归（评审）：已落库的跨成员同 id 共享关系不经迁移/改写，unlink 也只删目标一条。
+        owner=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
+        def agreed(a,b,actor,evidence):
+            return {'id':'L1','a':a,'b':b,'type':'study','same':False,'evidence':evidence,'locator':'p.1','status':'agreed','actor_id':actor}
+        self._preset_shared_links([agreed('R1','R2',coder,'Coder preset pair'),agreed('R1','R3',owner,'Owner preset pair')])
+        body={'expected_revision':0,'actor_id':coder,'link_id':'L1','action':'unlink'}
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        rest=r.json()['confirmed']
+        self.assertEqual(len(rest),1)
+        self.assertEqual(rest[0]['actor_id'],owner)
+        self.assertEqual({rest[0]['a'],rest[0]['b']},{'R1','R3'})
+
+    def test_preset_same_actor_duplicate_links_unlink_requires_pair(self):
+        # 同成员同 id 重复（仅直连 API 可构造）：不带 a/b 时明确 409，携带关系对后精确删除一条。
+        owner=str(self.users[0]['user_id'])
+        def agreed(a,b,evidence):
+            return {'id':'L1','a':a,'b':b,'type':'study','same':False,'evidence':evidence,'locator':'p.1','status':'agreed','actor_id':owner}
+        self._preset_shared_links([agreed('R1','R2','First pair'),agreed('R1','R3','Second pair')])
+        body={'expected_revision':0,'actor_id':owner,'link_id':'L1','action':'unlink'}
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,409,r.text)
+        self.assertEqual(len(self.client.get(self.base,headers=self.auth()).json()['confirmed']),2)
+        body.update(a='R1',b='R2')
+        r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        rest=r.json()['confirmed']
+        self.assertEqual(len(rest),1);self.assertEqual({rest[0]['a'],rest[0]['b']},{'R1','R3'})
 
     def test_trace_increment_entries_and_save_budget(self):
         # 回归#1 写放大：每事件只记录该主体的增量条目（不再内嵌整份工作区），单次保存轨迹总量受约2MB预算封顶。
@@ -238,6 +272,8 @@ class EvidenceTests(unittest.TestCase):
         blob=json.dumps(self.trace_changed_events(),ensure_ascii=False)
         self.assertNotIn(secret,blob);self.assertNotIn('p.4',blob)
         self.assertIn(hashlib.sha256(secret.encode()).hexdigest(),blob)
+        entries=[l for e in self.trace_changed_events() for l in e['after'].get('changes',{}).get('links',[])]
+        self.assertTrue(entries);self.assertTrue(all(l['id']=='L1' for l in entries))  # 不改写提案 id，不注入提案人 user id
         body.update(expected_revision=1,action='unlink')
         self.assertEqual(self.client.post(self.base+'/relations',json=body,headers=self.auth()).status_code,200)
         self.assertEqual(self.client.post(self.base+'/relations/undo',json={'expected_revision':2},headers=self.auth()).status_code,200)
@@ -247,8 +283,11 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(package.status_code,200,package.text[:200])
         with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
             exported=b''.join(z.read(name) for name in z.namelist())
+            events_jsonl=z.read('events.jsonl')
         self.assertNotIn(secret.encode(),exported)
         self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),exported)
+        self.assertNotIn(f'{proposer}-L1'.encode(),exported)  # 提案人 user id 不得以任何拼接形式进入公开导出
+        self.assertNotIn(b'"actor_id"',events_jsonl)  # 事件行与链接条目中的 actor_id 键均已脱敏删除
 
 
 if __name__=='__main__': unittest.main(verbosity=2)

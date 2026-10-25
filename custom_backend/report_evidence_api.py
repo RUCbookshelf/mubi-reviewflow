@@ -56,6 +56,9 @@ class RelationIn(UndoIn):
     action: Literal["confirm", "unlink"]
     # 可选：该次裁决动作归属的轨迹阶段；缺省 coding，并随共享撤销栈记录，供撤销复用。
     stage: Literal["screen", "fulltext", "coding"] = "coding"
+    # 可选：仅 unlink 使用。同成员同 id 重复等极端场景下，携带关系对 (a, b) 以精确定位目标。
+    a: str | None = Field(default=None, min_length=1, max_length=100)
+    b: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 def connect(path):
@@ -368,22 +371,20 @@ def register_report_evidence_routes(app, require_user):
                 if proposal["a"] not in keys or proposal["b"] not in keys: raise HTTPException(409, "A report is no longer active.")
                 pair = {proposal["a"], proposal["b"]}
                 shared["links"] = [l for l in shared["links"] if {l["a"], l["b"]} != pair]
-                # 共享库内保证 id 唯一：validate 只保证单个成员工作区内唯一，两成员可用同一 id
-                # 提交不同关系并被先后确认；冲突时把入共享库的 id 改写为带提案人前缀的唯一 id，
-                # 使 unlink 按 id 过滤无歧义。改写仍满足 [A-Za-z0-9_-]{1,100} 的 id 约束。
-                occupied_ids = {l["id"] for l in shared["links"]}
-                confirmed_id = proposal["id"]
-                if confirmed_id in occupied_ids:
-                    stem = f"{body.actor_id}-{proposal['id']}"[:90]
-                    confirmed_id = stem
-                    serial = 1
-                    while confirmed_id in occupied_ids:
-                        serial += 1
-                        confirmed_id = f"{stem}-{serial}"[:100]
-                shared["links"].append({**proposal, "id": confirmed_id, "status": "agreed", "actor_id": body.actor_id})
+                # 共享 id 与提案保持一致（不改写、不注入提案人 user id），前端按 id+字段比对
+                # 已确认关系的逻辑不受影响；跨成员同 id 的已确认关系可以并存，由 unlink 唯一定位。
+                shared["links"].append({**proposal, "status": "agreed", "actor_id": body.actor_id})
             else:
-                if not any(l["id"] == body.link_id for l in shared["links"]): raise HTTPException(404, "Confirmed relationship no longer exists.")
-                shared["links"] = [l for l in shared["links"] if l["id"] != body.link_id]
+                # validate 只保证单个成员工作区内 id 唯一，共享库可能存在（含 2.1.3 已落库的）
+                # 同 id 已确认关系；仅按 id 匹配会一次解除所有同 id 关系。至少按 (id, actor_id)
+                # 定位，请求同时携带 a/b 时再按关系对精确匹配；仍歧义时明确 409 而非批量删除。
+                def unlink_match(link):
+                    if link["id"] != body.link_id or str(link.get("actor_id", "")) != str(body.actor_id): return False
+                    return body.a is None or body.b is None or {link.get("a"), link.get("b")} == {body.a, body.b}
+                if not any(unlink_match(l) for l in shared["links"]): raise HTTPException(404, "Confirmed relationship no longer exists.")
+                if sum(1 for l in shared["links"] if unlink_match(l)) > 1:
+                    raise HTTPException(409, "Ambiguous confirmed relationship; resend with its report pair (a, b) to unlink exactly one.")
+                shared["links"] = [l for l in shared["links"] if not unlink_match(l)]
             if shared == before: return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
             trace(c, ctx, actor, "确认报告关系" if body.action == "confirm" else "解除报告关系", before, shared, stage=body.stage, shared=True)
             c.execute("INSERT INTO report_evidence_state VALUES('*',?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (revision + 1, json.dumps(shared), json.dumps(before), body.stage))
