@@ -155,6 +155,55 @@ class TraceLocaleCoverageTests(unittest.TestCase):
         self._assert_covered("research_trace.js", RESEARCH_TRACE_EXEMPT)
 
 
+class BackendTraceLabelCouplingTests(unittest.TestCase):
+    """后端轨迹 label 与前端词条/显式 label 集合的耦合。
+
+    report_evidence_api.py 中 ``trace(c, ctx, actor, <label>, …)`` 写入载荷
+    ``value`` 的中文 label 必须同时满足：① 已在某个 *_locale.js 注册十语言
+    （否则非中文界面的轨迹摘要/详情输出原样中文——F10 类缺陷的后端侧入口）；
+    ② 作为字符串字面量出现在 research_trace.js 的 RE_LABELS 显式集合里
+    （label 判定刻意不用整本界面词典，纯编码值不误译；漏登记则该 label
+    回退为原样输出）。集合精确钉住：后端新增/改名 label 而未同步前端时，
+    本测试失败提醒。前端 change() 的 9 个 label 由 report_evidence.js 产生，
+    已被其字面量覆盖测试钉住，不在此重复。
+    """
+
+    # 与 report_evidence_api.py 当前四个 trace() 调用点一一对应：
+    # 撤销 PUT /undo、裁决确认/解除 /relations、共享撤销 /relations/undo。
+    EXPECTED_BACKEND_LABELS = {
+        "撤销报告关联与证据变更",
+        "确认报告关系",
+        "解除报告关系",
+        "撤销报告关系裁决",
+    }
+
+    def _backend_trace_labels(self):
+        src = (BACKEND / "report_evidence_api.py").read_text(encoding="utf-8")
+        labels = set()
+        for line in src.splitlines():
+            if "trace(c, ctx" not in line:
+                continue
+            for literal in re.findall(r'"([^"]*)"', line):
+                if _CJK.search(literal):
+                    labels.add(literal)
+        return labels
+
+    def test_backend_labels_registered_and_pinned(self):
+        labels = self._backend_trace_labels()
+        self.assertEqual(
+            labels, self.EXPECTED_BACKEND_LABELS,
+            "report_evidence_api.py 的 trace() 中文 label 集合与钉住清单不一致——"
+            "后端新增/改名 label 时须同步：注册十语言词条并把其加入 research_trace.js "
+            "的 RE_LABELS 集合（未知 label 会以原样中文出现在非中文界面）",
+        )
+        keys = _locale_keys()
+        unregistered = labels - keys
+        self.assertEqual(unregistered, set(), f"后端轨迹 label 未注册词条: {sorted(unregistered)}")
+        trace_src = (FRONTEND / "research_trace.js").read_text(encoding="utf-8")
+        missing = {label for label in labels if f"'{label}'" not in trace_src}
+        self.assertEqual(missing, set(), f"后端轨迹 label 未进入 research_trace.js 的 RE_LABELS: {sorted(missing)}")
+
+
 class Stale409CouplingTests(unittest.TestCase):
     """后端版本冲突 409 文案与前端 STALE 正则的双向耦合。"""
 

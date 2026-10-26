@@ -173,5 +173,7 @@
 ['填空','Short text','Texte court','Короткий текст','Texto corto','記入式','Texto curto','Kurztext','Кратки текст','단답형'],
 ['单选','Single choice','Choix unique','Один вариант','Opción única','単一選択','Escolha única','Einfachauswahl','Један избор','단일 선택'],
 ['多选','Multiple choice','Choix multiple','Несколько вариантов','Opción múltiple','複数選択','Escolha múltipla','Mehrfachauswahl','Вишеструки избор','복수 선택'],
-['选项','Options','Options','Варианты','Opciones','選択肢','Opções','Optionen','Опције','옵션']
+['选项','Options','Options','Варианты','Opciones','選択肢','Opções','Optionen','Опције','옵션'],
+['评价条目','Appraisal items','Éléments d’évaluation','Пункты оценки','Elementos de evaluación','評価項目','Itens de avaliação','Bewertungspunkte','Ставке оцењивања','평가 항목'],
+['他人私有内容（已脱敏）','Another member’s private content (redacted)','Contenu privé d’un autre membre (caviardé)','Частный текст другого участника (скрыт)','Contenido privado de otro miembro (oculto)','他メンバーの非公開内容（非表示済み）','Conteúdo privado de outro membro (ocultado)','Privater Inhalt eines anderen Mitglieds (geschwärzt)','Приватни садржај другог члана (редиговано)','다른 구성원의 비공개 내용(비식별처리됨)']
 ]);})();

@@ -4,16 +4,19 @@
  const state={tab:'overview',settings:null,summary:null,events:[],cursor:null,next:null,stage:'',query:'',since:'',until:'',action:'',ticket:0,pendingSettings:null,configuring:false,importResult:null,clearResult:null,pendingClear:null,clearing:false};
  const stages={screen:'文献初筛',fulltext:'文献复筛',coding:'数据提取与编码'};
  const actions={history_cleared:'清除历史',fulltext_added:'添加全文',fulltext_replaced:'替换全文',decision_created:'首次决定',decision_changed:'修改决定',decision_imported:'导入决定',coding_value_created:'填写编码',coding_value_changed:'修改编码',coding_value_cleared:'清空编码',coding_note_created:'新增编码说明',coding_note_changed:'修改编码说明',coding_note_cleared:'清除编码说明',coding_note_image_added:'添加来源图片',coding_image_removed:'删除来源图片',coding_note_image_removed:'删除来源图片',coding_image_ocr_changed:'修改来源文字',field_definition_created:'新增字段',field_definition_changed:'修改字段',field_definition_deleted:'删除字段',rater_record_created:'保存编码修订',rater_record_changed:'保存编码修订',recording_started:'开始记录',recording_resumed:'恢复记录',recording_paused:'暂停记录',recording_stopped:'停止记录',stages_changed:'变更记录范围'};
- // 报告关联与证据（report_evidence_changed）载荷渲染：label 是 9 个已注册 change label（report_evidence_locale）
- // 之一时经 T() 本地化（与 report_evidence.js 的 n() 同用 ReportEvidenceLocale.keys 判定，用户数据不误译）；
- // changes/summary 载荷键名与枚举取值按下表映射为中文源键后走全局字典，未登记键与条目内容属数据、原样输出。
- const RE_KEYS={links:'报告关联',drafts:'证据草稿',findings:'证据草稿',review:'综述路径',method:'定性综合方法',appraisalTool:'评价工具',interpretations:'方法工作区',confidence:'证据置信度',duplicatePairs:'重复证据对',question:'研究问题',appraisals:'定性研究评价',analysisChoices:'样本与结果选择',workspace_sha256:'工作区校验和',total_subjects:'受影响主体',truncated_subjects:'已截断主体',skipped_events:'跳过事件',finding:'综合发现',reason:'判断依据',overall:'整体置信度',dependability:'可靠性（Dependability）',credibility:'可信度（Credibility）',limitations:'方法学局限',coherence:'一致性',adequacy:'资料充分性',relevance:'相关性',summary:'综合说明与未解决问题',coding:'原文编码与依据',descriptive:'描述性主题',analytic:'分析性主题与推理',framework:'框架及选择依据',mapping:'证据与框架映射',outside:'框架外发现',concepts:'原研究概念与出处',translation:'互惠／反驳转译',argument:'论证链与反思',categories:'类别形成依据',unsupported:'缺乏支持的发现如何单独呈现',integration:'定量与定性证据的整合备忘',participants:'研究对象／视角',phenomenon:'关注的现象或经历',context:'情境',criteria:'纳入条件与资料范围',judgment:'判断',locator:'页码／位置'};
+ // 报告关联与证据（report_evidence_changed）载荷渲染：label 判定用下方显式集合（9 个前端 change() label +
+ // 4 个后端裁决/撤销 label，共 13 个已注册词条），纯编码值载荷（{value:存储值}，coscreen/coding.py）不在此列、
+ // 按数据原样输出，不会因撞上界面词条（如「可信」）被误译；changes/summary 载荷键名与枚举取值按映射表走全局字典。
+ const RE_LABELS=new Set(['保存个人关联线索','解除个人关联线索','保存个人定性证据草稿','保存定性方法学评价草稿','保存定性综合置信度草稿','保存定性问题草稿','保存方法工作草稿','保存综述路径','核对证据共同出处','确认报告关系','解除报告关系','撤销报告关系裁决','撤销报告关联与证据变更']);
+ const RE_KEYS={links:'报告关联',drafts:'证据草稿',findings:'证据草稿',review:'综述路径',method:'定性综合方法',appraisalTool:'评价工具',interpretations:'方法工作区',confidence:'证据置信度',duplicatePairs:'重复证据对',question:'研究问题',appraisals:'定性研究评价',analysisChoices:'样本与结果选择',workspace_sha256:'工作区校验和',total_subjects:'受影响主体',truncated_subjects:'已截断主体',skipped_events:'跳过事件',items:'评价条目',finding:'综合发现',reason:'判断依据',overall:'整体置信度',dependability:'可靠性（Dependability）',credibility:'可信度（Credibility）',limitations:'方法学局限',coherence:'一致性',adequacy:'资料充分性',relevance:'相关性',summary:'综合说明与未解决问题',coding:'原文编码与依据',descriptive:'描述性主题',analytic:'分析性主题与推理',framework:'框架及选择依据',mapping:'证据与框架映射',outside:'框架外发现',concepts:'原研究概念与出处',translation:'互惠／反驳转译',argument:'论证链与反思',categories:'类别形成依据',unsupported:'缺乏支持的发现如何单独呈现',integration:'定量与定性证据的整合备忘',participants:'研究对象／视角',phenomenon:'关注的现象或经历',context:'情境',criteria:'纳入条件与资料范围',judgment:'判断',locator:'页码／位置'};
  const RE_ENUMS={linkType:{study:'同一研究的报告',sample:'相同样本',partial:'样本部分重叠',uncertain:'暂不确定',independent:'不同研究，样本不重叠'},linkStatus:{mine:'个人线索，待裁决',agreed:'已确认'},credibility:{unequivocal:'明确支持',credible:'可信',unsupported:'缺乏支持'},review:{quant:'定量综述／元分析',qual:'定性证据综合',mixed:'混合方法综述'},method:{jbi:'JBI 汇聚式综合',thematic:'主题综合',framework:'框架综合',ethno:'元民族志'},duplicatePairs:{same:'同一证据，保留共同出处',different:'不同证据，保留两条',uncertain:'暂不确定'}};
  const enumOf=(group,v)=>v==null||v===''?'':T(RE_ENUMS[group]?.[v]||String(v));
- // 条目摘要：links 条目→类型/状态（+同样本核对标记与位置），drafts 条目→研究发现（+JBI 可信度枚举）；其余交通用渲染。
+ // locator 仅拼接字符串；他成员提案在存储侧已脱敏为对象（{redacted,length[,sha256]}），渲染本地化占位说明而非 [object Object]。
+ const reLocator=v=>typeof v==='string'&&v?v:typeof v==='object'&&v!==null&&'redacted'in v?T('他人私有内容（已脱敏）'):'';
+ // 条目摘要：links 条目→类型/状态（+同样本核对标记与位置/脱敏占位），drafts 条目→研究发现（+JBI 可信度枚举）；其余交通用渲染。
  function reEntryText(entry){
   if(entry==null||typeof entry!=='object')return String(entry??'');
-  if('a'in entry&&'b'in entry)return [enumOf('linkType',entry.type),enumOf('linkStatus',entry.status),entry.same?T('相同样本已单独核对'):'',entry.locator||''].filter(Boolean).join(' · ');
+  if('a'in entry&&'b'in entry)return [enumOf('linkType',entry.type),enumOf('linkStatus',entry.status),entry.same?T('相同样本已单独核对'):'',reLocator(entry.locator)].filter(Boolean).join(' · ');
   if('finding'in entry||'theme'in entry)return [entry.finding||'',enumOf('credibility',entry.credibility)].filter(Boolean).join(' · ');
   return readableValue(entry);
  }
@@ -34,11 +37,12 @@
   }
   return parts.join(' · ');
  }
- // {value:label,…} 形态的统一入口：编码值等纯 {value:数据} 载荷维持原样输出，报告关联载荷追加键值描述。
+ // {value:label,…} 形态的统一入口：label 命中 RE_LABELS 显式集合才翻译（body.label 为自由字符串、编码值可撞界面词条，
+ // 不能用整本界面词典判定）；编码值等纯 {value:数据} 载荷维持原样输出，报告关联载荷追加键值描述。
  function reValueText(value,empty){
   const label=value.value==null?'':String(value.value),rest={...value};
   delete rest.value;delete rest.note;
-  const text=label?(window.ReportEvidenceLocale?.keys.has(label)?T(label):label):'';
+  const text=label?(RE_LABELS.has(label)?T(label):label):'';
   const desc=reEntriesText(rest);
   if(!desc)return text||empty;
   return (text?text+' · ':'')+desc;
