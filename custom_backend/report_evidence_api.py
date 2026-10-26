@@ -879,7 +879,12 @@ def register_report_evidence_routes(app, require_user):
             fresh_permission(c, ctx, user, shared=True)
             revision, before, _ = read(c, "*")
             row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor='*'").fetchone()
-            if revision != body.expected_revision or not row or not row[0]: raise HTTPException(409, "No current relationship change is available to undo.")
+            # 版本过期与「无可撤销变更」拆分返回：前者的 409 文案必须命中前端
+            # report_evidence.js 的 STALE 正则以触发冲突自动刷新（409 契约，钉子见
+            # build/tests/test_trace_static_guards.py）；后者与版本无关，保持原文案
+            # 且不得命中 STALE，避免误触发自动刷新。
+            if revision != body.expected_revision: raise HTTPException(409, "Confirmed relationships changed. Reload before undo.")
+            if not row or not row[0]: raise HTTPException(409, "No current relationship change is available to undo.")
             restored = json.loads(row[0])
             keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
             if any(l["a"] not in keys or l["b"] not in keys for l in restored["links"]):

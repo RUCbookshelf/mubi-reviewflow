@@ -13,11 +13,10 @@
    （"Evidence changed in another window."）、个人撤销 /undo（"Evidence
    changed. Reload before undo."）、裁决/确认 /relations（"Confirmed
    relationships changed. Reload first."——注意这不是共享撤销路由）、共享撤销
-   /relations/undo（组合条件 ``revision != body.expected_revision or not row
-   or not row[0]`` 的 "No current relationship change is available to undo."）。
-   其中共享撤销文案目前不命中 STALE，属真实未对齐：本测试按规格在此保持
-   失败，直至所属泳道修正（拆分组合条件使版本过期单独返回可命中文案，或
-   对齐后端文案/扩展前端正则）。其余 409 文案不得命中 STALE，防止非版本
+   /relations/undo（版本过期守卫已从「无可撤销变更」组合条件中拆分，单独返回
+   "Confirmed relationships changed. Reload before undo."；而 "No current
+   relationship change is available to undo." 仅由无可撤销变更触发，不参与
+   版本冲突，不得命中 STALE）。其余 409 文案不得命中 STALE，防止非版本
    冲突误触发自动刷新。
 """
 import re
@@ -57,9 +56,10 @@ RESEARCH_TRACE_EXEMPT = {
 
 _CJK = re.compile("[\u4e00-\u9fff]")
 # 由 expected_revision 不匹配触发的 409：单行守卫形态，允许与其他条件组合
-# （``if revision != body.expected_revision or ...: raise HTTPException(409, …)``，
-# 共享撤销 /relations/undo 即组合形态）。凡被该守卫覆盖的 409 文案都必须命中
-# 前端 STALE 正则——组合条件同样会在版本过期时触发，不能豁免。
+# （``if revision != body.expected_revision or ...: raise HTTPException(409, …)``）。
+# 凡被该守卫覆盖的 409 文案都必须命中前端 STALE 正则——组合条件同样会在
+# 版本过期时触发，不能豁免（共享撤销 /relations/undo 曾以组合形态漏出不可
+# 命中文案，已拆分修正）。
 _REVISION_CONFLICT_409 = re.compile(
     r"if\s+revision\s*!=\s*body\.expected_revision[^:\n]*:\s*"
     r"raise HTTPException\(409,\s*\"([^\"]+)\"\)"
@@ -176,7 +176,8 @@ class Stale409CouplingTests(unittest.TestCase):
         pattern = _frontend_stale_pattern()
         conflicts, _ = _backend_409_messages()
         # 四个触发点：保存 PUT / 个人撤销 /undo / 裁决确认 /relations /
-        # 共享撤销 /relations/undo（组合条件）。少于 4 条说明守卫被重构，钉子需跟进。
+        # 共享撤销 /relations/undo（版本过期守卫已拆分为独立 STALE 文案）。
+        # 少于 4 条说明守卫被重构，钉子需跟进。
         self.assertGreaterEqual(
             len(conflicts), 4,
             f"expected_revision 触发的 409 文案少于 4 条（当前 {conflicts}），耦合钉子失效",
