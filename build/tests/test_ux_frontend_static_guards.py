@@ -270,6 +270,17 @@ class ImportReviewLabelTests(unittest.TestCase):
         self.assertIn("ready:records.filter(r=>M.reason(r)==='ready').length", self.workspace,
                       "applyResult 应从合并后的本地数据即时重算 ready 计数（保存响应不含 review_counts）")
 
+    def test_apply_result_persists_authoritative_review_counts(self):
+        """评审修正：保存后计数以 review_updates.review_counts 为权威并持久化到
+        savedBatch——loader 后续渐进加载 notify 以首屏快照重建 batch 时不得把
+        ready 回退为保存前旧值（否则页签/按钮/实际可启用三者再度不一致）。"""
+        self.assertIn("const authoritativeCounts=delta&&delta.review_counts;", self.workspace,
+                      "applyResult 必须识别后端权威计数（review_updates.review_counts）")
+        self.assertIn("savedBatch={...savedBatch,review_counts:authoritativeCounts};", self.workspace,
+                      "权威计数必须写入 savedBatch 持久化（loader notify 的 savedBatch 覆盖合并由此保留它）")
+        self.assertIn("if(!authoritativeCounts)", self.workspace,
+                      "无 review_updates 的响应才退回本地重算（activate 由 I.open 重取批次详情）")
+
 
 class ImportLoadingTests(unittest.TestCase):
     """高5（F31）：preserve 重开静默合并、胶囊折叠、轮询不重放动画。"""

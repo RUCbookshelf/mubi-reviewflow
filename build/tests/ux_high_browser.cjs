@@ -66,9 +66,16 @@ async function apiFixtures() {
     return cands[0].review_id;
   };
 
-  await upload('base.ris', ris([BASE1, BASE2]));
+  await upload('base.ris', ris([BASE1, BASE2, {
+    AU: 'Charlie, C', TI: 'Progressive Base Study', PY: '2024', DO: '10.test/base3', ID: 'SHAREKEY3'}]));
   const batchHc = await upload('batchB.ris', ris([CONFLICT1, FRESH]));
   const batchGc = await upload('batchC.ris', ris([CONFLICT2]));
+  // batchP：渐进加载竞争现场——23 条记录（>20，records feed 必有第二页），
+  // 内含一个【未裁决】的 identity_conflict 候选（保存动作留给 UI 完成）。
+  const batchP = await upload('batchP.ris', ris([{
+    AU: 'Charlie, C', TI: 'Progressive Base Study Variant', PY: '2024', DO: '10.test/other3', ID: 'SHAREKEY3'},
+    ...Array.from({length: 22}, (_, i) => ({
+      AU: `Fill, F${i}`, TI: `Progressive Fill Study ${i}`, PY: '2025', DO: `10.test/pfill${i}`}))]));
   await decide(batchHc, 'not_duplicate');           // hc：已决未启用（成员仍 staged）
   await decide(batchGc, 'not_duplicate');           // gc：已决
   const version = (await (await fetch(`${base}/import-batches/${batchGc}?view=all&limit=200`, {headers})).json()).policy_version;
@@ -96,8 +103,14 @@ async function apiFixtures() {
   assert.equal(stagedMember.record.state, 'staged', 'hc 已决组必须仍含 staged 成员记录');
   assert.ok(!('ref_type' in legacy[0].members[0]) && 'zotero_key' in legacy[0].members[0],
     '真实 legacy 成员形状钉子：无 ref_type、有 zotero_key');
+  // batchP 数据前提：records feed 必须分页（>20 条），且存在未裁决候选。
+  const pDetail = await (await fetch(`${base}/import-batches/${batchP}?view=all&limit=200`, {headers})).json();
+  assert.ok(pDetail.view_total > 20, 'batchP 记录数必须 >20 才有第二页渐进加载，实际 ' + pDetail.view_total);
+  const pCands = (await (await fetch(`${base}/import-batches/${batchP}/candidates?view=all`, {headers})).json()).candidates;
+  assert.equal(pCands.filter(c => c.status === 'pending' || c.status === 'undecided').length, 1,
+    'batchP 必须恰好有一个待裁决候选（UI 保存动作的目标）');
 
-  const session = {token, task, batchHc, batchGc, url};
+  const session = {token, task, batchHc, batchGc, batchP, url};
   fs.writeFileSync(path.join(sessionDir, 'ux_high_session.json'), JSON.stringify(session, null, 2));
   return session;
 }
@@ -206,6 +219,60 @@ async function apiFixtures() {
       '队列项同款徽标');
   });
 
+  /* ---------- 高4（评审补强）：渐进加载竞争——后台阶段保存后权威计数不被快照回退 ---------- */
+  await check('高4: 渐进加载竞争——background 中保存 not_duplicate，complete 后四口径一致且可点击', async () => {
+    // 把 records feed 第二页（offset=20）人为延后：batchP 有 23 条记录（>20）。
+    // loader 在 resume() 里逐页拉取（import_review_loading.js:10），offset=20
+    // 挂起期间 phase==='background'，首屏已可交互——此时经 UI 完成一次
+    // not_duplicate 保存；放行后 loader 的 notify 会用首屏快照重建 batch，
+    // 若 applyResult 不持久化权威 review_counts，ready 会被回退为保存前旧值。
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/import-batches/**', async route => {
+      const request = route.request();
+      const target = request.url();
+      if (request.method() === 'GET' && target.includes('view=all')
+          && target.includes('offset=20') && !target.includes('/candidates')) await gate;
+      await route.continue();
+    });
+    await page.evaluate(() => window.WorkflowImports.list());
+    const card = page.locator('.history-batch').filter({hasText: 'batchP.ris'});
+    await card.waitFor({state: 'visible', timeout: 15000});
+    await card.getByRole('button').first().click();
+    await page.waitForFunction(() => document.querySelector('.load-state')?.dataset.phase === 'background',
+      null, {timeout: 30000});
+    // 待裁决候选组在默认「重复检查」页签且自动选中；经 UI 点「不同文献，分别保留」。
+    const groupCard = page.locator('.main-panel .card');
+    await groupCard.waitFor({state: 'visible'});
+    await groupCard.getByRole('button').filter({hasText: /不同文献|Not duplicates/}).click();
+    await page.waitForFunction(() => document.querySelector('#wf-import-activation button')?.textContent.includes('(1)'),
+      null, {timeout: 30000});
+    // 后台阶段：真实计数已生效（按钮 (1)），页签带「≥」前缀属加载提示而非旧值。
+    assert.match(await badge('ready').textContent(), /^≥\s*1/,
+      'background 阶段页签应为「≥ 1」，实际 ' + await badge('ready').textContent());
+    release();
+    await page.waitForFunction(() => {
+      const counts = document.querySelectorAll('#wf-import-review .tabs .count');
+      return counts.length === 5 && [...counts].every(c => !c.textContent.startsWith('≥'));
+    }, null, {timeout: 30000});
+    // 四口径一致：页签徽标 = 启用按钮 (N) = 后端 review_counts.ready = 页签可见记录数。
+    assert.equal(await badge('ready').textContent(), '1',
+      'complete 后页签计数不得被渐进加载快照回退（评审指出的回归路径）');
+    assert.match(await activationButton().textContent(), /\(1\)/);
+    assert.equal(await activationButton().isDisabled(), false, '启用按钮必须可点击');
+    const detail = await (await fetch(`${url}/api/tasks/${fixtures.task}/import-batches/${fixtures.batchP}?view=all&limit=1`,
+      {headers: {authorization: 'Bearer ' + fixtures.token}})).json();
+    assert.equal(detail.review_counts.ready, 1, '后端 review_counts.ready 必须为 1');
+    await page.locator('#wf-review-tab-ready').click();
+    const items = page.locator('#wf-import-review .queue .queue-item');
+    assert.equal(await items.count(), 1, '待启用页签可见记录数必须为 1');
+    await items.first().click();
+    const cardAction = page.locator('.main-panel .card [data-import-activation]');
+    assert.equal(await cardAction.count(), 1, '记录卡上应渲染启用动作');
+    assert.equal(await cardAction.isDisabled(), false, '记录卡上的启用动作必须可点击');
+    await page.unrouteAll({behavior: 'ignore'});
+  });
+
   /* ---------- 高7：遮罩取消 + 已用时长 ---------- */
   await check('高7: 挂起导入遮罩可取消并恢复交互，已用时长逐秒可见', async () => {
     let release;
@@ -236,7 +303,7 @@ async function apiFixtures() {
   });
 
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({checks: 8, errors, fixtures: {task: fixtures.task, batchHc: fixtures.batchHc, batchGc: fixtures.batchGc}}));
+  console.log(JSON.stringify({checks: 9, errors, fixtures: {task: fixtures.task, batchHc: fixtures.batchHc, batchGc: fixtures.batchGc}}));
   await browser.close();
 })().catch(error => {
   console.error(String(error.stack || error).replace(/Bearer [^\s'"\u001b]+/g, 'Bearer [redacted]'));
