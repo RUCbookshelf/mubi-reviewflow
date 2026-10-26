@@ -246,6 +246,10 @@ def _public_snapshot(events: list[dict[str, Any]], partitions: list[dict[str, An
         event.pop("task_id", None)
         event["actor_alias"] = alias
         event.pop("actor_id", None)
+        # Public preset only: the embedded origin copy retains the authoring
+        # store's original event verbatim (other members' evidence/locator text
+        # and identity fields included), so it never leaves in a public package.
+        event.pop("origin", None)
         event["store_id"] = store_aliases.get(str(raw.get("store_id")), "Store")
         output.append(event)
     public_origin = {

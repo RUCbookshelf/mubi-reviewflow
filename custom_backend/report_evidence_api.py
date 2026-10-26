@@ -10,9 +10,11 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
 import uuid
+from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 from typing import Literal
@@ -32,6 +34,15 @@ TRACE_SAVE_BYTES_LIMIT = 2_000_000
 TRACE_SUBJECT_LIMIT = 100
 # 幂等去重日志按成员保留的最近操作数：网络重试窗口足够，表不再随保存次数无限增长。
 REQUEST_JOURNAL_LIMIT = 200
+# 存量折叠迁移：迁移前备份后缀与完成标记表（fold-v1）。
+FOLD_BACKUP_SUFFIX = ".pre-fold-v1.bak"
+_FOLD_META_TABLE = "report_evidence_fold_meta"
+# 旧全量快照事件的扫描 SQL：载荷含精确键名 "workspace"（新格式/摘要的 workspace_sha256
+# 与 note 文本都不会命中该 LIKE 模式）。
+_LEGACY_SCAN_SQL = (
+    "SELECT sequence,task_id,actor_id,stage,action,subject_id,before_json,after_json,origin_event_id "
+    "FROM trace_events WHERE action IN ('report_evidence_changed','imported_report_evidence_changed') "
+    "AND (before_json LIKE '%\"workspace\"%' OR after_json LIKE '%\"workspace\"%') ORDER BY sequence")
 TRACE_STAGES = ("screen", "fulltext", "coding")
 DEFAULT = {"links": [], "drafts": [], "method": "jbi", "review": "quant",
            "interpretations": {}, "confidence": {}, "duplicatePairs": {},
@@ -65,7 +76,8 @@ class RelationIn(UndoIn):
 
 
 def _entry_subjects(entry):
-    return {entry[k] for k in ("a", "b", "key") if k in entry} if entry else set()
+    # 主体键统一为字符串：增量分组与排序不再依赖载荷内的原始类型。
+    return {str(entry[k]) for k in ("a", "b", "key") if k in entry} if entry else set()
 
 
 def _redact_foreign_entry(entry, owner_actor):
@@ -89,25 +101,66 @@ def _redact_foreign_entry(entry, owner_actor):
 
 
 def _workspace_deltas(before, after, owner_actor):
-    """计算按受影响主体分组的增量条目与通用映射增量；新写入路径与存量迁移共用。
+    """计算按受影响主体分组的增量条目与通用映射增量；新写入路径与存量折叠共用。
 
+    links/drafts 按多重集合比较：完全相同的条目先逐一抵消，剩余条目再按
+    (id, actor_id) 键配对（多余的一侧记为删除/新增）。跨成员同 id 提案与
+    已落库的同 id 重复共享关系因此都能得到正确增量——unlink/undo 删除任一条
+    同 id 关系必然留痕，也不会把仍然存在的关系误记为本次新增或替换。
     返回 (deltas, map_before, map_after)：deltas[主体] = (before 条目, after 条目)，
     每侧形如 {"links": [...], "drafts": [...]}，已按 owner_actor 脱敏非本人提案。
     """
+    def canonical(entry):
+        return json.dumps(entry, ensure_ascii=False, sort_keys=True)
+
+    def usable_entries(value):
+        # 非法条目（非 dict/缺 id）不参与增量：写入路径经 validate 保证合法，
+        # 折叠路径对这类形态已整体跳过（见 _legacy_workspace_foldable），此处仅防御。
+        return [x for x in (value or []) if isinstance(x, dict) and "id" in x]
+
+    def multiset_leftovers(old_list, new_list):
+        old_entries, new_entries = usable_entries(old_list), usable_entries(new_list)
+        new_counts = Counter(canonical(x) for x in new_entries)
+        old_counts = Counter(canonical(x) for x in old_entries)
+        kept_old = []
+        for entry in old_entries:
+            key = canonical(entry)
+            if new_counts[key] > 0:
+                new_counts[key] -= 1
+            else:
+                kept_old.append(entry)
+        kept_new = []
+        for entry in new_entries:
+            key = canonical(entry)
+            if old_counts[key] > 0:
+                old_counts[key] -= 1
+            else:
+                kept_new.append(entry)
+        return kept_old, kept_new
+
     deltas = {}
     for field in ("links", "drafts"):
-        old = {x["id"]: x for x in before.get(field, [])}
-        new = {x["id"]: x for x in after.get(field, [])}
-        for entry_id in set(old) | set(new):
-            old_entry, new_entry = old.get(entry_id), new.get(entry_id)
-            if old_entry == new_entry:
-                continue
-            for subject in _entry_subjects(old_entry) | _entry_subjects(new_entry):
-                pair = deltas.setdefault(subject, ({"links": [], "drafts": []}, {"links": [], "drafts": []}))
-                if old_entry:
-                    pair[0][field].append(_redact_foreign_entry(old_entry, owner_actor))
-                if new_entry:
-                    pair[1][field].append(_redact_foreign_entry(new_entry, owner_actor))
+        kept_old, kept_new = multiset_leftovers(before.get(field), after.get(field))
+
+        def pair_key(entry):
+            return (str(entry.get("id", "")), str(entry.get("actor_id", "")))
+
+        by_key_old, by_key_new = {}, {}
+        for entry in kept_old:
+            by_key_old.setdefault(pair_key(entry), []).append(entry)
+        for entry in kept_new:
+            by_key_new.setdefault(pair_key(entry), []).append(entry)
+        for key in sorted(set(by_key_old) | set(by_key_new)):
+            olds, news = by_key_old.get(key, []), by_key_new.get(key, [])
+            for index in range(max(len(olds), len(news))):
+                old_entry = olds[index] if index < len(olds) else None
+                new_entry = news[index] if index < len(news) else None
+                for subject in _entry_subjects(old_entry) | _entry_subjects(new_entry):
+                    pair = deltas.setdefault(subject, ({"links": [], "drafts": []}, {"links": [], "drafts": []}))
+                    if old_entry:
+                        pair[0][field].append(_redact_foreign_entry(old_entry, owner_actor))
+                    if new_entry:
+                        pair[1][field].append(_redact_foreign_entry(new_entry, owner_actor))
     map_before, map_after = {}, {}
     for name in ("review", "method", "appraisalTool", "interpretations", "confidence",
                  "duplicatePairs", "question", "appraisals", "analysisChoices"):
@@ -130,7 +183,7 @@ def _legacy_snapshot_digest(label, workspace):
     """存量全量快照的降级摘要：与新写入路径的超预算摘要同构。"""
     return {"value": label, "workspace_sha256": hashlib.sha256(
                 json.dumps(workspace, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
-            "links": len(workspace.get("links", [])), "findings": len(workspace.get("drafts", [])),
+            "links": len(workspace.get("links", []) or []), "findings": len(workspace.get("drafts", []) or []),
             "note": "Legacy full workspace snapshot compacted by one-time migration; export JSON to inspect current details."}
 
 
@@ -143,110 +196,342 @@ def _redact_workspace(workspace, owner_actor):
     return cleaned
 
 
-def compact_legacy_trace_events(c):
-    """一次性迁移 2.1.3 写入的全量快照轨迹事件（幂等，带完成标记，可安全重入）。
+def _table_exists(c, name):
+    return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
-    旧版每次保存把整份工作区快照嵌入每个受影响主体事件的 before/after
-    （{"value": 标签, "workspace": {...}}）：既会把轨迹导出顶过 32MB 上限（永久 413），
-    也让共享裁决轨迹中其他成员的 evidence/locator 原文长期留在库内、随公开导出外带。
-    此处把每条旧事件改写为与当前写入路径一致的按主体增量条目（单个主体增量超过
-    TRACE_EVENT_BYTES_LIMIT 时降级为摘要+哈希），并按事件归属人脱敏非本人提案文本；
-    同一次旧保存产生的多条事件共享相同快照，通用映射增量只保留一份避免重复。
-    迁移只改写 before_json/after_json 载荷，事件序号、时间、阶段、主体等元数据不变。
+
+def _fold_marker_present(c):
+    return (_table_exists(c, _FOLD_META_TABLE)
+            and c.execute(f"SELECT 1 FROM {_FOLD_META_TABLE} WHERE singleton=1").fetchone() is not None)
+
+
+def _classify_legacy_side(payload):
+    """单侧旧载荷形态：full=内嵌全量快照；digest=旧摘要；foreign=与本迁移无关；malformed=畸形。"""
+    if not isinstance(payload, dict):
+        return "malformed"
+    if "workspace" in payload:
+        return "full" if isinstance(payload["workspace"], dict) else "malformed"
+    if "workspace_sha256" in payload:
+        return "digest"
+    return "foreign"
+
+
+def _legacy_workspace_foldable(workspace):
+    """全量快照可折叠性检查：links/drafts 缺失或为含 id 的条目 dict 列表才可计算增量。"""
+    for field in ("links", "drafts"):
+        value = workspace.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            return False
+        if any(not isinstance(entry, dict) or "id" not in entry for entry in value):
+            return False
+    return True
+
+
+def _payload_pair_bytes(before_payload, after_payload):
+    return (len(json.dumps(before_payload, ensure_ascii=False).encode())
+            + len(json.dumps(after_payload, ensure_ascii=False).encode()))
+
+
+def _rewrite_legacy_rows(c, rows, payload_pairs, *, fold_to_one):
+    """只改写 before_json/after_json；fold_to_one 时删除同批多余的自有事件行。
+
+    携带 origin 身份（origin_event_id 非空）的导入事件行绝不会被删除：
+    origin_* 九列与 origin_sha256 一律不动，旧导出包重导入保持 duplicate 语义。
     """
-    if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trace_events'").fetchone() is None:
-        return
-    own = not c.in_transaction
-    if own:
-        c.execute("BEGIN IMMEDIATE")
+    for row, (payload_before, payload_after) in zip(rows, payload_pairs):
+        c.execute("UPDATE trace_events SET before_json=?, after_json=? WHERE sequence=?",
+                  (json.dumps(payload_before, ensure_ascii=False, sort_keys=True),
+                   json.dumps(payload_after, ensure_ascii=False, sort_keys=True),
+                   row["sequence"]))
+    if fold_to_one:
+        for row in rows[len(payload_pairs):]:
+            c.execute("DELETE FROM trace_events WHERE sequence=?", (row["sequence"],))
+
+
+def _merged_batch_payloads(label, redacted_before, redacted_after, actor):
+    """同一次保存全部主体的增量合并为单一载荷（changes 内为各主体条目并集 + 映射增量）。"""
+    deltas, map_before, map_after = _workspace_deltas(redacted_before, redacted_after, actor)
+    changes_before = {"links": [], "drafts": []}
+    changes_after = {"links": [], "drafts": []}
+    subjects = sorted(deltas)
+    for subject in subjects:
+        for field in ("links", "drafts"):
+            changes_before[field].extend(deltas[subject][0][field])
+            changes_after[field].extend(deltas[subject][1][field])
+    changes_before.update(map_before)
+    changes_after.update(map_after)
+    before_payload = {"value": label, "changes": changes_before}
+    after_payload = {"value": label, "changes": changes_after}
+    if subjects:
+        after_payload["affected_subjects"] = subjects
+    return before_payload, after_payload
+
+
+def _fold_one_run(c, run, budget):
+    """折叠一个保存批次；返回 (状态, 删除行数)：folded / foreign（无关，原样保留）/ malformed（跳过）。"""
+    rows = run["rows"]
+    first = rows[0]
     try:
-        c.execute("CREATE TABLE IF NOT EXISTS report_evidence_trace_meta "
-                  "(singleton INTEGER PRIMARY KEY CHECK(singleton=1), legacy_compacted_at TEXT NOT NULL)")
-        if c.execute("SELECT 1 FROM report_evidence_trace_meta WHERE singleton=1").fetchone():
+        before_payload = json.loads(first["before_json"]) if first["before_json"] is not None else None
+        after_payload = json.loads(first["after_json"]) if first["after_json"] is not None else None
+    except (TypeError, ValueError):
+        return "malformed", 0
+    kind_before = _classify_legacy_side(before_payload)
+    kind_after = _classify_legacy_side(after_payload)
+    if kind_before == "foreign" and kind_after == "foreign":
+        return "foreign", 0
+    if "malformed" in (kind_before, kind_after):
+        return "malformed", 0
+    if kind_before == "full" and not _legacy_workspace_foldable(before_payload["workspace"]):
+        return "malformed", 0
+    if kind_after == "full" and not _legacy_workspace_foldable(after_payload["workspace"]):
+        return "malformed", 0
+    if kind_before == "digest" and kind_after == "digest":
+        return "foreign", 0  # 两侧均已是旧摘要：紧凑形态，无需折叠
+    actor = str(first["actor_id"])
+    label = str(before_payload.get("value") or after_payload.get("value") or "")
+    redacted = {side: _redact_workspace(payload["workspace"], actor)
+                for side, kind, payload in (("before", kind_before, before_payload),
+                                            ("after", kind_after, after_payload)) if kind == "full"}
+    native = first["action"] == "report_evidence_changed" and first["origin_event_id"] is None
+    budget_key = (first["task_id"], actor)
+    used = budget.get(budget_key, 0)
+
+    def over_budget(payload_before, payload_after):
+        size = _payload_pair_bytes(payload_before, payload_after)
+        return size > TRACE_EVENT_BYTES_LIMIT or used + size > TRACE_SAVE_BYTES_LIMIT, size
+
+    if kind_before == "full" and kind_after == "full":
+        if native:
+            # 自有事件：整批折叠为一条增量事件；超预算（单条或该成员累计）降级为摘要+哈希。
+            payload_before, payload_after = _merged_batch_payloads(label, redacted["before"], redacted["after"], actor)
+            exceeded, size = over_budget(payload_before, payload_after)
+            if exceeded:
+                payload_before = _legacy_snapshot_digest(label, redacted["before"])
+                payload_after = _legacy_snapshot_digest(label, redacted["after"])
+                size = _payload_pair_bytes(payload_before, payload_after)
+            budget[budget_key] = used + size
+            _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)], fold_to_one=True)
+            return "folded", len(rows) - 1
+        # 导入事件：origin 身份行不可删除，逐行只保留各自主体的增量（首批附映射增量）。
+        deltas, map_before, map_after = _workspace_deltas(redacted["before"], redacted["after"], actor)
+        per_row = []
+        row_used = used
+        for index, row in enumerate(rows):
+            subject = str(row["subject_id"])
+            payload_before = payload_after = None
+            if subject in deltas:
+                payload_before = {"value": label, "changes": deltas[subject][0]}
+                payload_after = {"value": label, "changes": deltas[subject][1]}
+            if (map_before or map_after) and index == 0:
+                base_before = dict(payload_before or {"value": label, "changes": {}})
+                base_after = dict(payload_after or {"value": label, "changes": {}})
+                base_before["changes"] = {**base_before["changes"], **map_before}
+                base_after["changes"] = {**base_after["changes"], **map_after}
+                payload_before, payload_after = base_before, base_after
+            if payload_before is None:
+                payload_before = _legacy_snapshot_digest(label, redacted["before"])
+                payload_after = _legacy_snapshot_digest(label, redacted["after"])
+            exceeded, size = over_budget(payload_before, payload_after)
+            if exceeded:
+                payload_before = _legacy_snapshot_digest(label, redacted["before"])
+                payload_after = _legacy_snapshot_digest(label, redacted["after"])
+                size = _payload_pair_bytes(payload_before, payload_after)
+            row_used += size
+            per_row.append((payload_before, payload_after))
+        budget[budget_key] = row_used
+        _rewrite_legacy_rows(c, rows, per_row, fold_to_one=False)
+        return "folded", 0
+    # 混合形态（一侧全量、一侧已是旧摘要）：摘要侧原样保留其 workspace_sha256 与
+    # links/findings 计数（不得重算为空摘要），全量侧脱敏后降级为摘要。
+    payload_before = before_payload if kind_before == "digest" else _legacy_snapshot_digest(label, redacted["before"])
+    payload_after = after_payload if kind_after == "digest" else _legacy_snapshot_digest(label, redacted["after"])
+    size = _payload_pair_bytes(payload_before, payload_after)
+    budget[budget_key] = used + size
+    if native:
+        _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)], fold_to_one=True)
+        return "folded", len(rows) - 1
+    _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)] * len(rows), fold_to_one=False)
+    return "folded", 0
+
+
+def _fold_legacy_runs(c):
+    """按保存批次折叠全部旧全量快照事件；返回 (折叠批次数, 删除行数, {(task,actor,stage): 跳过数})。
+
+    同一次保存的多条事件共享完全相同的 before/after 快照且序号连续（单事务写入），
+    以 (task,actor,stage,action,before_json,after_json) 为键、序号连续性切分批次；
+    不同保存（不同快照对）天然落进不同批次，不会被误并。
+    """
+    # 先物化再折叠：避免在未走完的 SELECT 游标上 UPDATE/DELETE 同一张表。
+    runs = []
+    for row in c.execute(_LEGACY_SCAN_SQL).fetchall():
+        key = (row["task_id"], row["actor_id"], row["stage"], row["action"],
+               row["before_json"], row["after_json"])
+        if runs and runs[-1]["key"] == key and runs[-1]["last_sequence"] + 1 == row["sequence"]:
+            runs[-1]["rows"].append(row)
+            runs[-1]["last_sequence"] = row["sequence"]
+        else:
+            runs.append({"key": key, "rows": [row], "last_sequence": row["sequence"]})
+    folded_runs = deleted_rows = 0
+    skipped = {}
+    budget = {}
+    for run in runs:
+        try:
+            status, removed = _fold_one_run(c, run, budget)
+        except Exception:
+            status, removed = "malformed", 0  # M5：任何畸形/意外都只跳过该批，不中断迁移
+        if status == "folded":
+            folded_runs += 1
+            deleted_rows += removed
+        elif status == "malformed":
+            first = run["rows"][0]
+            skipped[(first["task_id"], str(first["actor_id"]), first["stage"])] = (
+                skipped.get((first["task_id"], str(first["actor_id"]), first["stage"]), 0) + 1)
+    return folded_runs, deleted_rows, skipped
+
+
+def _insert_fold_marker_events(c, skipped):
+    """畸形载荷跳过标记：沿用既有动作键 report_evidence_changed（不新增动作），按归属一批一条。"""
+    store = c.execute("SELECT store_id FROM trace_store WHERE singleton=1").fetchone()
+    if store is None:
+        return
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    for (task_id, actor_id, stage), count in sorted(skipped.items()):
+        c.execute(
+            "INSERT INTO trace_events (event_id,store_id,task_id,actor_id,stage,action,subject_id,"
+            "before_json,after_json,field_json,source,recorded_at,schema_version,app_version) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), store[0], task_id, actor_id, stage if stage in TRACE_STAGES else "coding",
+             "report_evidence_changed", "report-evidence", None,
+             json.dumps({"value": "Legacy trace fold skipped malformed events", "skipped_events": count,
+                         "note": "Legacy snapshot events with malformed payloads were left unchanged."},
+                        ensure_ascii=False, sort_keys=True),
+             None, "report_evidence", now, research_trace.SCHEMA_VERSION, research_trace.__version__))
+
+
+def _backup_before_fold(c):
+    """迁移前备份 <db>.pre-fold-v1.bak（经 sqlite backup 捕获 WAL 内容）；已存在则跳过不覆盖。
+
+    返回 False 表示备份失败：本次放弃折叠且不置完成标记，下次连接重试。
+    """
+    try:
+        row = c.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return False
+    path = row[2] if row else ""
+    if not path:
+        return True  # 内存库无文件可备，直接继续
+    backup_path = path + FOLD_BACKUP_SUFFIX
+    if os.path.exists(backup_path):
+        return True
+    target = None
+    ok = False
+    try:
+        target = sqlite3.connect(backup_path)
+        c.backup(target)
+        ok = True
+    except (OSError, sqlite3.Error):
+        ok = False
+    finally:
+        if target is not None:
+            try:
+                target.close()
+            except sqlite3.Error:
+                pass
+    if not ok:
+        try:
+            if os.path.exists(backup_path):
+                os.remove(backup_path)  # 清理半成品，避免下次被误判为“已备份”
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def compact_legacy_trace_events(c):
+    """一次性迁移：把 2.1.3 全量快照轨迹事件按保存批次折叠（幂等、带完成标记与迁移前备份）。
+
+    旧版每次保存给每个受影响主体写一条内嵌整份工作区快照的 report_evidence_changed
+    事件；同一次保存的多条事件共享相同快照且序号连续，据此识别保存批次并折叠为
+    每批一条增量事件（载荷含 value 标签、changes 增量；单条或该成员累计超出轨迹
+    预算时降级为摘要，含 workspace_sha256 与 links/findings 计数）。混合形态
+    （一侧全量、一侧已是旧摘要）保留摘要侧原有哈希与计数；畸形载荷跳过并写
+    标记事件，任何情况不抛错。迁移只改写/删减 2.1.3 自有事件行的
+    before_json/after_json：origin_* 九列与 origin_sha256 绝对不动，携带 origin
+    身份的导入事件只更新、不删除；不删除 trace_field_lifecycles 与幂等回执表
+    （无 clear_history 语义）。完成标记存在时本函数只做只读检查，不取写锁。
+    """
+    try:
+        if not _table_exists(c, "trace_events"):
+            return
+        if _fold_marker_present(c):
+            return
+        needs_fold = c.execute(_LEGACY_SCAN_SQL + " LIMIT 1").fetchone() is not None
+        backup_ok = _backup_before_fold(c) if needs_fold else True
+        # 备份在取写锁之前完成：backup API 不能在持有 BEGIN IMMEDIATE 事务的
+        # 连接上执行（会自锁）；备份失败则本次不折叠、不置标记，下次连接重试。
+        own = not c.in_transaction
+        if own:
+            c.execute("BEGIN IMMEDIATE")
+        try:
+            c.execute(f"CREATE TABLE IF NOT EXISTS {_FOLD_META_TABLE} "
+                      "(singleton INTEGER PRIMARY KEY CHECK(singleton=1), folded_at TEXT NOT NULL, "
+                      "folded_runs INTEGER NOT NULL, deleted_rows INTEGER NOT NULL, skipped_events INTEGER NOT NULL)")
+            if _fold_marker_present(c):  # 拿到写锁后复核，防并发重复折叠
+                if own:
+                    c.commit()
+                return
+            folded_runs = deleted_rows = 0
+            skipped = {}
+            if needs_fold:
+                if not backup_ok:
+                    if own:
+                        c.commit()  # 备份失败：空事务收尾，不置标记，下次连接重试
+                    return
+                folded_runs, deleted_rows, skipped = _fold_legacy_runs(c)
+                if skipped:
+                    _insert_fold_marker_events(c, skipped)
+            c.execute(f"INSERT INTO {_FOLD_META_TABLE} VALUES(1, ?, ?, ?, ?)",
+                      (datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                       folded_runs, deleted_rows, sum(skipped.values())))
             if own:
                 c.commit()
-            return
-        # 旧格式特征：载荷含精确键名 "workspace"（新格式的 workspace_sha256 不会命中该模式）。
-        rows = c.execute(
-            "SELECT sequence,actor_id,subject_id,before_json,after_json FROM trace_events "
-            "WHERE action IN ('report_evidence_changed','imported_report_evidence_changed') "
-            "AND (before_json LIKE '%\"workspace\"%' OR after_json LIKE '%\"workspace\"%') ORDER BY sequence"
-        ).fetchall()
-        groups = {}
-        for row in rows:
-            try:
-                before_payload = json.loads(row[3]) if row[3] is not None else None
-                after_payload = json.loads(row[4]) if row[4] is not None else None
-            except (TypeError, ValueError):
-                continue  # 载荷损坏的事件保持原样，不中断迁移
-            if not isinstance(before_payload, dict) or not isinstance(after_payload, dict):
-                continue
-            groups.setdefault((row[1], row[3], row[4]), []).append(
-                (row[0], row[2], before_payload, after_payload))
-        for (_actor, _raw_before, _raw_after), events in groups.items():
-            actor = str(_actor)
-            label = events[0][2].get("value") or events[0][3].get("value") or ""
-            w_before = events[0][2].get("workspace") if isinstance(events[0][2].get("workspace"), dict) else None
-            w_after = events[0][3].get("workspace") if isinstance(events[0][3].get("workspace"), dict) else None
-            if w_before is None or w_after is None:
-                # 任一侧已是旧版摘要形态时无法重算增量：两侧统一降级为摘要（脱敏后再哈希）。
-                redacted_before = _redact_workspace(w_before or {}, actor)
-                redacted_after = _redact_workspace(w_after or {}, actor)
-                for sequence, _subject, _bp, _ap in events:
-                    c.execute("UPDATE trace_events SET before_json=?, after_json=? WHERE sequence=?",
-                              (json.dumps(_legacy_snapshot_digest(label, redacted_before), ensure_ascii=False, sort_keys=True),
-                               json.dumps(_legacy_snapshot_digest(label, redacted_after), ensure_ascii=False, sort_keys=True),
-                               sequence))
-                continue
-            redacted_before = _redact_workspace(w_before, actor)
-            redacted_after = _redact_workspace(w_after, actor)
-            deltas, map_before, map_after = _workspace_deltas(redacted_before, redacted_after, actor)
-            digest_before = _legacy_snapshot_digest(label, redacted_before)
-            digest_after = _legacy_snapshot_digest(label, redacted_after)
-            map_carrier = next((e for e in events if e[1] == "report-evidence"), events[0])
-            for sequence, subject, _bp, _ap in events:
-                before_payload = after_payload = None
-                if subject in deltas:
-                    before_payload = {"value": label, "changes": deltas[subject][0]}
-                    after_payload = {"value": label, "changes": deltas[subject][1]}
-                if (map_before or map_after) and sequence == map_carrier[0]:
-                    merged_before = dict(before_payload or {"value": label, "changes": {}})
-                    merged_after = dict(after_payload or {"value": label, "changes": {}})
-                    merged_changes_before = dict(merged_before["changes"]); merged_changes_before.update(map_before)
-                    merged_changes_after = dict(merged_after["changes"]); merged_changes_after.update(map_after)
-                    merged_before["changes"] = merged_changes_before
-                    merged_after["changes"] = merged_changes_after
-                    before_payload, after_payload = merged_before, merged_after
-                if before_payload is None:
-                    before_payload, after_payload = digest_before, digest_after
-                size = (len(json.dumps(before_payload, ensure_ascii=False).encode())
-                        + len(json.dumps(after_payload, ensure_ascii=False).encode()))
-                if size > TRACE_EVENT_BYTES_LIMIT:
-                    before_payload, after_payload = digest_before, digest_after
-                c.execute("UPDATE trace_events SET before_json=?, after_json=? WHERE sequence=?",
-                          (json.dumps(before_payload, ensure_ascii=False, sort_keys=True),
-                           json.dumps(after_payload, ensure_ascii=False, sort_keys=True), sequence))
-        c.execute("INSERT INTO report_evidence_trace_meta VALUES(1, ?)",
-                  (datetime.now(timezone.utc).isoformat(timespec="milliseconds"),))
-        if own:
-            c.commit()
+        except Exception:
+            if own:
+                c.rollback()
+            raise
     except Exception:
-        if own:
-            c.rollback()
-        raise
+        # M5：迁移自身异常绝不向上传播（connect/导出路径不得 500）。
+        # 自有事务已回滚、无标记，下次连接重试；调用方事务由其自行回滚。
+        return
 
 
 def connect(path):
     c = sqlite3.connect(path, timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA busy_timeout=15000")
-    c.execute("CREATE TABLE IF NOT EXISTS report_evidence_state (actor TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL, previous TEXT, previous_stage TEXT)")
-    # 旧库迁移：为撤销栈补记保存时的轨迹阶段，使撤销事件与对应保存落在同一阶段。
-    if "previous_stage" not in {r[1] for r in c.execute("PRAGMA table_info(report_evidence_state)")}:
-        c.execute("ALTER TABLE report_evidence_state ADD COLUMN previous_stage TEXT")
-    c.execute("CREATE TABLE IF NOT EXISTS report_evidence_requests (actor TEXT, operation TEXT, digest TEXT NOT NULL, PRIMARY KEY(actor,operation))")
-    c.commit()
-    # 2.1.3 存量全量快照轨迹事件的一次性压缩/脱敏迁移（幂等；无旧事件时仅一次空扫描后置标记）。
+    # 证据表惰性建表：schema 就绪后（含折叠完成标记就位后）纯读路径不再执行
+    # 任何 DDL 或迁移写事务，不再取 SQLite 写锁。
+    def schema_ready():
+        return (_table_exists(c, "report_evidence_state") and _table_exists(c, "report_evidence_requests")
+                and "previous_stage" in {row[1] for row in c.execute("PRAGMA table_info(report_evidence_state)")})
+    if not schema_ready():
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS report_evidence_state (actor TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL, previous TEXT, previous_stage TEXT)")
+            # 旧库迁移：为撤销栈补记保存时的轨迹阶段，使撤销事件与对应保存落在同一阶段。
+            # BEGIN IMMEDIATE 下查改串行，杜绝并发首连的 duplicate column 竞态。
+            if "previous_stage" not in {row[1] for row in c.execute("PRAGMA table_info(report_evidence_state)")}:
+                c.execute("ALTER TABLE report_evidence_state ADD COLUMN previous_stage TEXT")
+            c.execute("CREATE TABLE IF NOT EXISTS report_evidence_requests (actor TEXT, operation TEXT, digest TEXT NOT NULL, PRIMARY KEY(actor,operation))")
+            c.commit()
+        except sqlite3.OperationalError:
+            c.rollback()
+            if not schema_ready():
+                raise
+    # 2.1.3 存量全量快照轨迹事件的按保存批次折叠迁移（幂等；完成标记后零写锁）。
     compact_legacy_trace_events(c)
     return c
 
@@ -396,7 +681,8 @@ def register_report_evidence_routes(app, require_user):
         单条事件增量超过 TRACE_EVENT_BYTES_LIMIT、或单次保存累计超过
         TRACE_SAVE_BYTES_LIMIT 时，降级为摘要+哈希（保持既有文档契约：
         大工作区轨迹保存摘要与哈希，完整内容通过 JSON 导出检查）。
-        超过 TRACE_SUBJECT_LIMIT 个受影响主体时补一条显式截断标记事件。
+        超过 TRACE_SUBJECT_LIMIT 个受影响主体时在 report_evidence_changed
+        载荷内补显式截断标记字段（不新增动作键）。
         共享工作区轨迹只记录与该主体相关的条目；脱敏按条目归属判定
         （非本人提案只留摘要，locator 低熵直接丢弃，见 _redact_foreign_entry）。
         """
@@ -439,9 +725,11 @@ def register_report_evidence_routes(app, require_user):
         if map_before or map_after:
             emit("report-evidence", {"value": label, "changes": map_before}, {"value": label, "changes": map_after})
         if len(subjects) > TRACE_SUBJECT_LIMIT:
-            # 显式截断标记：不再静默丢弃第 101 位及之后的受影响主体。
+            # 显式截断标记：不再静默丢弃第 101 位及之后的受影响主体。标记沿用既有
+            # 动作键 report_evidence_changed（不新增动作），截断信息放在载荷字段内。
             research_trace.capture_event(
-                c, tc, stage=stage, action="report_evidence_truncated", subject_id="report-evidence", before=None,
+                c, tc, stage=stage, action="report_evidence_changed",
+                subject_id="report-evidence", before=None,
                 after={"value": label, "total_subjects": len(subjects),
                        "truncated_subjects": len(subjects) - TRACE_SUBJECT_LIMIT,
                        "note": f"Only the first {TRACE_SUBJECT_LIMIT} affected subjects are traced; "
