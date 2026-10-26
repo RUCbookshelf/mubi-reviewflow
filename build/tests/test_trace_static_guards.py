@@ -237,5 +237,28 @@ class Stale409CouplingTests(unittest.TestCase):
             )
 
 
+class AppraiseDraftScopeGuardTests(unittest.TestCase):
+    """G2 残余收窄的静态钉子：appraise 暂存只入栈当前 tool|source 条目。
+
+    多差异键时取 ``keys[0]`` 会把非当前条目（本对话框早前切走的报告）当作
+    当前草稿暂存，与 ``:100-118`` 已验收的单条恢复/保存口径不一致。钉住：
+    ① trackDraft('appraise') 的脏判定只看当前条目 ``entryDiff(tool+'|'+source)``；
+    ② 写回调只携带当前 ``drafts[tool+'|'+source]``；
+    ③ 不得再出现 ``keys[0]`` / ``diffKeys`` 形态的回退挑选。
+    """
+
+    def test_appraise_track_draft_stages_current_entry_only(self):
+        src = (FRONTEND / "report_evidence.js").read_text(encoding="utf-8")
+        line = next(
+            (ln for ln in src.splitlines() if "trackDraft(m,'appraise'" in ln),
+            None,
+        )
+        self.assertIsNotNone(line, "未找到 appraise 的 trackDraft 注册行，钉子失效")
+        self.assertIn("entryDiff(tool+'|'+source)", line, "脏判定必须只比较当前 tool|source 条目")
+        self.assertIn("drafts[tool+'|'+source]", line, "写回调必须只入栈当前 tool|source 条目")
+        self.assertNotIn("keys[0]", src, "多差异键回退挑选（keys[0]）不得回流")
+        self.assertNotIn("diffKeys", src, "整表差异键枚举（diffKeys）不得回流")
+
+
 if __name__ == "__main__":
     unittest.main()

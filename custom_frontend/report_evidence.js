@@ -109,8 +109,10 @@
    restoreNote(m);}
  // 保存基线同样只比较当前条目（空条目与缺失等价，避免自动创建的空槽被判为差异）。
  const entryDiff=k=>JSON.stringify(pruneDrafts({x:drafts[k]}))!==JSON.stringify(pruneDrafts({x:baseDrafts[k]}));
- const diffKeys=()=>Object.keys(drafts).filter(entryDiff);
- trackDraft(m,'appraise',()=>tool!==baseTool||diffKeys().length>0,()=>{const cur=tool+'|'+source,keys=diffKeys(),pick=keys.includes(cur)?cur:keys[0]||cur;return {tool:pick.split('|')[0],source:pick.split('|')[1],entry:structuredClone(drafts[pick])};});
+ // G2 残余收窄：暂存只入栈当前 tool|source 条目。不再按差异键列表回退挑选首键——那会把
+ // 非当前条目（可能是本对话框早前切走的报告）当作当前草稿暂存，与单条恢复/保存口径不一致；
+ // 切到未修改条目后关闭即视为无草稿（该槽位 drop），当前条目有差异才写入。
+ trackDraft(m,'appraise',()=>tool!==baseTool||entryDiff(tool+'|'+source),()=>({tool,source,entry:structuredClone(drafts[tool+'|'+source]??{items:{},summary:''})}));
   m.body.append(field('参考报告',select(fixtures.map(r=>[r.key,r.title]),source,v=>{source=v;draw();},'定性评价的参考报告',true)),field('评价工具',select([['jbi','JBI 定性研究评价'],['casp','CASP 定性研究评价']],tool,v=>{tool=v;draw();},'定性评价工具')),note('评价针对研究的方法学；可结合关联报告，逐项记录依据。中文问题为释义，可打开原始清单核对。'),progress,host);
   function draft(){const k=tool+'|'+source;return drafts[k]??(drafts[k]={items:{},summary:''});}
   function update(){progress.textContent=T('已填写 {0} / 10 项 · 可保存未完成草稿',Object.values(draft().items).filter(i=>i.judgment).length);}
