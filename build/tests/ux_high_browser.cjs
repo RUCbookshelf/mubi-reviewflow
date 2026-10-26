@@ -10,9 +10,10 @@
  *   验证计数如实预告了启用结果（启用后按钮 (0)、已完成栏出现「已启用」组）。
  *   已决并启用（gc）与真实 legacy 标题组（成员只有 zotero_key 等 RIS 字段，
  *   徽标「已核验」）一并实测——上轮“legacy 用自造成员形状”的败因由此根治。
- * - 高7（F53）：导入全屏遮罩挂起（路由拦截 import-batch 不响应）→
- *   取消按钮存在可点击 → 点击后遮罩收起、inert 恢复、提示如实；
- *   已用时长（已等待 {0} 秒）逐秒可见。
+ * - 高7（F53）：导入全屏遮罩挂起（正则路由钉住 /import 与 /import-batch——
+ *   单文件导入实际请求 /import 且带 ?screener= 查询串，glob 拦不住——
+ *   挂起不响应）→ 取消按钮存在可点击 → 点击后遮罩收起、inert 恢复、
+ *   提示如实；已用时长（已等待 {0} 秒）逐秒可见。
  *
  * 运行（实例需已起，前端=本工作树）：
  *   REVIEWFLOW_GUARD_URL=http://127.0.0.1:18775 \
@@ -277,7 +278,14 @@ async function apiFixtures() {
   await check('高7: 挂起导入遮罩可取消并恢复交互，已用时长逐秒可见', async () => {
     let release;
     const gate = new Promise(resolve => { release = resolve; });
-    await page.route('**/import-batch', route => gate.then(() => route.fulfill({status: 503, json: {detail: 'released'}})));
+    // 确定性挂起闸门（终局意见修复）：单文件导入实际请求 /import（index.html realImport：
+    // files.length>1 才走 /import-batch），且两者都带 ?screener= 查询串——glob **/import-batch
+    // 匹配不到带查询串的 URL，此前 PASS 依赖真实请求恰好未完成。此处以正则同时钉住
+    // /import 与 /import-batch（含查询串），主请求在 release 前永不落定；取消后浏览器
+    // 会中止该 fetch，route.fulfill 可能对已中止的路由拒绝，吞掉该拒绝避免未处理 Promise。
+    const hangImport = route => gate.then(
+      () => route.fulfill({status: 503, json: {detail: 'released'}})).catch(() => {});
+    await page.route(/\/import(-batch)?(\?.*)?$/, hangImport);
     await page.route('**/import-progress/**', route => route.fulfill({json: {job_id: 'x', phase: 'parse', percent: 5}}));
     await page.locator('#io-import-tab-report').click();
     await page.setInputFiles('#importFile', {

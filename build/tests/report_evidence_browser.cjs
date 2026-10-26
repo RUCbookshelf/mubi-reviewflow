@@ -20,7 +20,8 @@
 //       延迟结束后状态一致（解除→撤销可恢复原关系）；
 //   F08 关联对话框编辑中途关闭→sessionStorage 暂存→重开恢复（含恢复提示）；
 //   F09 另一窗口推进 revision 后保存 409→自动刷新→提示冲突文案→原对话框重试成功；
-//   F20 置信度草稿按方法分槽：JBI 草稿暂存后，方法切到主题综合不串槽（空表单、无恢复提示）。
+//   F20 置信度草稿按方法分槽（confidence|<method>|new）：JBI 草稿暂存后，方法切到主题综合
+//       不串槽（空表单、无恢复提示）且不动 JBI 槽；切回 JBI 重开恢复原草稿（终局意见补强）。
 // 说明：本文件只做行为断言与证据留档，不修改任何产品代码。
 const fs=require('node:fs'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.REVIEWFLOW_PLAYWRIGHT||'playwright');
@@ -98,36 +99,64 @@ fs.mkdirSync(artifacts,{recursive:true});
   await dlg().waitFor({state:'detached'});
  });
 
- await check('F20 置信度草稿按方法分槽：JBI 草稿不串入主题综合',async()=>{
+ await check('F20 置信度草稿按方法分槽：JBI 草稿不串入主题综合，切回 JBI 恢复',async()=>{
   const openConf=async()=>{await page.locator('#mp-qual-tools').click();await dlg().waitFor();
    await dlg().getByRole('button',{name:'证据置信度'}).click();await dlg().waitFor();};
+  // 首页 → 数据提取与编码面板 → 综述路径与综合方法（可选）→ 保存 qual+<method>。
+  // homeTab 重渲染可能短暂替换 #mp-method-settings：等待稳定后展开，必要时重试。
+  const setMethod=async method=>{
+   await page.evaluate(()=>go('home'));
+   await page.waitForSelector('.wf-tabs',{timeout:15000});
+   await page.evaluate(()=>WorkflowControls.homeTab('coding'));
+   await page.waitForSelector('#wf-panel-coding',{timeout:15000});
+   await page.waitForSelector('#mp-method-settings',{timeout:15000});
+   await page.waitForTimeout(300);
+   const openSettings=async()=>{const settings=page.locator('#mp-method-settings');
+    if(!(await settings.evaluate(el=>el.open))){await settings.locator('summary').click();await page.waitForTimeout(200);}};
+   const trigger=page.getByRole('button',{name:'设置综述路径'});
+   for(let i=0;i<3&&!(await trigger.isVisible().catch(()=>false));i++)await openSettings();
+   await trigger.click();await dlg().waitFor();
+   await dlg().locator('select[aria-label="综述路径"]').selectOption('qual');
+   await dlg().locator('select[aria-label="定性综合方法"]').selectOption(method);
+   await dlg().getByRole('button',{name:'保存设置'}).click();
+   await toastHas('已保存个人综述路径与综合方法');
+   await dlg().waitFor({state:'detached'});
+  };
+  // F20 槽位机制钉子：暂存槽必须按方法命名（confidence|<method>|new），不得回到所有方法
+  // 共用的 confidence|new（终局评审实测该共用槽会被其他方法的对话框 write/drop 清掉）。
+  const slot=key=>page.evaluate(({taskId,userId,k})=>sessionStorage.getItem('rf_mp_evidence_draft:'+taskId+'|'+userId+'::'+k),
+   {taskId:session.task,userId:session.user_id,k:key});
+  await setMethod('jbi');
   await gotoAnalysis(...QUAL);
   await openConf();
   assert.equal(await dlg().locator('h2').textContent(),'综合发现的 ConQual 评估','默认方法 jbi → ConQual');
   const finding=field('综合发现');
   await finding.fill('JBI 置信度草稿');
   await dlg().getByRole('button',{name:'取消',exact:true}).click();await dlg().waitFor({state:'detached'});
+  assert.ok(await slot('confidence|jbi|new'),'JBI 新建草稿必须落在按方法分槽 confidence|jbi|new');
+  assert.equal(await slot('confidence|new'),null,'不得再使用跨方法共用的 confidence|new 槽');
   await openConf(); // 同方法重开：恢复自己的草稿
   assert.equal(await dlg().getByText('已恢复本浏览器暂存的未保存草稿。').count(),1);
   assert.equal(await finding.inputValue(),'JBI 置信度草稿');
   await dlg().getByRole('button',{name:'取消',exact:true}).click();await dlg().waitFor({state:'detached'});
-  // 切换方法：首页 → 数据提取与编码面板 → 综述路径与综合方法（可选）→ 保存为 qual+thematic
-  await page.evaluate(()=>go('home'));
-  await page.waitForSelector('.wf-tabs',{timeout:15000});
-  await page.evaluate(()=>WorkflowControls.homeTab('coding'));
-  await page.waitForSelector('#wf-panel-coding',{timeout:15000});
-  await page.locator('#mp-method-settings > summary').click();
-  await page.getByRole('button',{name:'设置综述路径'}).click();await dlg().waitFor();
-  await dlg().locator('select[aria-label="综述路径"]').selectOption('qual');
-  await dlg().locator('select[aria-label="定性综合方法"]').selectOption('thematic');
-  await dlg().getByRole('button',{name:'保存设置'}).click();
-  await toastHas('已保存个人综述路径与综合方法');
-  await dlg().waitFor({state:'detached'});
+  // 切换方法到主题综合：不得出现 JBI 草稿（不串槽），也不得动 JBI 的暂存槽
+  await setMethod('thematic');
   await gotoAnalysis(...QUAL);
-  await openConf(); // 主题综合：不得出现 JBI 草稿（不串槽）
+  await openConf();
   assert.equal(await dlg().locator('h2').textContent(),'综合发现的 CERQual 评估','方法 thematic → CERQual');
   assert.equal(await dlg().getByText('已恢复本浏览器暂存的未保存草稿。').count(),0,'其他方法的草稿不得恢复到本方法');
   assert.equal(await finding.inputValue(),'','其他方法的草稿不得串入综合发现字段');
+  await dlg().getByRole('button',{name:'取消',exact:true}).click();await dlg().waitFor({state:'detached'});
+  assert.equal(await slot('confidence|thematic|new'),null,'主题综合未输入即取消：不得写入自己的槽');
+  assert.ok(await slot('confidence|jbi|new'),'主题综合开/关后 JBI 槽必须原样保留');
+  // 切回 JBI（终局意见补强）：重开 ConQual 必须恢复 JBI 未保存草稿
+  await setMethod('jbi');
+  await gotoAnalysis(...QUAL);
+  await openConf();
+  assert.equal(await dlg().locator('h2').textContent(),'综合发现的 ConQual 评估','切回 jbi → ConQual');
+  assert.equal(await dlg().getByText('已恢复本浏览器暂存的未保存草稿。').count(),1,'切回原方法重开必须恢复草稿');
+  assert.equal(await finding.inputValue(),'JBI 置信度草稿','切回原方法重开必须回填字段');
+  await finding.fill(''); // 改回初始值即清槽，为后续场景让路
   await dlg().getByRole('button',{name:'取消',exact:true}).click();await dlg().waitFor({state:'detached'});
  });
 
