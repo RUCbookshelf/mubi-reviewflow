@@ -179,10 +179,23 @@ def _workspace_deltas(before, after, owner_actor):
     return deltas, map_before, map_after
 
 
+def _workspace_digest(workspace):
+    """工作区摘要哈希的统一序列化口径：ensure_ascii=False + sort_keys=True。
+
+    新写入路径的超预算摘要（digest_state）与存量折叠摘要（_legacy_snapshot_digest）
+    共用本函数，同一工作区内容在两条路径产出相同的 workspace_sha256。
+    可比性边界：存量折叠的哈希按归属人脱敏后的工作区计算（他人提案的
+    evidence/locator 文本已替换为摘要，避免公开哈希被用作枚举比对他人原文的
+    预言机），新写入路径按原始工作区计算——两条路径的哈希仅在工作区不含他人
+    提案条目（如个人工作区、全部条目归属本人）时逐字节可比；跨此边界比对
+    哈希只应作为“内容不同”的判据，不得作为“内容相同”的证明。
+    """
+    return hashlib.sha256(json.dumps(workspace, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
 def _legacy_snapshot_digest(label, workspace):
-    """存量全量快照的降级摘要：与新写入路径的超预算摘要同构。"""
-    return {"value": label, "workspace_sha256": hashlib.sha256(
-                json.dumps(workspace, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+    """存量全量快照的降级摘要：与新写入路径的超预算摘要同构（同一序列化口径）。"""
+    return {"value": label, "workspace_sha256": _workspace_digest(workspace),
             "links": len(workspace.get("links", []) or []), "findings": len(workspace.get("drafts", []) or []),
             "note": "Legacy full workspace snapshot compacted by one-time migration; export JSON to inspect current details."}
 
@@ -542,9 +555,14 @@ def connect(path):
         try:
             c.execute("CREATE TABLE IF NOT EXISTS report_evidence_state (actor TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL, previous TEXT, previous_stage TEXT)")
             # 旧库迁移：为撤销栈补记保存时的轨迹阶段，使撤销事件与对应保存落在同一阶段。
-            # BEGIN IMMEDIATE 下查改串行，杜绝并发首连的 duplicate column 竞态。
+            # BEGIN IMMEDIATE 下查改串行（写锁互斥），正常不会并发补列；对 duplicate
+            # column 再做幂等捕获兜底：另一连接已补列时放行，其余错误照常上抛。
             if "previous_stage" not in {row[1] for row in c.execute("PRAGMA table_info(report_evidence_state)")}:
-                c.execute("ALTER TABLE report_evidence_state ADD COLUMN previous_stage TEXT")
+                try:
+                    c.execute("ALTER TABLE report_evidence_state ADD COLUMN previous_stage TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             c.execute("CREATE TABLE IF NOT EXISTS report_evidence_requests (actor TEXT, operation TEXT, digest TEXT NOT NULL, PRIMARY KEY(actor,operation))")
             c.commit()
         except sqlite3.OperationalError:
@@ -716,10 +734,12 @@ def register_report_evidence_routes(app, require_user):
         digest_cache = {}
 
         def digest_state(side):
+            # 序列化口径与存量折叠摘要统一（_workspace_digest：sort_keys=True），
+            # 同一工作区内容在新旧事件中的 workspace_sha256 一致；脱敏差异的
+            # 可比性边界见 _workspace_digest 的说明。
             if side not in digest_cache:
                 value = after if side == "after" else before
-                encoded = json.dumps(value, ensure_ascii=False).encode()
-                digest_cache[side] = {"value": label, "workspace_sha256": hashlib.sha256(encoded).hexdigest(),
+                digest_cache[side] = {"value": label, "workspace_sha256": _workspace_digest(value),
                                       "links": len(value.get("links", [])), "findings": len(value.get("drafts", [])),
                                       "note": "Large workspace: export JSON to inspect current details."}
             return digest_cache[side]
