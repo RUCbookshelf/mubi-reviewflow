@@ -143,6 +143,21 @@ for(const [lang,idx] of [['fr',2],['de',7]]){
   const legacy=RF.message(api.message);
   check(lang+' 旧路径(无标记)被包壳——标记必要性',String(legacy.className).indexOf('an-technical-message')>=0);
 }
+// 评审补强：errOf 结构化对象分支（PoolCompatibilityError 形态）。
+langIndex=2;
+const payload={message:'incompatible selected effect measures, standardizers or directions for this comparison/outcome/timepoint',reasons:[{type:'direction_conflict',detail:'These reported effects run opposite to Comparison. Convert the estimate and uncertainty to first-group vs second-group direction before pooling.'}]};
+const translatedMessage=t(payload.message);
+const hit=translatedMessage!==payload.message;
+const joined=[translatedMessage,...(payload.reasons||[]).map(r=>r&&r.detail?t(r.detail):r&&r.detail)].filter(Boolean).join('\n');
+check('fr 对象分支主消息命中并标记',hit===true&&translatedMessage!==payload.message);
+const host2=RF.message(joined,{localized:hit===true});
+check('fr 对象分支直读(无外壳)且保留英文明细行',String(host2.className).indexOf('an-technical-message')<0&&host2.textContent===joined&&host2.textContent.includes('opposite to Comparison'));
+// 未注册 message（动态后缀形态）不标记：进可展开外壳（诚实行为）。
+const dynamic={message:'incompatible selected effect measures, standardizers or directions for this comparison/outcome/timepoint; expected SMD'};
+const dynHit=t(dynamic.message)!==dynamic.message;
+check('fr 动态后缀不误标',dynHit===false);
+const host3=RF.message(t(dynamic.message),{localized:false});
+check('fr 动态后缀走可展开外壳',String(host3.className).indexOf('an-technical-message')>=0);
 process.exit(fail?1:0);
 """)
         self.assertNotIn("FAIL", out)
@@ -152,15 +167,45 @@ process.exit(fail?1:0);
         self.assertIn("let translatedHit = false;", html)
         self.assertIn("if (translatedHit) error.rfLocalized = true;", html,
                       "errOf 翻译命中必须在 ApiError 上置 rfLocalized")
+        self.assertIn("const translatedMessage = T(payload.message);", html,
+                      "errOf 对象分支（池兼容错误）主消息必须过 T()")
+        self.assertIn("(payload.reasons || []).map(reason => reason && reason.detail ? T(reason.detail) : reason?.detail)", html,
+                      "errOf 对象分支 reasons 明细必须逐条过 T()")
 
-    def test_all_error_banner_callers_pass_localized(self):
-        for name, needle in [
-            ("analysis_influence.js", "message(error.message,{localized:error.rfLocalized===true})"),
-            ("analysis_estimator_sensitivity.js", "message(error.message, {localized: error.rfLocalized === true})"),
-            ("analysis_dependent_synthesis.js", "message(error.message, {localized: error.rfLocalized === true})"),
-            ("analysis_sensitivity_view.js", "message(error.message, {localized: error.rfLocalized === true})"),
+    def test_all_error_banner_catch_sites_pass_localized(self):
+        """全量扫描（评审补强：不再手工枚举文件，防止再漏 tau profile 类调用点）。
+
+        凡以 ``RFAnalysisLocale.message(<error>.message`` 形态渲染错误消息的
+        catch 调用点，其后必须紧跟 ``localized: <error>.rfLocalized === true``
+        （warnings/method_sources/limits.reason 等技术串展示不属于错误 catch，
+        不在扫描形态内，允许不传）。
+        """
+        checked = 0
+        for path in sorted(FRONTEND.glob("analysis_*.js")) + [FRONTEND / "index.html"]:
+            source = _read(path)
+            for match in re.finditer(r"RFAnalysisLocale\.message\((?:window\.)?(?:error|e|exc)\.message", source):
+                checked += 1
+                tail = source[match.end():match.end() + 120]
+                self.assertIn("localized", tail,
+                              f"{path.name} 的错误条调用点必须传 localized（error.rfLocalized）")
+                self.assertRegex(tail, r"rfLocalized\s*===\s*true",
+                                 f"{path.name} 的 localized 必须取自 error.rfLocalized === true")
+        self.assertGreaterEqual(checked, 5, f"扫描到的错误条调用点过少（{checked}），扫描形态可能失效")
+
+    def test_tau_and_pool_error_strings_registered(self):
+        locale = _read(FRONTEND / "analysis_locale.js")
+        for zh, en in [
+            ("轮廓似然区间至少需要三项匹配的研究效应与方差。", "profile interval needs at least three matching study effects and variances"),
+            ("REML 轮廓优化失败。", "REML profile optimization failed"),
+            ("此比较、结局与时间点的已选效应指标、标准化方法或方向不兼容。", "incompatible selected effect measures, standardizers or directions for this comparison/outcome/timepoint"),
         ]:
-            self.assertIn(needle, _read(FRONTEND / name), f"{name} 错误条必须透传 localized")
+            self.assertIn(f'"{zh}"', locale, f"analysis_locale.js 未注册中文键：{zh}")
+            self.assertIn(f'"{en}"', locale, f"analysis_locale.js 未注册英文键（须与后端错误串一致）：{en}")
+        # 行级校验：zh 键与 en 键必须位于同一注册行（成对注册）。
+        for zh, en in [("轮廓似然区间至少需要三项匹配的研究效应与方差。", "profile interval needs at least three"),
+                       ("此比较、结局与时间点的已选效应指标、标准化方法或方向不兼容。", "incompatible selected effect measures")]:
+            row = next((line for line in locale.splitlines() if f'"{zh}"' in line), None)
+            assert row and en in row, f"词条必须 zh/en 成对同行注册：{zh}"
 
     def test_hksj_error_carries_localized_flag(self):
         html = _read(FRONTEND / "index.html")
@@ -240,21 +285,63 @@ class CompletionBadgeBehaviorTests(unittest.TestCase):
         self.assertTrue(all(ref == "active" or state == "active" for ref, state in states),
                         f"启用后的已决候选组成员应全部 active，实际 {states}")
 
-    def test_real_completionBadge_on_real_backend_data(self):
-        activated = json.dumps(self._group_members("gc"), ensure_ascii=False)
-        staged = json.dumps(self._group_members("hc"), ensure_ascii=False)
-        source = _read(FRONTEND / "unified_import_workspace.js")
-        match = re.search(r"function completionBadge\(item\)\{.*?\}", source)
-        assert match, "unified_import_workspace.js 必须定义 completionBadge"
+    def test_items_level_badges_on_real_backend_data(self):
+        """items()/category 级断言（评审补强：hc 组必须真的进入已完成分类）。
+
+        从 unified_import_workspace.js 提取真实的 id/completionBadge/category/
+        items 四个纯函数，配上真实的 import_review_model 与 TestClient 返回的
+        groups/records（hc=已决未启用、gc=已启用），外加构造的空成员组与
+        legacy 形状组，实跑分类与徽标。
+        """
+        groups = self.client.get(self.base + "/candidates?view=all").json()["candidates"]
+        records = self.client.get(self.base + "?view=all&limit=200").json()["records"]
+        groups_json = json.dumps(groups, ensure_ascii=False)
+        records_json = json.dumps(records, ensure_ascii=False)
         out = _run_node(
-            "const activated=" + activated + ";\n" +
-            "const staged=" + staged + ";\n" +
-            match.group(0) + "\n" +
+            "const groups=" + groups_json + ";\n" +
+            "const records=" + records_json + ";\n" +
             r"""
+const fs=require('fs'),path=require('path');
+const src=fs.readFileSync(path.join(process.cwd(),'custom_frontend','unified_import_workspace.js'),'utf8');
+const pick=(re,name)=>{const m=src.match(re);if(!m){console.log('FAIL 提取失败: '+name);process.exit(1);}return m[0];};
+const idDecl=pick(/const id=item=>[^\n]*/,'id');
+const badgeSrc=pick(/function completionBadge\(item\)\{[\s\S]*?\}/,'completionBadge');
+const catSrc=pick(/function category\(item\)\{[^\n]*\}/,'category');
+const itemsSrc=pick(/function items\(\)\{[^\n]*\}/,'items');
+const M=require(path.join(process.cwd(),'custom_frontend','import_review_model.js'));
+const deferred=()=>new Set();
+const factory=new Function('groups','legacy','records','M','deferred',
+  '"use strict";'+idDecl+badgeSrc+catSrc+itemsSrc+'return {id,completionBadge,category,items};');
 let fail=0;const check=(n,ok)=>{if(!ok)fail++;console.log((ok?'OK  ':'FAIL')+' '+n);};
-check('启用后的候选组徽标=已启用',completionBadge({members:activated})==='已启用');
-check('已决未启用候选组徽标=已核验待启用',completionBadge({members:staged})==='已核验待启用');
-check('普通记录徽标=已启用',completionBadge({record_id:'r'})==='已启用');
+// 构造补充形状：空成员已决组、legacy 已决组（staged/active 两种）。
+const groupsAll=[...groups,
+ {review_id:'ec',kind:'title',status:'not_duplicate',members:[]},
+ {review_id:'lg-staged',legacy:true,status:'not_duplicate',members:[{ref_type:'record',ref_id:'lx1',record:{state:'staged'}}]},
+ {review_id:'lg-active',legacy:true,status:'duplicate',members:[{ref_type:'active',ref_id:'la1'}]}];
+const legacyAll=groupsAll.filter(g=>g.legacy);
+const api=factory(groupsAll.filter(g=>!g.legacy),legacyAll,records,M,deferred);
+const byId={};for(const g of groupsAll)byId[g.review_id]=g;
+const all=api.items();
+const find=id=>all.find(x=>x.review_id===id);
+check('items() 包含已启用候选组 gc',!!find('gc'));
+check('items() 包含已决未启用候选组 hc(评审指其曾被过滤)',!!find('hc'));
+check('items() 包含空成员已决组 ec',!!find('ec'));
+check('items() 包含 legacy 组',!!find('lg-staged')&&!!find('lg-active'));
+check('category(gc)=completed',api.category(byId.gc)==='completed');
+check('category(hc)=completed(已决未启用组进入已完成分类)',api.category(byId.hc)==='completed');
+check('category(ec)=completed',api.category(byId.ec)==='completed');
+check('badge(gc)=已启用',api.completionBadge(byId.gc)==='已启用');
+check('badge(hc)=已核验待启用',api.completionBadge(byId.hc)==='已核验待启用');
+check('badge(ec)=已核验待启用(空成员保守)',api.completionBadge(byId.ec)==='已核验待启用');
+check('badge(legacy staged)=已核验待启用',api.completionBadge(byId['lg-staged'])==='已核验待启用');
+check('badge(legacy active)=已启用',api.completionBadge(byId['lg-active'])==='已启用');
+// 已决组成员记录不得再以单条形态出现（去双显）。
+const memberIds=new Set(['ga','gb','ha','hb']);
+const dup=all.filter(x=>!x.members&&memberIds.has(x.record_id));
+check('已决组成员不再以单条形态重复出现',dup.length===0);
+// 已决组只出现在 completed，不进 ready。
+const readyGroups=all.filter(x=>x.members&&['gc','hc'].includes(x.review_id)&&api.category(x)!=='completed');
+check('已决组不进入 ready 分类',readyGroups.length===0);
 process.exit(fail?1:0);
 """)
         self.assertNotIn("FAIL", out)

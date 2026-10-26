@@ -221,9 +221,21 @@ class ImportReviewLabelTests(unittest.TestCase):
         self.assertEqual(pending[1], "Reviewed, pending activation")
 
     def test_completed_tab_renders_state_badge(self):
-        self.assertIn("function completionBadge(item){return item.members?(item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'已启用':'已核验待启用'):'已启用';}",
+        self.assertIn("function completionBadge(item){/* 高4（评审修正）：空成员数组无从证明已启用，保守标“已核验待启用”",
+                      self.workspace, "completionBadge 必须保留（空成员保守语义注释开头）")
+        self.assertIn("item.members.length>0&&item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'已启用':'已核验待启用'",
                       self.workspace,
-                      "已完成分类应按成员实际状态渲染徽标（启用后的候选组是「已启用」，不能只看是否候选组）")
+                      "徽标按成员实际状态计算；空 members 不得因 [].every 恒真判为已启用")
+        # reader 与 queue 两处真实调用（评审补强：不只断言函数定义）。
+        self.assertIn("if(tab==='completed'){const state=completionBadge(item);kicker.append(n('span',state,{class:'badge'",
+                      self.workspace, "reader 阅读卡应在已完成分类调用 completionBadge 渲染徽标")
+        self.assertIn("if(category(item)==='completed'){const state=completionBadge(item);button.append(n('span',state,{class:'badge'",
+                      self.workspace, "queue 队列项应在已完成分类调用 completionBadge 渲染徽标")
+
+    def test_decided_groups_enter_completed_items(self):
+        self.assertIn("const visibleGroups=groups,grouped=new Set(visibleGroups.filter(g=>['duplicate','not_duplicate'].includes(g.status))",
+                      self.workspace,
+                      "已决候选组（含成员未全部启用的）必须进入 items()，否则 F29 的“已完成一栏已决未启用候选”无处渲染徽标")
 
     def test_batch_dropdown_includes_filenames(self):
         self.assertIn("files.join(' · ')", self.workspace,

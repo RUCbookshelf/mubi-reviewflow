@@ -14,10 +14,16 @@
     此时它是“已启用”而非“已核验待启用”；仍含暂存成员的已决候选组才是
     “已核验待启用”。普通记录进入 completed 分类即 state==='active'。
     队列项与阅读卡使用同一函数，两处徽标语义一致。 */
- function completionBadge(item){return item.members?(item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'已启用':'已核验待启用'):'已启用';}
+ function completionBadge(item){/* 高4（评审修正）：空成员数组无从证明已启用，保守标“已核验待启用”
+   （浏览器夹具存在 completed members:[] 场景，[].every 恒真不得判为已启用）。 */return item.members?(item.members.length>0&&item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'已启用':'已核验待启用'):'已启用';}
  function title(item){return (item.article||item.members?.[0]?.article||item.members?.[0]?.record?.article||item.members?.[0]||item.original||{}).title||item.normalized_title||item.incoming_key||T('Untitled record');}
  function category(item){if(item.members)return ['duplicate','not_duplicate'].includes(item.status)?'completed':item.status==='undecided'||deferred().has(id(item))?'later':'duplicate';const reason=M.reason(item);return reason==='completed'?'completed':deferred().has(id(item))?'later':reason==='metadata'?'metadata':reason==='ready'?'ready':'later';}
- function items(){const visibleGroups=groups.filter(g=>!['duplicate','not_duplicate'].includes(g.status)||g.members.every(m=>m.ref_type==='active'||m.record?.state==='active')),grouped=new Set(visibleGroups.filter(g=>['duplicate','not_duplicate'].includes(g.status)).flatMap(g=>g.members.filter(m=>m.ref_type==='record').map(m=>m.ref_id)));return [...visibleGroups,...legacy,...records.filter(r=>M.reason(r)!=='duplicate'&&!grouped.has(r.record_id))];}
+ /* 高4（评审修正）：已决候选组（duplicate/not_duplicate）一律进入列表——旧代码只保留
+   成员全 active 的已决组，“已决未启用”的组被过滤、其成员记录散落进待启用分类，
+   F29 所指的“已完成一栏已决未启用候选”根本无处渲染徽标。现在两类已决组都进入
+   completed 分类（category 只看组 status），由 completionBadge 区分“已启用/
+   已核验待启用”；组的成员记录仍从 records 中剔除（grouped 集合），避免双显。 */
+ function items(){const visibleGroups=groups,grouped=new Set(visibleGroups.filter(g=>['duplicate','not_duplicate'].includes(g.status)).flatMap(g=>g.members.filter(m=>m.ref_type==='record').map(m=>m.ref_id)));return [...visibleGroups,...legacy,...records.filter(r=>M.reason(r)!=='duplicate'&&!grouped.has(r.record_id))];}
  function compactBatch(item){/* 高4（F05 批次同名不可区分）：下拉标签纳入文件名，
    同秒导入的两个批次靠文件名区分；文件名缺失时退回导入时间，最后保留文件数。 */
   const list=item.files||item.source_files||[],files=list.map(f=>f.filename||f.name).filter(Boolean),count=list.length,date=new Date(item.created_at);

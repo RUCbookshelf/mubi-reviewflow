@@ -5201,7 +5201,13 @@ async function apiRequest(path, opts = {}) {
           return (d.loc ? field + '：' : '') + (d.msg || '');
         }).join('；');
       } else if (typeof payload === 'object' && payload.message) {
-        detail = [payload.message, ...(payload.reasons || []).map(reason => reason.detail)].filter(Boolean).join('\n');
+        /* 高2（评审修正）：结构化错误（如池兼容 PoolCompatibilityError）的主消息
+           同样过 T()——命中词典即已是当前界面语言并置 rfLocalized，不再以英文
+           技术串进入分析页“暂无译文”外壳；reasons 明细逐条过 T()，未注册的
+           技术补救指引保持原文随主消息直读展示。 */
+        const translatedMessage = T(payload.message);
+        if (translatedMessage !== payload.message) translatedHit = true;
+        detail = [translatedMessage, ...(payload.reasons || []).map(reason => reason && reason.detail ? T(reason.detail) : reason?.detail)].filter(Boolean).join('\n');
       } else {
         /* 后端纯字符串错误消息统一在此过 T()（双键注册机制的中央接线点）：
            已注册的五类高频消息（登录失败/注册校验/登录限流/会话过期/撤销边界，
