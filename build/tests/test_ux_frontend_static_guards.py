@@ -175,10 +175,10 @@ class AnalysisErrorTests(unittest.TestCase):
         self.assertIn("error.rfLocalized = true", body, "汇总错误应带 rfLocalized 标记")
 
     def test_localized_flag_flows_to_error_host(self):
-        self.assertIn("localized:e.rfLocalized === true", self.html,
-                      "synthesis-failed 事件应携带 localized 标记")
-        self.assertIn("{localized:event.localized===true}", self.nav,
-                      "分析页错误条应把 localized 传给 RFAnalysisLocale.message")
+        self.assertIn("detail:{message:e.message, localized:e.rfLocalized === true}", self.html,
+                      "synthesis-failed 事件应把 localized 放进 detail（CustomEvent init 顶层键会被浏览器丢弃）")
+        self.assertIn("payload.localized===true", self.nav,
+                      "分析页错误条应从 detail 解包 localized")
         self.assertIn("options.localized", self.locale, "message() 应识别已本地化文案")
 
     def test_raw_message_details_toggles_explicitly(self):
@@ -221,8 +221,9 @@ class ImportReviewLabelTests(unittest.TestCase):
         self.assertEqual(pending[1], "Reviewed, pending activation")
 
     def test_completed_tab_renders_state_badge(self):
-        self.assertIn("item.members?'已核验待启用':'已启用'", self.workspace,
-                      "已完成分类应按条目状态渲染「已核验待启用/已启用」徽标")
+        self.assertIn("function completionBadge(item){return item.members?(item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'已启用':'已核验待启用'):'已启用';}",
+                      self.workspace,
+                      "已完成分类应按成员实际状态渲染徽标（启用后的候选组是「已启用」，不能只看是否候选组）")
 
     def test_batch_dropdown_includes_filenames(self):
         self.assertIn("files.join(' · ')", self.workspace,
@@ -241,9 +242,9 @@ class ImportLoadingTests(unittest.TestCase):
         self.loading = _read(FRONTEND / "import_review_loading.js")
 
     def test_preserve_reopen_keeps_complete_state(self):
-        self.assertIn("loadState=cached?{phase:'complete'", self.workspace,
-                      "preserve 重开且缓存可用时，起始状态应记为 complete（不重现转圈）")
-        self.assertIn("loadState=cached&&['initial','background'].includes(state.phase)?loadState:state",
+        self.assertIn("loadState=cachedUsable?{phase:'complete'", self.workspace,
+                      "preserve 重开且缓存确有数据时，起始状态应记为 complete（不重现转圈）；空缓存保持 initial")
+        self.assertIn("cachedUsable&&['initial','background'].includes(state.phase)?loadState:state",
                       self.workspace,
                       "首轮 initial/background 通知应被压住（静默合并；failed/complete 照常透传）")
 

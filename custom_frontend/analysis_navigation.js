@@ -689,7 +689,7 @@
     queueMicrotask(()=>{if(state.snapshot)renderHeterogeneity(state.snapshot.result);});
   });
   document.addEventListener('reviewflow:analysis-synthesis-running',()=>{state.status='running';errorHost.hidden=true;updateResultUI();});
-  document.addEventListener('reviewflow:analysis-synthesis-failed',event=>{state.status='error';errorHost.replaceChildren(RFAnalysisLocale.message(event.detail,{localized:event.localized===true}));errorHost.hidden=false;updateResultUI();});
+  document.addEventListener('reviewflow:analysis-synthesis-failed',event=>{const payload=event.detail||{};const text=typeof payload==='string'?payload:payload.message;/* 高2（评审修正）：localized 从 detail 解包（CustomEvent init 的顶层自定义键会被浏览器丢弃，不能从 event 上读）。 */state.status='error';errorHost.replaceChildren(RFAnalysisLocale.message(text,{localized:payload.localized===true}));errorHost.hidden=false;updateResultUI();});
   document.addEventListener('reviewflow:analysis-synthesis-ready',event=>{
     const result=event.detail||anLastForestResult;if(!result)return;
     state.snapshot={taskId:S.task?.task_id,result:structuredClone({...result,effects:result.effects.map(effect=>({...anSourceFields(effect.source_key),...effect}))}),scope:readScope(),appearance:{color:anValue('anForestColor'),digits:Number(anValue('anForestDigits')),title:anValue('anForestCustomTitle'),prediction:$id('anForestShowPrediction').checked},svg:$id('anForest').querySelector('svg')?.cloneNode(true)};

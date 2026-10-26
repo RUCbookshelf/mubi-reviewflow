@@ -171,7 +171,7 @@
       lastResult = result;
       $('#anDependentExport').disabled = false;
       renderResult(result, body, current);
-    } catch (error) { if (current === request) { output.replaceChildren(RFAnalysisLocale.message(error.message)); toast(error.message, 'warn'); } }
+    } catch (error) { if (current === request) { output.replaceChildren(RFAnalysisLocale.message(error.message, {localized: error.rfLocalized === true})); toast(error.message, 'warn'); } }
     finally { if (current === request) { clearInterval(progressTimer); runButton.disabled = false; } }
   });
 

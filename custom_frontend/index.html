@@ -5174,6 +5174,11 @@ async function apiRequest(path, opts = {}) {
 
   async function errOf(r, parsed) {
     let detail = T('请求失败（{0}）', r.status);
+    /* 高2（评审修正）：字符串错误经 T() 命中词典时已是当前界面语言，
+       记录 translatedHit 并在 ApiError 上置 rfLocalized——分析页错误条据此
+       直读，不再把法语/西语/葡语/德语译文当“未翻译技术串”包进
+       “暂无译文”外壳（RFAnalysisLocale.message 的启发式只认中英文）。 */
+    let translatedHit = false;
     const data = parsed || await r.json().catch(() => null);
     const payload = data?.detail;
     if (payload) {
@@ -5206,10 +5211,13 @@ async function apiRequest(path, opts = {}) {
            未注册的消息原样透传。注意：凡被前端按内容做正则/前缀判断的错误串
            （report_evidence.js 的 STALE 正则、analysis_paired_interval.js 的
            “b = c = 0…” startsWith）不得注册进词典，否则译文会破坏判断。 */
-        detail = typeof payload === 'string' ? T(payload) : JSON.stringify(payload);
+        const translated = typeof payload === 'string' ? T(payload) : null;
+        if (translated !== null) { translatedHit = translated !== payload; detail = translated; }
+        else detail = JSON.stringify(payload);
       }
     }
     const error = new ApiError(r.status, detail);
+    if (translatedHit) error.rfLocalized = true;
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
       error.code = payload.code; error.workflowSettings = payload.workflow_settings; error.reasons = payload.reasons || [];
     }
@@ -5989,7 +5997,10 @@ async function realImport(files) {
       await new Promise(resolve => setTimeout(resolve, 350));
       if (settled) break;
       try {
-        const p = await api(taskApi() + '/import-progress/' + encodeURIComponent(jobId) + scrQ());
+        /* 高7（评审修正）：进度轮询同样携带 abort.signal——服务器卡住时
+           realImport 会停在本 await 上；主请求取消后轮询 fetch 必须立即
+           拒绝，循环才能走到 catch/finally 恢复遮罩交互（F53 场景）。 */
+        const p = await api(taskApi() + '/import-progress/' + encodeURIComponent(jobId) + scrQ(), {signal: abort.signal});
         setImportBusy(true, p.phase, p.percent);
       } catch (_) { /* The import request remains authoritative if polling briefly fails. */ }
     }
@@ -8582,7 +8593,12 @@ $('#anSynthesize').addEventListener('click', async () => {
     renderForest(result);
     document.dispatchEvent(new CustomEvent('reviewflow:analysis-synthesis-ready', {detail:result}));
   } catch (e) {
-    if (ticket === anSynthesisGeneration) { $('#anSynthesisResult').textContent = e.message; document.dispatchEvent(new CustomEvent('reviewflow:analysis-synthesis-failed', {detail:e.message, localized:e.rfLocalized === true})); toast(T('分析未完成，请查看错误详情。'), 'warn'); }
+    /* 高2（评审修正）：localized 必须放进 detail——CustomEvent 的 init 字典
+       只认 detail/bubbles/cancelable/composed，多余键（旧写法 {detail:…,
+       localized:…} 的顶层 localized）会被浏览器丢弃，event.localized 恒为
+       undefined。这里统一 e.rfLocalized（本地校验 Error 与 errOf 已翻译的
+       ApiError 都会设该标记）。 */
+    if (ticket === anSynthesisGeneration) { $('#anSynthesisResult').textContent = e.message; document.dispatchEvent(new CustomEvent('reviewflow:analysis-synthesis-failed', {detail:{message:e.message, localized:e.rfLocalized === true}})); toast(T('分析未完成，请查看错误详情。'), 'warn'); }
   } finally {
     if (ticket === anSynthesisGeneration) { clearInterval(anSynthesisTimer); $('#anSynthesize').disabled = false; }
   }
@@ -8622,8 +8638,13 @@ function anSynthesisQuery() {
     error.rfLocalized = true;
     throw error;
   }
-  if (anValue('anModel') === 'fixed' && anValue('anCiMethod') === 'hksj')
-    throw new Error(T('修正 HKSJ 区间需要随机效应模型。'));
+  if (anValue('anModel') === 'fixed' && anValue('anCiMethod') === 'hksj') {
+    /* 高2（评审修正）：HKSJ 冲突文案同样经 T() 本地化，必须带 rfLocalized
+       标记，否则非中文界面会被 message() 启发式包进“暂无译文”外壳。 */
+    const hksj = new Error(T('修正 HKSJ 区间需要随机效应模型。'));
+    hksj.rfLocalized = true;
+    throw hksj;
+  }
   return anAnalysisQuery();
 }
 $('#anLeaveOneOut').addEventListener('click', () => anRunWithProgress($('#anLeaveOneOut'), $('#anLeaveOneOutResult'), async () =>

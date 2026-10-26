@@ -60,7 +60,7 @@ estimatorButton.addEventListener('click', async () => {
     cachedResults = {results,models};
     renderEstimatorResults(results,models);
   } catch (error) {
-    if (ticket === estimatorGeneration) { host.replaceChildren(RFAnalysisLocale.message(error.message)); toast(T(error.message), 'warn'); }
+    if (ticket === estimatorGeneration) { host.replaceChildren(RFAnalysisLocale.message(error.message, {localized: error.rfLocalized === true})); toast(T(error.message), 'warn'); }
   } finally {
     if (ticket === estimatorGeneration) { clearInterval(estimatorTimer); estimatorButton.disabled = false; }
   }
