@@ -45,7 +45,12 @@ class ReverseMixedDigestFoldTests(unittest.TestCase):
             "/api/auth/register",
             json={"username": "foldshape@example.test", "password": "Fold-Shape-2026"},
         ).json()
-        cls.user = {"user_id": r["user"]["id"], "token": r["token"]}
+        # context() 会读取 user["username"]（review_workflow_api 按其定位成员库），缺省会 KeyError。
+        cls.user = {
+            "user_id": r["user"]["id"],
+            "username": r["user"]["username"],
+            "token": r["token"],
+        }
 
     @classmethod
     def tearDownClass(cls):

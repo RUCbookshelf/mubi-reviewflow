@@ -7,11 +7,18 @@
    （RFLang 全局字典口径——T() 实际按全局字典解析，跨文件注册同样生效）。
    仅容忍下方逐项注明理由的豁免清单，且豁免清单被精确钉住：出现新的未注册
    界面文案（F10 类缺陷复发）或豁免项已注册未清理，都会使测试失败。
-2. STALE 耦合：后端「版本冲突」类 409 文案（形如
-   ``if revision != body.expected_revision: raise HTTPException(409, ...)``,
-   含共享撤销 /relations/undo 的 "Confirmed relationships changed"）必须与前端
-   report_evidence.js 的 STALE 正则匹配，保证 409 冲突自动刷新契约成立；
-   其余 409 文案不得命中 STALE，防止非版本冲突误触发自动刷新。
+2. STALE 耦合：后端凡由 ``revision != body.expected_revision`` 触发（含与其他
+   条件组合的单行守卫）的 409 文案，必须与前端 report_evidence.js 的 STALE
+   正则匹配，保证 409 冲突自动刷新契约成立。当前四个触发点：保存 PUT
+   （"Evidence changed in another window."）、个人撤销 /undo（"Evidence
+   changed. Reload before undo."）、裁决/确认 /relations（"Confirmed
+   relationships changed. Reload first."——注意这不是共享撤销路由）、共享撤销
+   /relations/undo（组合条件 ``revision != body.expected_revision or not row
+   or not row[0]`` 的 "No current relationship change is available to undo."）。
+   其中共享撤销文案目前不命中 STALE，属真实未对齐：本测试按规格在此保持
+   失败，直至所属泳道修正（拆分组合条件使版本过期单独返回可命中文案，或
+   对齐后端文案/扩展前端正则）。其余 409 文案不得命中 STALE，防止非版本
+   冲突误触发自动刷新。
 """
 import re
 import unittest
@@ -49,9 +56,12 @@ RESEARCH_TRACE_EXEMPT = {
 }
 
 _CJK = re.compile("[\u4e00-\u9fff]")
-# 行内版本冲突守卫 → 409 的固定形态（本仓两种后端基线均为此单行写法）。
+# 由 expected_revision 不匹配触发的 409：单行守卫形态，允许与其他条件组合
+# （``if revision != body.expected_revision or ...: raise HTTPException(409, …)``，
+# 共享撤销 /relations/undo 即组合形态）。凡被该守卫覆盖的 409 文案都必须命中
+# 前端 STALE 正则——组合条件同样会在版本过期时触发，不能豁免。
 _REVISION_CONFLICT_409 = re.compile(
-    r"if\s+revision\s*!=\s*body\.expected_revision:\s*"
+    r"if\s+revision\s*!=\s*body\.expected_revision[^:\n]*:\s*"
     r"raise HTTPException\(409,\s*\"([^\"]+)\"\)"
 )
 _ANY_409 = re.compile(r"HTTPException\(409,\s*\"([^\"]+)\"\)")
@@ -165,16 +175,20 @@ class Stale409CouplingTests(unittest.TestCase):
     def test_revision_conflict_409_messages_match_frontend_stale(self):
         pattern = _frontend_stale_pattern()
         conflicts, _ = _backend_409_messages()
-        # 三个冲突点：保存 / 个人撤销 / 共享撤销（relations/undo）。
+        # 四个触发点：保存 PUT / 个人撤销 /undo / 裁决确认 /relations /
+        # 共享撤销 /relations/undo（组合条件）。少于 4 条说明守卫被重构，钉子需跟进。
         self.assertGreaterEqual(
-            len(conflicts), 3,
-            f"版本冲突 409 文案少于 3 条（当前 {conflicts}），耦合钉子失效",
+            len(conflicts), 4,
+            f"expected_revision 触发的 409 文案少于 4 条（当前 {conflicts}），耦合钉子失效",
         )
-        for message in conflicts:
-            self.assertTrue(
-                pattern.search(message),
-                f"版本冲突 409 文案未命中前端 STALE 正则，自动刷新契约会破裂: {message!r}",
-            )
+        mismatched = [m for m in conflicts if not pattern.search(m)]
+        self.assertEqual(
+            mismatched, [],
+            "以下 409 文案由 expected_revision 不匹配触发（含组合条件），但未命中前端 "
+            "STALE 正则——共享撤销等路径的 409 冲突自动刷新契约会破裂。需所属泳道修正："
+            "拆分组合条件使版本过期单独返回可命中文案，或对齐后端文案/扩展前端正则: "
+            f"{mismatched}",
+        )
 
     def test_other_409_messages_do_not_match_stale(self):
         pattern = _frontend_stale_pattern()
