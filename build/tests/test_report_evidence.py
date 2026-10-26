@@ -870,6 +870,99 @@ class EvidenceTests(unittest.TestCase):
                     dst.writestr(info.filename,data)
         self.assertEqual(len(exporter.validate_import_package(legacy.getvalue())['events']),1)
 
+    def test_volume_packing_never_exceeds_volume_cap(self):
+        # 回归（评审）：行序贪心装箱的最坏浪费（行略超单卷一半 → 一行一卷）不得让
+        # “总事件字节 ≤ MAX_UNCOMPRESSED 且逐事件 ≤ MAX_EVENT_BYTES”的输入报
+        # needs too many volumes——卷数上限按 2*(U/V)+2 推导后必然可导出。
+        from coscreen import research_trace_export as exporter
+        def sized_events(count,target_line_bytes):
+            events=[]
+            for i in range(count):
+                low,high=0,target_line_bytes
+                for _ in range(24):  # 二分填充，把单行字节调到目标附近
+                    mid=(low+high)//2
+                    candidate={'event_id':str(uuid.uuid4()),'store_id':'st-1','sequence':i+1,'task_id':'T1',
+                               'actor_id':'42','stage':'coding','action':'coding_value_changed','subject_id':'R1',
+                               'before':None,'after':{'value':'x'*mid},'source':'manual',
+                               'recorded_at':'2026-01-01T00:00:00Z'}
+                    if len(exporter._json_bytes(candidate))<target_line_bytes:low=mid+1
+                    else:high=mid
+                events.append(candidate)
+            return events
+        volume_limit=1000
+        uncompressed=4_000_000  # 事件总量上限（其余成员留余量）
+        volume_cap=2*(uncompressed//volume_limit)+2  # 与模块公式一致的推导值
+        self.assertEqual(exporter.MAX_EVENT_VOLUMES,  # 模块常量本身按公式推导（防回退为固定小值）
+                         2*(exporter.MAX_UNCOMPRESSED_BYTES//exporter.MAX_EVENT_VOLUME_BYTES)+2)
+        self.assertEqual(exporter.MAX_MEMBERS,13+exporter.MAX_EVENT_VOLUMES)
+        originals=(exporter.MAX_EVENT_VOLUME_BYTES,exporter.MAX_UNCOMPRESSED_BYTES,
+                   exporter.MAX_EVENT_VOLUMES,exporter.MAX_MEMBERS)
+        try:
+            exporter.MAX_EVENT_VOLUME_BYTES=volume_limit
+            exporter.MAX_UNCOMPRESSED_BYTES=uncompressed
+            exporter.MAX_EVENT_VOLUMES=volume_cap
+            exporter.MAX_MEMBERS=13+volume_cap
+            # 评审探针复现：3×613B（两行装不进一卷）总量 ≤ 合法上限 → 必须可导出。
+            probe={'stores':[{'partition':'personal','store_id':'st-1',
+                              'settings':{'status':'recording','stages':['coding']},'summary':{},
+                              'events':sized_events(3,613)}]}
+            package=exporter.build_export_zip(probe,public=False)
+            with zipfile.ZipFile(_io.BytesIO(package)) as z:
+                volumes=[n for n in z.namelist() if n.startswith('events-part-')]
+            self.assertEqual(len(volumes),3)  # 一行一卷且不报卷数超限
+            self.assertEqual(len(exporter.validate_import_package(package)['events']),3)
+            # 最坏浪费规模化：1000×~505B（一行一卷）→ 1000 卷 ≤ 推导上限，仍可导出并可回导。
+            worst={'stores':[{'partition':'personal','store_id':'st-1',
+                              'settings':{'status':'recording','stages':['coding']},'summary':{},
+                              'events':sized_events(1000,505)}]}
+            worst_package=exporter.build_export_zip(worst,public=False)
+            with zipfile.ZipFile(_io.BytesIO(worst_package)) as z:
+                worst_volumes=[n for n in z.namelist() if n.startswith('events-part-')]
+                for name in worst_volumes:
+                    self.assertLessEqual(len(z.read(name)),volume_limit)  # 每卷不超上限
+            self.assertEqual(len(worst_volumes),1000)
+            self.assertLessEqual(len(worst_volumes),volume_cap)
+            parsed=exporter.validate_import_package(worst_package)  # 三位数卷名（100+）可回导
+            self.assertEqual(len(parsed['events']),1000)
+            # 总量超上限 → 报总量错误而非卷数错误。
+            over={'stores':[{'partition':'personal','store_id':'st-1',
+                             'settings':{'status':'recording','stages':['coding']},'summary':{},
+                             'events':sized_events(5000,900)}]}  # ≈4.5MB > 4MB
+            with self.assertRaises(exporter.TracePackageError) as raised:
+                exporter.build_export_zip(over,public=False)
+            self.assertIn('exceeds the export size limit',str(raised.exception))
+            self.assertNotIn('too many volumes',str(raised.exception))
+        finally:
+            (exporter.MAX_EVENT_VOLUME_BYTES,exporter.MAX_UNCOMPRESSED_BYTES,
+             exporter.MAX_EVENT_VOLUMES,exporter.MAX_MEMBERS)=originals
+
+    def test_volume_package_requires_event_volumes_manifest(self):
+        # 回归（评审）：分卷形态的包必须携带 manifest.event_volumes 且与实际成员一致
+        #（缺键的手工拼卷包拒绝）；旧单文件 events.jsonl 包无该键仍接受（见
+        # test_event_volume_round_trip_and_legacy_single_file 的旧 manifest 用例）。
+        from coscreen import research_trace_export as exporter
+        snapshot=self._volume_snapshot(3)
+        original=exporter.MAX_EVENT_VOLUME_BYTES
+        exporter.MAX_EVENT_VOLUME_BYTES=150  # 每行约 6KB → 三卷
+        try:
+            package=exporter.build_export_zip(snapshot,public=False)
+        finally:
+            exporter.MAX_EVENT_VOLUME_BYTES=original
+        with zipfile.ZipFile(_io.BytesIO(package),'r') as src:
+            files={n:src.read(n) for n in src.namelist()}
+            manifest=json.loads(files['manifest.json'])
+            manifest.pop('event_volumes')  # 手工去掉清单的分卷包
+        stripped=_io.BytesIO()
+        with zipfile.ZipFile(stripped,'w',compression=zipfile.ZIP_DEFLATED) as dst:
+            for name,data in files.items():
+                if name=='manifest.json':
+                    data=json.dumps(manifest,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()+b'\n'
+                dst.writestr(name,data)
+        with self.assertRaises(exporter.TracePackageError) as raised:
+            exporter.validate_import_package(stripped.getvalue())
+        self.assertIn('event_volumes',str(raised.exception))
+        self.assertEqual(len(exporter.validate_import_package(package)['events']),3)  # 带清单的原包仍接受
+
     def test_volume_package_imports_through_api(self):
         # 回归（契约⑥/⑦）：分卷包经真实导出→导入两步流（preview + commit）完整
         # round-trip，响应键不变；二次 commit 全量 duplicate；旧单文件 events.jsonl

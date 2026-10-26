@@ -28,10 +28,13 @@ MAX_EVENTS = 50_000
 #（report_evidence 单事件预算 850KB、折叠增量约 0.8MB、complete 包 origin 原始
 # 副本 0.6MB 级）必须能完整 round-trip；总 uncompressed 上限仍约束整体规模。
 MAX_EVENT_BYTES = 5 * 1024 * 1024
-# 分卷（契约⑥）：仅 events.jsonl 切卷。单卷上限 16MB、卷数上限 16
-# （= ceil(MAX_UNCOMPRESSED_BYTES / MAX_EVENT_VOLUME_BYTES)），单请求仍是单 application/zip。
+# 分卷（契约⑥）：仅 events.jsonl 切卷。单卷上限 16MB，卷数上限按行序贪心装箱的
+# 最坏浪费推导：任一非末卷因“下一行放不下”而封卷，故任意两个相邻卷（末卷除外）
+# 合计必超单卷上限——总事件字节 ≤ MAX_UNCOMPRESSED_BYTES 时卷数 ≤ 2*ceil(U/V)+1，
+# 再留 1 卷余量。“总大小 ≤ 上限且逐事件 ≤ MAX_EVENT_BYTES”的输入一定可导出，
+# 不会触发 needs too many volumes。单请求仍是单 application/zip。
 MAX_EVENT_VOLUME_BYTES = 16 * 1024 * 1024
-MAX_EVENT_VOLUMES = 16
+MAX_EVENT_VOLUMES = 2 * (MAX_UNCOMPRESSED_BYTES // MAX_EVENT_VOLUME_BYTES) + 2
 MAX_MEMBERS = 13 + MAX_EVENT_VOLUMES  # 固定成员上限 + 分卷上限
 MAX_COMPRESSION_RATIO = 2_000
 
@@ -42,8 +45,16 @@ PACKAGE_MEMBERS = frozenset({
     "data-dictionary.json",
 })
 _OPTIONAL_PACKAGE_MEMBERS = frozenset({"readable-events.csv"})
-# 连续编号分卷成员：events-part-01.jsonl、events-part-02.jsonl、…
-_EVENT_VOLUME_NAME = re.compile(r"^events-part-(\d{2})\.jsonl$")
+# 连续编号分卷成员：events-part-01.jsonl、events-part-02.jsonl、…（至少两位零填充；
+# 生产卷数上限 34 恒为两位，导入侧放宽到两位以上以便大分卷包/测试形态）。
+_EVENT_VOLUME_NAME = re.compile(r"^events-part-(\d{2,})\.jsonl$")
+
+
+def _event_member_sort_key(name: str) -> tuple[int]:
+    """事件成员统一按卷号数值排序（单文件 events.jsonl 视为 0），导出清单与
+    导入校验共用同一键，避免多位数卷名下字符串序与数值序不一致。"""
+    match = _EVENT_VOLUME_NAME.fullmatch(name)
+    return (int(match.group(1)) if match else 0,)
 EVENT_COLUMNS = (
     "event_id", "store_id", "sequence", "task_id", "actor_id", "actor_alias",
     "stage", "action", "subject_id", "before", "after", "field", "source",
@@ -1284,7 +1295,7 @@ def build_export_zip(snapshot: Mapping[str, Any], *, public: bool = False,
         "method_report_draft": method_draft,
         "stores": partitions,
         "event_count": len(events),
-        "event_volumes": sorted(event_members),
+        "event_volumes": sorted(event_members, key=_event_member_sort_key),
         "files": {name: hashlib.sha256(content).hexdigest() for name, content in sorted(files.items())},
     }
     files["manifest.json"] = _json_bytes(manifest)
@@ -1362,8 +1373,9 @@ def validate_import_package(package: bytes | bytearray | memoryview) -> dict[str
             raise TracePackageError("ZIP contains duplicate member names.")
         member_names = frozenset(names)
         # 事件成员两形态：旧单文件 events.jsonl，或连续编号分卷 events-part-01.jsonl…
-        # （零填充两位、自 01 起连续、卷数不超上限；两者互斥，其余成员仍为固定白名单）。
-        volume_names = sorted(name for name in names if _EVENT_VOLUME_NAME.fullmatch(name))
+        #（至少两位零填充、自 01 起连续、卷数不超上限；两者互斥，其余成员仍为固定白名单）。
+        volume_names = sorted((name for name in names if _EVENT_VOLUME_NAME.fullmatch(name)),
+                              key=_event_member_sort_key)
         if volume_names:
             indexes = [int(_EVENT_VOLUME_NAME.fullmatch(name).group(1)) for name in volume_names]
             if indexes != list(range(1, len(indexes) + 1)) or len(indexes) > MAX_EVENT_VOLUMES:
@@ -1439,11 +1451,15 @@ def validate_import_package(package: bytes | bytearray | memoryview) -> dict[str
         actual = hashlib.sha256(data[name]).hexdigest()
         if actual != expected:
             raise TracePackageError(f"Hash mismatch for {name}.")
-    # manifest.event_volumes 清单（旧包无此键视为旧单文件形态）：必须与实际事件成员一致。
+    # manifest.event_volumes 清单：分卷形态强制存在且与实际成员一致（手工拼卷包
+    # 不得缺省）；旧单文件 events.jsonl 包无此键时按旧形态接受，键存在则须一致。
     event_member_names = volume_names if volume_names else ["events.jsonl"]
     volumes_manifest = manifest.get("event_volumes")
-    if volumes_manifest is not None and (not isinstance(volumes_manifest, list)
-                                         or [str(item) for item in volumes_manifest] != event_member_names):
+    if volume_names:
+        if not isinstance(volumes_manifest, list) or [str(item) for item in volumes_manifest] != event_member_names:
+            raise TracePackageError("Volume packages must list their exact event members in manifest event_volumes.")
+    elif volumes_manifest is not None and (not isinstance(volumes_manifest, list)
+                                           or [str(item) for item in volumes_manifest] != event_member_names):
         raise TracePackageError("Manifest event volume list does not match package members.")
     lines = b"".join(data[name] for name in event_member_names).splitlines()
     if len(lines) > MAX_EVENTS:
