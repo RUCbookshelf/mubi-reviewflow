@@ -326,18 +326,6 @@
     "메타데이터 검토 필요"
   ],
   [
-    "可激活",
-    "Ready to activate",
-    "Prêt à activer",
-    "Готово к активации",
-    "Listo para activar",
-    "有効化可能",
-    "Pronto para ativar",
-    "Zur Aktivierung bereit",
-    "Спремно за активирање",
-    "활성화 가능"
-  ],
-  [
     "已完成，无需操作",
     "Completed — no action needed",
     "Terminé — aucune action requise",
@@ -348,6 +336,30 @@
     "Abgeschlossen — keine Aktion erforderlich",
     "Завршено — није потребна радња",
     "완료 — 조치 불필요"
+  ],
+  [
+    "已启用",
+    "Already active",
+    "Déjà activées",
+    "Уже активны",
+    "Ya activos",
+    "有効化済み",
+    "Já ativos",
+    "Bereits aktiv",
+    "Већ активни",
+    "이미 활성화됨"
+  ],
+  [
+    "已核验待启用",
+    "Reviewed, pending activation",
+    "Vérifiées, en attente d’activation",
+    "Проверены, ожидают активации",
+    "Revisados, pendientes de activación",
+    "確認済み・有効化待ち",
+    "Revisados, aguardando ativação",
+    "Geprüft, Aktivierung ausstehend",
+    "Проверено, чека активирање",
+    "검토 완료, 활성화 대기 중"
   ]
 ]);RFLang.register([
   [

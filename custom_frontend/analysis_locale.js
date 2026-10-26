@@ -3565,7 +3565,15 @@
     "문헌 목록을 사용할 수 없습니다: 분석 페이지 문헌이 아직 로드되지 않았습니다. 잠시 후 다시 시도하세요."
   ],
   ["主题簇根据当前文献库使用 TF-IDF+KMeans 自动分配。此处按另一维度（{0}）筛选文献；单篇归属不单独重算。", "Topic clusters are assigned across the current reference library using TF-IDF + K-means. This list filters by the other dimension ({0}); individual assignments are not recalculated here.", "Les groupes thématiques sont attribués à l’ensemble de la bibliothèque actuelle avec TF-IDF + K-means. Cette liste filtre selon l’autre dimension ({0}) ; les attributions individuelles ne sont pas recalculées ici.", "Тематические кластеры распределяются по текущей библиотеке публикаций методом TF-IDF + K-means. В этом списке действует фильтр по другому измерению ({0}); принадлежность отдельной публикации здесь не пересчитывается.", "Los grupos temáticos se asignan en toda la biblioteca actual mediante TF-IDF + K-means. Esta lista filtra por la otra dimensión ({0}); aquí no se recalcula la asignación de cada referencia.", "現在の文献ライブラリ全体を対象に TF-IDF + K-means でトピッククラスターを割り当てます。この一覧はもう一方の次元（{0}）で絞り込み、各文献の割り当てはここでは再計算しません。", "Os grupos temáticos são atribuídos em toda a biblioteca atual usando TF-IDF + K-means. Esta lista filtra pela outra dimensão ({0}); as atribuições individuais não são recalculadas aqui.", "Themencluster werden anhand der aktuellen Referenzbibliothek mit TF-IDF + K-means zugewiesen. Diese Liste filtert nach der anderen Dimension ({0}); einzelne Zuordnungen werden hier nicht neu berechnet.", "Тематски кластери се додељују у целој тренутној библиотеци референци методом TF-IDF + K-means. Овај списак филтрира по другој димензији ({0}); појединачне доделе се овде не прерачунавају.", "현재 문헌 라이브러리 전체를 대상으로 TF-IDF + K-means를 사용해 주제 군집을 할당합니다. 이 목록은 다른 차원({0})으로 필터링하며 개별 문헌의 할당을 여기서 다시 계산하지 않습니다."],
-  ["按相同规则从当前文献库筛出 {0} 篇，与地图计数 {1} 不一致（生成地图后，文献库可能已变化）。", "Applying the same rules to the current reference library gives {0} references, compared with {1} on the map. The library may have changed since the map was generated.", "L’application des mêmes règles à la bibliothèque actuelle donne {0} références, contre {1} sur la carte. La bibliothèque a peut-être changé depuis la création de la carte.", "Применение тех же правил к текущей библиотеке публикаций даёт {0} ссылок, тогда как на карте указано {1}. После построения карты библиотека могла измениться.", "Al aplicar las mismas reglas a la biblioteca actual se obtienen {0} referencias, frente a {1} en el mapa. La biblioteca pudo cambiar desde que se generó el mapa.", "現在の文献ライブラリに同じ規則を適用すると {0} 件となり、地図の件数 {1} と一致しません。地図の作成後にライブラリが変更された可能性があります。", "A aplicação das mesmas regras à biblioteca atual resulta em {0} referências, enquanto o mapa mostra {1}. A biblioteca pode ter mudado desde a geração do mapa.", "Nach denselben Regeln ergeben sich in der aktuellen Referenzbibliothek {0} Einträge, während die Karte {1} zeigt. Die Bibliothek kann sich seit der Kartenerstellung geändert haben.", "Применом истих правила на тренутну библиотеку добија се {0} референци, док мапа приказује {1}. Библиотека се можда променила од прављења мапе.", "현재 문헌 라이브러리에 같은 규칙을 적용하면 {0}건이며 지도에는 {1}건이 표시됩니다. 지도를 만든 뒤 라이브러리가 변경되었을 수 있습니다."]
+  ["按相同规则从当前文献库筛出 {0} 篇，与地图计数 {1} 不一致（生成地图后，文献库可能已变化）。", "Applying the same rules to the current reference library gives {0} references, compared with {1} on the map. The library may have changed since the map was generated.", "L’application des mêmes règles à la bibliothèque actuelle donne {0} références, contre {1} sur la carte. La bibliothèque a peut-être changé depuis la création de la carte.", "Применение тех же правил к текущей библиотеке публикаций даёт {0} ссылок, тогда как на карте указано {1}. После построения карты библиотека могла измениться.", "Al aplicar las mismas reglas a la biblioteca actual se obtienen {0} referencias, frente a {1} en el mapa. La biblioteca pudo cambiar desde que se generó el mapa.", "現在の文献ライブラリに同じ規則を適用すると {0} 件となり、地図の件数 {1} と一致しません。地図の作成後にライブラリが変更された可能性があります。", "A aplicação das mesmas regras à biblioteca atual resulta em {0} referências, enquanto o mapa mostra {1}. A biblioteca pode ter mudado desde a geração do mapa.", "Nach denselben Regeln ergeben sich in der aktuellen Referenzbibliothek {0} Einträge, während die Karte {1} zeigt. Die Bibliothek kann sich seit der Kartenerstellung geändert haben.", "Применом истих правила на тренутну библиотеку добија се {0} референци, док мапа приказује {1}. Библиотека се можда променила од прављења мапе.", "현재 문헌 라이브러리에 같은 규칙을 적용하면 {0}건이며 지도에는 {1}건이 표시됩니다. 지도를 만든 뒤 라이브러리가 변경되었을 수 있습니다."],
+  ["至少需要两项独立研究才能合并。", "at least two independent studies are required", "Au moins deux études indépendantes sont nécessaires.", "Для объединения требуются как минимум два независимых исследования.", "Se requieren al menos dos estudios independientes.", "統合には少なくとも 2 つの独立した研究が必要です。", "São necessários pelo menos dois estudos independentes.", "Es sind mindestens zwei unabhängige Studien erforderlich.", "Потребна су најмање два независна истраживања.", "병합하려면 독립적인 연구가 두 개 이상 필요합니다."],
+  ["不支持的效应指标或模型。", "unsupported measure or model", "Mesure ou modèle non pris en charge.", "Неподдерживаемый показатель или модель.", "Medida o modelo no admitido.", "未対応の効果指標またはモデルです。", "Medida ou modelo não suportado.", "Nicht unterstützte Effektmaß oder Modell.", "Неподржана мера или модел.", "지원되지 않는 효과 지표 또는 모델입니다."],
+  ["运行前请先选择合并模型。", "Choose a synthesis model before running this analysis.", "Choisissez d’abord un modèle de synthèse avant de lancer cette analyse.", "Сначала выберите модель объединения, затем запускайте анализ.", "Elija primero un modelo de síntesis antes de ejecutar este análisis.", "この分析を実行する前に統合モデルを選択してください。", "Escolha o modelo de síntese antes de executar esta análise.", "Wählen Sie vor dem Ausführen dieser Analyse ein Synthesemodell.", "Пре покретања ове анализе изаберите модел синтезе.", "이 분석을 실행하기 전에 통합 모델을 먼저 선택하세요."],
+  ["运行前请先选择置信区间方法。", "Choose a confidence interval method before running this analysis.", "Choisissez d’abord une méthode d’intervalle de confiance avant de lancer cette analyse.", "Сначала выберите метод доверительного интервала, затем запускайте анализ.", "Elija primero un método de intervalo de confianza antes de ejecutar este análisis.", "この分析を実行する前に信頼区間の方法を選択してください。", "Escolha o método de intervalo de confiança antes de executar esta análise.", "Wählen Sie vor dem Ausführen dieser Analyse eine Konfidenzintervallmethode.", "Пре покретања ове анализе изаберите метод интервала поузданости.", "이 분석을 실행하기 전에 신뢰구간 방법을 먼저 선택하세요."],
+  ["运行前请先选择效应指标。", "Choose an effect measure before running this analysis.", "Choisissez d’abord une mesure d’effet avant de lancer cette analyse.", "Сначала выберите показатель эффекта, затем запускайте анализ.", "Elija primero una medida del efecto antes de ejecutar este análisis.", "この分析を実行する前に効果指標を選択してください。", "Escolha a medida de efeito antes de executar esta análise.", "Wählen Sie vor dem Ausführen dieser Analyse ein Effektmaß.", "Пре покретања ове анализе изаберите меру ефекта.", "이 분석을 실행하기 전에 효과 지표를 먼저 선택하세요."],
+  ["运行合并分析前，请先选择：{0}。", "Before running the synthesis, choose: {0}.", "Avant de lancer la synthèse, choisissez : {0}.", "Перед запуском объединения выберите: {0}.", "Antes de ejecutar la síntesis, elija: {0}.", "統合解析の実行前に選択してください：{0}。", "Antes de executar a síntese, escolha: {0}.", "Wählen Sie vor dem Ausführen der Synthese: {0}.", "Пре покретања синтезе изаберите: {0}.", "통합 분석을 실행하기 전에 선택하세요: {0}."],
+  ["修正 HKSJ 区间需要随机效应模型。", "Modified HKSJ intervals require a random-effects model.", "Les intervalles HKSJ modifiés exigent un modèle à effets aléatoires.", "Модифицированные интервалы HKSJ требуют модель со случайными эффектами.", "Los intervalos HKSJ modificados requieren un modelo de efectos aleatorios.", "修正 HKSJ 区間にはランダム効果モデルが必要です。", "Intervalos HKSJ modificados exigem um modelo de efeitos aleatórios.", "Modifizierte HKSJ-Intervalle erfordern ein Modell mit zufälligen Effekten.", "Модификовани HKSJ интервали захтевају модел са случајним ефектима.", "수정 HKSJ 구간에는 무작위 효과 모델이 필요합니다."],
+  ["、", ", ", ", ", ", ", ", ", "、", ", ", ", ", ", ", "、"]
 ];
   RFLang.register(pairs);
   const bySource = new Map(pairs.flatMap(([zh,en]) => [[zh,zh],[en,zh]]));
@@ -3573,10 +3581,18 @@
     const raw = value == null ? '—' : String(value);
     return RFLang.t(bySource.get(raw) || raw);
   };
-  function message(value) {
+  function message(value, options) {
     const raw = String(value ?? '');
-    const translated = term(raw);
     const host = document.createElement('span');
+    /* 高2（F02）：options.localized 标记“调用方已用 T() 本地化的界面文案”
+       （如合并分析前的校验汇总）。这类文案按当前语言直读，不再落入下方
+       “疑似英文技术串”的启发式分支——否则法语等界面会把自己语言的校验
+       提示误包进“暂无译文”外壳里。 */
+    if (options && options.localized) {
+      host.textContent = raw;
+      return host;
+    }
+    const translated = term(raw);
     if (RFLang.get() === 'en' || translated !== raw || /[\u3400-\u9fff]/.test(raw) || !/[A-Za-z]{3}.*\s+[A-Za-z]{3}/.test(raw)) {
       host.textContent = translated; return host;
     }
@@ -3586,6 +3602,17 @@
     const details = document.createElement('details');
     const label = document.createElement('summary'); label.textContent = RFLang.t('查看原始信息');
     const content = document.createElement('div'); content.textContent = raw; content.lang = 'en'; content.setAttribute('translate','no');
+    /* 高2（F02 “查看原始信息”点不开的兜底）：原生 details/summary 的开合
+       依赖浏览器激活行为，易被样式或容器状态干扰。这里显式接管点击切换：
+       preventDefault 阻止原生默认切换后自行 open 取反，双击路径唯一，
+       展开不再依赖任何外部条件。 */
+    label.addEventListener('click', event => {
+      event.preventDefault();
+      details.open = !details.open;
+    });
+    label.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); details.open = !details.open; }
+    });
     details.append(label,content); host.append(summary,details); return host;
   }
   window.RFAnalysisLocale = Object.freeze({term,message});

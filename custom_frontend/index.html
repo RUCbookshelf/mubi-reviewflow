@@ -713,6 +713,12 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 #importBusyTrack { height:10px; margin:18px 0 9px; overflow:hidden; border-radius:99px; background:var(--border); }
 #importBusyFill { width:1%; height:100%; border-radius:inherit; background:var(--accent); transition:width .2s ease; }
 #importBusyPct { font-variant-numeric:tabular-nums; }
+/* 高7（F53 遮罩无取消）：等待时长行 + 取消操作区。取消如实告知“服务器可能
+   仍在处理”，不用禁用态隐藏风险。 */
+#importBusyElapsed { margin:6px 0 0; text-align:right; font-variant-numeric:tabular-nums; }
+#importBusyActions { display:flex; flex-direction:column; gap:6px; margin-top:14px; }
+#importBusyCancel { width:100%; }
+#importBusyCancelHint { margin:8px 0 0; text-align:center; }
 </style>
 <link rel="stylesheet" href="./analysis_workbench.css?v=20261005-button-borders1">
 <link rel="stylesheet" href="./workspace_shell.css?v=20261011-sheet2">
@@ -734,6 +740,11 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <p id="importBusyMessage" class="hint" aria-live="polite" style="margin:0">正在解析文件并准备去重…</p>
     <div id="importBusyTrack" role="progressbar" aria-label="导入与去重进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="1"><div id="importBusyFill"></div></div>
     <div id="importBusyPct" class="hint" style="margin:0;text-align:right">1%</div>
+    <div id="importBusyElapsed" class="hint"></div>
+    <div id="importBusyActions">
+      <button type="button" id="importBusyCancel" class="btn b-out">取消导入</button>
+      <p id="importBusyCancelHint" class="hint">取消仅停止本页等待；已上传的文件可能仍在服务器处理。</p>
+    </div>
   </div>
 </div>
 
@@ -4296,6 +4307,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["请求失败（{0}）","Request failed ({0})","Échec de la requête ({0})","Ошибка запроса ({0})","Solicitud fallida ({0})","リクエスト失敗（{0}）","Falha na requisição ({0})","Anfrage fehlgeschlagen ({0})","Захтев није успео ({0})", "요청 실패 ({0})"],
   ["无法连接服务，请检查网络连接或重新打开应用。", "Cannot connect to the service. Check your network connection or reopen the app.", "Impossible de se connecter au service. Vérifiez votre connexion réseau ou relancez l’application.", "Не удаётся подключиться к службе. Проверьте подключение к сети или перезапустите приложение.", "No se puede conectar con el servicio. Compruebe la conexión de red o vuelva a abrir la aplicación.", "サービスに接続できません。ネットワークを確認するか、アプリを再起動してください。", "Não foi possível conectar ao serviço. Verifique a conexão de rede ou reabra o aplicativo.", "Die Verbindung zum Dienst ist fehlgeschlagen. Prüfen Sie die Netzwerkverbindung oder öffnen Sie die App erneut.", "Није могуће повезивање са услугом. Проверите мрежну везу или поново покрените апликацију.", "서비스에 연결할 수 없습니다. 네트워크 연결을 확인하거나 앱을 다시 여세요."],
   ["登录已过期，请重新登录。","Session expired; please log in again.","Session expirée ; reconnectez-vous.","Сессия истекла; войдите снова.","Sesión caducada; inicie sesión de nuevo.","セッションが期限切れです。再度ログインしてください。","Sessão expirada; entre novamente.","Sitzung abgelaufen; bitte erneut anmelden.","Сесија је истекла; пријавите се поново.", "세션 만료. 다시 로그인하세요."],
+  ["登录已过期。当前页面地址已保留，重新登录后将回到此处。","Your session expired. The current page address is kept; you will return here after logging in again.","Votre session a expiré. L’adresse de la page actuelle est conservée ; vous y reviendrez après vous être reconnecté.","Сессия истекла. Адрес текущей страницы сохранён; после повторного входа вы вернётесь сюда.","Su sesión ha caducado. Se conserva la dirección de la página actual; volverá aquí tras iniciar sesión de nuevo.","セッションが期限切れです。現在のページのアドレスは保持されるため、再ログイン後にここへ戻ります.","Sua sessão expirou. O endereço da página atual foi mantido; você voltará aqui após entrar novamente.","Ihre Sitzung ist abgelaufen. Die Adresse der aktuellen Seite bleibt erhalten; nach der erneuten Anmeldung kehren Sie hierher zurück.","Сесија је истекла. Адреса тренутне странице је сачувана; након поновне пријаве вратићете се овде.", "세션이 만료되었습니다. 현재 페이지 주소가 유지되며 다시 로그인하면 이곳으로 돌아옵니다."],
   ["请先在首页选择或创建任务","Pick or create a task on the Home page first","Choisissez ou créez d'abord une tâche dans l'accueil","Сначала выберите или создайте задачу на главной","Elija o cree primero una tarea en Inicio","先にホームでタスクを選択または作成してください","Escolha ou crie uma tarefa na Início primeiro","Wählen oder erstellen Sie zuerst eine Aufgabe auf der Startseite","Прво изаберите или направите задатак на почетној", "홈에서 작업을 선택하거나 만드세요"],
   ["相关结局联合合并","Joint synthesis of correlated outcomes","Synthèse conjointe des critères corrélés","Совместный метаанализ коррелированных исходов","Síntesis conjunta de resultados correlacionados","相関するアウトカムの統合","Síntese conjunta de desfechos correlacionados","Gemeinsame Synthese korrelierter Endpunkte","Заједничка синтеза корелисаних исхода","상관된 결과의 공동 합성"],
   ["先选定比较、时间点及效应指标，载入后勾选要纳入的结果。同一研究的多个结局需输入协方差。", "Choose the comparison, time point and effect measure. After loading, tick the results to include. Enter covariance for multiple outcomes from the same study.", "Choisissez la comparaison, le temps et la mesure d’effet. Après chargement, cochez les résultats à inclure. Saisissez la covariance pour plusieurs critères d’une même étude.", "Выберите сравнение, момент времени и меру эффекта. После загрузки отметьте результаты для включения. Для нескольких исходов одного исследования укажите ковариацию.", "Elija la comparación, el momento y la medida del efecto. Tras cargar, marque los resultados que desea incluir. Indique la covarianza de varios resultados del mismo estudio.", "比較、時点、効果量を選び、読み込み後に採用する結果にチェックを入れてください。同じ研究の複数のアウトカムには共分散を入力します。", "Escolha a comparação, o momento e a medida de efeito. Após carregar, marque os resultados a incluir. Informe a covariância para vários desfechos do mesmo estudo.", "Wählen Sie Vergleich, Zeitpunkt und Effektmaß. Markieren Sie nach dem Laden die einzuschließenden Ergebnisse. Geben Sie für mehrere Endpunkte derselben Studie die Kovarianz ein.", "Изаберите поређење, време и меру ефекта. После учитавања означите резултате које желите да укључите. За више исхода исте студије унесите коваријансу.", "비교, 시점과 효과 지표를 선택하세요. 불러온 뒤 포함할 결과를 체크하세요. 같은 연구의 여러 결과에는 공분산을 입력하세요."],
@@ -5127,15 +5139,28 @@ async function apiRequest(path, opts = {}) {
   else if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
   let resp;
   try {
-    resp = await fetch(API_BASE + path, { method: opts.method || 'GET', headers, body });
+    /* 高7（F53）：opts.signal 透传给 fetch，供导入遮罩的“取消导入”中断上传/
+       等待；AbortError 在下方原样抛出，保留可识别的取消语义。 */
+    resp = await fetch(API_BASE + path, { method: opts.method || 'GET', headers, body, signal: opts.signal });
   } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
     if ((opts.method || 'GET').toUpperCase() !== 'GET')
       throw new ApiError(0, '无法连接服务，请检查网络连接或重新打开应用。');
     await new Promise(resolve => setTimeout(resolve, 250));
-    try { resp = await fetch(API_BASE + path, { method:'GET', headers }); }
-    catch (retryError) { throw new ApiError(0, '无法连接服务，请检查网络连接或重新打开应用。'); }
+    try { resp = await fetch(API_BASE + path, { method:'GET', headers, signal: opts.signal }); }
+    catch (retryError) {
+      if (retryError && retryError.name === 'AbortError') throw retryError;
+      throw new ApiError(0, '无法连接服务，请检查网络连接或重新打开应用。');
+    }
   }
   if (resp.status === 401 && !path.startsWith('/api/auth/')) {
+    /* 高1（F01 会话静默丢失）：统一登出前先给出显式提示（十语言注册），并明确
+       当前地址已保留、重登录后回到此处。logout() 不修改 location.hash，
+       enterApp() 会按 hash 复原页面（见 enterApp 内 initialRoute 解析），因此
+       片段保留由“不清除 hash”实现；本 toast 挂在 #toasts（appMain 之外），
+       切到登录页后仍可见，9000ms 停留避免被错过。401 统一登出架构保持不变：
+       仍是此唯一入口调用 logout() 一次。 */
+    toast('登录已过期。当前页面地址已保留，重新登录后将回到此处。', 'warn', 9000);
     logout('登录已过期，请重新登录。');
     throw new ApiError(401, '登录已过期');
   }
@@ -5776,7 +5801,15 @@ const dz = $('#dropZone');
 const importPromptHtml = $('#dzInner').innerHTML;
 let importVersion = 0;
 let importBusyPreviousInert = new Map();
+/* 高7（F53）：遮罩等待已用时长（秒）与取消接线。importAbort 指向当前导入
+   请求的 AbortController；取消按钮只调用 abort()，恢复交互、提示与状态
+   清理由 realImport 的 catch/finally 统一完成（单一出口，避免双路径漂移）。 */
+let importBusyTimer = null, importBusyStarted = 0, importAbort = null;
 const DUP_METHOD_LABEL = { exact_doi: 'DOI 精确匹配', exact_key: 'Key 精确匹配', fuzzy: '标题模糊匹配' };
+function importBusyTick() {
+  const node = $('#importBusyElapsed');
+  if (node) node.textContent = T('已等待 {0} 秒', Math.floor((performance.now() - importBusyStarted) / 1000));
+}
 function setImportBusy(active, phase = 'parse', percent = 1) {
   const overlay = $('#importBusyOverlay');
   if (!overlay) return;
@@ -5790,6 +5823,10 @@ function setImportBusy(active, phase = 'parse', percent = 1) {
       }
       overlay.hidden = false;
       overlay.focus();
+      importBusyStarted = performance.now();
+      clearInterval(importBusyTimer);
+      importBusyTimer = setInterval(importBusyTick, 1000);
+      importBusyTick();
     }
     const message = phase === 'exact' ? T('正在进行精确去重…')
       : phase === 'fuzzy' ? T('精确匹配已完成，正在分段查找标题和作者相似候选…')
@@ -5803,6 +5840,9 @@ function setImportBusy(active, phase = 'parse', percent = 1) {
     $('#importBusyPct').textContent = value + '%';
     $('#importBusyTrack').setAttribute('aria-valuenow', String(value));
   } else if (!overlay.hidden) {
+    clearInterval(importBusyTimer); importBusyTimer = null;
+    const elapsed = $('#importBusyElapsed');
+    if (elapsed) elapsed.textContent = '';
     for (const [node, wasInert] of importBusyPreviousInert) node.inert = wasInert;
     importBusyPreviousInert.clear();
     overlay.hidden = true;
@@ -5935,9 +5975,14 @@ async function realImport(files) {
   if (batch) files.forEach(f => fd.append('files', f, f.name));
   else fd.append('file', files[0], files[0].name);
   const url = taskApi() + (batch ? '/import-batch' : '/import') + scrQ();
+  /* 高7（F53 遮罩无取消）：本请求可被遮罩“取消导入”按钮中断（点击 →
+     importAbort.abort() → fetch 以 AbortError 拒绝）。取消只停止本页等待，
+     服务器可能仍在处理已上传的文件——catch 分支如实提示，不谎报“已撤销”。 */
+  const abort = new AbortController();
+  importAbort = abort;
   setImportBusy(true, 'parse', 1);
   try {
-    const request = api(url, { method: 'POST', form: fd });
+    const request = api(url, { method: 'POST', form: fd, signal: abort.signal });
     let settled = false;
     request.then(() => { settled = true; }, () => { settled = true; });
     while (!settled) {
@@ -5970,11 +6015,21 @@ async function realImport(files) {
   } catch (e) {
     if (ticket !== importVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
     $('#dzBar').style.display = 'none'; $('#dzBarI').style.width = '0';
-    toast(e.status === 0 ? e.message : T('导入失败：') + e.message, 'warn');
+    if (e && e.name === 'AbortError') {
+      /* 用户主动取消：恢复交互由 finally 的 setImportBusy(false) 完成；
+         如实告知服务器端可能仍在处理，结果稍后可在批次列表查看。 */
+      toast(T('已取消等待导入结果。已上传的文件可能仍在服务器处理，稍后可在导入批次列表查看。'), 'warn');
+    } else {
+      toast(e.status === 0 ? e.message : T('导入失败：') + e.message, 'warn');
+    }
   } finally {
-    if (ticket === importVersion && S.task?.task_id === taskId && S.screener === screener) setImportBusy(false);
+    if (importAbort === abort) importAbort = null;
+    /* 仅按导入代际判断是否收起遮罩：任务/筛选员中途变化（如 401 登出）时
+       也要恢复交互，避免遮罩滞留在登录页；较新的导入接管时不动它的遮罩。 */
+    if (ticket === importVersion) setImportBusy(false);
   }
 }
+$('#importBusyCancel').addEventListener('click', () => { importAbort?.abort(); });
 dz.addEventListener('click', () => $('#importFile').click());
 dz.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#importFile').click(); }
@@ -8204,6 +8259,7 @@ async function loadAnalysis() {
   status.hidden = false;
   const progress = () => { if (current()) status.textContent = T('正在载入研究与报告…已等待 {0} 秒。', ((performance.now()-started)/1000).toFixed(1)); };
   progress(); analysisLoadTimer = setInterval(progress, 500);
+  const loadTimer = analysisLoadTimer;
   try {
     const [studies, effects, articles] = await Promise.all([
       api(base + '/analysis/studies'), api(base + '/analysis/effects'),
@@ -8254,8 +8310,15 @@ async function loadAnalysis() {
       categories:qualCategories.categories, syntheses:qualSyntheses.syntheses }, null, 2);
   } catch (e) { if (current()) toast(e.message, 'warn'); }
   finally {
-    if (current()) {
-      clearInterval(analysisLoadTimer); status.hidden = true; status.textContent = '';
+    /* 高2（F02 “查看原始信息”点不开的根因之一）：交互性恢复不得绑定在
+       current() 上。任务/筛选员在加载中途变化时 current() 为假，旧代码会
+       跳过 inert/aria-busy 清理，且除再次进入分析页或登出外没有任何路径
+       恢复——整页点击（含错误条“查看原始信息”的展开）全部失效。改为只要
+       本次加载仍是最新一代（没有被更新的加载接管）就恢复交互；定时器用
+       本地引用清理，避免误杀新一代加载的进度计时。 */
+    clearInterval(loadTimer);
+    if (ticket === analysisLoadGeneration) {
+      status.hidden = true; status.textContent = '';
       analysisPage.inert = false; analysisPage.removeAttribute('aria-busy');
     }
   }
@@ -8519,7 +8582,7 @@ $('#anSynthesize').addEventListener('click', async () => {
     renderForest(result);
     document.dispatchEvent(new CustomEvent('reviewflow:analysis-synthesis-ready', {detail:result}));
   } catch (e) {
-    if (ticket === anSynthesisGeneration) { $('#anSynthesisResult').textContent = e.message; document.dispatchEvent(new CustomEvent('reviewflow:analysis-synthesis-failed', {detail:e.message})); toast(T('分析未完成，请查看错误详情。'), 'warn'); }
+    if (ticket === anSynthesisGeneration) { $('#anSynthesisResult').textContent = e.message; document.dispatchEvent(new CustomEvent('reviewflow:analysis-synthesis-failed', {detail:e.message, localized:e.rfLocalized === true})); toast(T('分析未完成，请查看错误详情。'), 'warn'); }
   } finally {
     if (ticket === anSynthesisGeneration) { clearInterval(anSynthesisTimer); $('#anSynthesize').disabled = false; }
   }
@@ -8538,16 +8601,29 @@ function anAnalysisQuery() {
     ci_method:anValue('anCiMethod') });
 }
 function anRequireModel() {
-  if (!anValue('anModel')) throw new Error('Choose a synthesis model before running this analysis.');
+  /* 高2（F02）：本地校验文案同样过 T()（十语言注册于 analysis_locale.js），
+     并带 rfLocalized 标记，供错误条直读。 */
+  if (!anValue('anModel')) { const error = new Error(T('运行前请先选择合并模型。')); error.rfLocalized = true; throw error; }
 }
 function anRequireCi() {
-  if (!anValue('anCiMethod')) throw new Error('Choose a confidence interval method before running this analysis.');
+  if (!anValue('anCiMethod')) { const error = new Error(T('运行前请先选择置信区间方法。')); error.rfLocalized = true; throw error; }
 }
 function anSynthesisQuery() {
-  anRequireModel(); anRequireCi();
-  if (!anValue('anMeasure')) throw new Error('Choose an effect measure before running this analysis.');
+  /* 高2（F02 校验串行报错）：一次性汇总全部缺失项，不再“模型→区间→效应指标”
+     逐次只报第一个。字段名经 T() 取当前语言；汇总模板十语言注册
+     （analysis_locale.js），错误对象带 rfLocalized 标记，分析页错误条按
+     “已本地化文案”直读，不再落入“查看原始信息”的技术串分支。 */
+  const missing = [];
+  if (!anValue('anModel')) missing.push(T('合并模型'));
+  if (!anValue('anCiMethod')) missing.push(T('置信区间方法'));
+  if (!anValue('anMeasure')) missing.push(T('效应指标'));
+  if (missing.length) {
+    const error = new Error(T('运行合并分析前，请先选择：{0}。', missing.join(T('、'))));
+    error.rfLocalized = true;
+    throw error;
+  }
   if (anValue('anModel') === 'fixed' && anValue('anCiMethod') === 'hksj')
-    throw new Error('Modified HKSJ requires a random-effects model.');
+    throw new Error(T('修正 HKSJ 区间需要随机效应模型。'));
   return anAnalysisQuery();
 }
 $('#anLeaveOneOut').addEventListener('click', () => anRunWithProgress($('#anLeaveOneOut'), $('#anLeaveOneOutResult'), async () =>
