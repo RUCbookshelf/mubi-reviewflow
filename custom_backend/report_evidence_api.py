@@ -239,6 +239,7 @@ def _rewrite_legacy_rows(c, rows, payload_pairs, *, fold_to_one):
 
     携带 origin 身份（origin_event_id 非空）的导入事件行绝不会被删除：
     origin_* 九列与 origin_sha256 一律不动，旧导出包重导入保持 duplicate 语义。
+    删除语句本身再带 origin_event_id IS NULL 守卫，与批次键中的 origin 列互为双保险。
     """
     for row, (payload_before, payload_after) in zip(rows, payload_pairs):
         c.execute("UPDATE trace_events SET before_json=?, after_json=? WHERE sequence=?",
@@ -247,19 +248,32 @@ def _rewrite_legacy_rows(c, rows, payload_pairs, *, fold_to_one):
                    row["sequence"]))
     if fold_to_one:
         for row in rows[len(payload_pairs):]:
-            c.execute("DELETE FROM trace_events WHERE sequence=?", (row["sequence"],))
+            c.execute("DELETE FROM trace_events WHERE sequence=? AND origin_event_id IS NULL",
+                      (row["sequence"],))
 
 
 def _merged_batch_payloads(label, redacted_before, redacted_after, actor):
-    """同一次保存全部主体的增量合并为单一载荷（changes 内为各主体条目并集 + 映射增量）。"""
+    """同一次保存全部主体的增量合并为单一载荷（changes 内为各主体条目并集 + 映射增量）。
+
+    同一条目可同时属于多个主体（关系的 a 与 b 各算一个受影响主体）：按 canonical
+    JSON 去重后并入，避免一次保存的关系条目在合并载荷里按主体数重复出现。
+    """
     deltas, map_before, map_after = _workspace_deltas(redacted_before, redacted_after, actor)
-    changes_before = {"links": [], "drafts": []}
-    changes_after = {"links": [], "drafts": []}
     subjects = sorted(deltas)
-    for subject in subjects:
-        for field in ("links", "drafts"):
-            changes_before[field].extend(deltas[subject][0][field])
-            changes_after[field].extend(deltas[subject][1][field])
+
+    def merged_field(field, side_index):
+        seen = set()
+        merged = []
+        for subject in subjects:
+            for entry in deltas[subject][side_index][field]:
+                key = json.dumps(entry, ensure_ascii=False, sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(entry)
+        return merged
+
+    changes_before = {"links": merged_field("links", 0), "drafts": merged_field("drafts", 0)}
+    changes_after = {"links": merged_field("links", 1), "drafts": merged_field("drafts", 1)}
     changes_before.update(map_before)
     changes_after.update(map_after)
     before_payload = {"value": label, "changes": changes_before}
@@ -361,19 +375,25 @@ def _fold_legacy_runs(c):
     """按保存批次折叠全部旧全量快照事件；返回 (折叠批次数, 删除行数, {(task,actor,stage): 跳过数})。
 
     同一次保存的多条事件共享完全相同的 before/after 快照且序号连续（单事务写入），
-    以 (task,actor,stage,action,before_json,after_json) 为键、序号连续性切分批次；
-    不同保存（不同快照对）天然落进不同批次，不会被误并。
+    以 (task,actor,stage,action,before_json,after_json,origin_event_id) 为键、序号
+    连续性切分批次；不同保存（不同快照对）天然落进不同批次，不会被误并。origin_event_id
+    入键使携带 origin 身份的行（即便动作键与自有事件相同）永远独立成批、只更新不删除。
+    行读取按 SELECT 列序位置取值并 dict 化：本函数与调用方 row_factory 无关
+    （导出钩子传入的 db._connect 连接不设 Row 工厂）。
     """
     # 先物化再折叠：避免在未走完的 SELECT 游标上 UPDATE/DELETE 同一张表。
     runs = []
     for row in c.execute(_LEGACY_SCAN_SQL).fetchall():
-        key = (row["task_id"], row["actor_id"], row["stage"], row["action"],
-               row["before_json"], row["after_json"])
-        if runs and runs[-1]["key"] == key and runs[-1]["last_sequence"] + 1 == row["sequence"]:
-            runs[-1]["rows"].append(row)
-            runs[-1]["last_sequence"] = row["sequence"]
+        record = {"sequence": row[0], "task_id": row[1], "actor_id": row[2], "stage": row[3],
+                  "action": row[4], "subject_id": row[5], "before_json": row[6],
+                  "after_json": row[7], "origin_event_id": row[8]}
+        key = (record["task_id"], record["actor_id"], record["stage"], record["action"],
+               record["before_json"], record["after_json"], record["origin_event_id"])
+        if runs and runs[-1]["key"] == key and runs[-1]["last_sequence"] + 1 == record["sequence"]:
+            runs[-1]["rows"].append(record)
+            runs[-1]["last_sequence"] = record["sequence"]
         else:
-            runs.append({"key": key, "rows": [row], "last_sequence": row["sequence"]})
+            runs.append({"key": key, "rows": [record], "last_sequence": record["sequence"]})
     folded_runs = deleted_rows = 0
     skipped = {}
     budget = {}

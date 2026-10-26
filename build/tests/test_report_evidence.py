@@ -155,9 +155,25 @@ class EvidenceTests(unittest.TestCase):
             c.execute('UPDATE workflow_state SET stages_json=?',(json.dumps(stages),))
         owner=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
         body={'expected_revision':0,'actor_id':coder,'link_id':'L1','action':'confirm'}
+        base=len(self.trace_changed_events())  # 此前两次个人保存的轨迹事件数
         self.assertEqual(self.client.post(self.base+'/relations',json=body,headers=self.auth()).status_code,200)
+        confirm1=self.trace_changed_events()[base:]  # 跨成员同 id：第一次确认（coder 提案）留痕
+        self.assertEqual(sorted(e['subject_id'] for e in confirm1),['R1','R2'])
+        for e in confirm1:
+            links=e['after']['changes']['links']
+            self.assertEqual(len(links),1);self.assertEqual(links[0]['actor_id'],coder)
+            self.assertEqual(links[0]['status'],'agreed')
+            blob=json.dumps(e,ensure_ascii=False)
+            self.assertNotIn('Coder pair',blob)  # 提案人私有文本按哈希摘要脱敏
+            self.assertIn(hashlib.sha256('Coder pair'.encode()).hexdigest(),blob)
         body.update(expected_revision=1,actor_id=owner)
         r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        confirm2=self.trace_changed_events()[base+len(confirm1):]  # 第二次确认（owner 同 id 提案）留痕
+        self.assertEqual(sorted(e['subject_id'] for e in confirm2),['R1','R3'])
+        for e in confirm2:
+            links=e['after']['changes']['links']
+            self.assertEqual(len(links),1);self.assertEqual(links[0]['actor_id'],owner)
+            self.assertIn('Owner pair',json.dumps(e,ensure_ascii=False))  # 本人提案不脱敏
         confirmed=r.json()['confirmed']
         self.assertEqual(len(confirmed),2)
         self.assertEqual([l['id'] for l in confirmed],['L1','L1'])  # id 与提案一致，未注入提案人 user id
@@ -166,6 +182,12 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual({dropped['a'],dropped['b']},{'R1','R2'});self.assertEqual({kept['a'],kept['b']},{'R1','R3'})
         body.update(expected_revision=2,link_id=dropped['id'],actor_id=dropped['actor_id'],action='unlink')
         r=self.client.post(self.base+'/relations',json=body,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        unlink_events=self.trace_changed_events()[base+len(confirm1)+len(confirm2):]  # 解除留痕且只归因目标
+        self.assertEqual(sorted(e['subject_id'] for e in unlink_events),['R1','R2'])
+        for e in unlink_events:
+            removed=e['before']['changes']['links']
+            self.assertEqual(len(removed),1);self.assertEqual(removed[0]['actor_id'],coder)
+            self.assertEqual(e['after']['changes']['links'],[])
         rest=r.json()['confirmed']
         self.assertEqual(len(rest),1)  # 只解除目标关系，另一条保留
         self.assertEqual(rest[0]['id'],'L1');self.assertEqual(rest[0]['actor_id'],owner)
@@ -384,13 +406,13 @@ class EvidenceTests(unittest.TestCase):
             return c.execute("SELECT COUNT(*),SUM(length(before_json)+length(after_json)) FROM trace_events "
                              "WHERE action IN ('report_evidence_changed','imported_report_evidence_changed')").fetchone()
 
-    def test_legacy_single_subject_history_folds_and_exports(self):
-        # 回归（H1）：90 次单主体约 0.4MB 快照的存量轨迹按保存批次折叠后体积显著缩小，
-        # public/complete 导出均不再 413；迁移前建 .pre-fold-v1.bak 备份并保留折叠前原貌。
+    def _insert_single_subject_legacy_history(self,saves=90):
+        # 构造 2.1.3 形态的单主体保存链（每次 before/after 互不相同，不坍缩），
+        # 每份快照约 0.4MB，且每份 after 都含一条他人 evidence/locator 提案。
         exporter=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
         secret='LEGACY-SECRET coder evidence'
         rows=[];previous={'links':[],'drafts':[]}
-        for i in range(90):
+        for i in range(saves):
             current={'links':[{'id':'L1','a':'R1','b':'R2','type':'study','same':False,'evidence':secret,
                                'locator':'p.4','status':'agreed','actor_id':coder}],
                      'drafts':[{'id':f'd{j}','key':'R1','finding':f'{i}-{j}','quote':'x'*19500} for j in range(20)]}
@@ -398,6 +420,12 @@ class EvidenceTests(unittest.TestCase):
                                 {'value':'Save evidence','workspace':current}))
             previous=current
         self._insert_legacy_trace_events(rows)
+        return secret
+
+    def test_legacy_single_subject_history_folds_and_exports(self):
+        # 回归（H1）：90 次单主体约 0.4MB 快照的存量轨迹按保存批次折叠后体积显著缩小，
+        # public/complete 导出均不再 413；迁移前建 .pre-fold-v1.bak 备份并保留折叠前原貌。
+        secret=self._insert_single_subject_legacy_history(90)
         count,before_total=self._legacy_payload_bytes()
         self.assertEqual(count,90);self.assertGreater(before_total,32*1024*1024)  # 未折叠时导出必然超过 32MB 上限
         with closing(connect(self.ctx.owner_db)) as c:
@@ -432,6 +460,145 @@ class EvidenceTests(unittest.TestCase):
         with closing(connect(self.ctx.owner_db)) as c:
             pass
         self.assertEqual(self._legacy_payload_bytes(),(count,after_total))
+
+    def test_export_hook_folds_without_prior_report_evidence_connect(self):
+        # 回归（评审）：导出钩子传入 db._connect 连接（不设 Row 工厂），迁移不得依赖
+        # 调用方 row_factory。全程不调用 report_evidence 的 connect，仅靠导出触发折叠。
+        secret=self._insert_single_subject_legacy_history(90)
+        count,before_total=self._legacy_payload_bytes()
+        self.assertEqual(count,90);self.assertGreater(before_total,32*1024*1024)
+        for preset in ('public','complete'):
+            package=self.client.post(f'/api/tasks/{self.task}/trace/exports',json={'preset':preset},headers=self.auth())
+            self.assertEqual(package.status_code,200,f'{preset}: {package.text[:200]}')
+            with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
+                exported=b''.join(z.read(name) for name in z.namelist())
+                events_jsonl=z.read('events.jsonl')
+            self.assertNotIn(b'"workspace":',events_jsonl)  # 迁移确实经导出钩子执行
+            self.assertNotIn(secret.encode(),exported)
+            self.assertNotIn(b'"p.4"',exported)
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            marker=c.execute("SELECT folded_runs,deleted_rows,skipped_events FROM report_evidence_fold_meta "
+                             "WHERE singleton=1").fetchone()
+        self.assertEqual(tuple(marker),(90,0,0))
+        count2,after_total2=self._legacy_payload_bytes()
+        self.assertEqual(count2,90);self.assertLess(after_total2,5_000_000)
+
+    def test_public_export_redacts_links_even_when_fold_cannot_run(self):
+        # 回归（契约⑧兜底）：导出前迁移失败/未执行时，public 导出仍不得带出关系条目中的
+        # evidence/locator 原文——导出侧脱敏独立于存储折叠（fail-safe）。
+        # 注：不用真实写锁模拟——导出路由自身在进入迁移钩子前就会对 owner 库取写锁
+        #（main._screener_db→db.init_db，非本泳道文件），持锁会挡住整条路由而非仅迁移；
+        # 故以注入 _fold_legacy_runs 异常模拟“迁移未执行/失败”这一等价路径。
+        secret='LOCKED-SECRET coder evidence'
+        actor=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
+        before={'value':'Save evidence','workspace':{'links':[],'drafts':[]}}
+        after={'value':'Save evidence','workspace':{'links':[
+            {'id':'L1','a':'R1','b':'R2','type':'study','same':False,'evidence':secret,
+             'locator':'p.4','status':'agreed','actor_id':coder}],'drafts':[]}}
+        self._insert_legacy_trace_events([(actor,'R1',before,after)])
+        from custom_backend import report_evidence_api as api_module
+        original=api_module._fold_legacy_runs
+        def _simulated_failure(*args,**kwargs):
+            raise RuntimeError('simulated fold failure')
+        api_module._fold_legacy_runs=_simulated_failure
+        try:
+            package=self.client.post(f'/api/tasks/{self.task}/trace/exports',json={'preset':'public'},headers=self.auth())
+            self.assertEqual(package.status_code,200,package.text[:200])  # 迁移失败不阻断导出
+            with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
+                exported=b''.join(z.read(name) for name in z.namelist())
+            self.assertNotIn(secret.encode(),exported)  # 他人 evidence 原文不外带
+            self.assertNotIn(b'"p.4"',exported)  # locator 原文不外带
+            self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),exported)  # evidence 保留哈希摘要
+        finally:
+            api_module._fold_legacy_runs=original
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            folded=c.execute("SELECT COUNT(*) FROM trace_events WHERE action='report_evidence_changed' "
+                             "AND after_json LIKE '%\"workspace\"%'").fetchone()[0]
+            marker=c.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name="
+                             "'report_evidence_fold_meta'").fetchone()[0]
+        self.assertEqual(folded,1)  # 迁移确实未执行（载荷仍是全量快照形态）
+        self.assertEqual(marker,0)  # 未置完成标记；隐私完全由导出侧脱敏承担
+
+    def test_native_batch_with_origin_row_never_deletes_origin(self):
+        # 回归（契约②）：同键连续批次中混入携带 origin 身份的行时，origin 行独立成批、
+        # 只更新不删除；origin_* 列与 origin_sha256 原样保留。
+        actor=str(self.users[0]['user_id'])
+        before={'value':'Save evidence','workspace':{'links':[],'drafts':[]}}
+        after={'value':'Save evidence','workspace':{'links':[
+            {'id':'L1','a':'R1','b':'R2','type':'study','same':False,'evidence':'Mixed batch evidence',
+             'locator':'p.9','status':'agreed','actor_id':str(self.users[1]['user_id'])}],'drafts':[]}}
+        origin_event={'event_id':str(uuid.uuid4()),'store_id':'st-x','sequence':99,'task_id':self.task,
+                      'actor_id':actor,'stage':'coding','action':'report_evidence_changed','subject_id':'R2',
+                      'before':before,'after':after,'source':'report_evidence','recorded_at':'2026-01-01T00:00:00Z'}
+        origin_sha=research_trace.origin_event_sha256(origin_event)
+        origin_row_id=str(uuid.uuid4())
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            research_trace.ensure_schema(c)
+            store_id=c.execute("SELECT store_id FROM trace_store WHERE singleton=1").fetchone()[0]
+            for subject,with_origin in (('R1',False),('R2',True),('R3',False)):
+                if with_origin:
+                    c.execute("INSERT INTO trace_events (event_id,store_id,task_id,actor_id,stage,action,subject_id,"
+                              "before_json,after_json,field_json,source,recorded_at,schema_version,app_version,"
+                              "origin_store_id,origin_event_id,origin_sequence,origin_actor_id,imported_at,"
+                              "origin_alias,origin_json,origin_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              (origin_row_id,store_id,self.task,actor,'coding','report_evidence_changed',subject,
+                               json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),None,
+                               'report_evidence','2026-01-01T00:00:00Z','reviewflow.research-trace/1','2.1.3',
+                               'st-x',origin_event['event_id'],99,actor,'2026-01-02T00:00:00Z','alias',
+                               json.dumps(research_trace._origin_record(origin_event),ensure_ascii=False,sort_keys=True),
+                               origin_sha))
+                else:
+                    c.execute("INSERT INTO trace_events (event_id,store_id,task_id,actor_id,stage,action,subject_id,"
+                              "before_json,after_json,field_json,source,recorded_at,schema_version,app_version) "
+                              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              (str(uuid.uuid4()),store_id,self.task,actor,'coding','report_evidence_changed',subject,
+                               json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),None,
+                               'report_evidence','2026-01-01T00:00:00Z','reviewflow.research-trace/1','2.1.3'))
+            c.commit()
+        with closing(connect(self.ctx.owner_db)) as c:
+            origin_row=c.execute("SELECT origin_json,origin_sha256,origin_event_id,origin_store_id,after_json "
+                                 "FROM trace_events WHERE event_id=?",(origin_row_id,)).fetchone()
+            remaining=c.execute("SELECT COUNT(*) FROM trace_events WHERE action='report_evidence_changed'").fetchone()[0]
+            meta=c.execute("SELECT folded_runs,deleted_rows FROM report_evidence_fold_meta WHERE singleton=1").fetchone()
+        self.assertIsNotNone(origin_row)  # origin 行绝不被删除
+        self.assertEqual(origin_row[1],origin_sha)  # origin_sha256 原样
+        self.assertEqual((origin_row[2],origin_row[3]),(origin_event['event_id'],'st-x'))
+        self.assertIn('changes',json.loads(origin_row[4]))  # 载荷照常折叠
+        self.assertEqual(remaining,3)  # 三行全部保留（origin 独立成批不参与 fold_to_one）
+        self.assertEqual(tuple(meta),(3,0))
+
+    def test_legacy_multi_subject_batch_folds_to_single_event(self):
+        # 回归（评审）：同一次保存影响 2-3 个主体（相同 before/after、连续序号）时，
+        # fold_to_one 路径折叠为 1 条：changes 合并各主体增量、deleted_rows=N-1、
+        # 幸存行保留批次首行序号，trace_field_lifecycles 与 origin 列不受影响。
+        actor=str(self.users[0]['user_id'])
+        before={'value':'Batch save','workspace':{'links':[],'drafts':[{'id':'d1','key':'R1','finding':'Base'}]}}
+        after={'value':'Batch save','workspace':{'links':[
+                    {'id':'L1','a':'R2','b':'R3','type':'study','same':False,'evidence':'Own evidence',
+                     'locator':'p.2','status':'mine'}],
+                'drafts':[{'id':'d1','key':'R1','finding':'Base'},{'id':'d2','key':'R1','finding':'Added'}]}}
+        self._insert_legacy_trace_events([(actor,s,before,after) for s in ('R1','R2','R3')])
+        with closing(db._connect(self.ctx.owner_db)) as c:
+            # 迁移不得走 clear_history 语义：预置一行字段生命周期并断言折叠后仍在。
+            c.execute("INSERT INTO trace_field_lifecycles (task_id,actor_id,legacy_field_id,field_uuid,definition_json,created_at) "
+                      "VALUES(?,?,?,?,?,?)",(self.task,actor,'f1','uuid-f1','{}','2026-01-01T00:00:00Z'))
+            first_seq=c.execute("SELECT MIN(sequence) FROM trace_events WHERE action='report_evidence_changed'").fetchone()[0]
+            c.commit()
+        with closing(connect(self.ctx.owner_db)) as c:
+            rows=c.execute("SELECT sequence,after_json FROM trace_events WHERE action='report_evidence_changed'").fetchall()
+            meta=c.execute("SELECT folded_runs,deleted_rows,skipped_events FROM report_evidence_fold_meta WHERE singleton=1").fetchone()
+            lifecycle=c.execute("SELECT COUNT(*) FROM trace_field_lifecycles").fetchone()[0]
+            origins=c.execute("SELECT COUNT(*) FROM trace_events WHERE origin_event_id IS NOT NULL").fetchone()[0]
+        self.assertEqual(len(rows),1)  # 一次保存的三条主体事件折叠为一条
+        self.assertEqual(tuple(meta),(1,2,0))  # 折叠 1 批、删除 2 行
+        self.assertEqual(rows[0][0],first_seq)  # 幸存行保留批次首行序号（外层字段不动）
+        self.assertEqual(origins,0)  # 未产生任何 origin 身份行
+        self.assertEqual(lifecycle,1)  # 无 clear_history 语义
+        payload=json.loads(rows[0][1])
+        self.assertEqual(payload['affected_subjects'],['R1','R2','R3'])
+        changes=payload['changes']
+        self.assertEqual([d['id'] for d in changes['drafts']],['d2'])  # R1 的新增条目（d1 未变被抵消）
+        self.assertEqual([l['id'] for l in changes['links']],['L1'])  # R2/R3 的新关系并入同一载荷
 
     def test_legacy_mixed_digest_side_preserved(self):
         # 回归（M2）：一侧全量、一侧已是旧摘要的混合形态折叠时，摘要侧原有

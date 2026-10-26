@@ -229,6 +229,36 @@ def _event_dict(event: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _public_link_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Public preset fail-safe: relation evidence/locator text never ships, even
+    when the storage-side fold could not run (write lock, malformed payload)."""
+    entry = dict(entry)
+    for field in ("evidence", "locator"):
+        text = entry.get(field)
+        if isinstance(text, str) and text:
+            summary = {"redacted": "public_export_private_text", "length": len(text)}
+            if field == "evidence":
+                summary["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+            entry[field] = summary
+    return entry
+
+
+def _public_link_privacy(value: Any) -> Any:
+    """Recursively replace evidence/locator text inside any "links" entry lists."""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, child in value.items():
+            if key == "links" and isinstance(child, list):
+                cleaned[key] = [_public_link_entry(item) if isinstance(item, dict) else item
+                                for item in child]
+            else:
+                cleaned[key] = _public_link_privacy(child)
+        return cleaned
+    if isinstance(value, list):
+        return [_public_link_privacy(item) for item in value]
+    return value
+
+
 def _public_snapshot(events: list[dict[str, Any]], partitions: list[dict[str, Any]],
                      snapshot: Mapping[str, Any], author_alias: str,
                      include_private_fields: frozenset[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
@@ -250,6 +280,10 @@ def _public_snapshot(events: list[dict[str, Any]], partitions: list[dict[str, An
         # store's original event verbatim (other members' evidence/locator text
         # and identity fields included), so it never leaves in a public package.
         event.pop("origin", None)
+        # Export-side privacy floor for relation text: applies to migrated and
+        # not-yet-folded (or fold-failed) payloads alike, matching the documented
+        # "always redacted in public exports" promise.
+        event = _public_link_privacy(event)
         event["store_id"] = store_aliases.get(str(raw.get("store_id")), "Store")
         output.append(event)
     public_origin = {
