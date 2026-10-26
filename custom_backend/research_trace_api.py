@@ -39,8 +39,10 @@ MAX_PAGE_SIZE = 200
 _STAGES = set(research_trace.STAGES)
 _CURSOR_FILTERS = ("stage", "action", "subject_id", "since", "until")
 _PREVIEW_TTL_SECONDS = 600
-_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
-_PREVIEW_CACHE_ENTRIES = 8
+# 预览缓存上限随 MAX_PACKAGE_BYTES 联动上调（契约⑥）：缓存总字节=单包上限
+#（可容纳至少一个最大分卷包），槽位 8→4 控制最坏驻留内存。
+_PREVIEW_CACHE_BYTES = MAX_PACKAGE_BYTES
+_PREVIEW_CACHE_ENTRIES = 4
 _PREVIEW_LOCK = threading.Lock()
 _PREVIEWS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _PREVIEW_BYTES = 0

@@ -733,8 +733,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(again['status'],'duplicate')  # 旧包重导入保持 duplicate 语义而非 conflict
 
     def test_public_export_redacts_origin_column(self):
-        # 回归（⑧/U2-P2）：公开导出不携带 origin 原始事件副本（他人 evidence/locator 与
-        # 身份字段随副本外带）；complete 预设保持个人完整备份语义（origin 原样保留）。
+        # 回归（⑧/M3）：公开导出对 origin 原始副本做结构化脱敏——保留导入来源结构
+        #（与事件本体走同一公开管线：私有键/身份字段移除、links 文本兜底脱敏），
+        # 不再携带他人 evidence/locator 与身份字段；complete 预设 origin 原样保留。
         from coscreen.research_trace_export import build_export_zip
         secret='IMPORTED-CODER-SECRET'
         original_after={'value':'Save','workspace':{'links':[{'id':'L1','a':'R1','b':'R2','type':'study',
@@ -753,12 +754,98 @@ class EvidenceTests(unittest.TestCase):
         with zipfile.ZipFile(_io.BytesIO(public)) as z:
             pub_events=z.read('events.jsonl')
             pub_all=b''.join(z.read(n) for n in z.namelist())
-        self.assertNotIn(b'"origin"',pub_events)
-        self.assertNotIn(secret.encode(),pub_all)
+        self.assertIn(b'"origin"',pub_events)  # origin 结构化保留（导入来源可追溯）
+        self.assertNotIn(b'"actor_id"',pub_events)  # 事件与 origin 内的身份字段均已移除
+        self.assertNotIn(b'"task_id"',pub_events)
+        self.assertNotIn(secret.encode(),pub_all)  # origin 副本内的他人 evidence 原文不外带
+        self.assertNotIn(b'"p.4"',pub_all)  # locator 原文不外带
         complete=build_export_zip(snapshot,public=False)
         with zipfile.ZipFile(_io.BytesIO(complete)) as z:
             comp_events=z.read('events.jsonl')
-        self.assertIn(b'"origin"',comp_events);self.assertIn(secret.encode(),comp_events)  # complete 保持完整备份
+        self.assertIn(secret.encode(),comp_events);self.assertIn(b'"actor_id"',comp_events)  # complete 保持完整备份
+
+    def _volume_snapshot(self,count):
+        def make_event(i):
+            return {'event_id':str(uuid.uuid4()),'store_id':'st-1','sequence':i+1,'task_id':'T1',
+                    'actor_id':'42','stage':'coding','action':'coding_value_changed','subject_id':f'S{i%7}',
+                    'before':None,'after':{'field':f'f{i%3}','value':'v'*6000},
+                    'source':'manual','recorded_at':'2026-01-01T00:00:00Z'}
+        return {'stores':[{'partition':'personal','store_id':'st-1',
+                           'settings':{'status':'recording','stages':['coding']},'summary':{},
+                           'events':[make_event(i) for i in range(count)]}]}
+
+    def test_event_volume_round_trip_and_legacy_single_file(self):
+        # 回归（契约⑥）：仅 events.jsonl 按行切卷（零填充连续编号、行不撕裂、同输入
+        # 切分确定），其余成员保持单文件；manifest 带 event_volumes 清单；导入校验
+        # 接受分卷包，也继续接受旧单文件 events.jsonl 包（含无 event_volumes 键的旧 manifest）。
+        from coscreen import research_trace_export as exporter
+        snapshot=self._volume_snapshot(120)
+        original=exporter.MAX_EVENT_VOLUME_BYTES
+        exporter.MAX_EVENT_VOLUME_BYTES=200_000  # 每行约 6KB：切出多卷
+        try:
+            package=exporter.build_export_zip(snapshot,public=False)
+            again=exporter.build_export_zip(snapshot,public=False)
+        finally:
+            exporter.MAX_EVENT_VOLUME_BYTES=original
+        with zipfile.ZipFile(_io.BytesIO(package)) as z:
+            names=z.namelist()
+            volumes=sorted(n for n in names if n.startswith('events-part-'))
+            volume_data={n:z.read(n) for n in volumes}
+            manifest=json.loads(z.read('manifest.json'))
+        self.assertGreaterEqual(len(volumes),3)
+        self.assertNotIn('events.jsonl',names)  # 分卷时不再有单文件事件成员
+        for member in ('events.csv','summary.csv','report.html','report.md','activity.csv','readable-events.csv'):
+            self.assertIn(member,names)  # 其余全局成员保持单文件
+        self.assertEqual(volumes,[f'events-part-{i:02d}.jsonl' for i in range(1,len(volumes)+1)])  # 零填充连续编号
+        self.assertEqual(manifest['event_volumes'],volumes)
+        self.assertEqual(manifest['event_count'],120)
+        for data in volume_data.values():
+            self.assertLessEqual(len(data),200_000)  # 每卷不超上限
+            for line in data.splitlines():  # 按行切不撕裂：每行都是完整 JSON
+                json.loads(line)
+        with zipfile.ZipFile(_io.BytesIO(again)) as z2:  # 同输入切分确定
+            self.assertEqual({n:z2.read(n) for n in volumes},volume_data)
+        parsed=exporter.validate_import_package(package)  # 分卷包导入校验 round-trip
+        self.assertEqual(len(parsed['events']),120)
+        self.assertEqual([e['sequence'] for e in parsed['events']],list(range(1,121)))
+        self.assertEqual(parsed['manifest']['event_volumes'],volumes)
+        small=exporter.build_export_zip(self._volume_snapshot(1),public=False)  # 小导出保持旧单文件形态
+        with zipfile.ZipFile(_io.BytesIO(small)) as z:
+            self.assertIn('events.jsonl',z.namelist())
+            self.assertFalse([n for n in z.namelist() if n.startswith('events-part-')])
+            self.assertEqual(json.loads(z.read('manifest.json'))['event_volumes'],['events.jsonl'])
+        self.assertEqual(len(exporter.validate_import_package(small)['events']),1)
+        legacy=_io.BytesIO()  # 旧 manifest（无 event_volumes 键）的单文件包继续被接受
+        with zipfile.ZipFile(_io.BytesIO(small),'r') as src:
+            with zipfile.ZipFile(legacy,'w',compression=zipfile.ZIP_DEFLATED) as dst:
+                for info in src.infolist():
+                    data=src.read(info.filename)
+                    if info.filename=='manifest.json':
+                        stripped=json.loads(data);stripped.pop('event_volumes',None)
+                        data=json.dumps(stripped,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()+b'\n'
+                    dst.writestr(info.filename,data)
+        self.assertEqual(len(exporter.validate_import_package(legacy.getvalue())['events']),1)
+
+    def test_volume_package_imports_through_api(self):
+        # 回归（契约⑥/⑦）：分卷包经真实导出→导入两步流第一步（preview）校验通过，
+        # 响应键不变；分卷对导入端点完全透明。
+        from coscreen import research_trace_export as exporter
+        self.assertEqual(self.save(self.link(self.state())).status_code,200)  # 本任务已有轨迹事件
+        original=exporter.MAX_EVENT_VOLUME_BYTES
+        exporter.MAX_EVENT_VOLUME_BYTES=600  # 超小上限强制每行一卷
+        try:
+            package=self.client.post(f'/api/tasks/{self.task}/trace/exports',json={'preset':'complete'},headers=self.auth())
+        finally:
+            exporter.MAX_EVENT_VOLUME_BYTES=original
+        self.assertEqual(package.status_code,200,package.text[:200])
+        with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
+            volumes=[n for n in z.namelist() if n.startswith('events-part-')]
+        self.assertGreaterEqual(len(volumes),2)
+        r=self.client.post(f'/api/tasks/{self.task}/trace/imports/preview',
+                           files={'package':('trace.zip',package.content,'application/zip')},headers=self.auth())
+        self.assertEqual(r.status_code,200,r.text[:300])
+        for key in ('package_sha256','source_aliases','subjects'):  # 两步流响应键不变
+            self.assertIn(key,r.json())
 
 
 if __name__=='__main__': unittest.main(verbosity=2)

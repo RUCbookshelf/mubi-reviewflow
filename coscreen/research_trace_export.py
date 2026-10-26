@@ -20,11 +20,15 @@ from typing import Any, Mapping
 
 
 PACKAGE_SCHEMA = "reviewflow.research-trace/1"
-MAX_PACKAGE_BYTES = 32 * 1024 * 1024
-MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
+MAX_PACKAGE_BYTES = 128 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_EVENTS = 50_000
 MAX_EVENT_BYTES = 256 * 1024
-MAX_MEMBERS = 13
+# 分卷（契约⑥）：仅 events.jsonl 切卷。单卷上限 16MB、卷数上限 16
+# （= ceil(MAX_UNCOMPRESSED_BYTES / MAX_EVENT_VOLUME_BYTES)），单请求仍是单 application/zip。
+MAX_EVENT_VOLUME_BYTES = 16 * 1024 * 1024
+MAX_EVENT_VOLUMES = 16
+MAX_MEMBERS = 13 + MAX_EVENT_VOLUMES  # 固定成员上限 + 分卷上限
 MAX_COMPRESSION_RATIO = 2_000
 
 PACKAGE_MEMBERS = frozenset({
@@ -34,6 +38,8 @@ PACKAGE_MEMBERS = frozenset({
     "data-dictionary.json",
 })
 _OPTIONAL_PACKAGE_MEMBERS = frozenset({"readable-events.csv"})
+# 连续编号分卷成员：events-part-01.jsonl、events-part-02.jsonl、…
+_EVENT_VOLUME_NAME = re.compile(r"^events-part-(\d{2})\.jsonl$")
 EVENT_COLUMNS = (
     "event_id", "store_id", "sequence", "task_id", "actor_id", "actor_alias",
     "stage", "action", "subject_id", "before", "after", "field", "source",
@@ -277,9 +283,16 @@ def _public_snapshot(events: list[dict[str, Any]], partitions: list[dict[str, An
         event["actor_alias"] = alias
         event.pop("actor_id", None)
         # Public preset only: the embedded origin copy retains the authoring
-        # store's original event verbatim (other members' evidence/locator text
-        # and identity fields included), so it never leaves in a public package.
-        event.pop("origin", None)
+        # store's original event verbatim (private keys, identity fields and
+        # relation evidence/locator text included). Keep a structured,
+        # provenance-preserving copy redacted through exactly the same public
+        # pipeline as the event itself instead of shipping it verbatim.
+        origin = event.get("origin")
+        if isinstance(origin, Mapping):
+            event["origin"] = _public_link_privacy(
+                _redact(dict(origin), include_private_fields=include_private_fields))
+        else:
+            event.pop("origin", None)
         # Export-side privacy floor for relation text: applies to migrated and
         # not-yet-folded (or fold-failed) payloads alike, matching the documented
         # "always redacted in public exports" promise.
@@ -1137,9 +1150,30 @@ def build_export_zip(snapshot: Mapping[str, Any], *, public: bool = False,
     if public:
         events, partitions, origin = _public_snapshot(
             events, partitions, snapshot, author_alias, selected_private_fields)
-    event_jsonl = b"".join(_json_bytes(event) for event in events)
-    if len(event_jsonl) > MAX_UNCOMPRESSED_BYTES:
+    # 分卷：事件行按行累加、绝不撕裂行边界；同一输入切分确定。总量不超上限时
+    # 保持旧的单文件 events.jsonl 形态（小导出与历史包字节形态兼容）。
+    event_lines = [_json_bytes(event) for event in events]
+    total_event_bytes = sum(len(line) for line in event_lines)
+    if total_event_bytes > MAX_UNCOMPRESSED_BYTES:
         raise TracePackageError("Trace event data exceeds the export size limit.")
+    if total_event_bytes <= MAX_EVENT_VOLUME_BYTES:
+        event_members = {"events.jsonl": b"".join(event_lines)}
+    else:
+        volumes: list[bytes] = []
+        current: list[bytes] = []
+        current_size = 0
+        for line in event_lines:
+            if current and current_size + len(line) > MAX_EVENT_VOLUME_BYTES:
+                volumes.append(b"".join(current))
+                current, current_size = [], 0
+            current.append(line)
+            current_size += len(line)
+        if current:
+            volumes.append(b"".join(current))
+        if len(volumes) > MAX_EVENT_VOLUMES:
+            raise TracePackageError("Trace event data needs too many volumes.")
+        event_members = {f"events-part-{index:02d}.jsonl": data
+                         for index, data in enumerate(volumes, start=1)}
     event_csv = _csv_bytes(EVENT_COLUMNS, events)
     coverage_csv = _csv_bytes(("partition", "store_id", "status", "stages", "cutoff_sequence",
                                "event_count", "history_event_count", "first_sequence", "last_sequence",
@@ -1185,7 +1219,7 @@ def build_export_zip(snapshot: Mapping[str, Any], *, public: bool = False,
     selection_filters = {key: value for key, value in selection_for_report.items()
                          if key in {"stage", "action", "subject_id", "since", "until"} and value is not None}
     files: dict[str, bytes] = {
-        "events.jsonl": event_jsonl,
+        **event_members,
         "events.csv": event_csv,
         "coverage.csv": coverage_csv,
         "summary.csv": summary_csv,
@@ -1200,13 +1234,15 @@ def build_export_zip(snapshot: Mapping[str, Any], *, public: bool = False,
             f"{_REPORT_GUIDANCE.get(language, _REPORT_GUIDANCE['en'])['open']}\n\n"
             "`readable-events.csv` · Excel / WPS\n\n"
             f"Schema: `{PACKAGE_SCHEMA}`. Privacy mode: `{'public' if public else 'complete'}`.\n\n"
-            "For a human-readable report, open `report.html` in a browser. For all events in a spreadsheet, open `readable-events.csv`; `events.csv` and `events.jsonl` retain the machine-readable format.\n\n"
+            "For a human-readable report, open `report.html` in a browser. For all events in a spreadsheet, open `readable-events.csv`; `events.csv` and the event volumes retain the machine-readable format.\n\n"
+            "Large exports split `events.jsonl` into `events-part-01.jsonl`, `events-part-02.jsonl`, ... volumes inside this same ZIP. Lines are never split across volumes, the split is deterministic for the same input, and `manifest.json` lists the exact event member names under `event_volumes`. Small exports keep a single `events.jsonl`.\n\n"
             "The package contains only trace events and derived reports; importing it does not modify screening or coding decisions. "
             "Manifest SHA-256 values detect accidental changes but are not digital signatures.\n"
         ).encode("utf-8"),
         "data-dictionary.json": _json_bytes({
             "schema": PACKAGE_SCHEMA,
             "event_columns": list(EVENT_COLUMNS),
+            "event_volumes": "events.jsonl may be split into events-part-NN.jsonl members (zero-padded, contiguous from 01). Lines are never split across volumes; the same input always splits identically. manifest.event_volumes lists the exact member names; imports accept both volume sets and the legacy single events.jsonl.",
             "activity_chart": "Stacked changes by day and stage. activity.csv retains every included date; SVG labels are provided in activity.svg.",
             "privacy_modes": {"public": "Private identifiers and fields are removed or aliased.",
                               "complete": "Personal backup; may contain private information."},
@@ -1228,6 +1264,7 @@ def build_export_zip(snapshot: Mapping[str, Any], *, public: bool = False,
         "method_report_draft": method_draft,
         "stores": partitions,
         "event_count": len(events),
+        "event_volumes": sorted(event_members),
         "files": {name: hashlib.sha256(content).hexdigest() for name, content in sorted(files.items())},
     }
     files["manifest.json"] = _json_bytes(manifest)
@@ -1304,7 +1341,19 @@ def validate_import_package(package: bytes | bytearray | memoryview) -> dict[str
         if len(names) != len(set(names)):
             raise TracePackageError("ZIP contains duplicate member names.")
         member_names = frozenset(names)
-        if member_names not in {PACKAGE_MEMBERS, PACKAGE_MEMBERS - _OPTIONAL_PACKAGE_MEMBERS}:
+        # 事件成员两形态：旧单文件 events.jsonl，或连续编号分卷 events-part-01.jsonl…
+        # （零填充两位、自 01 起连续、卷数不超上限；两者互斥，其余成员仍为固定白名单）。
+        volume_names = sorted(name for name in names if _EVENT_VOLUME_NAME.fullmatch(name))
+        if volume_names:
+            indexes = [int(_EVENT_VOLUME_NAME.fullmatch(name).group(1)) for name in volume_names]
+            if indexes != list(range(1, len(indexes) + 1)) or len(indexes) > MAX_EVENT_VOLUMES:
+                raise TracePackageError("Event volume members are not a contiguous zero-padded set.")
+            if "events.jsonl" in member_names:
+                raise TracePackageError("ZIP contains both single-file and volume event members.")
+            base_members = PACKAGE_MEMBERS - {"events.jsonl"} | frozenset(volume_names)
+        else:
+            base_members = PACKAGE_MEMBERS
+        if member_names not in {base_members, base_members - _OPTIONAL_PACKAGE_MEMBERS}:
             raise TracePackageError("ZIP contains missing or unsupported members.")
         total_size = 0
         for info in infos:
@@ -1370,7 +1419,13 @@ def validate_import_package(package: bytes | bytearray | memoryview) -> dict[str
         actual = hashlib.sha256(data[name]).hexdigest()
         if actual != expected:
             raise TracePackageError(f"Hash mismatch for {name}.")
-    lines = data["events.jsonl"].splitlines()
+    # manifest.event_volumes 清单（旧包无此键视为旧单文件形态）：必须与实际事件成员一致。
+    event_member_names = volume_names if volume_names else ["events.jsonl"]
+    volumes_manifest = manifest.get("event_volumes")
+    if volumes_manifest is not None and (not isinstance(volumes_manifest, list)
+                                         or [str(item) for item in volumes_manifest] != event_member_names):
+        raise TracePackageError("Manifest event volume list does not match package members.")
+    lines = b"".join(data[name] for name in event_member_names).splitlines()
     if len(lines) > MAX_EVENTS:
         raise TracePackageError("Package contains too many events.")
     events = []
