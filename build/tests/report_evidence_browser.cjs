@@ -2,12 +2,13 @@
 // report_evidence 前端行为浏览器回归（G21）：在隔离实例上实测 F06/F07/F08/F09/F20，
 // 全程断言用户可见结果（按钮禁用态 / 对话框内错误与恢复提示 / 字段值 / toast）。
 //
-// 前置（实例与账号准备，参考 E:/rf214-playwright 的泳道约定）：
-//   1) 隔离实例：COBOOKSHELF_DATA_DIR 指向新的独立目录（如 E:/uxt-r4-frontend）、
-//      端口避开其他泳道（本文件默认 18772），代码取自本工作树 build.launcher：
-//      `python run_instance.py`（后台常驻），health 200 后执行 prep.py 注册账号、
-//      建任务并向 owner 库种入 3 篇文献，写出 session.json（{token,task,...}）；
-//      prep.py 同时复位证据工作区（revision/撤销栈/幂等日志），每次跑 cjs 前重跑即可重复执行。
+// 前置（实例与账号准备，全部自包含于本仓库，参考 E:/rf214-playwright 的泳道约定）：
+//   1) 隔离实例：`python build/tests/report_evidence_instance.py --port 18772 --data-dir E:/uxt-r4-frontend`
+//      （后台常驻；COBOOKSHELF_DATA_DIR 指向独立目录、端口避开其他泳道、代码取自本工作树 build.launcher），
+//      health 200 后执行 `python build/tests/report_evidence_prep.py --url http://127.0.0.1:18772
+//      --data-dir E:/uxt-r4-frontend` 注册账号、建任务并向 owner 库种入 3 篇文献，
+//      写出 session.json（{token,task,...}）；prep 同时复位证据工作区（revision/撤销栈/幂等日志），
+//      每次跑 cjs 前重跑即可重复执行。
 //   2) 运行：
 //      REVIEWFLOW_PLAYWRIGHT=E:/rf214-playwright/node_modules/playwright \
 //      REVIEWFLOW_GUARD_SESSION=E:/uxt-r4-frontend/session.json \
@@ -68,8 +69,14 @@ fs.mkdirSync(artifacts,{recursive:true});
   const undo=dlg().getByRole('button',{name:'撤销最近变更'});
   assert.equal(await undo.isDisabled(),true,'撤销在栈空时必须禁用');
   assert.equal(await dlg().getByText('没有关联；普通文献可照常筛选和编码。').count(),1);
-  await dlg().locator('footer').getByRole('button',{name:'关闭',exact:true}).click(); // 点击其他按钮后关闭
+  await dlg().locator('footer').getByRole('button',{name:'关闭',exact:true}).click();
   await dlg().waitFor({state:'detached'});
+  // 点击「其他按钮」路径（终局意见补强）：非关闭/重开类按钮（页脚「查看轨迹」）关闭对话框并跳页，
+  // 返回后重开同样不得复活——原断言只覆盖关闭/重开，未实点其他按钮。
+  await open();
+  await dlg().getByRole('button',{name:'查看轨迹'}).click();
+  await dlg().waitFor({state:'detached'});
+  await gotoAnalysis(...STUDIES);
   await open(); // 重开：不得复活为可用
   assert.equal(await dlg().getByRole('button',{name:'撤销最近变更'}).isDisabled(),true,'重开后撤销仍必须禁用');
   await dlg().locator('footer').getByRole('button',{name:'关闭',exact:true}).click();
