@@ -8,7 +8,6 @@
  actions.decision_undone='撤销上次保存';
  actions.coding_values_undone='撤销上次保存';
  actions.report_evidence_changed='报告关联与证据变更';
- actions.report_evidence_truncated='报告关联与证据变更（超限截断标记）';
  function actionLabel(value){const action=value?.replace(/^imported_/,'');return actions[action]||(action?.startsWith('baseline_')?'起始状态':'其他记录');}
  function node(tag,text,attrs={}){const n=document.createElement(tag);if(text!=null)n.textContent=T(text);for(const [k,v]of Object.entries(attrs)){if(k==='class')n.className=v;else n.setAttribute(k,v);}return n;}
  function dataNode(tag,value,attrs={}){const n=node(tag,null,{translate:'no',...attrs});n.textContent=String(value??'');return n;}

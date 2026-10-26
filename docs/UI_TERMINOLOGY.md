@@ -26,7 +26,7 @@ The full-text queue position uses **Full-text report x / y**. This is an item po
 
 ## Review scope
 
-The October 2026 wording pass covered the full-text counter, screening history breakdown, stage labels, PDF placeholders, queue-save completion notices, the main merge/adjudication label and the login subtitle. It is a focused interface review, not a certification of every analysis/help/export string or a native-language linguistic review. Historical Trace content and user-authored titles, notes and reasons are preserved verbatim.
+The October 2026 wording pass covered the full-text counter, screening history breakdown, stage labels, PDF placeholders, queue-save completion notices, the main merge/adjudication label and the login subtitle. It is a focused interface review, not a certification of every analysis/help/export string or a native-language linguistic review. In-app Trace display applies no extra redaction, and user-authored titles, notes and reasons are preserved verbatim; historical Trace payloads themselves are compacted by the 2.1.4 legacy fold and privacy-redacted in public trace exports under the documented rules (see REPORT_LINKS_AND_EVIDENCE, section 7).
 
 ## Home & Settings terminology
 
@@ -40,7 +40,7 @@ The Home wording review covers all ten supported interface languages: Chinese, E
 - **Save current task workflow settings** saves stage-source rules, Maybe availability and evidence requirements. Libraries and Machine Learning settings retain their separate Save actions.
 - Training-label counts refer to saved Include/Exclude decisions; saved Maybe decisions are not training labels.
 
-Interface strings and placeholders are checked structurally across languages. These revisions do not constitute an independent native-speaker review of each translation. User-authored source names, reasons, notes and historical Trace payloads remain verbatim.
+Interface strings and placeholders are checked structurally across languages. These revisions do not constitute an independent native-speaker review of each translation. User-authored source names, reasons and notes remain verbatim in the app; historical Trace payloads are compacted by the 2.1.4 legacy fold and privacy-redacted in public trace exports, while in-app Trace display applies no extra redaction.
 
 - **Hide Machine Learning scores** describes a display preference. It hides scores and badges while retaining the selected ranking order; it does not promise a double-blind study design.
 - Model presets use neutral configuration names and descriptions. Benchmark performance is not presented as a universal guarantee. The four profile identifiers and their parameters remain unchanged.
