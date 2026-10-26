@@ -4,7 +4,46 @@
  const state={tab:'overview',settings:null,summary:null,events:[],cursor:null,next:null,stage:'',query:'',since:'',until:'',action:'',ticket:0,pendingSettings:null,configuring:false,importResult:null,clearResult:null,pendingClear:null,clearing:false};
  const stages={screen:'文献初筛',fulltext:'文献复筛',coding:'数据提取与编码'};
  const actions={history_cleared:'清除历史',fulltext_added:'添加全文',fulltext_replaced:'替换全文',decision_created:'首次决定',decision_changed:'修改决定',decision_imported:'导入决定',coding_value_created:'填写编码',coding_value_changed:'修改编码',coding_value_cleared:'清空编码',coding_note_created:'新增编码说明',coding_note_changed:'修改编码说明',coding_note_cleared:'清除编码说明',coding_note_image_added:'添加来源图片',coding_image_removed:'删除来源图片',coding_note_image_removed:'删除来源图片',coding_image_ocr_changed:'修改来源文字',field_definition_created:'新增字段',field_definition_changed:'修改字段',field_definition_deleted:'删除字段',rater_record_created:'保存编码修订',rater_record_changed:'保存编码修订',recording_started:'开始记录',recording_resumed:'恢复记录',recording_paused:'暂停记录',recording_stopped:'停止记录',stages_changed:'变更记录范围'};
- function changeText(event){const readable=value=>{if(value==null)return '';if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+(value.exclusion_reason||value.reason):'');if(Object.hasOwn(value,'value'))return String(value.value??'—');return '';};const before=readable(event.before),after=readable(event.after);return before||after?(before||'—')+' → '+(after||'—'):'';}
+ // 报告关联与证据（report_evidence_changed）载荷渲染：label 是 9 个已注册 change label（report_evidence_locale）
+ // 之一时经 T() 本地化（与 report_evidence.js 的 n() 同用 ReportEvidenceLocale.keys 判定，用户数据不误译）；
+ // changes/summary 载荷键名与枚举取值按下表映射为中文源键后走全局字典，未登记键与条目内容属数据、原样输出。
+ const RE_KEYS={links:'报告关联',drafts:'证据草稿',findings:'证据草稿',review:'综述路径',method:'定性综合方法',appraisalTool:'评价工具',interpretations:'方法工作区',confidence:'证据置信度',duplicatePairs:'重复证据对',question:'研究问题',appraisals:'定性研究评价',analysisChoices:'样本与结果选择',workspace_sha256:'工作区校验和',total_subjects:'受影响主体',truncated_subjects:'已截断主体',skipped_events:'跳过事件',finding:'综合发现',reason:'判断依据',overall:'整体置信度',dependability:'可靠性（Dependability）',credibility:'可信度（Credibility）',limitations:'方法学局限',coherence:'一致性',adequacy:'资料充分性',relevance:'相关性',summary:'综合说明与未解决问题',coding:'原文编码与依据',descriptive:'描述性主题',analytic:'分析性主题与推理',framework:'框架及选择依据',mapping:'证据与框架映射',outside:'框架外发现',concepts:'原研究概念与出处',translation:'互惠／反驳转译',argument:'论证链与反思',categories:'类别形成依据',unsupported:'缺乏支持的发现如何单独呈现',integration:'定量与定性证据的整合备忘',participants:'研究对象／视角',phenomenon:'关注的现象或经历',context:'情境',criteria:'纳入条件与资料范围',judgment:'判断',locator:'页码／位置'};
+ const RE_ENUMS={linkType:{study:'同一研究的报告',sample:'相同样本',partial:'样本部分重叠',uncertain:'暂不确定',independent:'不同研究，样本不重叠'},linkStatus:{mine:'个人线索，待裁决',agreed:'已确认'},credibility:{unequivocal:'明确支持',credible:'可信',unsupported:'缺乏支持'},review:{quant:'定量综述／元分析',qual:'定性证据综合',mixed:'混合方法综述'},method:{jbi:'JBI 汇聚式综合',thematic:'主题综合',framework:'框架综合',ethno:'元民族志'},duplicatePairs:{same:'同一证据，保留共同出处',different:'不同证据，保留两条',uncertain:'暂不确定'}};
+ const enumOf=(group,v)=>v==null||v===''?'':T(RE_ENUMS[group]?.[v]||String(v));
+ // 条目摘要：links 条目→类型/状态（+同样本核对标记与位置），drafts 条目→研究发现（+JBI 可信度枚举）；其余交通用渲染。
+ function reEntryText(entry){
+  if(entry==null||typeof entry!=='object')return String(entry??'');
+  if('a'in entry&&'b'in entry)return [enumOf('linkType',entry.type),enumOf('linkStatus',entry.status),entry.same?T('相同样本已单独核对'):'',entry.locator||''].filter(Boolean).join(' · ');
+  if('finding'in entry||'theme'in entry)return [entry.finding||'',enumOf('credibility',entry.credibility)].filter(Boolean).join(' · ');
+  return readableValue(entry);
+ }
+ // 键值描述：changes 子对象直展；数组按条目摘要；父键命中的枚举字典（如 duplicatePairs 的 id 对）映射取值；
+ // 摘要哈希只显示前 12 位（完整载荷见技术视图）；其余标量按数据原样。
+ function reEntriesText(entries,parentKey){
+  const parts=[];
+  for(const [k,v]of Object.entries(entries||{})){
+   if(v==null||v==='')continue;
+   if(parentKey&&RE_ENUMS[parentKey]&&typeof v!=='object'){parts.push(enumOf(parentKey,v));continue;}
+   const label=T(RE_KEYS[k]||k);
+   if(k==='changes'){const inner=reEntriesText(v);if(inner)parts.push(inner);continue;}
+   if(Array.isArray(v)){const items=v.map(reEntryText).filter(Boolean);if(items.length)parts.push(label+': '+items.join(' · '));continue;}
+   if(typeof v==='object'){const inner=reEntriesText(v,k);if(inner)parts.push(label+': '+inner);continue;}
+   if(RE_ENUMS[k]){parts.push(label+': '+enumOf(k,v));continue;}
+   if(k==='workspace_sha256'){parts.push(label+': '+String(v).slice(0,12));continue;}
+   parts.push(label+': '+String(v));
+  }
+  return parts.join(' · ');
+ }
+ // {value:label,…} 形态的统一入口：编码值等纯 {value:数据} 载荷维持原样输出，报告关联载荷追加键值描述。
+ function reValueText(value,empty){
+  const label=value.value==null?'':String(value.value),rest={...value};
+  delete rest.value;delete rest.note;
+  const text=label?(window.ReportEvidenceLocale?.keys.has(label)?T(label):label):'';
+  const desc=reEntriesText(rest);
+  if(!desc)return text||empty;
+  return (text?text+' · ':'')+desc;
+ }
+ function changeText(event){const readable=value=>{if(value==null)return '';if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+(value.exclusion_reason||value.reason):'');if(Object.hasOwn(value,'value'))return reValueText(value,'—');return '';};const before=readable(event.before),after=readable(event.after);return before||after?(before||'—')+' → '+(after||'—'):'';}
  actions.decision_undone='撤销上次保存';
  actions.coding_values_undone='撤销上次保存';
  actions.report_evidence_changed='报告关联与证据变更';
@@ -89,7 +128,7 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
   if(Array.isArray(value))return value.map(readableValue).join(' · ');
   if(Object.hasOwn(value,'field_id')&&Object.hasOwn(value,'name'))return [value.name,value.type?T('类型')+': '+T(({numeric:'数值字段',text:'填空',choice:'单选',multi:'多选'})[value.type]||value.type):null,value.description,value.unit?T('单位')+': '+value.unit:null,Array.isArray(value.options)&&value.options.length?T('选项')+': '+value.options.join(' · '):null].filter(v=>v!=null&&v!=='').join(' · ');
   if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+T('排除理由')+': '+(value.exclusion_reason||value.reason):'');
-  if(Object.hasOwn(value,'value'))return String(value.value??T('无'));
+  if(Object.hasOwn(value,'value'))return reValueText(value,T('无'));
   if(Object.hasOwn(value,'text'))return String(value.text||T('无'));
   return Object.entries(value).map(([key,v])=>T(({title:'文献',zotero_key:'文献标识',doi:'DOI',year:'年份',authors:'作者',reason:'排除理由',item_type:'类型',status:'状态',stages:'阶段'})[key]||key)+': '+(key==='status'?T(({recording:'记录中',paused:'已暂停',off:'未启用'})[v]||v):key==='stages'&&Array.isArray(v)?v.map(stage=>T(stages[stage]||stage)).join(' · '):v&&typeof v==='object'?readableValue(v):String(v??'—'))).join('\n');
  }

@@ -34,13 +34,22 @@
 
 - 契约④（high）：存量迁移不再把同批多主体事件合并为单主体事件——批次内逐行改写为各自主体的增量、不删除任何行，事件条数、唯一主体计数、修改主体计数与每日活动圆点不因迁移变化（新增回归测试钉住迁移前后 summary 计数一致）；`affected_subjects` 合并载荷与 `fold_to_one` 删除路径随之移除。
 - G2（high）：评价对话框（appraise）暂存只保存当前 tool|source 条目（旧的全量映射暂存格式不再恢复），恢复只作用于当前条目，保存基线也只比较该条目——其他报告的评价不再被本地旧暂存回写/删除。
-- G10（medium）：「新增发现」打开定性证据草稿时忽略并清空 `extract|…|new` 暂存槽，不再恢复可能已落库的旧内容/旧 id。
+- G10（medium）：「新增发现」打开定性证据草稿时忽略并清空 `extract|…|new` 暂存槽，不再恢复可能已落库的旧内容/旧 id（r3 收窄：清空仅在「新增发现」按钮路径 `old===null` 时执行；工作菜单入口 `existingId===undefined` 不再被误清空，F08 的「重新打开同一对话框恢复未保存草稿」在该路径恢复生效）。
 - G11（medium）：`index.html` 对 `research_trace.js`/`report_evidence_locale.js`/`report_evidence.js` 的引用上戳 `?v=2.1.4`（launcher 对非 HTML 静态资源下发 max-age=86400，旧戳会让升级用户最长 24h 继续跑旧 JS）；`WORKFLOW_CONTROLS.md` 的「所有改动脚本统一 20261012-workflow6」失实句已改为按区分戳如实表述。
 - G19/G20（low）：关系管理「解除」在版本冲突 409 自动刷新后仍重绘列表；「新增评估」改用固定 `confidence|new` 暂存槽，未保存的新建评估草稿不再因一次性 uuid 槽位成为不可达孤儿。
-- G22–G25/G28（low）：词条修正——韩语「결말」→「결과」（结局/结果，两处）、法语 outcomes「critères」→「critères de jugement」（两处）、日语「可信性」→「確信性」、德语「dient nur Ansicht/Kopie」→「dient nur der Ansicht und dem Kopieren」；「评估草稿已保存」（置信度）与「评价草稿已保存」（方法学评价）八种译文逐字相同的问题已按语义区分。
+- G22–G25/G28（low）：词条修正——韩语「결말」→「결과」（结局/结果，两处）、法语 outcomes「critères」→「critères de jugement」（两处）、日语「可信性」→「信頼性」（r3 按术语表定稿：`report_evidence_locale.js` 的「JBI 发现可信度」「可信度（Credibility）」两处旧词条与「沿用当前产品…」行一并统一为「信頼性」，与本文件「可靠性（Dependability）」行及 `interface_locale.js` 全应用用词一致）、德语「dient nur Ansicht/Kopie」→「dient nur der Ansicht und dem Kopieren」；「评估草稿已保存」（置信度）与「评价草稿已保存」（方法学评价）八种译文逐字相同的问题已按语义区分。
 - G26（low）：9 个 change() 轨迹 label 注册十语言词条（+9 行），静态守护豁免清单清空。
 - G31（low）：`REPORT_LINKS_AND_EVIDENCE.zh-CN.md` 与本文档「旧版每次保存把整份工作区快照写入轨迹」改为如实口径：2.1.3 为本功能首个版本（2.1.2 及更早无该文件），单侧序列化 ≥850KB 时该侧已是 workspace_sha256 摘要（两侧独立判定）。
 - G17（测试缺口）：新增共享裁决 `/relations` 携带 stage 与共享撤销 `/relations/undo` 复用 previous_stage 的回归测试（阶段收窄 screen 时裁决与撤销事件均留痕且阶段一致）。
+
+## 前端收尾（第三轮 r3，复核确认四缺口）
+
+- 日语术语统一（复核缺口 1）：`report_evidence_locale.js` 三处日语列统一为「信頼性」——「JBI 发现可信度」（`JBI 知見の信頼性`）、「可信度（Credibility）」（`信頼性（Credibility）`）、「沿用当前产品…」行（原「確信性」改「信頼性」），与全应用术语表一致；上文 G22–G25/G28 行已同步改写。
+- 轨迹页报告关联载荷中文化（复核缺口 2）：`research_trace.js` 新增 `report_evidence_changed` 载荷渲染——9 个已注册 change label 经 `T()` 本地化（沿用 `ReportEvidenceLocale.keys` 判定，用户数据不误译），`changes.links/drafts` 增量条目、映射字段（综述路径/综合方法/置信度等）与摘要/截断/跳过标记键名按映射表输出译文，枚举取值（关系类型/状态、JBI 可信度、综述路径、综合方法、重复对结论）走已注册词条；轨迹表变更摘要与详情「修改前/修改后」在非中文界面不再输出原样中文。纯 `{value:数据}` 编码载荷维持原样输出，`note` 等英文附注仍仅见于技术视图。
+- 字段类型词条补注册（复核缺口 3）：「填空/单选/多选/选项」4 个词条注册十语言（`research_trace_locale.js` +4 行），并连同本轮新增的「报告关联/证据草稿/重复证据对/工作区校验和/受影响主体/已截断主体/跳过事件」7 行（+11 行合计）从 `test_trace_static_guards.py` 的 `RESEARCH_TRACE_EXEMPT` 豁免清单移除，清单只剩语言自称名「日本語/简体中文」。
+- 「新增发现」清空范围收窄（复核缺口 4，本轮回归修复）：`report_evidence.js` 的 G10 清空条件由 `if(old)` 收窄为 `old===null`（仅「新增发现」按钮路径）；工作菜单入口 `extract(key)`（`existingId===undefined`、无已存草稿时 `old===undefined`）不再误清空 `extract|…|new` 暂存槽，F08 的「重新打开同一对话框恢复未保存草稿」在工作菜单路径恢复生效。
+- 缓存戳：四个改动脚本 `research_trace.js`/`research_trace_locale.js`/`report_evidence.js`/`report_evidence_locale.js` 的 `index.html` 引用统一上戳 `?v=2.1.4-r3`（G11 交付规则：内容变更须同变更上戳）。
+- r3 验证：工作树 `E:/rf214-r3-frontend` 实跑 `C:/Users/16073/.codex/preview-data/reviewflow-2-1-1-venv/Scripts/python.exe -m pytest build/tests -q` → 59 passed；PATH 无全局 Node（`node --version` 仍 command not found），本轮使用本机 Hermes Node 二进制（`C:/Users/16073/AppData/Local/hermes/node/node.exe`）对 4 个改动 JS 做 `--check` 语法校验，并以 vm 沙箱加载真实 locale 字典跑了两套功能 harness（轨迹载荷渲染 21 项断言全过：英文/日文/韩文界面、增量/摘要/截断/跳过标记、纯编码值不变、英文摘要无残留中文；`extract()` 暂存 4 项断言全过：工作菜单恢复/新增发现清空/清空后不恢复/重暂存可恢复）。Playwright 浏览器套件仍未运行（同 G21 现状）。
 
 ## Deferred（本轮未做、按终审要求逐项声明）
 
