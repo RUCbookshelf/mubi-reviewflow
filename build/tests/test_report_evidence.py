@@ -494,7 +494,10 @@ class EvidenceTests(unittest.TestCase):
         before={'value':'Save evidence','workspace':{'links':[],'drafts':[]}}
         after={'value':'Save evidence','workspace':{'links':[
             {'id':'L1','a':'R1','b':'R2','type':'study','same':False,'evidence':secret,
-             'locator':'p.4','status':'agreed','actor_id':coder}],'drafts':[]}}
+             'locator':'p.4','status':'agreed','actor_id':coder}],
+            'drafts':[{'id':'F1','key':'R1','finding':'UNFOLDED-SECRET finding','quote':'UNFOLDED-QUOTE',
+                       'locator':'p.9','context':'UNFOLDED-CONTEXT','theme':'UNFOLDED-THEME',
+                       'interpretation':'UNFOLDED-INTERPRETATION'}]}}
         self._insert_legacy_trace_events([(actor,'R1',before,after)])
         from custom_backend import report_evidence_api as api_module
         original=api_module._fold_legacy_runs
@@ -508,6 +511,9 @@ class EvidenceTests(unittest.TestCase):
                 exported=b''.join(z.read(name) for name in z.namelist())
             self.assertNotIn(secret.encode(),exported)  # 他人 evidence 原文不外带
             self.assertNotIn(b'"p.4"',exported)  # locator 原文不外带
+            for text in ('UNFOLDED-SECRET','UNFOLDED-QUOTE','UNFOLDED-CONTEXT',
+                         'UNFOLDED-THEME','UNFOLDED-INTERPRETATION'):
+                self.assertNotIn(text.encode(),exported)  # 未折叠的草稿文本同样不外带
             self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),exported)  # evidence 保留哈希摘要
         finally:
             api_module._fold_legacy_runs=original
@@ -734,16 +740,22 @@ class EvidenceTests(unittest.TestCase):
 
     def test_public_export_redacts_origin_column(self):
         # 回归（⑧/M3）：公开导出对 origin 原始副本做结构化脱敏——保留导入来源结构
-        #（与事件本体走同一公开管线：私有键/身份字段移除、links 文本兜底脱敏），
-        # 不再携带他人 evidence/locator 与身份字段；complete 预设 origin 原样保留。
+        #（与事件本体走同一公开管线：私有键/身份字段移除、links/drafts 文本兜底脱敏，
+        # 含 origin 副本内 workspace.drafts 的 finding/context/theme/interpretation）；
+        # complete 预设 evidence 与草稿文本全部原样保留。
         from coscreen.research_trace_export import build_export_zip
         secret='IMPORTED-CODER-SECRET'
         original_after={'value':'Save','workspace':{'links':[{'id':'L1','a':'R1','b':'R2','type':'study',
-                     'same':False,'evidence':secret,'locator':'p.4','status':'agreed','actor_id':'9'}],'drafts':[]}}
+                     'same':False,'evidence':secret,'locator':'p.4','status':'agreed','actor_id':'9'}],
+                     'drafts':[{'id':'F1','key':'R1','finding':'SECRET-FINDING synthesis','quote':'SECRET-QUOTE body',
+                                'locator':'p.7','context':'SECRET-CONTEXT','theme':'SECRET-THEME',
+                                'interpretation':'SECRET-INTERPRETATION','credibility':'credible'}]}}
         # 折叠后的载荷形态（evidence 已替换为哈希摘要），origin 副本仍保留原文。
-        folded_after={'value':'Save','changes':{'links':[{'id':'L1','a':'R1','b':'R2','type':'study','same':False,
-                     'evidence':{'redacted':'other_member_private_text','length':len(secret),
-                                 'sha256':hashlib.sha256(secret.encode()).hexdigest()},'actor_id':'9'}],'drafts':[]}}
+        folded_after={'value':'Save','changes':{
+            'links':[{'id':'L1','a':'R1','b':'R2','type':'study','same':False,
+                      'evidence':{'redacted':'other_member_private_text','length':len(secret),
+                                  'sha256':hashlib.sha256(secret.encode()).hexdigest()},'actor_id':'9'}],
+            'drafts':[{'id':'F1','key':'R1','finding':'OWN-FINDING synthesis text'}]}}
         base_event={'event_id':str(uuid.uuid4()),'store_id':'st-1','sequence':7,'task_id':'T1','actor_id':'42',
                     'stage':'coding','action':'imported_report_evidence_changed','subject_id':'R1',
                     'before':{'value':'Save','changes':{'links':[],'drafts':[]}},'after':folded_after,
@@ -759,10 +771,42 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotIn(b'"task_id"',pub_events)
         self.assertNotIn(secret.encode(),pub_all)  # origin 副本内的他人 evidence 原文不外带
         self.assertNotIn(b'"p.4"',pub_all)  # locator 原文不外带
+        for text in ('SECRET-FINDING','SECRET-QUOTE','SECRET-CONTEXT','SECRET-THEME',
+                     'SECRET-INTERPRETATION','OWN-FINDING'):
+            self.assertNotIn(text.encode(),pub_all)  # origin 与事件本体两侧的草稿文本一律脱敏
+        self.assertIn(hashlib.sha256(secret.encode()).hexdigest().encode(),pub_all)
         complete=build_export_zip(snapshot,public=False)
         with zipfile.ZipFile(_io.BytesIO(complete)) as z:
             comp_events=z.read('events.jsonl')
-        self.assertIn(secret.encode(),comp_events);self.assertIn(b'"actor_id"',comp_events)  # complete 保持完整备份
+        self.assertIn(secret.encode(),comp_events)
+        for text in ('SECRET-FINDING','OWN-FINDING synthesis text'):
+            self.assertIn(text.encode(),comp_events)
+        self.assertIn(b'"actor_id"',comp_events)  # complete 保持完整备份
+
+    def test_large_event_lines_round_trip(self):
+        # 回归（评审）：写路径真实产物（折叠增量 ~0.8MB、complete 包 origin 原始副本）
+        # 的单行事件必须能完整导出→重导入 round-trip，不再被 256KB 每事件上限拒绝。
+        from coscreen import research_trace_export as exporter
+        big_after={'value':'Save','changes':{'drafts':[{'id':f'd{i}','key':'R1','finding':'x'*4000} for i in range(100)]}}
+        big_origin_after={'value':'Save','workspace':{'drafts':[{'id':f'd{i}','key':'R1','finding':'y'*3000}
+                                                             for i in range(100)]}}
+        event={'event_id':str(uuid.uuid4()),'store_id':'st-1','sequence':1,'task_id':'T1','actor_id':'42',
+               'stage':'coding','action':'report_evidence_changed','subject_id':'R1',
+               'before':{'value':'Save','changes':{'drafts':[]}},'after':big_after,
+               'source':'report_evidence','recorded_at':'2026-01-01T00:00:00Z',
+               'origin':{'event_id':str(uuid.uuid4()),'store_id':'st-0','sequence':1,'task_id':'T0',
+                         'actor_id':'42','stage':'coding','action':'report_evidence_changed','subject_id':'R1',
+                         'before':{'value':'Save','workspace':{'drafts':[]}},'after':big_origin_after,
+                         'source':'report_evidence','recorded_at':'2026-01-01T00:00:00Z'}}
+        package=exporter.build_export_zip({'stores':[{'partition':'personal','store_id':'st-1',
+            'settings':{'status':'recording','stages':['coding']},'summary':{},'events':[event]}]},public=False)
+        with zipfile.ZipFile(_io.BytesIO(package)) as z:
+            line=z.read('events.jsonl').splitlines()[0]
+        self.assertGreater(len(line),256*1024)  # 旧 256KB 上限必然拒绝的行
+        parsed=exporter.validate_import_package(package)  # 新上限下完整 round-trip
+        self.assertEqual(len(parsed['events']),1)
+        self.assertEqual(parsed['events'][0]['after'],big_after)
+        self.assertEqual(parsed['events'][0]['origin']['after'],big_origin_after)
 
     def _volume_snapshot(self,count):
         def make_event(i):
@@ -827,8 +871,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(exporter.validate_import_package(legacy.getvalue())['events']),1)
 
     def test_volume_package_imports_through_api(self):
-        # 回归（契约⑥/⑦）：分卷包经真实导出→导入两步流第一步（preview）校验通过，
-        # 响应键不变；分卷对导入端点完全透明。
+        # 回归（契约⑥/⑦）：分卷包经真实导出→导入两步流（preview + commit）完整
+        # round-trip，响应键不变；二次 commit 全量 duplicate；旧单文件 events.jsonl
+        # 包（含无 event_volumes 键的旧 manifest）走同一 API 两步流同样成功。
         from coscreen import research_trace_export as exporter
         self.assertEqual(self.save(self.link(self.state())).status_code,200)  # 本任务已有轨迹事件
         original=exporter.MAX_EVENT_VOLUME_BYTES
@@ -840,12 +885,61 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(package.status_code,200,package.text[:200])
         with zipfile.ZipFile(_io.BytesIO(package.content)) as z:
             volumes=[n for n in z.namelist() if n.startswith('events-part-')]
+            manifest=json.loads(z.read('manifest.json'))
         self.assertGreaterEqual(len(volumes),2)
-        r=self.client.post(f'/api/tasks/{self.task}/trace/imports/preview',
-                           files={'package':('trace.zip',package.content,'application/zip')},headers=self.auth())
-        self.assertEqual(r.status_code,200,r.text[:300])
-        for key in ('package_sha256','source_aliases','subjects'):  # 两步流响应键不变
-            self.assertIn(key,r.json())
+        event_count=manifest['event_count']
+        def two_step(base,raw):
+            preview=self.client.post(f'{base}/trace/imports/preview',
+                                     files={'package':('trace.zip',raw,'application/zip')},headers=self.auth())
+            self.assertEqual(preview.status_code,200,preview.text[:300])
+            meta=preview.json()
+            for key in ('package_sha256','source_aliases','subjects'):  # 两步流响应键不变
+                self.assertIn(key,meta)
+            commit=self.client.post(f'{base}/trace/imports/commit',
+                                    files={'package':('trace.zip',raw,'application/zip')},
+                                    data={'preview_sha256':meta['package_sha256'],
+                                          'actor_aliases':json.dumps({a:'Owner' for a in meta['source_aliases']}),
+                                          'subject_mappings':'{}','confirm_unmapped':'true'},
+                                    headers=self.auth())
+            self.assertEqual(commit.status_code,200,commit.text[:300])
+            return commit.json()
+        first=two_step(f'/api/tasks/{self.task}',package.content)
+        self.assertEqual(first['status'],'committed')
+        self.assertEqual(first['event_count'],event_count)
+        self.assertEqual(first['imported'],event_count)  # 首次提交全量导入
+        self.assertEqual(first['duplicates'],0)
+        second=two_step(f'/api/tasks/{self.task}',package.content)  # 同包二次提交：幂等 duplicate
+        self.assertEqual(second['status'],'committed')
+        self.assertEqual(second['imported'],0)
+        self.assertEqual(second['duplicates'],event_count)
+        # 旧单文件包（manifest 无 event_volumes 键、events.jsonl 单成员、哈希重算）：
+        # 在另一个全新任务上走同一 API 两步流，验证旧包形态的真实导入。
+        task2=self.client.post('/api/tasks',json={'name':'legacy-single-file'},headers=self.auth()).json()['task_id']
+        ctx2=app.state.review_workflow.context(task2,self.users[0])
+        db.upsert_articles(ctx2.owner_db,[Article(zotero_key='R1',title='First'),Article(zotero_key='R2',title='Second')],[])
+        self.assertEqual(self.client.put(f'/api/tasks/{task2}/report-evidence',json={
+            'expected_revision':0,'operation_id':str(uuid.uuid4()),
+            'state':self.link(self.state()),'label':'Save evidence'},headers=self.auth()).status_code,200)
+        pkg2=self.client.post(f'/api/tasks/{task2}/trace/exports',json={'preset':'complete'},headers=self.auth())
+        self.assertEqual(pkg2.status_code,200,pkg2.text[:200])
+        with zipfile.ZipFile(_io.BytesIO(pkg2.content)) as z:
+            self.assertIn('events.jsonl',z.namelist())  # 小导出天然是单文件形态
+            manifest2=json.loads(z.read('manifest.json'))
+            files2={n:z.read(n) for n in z.namelist()}
+        legacy_count=manifest2['event_count']
+        manifest2.pop('event_volumes',None)  # 改写为旧 manifest 形态（无此键）
+        legacy=_io.BytesIO()
+        with zipfile.ZipFile(legacy,'w',compression=zipfile.ZIP_DEFLATED) as dst:
+            for name,data in files2.items():
+                if name=='manifest.json':
+                    data=json.dumps(manifest2,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()+b'\n'
+                dst.writestr(name,data)
+        legacy_bytes=legacy.getvalue()
+        parsed_legacy=exporter.validate_import_package(legacy_bytes)
+        self.assertEqual(len(parsed_legacy['events']),legacy_count)
+        legacy_result=two_step(f'/api/tasks/{task2}',legacy_bytes)
+        self.assertEqual(legacy_result['imported'],legacy_count)  # 旧单文件包经 API 真实导入
+        self.assertEqual(legacy_result['duplicates'],0)
 
 
 if __name__=='__main__': unittest.main(verbosity=2)

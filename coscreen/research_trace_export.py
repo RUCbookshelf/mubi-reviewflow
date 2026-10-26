@@ -23,7 +23,11 @@ PACKAGE_SCHEMA = "reviewflow.research-trace/1"
 MAX_PACKAGE_BYTES = 128 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_EVENTS = 50_000
-MAX_EVENT_BYTES = 256 * 1024
+# 每事件行上限与写路径联动：存储侧单列 ≤1MB（research_trace._MAX_JSON_BYTES），
+# 一行事件 = before/after/field/origin 四列序列化 + 外层字段，写路径真实产物
+#（report_evidence 单事件预算 850KB、折叠增量约 0.8MB、complete 包 origin 原始
+# 副本 0.6MB 级）必须能完整 round-trip；总 uncompressed 上限仍约束整体规模。
+MAX_EVENT_BYTES = 5 * 1024 * 1024
 # 分卷（契约⑥）：仅 events.jsonl 切卷。单卷上限 16MB、卷数上限 16
 # （= ceil(MAX_UNCOMPRESSED_BYTES / MAX_EVENT_VOLUME_BYTES)），单请求仍是单 application/zip。
 MAX_EVENT_VOLUME_BYTES = 16 * 1024 * 1024
@@ -249,19 +253,35 @@ def _public_link_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
-def _public_link_privacy(value: Any) -> Any:
-    """Recursively replace evidence/locator text inside any "links" entry lists."""
+def _public_draft_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Public preset fail-safe: draft synthesis text (finding/context/theme/
+    interpretation and the draft locator) never ships. quote is already removed
+    by _redact's private-key list; summaries keep only lengths."""
+    entry = dict(entry)
+    for field in ("finding", "context", "theme", "interpretation", "locator"):
+        text = entry.get(field)
+        if isinstance(text, str) and text:
+            entry[field] = {"redacted": "public_export_private_text", "length": len(text)}
+    return entry
+
+
+def _public_privacy_floor(value: Any) -> Any:
+    """Recursively replace evidence/locator text inside any "links" entry list
+    and draft synthesis text inside any "drafts" entry list (public preset)."""
     if isinstance(value, dict):
         cleaned = {}
         for key, child in value.items():
             if key == "links" and isinstance(child, list):
                 cleaned[key] = [_public_link_entry(item) if isinstance(item, dict) else item
                                 for item in child]
+            elif key == "drafts" and isinstance(child, list):
+                cleaned[key] = [_public_draft_entry(item) if isinstance(item, dict) else item
+                                for item in child]
             else:
-                cleaned[key] = _public_link_privacy(child)
+                cleaned[key] = _public_privacy_floor(child)
         return cleaned
     if isinstance(value, list):
-        return [_public_link_privacy(item) for item in value]
+        return [_public_privacy_floor(item) for item in value]
     return value
 
 
@@ -284,19 +304,19 @@ def _public_snapshot(events: list[dict[str, Any]], partitions: list[dict[str, An
         event.pop("actor_id", None)
         # Public preset only: the embedded origin copy retains the authoring
         # store's original event verbatim (private keys, identity fields and
-        # relation evidence/locator text included). Keep a structured,
-        # provenance-preserving copy redacted through exactly the same public
-        # pipeline as the event itself instead of shipping it verbatim.
+        # relation/draft text included). Keep a structured, provenance-preserving
+        # copy redacted through exactly the same public pipeline as the event
+        # itself instead of shipping it verbatim.
         origin = event.get("origin")
         if isinstance(origin, Mapping):
-            event["origin"] = _public_link_privacy(
+            event["origin"] = _public_privacy_floor(
                 _redact(dict(origin), include_private_fields=include_private_fields))
         else:
             event.pop("origin", None)
-        # Export-side privacy floor for relation text: applies to migrated and
-        # not-yet-folded (or fold-failed) payloads alike, matching the documented
-        # "always redacted in public exports" promise.
-        event = _public_link_privacy(event)
+        # Export-side privacy floor for relation and draft text: applies to
+        # migrated and not-yet-folded (or fold-failed) payloads alike, matching
+        # the documented "always redacted in public exports" promise.
+        event = _public_privacy_floor(event)
         event["store_id"] = store_aliases.get(str(raw.get("store_id")), "Store")
         output.append(event)
     public_origin = {
