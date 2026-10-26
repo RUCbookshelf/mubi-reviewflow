@@ -4117,9 +4117,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["页码必须为正整数","Page number must be a positive integer","Le numéro de page doit être un entier positif","Номер страницы — целое положительное число","El número de página debe ser un entero positivo","ページ番号は正の整数で入力してください","O número da página deve ser um inteiro positivo","Seitennummer muss eine positive Ganzzahl sein","Број стране мора бити позитиван цели број", "페이지 번호는 양의 정수여야 함"],
   ["高亮文本不能为空","Highlighted text cannot be empty","Le texte surligné ne peut pas être vide","Выделенный текст не может быть пустым","El texto resaltado no puede estar vacío","ハイライト文は空にできません","O texto do realce não pode ficar vazio","Markierter Text darf nicht leer sein","Маркирани текст не сме бити празан", "강조 텍스트 필수"],
   ["已保存{0}高亮（第 {1} 页）","Saved {0} highlight (page {1})","Surlignage {0} enregistré (page {1})","Выделение {0} сохранено (стр. {1})","Resaltado {0} guardado (página {1})","{0} のハイライトを保存（{1} ページ）","Realce {0} salvo (página {1})","Hervorhebung {0} gespeichert (Seite {1})","Маркирање {0} је сачувано (страна {1})", "{0} 강조 표시 저장됨 ({1}페이지)"],
-  ["✓ 复筛纳入","✓ Included at full-text","✓ Inclus au plein texte","✓ Включено на полном тексте","✓ Incluido en texto completo","✓ 全文で採用","✓ Incluído no texto completo","✓ Im Volltext eingeschlossen","✓ Укључено у пуном тексту", "✓ 전문 선별: 포함"],
-  ["◐ 复筛待定", "◐ Maybe at full-text", "◐ À décider au plein texte", "◐ Возможно на полном тексте", "◐ Pendiente en texto completo", "◐ 全文で保留", "◐ Talvez no texto completo", "◐ Im Volltext vielleicht", "◐ Можда у пуном тексту", "◐ 전문 선별: 보류"],
-  ["✗ 复筛排除 · {0}","✗ Excluded at full-text · {0}","✗ Exclu au plein texte · {0}","✗ Исключено на полном тексте · {0}","✗ Excluido en texto completo · {0}","✗ 全文で除外 · {0}","✗ Excluído no texto completo · {0}","✗ Im Volltext ausgeschlossen · {0}","✗ Искључено у пуном тексту · {0}", "✗ 전문 선별: 제외 · {0}"],
+  ["✓ 复筛纳入《{0}》","✓ Included at full-text “{0}”","✓ Inclus au plein texte « {0} »","✓ Включено на полном тексте «{0}»","✓ Incluido en texto completo “{0}”","✓ 全文で採用「{0}」","✓ Incluído no texto completo “{0}”","✓ Im Volltext eingeschlossen „{0}“","✓ Укључено у пуном тексту „{0}“", "✓ 전문 선별: «{0}» 포함"],
+  ["◐ 复筛待定《{0}》", "◐ Maybe at full-text “{0}”", "◐ À décider au plein texte « {0} »", "◐ Возможно на полном тексте «{0}»", "◐ Pendiente en texto completo “{0}”", "◐ 全文で保留「{0}」", "◐ Talvez no texto completo “{0}”", "◐ Im Volltext vielleicht „{0}“", "◐ Можда у пуном тексту „{0}“", "◐ 전문 선별: «{0}» 보류"],
+  ["✗ 复筛排除《{0}》 · 理由：{1}","✗ Excluded at full-text “{0}” · reason: {1}","✗ Exclu au plein texte « {0} » · motif : {1}","✗ Исключено на полном тексте «{0}» · причина: {1}","✗ Excluido en texto completo “{0}” · motivo: {1}","✗ 全文で除外「{0}」· 理由：{1}","✗ Excluído no texto completo “{0}” · motivo: {1}","✗ Im Volltext ausgeschlossen „{0}“ · Grund: {1}","✗ Искључено у пуном тексту „{0}“ · разлог: {1}", "✗ 전문 선별: «{0}» 제외 · 사유: {1}"],
   ["🎉 复筛队列全部完成","All reports in this queue have a saved decision","🎉 File plein texte entièrement traitée","🎉 Очередь полных текстов полностью завершена","🎉 Cola de texto completo totalmente completada","🎉 全文キューがすべて完了しました","🎉 Fila de texto completo totalmente concluída","🎉 Volltext-Warteschlange vollständig abgearbeitet","🎉 Ред пуног текста је потпуно завршен", "🎉 전문 선별 대기열 모두 완료"],
   ["载入复筛队列失败：","Failed to load the full-text queue: ","Échec du chargement de la file plein texte : ","Не удалось загрузить очередь полных текстов: ","Error al cargar la cola de texto completo: ","全文キューの読み込みに失敗：","Falha ao carregar a fila de texto completo: ","Volltext-Warteschlange konnte nicht geladen werden: ","Не успело учитавање реда пуног текста: ", "전문 선별 대기열 불러오기 실패:"],
   ["复筛队列为空","Full-text queue is empty","File plein texte vide","Очередь полных текстов пуста","La cola de texto completo está vacía","全文キューは空です","Fila de texto completo vazia","Volltext-Warteschlange ist leer","Ред пуног текста је празан", "전문 선별 대기열이 비어 있습니다"],
@@ -5156,7 +5156,17 @@ async function apiRequest(path, opts = {}) {
         detail = payload.map(d => (d.loc ? d.loc.filter(x => x !== 'body').join('.') + '：' : '') + (d.msg || '')).join('；');
       } else if (typeof payload === 'object' && payload.message) {
         detail = [payload.message, ...(payload.reasons || []).map(reason => reason.detail)].filter(Boolean).join('\n');
-      } else detail = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      } else {
+        /* 后端纯字符串错误消息统一在此过 T()（双键注册机制的中央接线点）：
+           已注册的五类高频消息（登录失败/注册校验/登录限流/会话过期/撤销边界，
+           见 interface_locale.js 的注册块与机制说明）在任何界面语言下都能命中，
+           #authErr、toast 拼接（含 workspace_undo.js 的撤销错误拼接）与
+           WorkflowControls.error 均经 error.message 取值即自动获得译文；
+           未注册的消息原样透传。注意：凡被前端按内容做正则/前缀判断的错误串
+           （report_evidence.js 的 STALE 正则、analysis_paired_interval.js 的
+           “b = c = 0…” startsWith）不得注册进词典，否则译文会破坏判断。 */
+        detail = typeof payload === 'string' ? T(payload) : JSON.stringify(payload);
+      }
     }
     const error = new ApiError(r.status, detail);
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
@@ -5226,15 +5236,19 @@ const HL_LABEL = { jade: '玉青', amber: '花芽黄', terra: '陶红' };
 /* 正在显示的 toast：文案是 T() 合成句，写进 DOM 后字典引擎无法再映射，
    记录可反查到的规范中文源串，切换语言时用 refreshToasts() 重译。 */
 const LIVE_TOASTS = [];
-function toast(msg, kind) {
+function toast(msg, kind, holdMs) {
   msg = T(msg);
   kind = kind || 'info';
   const box = el('div', { class: 'toast t-' + kind, text: msg });
   $('#toasts').appendChild(box);
   const source = window.RFLang ? RFLang.capture(msg) : null;
   if (source) LIVE_TOASTS.push({ el: box, source });
-  setTimeout(() => box.classList.add('hide'), 2600);
-  setTimeout(() => box.remove(), 2960);
+  /* holdMs：可选停留时长（毫秒）。筛选保存的“保存了哪条”反馈需要读到题名与
+     理由，默认 2.6 秒在连续操作下常被错过（走查 F03 即未感知到反馈），
+     决策保存传入更长的停留时间；其余调用不传保持原时长。 */
+  const hold = holdMs || 2600;
+  setTimeout(() => box.classList.add('hide'), hold);
+  setTimeout(() => box.remove(), hold + 360);
 }
 function refreshToasts() {
   for (let i = LIVE_TOASTS.length - 1; i >= 0; i--) {
@@ -6362,8 +6376,10 @@ async function screenDecide(decision) {
     WorkflowControls.markDecisionClean('screen');
     WorkflowControls.updateProgress('screen').catch(WorkflowControls.error);
     S.screenEditingKey = null;
+    /* 保存反馈（F03）：toast 标明题名片段与理由，并延长停留时间，
+       使“保存了哪条”在连续筛选时可被感知。 */
     const name = (r.title || '').slice(0, 22) + '…';
-    toast({ include: T('✓ 已纳入《{0}》', name), maybe: T('◐ 待定《{0}》', name), exclude: T('✗ 已排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision]);
+    toast({ include: T('✓ 已纳入《{0}》', name), maybe: T('◐ 待定《{0}》', name), exclude: T('✗ 已排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
     $('#scrCard').classList.add('out');
     setTimeout(async () => {
       if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
@@ -6867,7 +6883,10 @@ async function fullDecide(decision) {
     WorkflowControls.markDecisionClean('fulltext');
     WorkflowControls.updateProgress('fulltext').catch(WorkflowControls.error);
     S.ftUndoSaved = null;
-    toast({ include: T('✓ 复筛纳入'), maybe: T('◐ 复筛待定'), exclude: T('✗ 复筛排除 · {0}', reason) }[decision], DEC_KEY[decision]);
+    /* 保存反馈（F03）：复筛与初筛对齐——toast 标明题名片段（排除时附理由），
+       并延长停留时间，使“保存了哪条”在连续筛选时可被感知。 */
+    const name = (cur.title || '').slice(0, 22) + '…';
+    toast({ include: T('✓ 复筛纳入《{0}》', name), maybe: T('◐ 复筛待定《{0}》', name), exclude: T('✗ 复筛排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
     const nxt = S.ftQueue.findIndex(x => !S.ftDec[x.zotero_key]);
     if (nxt >= 0) { S.ftIdx = nxt; renderFtDoc(); openFtPdf(); }
     else { renderFtDoc(); toast(T('🎉 复筛队列全部完成'), 'inc'); }
