@@ -11,10 +11,15 @@
    的字典与 message()，复刻 errOf 的 T() 翻译语义，fr/de 界面下断言
    已翻译错误直读（className 无 an-technical-message、文本=译文），
    且不带标记的旧路径确实被包壳（标记必要性）。
-3. 已完成徽标语义：FastAPI TestClient 造“已决候选组 → 启用”（成员全
-   active）与“已决未启用”（成员 staged）两种真实数据，再把真实
-   completionBadge 源码（从 unified_import_workspace.js 提取）放到
-   Node 里对真实成员跑：前者必须是「已启用」，后者「已核验待启用」。
+3. 已完成徽标与计数一致性（r4）：fixture 全部经真实导入 API 构造
+   （identity_conflict 冲突候选 → 决策 → 启用；同标题对 → 真实 legacy
+   title_duplicate_reviews 组，成员形状直接取自真实响应），再把真实
+   id/category/completionBadge/items/readyCount 源码（从
+   unified_import_workspace.js 提取）放到 Node 里对真实数据跑：
+   已决全 active 组=「已启用」；已决含 staged 成员的组不以组形态吞掉
+   成员，其 staged 记录以待启用记录形态可见且 readyCount()=后端
+   review_counts.ready；legacy 已决组=「已核验」（真实成员无
+   ref_type/record，且无启用环节——上轮自造 legacy 形状败因的反证）。
 4. complete 胶囊真折叠：msedge --headless=new 加载真实
    import_export_workspace.css / import_review_refined.css 构造胶囊，
    virtual-time 快进后断言 getBoundingClientRect().height 折叠前 ≥44px
@@ -34,7 +39,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -214,7 +218,21 @@ process.exit(fail?1:0);
 
 
 class CompletionBadgeBehaviorTests(unittest.TestCase):
-    """评审修3：徽标按成员实际状态计算；TestClient 真数据 + 真实 completionBadge。"""
+    """高4（r4）：真实后端形状上的分类/徽标/计数一致性。
+
+    fixture 全部经真实导入 API 构造（无直写数据库、无自造成员形状）：
+    - batch A：base1/base2 两条独立记录（导入即激活）。
+    - batch B：与 base1 同外部 key 不同 DOI 的冲突记录 → identity_conflict
+      候选组（成员 [('active',article), ('record',staged)]）+ 一条 fresh 记录。
+    - batch C：与 base2 同 key 不同 DOI 的冲突记录 → 第二个候选组。
+    决策 B not_duplicate 后【不】启用 → hc 状态（已决、成员仍 staged、
+    review_counts.ready=1）；决策 C not_duplicate 后启用 → gc 状态
+    （已决、成员全 active）。
+    - legacy：单文件 /import 内同标题对 → 真实 title_duplicate_reviews 组
+      （成员只有 zotero_key/title/authors/… RIS 字段），经真实决策 API 置为
+      not_duplicate。上轮“legacy-active 用非真实成员形状”的败因由此根治：
+      legacy 成员形状直接取自真实 API 响应并断言键集合。
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -224,124 +242,175 @@ class CompletionBadgeBehaviorTests(unittest.TestCase):
         os.environ["COBOOKSHELF_DATA_DIR"] = cls._fixture.name
         from fastapi.testclient import TestClient
         from custom_backend.main import app
-        from coscreen import db, review_imports as store, review_workflow as wf
-        from coscreen.models import Article
+        import custom_backend.auth as auth_mod
         cls.client = TestClient(app)
         cls.client.__enter__()
         # 不走 HTTP /api/auth/register：全套 pytest 里 TestClient 的 client.host
         # 固定，多模块注册共享同一限流桶会撞 429（“注册尝试过于频繁”）；
         # 直接建用户并签发令牌，行为等价且不占限流额度。
-        import custom_backend.auth as auth_mod
         user = auth_mod.create_user("badge@example.test", "Badge-2026-x")
         token = auth_mod.create_access_token(user["id"], user["username"])
         cls.user = {"user_id": user["id"], "username": user["username"]}
         cls.client.headers["Authorization"] = "Bearer " + token
-        task = cls.client.post("/api/tasks", json={"name": "badge-probe"}).json()["task_id"]
-        cls.base = f"/api/tasks/{task}/import-batches/b"
-        ctx = app.state.review_workflow.context(task, cls.user)
-        cls.db = ctx.owner_db
-        db.init_db(cls.db)
-        store.migrate(cls.db)
+        task = cls.client.post("/api/tasks", json={"name": "badge-probe-r4"}).json()["task_id"]
+        cls.task = task
 
-        def record(conn, key, doi):
-            article = Article(zotero_key=key, title="Probe " + key, doi=doi).to_dict()
-            conn.execute("INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (key, "s", key, 1, "01-Wiley.ris", json.dumps(article), json.dumps(article), key, key, None, None, "new", "staged", "now"))
-            conn.execute("INSERT INTO workflow_import_members VALUES(?,?,?)", ("b", key, 0))
+        def ris(entries):
+            return "\n\n".join(
+                "TY  - JOUR\n" + "".join(f"{tag}  - {value}\n" for tag, value in entry.items()) + "ER  - "
+                for entry in entries)
 
-        def group(conn, cid, doi):
-            for key in (cid + "a", cid + "b"):
-                record(conn, key, doi)
-            conn.execute("INSERT INTO workflow_import_candidates(id,signature,kind,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                         (cid, cid, "title", "pending", "now", "now"))
-            for key in (cid + "a", cid + "b"):
-                conn.execute("INSERT INTO workflow_import_candidate_members VALUES(?,?,?)", (cid, "record", key))
+        base1 = {"AU": "Alpha, A", "TI": "Conflict Base One", "PY": "2024", "DO": "10.test/base1", "ID": "SHAREKEY1"}
+        base2 = {"AU": "Bravo, B", "TI": "Conflict Base Two", "PY": "2024", "DO": "10.test/base2", "ID": "SHAREKEY2"}
+        conflict1 = {"AU": "Alpha, A", "TI": "Conflict Base One Variant", "PY": "2024", "DO": "10.test/other1", "ID": "SHAREKEY1"}
+        conflict2 = {"AU": "Bravo, B", "TI": "Conflict Base Two Variant", "PY": "2024", "DO": "10.test/other2", "ID": "SHAREKEY2"}
+        fresh = {"AU": "Fresh, F", "TI": "Fresh Independent Study", "PY": "2025", "DO": "10.test/fresh"}
 
-        with closing(wf.connect(cls.db)) as conn, conn:
-            conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,?,?)", ("s", "01-Wiley.ris", "01-wiley.ris", 1, "now"))
-            conn.execute("INSERT INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)", ("b", str(cls.user["user_id"]), "h", "batch", 1, "staged", "now"))
-            conn.execute("INSERT INTO workflow_import_files VALUES(?,?,?,?,?)", ("b", 0, "01-Wiley.ris", "d", "s"))
-            group(conn, "gc", "10.test/same")
-            group(conn, "hc", "10.test/same2")
-        version = cls.client.get(cls.base).json()["policy_version"]
-        cls.client.post(cls.base + "/candidates/gc", json={"status": "not_duplicate", "expected_policy_version": version})
-        cls.client.post(cls.base + "/activate", json={"expected_policy_version": version + 1})
-        version = cls.client.get(cls.base).json()["policy_version"]
-        cls.client.post(cls.base + "/candidates/hc", json={"status": "not_duplicate", "expected_policy_version": version})
+        def upload(name, text):
+            result = cls.client.post(
+                f"/api/tasks/{task}/import-batch",
+                files={"files": (name, text.encode("utf-8"), "application/octet-stream")}).json()
+            assert result.get("batch_id"), f"真实导入失败：{result}"
+            return result["batch_id"]
+
+        upload("base.ris", ris([base1, base2]))
+        cls.batch_hc = upload("batchB.ris", ris([conflict1, fresh]))
+        cls.batch_gc = upload("batchC.ris", ris([conflict2]))
+
+        def decide(batch_id, status):
+            detail = cls.client.get(f"/api/tasks/{task}/import-batches/{batch_id}?view=all&limit=200").json()
+            cands = cls.client.get(f"/api/tasks/{task}/import-batches/{batch_id}/candidates?view=all").json()["candidates"]
+            assert cands, "真实冲突候选未生成"
+            cls.client.post(f"/api/tasks/{task}/import-batches/{batch_id}/candidates/{cands[0]['review_id']}",
+                            json={"status": status, "expected_policy_version": detail["policy_version"]}).raise_for_status()
+
+        # hc：已决未启用（成员仍 staged，ready=1）——上轮回归现场。
+        decide(cls.batch_hc, "not_duplicate")
+        # gc：已决并启用（成员全 active）。
+        decide(cls.batch_gc, "not_duplicate")
+        version = cls.client.get(f"/api/tasks/{task}/import-batches/{cls.batch_gc}?view=all&limit=200").json()["policy_version"]
+        cls.client.post(f"/api/tasks/{task}/import-batches/{cls.batch_gc}/activate",
+                        json={"expected_policy_version": version}).raise_for_status()
+        # legacy：真实同标题对 → title_duplicate_reviews 组 → 真实决策。
+        cls.client.post(
+            f"/api/tasks/{task}/import",
+            files={"file": ("legacy.ris", ris([
+                {"AU": "Legacy, L", "TI": "Legacy Same Title Pair", "PY": "2023", "DO": "10.test/lg1"},
+                {"AU": "Legacy, L", "TI": "Legacy Same Title Pair", "PY": "2023", "DO": "10.test/lg2"},
+            ]).encode("utf-8"), "application/octet-stream")}).raise_for_status()
+        groups = cls.client.get(f"/api/tasks/{task}/title-duplicate-reviews?view=all").json()["groups"]
+        assert groups, "真实 legacy 标题组未生成"
+        cls.client.post(f"/api/tasks/{task}/title-duplicate-reviews/{groups[0]['review_id']}",
+                        json={"decision": "not_duplicate", "keeper_key": ""}).raise_for_status()
 
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
         cls._fixture.cleanup()
 
-    def _group_members(self, review_id):
-        rows = self.client.get(self.base + "/candidates?view=all").json()["candidates"]
-        group = next(item for item in rows if item["review_id"] == review_id)
-        return group["members"]
+    def _batch_state(self, batch_id):
+        detail = self.client.get(f"/api/tasks/{self.task}/import-batches/{batch_id}?view=all&limit=200").json()
+        cands = self.client.get(f"/api/tasks/{self.task}/import-batches/{batch_id}/candidates?view=all").json()["candidates"]
+        return detail, cands
 
-    def test_activated_group_members_all_active(self):
-        members = self._group_members("gc")
-        states = [(m.get("ref_type"), (m.get("record") or {}).get("state")) for m in members]
-        self.assertTrue(all(ref == "active" or state == "active" for ref, state in states),
-                        f"启用后的已决候选组成员应全部 active，实际 {states}")
+    def test_hc_state_is_decided_with_staged_member(self):
+        """真实 hc 现场钉子：已决组仍含 staged 成员、后端 ready=1（r3 回归输入）。"""
+        detail, cands = self._batch_state(self.batch_hc)
+        decided = [c for c in cands if c["status"] == "not_duplicate"]
+        self.assertTrue(decided, "hc 候选必须已决")
+        members = decided[0]["members"]
+        self.assertTrue(any(m["ref_type"] == "record" and m["record"]["state"] == "staged" for m in members),
+                        f"hc 必须仍含 staged 成员记录，实际 {[(m['ref_type'], (m.get('record') or {}).get('state')) for m in members]}")
+        self.assertEqual(detail["review_counts"]["ready"], 1,
+                         f"hc 现场后端 ready 必须为 1（待启用记录正是该 staged 成员），实际 {detail['review_counts']}")
 
-    def test_items_level_badges_on_real_backend_data(self):
-        """items()/category 级断言（评审补强：hc 组必须真的进入已完成分类）。
+    def test_gc_state_members_all_active(self):
+        detail, cands = self._batch_state(self.batch_gc)
+        decided = [c for c in cands if c["status"] == "not_duplicate"]
+        self.assertTrue(decided)
+        for member in decided[0]["members"]:
+            self.assertTrue(member["ref_type"] == "active" or member["record"]["state"] == "active",
+                            f"启用后的已决候选组成员应全部 active，实际 {member}")
+
+    def test_real_legacy_member_shape_has_no_ref_type(self):
+        """真实 legacy 成员形状钉子（上轮自造形状败因的直接反证）。"""
+        groups = self.client.get(f"/api/tasks/{self.task}/title-duplicate-reviews?view=all").json()["groups"]
+        decided = [g for g in groups if g["status"] == "not_duplicate"]
+        self.assertTrue(decided, "legacy 组必须已决")
+        for member in decided[0]["members"]:
+            self.assertNotIn("ref_type", member, "真实 legacy 成员没有 ref_type（上轮自造形状引入的键）")
+            self.assertNotIn("record", member)
+            self.assertNotIn("article", member)
+            self.assertIn("zotero_key", member)
+            self.assertIn("title", member)
+
+    def test_items_level_badges_and_counts_on_real_backend_data(self):
+        """items()/category/readyCount 级断言（r4 语义，全部真实 API 数据）。
 
         从 unified_import_workspace.js 提取真实的 id/completionBadge/category/
-        items 四个纯函数，配上真实的 import_review_model 与 TestClient 返回的
-        groups/records（hc=已决未启用、gc=已启用），外加构造的空成员组与
-        legacy 形状组，实跑分类与徽标。
+        items/readyCount，配真实 import_review_model 与真实 API 响应实跑：
+        - gc（已决全 active）：组进 completed、徽标「已启用」、成员不双显；
+        - hc（已决含 staged 成员）：组不以组形态出现；其 staged 成员记录以
+          reason='ready' 进入 items()（待启用页签可见）；
+        - 计数一致性：readyCount() === 后端 review_counts.ready === ready 记录数；
+        - legacy 已决组（真实形状）：进 completed、徽标「已核验」。
         """
-        groups = self.client.get(self.base + "/candidates?view=all").json()["candidates"]
-        records = self.client.get(self.base + "?view=all&limit=200").json()["records"]
-        groups_json = json.dumps(groups, ensure_ascii=False)
-        records_json = json.dumps(records, ensure_ascii=False)
+        detail_hc, cands_hc = self._batch_state(self.batch_hc)
+        detail_gc, cands_gc = self._batch_state(self.batch_gc)
+        legacy_groups = self.client.get(f"/api/tasks/{self.task}/title-duplicate-reviews?view=all").json()["groups"]
         out = _run_node(
-            "const groups=" + groups_json + ";\n" +
-            "const records=" + records_json + ";\n" +
+            "const groupsHC=" + json.dumps(cands_hc, ensure_ascii=False) + ";\n" +
+            "const recordsHC=" + json.dumps(detail_hc["records"], ensure_ascii=False) + ";\n" +
+            "const countsHC=" + json.dumps(detail_hc["review_counts"], ensure_ascii=False) + ";\n" +
+            "const groupsGC=" + json.dumps(cands_gc, ensure_ascii=False) + ";\n" +
+            "const recordsGC=" + json.dumps(detail_gc["records"], ensure_ascii=False) + ";\n" +
+            "const countsGC=" + json.dumps(detail_gc["review_counts"], ensure_ascii=False) + ";\n" +
+            "const legacy=" + json.dumps(legacy_groups, ensure_ascii=False) + ";\n" +
             r"""
 const fs=require('fs'),path=require('path');
 const src=fs.readFileSync(path.join(process.cwd(),'custom_frontend','unified_import_workspace.js'),'utf8');
 const pick=(re,name)=>{const m=src.match(re);if(!m){console.log('FAIL 提取失败: '+name);process.exit(1);}return m[0];};
 const idDecl=pick(/const id=item=>[^\n]*/,'id');
-const badgeSrc=pick(/function completionBadge\(item\)\{[\s\S]*?\}/,'completionBadge');
+const badgeSrc=pick(/function completionBadge\(item\)\{[^\n]*\}/,'completionBadge');
 const catSrc=pick(/function category\(item\)\{[^\n]*\}/,'category');
 const itemsSrc=pick(/function items\(\)\{[^\n]*\}/,'items');
+const readySrc=pick(/function readyCount\(\)\{[^\n]*\}/,'readyCount');
 const M=require(path.join(process.cwd(),'custom_frontend','import_review_model.js'));
 const deferred=()=>new Set();
-const factory=new Function('groups','legacy','records','M','deferred',
-  '"use strict";'+idDecl+badgeSrc+catSrc+itemsSrc+'return {id,completionBadge,category,items};');
+const factory=new Function('groups','legacy','records','batch','M','deferred',
+  '"use strict";'+idDecl+badgeSrc+catSrc+itemsSrc+readySrc+'return {id,completionBadge,category,items,readyCount};');
 let fail=0;const check=(n,ok)=>{if(!ok)fail++;console.log((ok?'OK  ':'FAIL')+' '+n);};
-// 构造补充形状：空成员已决组、legacy 已决组（staged/active 两种）。
-const groupsAll=[...groups,
- {review_id:'ec',kind:'title',status:'not_duplicate',members:[]},
- {review_id:'lg-staged',legacy:true,status:'not_duplicate',members:[{ref_type:'record',ref_id:'lx1',record:{state:'staged'}}]},
- {review_id:'lg-active',legacy:true,status:'duplicate',members:[{ref_type:'active',ref_id:'la1'}]}];
-const legacyAll=groupsAll.filter(g=>g.legacy);
-const api=factory(groupsAll.filter(g=>!g.legacy),legacyAll,records,M,deferred);
-const byId={};for(const g of groupsAll)byId[g.review_id]=g;
-const all=api.items();
-const find=id=>all.find(x=>x.review_id===id);
-check('items() 包含已启用候选组 gc',!!find('gc'));
-check('items() 包含已决未启用候选组 hc(评审指其曾被过滤)',!!find('hc'));
-check('items() 包含空成员已决组 ec',!!find('ec'));
-check('items() 包含 legacy 组',!!find('lg-staged')&&!!find('lg-active'));
-check('category(gc)=completed',api.category(byId.gc)==='completed');
-check('category(hc)=completed(已决未启用组进入已完成分类)',api.category(byId.hc)==='completed');
-check('category(ec)=completed',api.category(byId.ec)==='completed');
-check('badge(gc)=已启用',api.completionBadge(byId.gc)==='已启用');
-check('badge(hc)=已核验待启用',api.completionBadge(byId.hc)==='已核验待启用');
-check('badge(ec)=已核验待启用(空成员保守)',api.completionBadge(byId.ec)==='已核验待启用');
-check('badge(legacy staged)=已核验待启用',api.completionBadge(byId['lg-staged'])==='已核验待启用');
-check('badge(legacy active)=已启用',api.completionBadge(byId['lg-active'])==='已启用');
-// 已决组成员记录不得再以单条形态出现（去双显）。
-const memberIds=new Set(['ga','gb','ha','hb']);
-const dup=all.filter(x=>!x.members&&memberIds.has(x.record_id));
-check('已决组成员不再以单条形态重复出现',dup.length===0);
-// 已决组只出现在 completed，不进 ready。
-const readyGroups=all.filter(x=>x.members&&['gc','hc'].includes(x.review_id)&&api.category(x)!=='completed');
-check('已决组不进入 ready 分类',readyGroups.length===0);
+
+// —— hc 现场（已决、成员仍 staged、后端 ready=1）——
+const hc=factory(groupsHC,[],recordsHC,{review_counts:countsHC},M,deferred);
+const hcGroups=groupsHC.filter(g=>['duplicate','not_duplicate'].includes(g.status));
+const hcGroup=hcGroups[0];
+const hcStagedIds=hcGroup.members.filter(m=>m.ref_type==='record').map(m=>m.ref_id);
+check('hc(已决含staged成员)不以组形态进入 items()',!hc.items().some(x=>x.members&&x.review_id===hcGroup.review_id));
+const hcReadyRecords=hc.items().filter(x=>!x.members&&M.reason(x)==='ready');
+check('hc 的 staged 成员记录以 ready 记录形态可见(待启用页签)',hcReadyRecords.length===hcStagedIds.length&&hcReadyRecords.length>0);
+check('hc ready 记录 category=ready(待启用页签可数)',hcReadyRecords.every(x=>hc.category(x)==='ready'));
+check('hc readyCount()=后端 review_counts.ready(页签=按钮=实际可启用)',hc.readyCount()===countsHC.ready&&hc.readyCount()===1);
+check('hc readyCount()=本地 ready 记录数(同源)',hc.readyCount()===recordsHC.filter(r=>M.reason(r)==='ready').length);
+
+// —— gc 现场（已决并启用、成员全 active）——
+const gc=factory(groupsGC,[],recordsGC,{review_counts:countsGC},M,deferred);
+const gcGroup=groupsGC.filter(g=>['duplicate','not_duplicate'].includes(g.status))[0];
+check('gc(已决全active)以组形态进入 items()',gc.items().some(x=>x.members&&x.review_id===gcGroup.review_id));
+check('gc category=completed',gc.category(gcGroup)==='completed');
+check('gc badge=已启用',gc.completionBadge(gcGroup)==='已启用');
+const gcMemberIds=new Set(gcGroup.members.filter(m=>m.ref_type==='record').map(m=>m.ref_id));
+check('gc 成员记录不以单条形态双显',!gc.items().some(x=>!x.members&&gcMemberIds.has(x.record_id)));
+check('gc readyCount()=后端 ready=0(已无可启用)',gc.readyCount()===countsGC.ready&&gc.readyCount()===0);
+
+// —— legacy 现场（真实形状：成员只有 zotero_key 等 RIS 字段）——
+// 与 I.open 加载器同款变换：prior.all.map(g=>({...g,legacy:true}))。
+const legacyLoaded=legacy.map(g=>({...g,legacy:true}));
+const lg=factory([],legacyLoaded,[],{review_counts:{}},M,deferred);
+const lgGroup=legacyLoaded.filter(g=>['duplicate','not_duplicate'].includes(g.status))[0];
+check('legacy 已决组进入 items()',lg.items().some(x=>x.members&&x.review_id===lgGroup.review_id));
+check('legacy category=completed',lg.category(lgGroup)==='completed');
+check('legacy badge=已核验(无启用环节，不得虚构待启用/已启用)',lg.completionBadge(lgGroup)==='已核验');
 process.exit(fail?1:0);
 """)
         self.assertNotIn("FAIL", out)

@@ -360,6 +360,18 @@
     "Geprüft, Aktivierung ausstehend",
     "Проверено, чека активирање",
     "검토 완료, 활성화 대기 중"
+  ],
+  [
+    "本次将启用 {0} 条已核验记录。",
+    "This activation will enable {0} reviewed record(s).",
+    "Cette activation activera {0} notice(s) vérifiée(s).",
+    "Эта активация задействует {0} проверенных записей.",
+    "Esta activación habilitará {0} registro(s) revisado(s).",
+    "今回の有効化で {0} 件の確認済みレコードを有効化します。",
+    "Esta ativação habilitará {0} registro(s) revisado(s).",
+    "Diese Aktivierung aktiviert {0} geprüfte Datensätze.",
+    "Ова активација ће омогућити {0} проверених записа.",
+    "이번 활성화로 {0}개의 검토 완료 기록이 활성화됩니다."
   ]
 ]);RFLang.register([
   [

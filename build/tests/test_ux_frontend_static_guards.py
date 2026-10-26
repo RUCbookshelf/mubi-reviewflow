@@ -219,10 +219,14 @@ class ImportReviewLabelTests(unittest.TestCase):
         self.assertEqual(enabled[1], "Already active")
         pending = _require_row(self.review_locale, "已核验待启用", "import_review_locale.js")
         self.assertEqual(pending[1], "Reviewed, pending activation")
+        # r4：legacy 已决组徽标「已核验」（refined locale 已注册该键）。
+        refined = _read(FRONTEND / "import_review_refined_locale.js")
+        self.assertIsNotNone(_find_row(refined, "已核验"),
+                             "「已核验」（legacy 已决组徽标）必须已有十语言注册")
 
     def test_completed_tab_renders_state_badge(self):
-        self.assertIn("function completionBadge(item){/* 高4（评审修正）：空成员数组无从证明已启用，保守标“已核验待启用”",
-                      self.workspace, "completionBadge 必须保留（空成员保守语义注释开头）")
+        self.assertIn("if(item.legacy)return '已核验';", self.workspace,
+                      "legacy 组（真实成员只有 zotero_key 等 RIS 字段，无 ref_type/record，且无启用环节）必须标「已核验」，不得虚构启用语义")
         self.assertIn("item.members.length>0&&item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'已启用':'已核验待启用'",
                       self.workspace,
                       "徽标按成员实际状态计算；空 members 不得因 [].every 恒真判为已启用")
@@ -232,10 +236,31 @@ class ImportReviewLabelTests(unittest.TestCase):
         self.assertIn("if(category(item)==='completed'){const state=completionBadge(item);button.append(n('span',state,{class:'badge'",
                       self.workspace, "queue 队列项应在已完成分类调用 completionBadge 渲染徽标")
 
-    def test_decided_groups_enter_completed_items(self):
-        self.assertIn("const visibleGroups=groups,grouped=new Set(visibleGroups.filter(g=>['duplicate','not_duplicate'].includes(g.status))",
+    def test_decided_groups_and_ready_records_visibility(self):
+        """高4（r4）：计数一致性 + 记录可见（上轮回归修复的静态钉子）。
+
+        已决候选组仅当成员全部 active 时以组形态进入列表（成员经 grouped 去双显）；
+        仍含暂存成员的已决组不再以组形态呈现，其成员记录保留在 records 流——
+        它们正是待启用记录（后端 review_counts.ready 与 /activate 同源），必须可见。
+        """
+        self.assertIn("const decidedActive=g=>['duplicate','not_duplicate'].includes(g.status)&&(g.members||[]).length>0&&g.members.every(m=>m.ref_type==='active'||m.record?.state==='active')",
+                      self.workspace, "已决组须以成员全 active 判定才能以组形态进入已完成栏")
+        self.assertIn("visibleGroups=groups.filter(g=>!['duplicate','not_duplicate'].includes(g.status)||decidedActive(g))",
                       self.workspace,
-                      "已决候选组（含成员未全部启用的）必须进入 items()，否则 F29 的“已完成一栏已决未启用候选”无处渲染徽标")
+                      "仍含暂存成员的已决组不得以组形态吞掉成员记录（r3 回归：待启用记录不可见、页签计数漏算）")
+        self.assertIn("records.filter(r=>M.reason(r)!=='duplicate'&&!grouped.has(r.record_id))",
+                      self.workspace, "records 流仅剔除全 active 已决组的成员，待启用记录必须保留")
+
+    def test_ready_count_single_source(self):
+        """高4（r4）：页签计数与启用按钮计数同一来源，两处数字恒等。"""
+        self.assertIn("function readyCount(){return Number(batch?.review_counts?.ready??records.filter(r=>M.reason(r)==='ready').length);}",
+                      self.workspace, "readyCount 单一来源：后端 review_counts.ready 优先（与 /activate 同源），本地推导兜底")
+        self.assertIn("counts.ready=readyCount();", self.workspace,
+                      "「待启用」页签计数必须用 readyCount()（上轮按 items() 计数漏掉已决未启用组成员，页签 0 ≠ 按钮 1）")
+        self.assertIn("activate.append(l('span',' ('+readyCount()+')'));", self.workspace,
+                      "启用按钮计数必须用 readyCount()")
+        self.assertIn("const count=readyCount();", self.workspace,
+                      "启用确认弹窗计数必须用 readyCount()（与按钮同数）")
 
     def test_batch_dropdown_includes_filenames(self):
         self.assertIn("files.join(' · ')", self.workspace,
