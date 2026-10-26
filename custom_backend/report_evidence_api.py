@@ -247,57 +247,26 @@ def _payload_pair_bytes(before_payload, after_payload):
             + len(json.dumps(after_payload, ensure_ascii=False).encode()))
 
 
-def _rewrite_legacy_rows(c, rows, payload_pairs, *, fold_to_one):
-    """只改写 before_json/after_json；fold_to_one 时删除同批多余的自有事件行。
+def _rewrite_legacy_rows(c, rows, payload_pairs):
+    """只改写 before_json/after_json，不删除任何行、不动其余任何列。
 
-    携带 origin 身份（origin_event_id 非空）的导入事件行绝不会被删除：
-    origin_* 九列与 origin_sha256 一律不动，旧导出包重导入保持 duplicate 语义。
-    删除语句本身再带 origin_event_id IS NULL 守卫，与批次键中的 origin 列互为双保险。
+    契约④：批次内逐行保留（自有行与携带 origin 身份的导入行同径处理），
+    事件条数、唯一主体计数与每日活动圆点不因迁移失真；origin_* 九列与
+    origin_sha256 一律不动，旧导出包重导入保持 duplicate 语义。
     """
     for row, (payload_before, payload_after) in zip(rows, payload_pairs):
         c.execute("UPDATE trace_events SET before_json=?, after_json=? WHERE sequence=?",
                   (json.dumps(payload_before, ensure_ascii=False, sort_keys=True),
                    json.dumps(payload_after, ensure_ascii=False, sort_keys=True),
                    row["sequence"]))
-    if fold_to_one:
-        for row in rows[len(payload_pairs):]:
-            c.execute("DELETE FROM trace_events WHERE sequence=? AND origin_event_id IS NULL",
-                      (row["sequence"],))
-
-
-def _merged_batch_payloads(label, redacted_before, redacted_after, actor):
-    """同一次保存全部主体的增量合并为单一载荷（changes 内为各主体条目并集 + 映射增量）。
-
-    同一条目可同时属于多个主体（关系的 a 与 b 各算一个受影响主体）：按 canonical
-    JSON 去重后并入，避免一次保存的关系条目在合并载荷里按主体数重复出现。
-    """
-    deltas, map_before, map_after = _workspace_deltas(redacted_before, redacted_after, actor)
-    subjects = sorted(deltas)
-
-    def merged_field(field, side_index):
-        seen = set()
-        merged = []
-        for subject in subjects:
-            for entry in deltas[subject][side_index][field]:
-                key = json.dumps(entry, ensure_ascii=False, sort_keys=True)
-                if key not in seen:
-                    seen.add(key)
-                    merged.append(entry)
-        return merged
-
-    changes_before = {"links": merged_field("links", 0), "drafts": merged_field("drafts", 0)}
-    changes_after = {"links": merged_field("links", 1), "drafts": merged_field("drafts", 1)}
-    changes_before.update(map_before)
-    changes_after.update(map_after)
-    before_payload = {"value": label, "changes": changes_before}
-    after_payload = {"value": label, "changes": changes_after}
-    if subjects:
-        after_payload["affected_subjects"] = subjects
-    return before_payload, after_payload
 
 
 def _fold_one_run(c, run, budget):
-    """折叠一个保存批次；返回 (状态, 删除行数)：folded / foreign（无关，原样保留）/ malformed（跳过）。"""
+    """折叠一个保存批次；返回 (状态, 删除行数，恒 0)：folded / foreign（无关，原样保留）/ malformed（跳过）。
+
+    批次内逐行改写为各自主体的增量（不合并为单主体事件、不删除行）：唯一主体
+    计数/修改主体计数/每日圆点与迁移前一致（契约④只允许载荷压缩，不允许计数失真）。
+    """
     rows = run["rows"]
     first = rows[0]
     try:
@@ -322,7 +291,6 @@ def _fold_one_run(c, run, budget):
     redacted = {side: _redact_workspace(payload["workspace"], actor)
                 for side, kind, payload in (("before", kind_before, before_payload),
                                             ("after", kind_after, after_payload)) if kind == "full"}
-    native = first["action"] == "report_evidence_changed" and first["origin_event_id"] is None
     budget_key = (first["task_id"], actor)
     used = budget.get(budget_key, 0)
 
@@ -331,18 +299,8 @@ def _fold_one_run(c, run, budget):
         return size > TRACE_EVENT_BYTES_LIMIT or used + size > TRACE_SAVE_BYTES_LIMIT, size
 
     if kind_before == "full" and kind_after == "full":
-        if native:
-            # 自有事件：整批折叠为一条增量事件；超预算（单条或该成员累计）降级为摘要+哈希。
-            payload_before, payload_after = _merged_batch_payloads(label, redacted["before"], redacted["after"], actor)
-            exceeded, size = over_budget(payload_before, payload_after)
-            if exceeded:
-                payload_before = _legacy_snapshot_digest(label, redacted["before"])
-                payload_after = _legacy_snapshot_digest(label, redacted["after"])
-                size = _payload_pair_bytes(payload_before, payload_after)
-            budget[budget_key] = used + size
-            _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)], fold_to_one=True)
-            return "folded", len(rows) - 1
-        # 导入事件：origin 身份行不可删除，逐行只保留各自主体的增量（首批附映射增量）。
+        # 逐行只保留各自主体的增量（首批附映射增量），自有与导入行同径处理；
+        # 超预算（单条或该成员累计）降级为摘要+哈希。批内不合并、不删除。
         deltas, map_before, map_after = _workspace_deltas(redacted["before"], redacted["after"], actor)
         per_row = []
         row_used = used
@@ -369,18 +327,16 @@ def _fold_one_run(c, run, budget):
             row_used += size
             per_row.append((payload_before, payload_after))
         budget[budget_key] = row_used
-        _rewrite_legacy_rows(c, rows, per_row, fold_to_one=False)
+        _rewrite_legacy_rows(c, rows, per_row)
         return "folded", 0
     # 混合形态（一侧全量、一侧已是旧摘要）：摘要侧原样保留其 workspace_sha256 与
-    # links/findings 计数（不得重算为空摘要），全量侧脱敏后降级为摘要。
+    # links/findings 计数（不得重算为空摘要），全量侧脱敏后降级为摘要。同一载荷
+    # 逐行写入批次内每一行（条数与主体保持不变）。
     payload_before = before_payload if kind_before == "digest" else _legacy_snapshot_digest(label, redacted["before"])
     payload_after = after_payload if kind_after == "digest" else _legacy_snapshot_digest(label, redacted["after"])
     size = _payload_pair_bytes(payload_before, payload_after)
-    budget[budget_key] = used + size
-    if native:
-        _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)], fold_to_one=True)
-        return "folded", len(rows) - 1
-    _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)] * len(rows), fold_to_one=False)
+    budget[budget_key] = used + size * len(rows)
+    _rewrite_legacy_rows(c, rows, [(payload_before, payload_after)] * len(rows))
     return "folded", 0
 
 
@@ -487,14 +443,16 @@ def compact_legacy_trace_events(c):
     """一次性迁移：把 2.1.3 全量快照轨迹事件按保存批次折叠（幂等、带完成标记与迁移前备份）。
 
     旧版每次保存给每个受影响主体写一条内嵌整份工作区快照的 report_evidence_changed
-    事件；同一次保存的多条事件共享相同快照且序号连续，据此识别保存批次并折叠为
-    每批一条增量事件（载荷含 value 标签、changes 增量；单条或该成员累计超出轨迹
-    预算时降级为摘要，含 workspace_sha256 与 links/findings 计数）。混合形态
-    （一侧全量、一侧已是旧摘要）保留摘要侧原有哈希与计数；畸形载荷跳过并写
-    标记事件，任何情况不抛错。迁移只改写/删减 2.1.3 自有事件行的
-    before_json/after_json：origin_* 九列与 origin_sha256 绝对不动，携带 origin
-    身份的导入事件只更新、不删除；不删除 trace_field_lifecycles 与幂等回执表
-    （无 clear_history 语义）。完成标记存在时本函数只做只读检查，不取写锁。
+    事件；同一次保存的多条事件共享相同快照且序号连续，据此识别保存批次并逐行
+    改写为该主体的增量事件（载荷含 value 标签、changes 增量；批次内不合并、
+    不删除行——事件条数、唯一主体计数与每日活动圆点不失真；单条或该成员累计
+    超出轨迹预算时降级为摘要，含 workspace_sha256 与 links/findings 计数）。
+    混合形态（一侧全量、一侧已是旧摘要）保留摘要侧原有哈希与计数；畸形载荷
+    跳过并写标记事件，任何情况不抛错。迁移只改写 2.1.3 快照事件行的
+    before_json/after_json：origin_* 九列与 origin_sha256 绝对不动，任何行
+    （自有或携带 origin 身份的导入事件）都不删除；不删除 trace_field_lifecycles
+    与幂等回执表（无 clear_history 语义）。完成标记存在时本函数只做只读检查，
+    不取写锁。
     """
     try:
         if not _table_exists(c, "trace_events"):

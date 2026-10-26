@@ -281,6 +281,27 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(changed),4)
         self.assertTrue(all(e['stage']=='screen' for e in changed))
 
+    def test_shared_adjudication_and_undo_trace_stages(self):
+        # 回归（G17）：共享裁决 /relations 的 stage 随请求体记录；共享撤销
+        # /relations/undo 复用对应裁决动作随共享撤销栈保存的 previous_stage，
+        # 裁决与撤销事件阶段一致（收窄 screen 时不再被静默过滤）。
+        actor=self.users[0]['user_id']
+        with closing(review_workflow.connect(self.ctx.owner_db)) as c,c:
+            current=research_trace.get_settings(c,self.task,actor)
+            research_trace.update_settings(c,research_trace.TraceContext(self.task,actor,source='api'),
+                                           stages=['screen'],status='recording',operation_id='test-shared-stage',
+                                           expected_version=current['version'])
+        save_body={'expected_revision':0,'operation_id':str(uuid.uuid4()),'state':self.link(self.state()),'label':'Screen save','stage':'screen'}
+        self.assertEqual(self.client.put(self.base,json=save_body,headers=self.auth()).status_code,200)
+        confirm={'expected_revision':0,'actor_id':str(actor),'link_id':'L1','action':'confirm','stage':'screen'}
+        r=self.client.post(self.base+'/relations',json=confirm,headers=self.auth());self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.client.post(self.base+'/relations/undo',json={'expected_revision':1},headers=self.auth()).status_code,200)
+        changed=self.trace_changed_events()
+        labels=[e['after'].get('value') for e in changed]
+        self.assertEqual(labels.count('确认报告关系'),2)  # 裁决按受影响主体 R1/R2 各一条
+        self.assertEqual(labels.count('撤销报告关系裁决'),2)  # 共享撤销同样逐主体留痕
+        self.assertTrue(all(e['stage']=='screen' for e in changed),[e['stage'] for e in changed])
+
     def test_confirm_trace_redacts_other_member_private_text(self):
         # 回归#4 隐私：裁决确认/解除/撤销不把提案人私有依据与位置写入裁决人轨迹，公开导出只含哈希摘要。
         task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
@@ -570,13 +591,14 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(origin_row[1],origin_sha)  # origin_sha256 原样
         self.assertEqual((origin_row[2],origin_row[3]),(origin_event['event_id'],'st-x'))
         self.assertIn('changes',json.loads(origin_row[4]))  # 载荷照常折叠
-        self.assertEqual(remaining,3)  # 三行全部保留（origin 独立成批不参与 fold_to_one）
+        self.assertEqual(remaining,3)  # 三行全部保留（origin 独立成批，批次内不删除任何行）
         self.assertEqual(tuple(meta),(3,0))
 
-    def test_legacy_multi_subject_batch_folds_to_single_event(self):
-        # 回归（评审）：同一次保存影响 2-3 个主体（相同 before/after、连续序号）时，
-        # fold_to_one 路径折叠为 1 条：changes 合并各主体增量、deleted_rows=N-1、
-        # 幸存行保留批次首行序号，trace_field_lifecycles 与 origin 列不受影响。
+    def test_legacy_multi_subject_batch_keeps_per_subject_rows(self):
+        # 回归（契约④）：同一次保存影响 3 个主体（相同 before/after、连续序号）时，
+        # 批内逐行改写为各自主体的增量、不合并为单主体事件、不删除行——事件条数、
+        # 唯一主体计数/修改主体计数与每日圆点与迁移前一致（唯一被允许的变化是载荷
+        # 压缩）。trace_field_lifecycles 与 origin 列不受影响。
         actor=str(self.users[0]['user_id'])
         before={'value':'Batch save','workspace':{'links':[],'drafts':[{'id':'d1','key':'R1','finding':'Base'}]}}
         after={'value':'Batch save','workspace':{'links':[
@@ -589,22 +611,36 @@ class EvidenceTests(unittest.TestCase):
             c.execute("INSERT INTO trace_field_lifecycles (task_id,actor_id,legacy_field_id,field_uuid,definition_json,created_at) "
                       "VALUES(?,?,?,?,?,?)",(self.task,actor,'f1','uuid-f1','{}','2026-01-01T00:00:00Z'))
             first_seq=c.execute("SELECT MIN(sequence) FROM trace_events WHERE action='report_evidence_changed'").fetchone()[0]
+            before_summary=research_trace.summary(c,self.task,actor)
             c.commit()
         with closing(connect(self.ctx.owner_db)) as c:
-            rows=c.execute("SELECT sequence,after_json FROM trace_events WHERE action='report_evidence_changed'").fetchall()
+            rows=c.execute("SELECT sequence,subject_id,after_json FROM trace_events WHERE action='report_evidence_changed' "
+                           "ORDER BY sequence").fetchall()
             meta=c.execute("SELECT folded_runs,deleted_rows,skipped_events FROM report_evidence_fold_meta WHERE singleton=1").fetchone()
             lifecycle=c.execute("SELECT COUNT(*) FROM trace_field_lifecycles").fetchone()[0]
             origins=c.execute("SELECT COUNT(*) FROM trace_events WHERE origin_event_id IS NOT NULL").fetchone()[0]
-        self.assertEqual(len(rows),1)  # 一次保存的三条主体事件折叠为一条
-        self.assertEqual(tuple(meta),(1,2,0))  # 折叠 1 批、删除 2 行
-        self.assertEqual(rows[0][0],first_seq)  # 幸存行保留批次首行序号（外层字段不动）
+            after_summary=research_trace.summary(c,self.task,actor)
+        self.assertEqual(len(rows),3)  # 三条主体事件全部保留，不合并为单主体事件
+        self.assertEqual([r[1] for r in rows],['R1','R2','R3'])  # 各行主体保持原位
+        self.assertEqual(tuple(meta),(1,0,0))  # 折叠 1 批、不删除任何行
+        self.assertEqual(rows[0][0],first_seq)  # 各行序号不变（外层字段不动）
         self.assertEqual(origins,0)  # 未产生任何 origin 身份行
         self.assertEqual(lifecycle,1)  # 无 clear_history 语义
-        payload=json.loads(rows[0][1])
-        self.assertEqual(payload['affected_subjects'],['R1','R2','R3'])
-        changes=payload['changes']
-        self.assertEqual([d['id'] for d in changes['drafts']],['d2'])  # R1 的新增条目（d1 未变被抵消）
-        self.assertEqual([l['id'] for l in changes['links']],['L1'])  # R2/R3 的新关系并入同一载荷
+        # 契约④核心断言：summary 主体计数与每日圆点迁移前后一致，只允许 event_count 不变或变小。
+        self.assertEqual(after_summary['unique_subject_count'],before_summary['unique_subject_count'])
+        self.assertEqual(after_summary['modified_subject_count'],before_summary['modified_subject_count'])
+        self.assertEqual(after_summary['event_count'],before_summary['event_count'])
+        self.assertEqual([(d['date'],d['unique_subject_count']) for d in after_summary['daily']],
+                         [(d['date'],d['unique_subject_count']) for d in before_summary['daily']])
+        by_subject={r[1]:json.loads(r[2]) for r in rows}
+        for subject in ('R1','R2','R3'):
+            self.assertNotIn('affected_subjects',by_subject[subject])  # 不再产出合并载荷字段
+            self.assertIn('changes',by_subject[subject])
+        self.assertEqual(by_subject['R1']['changes']['drafts'][0]['id'],'d2')  # R1 只带自己的新增草稿（d1 未变被抵消）
+        self.assertEqual(by_subject['R1']['changes']['links'],[])
+        for subject in ('R2','R3'):  # 关系的 a 与 b 各算一个受影响主体，增量同型分置两行
+            self.assertEqual([l['id'] for l in by_subject[subject]['changes']['links']],['L1'])
+            self.assertEqual(by_subject[subject]['changes']['drafts'],[])
 
     def test_legacy_mixed_digest_side_preserved(self):
         # 回归（M2）：一侧全量、一侧已是旧摘要的混合形态折叠时，摘要侧原有
