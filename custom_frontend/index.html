@@ -5043,7 +5043,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261012-workflow6"></script>
-<script src="./interface_locale.js?v=20261013-disclosure5"></script>
+<script src="./interface_locale.js?v=20261026-ux-errors1"></script>
 <script src="./research_trace_locale.js?v=20261013-title-search1"></script>
 <script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
 <script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
@@ -5153,7 +5153,23 @@ async function apiRequest(path, opts = {}) {
     const payload = data?.detail;
     if (payload) {
       if (Array.isArray(payload)) {  /* FastAPI 422 校验错误数组 */
-        detail = payload.map(d => (d.loc ? d.loc.filter(x => x !== 'body').join('.') + '：' : '') + (d.msg || '')).join('；');
+        /* 注册/登录的账号与密码长度校验由 Pydantic 先行拦截（CredentialsIn，
+           main.py 的 username 3~64 / password 8~128 Field 约束），返回英文
+           422 文案；此处仅对 /api/auth/ 路径按 type（string_too_short /
+           string_too_long）与 loc（username/password）映射到 interface_
+           locale.js 已注册词条（与 auth.py 的中文校验消息同源同文案），
+           使中文界面不再显示英文；其余 422（含非 auth 路径如同协作邀请的
+           username 字段）维持原有 loc+msg 拼接，列后续工作。 */
+        const lengthRules = path.startsWith('/api/auth/') ? {
+          username: '用户名须为 3~64 个字符，且只含字母、数字、汉字与 . _ - @。',
+          password: '密码长度须为 8~128 个字符。'
+        } : null;
+        detail = payload.map(d => {
+          const field = d.loc ? d.loc.filter(x => x !== 'body').join('.') : '';
+          if (lengthRules && lengthRules[field] && (d.type === 'string_too_short' || d.type === 'string_too_long'))
+            return T(lengthRules[field]);
+          return (d.loc ? field + '：' : '') + (d.msg || '');
+        }).join('；');
       } else if (typeof payload === 'object' && payload.message) {
         detail = [payload.message, ...(payload.reasons || []).map(reason => reason.detail)].filter(Boolean).join('\n');
       } else {
