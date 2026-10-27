@@ -625,6 +625,26 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         ai_keys.delete_shared_key(info.task_id, data_root)
         return {"enabled": False, "provider_name": None}
 
+    @app.get("/api/tasks/{task_id}/ai-suggest/status")
+    def get_ai_status(task_id: str, user: dict = Depends(require_user)) -> dict:
+        """参与者可读的任务 AI 状态（B7 审查修复：成员在 personal 模式下也需知道任务已启用）。
+
+        只暴露非敏感配置（B4 §0 R2 披露条款）：开关、钥匙模式、白名单子集、共享钥匙
+        存在性与 provider 名、字段标签表；任何钥匙元数据/明文一概不出。
+        """
+        info = task_lookup(task_id)
+        _context(task_id, user)
+        settings = _load_settings(info)
+        shared = ai_keys.load_shared_key(info.task_id, data_root)
+        return {
+            "enabled": bool(settings.get("enabled")),
+            "key_mode": settings.get("key_mode") or "personal",
+            "allowed_field_ids": sorted(settings.get("allowed_field_ids") or []),
+            "field_labels": {fid: FIELD_WHITELIST[fid]["label"] for fid in FIELD_WHITELIST},
+            "shared_available": shared is not None,
+            "shared_provider_name": shared.get("provider") if shared else None,
+        }
+
     # -- 任务 AI 设置（owner；expected_version 乐观锁，B4 §2） ----------------
 
     @app.get("/api/tasks/{task_id}/ai-suggest/settings")

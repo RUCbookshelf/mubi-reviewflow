@@ -19,7 +19,8 @@
  *     「任务 AI 设置（owner）/成员偏好/审计与报告」卡；字段映射（Q4 一期）存
  *     localStorage（per task+user，键 rfAiFieldMap.{task}.{user}）；
  *   - R1 无 Key 零影响：判定信息一次拉取（任务 settings GET；成员 403 时回落
- *     shared-key GET + 个人 key GET + 本人 preferences GET），失败静默退出；
+ *     shared-key 改为 GET status（参与者可读，B7 审查修复：personal 模式成员可见）+ 个人 key GET
+ *     + 本人 preferences GET），失败静默退出；
  *     任务未启用或无可用钥匙时编码页零渲染（判定后不再发起任何请求）；
  *   - P1 身份留痕：每条建议卡带 provider · model · prompt_version 角标；
  *     共享模式常驻披露行「本任务由负责人启用了 AI（provider），请求以任务名义发出」。
@@ -241,8 +242,9 @@
     /* =====================================================================
      * 四、判定（R1：判定信息一次拉取；失败静默退出）
      *   owner：GET ai-suggest/settings（200 即 owner，enabled 决定是否启用）
-     *   成员：settings 403/404 → GET shared-key（enabled=共享钥匙已配置 视为可用），
-     *         否则视为未启用（零渲染零请求）。B7_brief §一。
+     *   成员：settings 403/404 → GET ai-suggest/status（参与者可读：开关/模式/白名单/
+     *         共享钥匙存在性——B7 审查修复，personal 模式下配了个人钥匙的成员可见），
+     *         失败视为未启用（零渲染零请求）。
      * ===================================================================== */
     function inactiveDetection(scope, extra) {
       return Object.assign({ scope, isOwner: false, active: false, keyAvailable: false, prefs: null }, extra || {});
@@ -261,7 +263,7 @@
           isOwner = true;                                   // 仅 owner 可读（B6 端点）
         } catch (e) {
           if (e && (e.status === 403 || e.status === 404)) {
-            try { sharedMeta = await api(base + '/ai-suggest/shared-key'); }
+            try { sharedMeta = await api(base + '/ai-suggest/status'); }
             catch (e2) { return inactiveDetection(scope); } // 失败静默：未启用
           } else {
             return inactiveDetection(scope);                // 网络等错误：静默退出
@@ -278,7 +280,7 @@
         }
         const sharedAvailable = isOwner
           ? (taskSettings.key_mode === 'shared' && taskSettings.shared_key_enabled === true)
-          : (sharedMeta && sharedMeta.enabled === true);
+          : !!(sharedMeta && sharedMeta.key_mode === 'shared' && sharedMeta.shared_available === true);
         const personalConfigured = !!(personal && personal.configured);
         const personalEffective = !prefs || prefs.use_personal_key === undefined ? personalConfigured
           : (prefs.use_personal_key !== false && personalConfigured);
@@ -286,11 +288,14 @@
           scope, isOwner, active: enabled,
           settings: isOwner ? taskSettings : null,
           settingsVersion: isOwner ? (taskSettings.version ?? 0) : null,
-          allowedFields: isOwner ? (taskSettings.allowed_field_ids || []) : null,
-          fieldLabels: (isOwner && taskSettings.field_whitelist) || null,
+          allowedFields: isOwner ? (taskSettings.allowed_field_ids || [])
+                                 : ((sharedMeta && sharedMeta.allowed_field_ids) || []),
+          fieldLabels: (isOwner && taskSettings.field_whitelist)
+                       || (sharedMeta && sharedMeta.field_labels) || null,
           contextPrompt: isOwner ? (taskSettings.context_prompt || '') : '',
           sharedAvailable: !!sharedAvailable,
-          sharedProviderName: isOwner ? (taskSettings.shared_provider_name || null) : (sharedMeta ? sharedMeta.provider_name : null),
+          sharedProviderName: isOwner ? (taskSettings.shared_provider_name || null)
+                                       : (sharedMeta ? sharedMeta.shared_provider_name : null),
           personal, prefs,
           keyAvailable: personalConfigured || !!sharedAvailable,
           sharedEffective: enabled && !personalEffective && !!sharedAvailable

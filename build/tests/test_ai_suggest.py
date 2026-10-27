@@ -201,6 +201,36 @@ class AISuggestTests(unittest.TestCase):
 
     # -- 任务设置 / 偏好 -------------------------------------------------------
 
+    def test_status_participant_readable_personal_mode(self):
+        """B7 审查修复：成员可读任务 AI 状态——personal 模式下成员不被误判为未启用。"""
+        self.invite_member()
+        r = self.client.get(f"{self.base}/ai-suggest/status", headers=self.auth(1))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["enabled"])
+        # owner 启用（personal 模式）后：成员读到 开关/模式/白名单子集/标签，settings 仍 owner-only。
+        self.enable_task(key_mode="personal", field_ids=["study_design", "sample_size"])
+        r = self.client.get(f"{self.base}/ai-suggest/status", headers=self.auth(1))
+        body = r.json()
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["key_mode"], "personal")
+        self.assertEqual(body["allowed_field_ids"], ["sample_size", "study_design"])
+        self.assertIn("study_design", body["field_labels"])
+        self.assertFalse(body["shared_available"])
+        self.assertNotIn("key", body)  # 状态端点绝无钥匙材料
+        self.assertEqual(
+            self.client.get(f"{self.base}/ai-suggest/settings", headers=self.auth(1)).status_code, 403)
+        # shared 模式：成员读到共享钥匙存在性与 provider 名（披露条款），仍无任何明文。
+        self.client.put(f"{self.base}/ai-suggest/shared-key", json={
+            "provider": "deepseek", "key": FAKE_KEY}, headers=self.auth(0))
+        settings = self.client.get(f"{self.base}/ai-suggest/settings", headers=self.auth(0)).json()
+        self.client.put(f"{self.base}/ai-suggest/settings", json={
+            "expected_version": settings["version"], "enabled": True, "key_mode": "shared",
+            "allowed_field_ids": ["study_design"], "context_prompt": ""}, headers=self.auth(0))
+        body = self.client.get(f"{self.base}/ai-suggest/status", headers=self.auth(1)).json()
+        self.assertTrue(body["shared_available"])
+        self.assertEqual(body["shared_provider_name"], "deepseek")
+        self.assertNotIn(FAKE_KEY, json.dumps(body))
+
     def test_settings_owner_only_and_optimistic_lock(self):
         self.invite_member()
         r = self.client.get(f"{self.base}/ai-suggest/settings", headers=self.auth(1))
