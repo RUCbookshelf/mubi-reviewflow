@@ -288,6 +288,31 @@ class StaticGuardTests(unittest.TestCase):
             row = next(row for row in rows if message in row)
             self.assertEqual(len(row), 10)
 
+    def test_locale_cache_token_matches_content(self):
+        """缓存令牌守护（评审反馈 r6 第二轮；同类遗漏先例见提交 89a73b1）：
+        interface_locale.js 内容与 index.html 的 ?v= 令牌必须成对变更。
+
+        launcher 对非 HTML 静态资源下发 Cache-Control: public, max-age=86400
+        且无构建期改写——只改词典不上调令牌时，升级用户最长 24h 内命中旧
+        词典，新词条（本轮 #28/#30/#31/#32/#34）全部不生效。本守护把
+        （令牌, 词典内容 sha256）钉成一对：任一侧单独变更即红，迫使后续
+        任何词典改动同步上调令牌并更新本处 PINNED。"""
+        import hashlib
+        pinned_token = '20261027-r6-undo-collab1'
+        pinned_sha256 = 'b7db672d1fb77624df8bea833658ac5315afb0e71a788ca675e2862b0efbc069'
+        html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
+        match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
+        self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')
+        token = match.group(1)
+        digest = hashlib.sha256(
+            (ROOT / 'custom_frontend' / 'interface_locale.js').read_bytes()).hexdigest()
+        self.assertEqual(token, pinned_token,
+                         'interface_locale.js 引用令牌与守护钉住的令牌不一致：'
+                         '词典内容变更必须同步上调 index.html 的 ?v= 并更新 PINNED')
+        self.assertEqual(digest, pinned_sha256,
+                         'interface_locale.js 内容已变更但（令牌, 内容）钉对未更新：'
+                         '请上调 index.html 的 ?v= 令牌并同步更新本测试的 PINNED 元组')
+
 
 # ---------------------------------------------------------------------------
 # 【is_participant 口径】单元级（#36）
