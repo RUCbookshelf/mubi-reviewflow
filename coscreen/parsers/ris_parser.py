@@ -19,9 +19,13 @@ from coscreen.models import Article, compute_content_hash
 from coscreen.normalize import (
     build_zotero_key,
     extract_year,
+    first_author_given_names,
+    first_author_surname,
+    given_names_compatible,
     normalize_authors,
     normalize_doi,
     normalize_title,
+    years_compatible,
 )
 from coscreen.parsers.csv_parser import (
     ParseError,
@@ -213,7 +217,10 @@ def parse_ris(path: str | Path) -> list[Article]:
         raise ParseError(f"RIS 解析失败（{p.name}）: 未找到任何记录（缺少 TY/ER 标签）")
 
     articles: list[Article] = []
-    seen_keys: dict[str, str] = {}
+    # 同文件来源键身份（复审 B1/B7）：content_hash 只含 doi|title，同题异
+    # 作者不触发降级——记录 (content_hash, 姓氏, 名, 年份)，作者/年份能
+    # 证明不同才降级，缺一侧按元数据补全口径交给去重层裁定
+    seen_keys: dict[str, tuple[str, str, str, object]] = {}
     record_id_occurrences: dict[str, int] = {}
     for record_no, record in enumerate(records, start=1):
         if not isinstance(record, dict):
@@ -242,22 +249,36 @@ def parse_ris(path: str | Path) -> list[Article]:
         # 来源键降级（U2-P2/R6-P3）：AN 在 Zotero 导出里是 archiveLocation
         # 自由文本（可重复、可含 "/" 或超长），ID 是 Zotero 导入时忽略的标签。
         # 非法键（后端 _KEY_RE 不可达）、非全局稳定标识（自由文本/短序号，
-        # 跨文件撞键覆盖）或同文件内同键不同文献时按无 Key 处理走派生键，
-        # 原值保留在 raw 供追溯——绝不静默沿用导致整条覆盖。
+        # 跨文件撞键覆盖）或同文件内同键异文（内容哈希不同，或同题但作者/
+        # 年份可证不同——content_hash 只含 doi|title，同题异作者不会触发，
+        # 复审 B1/B7）时按无 Key 处理走派生键，原值保留在 raw 供追溯——
+        # 绝不静默沿用导致整条覆盖。
         source_key = _first(view, _KEY_KEYS)
         demoted = False
         if source_key:
+            surname = first_author_surname(authors)
+            given = first_author_given_names(authors)
             if not is_legal_source_key(source_key):
                 demoted = True
                 reason = "含非法字符（/、\\ 或超长），经后端接口不可达"
             elif not is_global_stable_identifier(source_key):
                 demoted = True
                 reason = "为自由文本/序号形态（含空白或短纯数字），不是全局稳定标识"
-            elif source_key in seen_keys and seen_keys[source_key] != content_hash:
-                demoted = True
-                reason = "与本文件内另一条文献相同，不是行级唯一标识"
+            elif source_key in seen_keys:
+                prev_hash, prev_surname, prev_given, prev_year = seen_keys[source_key]
+                if prev_hash != content_hash:
+                    demoted = True
+                    reason = "与本文件内另一条文献相同，不是行级唯一标识"
+                elif ((prev_surname and surname and prev_surname != surname)
+                        or (prev_given and given
+                            and not given_names_compatible(prev_given, given))
+                        or not years_compatible(prev_year, year)):
+                    demoted = True
+                    reason = "与本文件内另一条文献同键同题，但作者/年份不同，不是同一文献"
+                # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见身份
+                # 不覆盖——后续同键记录仍与首条比较，不被中间行的缺字段稀释
             else:
-                seen_keys[source_key] = content_hash
+                seen_keys[source_key] = (content_hash, surname, given, year)
         if demoted:
             raw["_demoted_source_key"] = source_key
             record_warnings.append(

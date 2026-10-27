@@ -204,7 +204,9 @@ class KeyMergeStrictTests(unittest.TestCase):
 
     def test_cli_women_men_same_key_both_survive_without_overwrite(self):
         # 复审 #7 实测复现：两条 ID - WM1 的 women(2005)/men(2006) 无 DOI
-        # 曾"精确重复 1"静默覆盖只剩 men 行；现键冲突候选 + 两行共存。
+        # 曾"精确重复 1"静默覆盖只剩 men 行；集成对账（r6-parsers 53a3823
+        # 同文件重复键降级）后：第二条在解析层降级为 auto 键，两条均进入
+        # 筛选并报模糊候选，不再静默合并/覆盖——安全不变量保持。
         with tempfile.TemporaryDirectory(prefix="rf_r6d1_") as tmp:
             ris = Path(tmp) / "wm.ris"
             db = str(Path(tmp) / "wm.db")
@@ -214,8 +216,8 @@ class KeyMergeStrictTests(unittest.TestCase):
             ])
             proc = _run_cli(["import", "--file", str(ris), "--db", db])
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("键冲突候选 1 条", proc.stdout)
-            self.assertIn("键消歧 1 处", proc.stdout)
+            self.assertIn("模糊候选 1 条", proc.stdout)
+            self.assertIn("未自动合并", proc.stdout)
             self.assertIn("进入筛选 2 条", proc.stdout)
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
@@ -402,7 +404,9 @@ class StabilizeMemberOverwriteTests(unittest.TestCase):
             proc = _run_cli(["import", "--file", str(ris), "--db", db])
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("重复标记 2 条", proc.stdout)
-            self.assertIn("键消歧 1 处", proc.stdout)
+            # 集成对账（r6-parsers 53a3823 同文件重复键降级）：SHARED 第二次出现
+            # 在解析层即降级为内容稳定 auto 键，不再走 stabilize 后缀消歧——
+            # 安全不变量不变：4 行全存活、无内容覆盖、重复标记指向各自组友。
             with closing(sqlite3.connect(db)) as conn:
                 rows = dict(conn.execute(
                     "SELECT zotero_key, title FROM articles").fetchall())
@@ -410,13 +414,14 @@ class StabilizeMemberOverwriteTests(unittest.TestCase):
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
             self.assertEqual(len(rows), 4)               # 4 行全部共存
             shared_keys = [k for k in rows if k.startswith("SHARED")]
-            self.assertEqual(len(shared_keys), 2)        # 一个原键 + 一个后缀键
-            suffixed = next(k for k in shared_keys if k != "SHARED")
-            self.assertTrue(suffixed.startswith("SHARED-"))
+            self.assertEqual(len(shared_keys), 1)        # 首个 SHARED 保留原键
             self.assertEqual(rows["SHARED"], "Shared Study One")   # Alpha 内容未被覆盖
-            self.assertEqual(rows[suffixed], "Shared Study Two")   # Gamma 内容保留
+            # 第二个 SHARED（Gamma 侧）被解析层降级为内容稳定 auto 键：
+            demoted = [k for k in rows if k.startswith("auto-")]
+            self.assertEqual(len(demoted), 1)
+            self.assertEqual(rows[demoted[0]], "Shared Study Two")  # Gamma 内容保留
             self.assertEqual(dup_of["SHARED"], "KA")
-            self.assertEqual(dup_of[suffixed], "KC")
+            self.assertEqual(dup_of[demoted[0]], "KC")
 
     def test_members_renamed_to_own_suffix_not_group_key(self):
         # 复审 #9 实测复现：库含 K2/K3 无关文献，导入 K1/K2/K3 三条同 DOI
@@ -974,6 +979,140 @@ class ReviewFeedbackR1Tests(unittest.TestCase):
             with closing(sqlite3.connect(db)) as conn:
                 self.assertEqual(
                     conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+
+
+# ---------------------------------------------------------------------------
+# 集成轮复审回归（D1 跨批/D2 作者门/D3 姓名提取）：复现手法原样回放
+# ---------------------------------------------------------------------------
+
+class CrossBatchStableKeyTests(unittest.TestCase):
+    """R6-D1 复审：跨批次同来源键不再静默覆盖（r5 原 ID=1 手法已因 1-2 位
+    纯数字键降级失效，此处按复审改用 5 位合法 PMID 形态稳定键原样回放）。"""
+
+    def test_cross_batch_phase2_phase3_same_stable_key_both_survive(self):
+        # 复审实测：$TMP/a/p2.ris 与 p3.ris（ID - 12345，无 DOI，A phase 2/
+        # Smith/2020 与 A phase 3/Jones/2021）——修复前第二次导入「新增 0
+        # 条，更新 1 条」，DB 仅剩 phase 3 行、phase 2 无候选提示。
+        with tempfile.TemporaryDirectory(prefix="rf_r6d1cb_") as tmp:
+            p2, p3 = Path(tmp) / "p2.ris", Path(tmp) / "p3.ris"
+            db = str(Path(tmp) / "cb.db")
+            _write_ris(p2, [{"au": "Smith, John", "ti": "A phase 2 trial of drug X",
+                             "py": "2020", "id": "12345"}])
+            _write_ris(p3, [{"au": "Jones, Jane", "ti": "A phase 3 trial of drug X",
+                             "py": "2021", "id": "12345"}])
+            self.assertEqual(_run_cli(["import", "--file", str(p2), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(p3), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 1 条", proc.stdout)  # 不得「更新 1 条」覆盖
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT title, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(len(rows), 2)          # 两行共存
+            self.assertIn("phase 2", rows[0][0])    # phase 2 行原样保留
+            self.assertIn("phase 3", rows[1][0])
+            self.assertEqual([r[1] for r in rows], [None, None])  # 无静默合并
+
+    def test_cross_batch_same_surname_different_given_both_survive(self):
+        # 复审实测：同题『Editorial』Smith, John vs Smith, Jane（同键同年无
+        # DOI）修复前只剩 1 行（R6-D4：名无区分度）。
+        with tempfile.TemporaryDirectory(prefix="rf_r6d1sj_") as tmp:
+            e1, e2 = Path(tmp) / "e1.ris", Path(tmp) / "e2.ris"
+            db = str(Path(tmp) / "sj.db")
+            _write_ris(e1, [{"au": "Smith, John", "ti": "Editorial",
+                             "py": "2020", "id": "EDIT1"}])
+            _write_ris(e2, [{"au": "Smith, Jane", "ti": "Editorial",
+                             "py": "2020", "id": "EDIT1"}])
+            self.assertEqual(_run_cli(["import", "--file", str(e1), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(e2), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 1 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT title, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(len(rows), 2)          # 两行共存不坍缩
+            self.assertEqual([r[1] for r in rows], [None, None])
+
+
+class LegacyHashAuthorGateTests(unittest.TestCase):
+    """R6-D2 复审回归：content_hash 命中必须叠加首作者门（分支修复自身
+    引入的坍缩面——哈希只含 doi|title，同题不同作者曾直接沿用库内键）。"""
+
+    def test_hash_hit_incompatible_author_not_adopted(self):
+        # 复审实测：预置 2.1.3 键 auto-ab84b05d60c2 的行（无 ID/无 DOI，
+        # 标题『Editorial』，Smith, John/2020），再导入同标题但
+        # Jones, Jane/2021 → 曾『精确重复 1』DB 仅 1 行且零警告。
+        import hashlib
+        from coscreen.models import Article
+        import coscreen.db as db_mod
+
+        base = "auto-" + hashlib.sha1("|Editorial".encode()).hexdigest()[:12]
+        with tempfile.TemporaryDirectory(prefix="rf_r6d2ag_") as tmp:
+            j = Path(tmp) / "j.ris"
+            db = str(Path(tmp) / "ag.db")
+            _write_ris(j, [{"au": "Jones, Jane", "ti": "Editorial", "py": "2021"}])
+            db_mod.init_db(db)
+            db_mod.upsert_articles(
+                db, [Article(zotero_key=base, title="Editorial",
+                             authors="Smith, John", year=2020, raw={})], [])
+            proc = _run_cli(["import", "--file", str(j), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 1 条", proc.stdout)     # 不沿用：新行
+            self.assertIn("首作者不兼容", proc.stderr)   # 显式警告（R3）
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, title FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(len(rows), 2)              # 两行各自成行
+            self.assertEqual(rows[0][0], base)          # 旧键行原样保留
+
+    def test_hash_hit_same_author_adopts_legacy_key(self):
+        # 对照（FB1/FB3 前提）：同作者同题的 2.1.3 预置行重导仍沿用旧键，
+        # 零新增——作者门不得误伤元数据补全与正常重导。
+        import hashlib
+        from coscreen.models import Article
+        import coscreen.db as db_mod
+
+        base = "auto-" + hashlib.sha1("|Editorial".encode()).hexdigest()[:12]
+        with tempfile.TemporaryDirectory(prefix="rf_r6d2ok_") as tmp:
+            j = Path(tmp) / "j.ris"
+            db = str(Path(tmp) / "ok.db")
+            _write_ris(j, [{"au": "Smith, John", "ti": "Editorial", "py": "2020"}])
+            db_mod.init_db(db)
+            db_mod.upsert_articles(
+                db, [Article(zotero_key=base, title="Editorial",
+                             authors="Smith, John", year=2020, raw={})], [])
+            proc = _run_cli(["import", "--file", str(j), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)     # 沿用旧键走更新
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, title FROM articles").fetchall()
+            self.assertEqual(rows, [(base, "Editorial")])
+
+
+class SurnameExtractionTests(unittest.TestCase):
+    """R6-D3 复审回归：1-2 字母真实姓氏不得当缩写（表驱动原样回放）。"""
+
+    def test_two_letter_surnames_recognized(self):
+        from coscreen.normalize import (
+            first_author_given_names, first_author_surname,
+        )
+        cases = [
+            # (输入, 期望姓, 期望名)
+            ("John Wu", "wu", "john"),       # 修复前姓='john'
+            ("Wu, John", "wu", "john"),
+            ("Wei Li", "li", "wei"),         # 修复前姓='wei'
+            ("Li, Wei", "li", "wei"),
+            ("Smith, J. A.", "smith", "j a"),
+            ("Smith JA", "smith", "ja"),     # PubMed 缩写尾仍是名
+            ("Maria de la Cruz", "cruz", "maria de la"),
+        ]
+        for name, want_surname, want_given in cases:
+            with self.subTest(name=name):
+                self.assertEqual(first_author_surname(name), want_surname)
+                self.assertEqual(first_author_given_names(name), want_given)
 
 
 if __name__ == "__main__":

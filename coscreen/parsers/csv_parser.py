@@ -18,9 +18,13 @@ from coscreen.models import Article, compute_content_hash
 from coscreen.normalize import (
     build_zotero_key,
     extract_year,
+    first_author_given_names,
+    first_author_surname,
+    given_names_compatible,
     normalize_authors,
     normalize_doi,
     normalize_title,
+    years_compatible,
 )
 
 
@@ -299,7 +303,10 @@ def parse_csv(path: str | Path) -> list[Article]:
     line_map_ok = len(physical_lines) == len(records)
 
     reserved_columns: dict[str, int] = {}
-    seen_keys: dict[str, str] = {}
+    # 同文件来源键身份（复审 B1/B7：content_hash 只含 doi|title，同题异作者
+    # 不会触发降级——记录 (content_hash, 姓氏, 名, 年份)，作者/年份能证明
+    # 不同才降级，缺一侧按元数据补全口径交给去重层裁定）
+    seen_keys: dict[str, tuple[str, str, str, object]] = {}
     record_id_occurrences: dict[str, int] = {}
     # 2.1.3 出货形态（r2 评审 R1）：_fallback_id = sha256(整文件字节):行号，
     # 下游 _stabilize_generated_import_keys/_conflict_suffix_key 按该串反查
@@ -313,6 +320,17 @@ def parse_csv(path: str | Path) -> list[Article]:
         title = normalize_title(get("title"))
         doi = normalize_doi(get("doi"))
         key_raw = get("zotero_key")
+        if not key_raw:
+            # 口径对齐（复审：CSV 的 ID/AN 列不得绕过来源键降级门）：
+            # build_zotero_key 的 _KEY_FIELDS 会从 raw 取 id/an/accession_number
+            # 作字面键——同一批候选在此先过同一三道闸，避免同一 'Box 3' 在
+            # RIS 路降级告警、CSV 路却静默用作主键（直调 upsert 即静默覆盖）。
+            for col, value in row.items():
+                lowered_col = str(col).strip().lower()
+                if (lowered_col in ("id", "an", "accession_number")
+                        and value is not None and str(value).strip()):
+                    key_raw = str(value).strip()
+                    break
 
         # 无 Key 且无 DOI/标题（无法构建 content_hash）的行视为损坏数据
         if not key_raw and not title and not doi:
@@ -341,20 +359,33 @@ def parse_csv(path: str | Path) -> list[Article]:
 
         # 来源键降级（U2-P2/R6-P3）：非法键（后端不可达）、非全局稳定标识
         # （含空白的自由文本/短纯数字序号，跨文件会撞键覆盖）或同文件内
-        # 同键不同文献时按无 Key 处理，走派生键；原值保留在 raw 供追溯
+        # 同键异文（内容哈希不同，或同题但作者/年份可证不同）时按无 Key
+        # 处理，走派生键；原值保留在 raw 供追溯
         demoted = False
         if key_raw:
+            surname = first_author_surname(authors)
+            given = first_author_given_names(authors)
             if not is_legal_source_key(key_raw):
                 demoted = True
                 reason = "含非法字符（/、\\ 或超长），经后端接口不可达"
             elif not is_global_stable_identifier(key_raw):
                 demoted = True
                 reason = "为自由文本/序号形态（含空白或短纯数字），不是全局稳定标识"
-            elif key_raw in seen_keys and seen_keys[key_raw] != content_hash:
-                demoted = True
-                reason = "与本文件内另一条文献相同，不是行级唯一标识"
+            elif key_raw in seen_keys:
+                prev_hash, prev_surname, prev_given, prev_year = seen_keys[key_raw]
+                if prev_hash != content_hash:
+                    demoted = True
+                    reason = "与本文件内另一条文献相同，不是行级唯一标识"
+                elif ((prev_surname and surname and prev_surname != surname)
+                        or (prev_given and given
+                            and not given_names_compatible(prev_given, given))
+                        or not years_compatible(prev_year, year)):
+                    demoted = True
+                    reason = "与本文件内另一条文献同键同题，但作者/年份不同，不是同一文献"
+                # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见身份
+                # 不覆盖——后续同键记录仍与首条比较，不被中间行的缺字段稀释
             else:
-                seen_keys[key_raw] = content_hash
+                seen_keys[key_raw] = (content_hash, surname, given, year)
         if demoted:
             raw["_demoted_source_key"] = key_raw
             record_warnings.append(

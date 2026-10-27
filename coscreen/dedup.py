@@ -38,7 +38,13 @@ from rapidfuzz import fuzz, process
 
 from coscreen import config
 from coscreen.models import Article
-from coscreen.normalize import first_author_surname, normalize_doi
+from coscreen.normalize import (
+    first_author_given_names,
+    first_author_surname,
+    given_names_compatible,
+    normalize_doi,
+    years_compatible,
+)
 
 #: 每次交给 RapidFuzz 的标题查询分块行数；分块限制临时矩阵内存，不限制总量。
 FUZZY_CHUNK_SIZE = 64
@@ -151,9 +157,12 @@ def _first_author_token(authors: str) -> str:
 
 
 def _first_authors_compatible(a: Article, b: Article) -> bool:
-    """首作者是否兼容（R6-D1 + 评审 R1 返修·FB2）。
+    """首作者是否兼容（R6-D1 + 评审 R1 返修·FB2 + R6-D3/D4 名的区分度）。
 
     - 双方姓氏均在：相似度达标才兼容（Smith vs Jones 不兼容）；
+    - **姓氏相同时名的区分度（R6-D4）**：双侧均含全名词且不一致则不兼容
+      （"Smith, John" vs "Smith, Jane" 不再坍缩为同一文献）；一侧只有缩写
+      或缺名时按首字母/元数据补全口径兼容；
     - **单侧缺作者视为兼容（元数据补全口径）**：旧版本库（2.1.3 的 CSV
       "Author" 列不映射，U2-P1）行 authors 为空，同键 + 标题完全相等的
       重导不得因作者缺失被判为不同文献（基线 4a06688 的 _key_merge_confirmed
@@ -166,7 +175,10 @@ def _first_authors_compatible(a: Article, b: Article) -> bool:
     if not surname_a or not surname_b:
         # 任一侧缺作者：不能证明"作者不同"，按元数据补全处理（不阻断合并）
         return True
-    return fuzz.ratio(surname_a, surname_b) >= config.FUZZY_AUTHOR_THRESHOLD
+    if fuzz.ratio(surname_a, surname_b) < config.FUZZY_AUTHOR_THRESHOLD:
+        return False
+    return given_names_compatible(
+        first_author_given_names(a.authors), first_author_given_names(b.authors))
 
 
 def _key_merge_confirmed(a: Article, b: Article) -> bool:
@@ -378,10 +390,14 @@ def merged_group_roots(count: int, pairs: Sequence[DuplicatePair]) -> list[int]:
 
 
 def _stable_content_id(art: Article) -> str:
-    """记录级稳定内容标识：优先解析器写入的 raw["_fallback_id"]，否则
-    DOI|标题|作者|年份。同一文件重复导入得到同一标识。"""
+    """记录级稳定内容标识（U2-P5/#18：_record_id 消费）：优先解析器写入的
+    raw["_record_id"]（内容稳定、含同文件 #N occurrence，不随文件字节漂移），
+    其次 raw["_fallback_id"]（v2.1.3 逐字一致形态，旧库行回退），否则
+    DOI|标题|作者|年份。同一文件/同内容重导得到同一标识。"""
     raw = art.raw if isinstance(art.raw, dict) else {}
-    base_id = str(raw.get("_fallback_id") or "").strip()
+    base_id = str(raw.get("_record_id") or "").strip()
+    if not base_id:
+        base_id = str(raw.get("_fallback_id") or "").strip()
     if not base_id:
         base_id = f"{art.doi}|{art.title}|{art.authors}|{art.year}"
     return base_id
@@ -421,15 +437,16 @@ def _is_generated_key_article(art: Article) -> bool:
     return bool(raw.get("_generated_key")) or art.zotero_key.startswith("auto-")
 
 
-def _content_match_key(art: Article) -> tuple[str, str, object]:
-    """内容匹配键（R6-D2 方案2）：规范化标题 + 首作者姓氏 + 年份。"""
+def _content_match_key(art: Article) -> tuple[str, str, str, object]:
+    """内容匹配键（R6-D2 方案2 + R6-D4 名的区分度）：标题+姓氏+名+年份。"""
     year = art.year
     if year is not None:
         try:
             year = int(year)
         except (TypeError, ValueError):
             year = str(year).strip()
-    return (_norm_title(art.title), _first_author_token(art.authors), year)
+    return (_norm_title(art.title), _first_author_token(art.authors),
+            first_author_given_names(art.authors), year)
 
 
 def stabilize_conflicting_keys(
@@ -491,10 +508,14 @@ def stabilize_conflicting_keys(
     # 取值口径不同（extract_year 括号/句末优先），故（标题+姓氏+年份）只是
     # 最后一级；content_hash 与 _fallback_id 不受两者影响（FB1/FB3）。
     fallback_index: dict[str, str] = {}   # raw["_fallback_id"] -> 库内键
+    record_id_index: dict[str, str] = {}  # raw["_record_id"] -> 库内键（U2-P5）
     hash_index: dict[str, str] = {}       # content_hash -> 库内键
-    content_index: dict[tuple[str, str, object], str] = {}
+    content_index: dict[tuple[str, str, str, object], str] = {}
     for key_text, art in known_by_key.items():
         raw = art.raw if isinstance(art.raw, dict) else {}
+        record_id = str(raw.get("_record_id") or "").strip()
+        if record_id:
+            record_id_index.setdefault(record_id, key_text)
         fallback_id = str(raw.get("_fallback_id") or "").strip()
         if fallback_id:
             fallback_index.setdefault(fallback_id, key_text)
@@ -510,16 +531,33 @@ def stabilize_conflicting_keys(
     def _match_legacy_key(art: Article) -> str | None:
         """按分层在库内既有行中匹配旧身份，返回库内目标键；无命中返回 None。
 
-        层级：raw["_fallback_id"]（字节相同文件的同一行）→ content_hash
-        （2.1.3 起持久化，不受 authors 缺失/年份口径漂移影响）→
-        （规范化标题+首作者姓氏+年份）。
+        层级：raw["_record_id"]（内容稳定、含 #N occurrence，不随文件字节
+        漂移——U2-P5/#18 的重导出零新增）→ raw["_fallback_id"]（v2.1.3
+        逐字一致形态，字节相同文件的同一行）→ content_hash（2.1.3 起持久
+        化，不受 authors 缺失/年份口径漂移影响；复审 D2 回归修复：哈希命中
+        **必须叠加首作者兼容门**——content_hash 只含 doi|title，同题不同
+        作者会命中，直接沿用会把 2.1.3 的同题坍缩重新引入；不兼容时显式
+        警告并落后续层，绝不静默沿用。年份不参与裁决：与
+        _key_merge_confirmed 同口径（标题相等+作者兼容即为同一文献），
+        2.1.3↔2.1.4 的年份抽取口径漂移（FB1/FB3 验收）仍可沿用）
+        →（规范化标题+首作者姓氏+名+年份）。
         """
         raw = art.raw if isinstance(art.raw, dict) else {}
+        record_id = str(raw.get("_record_id") or "").strip()
+        if record_id and record_id in record_id_index:
+            return record_id_index[record_id]
         fallback_id = str(raw.get("_fallback_id") or "").strip()
         if fallback_id and fallback_id in fallback_index:
             return fallback_index[fallback_id]
         if art.content_hash and art.content_hash in hash_index:
-            return hash_index[art.content_hash]
+            key_text = hash_index[art.content_hash]
+            db_art = known_by_key.get(key_text)
+            if db_art is None or _first_authors_compatible(art, db_art):
+                return key_text
+            _warn(
+                f"记录与库内行 {key_text} 的内容哈希相同（标题一致），但首作者"
+                "不兼容，未沿用库内键（视为不同文献，各自成行）"
+            )
         match_key = _content_match_key(art)
         if match_key[0] and match_key in content_index:
             return content_index[match_key]

@@ -208,9 +208,22 @@ def _raw_first_text(raw: dict | None, fields: tuple[str, ...]) -> str:
 
 
 def _is_name_initial(word: str) -> bool:
-    """是否为姓名缩写：1-2 个字母（可带点），如 "J."、"JA"、"A"。"""
+    """是否为姓名缩写（R6-D3 修正：两字母混合大小写是真实姓氏）。
+
+    - 单字母（可带点）恒为缩写："J."、"A"；
+    - 两字母仅**全大写**视为 PubMed 风格双名缩写（"Smith JA" 的 "JA"）；
+      混合大小写的两字母是真实姓氏（Wu/Li/Xu/He 等中国姓氏，"John Wu"、
+      "Wei Li" 的末词），不得误判为缩写——修复前 'John Wu' 的姓氏被回退
+      成 'john'、'Wei Li' 被回退成 'wei'（R6-D3 复审实测）；
+    - 全大写双词（"WEI LI"）与全大写缩写形态上不可区分，维持按缩写处理
+      的旧口径（残余如实声明：此类输入姓氏取前词）。
+    """
     core = word.strip(".,")
-    return 0 < len(core) <= 2 and core.isalpha()
+    if not (0 < len(core) <= 2 and core.isalpha()):
+        return False
+    if len(core) == 1:
+        return True
+    return core.isupper() and core == word.strip(".")
 
 
 def _looks_institutional(words: list[str]) -> bool:
@@ -282,6 +295,71 @@ def first_author_surname(authors: str | list | None) -> str:
     return " ".join(surname_words).lower().strip(".,:")
 
 
+def first_author_given_names(authors: str | list | None) -> str:
+    """第一作者的名（小写、逐词归一），供同姓不同名的区分（R6-D4）。
+
+    - "Smith, John" -> "john"；"Smith, J. A." -> "j a"；
+    - "John Wu" -> "john"（末词为姓）；"Smith JA" -> "ja"（缩写也是名）；
+    - 空作者/空首段 -> ""（调用方按「缺名视为兼容」处理，不得两空相等）。
+
+    纯函数；与 first_author_surname 共用同一姓名顺序/缩写判定口径。
+    """
+    head = ""
+    if authors is None:
+        return ""
+    if isinstance(authors, (list, tuple)):
+        head = str(authors[0]).strip() if authors else ""
+    else:
+        head = str(authors).split(";")[0].strip()
+    if not head:
+        return ""
+    if "," in head:
+        given_text = head.split(",", 1)[1]
+    else:
+        words = [w for w in head.split() if w]
+        if len(words) < 2:
+            return ""  # 单词串无从分名姓
+        end = len(words)
+        while end > 1 and _is_name_initial(words[end - 1]):
+            end -= 1
+        if end == len(words):
+            given_text = " ".join(words[:-1])   # 末词是姓
+        else:
+            given_text = " ".join(words[end:])  # 缩写尾是名
+    tokens = [token.strip(".,: ").lower() for token in given_text.split()]
+    return " ".join(token for token in tokens if token)
+
+
+def given_names_compatible(given_a: str, given_b: str) -> bool:
+    """名的兼容性（R6-D4）：能证明不同才不兼容，缺名按元数据补全口径兼容。
+
+    - 任一侧为空 -> True；
+    - 双侧均含全名词 -> 全名词序列必须一致（"john" vs "jane" -> False，
+      「Editorial」Smith, John vs Smith, Jane 同键同题坍缩的根因）；
+    - 至少一侧只有缩写 -> 首字母有交集即兼容（"j" vs "john" -> True）。
+      纯缩写互比（"j a" vs "j b"）无法证明不同，按兼容（残余如实声明）。
+    """
+    tokens_a = [t for t in given_a.split() if t]
+    tokens_b = [t for t in given_b.split() if t]
+    if not tokens_a or not tokens_b:
+        return True
+    full_a = [t for t in tokens_a if len(t) > 1]
+    full_b = [t for t in tokens_b if len(t) > 1]
+    if full_a and full_b:
+        return full_a == full_b
+    return bool({t[0] for t in tokens_a} & {t[0] for t in tokens_b})
+
+
+def years_compatible(year_a: int | None, year_b: int | None) -> bool:
+    """年份兼容（R6-D2）：双侧均明确且不同才不兼容；缺一侧按元数据口径兼容。"""
+    if year_a is None or year_b is None:
+        return True
+    try:
+        return int(year_a) == int(year_b)
+    except (TypeError, ValueError):
+        return True
+
+
 def build_zotero_key(
     raw: dict, content_hash: str,
     *, authors: str | list | None = None, year: int | None = None,
@@ -290,11 +368,15 @@ def build_zotero_key(
 
     候选键名（大小写不敏感）：Key（CSV）/ ID、AN（RIS 及其 rispy 映射名）。
 
-    生成键掺入第一作者姓氏与年份（authors/year 显式给出，否则在 raw 中
-    按候选字段名查找）：同标题、不同作者/不同年份的记录不再坍缩为同一个
-    auto-* 键导致主键覆盖丢条目。摘要输入为 content_hash|姓氏|年份 的
-    sha1，确定性可复现。既有库中的旧 auto-* 键不重写——本函数只在导入
-    解析时被调用，历史行不受影响。
+    生成键掺入第一作者姓氏、**名**与年份（R6-D4：同姓不同名不再坍缩为
+    同一 auto-* 键；authors/year 显式给出，否则在 raw 中按候选字段名查找）：
+    同标题、不同作者/不同年份的记录不再坍缩导致主键覆盖丢条目。摘要输入
+    为 content_hash|姓氏|名|年份 的 sha1，确定性可复现。
+
+    R1 铁律：键公式变更不破坏旧库重导幂等——既有 auto-* 键不重写（本函数
+    只在导入解析时被调用），重导经 stabilize 的分层身份匹配（_fallback_id →
+    content_hash → 标题+姓氏+年份）沿用库内既有键，2.1.3 预置库重导同一
+    文件零新增行由 LegacyAutoKeyReimportTests 验收钉住。
     """
     if raw:
         lowered = {str(k).strip().lower(): v for k, v in raw.items()}
@@ -310,9 +392,10 @@ def build_zotero_key(
     if authors is None:
         authors = _raw_first_text(raw, _AUTHOR_FIELDS)
     surname = first_author_surname(authors)
+    given = first_author_given_names(authors)
     if year is None:
         year = extract_year(_raw_first_text(raw, _YEAR_LOOKUP_FIELDS))
     digest = hashlib.sha1(
-        f"{content_hash}|{surname}|{year if year is not None else ''}".encode("utf-8")
+        f"{content_hash}|{surname}|{given}|{year if year is not None else ''}".encode("utf-8")
     ).hexdigest()
     return "auto-" + digest[:12]

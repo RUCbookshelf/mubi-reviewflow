@@ -1903,25 +1903,40 @@ def _stabilize_generated_import_keys(existing: list, incoming: list) -> None:
 
     Generated ``auto-*`` values are storage identifiers, not evidence of a match.
     The source digest + row locator makes collision suffixes stable on re-import.
+    U2-P5/#18：行身份优先 raw["_record_id"]（内容稳定、含 #N occurrence，
+    不随文件字节漂移——「仅加一行注释的重导出」零新增）；旧 2.1.3 行无
+    _record_id 时回退 _fallback_id 匹配（v2.1.3 逐字一致形态）。
     """
     occupied = {a.zotero_key for a in existing}
-    key_by_fallback_id: dict[str, str] = {}
+    # 旧行可能只有 _fallback_id（2.1.3 形态）——双登记，命中任一即沿用其键
+    key_by_identity: dict[str, str] = {}
     for article in existing:
-        fallback_id = str(article.raw.get("_fallback_id") or "")
-        if fallback_id:
-            key_by_fallback_id[fallback_id] = article.zotero_key
+        raw = article.raw if isinstance(article.raw, dict) else {}
+        identities = (str(raw.get("_record_id") or "").strip(),
+                      str(raw.get("_fallback_id") or "").strip())
+        for identity in identities:
+            if identity and identity not in key_by_identity:
+                key_by_identity[identity] = article.zotero_key
     for article in incoming:
         if not article.raw.get("_generated_key"):
             continue
+        raw = article.raw if isinstance(article.raw, dict) else {}
         base_key = str(article.raw.get("_fallback_key") or article.zotero_key)
-        fallback_id = str(article.raw.get("_fallback_id") or "")
-        known_key = key_by_fallback_id.get(fallback_id) if fallback_id else None
+        known_key = next(
+            (key_by_identity[i] for i in
+             (str(raw.get("_record_id") or "").strip(),
+              str(raw.get("_fallback_id") or "").strip())
+             if i and i in key_by_identity),
+            None,
+        )
+        identity = str(raw.get("_record_id") or "").strip() \
+            or str(raw.get("_fallback_id") or "").strip()
         if known_key:
             chosen = known_key
         elif base_key not in occupied:
             chosen = base_key
         else:
-            suffix = hashlib.sha256(fallback_id.encode("utf-8")).hexdigest()[:12]
+            suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
             chosen = f"{base_key}-{suffix}"
             serial = 2
             while chosen in occupied:
@@ -1929,8 +1944,8 @@ def _stabilize_generated_import_keys(existing: list, incoming: list) -> None:
                 serial += 1
         article.zotero_key = chosen
         occupied.add(chosen)
-        if fallback_id:
-            key_by_fallback_id[fallback_id] = chosen
+        if identity:
+            key_by_identity[identity] = chosen
 
 
 def _title_review_groups(exact_survivors: list, incoming_keys: set,
