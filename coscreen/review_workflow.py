@@ -87,6 +87,23 @@ def note_freshly_created(db: str | Path) -> None:
         _FRESH_DBS[str(Path(db).resolve())] = identity
 
 
+def migration_state(db: str | Path) -> set[int] | None:
+    """一次只读连接读出 workflow_migrations 已落地的版本集合。
+
+    供 context() 热路径合并版本核查（门禁墙钟：每个 API 请求原先对同一
+    库开 5 个只读连接逐个重查 v1/v4/v5/v3/v6——各 migrate 在版本齐全时
+    本就是无操作，此处一次判齐后跳过，首建/旧库升级行为不变）。库文件
+    不存在或账本表未建时返回 None（调用方走完整迁移链）。
+    """
+    path = Path(db)
+    if not path.is_file():
+        return None
+    with closing(connect(path, read_only=True)) as conn:
+        if not has_table(conn, "workflow_migrations"):
+            return None
+        return {int(row[0]) for row in conn.execute("SELECT version FROM workflow_migrations")}
+
+
 def is_fresh_database(db: str | Path) -> bool:
     """该库文件是否由本进程新建且从未被整体替换（可安全跳过升级前备份）。"""
     try:

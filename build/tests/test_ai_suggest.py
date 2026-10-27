@@ -63,6 +63,15 @@ def fake_generate(content=FAKE_CONTENT):
 
 
 class AISuggestTests(unittest.TestCase):
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        fixture.cleanup()
+
+    def auth(self, i=0):
+        return {"Authorization": "Bearer " + self.users[i]["token"]}
+
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
@@ -76,14 +85,20 @@ class AISuggestTests(unittest.TestCase):
             token = auth_mod.create_access_token(user["id"], user["username"])
             cls.users.append({"user_id": user["id"], "username": user["username"],
                               "token": token})
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.client.__exit__(None, None, None)
-        fixture.cleanup()
-
-    def auth(self, i=0):
-        return {"Authorization": "Bearer " + self.users[i]["token"]}
+        # 门禁墙钟（类级模板库，同 test_report_evidence 手法）：原 setUp 每用例
+        # 「POST + 首建迁移链 + 种入 A1」约 200ms；类级建真实模板任务并快照
+        # 库字节，每用例复制（~3ms），隔离与内容与逐用例自建同源。
+        from coscreen import tasks as tasks_mod
+        cls._slug = tasks_mod.slugify_screener(cls.users[0]["username"])
+        template_task = cls.client.post(
+            "/api/tasks", json={"name": "ai-suggest-template"},
+            headers={"Authorization": "Bearer " + cls.users[0]["token"]}).json()["task_id"]
+        ctx0 = app.state.review_workflow.context(template_task, cls.users[0])
+        db.upsert_articles(ctx0.owner_db, [Article(
+            zotero_key="A1", title="Trial of Example Therapy",
+            authors="Doe J; Smith A", journal="J Example", year=2024, doi="10.test/ai",
+            abstract="Background: example. Methods: a randomised controlled trial was conducted in 6 centres.")], [])
+        cls._template_db_bytes = Path(ctx0.owner_db).read_bytes()
 
     def setUp(self):
         # 每用例清场：环境变量覆盖、个人钥匙；任务为每用例新建（共享钥匙随任务 id 隔离）。
@@ -97,11 +112,9 @@ class AISuggestTests(unittest.TestCase):
         self.addCleanup(self.guard.stop)
         self.task = self.client.post("/api/tasks", json={"name": self._testMethodName},
                                      headers=self.auth(0)).json()["task_id"]
-        ctx = app.state.review_workflow.context(self.task, self.users[0])
-        db.upsert_articles(ctx.owner_db, [Article(
-            zotero_key="A1", title="Trial of Example Therapy",
-            authors="Doe J; Smith A", journal="J Example", year=2024, doi="10.test/ai",
-            abstract="Background: example. Methods: a randomised controlled trial was conducted in 6 centres.")], [])
+        from coscreen import tasks as tasks_mod
+        info = tasks_mod.find_task(self.task, str(DATA_ROOT))
+        (info.dir / (self._slug + ".db")).write_bytes(self._template_db_bytes)
         self.base = f"/api/tasks/{self.task}"
 
     def invite_member(self):

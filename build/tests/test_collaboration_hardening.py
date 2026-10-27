@@ -52,6 +52,15 @@ class CollaborationHardeningTests(unittest.TestCase):
             user = auth_mod.create_user(f"collab{i}@example.test", "Collab-Test-2026")
             cls.users.append({"user_id": user["id"], "username": user["username"],
                               "token": auth_mod.create_access_token(user["id"], user["username"])})
+        # 门禁墙钟（类级模板库，同 test_report_evidence 手法）：原每用例首个
+        # 请求都付一遍全量首建迁移链（~130ms）；类级快照库字节，每用例
+        # POST 后复制（~3ms），首个请求即走热路径。隔离与内容同源自建。
+        cls._slug = tasks_mod.slugify_screener(cls.users[0]["username"])
+        template_task = cls.client.post(
+            "/api/tasks", json={"name": "collab-template"},
+            headers={"Authorization": "Bearer " + cls.users[0]["token"]}).json()["task_id"]
+        ctx0 = app.state.review_workflow.context(template_task, cls.users[0])
+        cls._template_db_bytes = Path(ctx0.owner_db).read_bytes()
 
     @classmethod
     def tearDownClass(cls):
@@ -65,6 +74,7 @@ class CollaborationHardeningTests(unittest.TestCase):
         self.task = self.client.post(
             "/api/tasks", json={"name": self._testMethodName}, headers=self.auth()).json()["task_id"]
         self.info = tasks_mod.find_task(self.task, DATA_DIR)
+        (self.info.dir / (self._slug + ".db")).write_bytes(self._template_db_bytes)
         self.store = task_collaboration.shared_store_path(self.info.dir)
         self.owner_id = self.users[0]["user_id"]
 

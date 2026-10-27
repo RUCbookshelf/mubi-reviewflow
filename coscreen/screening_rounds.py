@@ -6,10 +6,13 @@ from contextlib import closing
 from pathlib import Path
 from coscreen import review_workflow as store
 
+#: v6（复筛轮次快照）版本号；context() 热路径判齐用
+ROUNDS_VERSION = 6
+
 
 def migrate(db: Path) -> None:
     with closing(store.connect(db, read_only=True)) as conn:
-        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=6').fetchone():
+        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (ROUNDS_VERSION,)).fetchone():
             return
         # 备份只保护既有库；本进程新建、尚在首建链中的库没有可备份的数据。
         if not store.is_fresh_database(db):

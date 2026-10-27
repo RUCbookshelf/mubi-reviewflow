@@ -33,6 +33,18 @@ class EvidenceTests(unittest.TestCase):
         for i in range(3):
             r = cls.client.post('/api/auth/register', json={'username':f'evidence{i}@example.test','password':'Evidence-Test-2026'}).json()
             cls.users.append({'user_id':r['user']['id'],'username':r['user']['username'],'token':r['token']})
+        from coscreen import tasks as tasks_mod
+        # 门禁墙钟（类级模板库）：原 setUp 每用例走一遍「POST + 全量首建
+        # 迁移链 + 种入 R1/R2」（实测 ~196ms/用例）。类 setUp 建一个真实
+        # API 模板任务并把库文件字节快照下来；每用例 POST 新任务后仅把
+        # 模板库复制过去（~3ms）——首建链只跑一次，库内容与逐用例自建
+        # 逐字节同源（同一条产品路径产出），用例间隔离不变（各自独立副本）。
+        cls._slug = tasks_mod.slugify_screener(cls.users[0]['username'])
+        template_task = cls.client.post('/api/tasks', json={'name': 'evidence-template'},
+                                        headers={'Authorization': 'Bearer ' + cls.users[0]['token']}).json()['task_id']
+        ctx0 = app.state.review_workflow.context(template_task, cls.users[0])
+        db.upsert_articles(ctx0.owner_db, [Article(zotero_key='R1', title='First', doi='10.test/1', raw={'source_file': '01-Wiley.ris'}), Article(zotero_key='R2', title='Second', doi='10.test/2')], [])
+        cls._template_db_bytes = Path(ctx0.owner_db).read_bytes()
 
     @classmethod
     def tearDownClass(cls):
@@ -44,8 +56,13 @@ class EvidenceTests(unittest.TestCase):
 
     def setUp(self):
         self.task = self.client.post('/api/tasks',json={'name':self._testMethodName},headers=self.auth()).json()['task_id']
+        from coscreen import tasks as tasks_mod
+        # main.DATA_DIR 是任务真实落盘根（全套 pytest 下环境变量会被后续
+        # 模块的 fixture 改写，不能用 os.environ）
+        from custom_backend.main import DATA_DIR as _APP_DATA_DIR
+        info = tasks_mod.find_task(self.task, _APP_DATA_DIR)
+        (info.dir / (self._slug + '.db')).write_bytes(self._template_db_bytes)
         self.ctx = app.state.review_workflow.context(self.task,self.users[0])
-        db.upsert_articles(self.ctx.owner_db,[Article(zotero_key='R1',title='First',doi='10.test/1',raw={'source_file':'01-Wiley.ris'}),Article(zotero_key='R2',title='Second',doi='10.test/2')],[])
         self.base = f'/api/tasks/{self.task}/report-evidence'
 
     def state(self):
@@ -414,11 +431,15 @@ class EvidenceTests(unittest.TestCase):
             research_trace.ensure_schema(c)
             store_id=c.execute("SELECT store_id FROM trace_store WHERE singleton=1").fetchone()[0]
             for actor,subject,before,after in rows:
+                # 门禁墙钟：before/after 允许直接传已序列化串（调用方复用上轮
+                # after 串，免每行重复 dumps/深拷贝同一 0.4MB 快照）
+                before_json = before if isinstance(before, str) else json.dumps(before, ensure_ascii=False)
+                after_json = after if isinstance(after, str) else json.dumps(after, ensure_ascii=False)
                 c.execute("INSERT INTO trace_events (event_id,store_id,task_id,actor_id,stage,action,subject_id,"
                           "before_json,after_json,field_json,source,recorded_at,schema_version,app_version) "
                           "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           (str(uuid.uuid4()),store_id,self.task,actor,'coding','report_evidence_changed',subject,
-                           json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),None,
+                           before_json,after_json,None,
                            'report_evidence','2026-01-01T00:00:00Z','reviewflow.research-trace/1','2.1.3'))
             c.commit()
 
@@ -432,14 +453,15 @@ class EvidenceTests(unittest.TestCase):
         # 每份快照约 0.4MB，且每份 after 都含一条他人 evidence/locator 提案。
         exporter=str(self.users[0]['user_id']);coder=str(self.users[1]['user_id'])
         secret='LEGACY-SECRET coder evidence'
-        rows=[];previous={'links':[],'drafts':[]}
+        rows=[];prev_json=json.dumps({'value':'Save evidence','workspace':{'links':[],'drafts':[]}},ensure_ascii=False)
         for i in range(saves):
             current={'links':[{'id':'L1','a':'R1','b':'R2','type':'study','same':False,'evidence':secret,
                                'locator':'p.4','status':'agreed','actor_id':coder}],
                      'drafts':[{'id':f'd{j}','key':'R1','finding':f'{i}-{j}','quote':'x'*19500} for j in range(20)]}
-            rows.append((exporter,'R1',{'value':'Save evidence','workspace':json.loads(json.dumps(previous))},
-                                {'value':'Save evidence','workspace':current}))
-            previous=current
+            # before 直接复用上一轮 after 串（同一快照内容；立即序列化无别名风险）
+            cur_json=json.dumps({'value':'Save evidence','workspace':current},ensure_ascii=False)
+            rows.append((exporter,'R1',prev_json,cur_json))
+            prev_json=cur_json
         self._insert_legacy_trace_events(rows)
         return secret
 

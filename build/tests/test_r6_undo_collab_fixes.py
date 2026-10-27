@@ -67,14 +67,29 @@ def _png_bytes(color=(255, 0, 0)) -> bytes:
 # 【note updated_at】【MISSING_EVIDENCE_FILE】【description 仲裁】单元级
 # ---------------------------------------------------------------------------
 
+
+# 门禁墙钟（模块级模板库）：init_db 冷启动自愈链 ~30ms×每用例——模块加载时
+# 建一份「init_db + K1 种入」的库字节，用例 setUp 复制（~3ms）。内容与逐
+# 用例自建同源（同一条产品路径产出），隔离不变（各自独立副本）。
+def _template_db_bytes() -> bytes:
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+    with _tempfile.TemporaryDirectory() as _tmp:
+        _db = _Path(_tmp) / 'task' / 'user.db'
+        _db.parent.mkdir(parents=True)
+        articles_db.init_db(_db)
+        articles_db.upsert_articles(_db, [Article(zotero_key='K1', title='Study', doi='10.x/1')], [])
+        return _db.read_bytes()
+
+_TEMPLATE_DB_BYTES = _template_db_bytes()
+
 class UndoGuardFixTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory(prefix='rf_r6_undo_')
         self.root = Path(self._dir.name)
         self.db = self.root / 'task' / 'user.db'
         self.db.parent.mkdir(parents=True)
-        articles_db.init_db(self.db)
-        articles_db.upsert_articles(self.db, [Article(zotero_key='K1', title='Study', doi='10.x/1')], [])
+        self.db.write_bytes(_TEMPLATE_DB_BYTES)
 
     def tearDown(self):
         self._dir.cleanup()

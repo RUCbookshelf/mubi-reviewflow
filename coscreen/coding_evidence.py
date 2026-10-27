@@ -30,9 +30,18 @@ CREATE TABLE IF NOT EXISTS workflow_form_requests(task_id TEXT NOT NULL,actor_id
 
 
 def migrate(db: str | Path) -> None:
+    # 快路径（门禁墙钟）：基础迁移(v1)与自身版本(v3)齐全时 migrate 是无操作
+    # ——一次只读连接判齐即返回（原先每个 API 请求经 ensure_fields 进来要开
+    # 2 个只读连接逐个重查）；未建库/旧库走完整链，首建与升级行为不变。
+    path = Path(db)
+    if path.is_file():
+        with closing(workflow.connect(path, read_only=True)) as probe:
+            if workflow.has_table(probe, 'workflow_migrations'):
+                done = {int(r[0]) for r in probe.execute('SELECT version FROM workflow_migrations')}
+                if {workflow.SCHEMA_VERSION, MIGRATION_VERSION} <= done:
+                    return
     # The foundation helper makes the pre-workflow backup before any new DDL.
     workflow.migrate(db)
-    path = Path(db)
     with closing(workflow.connect(path, read_only=True)) as source:
         if source.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (MIGRATION_VERSION,)).fetchone():
             return
@@ -90,6 +99,22 @@ def current_owner_db(db: str | Path) -> Path:
 
 def ensure_fields(db: str | Path) -> None:
     migrate(db)
+    # 只读优先（门禁墙钟）：先以只读连接比对，全部就绪（无缺字段/无定义
+    # 漂移/无 Task1 数字字段待升级）时不开写连接——原先每个 API 请求都
+    # 开写连接并走一遍空事务提交。有待写再走原写路径（罕见竞态窗口下
+    # 下一请求自愈，与原实现一致性等价）。
+    with closing(workflow.connect(db, read_only=True)) as probe:
+        known = {r[0]: r[1] for r in probe.execute('SELECT dimension_id,definition_json FROM workflow_coding_fields')}
+        pending = False
+        for row in probe.execute(f"SELECT {','.join(coding._DIM_COLUMNS)} FROM coding_dimensions").fetchall():
+            dim = coding._row_to_dimension(row)
+            if dim['id'] not in known or known[dim['id']] != definition(dim):
+                pending = True
+                break
+        if not pending:
+            required_peek = json.loads(probe.execute('SELECT evidence_json FROM workflow_state WHERE singleton=1').fetchone()[0])
+            if not any(isinstance(fid, int) for fid in required_peek):
+                return
     with closing(workflow.connect(db)) as conn, conn:
         known = {r[0]: r[1] for r in conn.execute('SELECT dimension_id,definition_json FROM workflow_coding_fields')}
         for row in conn.execute(f"SELECT {','.join(coding._DIM_COLUMNS)} FROM coding_dimensions").fetchall():

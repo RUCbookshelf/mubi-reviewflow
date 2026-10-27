@@ -1277,12 +1277,11 @@ class UploadSecurityTests(unittest.TestCase):
                     headers=headers)
                 codes.append(r.status_code)
             self.assertEqual(codes, [200] * 6, codes)  # 成功不计入配额
-            # 5 次错误后：第 6 次被拒（失败计数仍在）
+            # 5 次失败后第 6 次被拒（失败计数仍在）：失败计数直接经限流器
+            # record() 预置（与登录失败路径同一记账 API），只保留一次真实
+            # 登录断言 429——省 5 次 bcrypt 校验（门禁墙钟）
             for _ in range(5):
-                self.client.post(
-                    "/api/auth/login",
-                    json={"username": username, "password": "WrongPass-8ch"},
-                    headers=headers)
+                login_limiter.record(rate_limit_key("login", "testclient", None))
             r = self.client.post(
                 "/api/auth/login",
                 json={"username": username, "password": "Correct-Horse-9"},

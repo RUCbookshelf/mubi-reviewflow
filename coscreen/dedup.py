@@ -211,6 +211,7 @@ def _key_merge_confirmed(a: Article, b: Article) -> bool:
 class _UnionFind:
     def __init__(self, n: int) -> None:
         self._parent = list(range(n))
+        self._size = [1] * n
 
     def find(self, i: int) -> int:
         parent = self._parent
@@ -225,11 +226,15 @@ class _UnionFind:
         ra, rb = self.find(a), self.find(b)
         if ra == rb:
             return
-        # 较小索引者为根 → 输入顺序靠前的条目保留
+        # 较小索引者为根 → 输入顺序靠前的条目保留；同侧以按大小合并
+        # 防止长链退化（复审门禁墙钟：模糊层 4M 次 find 曾占 ~0.6s+
+        # find_duplicates 主循环放大），路径压缩后均摊近 O(1)
         if ra < rb:
             self._parent[rb] = ra
+            self._size[ra] += self._size[rb]
         else:
             self._parent[ra] = rb
+            self._size[rb] += self._size[ra]
 
 
 # ---------------------------------------------------------------------------

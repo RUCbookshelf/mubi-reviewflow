@@ -12,6 +12,8 @@ from pathlib import Path
 from coscreen import review_workflow as workflow
 
 VERSION = 4
+#: v5（文件名溯源重构）版本号；context() 热路径判齐用
+FILENAME_VERSION = 5
 SOURCE_TYPES = {'database', 'register', 'website', 'organisation', 'citation_searching', 'other'}
 ALIASES = {'wos': 'Web of Science', 'web of science': 'Web of Science', 'scopus': 'Scopus',
            'pubmed': 'PubMed', 'medline': 'MEDLINE', 'eric': 'ERIC', 'proquest': 'ProQuest'}
@@ -183,7 +185,7 @@ def migrate(db: str | Path) -> None:
     """Upgrade filename associations without rewriting original records or research."""
     _migrate_v4(db)
     with closing(workflow.connect(db, read_only=True)) as conn:
-        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=5').fetchone():
+        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (FILENAME_VERSION,)).fetchone():
             return
         # 同 v4：首建链中的新库跳过空库备份，真实旧库照常备份。
         if not workflow.is_fresh_database(db):

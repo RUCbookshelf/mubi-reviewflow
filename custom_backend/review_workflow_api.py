@@ -65,16 +65,39 @@ class WorkflowRuntime:
             # workflow.migrate）与 coding_evidence.ensure_fields 共同兜底，此处
             # 不再单独调 store.migrate——每次请求省一次只读连接与版本查询。
             from coscreen import import_sources
-            import_sources.migrate(owner_db)
+            # 热路径合并（门禁墙钟）：v1/v4/v5/v3 版本齐全时各 migrate 本就是
+            # 无操作——一次只读连接判齐后整段跳过（原先每个 API 请求对同一
+            # 库开 4 个只读连接逐个重查）；未建库/旧库走完整链，首建与升级
+            # 行为不变。ensure_fields 的字段种子检查不受影响（仍每请求执行）。
+            owner_versions = store.migration_state(owner_db)
+            if owner_versions is None or not {
+                    store.SCHEMA_VERSION, import_sources.VERSION,
+                    import_sources.FILENAME_VERSION, coding_evidence.MIGRATION_VERSION,
+            } <= owner_versions:
+                import_sources.migrate(owner_db)
             coding_evidence.ensure_fields(owner_db)
             grants = task_collaboration.list_role_grants(collab, actor_user_id=owner["owner_user_id"], task_id=task_id)
             if any(grant["user_id"] != owner["owner_user_id"] for grant in grants):
                 self.latch_team_db(owner_db)
             kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
-            actor_db = self.screener_db(info, user["username"])
-            store.migrate(actor_db)
-            screening_rounds.migrate(actor_db)
-            if actor_db.resolve() != owner_db.resolve():
+            # 属主同人时复用 owner 库路径（省一次 _connect/PRAGMA；同文件
+            # 同名，语义不变），否则按成员名建/取个人库
+            if actor_db.name == owner_db.name:
+                actor_db = owner_db
+            else:
+                actor_db = self.screener_db(info, user["username"])
+            # 同法：actor 库 v1/v6 齐全时跳过两个 migrate 的重复重查；
+            # 属主同人时 actor 库即 owner 库，直接复用 owner 的版本判定与
+            # ensure_fields 结果（省一次 migration_state 连接与两次 resolve）
+            if actor_db is owner_db or actor_db.name == owner_db.name:
+                actor_versions = owner_versions
+            else:
+                actor_versions = store.migration_state(actor_db)
+                if actor_versions is None or not {
+                        store.SCHEMA_VERSION, screening_rounds.ROUNDS_VERSION,
+                } <= actor_versions:
+                    store.migrate(actor_db)
+                    screening_rounds.migrate(actor_db)
                 coding_evidence.ensure_fields(actor_db)
             return WorkflowContext(info, user, owner, owner_db, actor_db,
                                    owner["owner_user_id"] == user["user_id"], kind, collab)
