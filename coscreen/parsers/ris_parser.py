@@ -1,12 +1,15 @@
 """Zotero/标准 RIS 导出解析器 —— rispy 读取，兼容 UTF-8/GBK 编码（见 SPEC.md §3）。
 
-RIS 作者为列表，经 normalize_authors 以 "; " 连接；记录边界预校验与 rispy
-文法逐字对齐（_validate_record_terminators），rispy 会静默丢弃的在途记录
-在导入前显式报错，合法续行（"ER -" 单空格以外的行）不会被误拒。
+RIS 作者为列表，经 normalize_authors 以 "; " 连接。记录边界处理与 rispy
+文法逐字对齐：单空格 "ER -" 终止行先规范化再交给 rispy（该记录真正导入）；
+被截断（缺 ER）的记录不整文件拒绝——完整记录照常导入，被丢弃记录逐条
+告警（r2 评审 R3）；合法续行（"ER-positive…"、缩进 "    TY - …"）不误拒。
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -22,8 +25,9 @@ from coscreen.normalize import (
 )
 from coscreen.parsers.csv_parser import (
     ParseError,
-    content_fallback_id,
+    content_record_id,
     decode_bytes_with_confidence,
+    is_global_stable_identifier,
     is_legal_source_key,
 )
 
@@ -67,28 +71,58 @@ def _ris_tag(line: str) -> str | None:
     return None
 
 
-def _validate_record_terminators(text: str, filename: str) -> None:
-    """预校验记录边界，与 rispy 0.10 的解析状态机逐字对齐（U2-P8 + 复审 #12/#13/#17）。
+# 单空格记录终止行 "ER -"（无内容）：Zotero 自身导入正则允许 1-2 个空格，
+# rispy 只认两个空格——不规范化会使末条记录被当作未终止而静默丢弃（#13）
+_BARE_ER_LINE_RE = re.compile(r"ER[ ]{1,2}-[ ]*")
 
-    rispy 的实际行为：任何以 "TY" 开头的行都会开启一条记录；记录仅在遇到
-    文法合法的 "ER  - " 标签行时结算；生成器耗尽时在途记录被静默丢弃。
-    此处按同一状态机复演：
 
-    - 仅当一条「由文法合法 TY 行开启、直到文件末尾都未遇到 ER」的记录
-      （即 rispy 必定静默丢弃的真实记录）时抛错并给出定位；
-    - 在途记录中再次出现文法合法的 TY 行时，rispy 会把新记录的标签并入
-      旧记录生成嵌合记录（作者污染、后一条标题静默消失）——rispy 不丢弃
-      记录（返回数与 ER 数一致），故不整文件拒绝，只打可定位的 stderr
-      告警（R3：能警告不改变行为）；
-    - 除此之外不附加任何校验——纯文本幻影记录（如 ER 之后以 "TY" 开头
-      的注释行）rispy 本就丢弃，不视为数据丢失，不得借预校验整文件拒绝。
+def _normalize_er_terminators(text: str) -> str:
+    """把「ER -」（1 个空格、无内容）的终止行规范为 rispy 文法的 "ER  -"。
+
+    只规范内容为空的终止行（含 2 空格原样重写为等价形式）：带内容的
+    "ER - xxx" 仍按 rispy 语义视为续行——如 "ER - negative findings…"
+    出现在摘要中是合法续行，不得因规范化提前截断记录（R2：宁可少改，
+    不可误伤）。行尾的 \\r（CRLF 文件按 \\n 切分残留）原样保留。
     """
+    lines = text.split("\n")
+    changed = False
+    for i, line in enumerate(lines):
+        body = line[:-1] if line.endswith("\r") else line
+        if _BARE_ER_LINE_RE.fullmatch(body):
+            lines[i] = "ER  -" + ("\r" if line.endswith("\r") else "")
+            changed = True
+    return "\n".join(lines) if changed else text
+
+
+def _in_flight_title(lines: list[str], start_index: int) -> str:
+    """从未终止记录起始行（0 基下标）起提取首个 TI/T1 标题值，供告警定位。"""
+    for line in lines[start_index:]:
+        tag = _ris_tag(line)
+        if tag in ("TI", "T1"):
+            return line[6:].strip()
+    return ""
+
+
+def _warn_dropped_records(text: str, filename: str) -> None:
+    """按 rispy 状态机找出将被静默丢弃的在途记录，逐条打显式可操作告警。
+
+    rispy 的实际行为：以 "TY" 开头的行开启记录；记录仅在文法合法的
+    "ER  - " 行结算；生成器耗尽时在途记录被静默丢弃。r2 评审 R3 裁定
+    「绝不整文件拒绝」：完整记录照常导入，被丢弃的记录逐条告警（含
+    记录序号、起始行号、标题与修复指引），不再抛 ParseError 把前面
+    已完整的记录一并丢弃（此前实测 CLI rc=2、0 行入库）。
+
+    在途记录中再次出现文法合法 TY 行时 rispy 会吞并后续记录生成嵌合
+    记录（rispy 不丢弃记录，返回数与 ER 数一致）——同样只告警不拒绝。
+    除此之外不附加任何校验：纯文本幻影记录（如 ER 后以 "TY" 开头的
+    注释行）rispy 本就丢弃，不视为数据丢失。
+    """
+    lines = text.split("\n")
     in_record = False
     open_line = 0
     ty_count = 0
     chimera_warned = False
-    # 与 rispy.parse 的 newline="\\n" 口径一致（CRLF 行尾的 \\r 不影响判定）
-    for lineno, line in enumerate(text.split("\n"), start=1):
+    for lineno, line in enumerate(lines, start=1):
         if not in_record:
             if line.startswith("TY") and _ris_tag(line) == "TY":
                 in_record = True
@@ -107,11 +141,13 @@ def _validate_record_terminators(text: str, filename: str) -> None:
                     file=sys.stderr,
                 )
     if in_record:
-        raise ParseError(
-            f"RIS 解析失败（{filename}）: 第 {ty_count} 条记录"
-            f"（自第 {open_line} 行起）缺少结束标签 ER（正确写法为两个空格: "
-            '"ER  -"），rispy 解析会静默丢弃该条记录；'
-            "导出文件可能被截断，请检查文件完整性后重试。"
+        title = _in_flight_title(lines, open_line - 1)
+        title_hint = f"（标题：{title}）" if title else ""
+        print(
+            f"警告：{filename} 第 {ty_count} 条记录{title_hint}（自第 {open_line} 行起）"
+            "缺少结束标签 ER（正确写法为两个空格: \"ER  -\"），该条记录未被导入；"
+            "前面已完整的记录照常入库。导出文件可能被截断，请补全 ER 后单独重导该条。",
+            file=sys.stderr,
         )
 
 
@@ -151,7 +187,12 @@ def _record_view(record: dict) -> dict:
 
 
 def parse_ris(path: str | Path) -> list[Article]:
-    """解析 RIS 导出，返回与 "ER  -" 记录数一致的 Article 列表（不去重）。"""
+    """解析 RIS 导出，返回与 "ER  -" 记录数一致的 Article 列表（不去重）。
+
+    被截断（缺 ER）的末条记录不整文件拒绝（r2 评审 R3）：完整记录照常
+    返回入库，未终止记录逐条打显式告警；单空格 "ER -" 终止行先规范化
+    为 "ER  -" 再交给 rispy，使该记录真正导入。
+    """
     p = Path(path)
     if not p.is_file():
         raise ParseError(f"文件不存在: {p}")
@@ -159,7 +200,10 @@ def parse_ris(path: str | Path) -> list[Article]:
     if encoding_warnings:
         for warning in encoding_warnings:
             print(f"警告：{warning}", file=sys.stderr)
-    _validate_record_terminators(text, p.name)
+    text = _normalize_er_terminators(text)
+    _warn_dropped_records(text, p.name)
+    # 2.1.3 出货形态（r2 评审 R1）：_fallback_id 用整文件摘要，保持逐字一致
+    source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     try:
         records = rispy.loads(text)
     except Exception as exc:  # rispy 异常类型随版本变化，统一包装并保留定位信息
@@ -170,6 +214,7 @@ def parse_ris(path: str | Path) -> list[Article]:
 
     articles: list[Article] = []
     seen_keys: dict[str, str] = {}
+    record_id_occurrences: dict[str, int] = {}
     for record_no, record in enumerate(records, start=1):
         if not isinstance(record, dict):
             raise ParseError(f"RIS 第 {record_no} 条记录格式异常：非键值结构")
@@ -196,14 +241,18 @@ def parse_ris(path: str | Path) -> list[Article]:
 
         # 来源键降级（U2-P2/R6-P3）：AN 在 Zotero 导出里是 archiveLocation
         # 自由文本（可重复、可含 "/" 或超长），ID 是 Zotero 导入时忽略的标签。
-        # 非法键（后端 _KEY_RE 不可达）或同文件内同键不同文献时按无 Key
-        # 处理走派生键，原值保留在 raw 供追溯——绝不静默沿用导致整条覆盖。
+        # 非法键（后端 _KEY_RE 不可达）、非全局稳定标识（自由文本/短序号，
+        # 跨文件撞键覆盖）或同文件内同键不同文献时按无 Key 处理走派生键，
+        # 原值保留在 raw 供追溯——绝不静默沿用导致整条覆盖。
         source_key = _first(view, _KEY_KEYS)
         demoted = False
         if source_key:
             if not is_legal_source_key(source_key):
                 demoted = True
                 reason = "含非法字符（/、\\ 或超长），经后端接口不可达"
+            elif not is_global_stable_identifier(source_key):
+                demoted = True
+                reason = "为自由文本/序号形态（含空白或短纯数字），不是全局稳定标识"
             elif source_key in seen_keys and seen_keys[source_key] != content_hash:
                 demoted = True
                 reason = "与本文件内另一条文献相同，不是行级唯一标识"
@@ -228,17 +277,26 @@ def parse_ris(path: str | Path) -> list[Article]:
         if not source_key or demoted:
             # Retain the legacy key as a base for compatibility, but give each
             # source row a stable identity so same-title rows are not collapsed.
-            # _fallback_id 为记录内容稳定标识（U2-P5）：同一记录重新导出
-            # （文件字节/行号变化）标识不变，重导不再漂移出新后缀键。
+            # _fallback_id 为 v2.1.3 逐字一致的行定位标识（sha256(整文件):
+            # 记录序号；R1：2.1.3 库重导幂等依赖 _stabilize 按它反查键）。
             raw["_generated_key"] = True
             raw["_fallback_key"] = zotero_key
-            raw["_fallback_id"] = content_fallback_id(
+            raw["_fallback_id"] = f"{source_digest}:{record_no}"
+            # 内容稳定标识（U2-P5）：与文件字节/行号无关，同文件内相同内容
+            # 第 2+ 条加 "#N" occurrence 区分（不折叠真实重复行）；消费归
+            # 去重引擎 R6-D5，解析器与既有下游行为不因本字段改变
+            base_record_id = content_record_id(
                 doi=doi,
                 title=title,
                 authors=authors,
                 journal=journal,
                 year=year,
                 url=url,
+            )
+            occurrence = record_id_occurrences.get(base_record_id, 0) + 1
+            record_id_occurrences[base_record_id] = occurrence
+            raw["_record_id"] = (
+                base_record_id if occurrence == 1 else f"{base_record_id}#{occurrence}"
             )
         if record_warnings:
             raw["_parse_warnings"] = record_warnings

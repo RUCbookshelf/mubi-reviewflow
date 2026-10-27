@@ -79,7 +79,11 @@ class CsvEncodingTests(unittest.TestCase):
 
 
 class RisTerminatorTests(unittest.TestCase):
-    """U2-P8 + 复审新发现：缺 ER 的记录被 rispy 静默丢弃/吞并后续记录。"""
+    """U2-P8 + 复审新发现：缺 ER 的记录被 rispy 静默丢弃/吞并后续记录。
+
+    r2 评审 R3 口径：不整文件拒绝——完整记录照常导入，被丢弃/嵌合的
+    记录逐条显式告警。
+    """
 
     @staticmethod
     def _write(tmp: str, body: str) -> Path:
@@ -108,14 +112,23 @@ class RisTerminatorTests(unittest.TestCase):
         self.assertEqual([a.title for a in articles], ["Alpha", "Beta"])
         self.assertIn("嵌合", err.getvalue())
 
-    def test_last_record_missing_er_rejected(self):
+    def test_last_record_missing_er_imports_complete_with_warning(self):
+        # r2 评审 R3「绝不整文件拒绝」：末条缺 ER 不再 ParseError（此前实测
+        # CLI rc=2、0 行入库、Alpha 也被丢弃）——完整记录照常导入，被
+        # rispy 丢弃的记录逐条显式告警
+        from contextlib import redirect_stderr
+        from io import StringIO as _StringIO
+
         from coscreen.parsers.ris_parser import parse_ris
 
         body = "TY  - JOUR\nTI  - Alpha\nER  -\nTY  - JOUR\nTI  - Beta\n"
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ParseError) as ctx:
-                parse_ris(self._write(tmp, body))
-        self.assertIn("缺少结束标签 ER", str(ctx.exception))
+            err = _StringIO()
+            with redirect_stderr(err):
+                articles = parse_ris(self._write(tmp, body))
+        self.assertEqual([a.title for a in articles], ["Alpha"])
+        self.assertIn("第 2 条记录", err.getvalue())
+        self.assertIn("未被导入", err.getvalue())
 
     def test_complete_records_still_parse(self):
         from coscreen.parsers.ris_parser import parse_ris

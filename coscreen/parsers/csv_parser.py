@@ -134,11 +134,11 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
 
 
 # ---------------------------------------------------------------------------
-# 行级稳定内容标识（U2-P5）：替代「整文件 sha256:行号」的漂移标识
+# 行级内容稳定标识（U2-P5）：独立字段 raw["_record_id"]，不改 _fallback_id
 # ---------------------------------------------------------------------------
 
 
-def content_fallback_id(
+def content_record_id(
     *,
     doi: str,
     title: str,
@@ -147,12 +147,17 @@ def content_fallback_id(
     year: int | None,
     url: str,
 ) -> str:
-    """由记录自身规范化字段派生的稳定标识，与文件字节/行号/顺序无关。
+    """由记录自身规范化字段派生的内容摘要（不含 occurrence），前缀 "rec-"。
 
-    同一条记录重新导出（时间戳、顺序、注释行变化）得到同一标识；两条
-    完全相同的记录得到同一标识（自然并入同一行）。摘要不参与——摘要的
-    编辑不应改变记录身份。供 raw["_fallback_id"] 的消费方（键消歧后缀、
-    _stabilize_generated_import_keys）获得重导稳定性。
+    与文件字节/行号/顺序无关：同一条记录重新导出（时间戳、顺序、注释行
+    变化）得到同一摘要；摘要不参与——摘要编辑不应改变记录身份。
+    r2 评审 R1 裁定：``_fallback_id`` 必须保持 v2.1.3 出货形态
+    （sha256(整文件字节):行号），否则 2.1.3 库重导同一文件会新增行；
+    因此内容稳定标识放在**独立字段** ``raw["_record_id"]``（同文件内
+    相同内容的记录由解析器加 "#2"/"#3" occurrence 后缀区分，不折叠
+    真实重复行），消费与切换归去重引擎泳道 R6-D5——解析器与既有下游
+    （_stabilize_generated_import_keys/_conflict_suffix_key）的行为
+    不因本字段改变。
     """
     payload = "|".join(
         (doi, title, authors, journal, "" if year is None else str(year), url)
@@ -174,6 +179,26 @@ def is_legal_source_key(key: str) -> bool:
         and "\\" not in key
         and "\x00" not in key
     )
+
+
+def is_global_stable_identifier(key: str) -> bool:
+    """来源键是否为「全局稳定标识」（U2-P2：自由文本/序号不作键）。
+
+    Zotero RIS 的 AN 映射 archiveLocation 自由文本（可含空格、每条文献
+    各写各的），ID 是 Zotero 导入时明确忽略的标签，部分导出器逐条附加
+    纯数字序号——这些值跨文件/跨导出不是全局唯一，撞在同一键上会让
+    不同文献互相覆盖（r2 评审实测：两个单记录文件同 AN "Box 3"，第二
+    次导入「更新 1 条」，DB 只剩 Men，Women 被静默覆盖）。保守判定，
+    只降级明显非标识的形态，合法紧凑标识（Zotero 8 位键、WOS:…、
+    PMC…、6 位以上纯数字 PMID）不受影响：
+    - 含任意空白字符（archiveLocation 类自由文本，如 "Box 3"）；
+    - 纯数字且长度 <= 5（逐条序号）。
+    """
+    if any(ch.isspace() for ch in key):
+        return False
+    if key.isdigit() and len(key) <= 5:
+        return False
+    return True
 
 
 def _normalize_header(name: str) -> str:
@@ -274,6 +299,11 @@ def parse_csv(path: str | Path) -> list[Article]:
 
     reserved_columns: dict[str, int] = {}
     seen_keys: dict[str, str] = {}
+    record_id_occurrences: dict[str, int] = {}
+    # 2.1.3 出货形态（r2 评审 R1）：_fallback_id = sha256(整文件字节):行号，
+    # 下游 _stabilize_generated_import_keys/_conflict_suffix_key 按该串反查
+    # 键——保持逐字一致，2.1.3 库重导同一文件才能零新增
+    source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     articles: list[Article] = []
     for idx, row in enumerate(records):
         get = _row_getter(row, colmap)
@@ -308,14 +338,17 @@ def parse_csv(path: str | Path) -> list[Article]:
                 continue
             raw[col] = value
 
-        # 来源键降级（U2-P2/R6-P3）：非法键（后端不可达）或同文件内同键
-        # 不同文献（键不是行级标识，如 archiveLocation "Box 3"）时按无 Key
-        # 处理，走派生键；原值保留在 raw 供追溯，绝不静默沿用
+        # 来源键降级（U2-P2/R6-P3）：非法键（后端不可达）、非全局稳定标识
+        # （含空白的自由文本/短纯数字序号，跨文件会撞键覆盖）或同文件内
+        # 同键不同文献时按无 Key 处理，走派生键；原值保留在 raw 供追溯
         demoted = False
         if key_raw:
             if not is_legal_source_key(key_raw):
                 demoted = True
                 reason = "含非法字符（/、\\ 或超长），经后端接口不可达"
+            elif not is_global_stable_identifier(key_raw):
+                demoted = True
+                reason = "为自由文本/序号形态（含空白或短纯数字），不是全局稳定标识"
             elif key_raw in seen_keys and seen_keys[key_raw] != content_hash:
                 demoted = True
                 reason = "与本文件内另一条文献相同，不是行级唯一标识"
@@ -339,13 +372,22 @@ def parse_csv(path: str | Path) -> list[Article]:
         if not key_raw or demoted:
             raw["_generated_key"] = True
             raw["_fallback_key"] = zotero_key
-            raw["_fallback_id"] = content_fallback_id(
+            # v2.1.3 逐字一致的行定位标识（R1：2.1.3 库重导幂等依赖它）
+            raw["_fallback_id"] = f"{source_digest}:{idx + 2}"
+            # 内容稳定标识（U2-P5）：同文件内相同内容第 2+ 条加 "#N"
+            # occurrence，不折叠真实重复行；消费归去重引擎 R6-D5
+            base_record_id = content_record_id(
                 doi=doi,
                 title=title,
                 authors=authors,
                 journal=journal,
                 year=year,
                 url=url,
+            )
+            occurrence = record_id_occurrences.get(base_record_id, 0) + 1
+            record_id_occurrences[base_record_id] = occurrence
+            raw["_record_id"] = (
+                base_record_id if occurrence == 1 else f"{base_record_id}#{occurrence}"
             )
         if record_warnings:
             raw["_parse_warnings"] = record_warnings

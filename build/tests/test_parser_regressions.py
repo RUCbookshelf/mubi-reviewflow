@@ -7,18 +7,26 @@
 
 矩阵对应：
 - U2-P1 Author 列（集成轮已修，此处保持钉住）；
-- U2-P2/R6-P3 AN/ID 非法键与同文件键冲突（来源键降级 + 直调 upsert 消歧）；
+- U2-P2/R6-P3 AN/ID 非法键、非全局稳定标识（自由文本/短序号）与同文件
+  键冲突的降级；跨文件同键两文件 CLI 复现（r2 评审）；
 - U2-P3 首行字段数校验；U2-P12 物理行号；
-- U2-P5/R6-D5 _fallback_id 改记录内容稳定标识（重导幂等验收）；
+- U2-P5/复审#18：_fallback_id 保持 v2.1.3 形态（R1），内容稳定标识放
+  raw["_record_id"]（含同文件 occurrence 区分，不折叠真实重复行），
+  下游消费归 R6-D5（漂移族以 skip 钉住）；
 - U2-P6/P9/P10 J2/JA/Y1/SO/DI/A1 标签映射补齐；
-- U2-P8 + 复审 #12/#13/#17 TY/ER 预校验与 rispy 文法逐字对齐；
+- U2-P8 + 复审 #12/#13/#17：单空格 'ER -' 规范化后真正导入；末条缺 ER
+  不整文件拒绝（完整记录照常入库+逐条告警）；合法续行不误拒（r2 评审 R3）；
 - U2-P11 + 复审 #11/#16 编码回退置信度与告警（cp1252 不再静默乱码）；
+- U2-P7/R5#14 以 skip 钉住并归因 R6-D4/R6-D2；
 - R6-P2 用户保留列注入剔除；
-- R1 重导幂等验收（byte 级与内容级；2.1.3 旧 auto 键公式归 R6-D2 泳道）。
+- R1 验收：字节级重导零新增 + 2.1.3 形态预置库（旧 id+后缀行）CLI 与
+  _stabilize 两路重导零新增（V213PresetReimportTests）；2.1.3 旧 auto
+  键公式归 R6-D2（skip 注明）。
 """
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tempfile
@@ -31,6 +39,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from coscreen.parsers.csv_parser import parse_csv, ParseError
 from coscreen.parsers.ris_parser import parse_ris
+
+
+def _backend_main():
+    """按需导入 custom_backend.main（模块级 DATA_DIR 在首次导入时冻结）。
+
+    若本文件先于其他 Web 测试类运行且环境未设 COBOOKSHELF_DATA_DIR，
+    先指到临时目录——否则 DATA_DIR 冻结为仓库相对路径 ./data，后续
+    类的任务/用户库会写进仓库（测试顺序敏感，r2 会话实测 409 污染）。
+    """
+    if "COBOOKSHELF_DATA_DIR" not in os.environ:
+        os.environ["COBOOKSHELF_DATA_DIR"] = tempfile.mkdtemp(prefix="rf_parser_main_")
+    import custom_backend.main as main_mod
+
+    return main_mod
 
 # 与 custom_backend/main.py 的 _KEY_RE 逐字一致：含 "/"、"\"、NUL 或超长
 # 的键在 coding/fulltext 等端点不可达（U2-P2/R6-P3 的后端口径）
@@ -225,7 +247,7 @@ class CsvReservedColumnTests(unittest.TestCase):
 
     def test_stabilize_ignores_injected_reserved_columns(self):
         # 下游真实 _stabilize_generated_import_keys：注入值被剔除后不得坍缩键
-        from custom_backend.main import _stabilize_generated_import_keys
+        _stabilize_generated_import_keys = _backend_main()._stabilize_generated_import_keys
 
         with tempfile.TemporaryDirectory() as tmp:
             path = _write(
@@ -244,16 +266,57 @@ class CsvReservedColumnTests(unittest.TestCase):
 class RisTerminatorGrammarTests(unittest.TestCase):
     """U2-P8 + 复审 #12/#13/#17：TY/ER 预校验与 rispy 文法逐字对齐。"""
 
-    def test_last_record_single_space_er_rejected(self):
-        # 复审 #13 原样回放：'ER -'（单空格）曾通过预校验后让 Beta 静默丢失
+    def test_last_record_single_space_er_normalized_imports_both(self):
+        # r2 评审 R3 裁定：单空格 'ER -' 是终止行笔误（Zotero 导入器自身
+        # 允许 1-2 空格），不得整文件拒绝——规范化为 'ER  -' 后 Beta 真正
+        # 导入（修复前：rc=2、0 行入库、Alpha 也被丢弃）
         body = "TY  - JOUR\nTI  - Alpha\nER  -\nTY  - JOUR\nTI  - Beta\nER -\n"
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ParseError) as ctx:
-                parse_ris(_write(tmp, "p8.ris", body))
-        message = str(ctx.exception)
-        self.assertIn("缺少结束标签 ER", message)
+            err = StringIO()
+            with redirect_stderr(err):
+                articles = parse_ris(_write(tmp, "p8.ris", body))
+        self.assertEqual([a.title for a in articles], ["Alpha", "Beta"])
+        self.assertNotIn("缺少结束标签 ER", err.getvalue())
+
+    def test_last_record_missing_er_imports_complete_with_warning(self):
+        # r2 评审 R3「绝不整文件拒绝」：末条完全缺 ER 时完整记录（Alpha）
+        # 照常导入，被 rispy 丢弃的记录（Beta）逐条显式告警，不再 ParseError
+        body = "TY  - JOUR\nTI  - Alpha\nER  -\nTY  - JOUR\nTI  - Beta\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            err = StringIO()
+            with redirect_stderr(err):
+                articles = parse_ris(_write(tmp, "trunc.ris", body))
+        self.assertEqual([a.title for a in articles], ["Alpha"])
+        message = err.getvalue()
         self.assertIn("第 2 条记录", message)
         self.assertIn("第 4 行", message)
+        self.assertIn("Beta", message)  # 标题定位
+        self.assertIn("未被导入", message)
+
+    def test_cli_import_survives_damaged_last_record(self):
+        # r2 评审要求：CLI 不得因末条损坏而 0 行退出 2；Alpha 必须已入库
+        import coscreen.cli as cli
+        from argparse import Namespace
+        from contextlib import redirect_stdout
+
+        body = "TY  - JOUR\nTI  - Alpha\nAU  - Alice\nDO  - 10.1/a\nER  -\nTY  - JOUR\nTI  - Beta\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "dmg.ris", body)
+            db_path = str(Path(tmp) / "dmg.db")
+            err = StringIO()
+            out = StringIO()
+            with redirect_stderr(err), redirect_stdout(out):
+                code = cli.cmd_import(
+                    Namespace(file=str(path), db=db_path, screener=None,
+                              task=None, auto_merge_fuzzy=False)
+                )
+            self.assertEqual(code, 0)
+            import sqlite3
+            from contextlib import closing
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute("SELECT title FROM articles").fetchall()
+        self.assertEqual(rows, [("Alpha",)])
 
     def test_mid_record_missing_er_warns_chimera(self):
         # 中部缺 ER：rispy 不丢弃记录（返回数与 ER 数一致）而是生成嵌合记录
@@ -455,7 +518,9 @@ class SourceKeyDemotionTests(unittest.TestCase):
     """U2-P2/R6-P3：非法键与同文件键冲突降级为派生键，直调 upsert 不再覆盖。"""
 
     def test_same_an_different_titles_not_collapsed(self):
-        # 首审 U2-P2 原样回放：同 'AN  - Box 3' 的 Women/Men 曾 exact_key 合并剩 1 行
+        # 首审 U2-P2 原样回放：同 'AN  - Box 3' 的 Women/Men 曾 exact_key 合并剩 1 行。
+        # r2 评审后口径：'Box 3' 含空白属 archiveLocation 自由文本，两条一致
+        # 降级为内容派生键（跨文件也不再撞键覆盖）
         body = (
             "TY  - JOUR\nTI  - Women in science\nAU  - Womon, Wendy\nAN  - Box 3\nER  -\n"
             "TY  - JOUR\nTI  - Men in science\nAU  - Mandel, Mark\nAN  - Box 3\nER  -\n"
@@ -465,11 +530,12 @@ class SourceKeyDemotionTests(unittest.TestCase):
             with redirect_stderr(err):
                 articles = parse_ris(_write(tmp, "box3.ris", body))
         keys = [a.zotero_key for a in articles]
-        self.assertEqual(keys[0], "Box 3")  # 首条保留原键（最小改动）
         self.assertNotEqual(keys[0], keys[1])
-        self.assertTrue(keys[1].startswith("auto-"))
-        self.assertEqual(articles[1].raw.get("_demoted_source_key"), "Box 3")
-        self.assertIn("不是行级唯一标识", " ".join(articles[1].raw.get("_parse_warnings", [])))
+        self.assertTrue(all(k.startswith("auto-") for k in keys))
+        self.assertEqual(
+            [a.raw.get("_demoted_source_key") for a in articles], ["Box 3", "Box 3"]
+        )
+        self.assertIn("不是全局稳定标识", " ".join(articles[0].raw.get("_parse_warnings", [])))
         self.assertIn("Box 3", err.getvalue())
 
     def test_same_an_direct_upsert_keeps_two_rows(self):
@@ -555,6 +621,76 @@ class SourceKeyDemotionTests(unittest.TestCase):
                 )[0]
             self.assertEqual(article.zotero_key, key)
 
+    def test_free_text_and_sequence_keys_demoted(self):
+        # r2 评审 U2-P2：单记录 'AN - Box 3'（含空白自由文本）与 'ID - 1'
+        # （短纯数字序号）不是全局稳定标识，跨文件会撞键覆盖——一致降级 auto
+        for tag, key in (("AN", "Box 3"), ("ID", "1"), ("AN", "123")):
+            with tempfile.TemporaryDirectory() as tmp:
+                with redirect_stderr(StringIO()):
+                    article = parse_ris(
+                        _write(
+                            tmp,
+                            f"seq{key[-2:]}.ris",
+                            f"TY  - JOUR\nTI  - Paper {key}\n{tag}  - {key}\nER  -\n",
+                        )
+                    )[0]
+            self.assertTrue(
+                article.zotero_key.startswith("auto-"),
+                f"{tag}={key!r} 应降级，实际 {article.zotero_key!r}",
+            )
+            self.assertEqual(article.raw.get("_demoted_source_key"), key)
+
+
+class CrossFileKeyClashTests(unittest.TestCase):
+    """r2 评审 U2-P2：跨文件同键不同文献曾「更新 1 条」覆盖（DB 只剩 Men）。"""
+
+    @staticmethod
+    def _import(db_path: str, path: Path) -> None:
+        from argparse import Namespace
+        from contextlib import redirect_stdout
+        import coscreen.cli as cli
+
+        with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+            code = cli.cmd_import(
+                Namespace(file=str(path), db=db_path, screener=None,
+                          task=None, auto_merge_fuzzy=False)
+            )
+        assert code == 0
+
+    def test_two_files_same_an_both_survive(self):
+        # 评审复现原样回放：两个单记录文件同 AN 'Box 3'，第二次导入
+        # 曾「更新 1 条」把 Women 覆盖成 Men；降级 auto 后两行都在
+        import sqlite3
+        from contextlib import closing
+
+        women = "TY  - JOUR\nTI  - Women in science\nAU  - Womon, Wendy\nAN  - Box 3\nER  -\n"
+        men = "TY  - JOUR\nTI  - Men in science\nAU  - Mandel, Mark\nAN  - Box 3\nER  -\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "t.db")
+            for i, body in enumerate((women, men)):
+                self._import(db_path, _write(tmp, f"f{i}.ris", body))
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute("SELECT title FROM articles ORDER BY title").fetchall()
+        self.assertEqual(rows, [("Men in science",), ("Women in science",)])
+
+    def test_two_files_same_numeric_id_both_survive(self):
+        import sqlite3
+        from contextlib import closing
+
+        women = "TY  - JOUR\nTI  - Women in science\nAU  - Womon, Wendy\nID  - 1\nER  -\n"
+        men = "TY  - JOUR\nTI  - Men in science\nAU  - Mandel, Mark\nID  - 1\nER  -\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "t.db")
+            for i, body in enumerate((women, men)):
+                self._import(db_path, _write(tmp, f"g{i}.ris", body))
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute("SELECT title FROM articles ORDER BY title").fetchall()
+        self.assertEqual(rows, [("Men in science",), ("Women in science",)])
+
+
+class CsvInFileKeyClashTests(unittest.TestCase):
+    """CSV 同文件同键冲突降级（U2-P2 的 CSV 侧）。"""
+
     def test_csv_duplicate_key_demotion(self):
         with tempfile.TemporaryDirectory() as tmp:
             err = StringIO()
@@ -572,7 +708,15 @@ class SourceKeyDemotionTests(unittest.TestCase):
 
 
 class FallbackIdStabilityTests(unittest.TestCase):
-    """U2-P5/复审 #18：_fallback_id 改记录内容稳定标识，重导不再漂移。"""
+    """U2-P5/复审 #18 + r2 评审 R1/U2-P5 定案：
+
+    - ``_fallback_id`` 保持 v2.1.3 出货形态（sha256(整文件字节):行号）——
+      2.1.3 库重导幂等依赖它，改形态即 R1 断裂（r2 评审实测 n_new 0→2）；
+    - 内容稳定标识放独立字段 ``raw["_record_id"]``（同文件相同内容加
+      "#N" occurrence，不折叠真实重复行），消费与切换归去重引擎 R6-D5；
+    - 「换字节重导零新增」在 _fallback_id 旧形态下不成立（后缀随文件
+      摘要漂移），整族以 skip 钉住并注明 R6-D5 归属。
+    """
 
     @staticmethod
     def _smith_file(tmp: str, name: str, extra: str = "") -> Path:
@@ -583,19 +727,72 @@ class FallbackIdStabilityTests(unittest.TestCase):
         ) + extra
         return _write(tmp, name, body)
 
-    def test_fallback_id_stable_across_file_change(self):
-        # 复审 #18 原样回放：仅追加 '; exported again' 后标识/后缀曾漂移
+    def test_fallback_id_matches_v2_1_3_format(self):
+        # R1 钉：_fallback_id 与 git show v2.1.3:...ris_parser.py:96-97 的
+        # f"{sha256(文件字节).hexdigest()}:{record_no}" 逐字一致
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._smith_file(tmp, "a.ris")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            articles = parse_ris(path)
+        self.assertEqual(
+            [a.raw["_fallback_id"] for a in articles],
+            [f"{digest}:1", f"{digest}:2"],
+        )
+
+    def test_record_id_stable_across_file_change(self):
+        # 内容稳定标识（独立字段）：换字节重导出后逐条相同（U2-P5 的
+        # 解析侧交付物；下游消费归 R6-D5）
         with tempfile.TemporaryDirectory() as tmp:
             base = parse_ris(self._smith_file(tmp, "a.ris"))
             reexport = parse_ris(self._smith_file(tmp, "b.ris", "; exported again\n"))
         self.assertEqual(
-            [a.raw["_fallback_id"] for a in base],
-            [a.raw["_fallback_id"] for a in reexport],
+            [a.raw["_record_id"] for a in base],
+            [a.raw["_record_id"] for a in reexport],
         )
+        # 同文件内两条不同内容记录的 _record_id 互不相同
+        self.assertNotEqual(base[0].raw["_record_id"], base[1].raw["_record_id"])
 
-    def test_reimport_after_file_change_adds_zero_rows(self):
-        # 端到端（CLI 同序管道：find_duplicates → stabilize → upsert）：
-        # 首导 2 行；换字节重导（文件加注释行）不得新增第 3 行
+    def test_identical_records_get_occurrence_suffixed_record_ids(self):
+        # r2 评审 U2-P5 定案：同文件内完全相同的记录不折叠——第 2 条的
+        # _record_id 加 "#2" occurrence 区分（供 R6-D5 保持 2 行基线）
+        body = (
+            "TY  - JOUR\nTI  - Intro\nAU  - Carol\nER  -\n"
+            "TY  - JOUR\nTI  - Intro\nAU  - Carol\nER  -\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            articles = parse_ris(_write(tmp, "intro.ris", body))
+        ids = [a.raw["_record_id"] for a in articles]
+        self.assertNotEqual(ids[0], ids[1])
+        self.assertTrue(ids[1].startswith(ids[0]) and "#2" in ids[1])
+
+    def test_identical_records_keep_two_rows_web_and_direct(self):
+        # r2 评审 U2-P5 复现原样回放：两条 'Intro'/Carol 曾被折叠成 1 行
+        # （Web stabilize 后同键、直调 upsert n_new=1）。恢复 2.1.3 形态
+        # _fallback_id 后两路均回到 2 行基线
+        import coscreen.db as db_mod
+
+        _stabilize_generated_import_keys = _backend_main()._stabilize_generated_import_keys
+
+        body = (
+            "TY  - JOUR\nTI  - Intro\nAU  - Carol\nER  -\n"
+            "TY  - JOUR\nTI  - Intro\nAU  - Carol\nER  -\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            articles = parse_ris(_write(tmp, "intro.ris", body))
+            _stabilize_generated_import_keys([], articles)
+            keys = [a.zotero_key for a in articles]
+            self.assertEqual(len(set(keys)), 2)
+            db_path = str(Path(tmp) / "t.db")
+            db_mod.init_db(db_path)
+            summary = db_mod.upsert_articles(db_path, articles, [])
+            rows = db_mod.list_articles(db_path, include_duplicates=True)
+        self.assertEqual(summary.n_new, 2)
+        self.assertEqual(len(rows), 2)
+
+    def test_reimport_byte_identical_zero_new_rows(self):
+        # 字节级幂等（同一文件重导）：CLI 同序管道下零新增
         import coscreen.db as db_mod
         from coscreen.dedup import find_duplicates, stabilize_conflicting_keys
 
@@ -609,49 +806,28 @@ class FallbackIdStabilityTests(unittest.TestCase):
                     report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs,
                     known=known,
                 )
-                return db_mod.upsert_articles(db_path, articles, report.exact_pairs), articles
+                return db_mod.upsert_articles(db_path, articles, report.exact_pairs)
 
         with tempfile.TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "t.db")
             db_mod.init_db(db_path)
-            summary1, arts1 = import_once(db_path, self._smith_file(tmp, "a.ris"))
-            rows1 = db_mod.list_articles(db_path, include_duplicates=True)
-            self.assertEqual(len(rows1), 2)
+            summary1 = import_once(db_path, self._smith_file(tmp, "a.ris"))
             self.assertEqual(summary1.n_new, 2)
-            self.assertNotEqual(arts1[0].zotero_key, arts1[1].zotero_key)
-            # 字节级幂等：同一文件重导零新增
-            summary2, _ = import_once(db_path, self._smith_file(tmp, "a2.ris"))
+            summary2 = import_once(db_path, self._smith_file(tmp, "a2.ris"))
             self.assertEqual(summary2.n_new, 0)
-            self.assertEqual(len(db_mod.list_articles(db_path, include_duplicates=True)), 2)
-            # 内容级幂等：仅加一行注释的重导出（U2-P5 验收）零新增
-            summary3, _ = import_once(
-                db_path, self._smith_file(tmp, "b.ris", "; exported again\n")
+            self.assertEqual(
+                len(db_mod.list_articles(db_path, include_duplicates=True)), 2
             )
-            self.assertEqual(summary3.n_new, 0)
-            self.assertEqual(len(db_mod.list_articles(db_path, include_duplicates=True)), 2)
 
-    def test_web_stabilize_path_stable_across_file_change(self):
-        # Web 导入路径（真实 _stabilize_generated_import_keys）同样稳定
-        from custom_backend.main import _stabilize_generated_import_keys
-
-        with tempfile.TemporaryDirectory() as tmp:
-            first = parse_ris(self._smith_file(tmp, "a.ris"))
-            _stabilize_generated_import_keys([], first)
-            reexport = parse_ris(self._smith_file(tmp, "b.ris", "; exported again\n"))
-            _stabilize_generated_import_keys(first, reexport)
-        self.assertEqual(
-            [a.zotero_key for a in first], [a.zotero_key for a in reexport]
-        )
-
-    def test_identical_records_share_fallback_id(self):
-        # 完全相同的记录共享标识：自然并入同一行（真实重复的正确语义）
-        body = (
-            "TY  - JOUR\nTI  - Intro\nAU  - Carol\nER  -\n"
-            "TY  - JOUR\nTI  - Intro\nAU  - Carol\nER  -\n"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            articles = parse_ris(_write(tmp, "intro.ris", body))
-        self.assertEqual(articles[0].raw["_fallback_id"], articles[1].raw["_fallback_id"])
+    @unittest.skip(
+        "R6-D5（去重引擎泳道）：_fallback_id 按 r2 评审 R1 裁定保持 v2.1.3 形态"
+        "（sha256(整文件):行号），其派生后缀随文件字节漂移——「仅加一行注释的"
+        "重导出零新增」（复审 #18/U2-P5 验收）需下游改用 raw['_record_id']（本"
+        "轮已按内容+occurrence 生成）后在 dedup/main 两处消费方落地；解析器侧"
+        "单方面改 _fallback_id 会使 2.1.3 库重导新增行（r2 评审实测 0→1/2）"
+    )
+    def test_reimport_after_file_change_adds_zero_rows(self):
+        raise NotImplementedError
 
 
 class ReImportIdempotencyTests(unittest.TestCase):
@@ -695,14 +871,35 @@ class ReImportIdempotencyTests(unittest.TestCase):
             # 字节级重导：零新增、主键不变
             summary = import_once(db_path, self._file(tmp, "a2.ris"))
             self.assertEqual(summary.n_new, 0)
-            # 内容级重导（文件尾部加注释行）：零新增、主键不变
-            summary = import_once(db_path, self._file(tmp, "b.ris", "; exported again\n"))
-            self.assertEqual(summary.n_new, 0)
             rows = db_mod.list_articles(db_path, include_duplicates=True)
             self.assertEqual(
                 sorted(a.zotero_key for a in rows), sorted(keys_after_first)
             )
             self.assertEqual(len(rows), 2)
+            # （内容级重导「文件尾部加注释行零新增」归 R6-D5：_fallback_id
+            # 按 r2 评审 R1 裁定保持 v2.1.3 形态，后缀随文件摘要漂移，
+            # 见 FallbackIdStabilityTests 的 skip 钉与 raw["_record_id"]）
+
+    @unittest.skip(
+        "R6-D5（去重引擎泳道）：_fallback_id 保持 v2.1.3 形态（r2 评审 R1），"
+        "其派生消歧后缀随整文件摘要漂移——「重导出（文件加注释行）零新增」"
+        "需下游（dedup.py:320-330 / main.py _stabilize）改用 raw['_record_id']；"
+        "解析器侧已按内容+occurrence 生成 _record_id 备用"
+    )
+    def test_reimport_modified_file_zero_new_rows(self):
+        raise NotImplementedError
+
+    @unittest.skip(
+        "R6-D4/R6-D2（去重引擎泳道）：auto 键公式 normalize.py:build_zotero_key 仅含"
+        " content_hash|姓氏|年份，同姓同年同题（Smith John/Jane 2020 同题）两记录"
+        "同键，直调 db.upsert_articles 主键 upsert 坍缩 1 行（n_new=1,n_existing=1，"
+        "r5 复审 #14 原样）；无作者/无年份同题同理。CLI/Web/living 路径靠 stabilize"
+        " 后缀保 2 行（test_reimport_byte_identical_zero_new_rows 已钉）。键公式不在"
+        "本泳道（normalize.py 归回归泳道不碰）；解析器侧预加后缀会复制 dedup 的"
+        "后缀公式并与 R6-D5 的 _record_id 切换耦合，归 R6-D4+R6-D5 一并定案"
+    )
+    def test_smith_john_jane_same_key_direct_upsert_two_rows(self):
+        raise NotImplementedError
 
     @unittest.skip(
         "R6-D2（去重引擎泳道）：2.1.3 旧 auto-* 键公式（sha1(doi|title)）与新公式"
@@ -713,6 +910,104 @@ class ReImportIdempotencyTests(unittest.TestCase):
         # 验收（R6-D2 落地后启用）：按 2.1.3 公式预置 auto-<sha1(doi|title)[:12]>
         # 行后重导同一 RIS，断言零新增
         raise NotImplementedError
+
+
+class V213PresetReimportTests(unittest.TestCase):
+    """r2 评审 R1 验收：2.1.3 形态预置库（旧 id + 后缀行）→ 两路重导零新增。
+
+    预置行的 _fallback_id 与后缀键按 v2.1.3 出货代码手工构造：
+    - id：git show v2.1.3:coscreen/parsers/ris_parser.py:96-97 的
+      f"{sha256(文件字节).hexdigest()}:{record_no}"；
+    - Web 后缀：v2.1.3 custom_backend/main.py:1425 的
+      sha256(fallback_id)[:12]；
+    - CLI 后缀：coscreen/dedup.py _conflict_suffix_key 的
+      sha256(f"{key}|{fallback_id}")[:12]。
+    """
+
+    BODY = (
+        "TY  - JOUR\nTI  - Same Topic\nAU  - Smith, John\nPY  - 2020\nER  -\n"
+        "TY  - JOUR\nTI  - Same Topic\nAU  - Smith, Jane\nPY  - 2020\nER  -\n"
+    )
+
+    @staticmethod
+    def _preset(articles, digest: str, suffix_fn) -> list:
+        preset = []
+        for art, fbid in zip(articles, (f"{digest}:1", f"{digest}:2")):
+            row = type(art)(**art.__dict__)
+            row.raw = dict(art.raw)
+            row.raw["_fallback_id"] = fbid
+            if not fbid.endswith(":1"):
+                row.zotero_key = f"{articles[0].zotero_key}-{suffix_fn(fbid)}"
+            preset.append(row)
+        return preset
+
+    def test_web_stabilize_reuses_2_1_3_preset_keys(self):
+        # r2 评审 R1 复现原样回放：预置 2.1.3 形态行后，incoming 若用新形态
+        # id 曾稳定选中全新后缀键（n_new=2、DB 4 行）；恢复旧形态后必须
+        # 逐条复用预置键（n_new=0、仍 2 行）
+        import hashlib
+
+        import coscreen.db as db_mod
+
+        _stabilize_generated_import_keys = _backend_main()._stabilize_generated_import_keys
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "smith.ris", self.BODY)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            articles = parse_ris(path)
+            web_suffix = (
+                lambda fbid: hashlib.sha256(fbid.encode("utf-8")).hexdigest()[:12]
+            )
+            preset = self._preset(articles, digest, web_suffix)
+            db_path = str(Path(tmp) / "web.db")
+            db_mod.init_db(db_path)
+            db_mod.upsert_articles(db_path, preset, [])
+            incoming = parse_ris(path)
+            _stabilize_generated_import_keys(
+                db_mod.list_articles(db_path, include_duplicates=True), incoming
+            )
+            self.assertEqual(
+                [a.zotero_key for a in incoming], [a.zotero_key for a in preset]
+            )
+            summary = db_mod.upsert_articles(db_path, incoming, [])
+            rows = db_mod.list_articles(db_path, include_duplicates=True)
+        self.assertEqual(summary.n_new, 0)
+        self.assertEqual(len(rows), 2)
+
+    def test_cli_reimport_2_1_3_preset_zero_new_rows(self):
+        # CLI 同序管道（find_duplicates → stabilize_conflicting_keys → upsert）
+        # 对 dedup 公式后缀的 2.1.3 预置库同样零新增
+        import hashlib
+        import sqlite3
+        from argparse import Namespace
+        from contextlib import closing, redirect_stdout
+
+        import coscreen.cli as cli
+        import coscreen.db as db_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "smith.ris", self.BODY)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            articles = parse_ris(path)
+            base = articles[0].zotero_key
+            dedup_suffix = (
+                lambda fbid: hashlib.sha256(f"{base}|{fbid}".encode("utf-8")).hexdigest()[:12]
+            )
+            preset = self._preset(articles, digest, dedup_suffix)
+            db_path = str(Path(tmp) / "cli.db")
+            db_mod.init_db(db_path)
+            db_mod.upsert_articles(db_path, preset, [])
+            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+                code = cli.cmd_import(
+                    Namespace(file=str(path), db=db_path, screener=None,
+                              task=None, auto_merge_fuzzy=False)
+                )
+            self.assertEqual(code, 0)
+            with closing(sqlite3.connect(db_path)) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+                titles = conn.execute("SELECT COUNT(DISTINCT title) FROM articles").fetchone()[0]
+        self.assertEqual(count, 2)  # 零新增：仍是预置的 2 行
+        self.assertEqual(titles, 1)
 
 
 if __name__ == "__main__":

@@ -685,10 +685,10 @@ class CliImportSemanticsTests(unittest.TestCase):
 
     def test_same_id_different_articles_both_survive(self):
         # 首审实测：两条 ID - 1 不同文献曾静默覆盖只剩一条。
-        # r6 解析器泳道（U2-P2）口径变化：同文件内同键不同文献在解析侧即
-        # 降级为内容派生键（方向：序号/自由文本键回退 auto），不再依赖
-        # 去重层的「键消歧」后缀——两行仍都落库且重导幂等（降级键由内容
-        # 派生故跨导出稳定；跨文件键冲突仍走去重层键消歧路径不变）。
+        # r6 解析器泳道（U2-P2，r2 评审判定）口径：'1' 为短纯数字序号，
+        # 非全局稳定标识——解析侧即降级为内容派生键（跨文件同键也不再有
+        # 「更新 1 条」覆盖）；两行都落库且重导幂等，跨文件键冲突仍走
+        # 去重层键消歧路径不变。
         with tempfile.TemporaryDirectory(prefix="rf_u1cli3_") as tmp:
             ris = Path(tmp) / "id.ris"
             db = str(Path(tmp) / "id.db")
@@ -700,14 +700,13 @@ class CliImportSemanticsTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("导入 2 条", proc.stdout)
             # 解析侧降级告警可见（stderr），键在入库前已消歧
-            self.assertIn("不是行级唯一标识", proc.stderr)
+            self.assertIn("不是全局稳定标识", proc.stderr)
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, title, is_duplicate_of FROM articles ORDER BY import_order"
                 ).fetchall()
             self.assertEqual(len(rows), 2)
-            self.assertEqual(rows[0][0], "1")
-            self.assertTrue(rows[1][0].startswith("auto-"))
+            self.assertTrue(all(r[0].startswith("auto-") for r in rows))
             self.assertEqual([r[2] for r in rows], [None, None])
             # 重导同一文件幂等（不冲突不重复消歧，行数不变）
             proc2 = _run_cli(["import", "--file", str(ris), "--db", db])
