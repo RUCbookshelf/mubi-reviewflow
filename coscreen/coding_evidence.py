@@ -47,8 +47,13 @@ def migrate(db: str | Path) -> None:
         for statement in _SCHEMA.split(';'):
             if statement.strip():
                 conn.execute(statement)
-        if workflow.has_table(conn, 'workspace_undo') and 'request_id' not in {r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}:
-            conn.execute('ALTER TABLE workspace_undo ADD COLUMN request_id TEXT')
+        if workflow.has_table(conn, 'workspace_undo'):
+            # 旧库自愈：补齐撤销 journal 的追加列（键与既有行不重写）。
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
+            if 'request_id' not in columns:
+                conn.execute('ALTER TABLE workspace_undo ADD COLUMN request_id TEXT')
+            if 'superseded' not in columns:
+                conn.execute('ALTER TABLE workspace_undo ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0')
         conn.execute('INSERT INTO workflow_migrations VALUES(?,?)', (MIGRATION_VERSION, coding._now()))
 
 
@@ -72,7 +77,11 @@ def field_rows(db: str | Path) -> list[dict]:
 def current_owner_db(db: str | Path) -> Path:
     from coscreen import task_collaboration, tasks
     path = Path(db)
-    owner = task_collaboration.get_owner(task_collaboration.shared_store_path(path.parent))
+    # U4-P8：get_owner 必传 task_id（任务目录名），使属主-任务绑定校验与
+    # review_workflow_api.context 同口径：库文件被错拷/恢复到错误任务目录时
+    # 不再把数据路径重定向到 owner 的个人库，而是回退原路径。
+    owner = task_collaboration.get_owner(
+        task_collaboration.shared_store_path(path.parent), task_id=path.parent.name)
     candidate = path.parent / (tasks.slugify_screener(owner['owner_username']) + '.db') if owner else path
     return candidate if candidate.is_file() else path
 
@@ -329,3 +338,6 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
         if submission_evidence:
             before['access_context'] = after['access_context'] = undo.SUBMISSION_EVIDENCE
         undo.record_save(conn, context, 'coding', key, before, after)
+        # 保存后复位不再被引用的上传附件标记，让 7 天垃圾回收可回收（U3-P8）；
+        # 仍被 coding_note_images 或活跃撤销快照引用的文件保持 attached=1。
+        undo.release_detached_uploads(conn, context, key)

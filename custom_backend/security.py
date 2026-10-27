@@ -2,30 +2,40 @@
 
 - 安全头由纯 ASGI 中间件注入（不经 BaseHTTPMiddleware，避免流式响应陷阱）；
 - 登录限流：内存滑动窗口，按客户端 IP 计数（5 次/分钟），超限 429 + Retry-After；
-- 上传安全：大小上限、扩展名白名单、文件名清洗（防路径穿越/控制字符）、
-  magic bytes 校验（PDF=%PDF-，CSV/RIS=可解码文本且无 NUL 字节）；
+- 上传安全：Content-Length 预检（解析前 413）+ 大小上限 + 扩展名白名单 +
+  文件名清洗（防路径穿越/控制字符/Windows 保留设备名）、magic bytes 校验；
 - 路径防护：is_relative_to 判定解析后的真实路径不得逃出白名单根目录。
+
+注意：``%PDF-`` 等 magic bytes 校验只确认文件头形状，**不是内容安全边界**
+（U5-P9/P11：polyglot 可伪造文件头）；真正的缓解是同源回放 + nosniff +
+CSP，以及保存时用 pypdf 实际解析（0 页拒绝，见 coscreen.fulltext.save_pdf）。
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
 
 __all__ = [
     "MAX_UPLOAD_BYTES",
+    "EventTicketStore",
+    "MultipartStructureRejected",
     "RateLimiter",
     "SecurityHeadersMiddleware",
+    "UploadSizeLimitMiddleware",
     "content_security_policy",
     "inline_script_hashes",
     "clean_upload_name",
     "check_pdf_bytes",
     "check_text_bytes",
     "is_within",
+    "rate_limit_key",
     "safe_path_under",
 ]
 
@@ -211,21 +221,69 @@ class RateLimiter:
 login_limiter = RateLimiter(max_events=5, window_seconds=60.0)
 
 
+def rate_limit_key(action: str, client_host: str | None,
+                   forwarded_for: str | None) -> str:
+    """限流桶 key（U5-P5：X-Forwarded-For 不可信）。
+
+    - 直连（无 XFF 头）：按连接对端 IP 分桶；
+    - 带任意 X-Forwarded-For 头：**不信任 XFF 值**（同源直连部署下可被
+      客户端伪造、无限轮换绕过按 IP 限流），全部归入一个固定桶——伪造者
+      只会把自己（和同桶的其他伪造请求）限得更死，无法扩大配额；
+    - 反向代理部署下真实客户端 IP 只存在于 XFF 中，应用层无法区分真伪，
+      登录/注册限流应由反代层完成（见 docs/deployment/UBUNTU_SERVER.md）。
+    """
+    if forwarded_for:
+        return f"{action}:xff-untrusted"
+    return f"{action}:{client_host or '?'}"
+
+
 # ---------------------------------------------------------------------------
 # 上传校验
 # ---------------------------------------------------------------------------
 
+#: Windows 保留设备名（CON/NUL/COM1..9/LPT1..9 等，带任意扩展名同样保留）
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+#: 清洗后文件名总长上限（含扩展名）
+_MAX_NAME_LENGTH = 180
+
+#: 视为"扩展名"的最大长度（含点）；超过即按无扩展名整体截断（评审回归：
+#: 'a.'+'b'*300 这类"扩展名本身超长"的名字此前会突破 180 上限）
+_MAX_EXTENSION_LENGTH = 40
+
+
 def clean_upload_name(filename: str, fallback: str = "upload") -> str:
-    """清洗上传文件名：去目录成分、去控制字符、去 ".."、限制长度。
+    """清洗上传文件名：去目录成分、去控制字符、去 ".."、规避保留设备名、限长。
 
     只保留最终成分（``Path(...).name`` 语义 + 显式剥离分隔符），清洗后为空
-    回退 fallback。**返回值只用于展示/派生名称，落盘路径一律由服务端构造。**
-    """
+    回退 fallback。**返回值只用于展示/派生名称，落盘路径一律由服务端构造。"""
+
+    def _truncate(name: str) -> str:
+        # U5-P8：先取最后一个扩展名再截断主体，保证 ".csv" 等合法后缀
+        # 不会被截掉（截掉后 check_extension 会把超长文件名误判 415）；
+        # "扩展名"本身超长时按无扩展名整体截断，保证结果恒 ≤ 180。
+        if len(name) <= _MAX_NAME_LENGTH:
+            return name
+        stem, dot, ext = name.rpartition(".")
+        if not stem or len(dot) + len(ext) > _MAX_EXTENSION_LENGTH:
+            return name[:_MAX_NAME_LENGTH]
+        return stem[: _MAX_NAME_LENGTH - (len(dot) + len(ext))] + dot + ext
+
     name = (filename or "").replace("\\", "/").split("/")[-1]
     name = _UNSAFE_NAME_RE.sub("", name).strip().strip(".")
     if name in ("", ".", ".."):
         name = fallback
-    return name[:180]
+    # U5-P8：Windows 保留设备名（NUL 落盘静默丢数据、CON/COM1 可能重定向
+    # 设备）加下划线前缀规避。Win32 按第一个点之前的基名判定，因此
+    # "NUL.tar.gz"/"COM1.csv" 同样命中。
+    base = name.split(".", 1)[0].rstrip(". ")
+    if base.upper() in _WINDOWS_RESERVED_NAMES:
+        name = "_" + name
+    return _truncate(name)
 
 
 def stem_of(filename: str) -> str:
@@ -301,3 +359,293 @@ def safe_path_under(root: Path, *parts: str) -> Path:
     if not is_within(candidate, root):
         raise UploadRejected("非法路径。", status=400)
     return candidate
+
+
+# ---------------------------------------------------------------------------
+# 请求体 Content-Length / 结构预检（U5-P3）
+# ---------------------------------------------------------------------------
+
+class _MultipartFilePartCounter:
+    """流式统计 multipart 请求里的**文件 part** 数（part 头含 filename）。
+
+    只观察流经的字节、不修改不缓存整个请求；发现第 ``max_files + 1`` 个
+    文件 part 的头部即抛 :class:`MultipartStructureRejected`——该 part 的
+    内容不会再被转发给解析器，落盘量以端点声明的文件数上限为界
+    （评审三轮：21×1.1MiB 已认证 import-batch 曾在文件数校验前全部 spool）。
+
+    判定依据与 Starlette 一致：part 头部块（到空行 ``\\r\\n\\r\\n`` 为止）
+    里出现 ``filename``（formparsers.py 按该键区分文件/字段）。已知边界：
+    名字恰为 "filename" 的**表单字段**也会被计入——本产品各端点的表单
+    字段名均不含该词，误报只可能来自攻击者自伤。
+    """
+
+    _SCAN = 0
+    _HEADERS = 1
+    _DONE = 2
+    #: part 头部块的最大观察长度（超过按不可分类跳过，防御异常结构）
+    _MAX_HEADER_BYTES = 4096
+
+    def __init__(self, boundary: bytes, max_files: int) -> None:
+        self._delim = b"\r\n--" + boundary
+        self._lead = b"--" + boundary
+        self._max_files = max_files
+        self.files = 0
+        self._state = self._SCAN
+        self._buf = b""       # 尚未判定的观察窗口（字节本身仍原样转发）
+        self._body_started = False
+
+    def feed(self, chunk: bytes) -> None:
+        data = self._buf + chunk
+        self._buf = b""
+        pos = 0
+        if not self._body_started:
+            self._body_started = True
+            if data.startswith(self._lead):  # 正文直接以首边界开头（无前导 CRLF）
+                pos = len(self._lead)
+                self._state = self._HEADERS
+        while self._state != self._DONE:
+            if self._state == self._SCAN:
+                idx = data.find(self._delim, pos)
+                if idx < 0:
+                    keep = len(self._delim) - 1  # 跨 chunk 的分隔符不漏判
+                    self._buf = data[pos:] if len(data) - pos <= keep else data[-keep:]
+                    return
+                after = idx + len(self._delim)
+                if data[after:after + 2] == b"--":  # 结束边界 --boundary--
+                    self._state = self._DONE
+                    return
+                pos = after
+                self._state = self._HEADERS
+                continue
+            # _HEADERS：累积 part 头到空行为止，判定是否文件 part
+            end = data.find(b"\r\n\r\n", pos)
+            if end < 0:
+                tail = data[pos:]
+                if len(tail) > self._MAX_HEADER_BYTES:  # 异常超长头：放弃分类
+                    self._state = self._SCAN
+                    return
+                self._buf = tail  # 头部未完整，等下一个 chunk 补全
+                return
+            if b"filename" in data[pos:end].lower():
+                self.files += 1
+                if self.files > self._max_files:
+                    raise MultipartStructureRejected(
+                        f"上传文件数超过该端点允许的上限（{_fmt_count(self._max_files)} 个）。"
+                    )
+            pos = end + 4
+            self._state = self._SCAN
+
+
+def _fmt_count(limit: int) -> str:
+    return "1" if limit == 1 else f"1–{limit}"
+
+
+class MultipartStructureRejected(UploadRejected):
+    """multipart 结构超限（文件 part 数超端点上限），映射 413。
+
+    在解析器读取多余 part **内容之前**由 receive 层抛出；经 ExceptionMiddleware
+    按既有 ``UploadRejected`` 处理器映射（子类按 MRO 匹配），不会落 500。
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=413)
+
+
+class UploadSizeLimitMiddleware:
+    """multipart 上传的 ASGI 级预检：**解析请求体之前**拒绝异常请求。
+
+    背景：FastAPI/Starlette 在进入端点/依赖前已完整解析 multipart，>1MB 的
+    文件 part 会 spool 到系统临时目录——端点内的 ``check_size``/文件数校验
+    永远发生在落盘之后（G3/U5-P3 同一根因）。本中间件在解析发生前依次检查
+    （顺序：400 重复头 → 411 → 401 → 413 字节上限），放行后仍在 receive 层
+    流式限制文件 part 数：
+
+    0. **Content-Type / Content-Length 头重复 → 400**：同名头取值以先到者
+       为准（与 Starlette Headers.get 前值语义一致）。评审实测：双
+       Content-Type（前 multipart 后 json）可让本中间件按后值放行、而
+       Starlette 按前值照常解析，绕过下面全部预检——重复的这两个头只会
+       来自异常客户端，一律 400；
+    1. **无/非法 Content-Length 的 multipart → 411**：浏览器与 fetch 发送
+       multipart 表单必然携带 Content-Length；
+    2. **无有效 Bearer 凭据 → 401**（``token_validator`` 注入时启用）：全部
+       上传端点都要求登录，未认证请求不解析、不 spool、不触任务锁；
+    3. **Content-Length 超过路径上限 → 413**：``rules`` =
+       ``[(路径正则, 最大请求体字节数, 最大文件 part 数), ...]``，上限取
+       各端点**真实限制 + multipart 开销余量**；
+    4. **文件 part 数超过路径上限 → 413**（receive 层流式计数，见
+       :class:`_MultipartFilePartCounter`）：超限 part 的内容不再转发给
+       解析器，已认证请求的落盘量同样以端点声明的文件数为界。
+
+    只拦 ``multipart/form-data`` 的 POST/PUT（JSON 端点不受影响）。
+    """
+
+    def __init__(self, app, rules: list[tuple[re.Pattern[str], int, int]],
+                 token_validator=None):  # noqa: ANN001
+        self.app = app
+        self.rules = rules
+        self.token_validator = token_validator
+
+    @staticmethod
+    def _bearer_token(scope) -> str | None:  # noqa: ANN001
+        """从 ASGI scope 提取 Bearer 令牌（首个 Authorization 头，同 Starlette）。"""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"authorization":
+                try:
+                    authorization = value.decode("latin-1")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+                if not authorization.lower().startswith("bearer "):
+                    return None
+                token = authorization[7:].strip()
+                return token or None
+        return None
+
+    @staticmethod
+    def _extract_boundary(content_type: bytes) -> bytes | None:
+        """从 Content-Type 值提取 boundary 参数（无则 None）。"""
+        for part in content_type.split(b";"):
+            key, _, value = part.partition(b"=")
+            if key.strip().lower() == b"boundary":
+                return value.strip().strip(b'"') or None
+        return None
+
+    async def _reject(self, send, status: int, detail: str,
+                      extra_headers: list = None) -> None:  # noqa: ANN001
+        body = json.dumps({"detail": detail}, ensure_ascii=False).encode("utf-8")
+        headers = [(b"content-type", b"application/json"),
+                   (b"content-length", str(len(body)).encode("ascii")),
+                   (b"connection", b"close")]
+        headers.extend(extra_headers or [])
+        # 未读请求体即应答：要求关闭连接，避免服务端继续吸收数据。
+        await send({"type": "http.response.start", "status": status,
+                    "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "")
+        if method not in ("POST", "PUT"):
+            await self.app(scope, receive, send)
+            return
+        content_types: list[bytes] = []
+        content_lengths: list[bytes] = []
+        for key, value in scope.get("headers") or []:
+            lowered = key.lower()
+            if lowered == b"content-type":
+                content_types.append(value)  # 原值保留：boundary 大小写敏感
+            elif lowered == b"content-length":
+                content_lengths.append(value)
+        if len(content_types) > 1 or len(content_lengths) > 1:
+            # 双 Content-Type（前 multipart 后 json）可让预检按后值放行、
+            # Starlette 按前值照常解析（评审实测绕过）；重复头一律拒绝。
+            await self._reject(send, 400, "请求头结构异常（Content-Type/Content-Length 重复）。")
+            return
+        if not content_types or not content_types[0].lower().startswith(b"multipart/form-data"):
+            await self.app(scope, receive, send)
+            return
+        raw_length = content_lengths[0] if content_lengths else None
+        try:
+            content_length = int(raw_length) if raw_length is not None else None
+        except ValueError:
+            content_length = None
+        if content_length is None:
+            await self._reject(send, 411, "上传请求缺少有效的 Content-Length，无法预检大小。")
+            return
+        if self.token_validator is not None:
+            token = self._bearer_token(scope)
+            if token is None or not self.token_validator(token):
+                await self._reject(
+                    send, 401, "未登录或缺少访问令牌。",
+                    extra_headers=[(b"www-authenticate", b"Bearer")])
+                return
+        path = scope.get("path", "")
+        rule = next(((pattern, limit, max_files) for pattern, limit, max_files in self.rules
+                     if pattern.match(path)), None)
+        if rule is not None:
+            _, limit, max_files = rule
+            if content_length > limit:
+                await self._reject(send, 413, "上传请求体超过大小上限，请在压缩或减少文件数量后重试。")
+                return
+            boundary = self._extract_boundary(content_types[0])
+            if boundary is not None and max_files >= 1:
+                counter = _MultipartFilePartCounter(boundary, max_files)
+
+                async def receive_wrapper():
+                    message = await receive()
+                    if message.get("type") == "http.request" and message.get("body"):
+                        counter.feed(message["body"])
+                    return message
+
+                await self.app(scope, receive_wrapper, send)
+                return
+        await self.app(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
+# SSE 事件流短期票据（U5-P10）
+# ---------------------------------------------------------------------------
+
+class EventTicketStore:
+    """``/api/events`` 的短期一次性票据（默认 5 分钟）。
+
+    EventSource 无法设置 Authorization 头，旧方案把 24h JWT 放进 URL
+    查询参数——完整凭据进入反代/访问日志与浏览器历史。改由已认证客户端
+    ``POST /api/events/ticket``（凭 Bearer）换取短时效票据，再用票据连
+    接事件流：票据一次性（连接时消费）、过期即作废，泄露面从 24h 降到
+    5 分钟且不可重放。
+
+    容量有界（``max_active``）：签发与消费时都清理过期票据，达到上限时
+    逐出最早过期者——反复签发不能无限撑大内存（评审低危残余的收口）。
+    """
+
+    def __init__(self, ttl_seconds: float = 300.0,
+                 max_active: int = 10_000) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        if max_active < 1:
+            raise ValueError("max_active must be positive")
+        self.ttl = ttl_seconds
+        self.max_active = max_active
+        self._tickets: dict[str, tuple[float, dict]] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, user_id: int, username: str,
+              now: float | None = None) -> tuple[str, int]:
+        """签发一张票据，返回 ``(ticket, expires_in_seconds)``。"""
+        moment = time.monotonic() if now is None else now
+        ticket = secrets.token_urlsafe(32)
+        with self._lock:
+            self._cleanup(moment)
+            if len(self._tickets) >= self.max_active:
+                oldest = min(self._tickets, key=lambda key: self._tickets[key][0])
+                del self._tickets[oldest]
+            self._tickets[ticket] = (
+                moment + self.ttl, {"user_id": int(user_id), "username": str(username)}
+            )
+        return ticket, int(self.ttl)
+
+    def consume(self, ticket: str,
+                now: float | None = None) -> dict | None:
+        """一次性消费票据；无效/已用/过期返回 None（顺带清理过期票据）。"""
+        moment = time.monotonic() if now is None else now
+        if not ticket:
+            return None
+        with self._lock:
+            self._cleanup(moment)
+            entry = self._tickets.pop(ticket, None)
+            if entry is None:
+                return None
+            expires_at, payload = entry
+            if expires_at <= moment:
+                return None
+            return dict(payload)
+
+    def _cleanup(self, moment: float) -> None:
+        if len(self._tickets) < 512:
+            return  # 小表不做全量扫描（消费路径也走这里）
+        self._tickets = {
+            key: entry for key, entry in self._tickets.items()
+            if entry[0] > moment
+        }

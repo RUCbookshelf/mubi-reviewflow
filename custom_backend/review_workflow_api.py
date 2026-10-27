@@ -126,6 +126,13 @@ class WorkflowRuntime:
             yield ctx
             coding_evidence.ensure_fields(db)
             if before != coding_evidence.field_rows(db):
+                if not ctx.can_manage:
+                    # U4-P3：成员编辑的是自己的私有 coding scheme，其他参与者
+                    # 既不可见也不依赖它——不 bump owner 库 workflow_state.version
+                    # （那是 owner 的全局乐观锁），也不向全员广播 coding-scheme，
+                    # 避免一名成员反复让全员的后续写请求 409。owner 版本只由
+                    # owner 级写操作推进（owner 改方案仍 bump+广播，成员需重映射）。
+                    return
                 with closing(store.connect(ctx.owner_db)) as conn, conn:
                     self.bump_version(conn)
                 self.notify(ctx, 'coding-scheme')

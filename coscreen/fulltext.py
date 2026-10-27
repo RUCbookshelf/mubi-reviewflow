@@ -218,16 +218,24 @@ def save_pdf(
     """保存一篇文献的 PDF：校验文件头 -> 落盘 -> upsert 元数据。
 
     - ``data`` 必须以 ``%PDF-`` 开头，否则 ValueError（中文提示）；
+    - **U5-P9**：pypdf 解析不出任何页面（0 页）同样 ValueError 拒绝——
+      ``%PDF-`` 前 5 字节的 magic 校验只是形状检查、不是内容安全边界
+      （polyglot 可伪造文件头），真正打开过一遍的解析结果是最低门槛；
     - 字节写入 ``{pdfs_dir}/{安全化的 key}.pdf``（目录不存在自动创建），
       同一 key 重复保存为覆盖（幂等更新）；key 先经白名单清洗、再过
       safe_path 越界校验（安全加固 §4：书目数据攻击者可控，双层防线）；
-    - ``n_pages`` 用 pypdf 统计，内容损坏时按 0 存（阅读层给占位文案）；
+    - ``n_pages`` 用 pypdf 统计；
     - zotero_key 不在 articles 表时因外键约束抛 sqlite3.IntegrityError。
     """
     if not (data or b"").startswith(PDF_MAGIC):
         raise ValueError("不是有效的 PDF 文件（缺少 %PDF- 文件头）")
     if not (key or "").strip():
         raise ValueError("zotero_key 不能为空")
+    n_pages = _page_count_from_bytes(data)
+    if n_pages <= 0:
+        raise ValueError(
+            "PDF 内容无法解析（pypdf 未识别出任何页面），请确认文件未损坏后重试。"
+        )
 
     directory = Path(pdfs_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -242,7 +250,7 @@ def save_pdf(
         filename=filename,
         path=str(path),
         sha256=hashlib.sha256(data).hexdigest(),
-        n_pages=_page_count_from_bytes(data),
+        n_pages=n_pages,
         added_at=now,
     )
     backup = None

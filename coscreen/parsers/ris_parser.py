@@ -58,12 +58,46 @@ def _first(record: dict, keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _validate_record_terminators(text: str, filename: str) -> None:
+    """预校验 TY/ER 记录边界（U2-P8 + 复审新发现：中部缺 ER 静默吞并后续记录）。
+
+    rispy 只在遇到 ER 时结算记录：末条缺 ER 会静默丢弃该条；中部缺 ER
+    会把下一条的标签并入上一条，生成嵌合记录（作者污染、后续整条消失，
+    无任何告警）。在交给 rispy 之前按行统计 TY 与 ER，两者不等则拒绝
+    整个文件并指出首个未终止记录的行号——宁可显式失败，不可静默丢数据。
+    """
+    open_ty: list[tuple[int, int]] = []  # (该 TY 的行号, 第几条 TY)
+    ty_count = er_count = 0
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        tag = line.split("-", 1)[0].strip().upper() if "-" in line else ""
+        if tag == "TY":
+            ty_count += 1
+            open_ty.append((lineno, ty_count))
+        elif tag == "ER":
+            er_count += 1
+            if open_ty:
+                open_ty.pop()
+    if open_ty:
+        bad_line, bad_no = open_ty[0]
+        raise ParseError(
+            f"RIS 解析失败（{filename}）: 共 {ty_count} 个 TY 但只有 {er_count} 个 ER；"
+            f"第 {bad_no} 条记录（自第 {bad_line} 行起）缺少结束标签 ER，"
+            "导出文件可能被截断，请检查文件完整性后重试。"
+        )
+    if er_count > ty_count:
+        raise ParseError(
+            f"RIS 解析失败（{filename}）: ER 标签数（{er_count}）多于 TY 标签数（{ty_count}），"
+            "文件结构异常，请检查导出文件。"
+        )
+
+
 def parse_ris(path: str | Path) -> list[Article]:
     """解析 RIS 导出，返回与 "ER -" 记录数一致的 Article 列表（不去重）。"""
     p = Path(path)
     if not p.is_file():
         raise ParseError(f"文件不存在: {p}")
     text = _read_text(p)
+    _validate_record_terminators(text, p.name)
     source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     try:
         records = rispy.loads(text)

@@ -124,13 +124,16 @@ from custom_backend.source_provenance import source_articles
 from custom_backend.security import (
     MAX_UPLOAD_BYTES,  # noqa: F401  上限常量随模块口径导出
     TEXT_EXTENSIONS,
+    EventTicketStore,
     UploadRejected,
+    UploadSizeLimitMiddleware,
     check_extension,
     check_pdf_bytes,
     check_text_bytes,
     clean_upload_name,
     is_within,
     login_limiter,
+    rate_limit_key,
     stem_of,
 )
 from custom_backend.security import SecurityHeadersMiddleware
@@ -186,16 +189,47 @@ class TaskLockMiddleware:
     防线是死代码（审查 P1-3）。现按路径统一 acquire/release：另一存活后端
     进程正在处理同一任务时返回 409（同进程并发请求按引用计数共享一把锁，
     锁只在最后一个在途请求结束后释放）。
+
+    - **U5-P1 锁别名**：锁键与锁文件一律用 ``find_task`` 解析出的规范
+      ``info.task_id``（来自 task.json），Windows 上 ``task.`` 与 ``task``
+      会解析到同一任务目录——URL 里的别名不再派生第二个锁文件；
+    - **U5-P4 鉴权前置**：无有效 Bearer 凭据的请求**不取锁**直接放行给
+      端点（由 require_user 统一回 401），消除未认证的 409 占用状态预言机
+      与未认证锁文件操作；
+    - **U5-P2 在途计数**：``inflight()`` 暴露任务当前在途请求数，DELETE
+      端点据此对同进程并发操作（导入进行中删除任务）回 409。
     """
 
     _PATH_RE = re.compile(r"^/api/tasks/([^/]+)")
-    # task_id -> [在途请求数, 锁路径]：同任务并发请求共享一把锁，最后一个
-    # 在途请求结束时释放（无论谁最初获取）。
+    # 规范 task_id -> [在途请求数, 锁路径]：同任务并发请求共享一把锁，
+    # 最后一个在途请求结束时释放（无论谁最初获取）。
     _held: dict[str, list] = {}
     _guard = threading.Lock()
 
     def __init__(self, app):  # noqa: ANN001  ASGI 约定
         self.app = app
+
+    @classmethod
+    def inflight(cls, task_id: str) -> int:
+        """该（规范）任务当前在本进程内的在途请求数（无则 0）。"""
+        with cls._guard:
+            entry = cls._held.get(task_id)
+            return entry[0] if entry else 0
+
+    @staticmethod
+    def _bearer_token(scope) -> str | None:  # noqa: ANN001
+        """从 ASGI scope 提取 Bearer 令牌；无/形状不符返回 None。"""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"authorization":
+                try:
+                    authorization = value.decode("latin-1")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+                if not authorization.lower().startswith("bearer "):
+                    return None
+                token = authorization[7:].strip()
+                return token or None
+        return None
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
@@ -209,22 +243,34 @@ class TaskLockMiddleware:
         if not match:
             await self.app(scope, receive, send)
             return
+        # U5-P4：先做凭据存在性+有效性检查，未认证请求不触碰任务锁。
+        token = self._bearer_token(scope)
+        if token is None or auth.decode_access_token(token) is None:
+            await self.app(scope, receive, send)  # 端点 require_user 统一回 401
+            return
         task_id = match.group(1)
+        canonical = None
         entry = None
         busy_response = None
         info = tasks_mod.find_task(task_id, DATA_DIR)
         if info is not None:
+            # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在规范
+            # 任务目录（tasks_root/{info.task_id}），URL 尾点等别名不再派生
+            # 出 `{task_id}..lock` 之类的第二把锁。
+            canonical = info.task_id
             with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
-                entry = self._held.get(task_id)
+                entry = self._held.get(canonical)
                 if entry is None:
                     lock_path = tasks_mod.acquire_task_lock(
-                        task_id, DATA_DIR, task_dir=info.dir)
+                        canonical, DATA_DIR,
+                        task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
+                    )
                     if lock_path is None:
                         busy_response = JSONResponse(status_code=409, content={
                             "detail": "任务正被其他窗口（另一个后端进程）使用，请稍后重试。"})
                     else:
                         entry = [0, lock_path]
-                        self._held[task_id] = entry
+                        self._held[canonical] = entry
                 if entry is not None:
                     entry[0] += 1
         if busy_response is not None:
@@ -237,13 +283,73 @@ class TaskLockMiddleware:
                 with self._guard:
                     entry[0] -= 1
                     last = entry[0] <= 0
-                    if last:
-                        self._held.pop(task_id, None)
+                    if last and canonical is not None:
+                        self._held.pop(canonical, None)
                 if last:
                     tasks_mod.release_task_lock(entry[1])
 
 
 app.add_middleware(TaskLockMiddleware)
+
+#: U5-P3：multipart 上传在请求体解析/落盘前的预检（字节数 + 文件 part 数）。
+#: **上限取各端点真实限制 + multipart 开销余量**（boundary/文件名/表单字段），
+#: 只提前拒绝超限流量，不收紧也不放宽端点既有校验：
+#: - 文本导入/PDF 全文：security.MAX_UPLOAD_BYTES（100MB/文件）；
+#: - import-batch：20 文件 × 100MB（review_imports_api 的文件数上限）；
+#: - 合并/一致性/仲裁：2..9 文件 × 100MB（端点文件数校验）；
+#: - trace 导入包：端点守卫 MAX_TRACE_BODY_BYTES = MAX_PACKAGE_BYTES(128MB)+1MB，
+#:   预检取同值（129MB）——再大的包会在解析后才 413（评审三轮对齐）；
+#: - 编码证据：coscreen/coding_evidence.MAX_UPLOAD_BYTES=10MB；
+#: - living-review/import-update：端点从不读文件（固定 409 引导到受保护
+#:   导入），出货前端无调用，给 10MB 小上限封住无效落盘面。
+#: 文件 part 数（第三列）= 各端点声明的文件数上限；超出者其内容不再进入
+#: 解析器（security._MultipartFilePartCounter 在 receive 层流式拦截）。
+from coscreen.research_trace_export import MAX_PACKAGE_BYTES as _TRACE_PACKAGE_MAX_BYTES
+from coscreen.coding_evidence import MAX_UPLOAD_BYTES as _CODING_EVIDENCE_MAX_BYTES
+
+_UPLOAD_SLACK_BYTES = 1024 * 1024
+_BATCH_IMPORT_MAX_FILES = 20
+_MULTI_CSV_MAX_FILES = 9
+#: 与 custom_backend.research_trace_api.MAX_TRACE_BODY_BYTES 同值（129MB）；
+#: 不直接 import 该模块是保持 main 顶层依赖不变（其路由为按需加载）。
+_TRACE_BODY_MAX_BYTES = _TRACE_PACKAGE_MAX_BYTES + 1024 * 1024
+
+#: 预检规则表（模块级常量供回归测试核对：新增上传端点必须补对应规则）
+_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int, int]] = [
+    (re.compile(r"^/api/tasks/[^/]+/import-batch$"),
+     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES,
+     _BATCH_IMPORT_MAX_FILES),
+    (re.compile(r"^/api/tasks/[^/]+/screening-arbitrations$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/merge/decisions$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/coding/agreement$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/tasks/[^/]+/import$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/fulltext/[^/]+/upload$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/living-review/import-update$"),
+     10 * 1024 * 1024 + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"),
+     _CODING_EVIDENCE_MAX_BYTES + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"),
+     _TRACE_BODY_MAX_BYTES, 1),
+]
+
+app.add_middleware(
+    UploadSizeLimitMiddleware,
+    rules=_UPLOAD_SIZE_RULES,
+    # 未认证的 multipart 在解析/落盘前直接 401（全部上传端点都要求登录）
+    token_validator=lambda token: auth.decode_access_token(token) is not None,
+)
+
+# U5-P2：任务删除的同进程在途防线——coscreen 层通过该钩子读取当前任务的
+# 在途请求数（DELETE 请求自身占 1，>1 即还有导入/分析等操作在跑）。
+tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
 
 
 @app.exception_handler(Exception)
@@ -268,6 +374,24 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 @app.exception_handler(UploadRejected)
 async def _upload_rejected_handler(request: Request, exc: UploadRejected) -> JSONResponse:
     return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
+
+
+@app.exception_handler(collaboration_mod.OwnerUnavailableError)
+async def _collaboration_owner_unavailable_handler(
+    request: Request, exc: collaboration_mod.OwnerUnavailableError
+) -> JSONResponse:
+    """属主解析异常（锁超时/读失败/库损坏）-> 503 重试语义（U4-P1）。
+
+    不得折叠成“无 owner=legacy”：server 模式下 legacy 会走 409 迁移口径，
+    desktop 模式下 legacy 保持可管理（fail-open）；解析失败必须显式重试。
+    """
+    logger.warning("Collaboration owner unavailable on %s %s: %s",
+                   request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "任务属主状态暂时无法确认（协作库锁定或读取失败），请稍后重试。"},
+        headers={"Retry-After": "5"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +435,17 @@ def require_user(
     task_id = request.path_params.get("task_id")
     if task_id:
         info = _task_or_404(task_id)
-        if not _task_visible_to(info, user):
+        try:
+            visible = _task_visible_to(info, user)
+        except collaboration_mod.OwnerUnavailableError:
+            raise  # 全局处理器映射 503 重试语义（U4-P1）
+        if not visible:
+            # 统一 legacy 口径（U4-P1/P6）：server 模式下无属主记录的任务不再
+            # 误报“不是参与者”（403），而是与列表隐藏、协作管理一致地 409
+            # 提示属主迁移；desktop 模式下 legacy 任务可见，不会进入此分支。
+            if _server_mode() and collaboration_mod.get_owner(
+                    _collaboration_store(info), task_id=info.task_id) is None:
+                raise _legacy_owner_migration_error()
             raise HTTPException(403, "当前账号不是该任务的参与者。")
     return user
 
@@ -867,6 +1001,18 @@ def _dim_error(exc: ValueError) -> HTTPException:
     return _bad(str(exc), 404 if "不存在" in str(exc) else 400)
 
 
+def _legacy_owner_migration_error() -> HTTPException:
+    """server 模式下 legacy（无属主记录）任务的统一 409 口径（U4-P1/P6）。
+
+    与列表隐藏、协作管理、仲裁端点一致：提示走属主迁移流程，而非放行或
+    误报“不是参与者”。
+    """
+    return HTTPException(409, {"error_code": "collaboration_owner_unset",
+                                "message_key": "coding.collaboration_owner_unset", "params": {},
+                                "details": "Legacy task needs explicit owner migration",
+                                "message": "Legacy task needs explicit owner migration"})
+
+
 def _task_or_404(task_id: str) -> tasks_mod.TaskInfo:
     """按 id 取任务；id 形状或目录逃逸校验失败一律 404（不泄露文件系统信息）。"""
     if not _TASK_ID_RE.match(task_id or "") or Path(task_id).name != task_id:
@@ -927,13 +1073,15 @@ def _run_export(exporter, suffix: str) -> bytes:
 def _file_response(data: bytes, media_type: str, filename: str) -> Response:
     safe_name = clean_upload_name(filename, "download")
     ascii_name = safe_name.encode("ascii", "ignore").decode("ascii") or "download"
+    # U5-P6：非 ASCII 文件名必须百分号编码后再进头部（starlette 只接受
+    # latin-1，中文任务名/文献名直接拼接会 UnicodeEncodeError -> 500）。
     return Response(
         content=data,
         media_type=media_type,
         headers={
             "Content-Disposition": (
                 f"attachment; filename=\"{ascii_name}\"; "
-                f"filename*=UTF-8''{safe_name}"
+                f"filename*=UTF-8''{quote(safe_name, safe='')}"
             )
         },
     )
@@ -1028,7 +1176,12 @@ def app_update_check() -> dict:
 
 @app.post("/api/auth/register")
 def register(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(f"register:{request.client.host if request.client else '?'}")
+    # U5-P5：XFF 存在时不信任其值（可伪造轮换绕过按 IP 限流），见 rate_limit_key。
+    allowed, retry_after = login_limiter.check(rate_limit_key(
+        "register",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    ))
     if not allowed:
         raise HTTPException(429, "注册尝试过于频繁，请稍后再试。", headers={"Retry-After": str(retry_after)})
     try:
@@ -1040,13 +1193,27 @@ def register(body: CredentialsIn, request: Request) -> dict:
 
 @app.post("/api/auth/login")
 def login(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(f"login:{request.client.host if request.client else '?'}")
+    allowed, retry_after = login_limiter.check(rate_limit_key(
+        "login",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    ))
     if not allowed:
         raise HTTPException(429, "登录尝试过于频繁，请 1 分钟后再试。", headers={"Retry-After": str(retry_after)})
     user = auth.authenticate(body.username, body.password)
     if user is None:
         raise _bad("用户名或密码错误。", 401)
-    return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
+    # U4-P2：历史上已注册、但用户名与任务目录保留库名（collaboration.db）
+    # 相撞的账号：不阻断登录、不破坏数据，在响应中给出改名指引。
+    warnings = []
+    if auth.reserved_screener_collision(user["username"]):
+        warnings.append(
+            "您的用户名与任务协作数据库保留文件名（collaboration.db）冲突，"
+            "团队协作功能不可用；请改用其他用户名注册新账号使用协作功能，"
+            "本账号的历史数据保持不变。"
+        )
+    return {"token": auth.create_access_token(user["id"], user["username"]),
+            "user": user, "warnings": warnings}
 
 
 @app.get("/api/auth/me")
@@ -1054,11 +1221,46 @@ def me(user: dict = Depends(require_user)) -> dict:
     return {"user_id": user["user_id"], "username": user["username"]}
 
 
+#: U5-P10：SSE 事件流短期票据（5 分钟一次性，EventSource 无法设 Authorization 头）
+_event_tickets = EventTicketStore(ttl_seconds=300)
+
+
+@app.post("/api/events/ticket")
+def issue_event_ticket(user: dict = Depends(require_user)) -> dict:
+    """凭 Bearer 换一次性短期票据（5 分钟），供 EventSource 连接 /api/events。
+
+    取代把 24h JWT 放进 URL 查询参数的旧方案（完整凭据进入反代/访问日志
+    与浏览器历史）；票据一次性、短时效，泄露不可重放。
+    """
+    ticket, expires_in = _event_tickets.issue(user["user_id"], user["username"])
+    return {"ticket": ticket, "expires_in": expires_in}
+
+
 @app.get("/api/events")
-async def task_events(request: Request, token: str | None = Query(default=None),
+async def task_events(request: Request,
+                      ticket: str | None = Query(default=None),
+                      token: str | None = Query(default=None),
                       authorization: str | None = Header(default=None)):
-    # EventSource cannot set a Bearer header. Reuse all normal auth checks.
-    user = require_user(request, authorization or (f"Bearer {token}" if token else None))
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if ticket is not None:
+        # U5-P10：短期一次性票据（POST /api/events/ticket 换取）。签发时已
+        # 走完整 require_user 校验，这里只恢复身份并立即消费（防重放）。
+        payload = _event_tickets.consume(ticket)
+        if payload is None:
+            raise HTTPException(401, "事件票据无效或已过期，请重新获取。",
+                                headers={"WWW-Authenticate": "Bearer"})
+        user = {"user_id": payload["user_id"], "username": payload["username"]}
+    else:
+        # 兼容期：仍接受旧 token 查询参数（前端 EventSource 迁移到票据前不
+        # 可断），但响应头明确提醒弃用并在未来版本移除，新客户端一律用票据。
+        if token is not None:
+            headers["Deprecation"] = "true"
+            headers["Warning"] = (
+                '299 reviewflow "token query parameter is deprecated and '
+                'will be removed; use POST /api/events/ticket"'
+            )
+        # EventSource cannot set a Bearer header. Reuse all normal auth checks.
+        user = require_user(request, authorization or (f"Bearer {token}" if token else None))
 
     async def stream():
         queue = BUS.subscribe(user["user_id"])
@@ -1075,7 +1277,7 @@ async def task_events(request: Request, token: str | None = Query(default=None),
             BUS.unsubscribe(user["user_id"], queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -1101,8 +1303,16 @@ def list_all_tasks(
 ) -> dict:
     infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
     # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
-    # 尚无属主记录（显式迁移路径未定），保持历史可见性。
-    visible = [i for i in infos if _task_visible_to(i, user)]
+    # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
+    # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
+    # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
+    visible = []
+    for info in infos:
+        try:
+            if _task_visible_to(info, user):
+                visible.append(info)
+        except collaboration_mod.OwnerUnavailableError:
+            continue
     return {"tasks": [_task_payload(i) for i in visible]}
 
 
@@ -1129,21 +1339,31 @@ def _collaboration_store(info: tasks_mod.TaskInfo) -> Path:
 
 
 def _collaboration_owner_store(task_id: str, user: dict) -> Path:
+    # U4-P4：协作管理（邀请/授权/撤销/列表）整体仅服务器模式开放——门禁
+    # 收口在本助手内，覆盖按用户名与按 user_id 的全部入口。
+    if not _server_mode():
+        raise HTTPException(404, "团队协作仅在服务器模式下开放。")
     info = _task_or_404(task_id)
     path = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    try:
+        owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
     if owner is None:
-        raise HTTPException(409, {"error_code": "collaboration_owner_unset",
-                                  "message_key": "coding.collaboration_owner_unset", "params": {},
-                                  "details": "Legacy task needs explicit owner migration",
-                                  "message": "Legacy task needs explicit owner migration"})
+        raise _legacy_owner_migration_error()
     if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can manage collaborators.")
     return path
 
 
 def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
-    """任务对当前用户是否可见：属主/协作者可见，legacy 无属主任务保持可见。"""
+    """任务对当前用户是否可见：属主/协作者可见，legacy 无属主任务保持可见。
+
+    desktop 模式下 legacy 任务维持历史可见性（单机安装的向后兼容，有意
+    保留并在 task_collaboration 模块披露）；server 模式下不可见。
+    属主解析失败（OwnerUnavailableError）向上抛出：单任务请求映射 503
+    重试语义，任务列表由调用方按不可见降级。
+    """
     try:
         path = _collaboration_store(info)
     except HTTPException:
@@ -1159,12 +1379,22 @@ def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
 def _require_task_owner(task_id: str, user: dict) -> tasks_mod.TaskInfo:
     """任务改名/描述/归档/删除的属主闸门。
 
-    已登记属主的任务仅属主可改（非属主 403）；legacy 任务尚无属主记录
-    （创建于协作库机制之前、迁移路径未定），保持既有可管理性。
+    已登记属主的任务仅属主可改（非属主 403）。legacy 任务（创建于协作库
+    机制之前、迁移路径未定）按模式区分（U4-P6）：server 模式 fail-closed
+    ——与列表隐藏、协作管理 409 同口径，提示走属主迁移流程；desktop 模式
+    维持既有可管理性（单机向后兼容，见 task_collaboration 模块披露）。
+    属主解析失败（OwnerUnavailableError）映射 503，不折叠成 legacy。
     """
     info = _task_or_404(task_id)
-    owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
-    if owner is not None and owner["owner_user_id"] != user["user_id"]:
+    try:
+        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
+    if owner is None:
+        if _server_mode():
+            raise _legacy_owner_migration_error()
+        return info
+    if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can modify or delete this task.")
     return info
 
@@ -1298,7 +1528,13 @@ def update_task(
 
 @app.delete("/api/tasks/{task_id}")
 def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
-    _require_task_owner(task_id, user)
+    info = _require_task_owner(task_id, user)
+    # U5-P2：单进程部署下中间件对同任务并发只做引用计数，此前本进程持锁
+    # 时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
+    # 在途计数 >1 说明除了本 DELETE 请求还有别的操作在跑（导入/分析等）。
+    inflight = TaskLockMiddleware.inflight(info.task_id)
+    if inflight > 1:
+        raise _bad(f"任务有操作进行中（{inflight - 1} 个请求未完成），请等待后再删除。", 409)
     try:
         trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
     except ValueError as exc:
@@ -1526,7 +1762,10 @@ def _exact_duplicate_metrics(report, incoming_keys: set | None = None,
         if previous_report is not None else 0
     )
     return {
-        "exact_match_hits": len(hits),
+        # U1-P12：按记录去重计数（distinct dup_key）——同 DOI 且同键的一对
+        # 重复行产生 exact_doi+exact_key 两条事件但只有 1 条记录，与
+        # exact_duplicate_excess（total-unique 口径）一致，不再翻倍。
+        "exact_match_hits": len({p.dup_key for p in hits}),
         "exact_duplicate_groups": len(groups),
         "exact_duplicate_excess": max(
             0, report.total - report.unique - previous_excess
@@ -2358,8 +2597,11 @@ def prisma_generate(body: PrismaGenerateIn, user: dict = Depends(require_user)) 
         "errors": [i.text for i in result.errors],
         "warnings": [i.text for i in result.warnings],
         "hints": [i.text for i in result.hints],
-        "dot": prisma_form_dot(form),
-        "json": form_json(form),
+        # validate 契约（prisma_form.validate docstring）：error 阻止导出与
+        # 流程图渲染。ok=False 时不产出 dot/json，直连 API 的客户端无法对
+        # 非法表单拿到导出物；前端 prRenderResult 仅在 d.ok 时渲染与下载。
+        "dot": prisma_form_dot(form) if result.ok else None,
+        "json": form_json(form) if result.ok else None,
         "form": form_to_dict(form),
     }
 
@@ -4393,12 +4635,17 @@ def fulltext_pdf(task_id: str, zotero_key: str, screener: str | None = None,
     )
     if data is None or not inside:
         raise _bad("PDF 文件不存在或已移动。", 404)
+    # U5-P6：inline PDF 的文件名同样走「ASCII 回退 + 百分号编码 UTF-8」双写
+    # （对齐 download_import_file 的既有正确写法），中文文献键不再 500。
+    display_name = clean_upload_name(meta.filename, "document.pdf")
+    ascii_name = display_name.encode("ascii", "ignore").decode("ascii") or "document.pdf"
     return Response(
         content=data,
         media_type="application/pdf",
         headers={
             "Content-Disposition": (
-                f"inline; filename=\"{clean_upload_name(meta.filename, 'document.pdf')}\""
+                f"inline; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quote(display_name, safe='')}"
             )
         },
     )
@@ -4417,6 +4664,10 @@ async def upload_pdf(task_id: str, zotero_key: str, file: UploadFile = File(...)
         meta = save_pdf(db, zotero_key, data, pdfs_dir=_pdfs_dir(info), trace_context=_trace_context(info, user))
     except ValueError as exc:
         raise _bad(exc) from exc
+    except sqlite3.IntegrityError as exc:
+        # U5-P7：zotero_key 不在 articles 表时外键插入失败——按文献不存在
+        # 映射 4xx（对齐 add_highlights 的既有处理），不再 500 刷服务端日志。
+        raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
     return {
         "zotero_key": meta.zotero_key,
         "filename": meta.filename,

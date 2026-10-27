@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 
 import pandas as pd
@@ -29,7 +30,11 @@ _COLUMN_ALIASES: dict[str, str] = {
     "key": "zotero_key",
     "item type": "item_type",
     "title": "title",
+    # "creator" 为新版 Zotero 导出列名；"author"/"authors" 为旧版及常见
+    # 第三方导出的列名变体（U2-P1：Author 列被静默丢弃 → authors=""）。
     "creator": "authors",
+    "author": "authors",
+    "authors": "authors",
     "publication title": "journal",
     "publication year": "year",
     "date": "date",
@@ -70,6 +75,24 @@ def _row_getter(row: dict, colmap: dict[str, str]):
     return get
 
 
+def _read_csv_text(path: Path) -> str:
+    """依次尝试 UTF-8（含 BOM）与 GBK 解码（与 ris_parser._read_text 对称）。
+
+    中文 Excel/EndNote 以 ANSI 另存的 CSV 是 GBK 字节，硬编码 UTF-8 会抛
+    不可操作的解码错误；两轮解码均失败时给出可自查的转存指引。
+    """
+    data = path.read_bytes()
+    for encoding in ("utf-8-sig", "gbk"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ParseError(
+        f"CSV 文件既非 UTF-8 也非 GBK 编码，无法解码（{path.name}）；"
+        "请将其重新另存为 UTF-8 后再导入。"
+    )
+
+
 def parse_csv(path: str | Path) -> list[Article]:
     """解析 Zotero CSV 导出，返回与数据行数一致的 Article 列表（不去重）。"""
     p = Path(path)
@@ -77,7 +100,7 @@ def parse_csv(path: str | Path) -> list[Article]:
         raise ParseError(f"文件不存在: {p}")
     source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     try:
-        frame = pd.read_csv(p, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+        frame = pd.read_csv(io.StringIO(_read_csv_text(p)), dtype=str, keep_default_na=False)
     except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as exc:
         raise ParseError(f"CSV 解析失败（{p.name}）: {exc}") from exc
 

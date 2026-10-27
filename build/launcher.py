@@ -221,6 +221,10 @@ def _run_server(port: int) -> int:
         host=os.environ.get("REVIEWFLOW_HOST", "127.0.0.1"),
         port=port,
         log_level="warning",
+        # U5-P5：同源直连部署，不信任 X-Forwarded-For——uvicorn 默认
+        # proxy_headers=True 会对环回对端用客户端可伪造的 XFF 改写
+        # request.client.host，登录/注册的按 IP 限流可被无限轮换绕过。
+        proxy_headers=False,
     ))
     backend_main.configure_desktop_restart(lambda: setattr(server, "should_exit", True))
     server.run()

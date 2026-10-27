@@ -73,6 +73,10 @@ server {
     ssl_certificate_key /path/to/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
+    # 上传上限：nginx 默认 client_max_body_size 仅 1m，>1MB 的正常上传
+    # （PDF 全文等，应用层单文件上限 100MB）会被代理层直接 413。
+    client_max_body_size 100m;
+
     location / {
         proxy_pass http://127.0.0.1:8613;
         proxy_http_version 1.1;
@@ -118,6 +122,8 @@ location ^~ /api/ {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 600s;
+    # 上传走 /api/：默认 1m 会把 >1MB 的正常上传拦成 413（应用层单文件上限 100MB）
+    client_max_body_size 100m;
 }
 ```
 
@@ -130,6 +136,31 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 还需在云防火墙/安全组放行所用 HTTPS 端口（场景 A 示例为 8443）。不要对公网开放应用的 8613 端口。
+
+**上传与限流的安全说明（反向代理场景）**：
+
+- **上传大小**：`client_max_body_size 100m` 与应用层单文件上限（100MB）对齐。
+  批量导入端点单请求最多 20 个文件，若确需一次提交总大小超过 100MB 的多文件
+  批量导入，需有意调大该值（例如 `2000m`）——但要注意代理层会先把请求体缓
+  冲到自身临时磁盘，调大即放大临时盘占用面；更稳妥的做法是分多次提交。
+  应用层在解析请求体**之前**会按 Content-Length 预检，超限直接 413，
+  不落入服务器临时盘；预检上限与各端点真实限制一致（均含余量）：单文件
+  文本/PDF 导入 100MB、批量导入 20×100MB、合并/一致性/仲裁多文件端点
+  9×100MB、trace 导入包 128MB、编码证据 10MB。缺 Content-Length 的
+  multipart（chunked）、未认证的 multipart、以及重复 Content-Type/
+  Content-Length 头的请求在解析前即被 411/401/400 拒绝；文件 part 数
+  超过端点声明上限（如批量导入 20 个）的请求同样在落盘前被截断。注意：trace 导入包（≤128MB+余量）若经反代提交，需将
+  `client_max_body_size` 相应调大（如 `client_max_body_size 130m`）。
+- **登录/注册限流**：应用层的限流按**直连对端 IP**计数，且**不信任
+  `X-Forwarded-For`**（该头可被客户端伪造轮换）。经反向代理访问时，所有
+  请求的对端都是反代机，应用层限流退化为全局共享桶——请在反代层为
+  `/api/auth/` 追加 `limit_req` 限流，例如：
+  `limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;` 并在
+  `/api/auth/` location 中 `limit_req zone=rf_auth burst=5 nodelay;`。
+- **PDF 上传校验的边界**：应用层对 PDF 的 `%PDF-` 文件头与 pypdf 可解析性
+  校验是**格式门槛，不是内容安全边界**——恶意构造的 PDF 内容本身仍可能
+  利用阅读器漏洞。部署时应保持同源回放（本应用即是）、`X-Content-Type-
+  Options: nosniff` 与 CSP（应用默认已加），不要把回放域名与站点主域混用。
 
 ### 6. 开启团队协作
 
@@ -215,6 +246,9 @@ server {
     ssl_certificate     /path/to/fullchain.pem;
     ssl_certificate_key /path/to/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    # Uploads: nginx defaults to a 1m body limit, which breaks normal >1MB
+    # uploads (PDF full text etc.; the app allows 100MB per file).
+    client_max_body_size 100m;
 
     location / {
         proxy_pass http://127.0.0.1:8613;
@@ -259,12 +293,21 @@ location ^~ /api/ {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 600s;
+    # Uploads go through /api/: the default 1m limit would 413 any >1MB
+    # upload (the app allows 100MB per file).
+    client_max_body_size 100m;
 }
 ```
 
 The page `proxy_pass` ends with `/`, removing the `/reviewflow/` prefix; the API target has no trailing slash, preserving `/api/...`. If another app also uses `/api/`, check for route conflicts. Nginx selects the more specific longer prefix.
 
 Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. Open the chosen HTTPS port in the cloud firewall/security group (8443 in Option A). Do not expose port 8613 publicly.
+
+**Upload and rate-limit notes (reverse-proxy deployments):**
+
+- **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked), unauthenticated multipart requests, and requests with duplicate Content-Type/Content-Length headers are rejected with 411/401/400 before parsing; requests whose file-part count exceeds the endpoint's declared maximum (e.g. 20 for batch import) are cut off before the excess parts touch the disk. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
+- **Login/register rate limiting**: the app rate-limits by *direct peer IP* and does **not** trust `X-Forwarded-For` (it is client-forgeable). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — add `limit_req` at the proxy for `/api/auth/`, e.g. `limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;` plus `limit_req zone=rf_auth burst=5 nodelay;` in the `/api/auth/` location.
+- **PDF upload checks are a format gate, not a content-security boundary**: the `%PDF-` header and pypdf parseability checks reject malformed files, but a maliciously crafted PDF could still exploit reader bugs. Keep same-origin playback (the default), `X-Content-Type-Options: nosniff` and CSP (enabled by default); do not mix the playback origin with your main site domain.
 
 ### 6. Enable team collaboration
 
