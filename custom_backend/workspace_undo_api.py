@@ -51,6 +51,11 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
     async def upload_evidence(task_id: str, zotero_key: str, dim_id: int, file: UploadFile,
                               user: dict, *, canonical_only: bool = False,
                               expected_version: int | None = None) -> dict:
+        # R6-C3/#22：路由原始 task_id（Windows 尾点别名）统一为规范 id——
+        # stage_upload 落库的 task_id 与 save_form 附着查询（trace_context 的
+        # info.task_id）同键，别名路径上传的图片才能被表单保存附着。
+        info = task_lookup(task_id)
+        task_id = info.task_id
         data = await file.read(coding_evidence.MAX_UPLOAD_BYTES + 1)
         await file.close()
         try:
@@ -89,6 +94,8 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
     @app.post('/api/tasks/{task_id}/coding/submission-evidence')
     def save_submission_evidence(task_id: str, body: SubmissionEvidenceIn,
                                  user: dict = Depends(require_user)) -> dict:
+        info = task_lookup(task_id)
+        task_id = info.task_id  # R6-C3/#22：锁/守卫统一规范 id（别名同键）
         runtime = app.state.review_workflow
         try:
             with runtime.write_guard(task_id, user, 'coding', body.zotero_key,
@@ -110,6 +117,9 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
         return result
 
     def image_file(task_id: str, identity: str | int, staged: bool, user: dict):
+        # R6-C3/#22：锁、ctx 与 staged 上传行查询统一规范 task_id（别名同键）。
+        info = task_lookup(task_id)
+        task_id = info.task_id
         runtime = app.state.review_workflow
         with runtime.lock(task_id):
             ctx = runtime.context(task_id, user)
@@ -146,15 +156,26 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
         db = screener_db(info, screener or user["username"])
-        if app.state.review_workflow.context(task_id, user).actor_db.resolve() != db.resolve():
+        if app.state.review_workflow.context(info.task_id, user).actor_db.resolve() != db.resolve():
             raise HTTPException(403, 'Undo is limited to your own workspace.')
         context = TraceContext(task_id=info.task_id, actor_id=user["user_id"])
-        return {"latest": workspace_undo.latest(db, context, stage)}
+        latest = workspace_undo.latest(db, context, stage)
+        available = bool(latest.get('undo_available', True)) if latest else True
+        if latest is not None and not available:
+            # R6-U5/#25：状态判定与 undo 的 MISSING_EVIDENCE_FILE 拒绝同口径——
+            # 文件已不在数据目录的条目不再标为可撤销（latest 置空使前端撤销
+            # 按钮禁用，409 后 refresh 即停止循环点击）。
+            latest = None
+        return {"latest": latest, "undo_available": available}
 
     @app.post("/api/tasks/{task_id}/undo/{stage}")
     def restore(task_id: str, stage: Stage, body: UndoIn, screener: str | None = None,
                 user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
+        # R6-C3/#22：预读 journal、任务锁、写守卫与 trace 一律用规范 task_id——
+        # 尾点别名与规范 id 是同一物理任务，journal/锁/守卫必须同键（修复前
+        # 别名预读 None -> 永久 409 "There is no saved operation to undo"）。
+        task_id = info.task_id
         db = screener_db(info, screener or user["username"])
         context = trace_context(info, user, source="undo")
         if context is None:
@@ -189,6 +210,7 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
     def save_form(task_id: str, body: CodingBatchIn, screener: str | None = None,
                   user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
+        task_id = info.task_id  # R6-C3/#22：锁/守卫统一规范 id（别名同键）
         db = screener_db(info, screener or user["username"])
         context = trace_context(info, user)
         if context is None:

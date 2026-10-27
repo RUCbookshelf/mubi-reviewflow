@@ -18,6 +18,17 @@ _DECISION_COLUMNS = "decision,exclusion_reason,notes,tags,screened_at,updated_at
 _TABLES = {"screen": "decisions", "fulltext": "stage2_decisions"}
 # 每篇文章（task+actor+stage+zotero_key）保留的可撤销历史条数；更早条目置
 # superseded（不删除，可追溯，但不再参与比较，也不再可能被恢复）。
+#
+# 【journal 容量与保留策略披露（U3-P5 复审 #24，2.1.4）】
+# - 活动窗口：每篇文章每阶段最多 JOURNAL_RETAIN_PER_ARTICLE 条可撤销条目；
+#   更早条目置 superseded=1（不参与比较/恢复/latest）。
+# - superseded 与 undone 行**有意永久保留**（含完整 before/after_json）：
+#   撤销 journal 同时是研究过程审计记录（trace_actions 依赖其历史链接），
+#   产品选择"不删历史"，因此 coding journal 容量随保存次数线性增长
+#   （复审实测：120 次保存约 2.4MB，其中 superseded 行约占 58%）。
+# - 本模块不含任何针对 workspace_undo 表的 DELETE 语句；曾评估的"清理
+#   开关（按文章裁剪 superseded 行）"默认关闭、未实装——删除历史属于产品
+#   口径变更，需单独立项而非随修复引入。
 JOURNAL_RETAIN_PER_ARTICLE = 50
 # 维度定义的语义键集（与 coding_evidence.definition / trace_actions 的
 # definition_keys 同口径）：布局列 section/position/created_at 不参与守卫比较。
@@ -26,6 +37,10 @@ _SEMANTIC_DEFINITION_SQL = (
     "SELECT name,dtype,options_json,multi_select,unit,description FROM coding_dimensions WHERE id=?")
 # 撤销 journal 无法完整恢复时的明确拒绝文案（U3-P1）。
 MISSING_EVIDENCE_FILE = '图片文件已不在当前数据目录，无法完整撤销。'
+# 守卫失配且差异仅限字段说明（description）编辑时的区分文案（U3-P3 仲裁案 B，
+# R6-U1/#21/#26）：description 仍属语义键集、其编辑仍阻断撤销——只把误导性的
+# "下游已变更"细化为具体冲突字段，不改变语义键集、不改变阻断行为。
+DESCRIPTION_CHANGED = '字段说明已变更，撤销不能覆盖较新的修改。'
 
 
 def _ensure_journal_columns(conn: sqlite3.Connection) -> None:
@@ -114,7 +129,13 @@ def evidence_snapshot(conn: sqlite3.Connection, key: str, dimensions: list[int] 
 def _evidence_digest(state: dict) -> str:
     """证据维度内容摘要。图片行抹去路径字段参与摘要：数据目录迁移会整体
     改写绝对路径，文件位置不属于证据内容（图片身份由 id/sha256/OCR 承载），
-    这样迁移前后摘要一致，迁移不会破坏 screen/fulltext 撤销守卫。"""
+    这样迁移前后摘要一致，迁移不会破坏 screen/fulltext 撤销守卫。
+
+    备注行的 created_at/updated_at **保留**在摘要内（R6-U2/#23）：历史
+    screen/fulltext 条目存的是摘要哈希、无法在比较时重算，改动摘要公式会使
+    既有条目的撤销全部永久失配（不可无迁移变更）；"同值重存刷新时间戳→摘要
+    失配"的根因改在源头收口——coding_evidence.save_form 对业务值/备注文本
+    未变化的维度不再刷新 updated_at（幂等保存），时间戳不再漂移。"""
     def without_path(image):
         if not isinstance(image, list):
             return image
@@ -161,16 +182,19 @@ def _definition_view(row):
 
 
 def _guard_state(stage: str, state: dict) -> dict:
-    """守卫比较视图（U3-P2/P7/P3/P5）。
+    """守卫比较视图（U3-P2/P7/P3/P5；R6-U2/#23）。
 
     screen/fulltext 条目：忽略双方均无实际数据的编码取值/证据维度——编码方案
     新增或删除空维度不是下游工作，不触发"下游已变更"误报；有数据的维度以
     摘要精确比较（历史条目存全文快照，此处计算同一摘要）。definitions 归一
-    到语义键集，忽略布局列。coding 条目是恢复载荷，保持精确比较。"""
+    到语义键集，忽略布局列。coding 条目是恢复载荷，保持精确比较。
+    coding_values 的 updated_at 是实现细节而非语义状态（同值重存只刷新时间戳
+    不构成下游变更）：比较面前后两侧一致剔除；恢复载荷不经过本视图，仍按
+    快照原样恢复（含历史时间戳）。"""
     view = {}
     for name, value in state.items():
         if stage in _TABLES and name == 'coding' and isinstance(value, list):
-            view[name] = [row for row in value if str(row[1] or '').strip()]
+            view[name] = [[row[0], row[1]] for row in value if str(row[1] or '').strip()]
         elif stage in _TABLES and name == 'coding_evidence' and isinstance(value, dict):
             digests = {}
             for dim, snap in value.items():
@@ -181,6 +205,11 @@ def _guard_state(stage: str, state: dict) -> dict:
             view[name] = digests
         elif name == 'definitions' and isinstance(value, dict):
             view[name] = {dim: _definition_view(row) for dim, row in value.items()}
+        elif name == 'values' and isinstance(value, dict):
+            # coding 取值对 [value, updated_at] 的 updated_at 同口径剔除（双保险，
+            # 兼容旧版本库已被同值重存刷新过时间戳的存量状态）。
+            view[name] = {dim: ([pair[0]] if isinstance(pair, list) else pair)
+                          for dim, pair in value.items()}
         else:
             view[name] = value
     return view
@@ -232,6 +261,68 @@ def snapshot_matches(conn: sqlite3.Connection, stage: str, key: str, before: dic
         == _guard_state(stage, after)
 
 
+def _definition_without_description(view):
+    """语义键视图去掉 description 元素（仅用于失配诊断，不改变比较面）。"""
+    if not isinstance(view, list) or len(view) != len(_SEMANTIC_DEFINITION_COLUMNS):
+        return view
+    return view[:-1]
+
+
+def _stable_fields_equal_modulo_description(a: list, b: list) -> bool:
+    """workflow_coding_fields 行（dimension_id,field_id,definition_json）在忽略
+    definition_json 内 description 键后是否等价（仅用于失配诊断）。"""
+    def normalized(rows):
+        out = []
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 3:
+                return None
+            try:
+                defn = json.loads(row[2] or '{}')
+            except ValueError:
+                defn = {}
+            if not isinstance(defn, dict):
+                defn = {}
+            defn.pop('description', None)
+            out.append([row[0], row[1], json.dumps(defn, ensure_ascii=False, sort_keys=True)])
+        return out
+    na, nb = normalized(a), normalized(b)
+    return na is not None and nb is not None and na == nb
+
+
+def _description_only_mismatch(stage: str, conn: sqlite3.Connection, key: str,
+                               before: dict, after: dict) -> bool:
+    """守卫失配是否仅由字段说明（description）编辑引起（U3-P3 仲裁案 B）。
+
+    description 属语义键集（与 coding_evidence.definition 的映射口径一致），
+    其编辑仍阻断撤销；本诊断只区分 409 文案（DESCRIPTION_CHANGED），不改变
+    阻断行为、不修改语义键集。其余任何差异（取值/备注/其他定义键）都返回
+    False，维持泛化的"下游已变更"口径。"""
+    if stage != 'coding':
+        return False
+    dims = [int(d) for d in after.get('values', {})]
+    current = snapshot(conn, stage, key, dims, evidence='evidence' in after)
+    if is_submission_evidence(before, after):
+        current['access_context'] = SUBMISSION_EVIDENCE
+    cur = _guard_state(stage, {name: value for name, value in current.items() if name in after})
+    old = _guard_state(stage, after)
+    if cur == old:
+        return False
+    for name in set(cur) | set(old):
+        a, b = cur.get(name), old.get(name)
+        if a == b:
+            continue
+        if (name == 'definitions' and isinstance(a, dict) and isinstance(b, dict)
+                and set(a) == set(b)
+                and all(_definition_without_description(a[dim]) == _definition_without_description(b[dim])
+                        for dim in a)):
+            continue
+        if (name == 'stable_fields' and isinstance(a, list) and isinstance(b, list)
+                and _stable_fields_equal_modulo_description(a, b)):
+            continue
+        return False
+    return True
+
+
 def _latest(conn: sqlite3.Connection, context: TraceContext, stage: str) -> dict | None:
     if not _exists(conn):
         return None
@@ -252,11 +343,30 @@ def _latest(conn: sqlite3.Connection, context: TraceContext, stage: str) -> dict
 
 
 def latest(db: str | Path, context: TraceContext, stage: str) -> dict | None:
+    """最新可撤销条目（状态接口）。coding 条目附带回滚所需图片的文件存在性
+    判定（undo_available，R6-U5/#25）：与 undo() 的 MISSING_EVIDENCE_FILE
+    拒绝同口径——文件缺失时调用方不得再把该条目标为可撤销。"""
     from coscreen.db import _connect
     if stage not in STAGES:
         raise ValueError("Unknown Undo stage.")
     with closing(_connect(db)) as conn:
-        return _latest(conn, context.normalized(), stage)
+        result = _latest(conn, context.normalized(), stage)
+        if result is not None and stage == 'coding':
+            row = conn.execute('SELECT before_json FROM workspace_undo WHERE id=?',
+                               (result['entry_id'],)).fetchone()
+            before = json.loads(row[0]) if row else {}
+            if isinstance(before.get('evidence'), dict):
+                result['undo_available'] = _evidence_files_available(db, before['evidence'])
+    return result
+
+
+def _evidence_files_available(db: str | Path, evidence: dict) -> bool:
+    """只读预检：待恢复图片是否都仍在当前数据目录（与撤销拒绝同口径，U3-P1）。"""
+    try:
+        _require_restorable_evidence(db, evidence)
+    except ValueError:
+        return False
+    return True
 
 
 def _require_restorable_evidence(db: str | Path, evidence: dict) -> None:
@@ -351,6 +461,9 @@ def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> di
             if not conn.execute("SELECT 1 FROM articles WHERE zotero_key=?", (key,)).fetchone():
                 raise ValueError("This article is no longer available for Undo.")
             if not snapshot_matches(conn, stage, key, before, after):
+                # U3-P3 仲裁案 B：差异仅限字段说明时给出区分文案（仍阻断撤销）。
+                if _description_only_mismatch(stage, conn, key, before, after):
+                    raise ValueError(DESCRIPTION_CHANGED)
                 raise ValueError("The saved result or downstream work has changed. Undo cannot overwrite newer changes.")
             if stage == 'coding' and 'evidence' in before:
                 _require_restorable_evidence(db, before['evidence'])

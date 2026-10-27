@@ -130,14 +130,16 @@ class UndoRepairTests(unittest.TestCase):
                 'SELECT 1 FROM coding_values WHERE zotero_key=? AND dimension_id=?', ('K1', dim)).fetchone())
 
     def test_description_edit_still_blocks_coding_undo(self):
-        """description 在语义键集内（与 coding_evidence.definition 的映射口径一致）。"""
+        """description 在语义键集内（与 coding_evidence.definition 的映射口径一致），
+        其编辑仍阻断撤销——但 409 文案区分"字段说明已变更"（U3-P3 仲裁案 B，
+        R6-U1）：不再误导性地报"下游工作已变化"。"""
         dim = coding.add_dimension(self.db, '年龄', 'numeric', [])
         coding.save_coding_value(self.db, dim, 'K1', '42', trace_context=self.ctx())
         entry = self.latest_entry('coding')
         coding.update_dimension(self.db, dim, description='新的字段说明', trace_context=self.ctx())
         with self.assertRaises(ValueError) as caught:
             workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
-        self.assertIn('downstream work has changed', str(caught.exception))
+        self.assertEqual(str(caught.exception), workspace_undo.DESCRIPTION_CHANGED)
 
     # ------------------------------------------------------------------
     # U3-P1：迁移改写 journal + 悬空图片明确拒绝
@@ -413,7 +415,8 @@ class UndoRepairTests(unittest.TestCase):
         coding.update_dimension(self.db, dim, description='新说明', trace_context=self.ctx())
         with self.assertRaises(ValueError) as caught:
             workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
-        self.assertIn('downstream work has changed', str(caught.exception))
+        # U3-P3 仲裁案 B：文案区分"字段说明已变更"（阻断行为不变）
+        self.assertEqual(str(caught.exception), workspace_undo.DESCRIPTION_CHANGED)
 
     def test_legacy_fullrow_journal_with_choice_dimension(self):
         """旧版整行 definitions 快照（SELECT * 含 options_json 字符串）不崩溃。"""
