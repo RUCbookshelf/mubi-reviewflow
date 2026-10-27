@@ -657,8 +657,11 @@ class CliImportSemanticsTests(unittest.TestCase):
 
     def test_reimport_same_doi_group_keeps_titles_and_marks(self):
         # 评审反馈（R2/FB1）：库内已有 K2('Title B')，再导 K1('Title A',
-        # 同 DOI)+K2('Title B refined', 同 DOI) → K1 保留 Title A、K2 更新
-        # 为 refined 并标记 is_duplicate_of=K1；不得出现 K2->K1 改键。
+        # 同 DOI)+K2('Title B refined', 同 DOI) → 不改键、两行共存。
+        # r6（复审 #3，CLI 与 living_review 对齐库内条目优先口径）：合并组根
+        # 是库内 K2 行，故本批 K1 是"与库重复"的新键行（打 is_duplicate_of=K2），
+        # K2 行被 refined 内容更新——方向与 living_review 一致，且 K1 的
+        # Title A / K2 的 refined 内容均不丢失、无键重写。
         with tempfile.TemporaryDirectory(prefix="rf_u1cli5_") as tmp:
             seed = Path(tmp) / "seed.ris"
             batch = Path(tmp) / "batch.ris"
@@ -673,15 +676,15 @@ class CliImportSemanticsTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertNotIn("键消歧", proc.stdout)
             self.assertIn("重复标记 1 条", proc.stdout)
-            self.assertIn("进入筛选 1 条", proc.stdout)
+            self.assertIn("进入筛选 0 条", proc.stdout)
             with closing(sqlite3.connect(db)) as conn:
                 rows = dict(conn.execute(
                     "SELECT zotero_key, title FROM articles").fetchall())
                 dup_of = dict(conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
-            self.assertEqual(rows["K1"], "Title A")            # 代表行未被覆盖
-            self.assertEqual(rows["K2"], "Title B refined")    # 重导更新
-            self.assertEqual(dup_of, {"K1": None, "K2": "K1"})
+            self.assertEqual(rows["K1"], "Title A")            # 新键行未被覆盖
+            self.assertEqual(rows["K2"], "Title B refined")    # 库内代表行更新
+            self.assertEqual(dup_of, {"K1": "K2", "K2": None})
 
     def test_same_id_different_articles_both_survive(self):
         # 首审实测：两条 ID - 1 不同文献曾静默覆盖只剩一条。

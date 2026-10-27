@@ -425,6 +425,50 @@ class StabilizeMemberOverwriteTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 复审 #3：CLI 库内去重（known 纳入 DOI/键匹配，与 living_review 对齐）
+# ---------------------------------------------------------------------------
+
+class CliLibraryDedupTests(unittest.TestCase):
+    def test_cross_batch_same_doi_marked_not_reinserted(self):
+        # 复审 #3 实测复现：种子 K1 DOI 10.1/x 后导入 K2 同 DOI/标题曾
+        # 输出"新增 1 条、重复标记 0"且两行 is_duplicate_of 均 NULL。
+        with tempfile.TemporaryDirectory(prefix="rf_r6lib_") as tmp:
+            seed = Path(tmp) / "seed.ris"
+            batch = Path(tmp) / "batch.ris"
+            db = str(Path(tmp) / "lib.db")
+            _write_ris(seed, [{"au": "Kim, Lee", "ti": "Some study", "do": "10.1/x", "id": "K1"}])
+            _write_ris(batch, [{"au": "Kim, Lee", "ti": "Some study", "do": "10.1/x", "id": "K2"}])
+            self.assertEqual(_run_cli(["import", "--file", str(seed), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(batch), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("重复标记 1 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(rows, [("K1", None), ("K2", "K1")])
+
+    def test_reimport_same_file_is_idempotent_with_source_keys(self):
+        # 同一文件重导（带来源键）：行数不变、顺序不变（db.py 承诺的幂等）。
+        with tempfile.TemporaryDirectory(prefix="rf_r6lib2_") as tmp:
+            ris = Path(tmp) / "a.ris"
+            db = str(Path(tmp) / "idem.db")
+            _write_ris(ris, [
+                {"au": "Kim, Lee", "ti": "Title One", "do": "10.9/t1", "id": "K1"},
+                {"au": "Roe, Rae", "ti": "Title Two", "py": "2021", "id": "K2"},
+            ])
+            self.assertEqual(_run_cli(["import", "--file", str(ris), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(rows, [("K1", None), ("K2", None)])
+
+
+# ---------------------------------------------------------------------------
 # 复审 #5：living_review 口径（duplicates_removed 只按 is_duplicate_of 计）
 # ---------------------------------------------------------------------------
 
