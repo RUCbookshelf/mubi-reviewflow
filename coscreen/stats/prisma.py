@@ -67,6 +67,9 @@ class PrismaFlow:
     excluded: int
     included: int
     warnings: tuple[str, ...] = field(default=())
+    #: 双方均无决策（unscreened）的行数——复审勾稽桶：决策表行数 =
+    #: screened + unscreened（+ 多人 incomplete 等形态），导出供对账
+    unscreened: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """按固定键顺序导出（同一输入多次调用结果完全一致）。"""
@@ -76,6 +79,7 @@ class PrismaFlow:
             "screened": self.screened,
             "excluded": self.excluded,
             "included": self.included,
+            "unscreened": self.unscreened,
             "warnings": list(self.warnings),
         }
 
@@ -93,10 +97,15 @@ def _count_duplicates(report: Any | None) -> int:
         return 0
 
 
-def _count_identified(report: Any | None, duplicates_removed: int, screened: int) -> int:
-    """优先取 report.total，其次 unique + 去重数，均缺失时以 screened 兜底。"""
+def _count_identified(
+    report: Any | None, duplicates_removed: int, screened: int, total_rows: int | None = None,
+) -> int:
+    """优先取 report.total，其次 unique + 去重数；report=None 时以**决策表
+    行数**兜底（复审勾稽修正：检索识别数=决策表行数——含未筛行；此前用
+    screened 兜底，决策表含未筛记录时 identified 静默少计，与
+    merged_detail.csv 行数矛盾）。total_rows 由调用方传 len(merged)。"""
     if report is None:
-        return screened
+        return screened if total_rows is None else int(total_rows)
     total = getattr(report, "total", None)
     if total is not None:
         return int(total)
@@ -129,17 +138,35 @@ def _screened_mask(merged: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
     return mask
 
 
+def _unique_key_count(merged: pd.DataFrame, mask: pd.Series) -> tuple[int, bool]:
+    """mask 命中行按 zotero_key 去重计数（R6-F5：agree 路径与 resolved 路径
+    同法按键去重，included+excluded<=screened 在重复键输入下也成立）。
+
+    返回 (键数, 是否存在重复键)；无 zotero_key 列时按行数计（兼容最小表）。
+    """
+    if "zotero_key" not in merged.columns:
+        return int(mask.sum()), False
+    keys = merged.loc[mask.fillna(False), "zotero_key"].fillna("").astype(str)
+    return int(keys.nunique()), int(len(keys)) != int(keys.nunique())
+
+
 def _agree_counts_two(merged: pd.DataFrame) -> tuple[int, int]:
-    """双筛选员一致决策计数：(included, excluded)。空决策不算一致（U6-P7）。"""
+    """双筛选员一致决策计数：(included, excluded)。空决策不算一致（U6-P7）。
+
+    R6-F5（复审）：含 zotero_key 列时按**唯一键**计数——重复键行输入下
+    行计数会突破 included+excluded<=screened 的 docstring 不变量。
+    """
     a = _decision_series(merged, "decision_A")
     b = _decision_series(merged, "decision_B")
     if "decision_B" in merged.columns:
-        included = int(((a == "include") & (b == "include")).sum())
-        excluded = int(((a == "exclude") & (b == "exclude")).sum())
+        inc_mask = (a == "include") & (b == "include")
+        exc_mask = (a == "exclude") & (b == "exclude")
     else:  # 兼容仅 decision_A + status 的最小表
         agree = merged["status"].astype(str).str.strip().str.lower() == "agree"
-        included = int((agree & (a == "include")).sum())
-        excluded = int((agree & (a == "exclude")).sum())
+        inc_mask = agree & (a == "include")
+        exc_mask = agree & (a == "exclude")
+    included, _ = _unique_key_count(merged, inc_mask)
+    excluded, _ = _unique_key_count(merged, exc_mask)
     return included, excluded
 
 
@@ -210,7 +237,14 @@ def prisma_from_merge(
     if "status" not in merged.columns:
         raise ValueError("prisma_from_merge 需要 merge_decisions 的输出（缺少 status 列）")
     mask = _screened_mask(merged, ("decision_A", "decision_B"))
-    screened = int(mask.sum())
+    # R6-F5（复审）：screened 同样按唯一键计（与 multi 路径 nunique 口径
+    # 一致）——重复 zotero_key 行不放大分母，included+excluded<=screened
+    # 的不变量在 agree 路径的任何输入下成立。
+    if "zotero_key" in merged.columns:
+        screened = int(merged.loc[mask.fillna(False), "zotero_key"]
+                       .fillna("").astype(str).nunique())
+    else:
+        screened = int(mask.sum())
     warns: list[str] = []
 
     if resolved is not None:
@@ -226,7 +260,7 @@ def prisma_from_merge(
         included, excluded = _agree_counts_two(merged)
 
     duplicates_removed = _count_duplicates(report)
-    identified = _count_identified(report, duplicates_removed, screened)
+    identified = _count_identified(report, duplicates_removed, screened, len(merged))
     if report is not None and identified - duplicates_removed != screened:
         warns.append(
             f"identified({identified}) − duplicates_removed({duplicates_removed}) "
@@ -240,6 +274,7 @@ def prisma_from_merge(
         excluded=excluded,
         included=included,
         warnings=tuple(warns),
+        unscreened=int(len(merged) - mask.sum()),
     )
 
 
@@ -284,8 +319,11 @@ def prisma_from_merge_multi(
         for name in names:
             col = agree[f"decision_{name}"].fillna("")
             shared = shared.where(shared != "", col)
-        included = int((shared == "include").sum())
-        excluded = int((shared == "exclude").sum())
+        # R6-F5（复审）：按唯一键计数（重复键行不突破 screened 不变量）
+        inc_mask = (shared == "include").reindex(merged_multi.index, fill_value=False)
+        exc_mask = (shared == "exclude").reindex(merged_multi.index, fill_value=False)
+        included, _ = _unique_key_count(merged_multi, inc_mask)
+        excluded, _ = _unique_key_count(merged_multi, exc_mask)
 
     return PrismaFlow(
         identified=screened,
@@ -317,6 +355,10 @@ def prisma_two_stage(
       条目：键域外与重复键忽略并记入 warnings（R6-F5），保证
       included + excluded <= screened 恒成立（复筛在初筛纳入子集上进行，
       其排除对象已被初筛排除计数覆盖，故不相加两次）。
+    - 键域口径如实声明（复审）：stage1 **经仲裁纳入**的键（resolved1 形态）
+      目前不在本函数键域内——尚无 resolved1 入参，传入前需先把仲裁结果
+      并入 stage1_merged 的决策列；越域条目按 warning 显式忽略，不静默
+      也不计入（扩展 resolved1 属后续轮次，见集成指示文档）。
     """
     stage1 = prisma_from_merge(stage1_merged)
     include_keys = _agree_decision_keys(stage1_merged, "include")
@@ -342,8 +384,8 @@ def prisma_two_stage(
             agree2 = stage2_merged["status"].astype(str).str.strip().str.lower() == "agree"
             inc_mask = agree2 & (a2 == "include")
             exc_mask = agree2 & (a2 == "exclude")
-        included = int((inc_mask & in_domain).sum())
-        excluded2 = int((exc_mask & in_domain).sum())
+        included, _ = _unique_key_count(stage2_merged, inc_mask & in_domain)
+        excluded2, _ = _unique_key_count(stage2_merged, exc_mask & in_domain)
         n_out = int(((inc_mask | exc_mask) & ~in_domain).sum())
         if n_out:
             warns.append(

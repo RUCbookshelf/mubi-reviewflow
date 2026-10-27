@@ -123,8 +123,12 @@ def summary(ctx, mode: str) -> dict:
     fields = {'identified_rows_db': db_rows, 'identified_rows_other': other_rows,
               'sources_scope': 'db_reg_other' if other_rows else 'db_reg',
               'duplicates_removed': duplicate_count,
-              'records_screened': len(db_keys & set(first)),
-              'records_excluded_screening': sum(v['decision']=='exclude' for k,v in first.items() if k in db_keys),
+              # R6-F9（复审 v2 口径）：records_screened 按**全部有决策的
+              # 活动键**计——与 CLI prisma_from_merge 的 screened（所有决策
+              # 行）相等（同库验收）。db_reg 单源场景 other_keys 为空，
+              # len(first) 与 len(db_keys & first) 恒等，v1 口径不变。
+              'records_screened': len(first),
+              'records_excluded_screening': sum(v['decision']=='exclude' for v in first.values()),
               'reports_sought_db': len(sought & db_keys), 'reports_sought_other': len(sought & other_keys),
               'reports_assessed_db': len(set(second) & db_keys), 'reports_assessed_other': len(set(second) & other_keys),
               'reports_of_included_studies': len(included) if ready else None,

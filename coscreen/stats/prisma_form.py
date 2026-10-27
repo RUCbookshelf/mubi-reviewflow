@@ -1170,9 +1170,14 @@ def prisma_form_dot(form: PrismaFormData, merge_note: str = "") -> str:
     scr_reasons = active_reason_rows(form.screening_exclusion_reasons)
     excl_scr_lines += [f"· {(r.reason or '').strip()}（n = {r.n}）" for r in scr_reasons]
     if form.human_excluded_n is not None and form.automation_excluded_n is not None:
-        excl_scr_lines.append(
-            f"其中：人工 {form.human_excluded_n} · 自动化 {form.automation_excluded_n}"
-        )
+        # R10W 降级时拆分本身不勾稽（人工+自动化 ≠ 排除总数）——不把不一致
+        # 的拆分行画进导出图（复审：导出图只呈现自洽数字，不一致由 warning
+        # 与备注承载，不省略时会误导读者把 50+5 当 60）。
+        if (form.human_excluded_n + form.automation_excluded_n
+                == form.records_excluded_screening):
+            excl_scr_lines.append(
+                f"其中：人工 {form.human_excluded_n} · 自动化 {form.automation_excluded_n}"
+            )
     node("excl_screen_db", _lines_label(excl_scr_lines), fillcolor=_SIDE_FILL, color=_TERRA)
     edge("screened_db", "excl_screen_db")
     rank("stage_screen", "screened_db", "excl_screen_db")

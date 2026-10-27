@@ -390,7 +390,8 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
     print(
         f"合并完成：共 {summary.n_total} 条 | 一致 {summary.n_agree} | "
-        f"冲突 {summary.n_conflict} | 仅A {summary.n_A_only} | 仅B {summary.n_B_only}"
+        f"冲突 {summary.n_conflict} | 仅A {summary.n_A_only} | 仅B {summary.n_B_only} | "
+        f"无人筛 {summary.n_unscreened}"
         f"（一致率 {summary.agreement_rate:.1%}）"
     )
     print(

@@ -58,6 +58,7 @@ class MergeSummary:
     n_agree: int
     n_conflict: int
     n_A_only: int
+    n_unscreened: int  # 双方决策均为空（无人筛，U6-P3/P7）——四桶之外的第五桶
     n_B_only: int
     agreement_rate: float
 
@@ -155,6 +156,7 @@ def summarize(merged: pd.DataFrame) -> MergeSummary:
     n_conflict = int((status == "conflict").sum())
     n_a_only = int((status == "A_only").sum())
     n_b_only = int((status == "B_only").sum())
+    n_unscreened = int((status == "unscreened").sum())  # 勾稽第五桶（复审）
     denominator = n_agree + n_conflict
     agreement_rate = (n_agree / denominator) if denominator > 0 else 0.0
     return MergeSummary(
@@ -164,6 +166,7 @@ def summarize(merged: pd.DataFrame) -> MergeSummary:
         n_A_only=n_a_only,
         n_B_only=n_b_only,
         agreement_rate=agreement_rate,
+        n_unscreened=n_unscreened,
     )
 
 

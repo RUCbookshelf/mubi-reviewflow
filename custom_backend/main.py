@@ -2899,13 +2899,12 @@ def prisma_generate(body: PrismaGenerateIn, user: dict = Depends(require_user)) 
         "errors": [i.text for i in result.errors],
         "warnings": [i.text for i in result.warnings],
         "hints": [i.text for i in result.hints],
-        # r5 复审 #51：ok=False 时仍返回 dot/json（降级导出）——fa12f16 的
-        # 「ok=False 一律 None」叠加上游校验 error 时，官方模板式合规表单
-        # 在 API 层也拿不到导出物且无降级路径。前端 prRenderResult 仅在
-        # d.ok 分支渲染与启用下载（index.html），直连 API 客户端可对非法
-        # 表单自行取舍是否使用降级导出物。
-        "dot": prisma_form_dot(form),
-        "json": form_json(form),
+        # R6-F8（复审：恢复集成轮契约）：error 阻止导出——ok=False 时
+        # dot/json 一律 None。r5 #51 的「官方模板被 error 误伤」动机已由
+        # R13W warning 化修复闭环（官方模板实测 ok=True），对非法表单开放
+        # 降级导出会让未获产品裁决的 API 客户端直接导出非法图。
+        "dot": prisma_form_dot(form) if result.ok else None,
+        "json": form_json(form) if result.ok else None,
         "form": form_to_dict(form),
     }
 

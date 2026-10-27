@@ -327,5 +327,46 @@ class FriendlyMsgIntegrationTests(unittest.TestCase):
             self.assertIn(f'"{token}"', source)
 
 
+
+class NonZhRegistrationGuardTests(unittest.TestCase):
+    """复审（i18n 回归）：R14/R10W/R13W/R4B/R5B 与 R10 新措辞的十语言登记。
+
+    修复前：这些新文案在 PR_MSG_RULES 与词典均无条目——r5 时代可翻译的
+    R10 提示因改词回退裸中文（9 个非中文界面回归），R13W/R4B/R5B 新增
+    时同样未注册（node 实测 fr 环境输出裸中文）。
+    """
+
+    NEW_TEMPLATES = [
+        "纳入综述研究数({0}) 多于纳入综述报告数({1})：每个纳入研究至少对应一份报告",
+        "上一版综述纳入研究数({0}) 多于上一版综述纳入报告数({1})：每个纳入研究至少对应一份报告",
+        "新纳入研究数({0}) 多于新纳入报告数({1})：每个纳入研究至少对应一份报告",
+        "纳入综述研究数为 0 但纳入综述报告数为 {0}：请确认口径（官方末框为『纳入研究的报告』）",
+        "上一版综述纳入研究数为 0 但上一版综述纳入报告数为 {0}：请确认口径（官方末框为『纳入研究的报告』）",
+        "新纳入研究数为 0 但新纳入报告数为 {0}：请确认口径（官方末框为『纳入研究的报告』）",
+        "脚注**拆分：人工({0}) + 自动化({1}) ≠ 排除的记录({2})（可在备注中说明）",
+        "脚注**拆分：人工与自动化两个计数需同时填写或同时留空（可在备注中说明）",
+        "自动化工具筛前移除了 {0} 条，但未提供脚注**拆分——建议补填人工/自动化各排除多少",
+        "初筛排除 {0} 条仅报单一总数：官方模板允许不拆分；如需逐理由拆分请补填（拆分为本项目推断口径，需 Σ = 排除数）",
+        "其他方法列：寻求获取的报告({0}) − 未获取到的报告({1}) ≠ 进行资格评估的报告({2})",
+        "其他方法列：Σ排除理由({0}) > 进行资格评估的报告({1})（单列排除数不能超过该列评估数）",
+    ]
+
+    def test_new_prisma_messages_have_ten_language_rows(self):
+        html = _FRONTEND.read_text(encoding="utf-8")
+        for tpl in self.NEW_TEMPLATES:
+            with self.subTest(template=tpl[:24]):
+                # PR_MSG_RULES 规则存在（模板字符串以第二元素出现）
+                self.assertIn('"' + tpl + '"', html)
+                # 词典行存在且十语言列齐全（zh + 9 个非空译文）
+                needle = '["' + tpl + '","'
+                self.assertIn(needle, html, "词典行缺失")
+                line = next(l for l in html.splitlines() if needle in l)
+                fields = line.strip().rstrip(",").split('","')
+                self.assertEqual(len(fields), 10,
+                                 "词典行必须含 zh+9 语言共 10 列")
+                self.assertTrue(all(len(f.strip('[]"')) >= 2 for f in fields),
+                                "任一语言列不得为空")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -111,8 +111,9 @@ class RisTerminatorTests(unittest.TestCase):
             err = _StringIO()
             with redirect_stderr(err):
                 articles = parse_ris(self._write(tmp, body))
-        self.assertEqual([a.title for a in articles], ["Alpha", "Beta"])
-        self.assertIn("嵌合", err.getvalue())
+        # 集成轮复审（B3）落地后转正：嵌合点拆分，三条各自导入无字段污染
+        self.assertEqual([a.title for a in articles], ["Alpha", "Beta", "Gamma"])
+        self.assertIn("拆分", err.getvalue())
 
     def test_last_record_missing_er_imports_complete_with_warning(self):
         # r2 评审 R3「绝不整文件拒绝」：末条缺 ER 不再 ParseError（此前实测
@@ -274,20 +275,20 @@ class PrismaGenerateContractTests(unittest.TestCase):
     其他依赖环境变量的集成测试产生目录生命周期干扰。
     """
 
-    def test_invalid_form_still_returns_degraded_exports(self):
+    def test_invalid_form_blocks_exports(self):
         from custom_backend.main import PrismaFormIn, PrismaGenerateIn, prisma_generate
 
-        # 空表单缺识别来源行 → R1 error → ok=False，但降级导出物仍返回。
+        # 集成轮复审（R6-F8 契约恢复）：空表单缺识别来源行 → R1 error →
+        # ok=False 时 dot/json 一律 None（error 阻止导出；r6 曾反转成
+        # 「降级导出仍返回」——r5 #51 的官方模板动机已由 R13W 闭环）。
         payload = prisma_generate(
             PrismaGenerateIn(form=PrismaFormIn()),
             user={"user_id": "probe", "username": "probe"},
         )
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["errors"])
-        self.assertIsNotNone(payload["dot"])
-        self.assertIn("digraph PRISMA2020", payload["dot"])
-        self.assertIsNotNone(payload["json"])
-        self.assertIn("identified_rows_db", payload["json"])
+        self.assertIsNone(payload["dot"])
+        self.assertIsNone(payload["json"])
         self.assertIsNotNone(payload["form"])
 
     def test_official_template_form_gets_ok_and_exports(self):

@@ -58,12 +58,15 @@ class BlankDecisionTests(unittest.TestCase):
         df_a, df_b = self._blank_probe_dfs()
         merged = merge_decisions(df_a, df_b)
         flow = prisma_from_merge(merged)
-        # R6-F2 验收：screened=1（仅 k2），included=1；report=None 的兜底
-        # 口径下 identified = screened（无去重报告时不臆造检索总数）。
+        # R6-F2 验收：screened=1（仅 k2），included=1。report=None 的兜底
+        # 口径（复审勾稽修正后）：identified = 决策表行数（检索识别数——
+        # 含未筛行，与 merged_detail.csv 行数一致；曾用 screened 兜底致
+        # 决策表含未筛记录时 identified 静默少计）；unscreened=1 可勾稽。
         self.assertEqual(
             (flow.identified, flow.duplicates_removed, flow.screened, flow.excluded, flow.included),
-            (1, 0, 1, 0, 1),
+            (2, 0, 1, 0, 1),
         )
+        self.assertEqual(flow.unscreened, 1)
 
     def test_legacy_table_with_mislabeled_agree_not_screened(self):
         # 兼容旧版合并表：双空行曾被标 status='agree'（CSV 往返产物），
@@ -275,6 +278,92 @@ class ScreenedCaliberAlignmentTests(unittest.TestCase):
       比本模块口径更严；对齐需修改该文件（不在本泳道允许改动清单），
       Task 端到端未运行——边界声明见 coscreen/stats/prisma.py 模块 docstring。
     """
+
+    def test_f5_duplicate_keys_agree_path_dedup_keeps_invariant(self):
+        """R6-F5（复审）：agree 路径按唯一键计数——重复 zotero_key 行输入
+        不再使 included > screened（docstring 不变量在全部路径成立）。"""
+        merged = pd.DataFrame({
+            "zotero_key": ["k1", "k1"],
+            "decision_A": ["include", "include"],
+            "decision_B": ["include", "include"],
+            "status": ["agree", "agree"],
+        })
+        flow = prisma_from_merge(merged)
+        self.assertEqual(flow.screened, 1)   # 按唯一键
+        self.assertEqual(flow.included, 1)   # 修复前 = 2 > screened
+        self.assertLessEqual(flow.included + flow.excluded, flow.screened)
+        # multi 路径同法
+        multi = pd.DataFrame({
+            "zotero_key": ["k1", "k1"],
+            "decision_x": ["include", "include"],
+            "decision_y": ["include", "include"],
+            "status": ["agree", "agree"],
+        })
+        mflow = prisma_from_merge_multi(multi)
+        self.assertEqual((mflow.screened, mflow.included), (1, 1))
+        # two_stage：stage1 纳入 1 键、stage2 同键两行 agree-include
+        stage2 = pd.DataFrame({
+            "zotero_key": ["k1", "k1"],
+            "decision_A": ["include", "include"],
+            "decision_B": ["include", "include"],
+            "status": ["agree", "agree"],
+        })
+        tflow = prisma_two_stage(merged, stage2)
+        self.assertEqual(tflow.included, 1)  # 修复前 = 2 > screened(1)
+
+    def test_unscreened_bucket_reconciles_with_decision_table(self):
+        """复审勾稽桶：PrismaFlow.unscreened 与 MergeSummary.n_unscreened 使
+        决策表行数可解释（identified = screened + unscreened，report=None）。"""
+        df = _decisions_df([("k1", "include"), ("k2", "exclude"), ("k3", "")])
+        merged = merge_decisions(df, df)
+        flow = prisma_from_merge(merged)
+        summary = summarize(merged)
+        self.assertEqual(flow.unscreened, 1)
+        self.assertEqual(summary.n_unscreened, 1)
+        self.assertEqual(flow.identified, flow.screened + flow.unscreened)
+
+    def test_v2_other_only_keys_count_in_task_page_records_screened(self):
+        """R6-F9（复审 v2 口径验收）：other 来源（website/register 之外）独占
+        键上有决策时，任务页 records_screened 与 CLI prisma_from_merge 的
+        screened 相等——修复前任务页剔除 other-only 键（实测 1≠2）。
+        复现手法照复审探针：db.init_db+review_workflow.migrate 合成任务库。"""
+        import tempfile
+        from types import SimpleNamespace
+        from contextlib import closing as _closing
+        import sqlite3 as _sqlite3
+        from coscreen import db as _db, review_workflow as _wf
+        from coscreen.models import Article as _Article
+        from custom_backend.prisma_task_metrics import summary as _summary
+        with tempfile.TemporaryDirectory() as tmp:
+            task_db = str(Path(tmp) / "user.db")
+            _db.init_db(task_db)
+            _wf.migrate(task_db)
+            from coscreen import import_sources as _imports
+            _imports.migrate(task_db)  # workflow_source_details（v4/v5）
+            from coscreen import review_imports as _rim
+            _rim.migrate(task_db)      # workflow_source_records 等导入溯源表
+            _db.upsert_articles(task_db, [
+                _Article(zotero_key="k1", title="WOS Study"),
+                _Article(zotero_key="k2", title="GS Study"),
+            ], [])
+            with _closing(_wf.connect(task_db)) as c, c:
+                # 两个来源：database（WOS）与其他来源（website/GS）
+                c.execute("INSERT INTO workflow_sources(id,name,normalized_name,active,created_at) VALUES('s1','WOS','wos',1,'now')")
+                c.execute("INSERT INTO workflow_sources(id,name,normalized_name,active,created_at) VALUES('s2','GS','gs',1,'now')")
+                c.execute("INSERT INTO workflow_source_details(source_id,identification,source_type,provider,suggestion,evidence_json,identity) VALUES('s1','db','database','','','{}','')")
+                c.execute("INSERT INTO workflow_source_details(source_id,identification,source_type,provider,suggestion,evidence_json,identity) VALUES('s2','db','website','','','{}','')")
+                c.execute("INSERT INTO workflow_source_records(id,source_id,digest,row_index,filename,original_json,article_json,incoming_key,staged_key,canonical_key,outcome,state,created_at) VALUES('r1','s1','d1',0,'a.ris','{}','{}','k1','k1','k1','accepted','active','now')")
+                c.execute("INSERT INTO workflow_source_records(id,source_id,digest,row_index,filename,original_json,article_json,incoming_key,staged_key,canonical_key,outcome,state,created_at) VALUES('r2','s2','d2',0,'b.ris','{}','{}','k2','k2','k2','accepted','active','now')")
+                c.execute("INSERT INTO decisions(zotero_key,decision,screened_at,updated_at) VALUES('k1','include','now','now')")
+                c.execute("INSERT INTO decisions(zotero_key,decision,screened_at,updated_at) VALUES('k2','include','now','now')")
+            ctx = SimpleNamespace(owner_db=Path(task_db), actor_db=Path(task_db),
+                                   task_kind="personal", can_manage=True)
+            fields = _summary(ctx, "reviewer")["fields"]
+            # CLI 同组决策：merge_decisions（双人一致 include）→ screened
+            df = _decisions_df([("k1", "include"), ("k2", "include")])
+            cli_screened = prisma_from_merge(merge_decisions(df, df)).screened
+            self.assertEqual(cli_screened, 2)
+            self.assertEqual(fields["records_screened"], cli_screened)  # 修复前 1
 
     def test_screened_matches_saved_decision_union(self):
         # 两名筛选员的决策表（任务页 first 的数据形状：键 -> 已保存决策）；
