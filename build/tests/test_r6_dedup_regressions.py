@@ -34,6 +34,17 @@
 - FB6：沿用库内键/同键更新的行不计入"进入筛选"；
 - FB7：自指配对在调用方 report 列表赋值处真正过滤，经真实 CLI/
   living_review 路径 spy upsert 实参断言。
+
+评审 R2 返修（adoption 预扫描未排除库内行的三处后果）：
+- FB-A（阻断）：库内旧行（auto-* 同样命中 _is_generated_key_article）
+  经索引自匹配/互匹配被计入 adopted_targets，把库内行当"本批记录"误报
+  坍缩警告（1 旧+1 新报"本批 2 条"、1 旧+2 新报"本批 3 条"、库内两条
+  同哈希行+无关导入也告警）。修复=预扫描跳过 id(art) in known_ids；
+  回归钉住条数（"本批 2 条"）与三个负例（含 living change_report）。
+- FB-B（低）：content/_fallback 分层命中且库行缺作者时同样发"元数据
+  补全"警告（此前只并入旧键、静默补 authors）。
+- FB-C（低）：预扫描仅处理本批生成键记录，不再对库内行互相 uf.union
+  形成与 exact_pairs 无关的阴影组；"库内同哈希行+无关导入"回归覆盖。
 """
 
 from __future__ import annotations
@@ -281,6 +292,9 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("新增 0 条", proc.stdout)   # R1：零新增行
             self.assertIn("进入筛选 0 条", proc.stdout)  # FB6：沿用键更新不计入
+            # 评审 R2 返修·FB-A：1 旧 + 1 新（幂等重导）不得报"本批 N 条
+            # 匹配到同一库内行"——库内行不得被当成"本批记录"计数
+            self.assertNotIn("匹配到同一库内行", proc.stderr)
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
@@ -334,6 +348,10 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("新增 0 条", proc.stdout)          # R1：零新增行
             self.assertIn("进入筛选 0 条", proc.stdout)       # FB6：沿用键更新不计入
+            # 评审 R2 返修·FB-B：content/_fallback 分层命中且库行缺作者时
+            # 必须发"元数据补全"警告，不得静默把 authors='' 补成有值
+            self.assertIn("补全", proc.stderr)
+            self.assertNotIn("匹配到同一库内行", proc.stderr)   # FB-A：无误报
             with closing(sqlite3.connect(db)) as conn:
                 keys = {r[0] for r in conn.execute("SELECT zotero_key FROM articles")}
             self.assertEqual(keys, set(legacy_keys))          # 沿用旧键
@@ -355,6 +373,8 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
                 db, str(ris), "A vs B", "mortality", "12 months", "RR")
             self.assertEqual(result.new_articles, [])
             self.assertEqual(result.duplicates_removed, 0)
+            # 评审 R2 返修·FB-A：living 变更报告同样不得出现库内行误报
+            self.assertNotIn("匹配到同一库内行", result.change_report)
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall()
@@ -818,8 +838,11 @@ class ReviewFeedbackR1Tests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("新增 0 条", proc.stdout)                  # 零新增（R1 兼容）
             self.assertIn("更新 2 条", proc.stdout)
-            self.assertIn("匹配到同一库内行", proc.stderr)             # 显式警告
+            # 评审 R2 返修·FB-A：警告条数必须只数本批命中（1 旧 + 2 新
+            # → "本批 2 条"，此前库内行被计入报"本批 3 条"）
+            self.assertIn("本批 2 条记录内容匹配到同一库内行", proc.stderr)
             self.assertIn("覆盖", proc.stderr)
+            self.assertNotIn("本批 3 条", proc.stderr)
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, journal, COUNT(*) FROM articles"
@@ -834,6 +857,66 @@ class ReviewFeedbackR1Tests(unittest.TestCase):
             with closing(sqlite3.connect(db2)) as conn:
                 self.assertEqual(
                     conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 2)
+
+    def test_unrelated_import_into_duplicate_hash_library_no_warning(self):
+        # 评审 R2 返修·FB-A 探针3/FB-C：库内已有两条 content_hash 相同、
+        # 键不同、无 _fallback_id 的 auto-* 旧行，导入一条完全无关的新
+        # 记录——修复前两条库内行经 hash 索引互相命中被计入 adopted_targets
+        # （stderr 误报"本批 2 条…auto-aaaaaaaaaaaa"，DB 零改动），且形成
+        # 与 exact_pairs 无关的阴影合并组。修复后：无警告、无改写。
+        with tempfile.TemporaryDirectory(prefix="rf_r6r2c_") as tmp:
+            other = Path(tmp) / "new.ris"
+            db = str(Path(tmp) / "lib.db")
+            title = "Identical title here"
+            same_hash = hashlib.sha1(f"|{title}".encode()).hexdigest()
+            db_mod.init_db(db)
+            db_mod.upsert_articles(db, [
+                Article(zotero_key="auto-aaaaaaaaaaaa", title=title,
+                        authors="Doe, Jane", year=2020,
+                        raw={"_generated_key": True}, content_hash=same_hash),
+                Article(zotero_key="auto-bbbbbbbbbbbb", title=title,
+                        authors="Doe, Jane", year=2020,
+                        raw={"_generated_key": True}, content_hash=same_hash),
+            ], [])
+            _write_ris(other, [{"au": "Rae, Kim", "ti": "Totally different subject",
+                                "py": "2021", "id": "NEW1"}])
+            proc = _run_cli(["import", "--file", str(other), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("匹配到同一库内行", proc.stderr)
+            self.assertNotIn("补全", proc.stderr)
+            with closing(sqlite3.connect(db)) as conn:
+                after = conn.execute(
+                    "SELECT zotero_key, title, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(after, [
+                ("auto-aaaaaaaaaaaa", title, None),      # 既有两行零改动
+                ("auto-bbbbbbbbbbbb", title, None),
+                ("NEW1", "Totally different subject", None),  # 仅新增无关记录
+            ])
+
+    def test_living_review_multi_hit_warning_in_change_report(self):
+        # 评审 R2 返修·FB-A：living_review 正例——1 旧 + 2 新命中同一库内行
+        # 时变更报告出现"本批 2 条"坍缩警告（此前库内行被计入会报 3 条）。
+        with tempfile.TemporaryDirectory(prefix="rf_r6r2d_") as tmp:
+            ris = Path(tmp) / "dup.ris"
+            db = str(Path(tmp) / "lr.db")
+            _write_ris(ris, [
+                {"au": "Doe, Jane", "ti": "Shared cohort analysis", "py": "2020",
+                 "jo": "Journal One"},
+                {"au": "Doe, Jane", "ti": "Shared cohort analysis", "py": "2020",
+                 "jo": "Journal Two"},
+            ])
+            arts = parse_file(ris)
+            legacy = _legacy_auto_key(arts[0].doi, arts[0].title)
+            LegacyAutoKeyReimportTests._preset_legacy_db(db, arts[:1], [legacy])
+            result = process_incremental_update(
+                db, str(ris), "A vs B", "mortality", "12 months", "RR")
+            self.assertIn("本批 2 条记录内容匹配到同一库内行", result.change_report)
+            self.assertNotIn("本批 3 条", result.change_report)
+            self.assertEqual(result.new_articles, [])   # 坍缩语义：零新增
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
 
     def test_mark_pairs_contain_no_self_pairs_through_real_cli(self):
         # FB7：自指配对过滤必须落到调用方真正消费的 report 列表——经真实

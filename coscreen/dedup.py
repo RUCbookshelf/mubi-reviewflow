@@ -468,7 +468,8 @@ def stabilize_conflicting_keys(
             uf.union(pair.kept_index, pair.dup_index)
 
     def _warn(message: str) -> None:
-        if warnings is not None:
+        # 去重：同一事件经不同路径（预扫描/组循环）只提示一次
+        if warnings is not None and message not in warnings:
             warnings.append(message)
 
     def _metadata_completion_note(key: str, db_art: Article, art: Article) -> None:
@@ -528,6 +529,15 @@ def stabilize_conflicting_keys(
     for i, art in enumerate(articles):
         if not _is_generated_key_article(art):
             continue
+        if id(art) in known_ids:
+            # 评审 R2 返修·FB-A/FB-C：库内旧行（auto-* 同样命中
+            # _is_generated_key_article）不参与本批身份匹配——它们经
+            # hash/content 索引与自身或彼此互相命中时，会被计入
+            # adopted_targets（把库内行当"本批记录"误报坍缩警告：1 旧 +
+            # 1 新报"本批 2 条"、库内两条同哈希行 + 无关导入也告警），
+            # 且形成与 exact_pairs 无关的阴影合并组。仅本批（非库内）
+            # 生成键记录需要沿用库内键。
+            continue
         target = _match_legacy_key(art)
         if target is None:
             continue
@@ -536,8 +546,13 @@ def stabilize_conflicting_keys(
             doi_known, doi_new = _norm_doi(db_art.doi), _norm_doi(art.doi)
             if doi_known and doi_new and doi_known != doi_new:
                 continue  # DOI 冲突：不同文献，不沿用库内键
+            # 评审 R2 返修·FB-B：content/_fallback 分层命中沿用库内键且库行
+            # 缺作者时，同样发"元数据补全"警告（与来源键路径同一口径，
+            # 不静默改写库行 authors）。
+            _metadata_completion_note(target, db_art, art)
         # 记账所有命中（含 _fallback_id 层）：不同分层（同文件行 vs 哈希/
-        # 内容）仍可能命中同一库内行，坍缩警告按目标键计数（FB5）。
+        # 内容）仍可能命中同一库内行，坍缩警告按目标键计数（FB5）——
+        # 只统计本批命中（库内行已在上面跳过）。
         adopted_targets.setdefault(target, []).append(i)
         j = key_positions.get(target)
         if j is not None and j != i:
