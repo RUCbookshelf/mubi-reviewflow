@@ -291,44 +291,53 @@ class TaskLockMiddleware:
 
 app.add_middleware(TaskLockMiddleware)
 
-#: U5-P3：multipart 上传在请求体解析/落盘前的 Content-Length 预检。
+#: U5-P3：multipart 上传在请求体解析/落盘前的预检（字节数 + 文件 part 数）。
 #: **上限取各端点真实限制 + multipart 开销余量**（boundary/文件名/表单字段），
 #: 只提前拒绝超限流量，不收紧也不放宽端点既有校验：
 #: - 文本导入/PDF 全文：security.MAX_UPLOAD_BYTES（100MB/文件）；
 #: - import-batch：20 文件 × 100MB（review_imports_api 的文件数上限）；
 #: - 合并/一致性/仲裁：2..9 文件 × 100MB（端点文件数校验）；
-#: - trace 导入包：MAX_PACKAGE_BYTES=128MB（coscreen/research_trace_export），
-#:   端点自身守卫允许 128MB+1MB，预检取 128MB+2MB 余量（101MB 曾把
-#:   101–128MB 的合法包误拒，评审回归）；
+#: - trace 导入包：端点守卫 MAX_TRACE_BODY_BYTES = MAX_PACKAGE_BYTES(128MB)+1MB，
+#:   预检取同值（129MB）——再大的包会在解析后才 413（评审三轮对齐）；
 #: - 编码证据：coscreen/coding_evidence.MAX_UPLOAD_BYTES=10MB；
 #: - living-review/import-update：端点从不读文件（固定 409 引导到受保护
 #:   导入），出货前端无调用，给 10MB 小上限封住无效落盘面。
+#: 文件 part 数（第三列）= 各端点声明的文件数上限；超出者其内容不再进入
+#: 解析器（security._MultipartFilePartCounter 在 receive 层流式拦截）。
 from coscreen.research_trace_export import MAX_PACKAGE_BYTES as _TRACE_PACKAGE_MAX_BYTES
 from coscreen.coding_evidence import MAX_UPLOAD_BYTES as _CODING_EVIDENCE_MAX_BYTES
 
 _UPLOAD_SLACK_BYTES = 1024 * 1024
 _BATCH_IMPORT_MAX_FILES = 20
 _MULTI_CSV_MAX_FILES = 9
+#: 与 custom_backend.research_trace_api.MAX_TRACE_BODY_BYTES 同值（129MB）；
+#: 不直接 import 该模块是保持 main 顶层依赖不变（其路由为按需加载）。
+_TRACE_BODY_MAX_BYTES = _TRACE_PACKAGE_MAX_BYTES + 1024 * 1024
 
 #: 预检规则表（模块级常量供回归测试核对：新增上传端点必须补对应规则）
-_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int]] = [
+_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int, int]] = [
     (re.compile(r"^/api/tasks/[^/]+/import-batch$"),
-     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES),
+     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES,
+     _BATCH_IMPORT_MAX_FILES),
     (re.compile(r"^/api/tasks/[^/]+/screening-arbitrations$"),
-     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
     (re.compile(r"^/api/merge/decisions$"),
-     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
     (re.compile(r"^/api/coding/agreement$"),
-     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
-    (re.compile(r"^/api/tasks/[^/]+/import$"), MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/tasks/[^/]+/import$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
     (re.compile(r"^/api/tasks/[^/]+/fulltext/[^/]+/upload$"),
-     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
     (re.compile(r"^/api/tasks/[^/]+/living-review/import-update$"),
-     10 * 1024 * 1024 + _UPLOAD_SLACK_BYTES),
+     10 * 1024 * 1024 + _UPLOAD_SLACK_BYTES, 1),
     (re.compile(r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"),
-     _CODING_EVIDENCE_MAX_BYTES + _UPLOAD_SLACK_BYTES),
+     _CODING_EVIDENCE_MAX_BYTES + _UPLOAD_SLACK_BYTES, 1),
     (re.compile(r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"),
-     _TRACE_PACKAGE_MAX_BYTES + 2 * _UPLOAD_SLACK_BYTES),
+     _TRACE_BODY_MAX_BYTES, 1),
 ]
 
 app.add_middleware(

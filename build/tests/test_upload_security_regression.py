@@ -28,6 +28,7 @@ from custom_backend.main import TaskLockMiddleware, app, _file_response
 from coscreen import tasks as tasks_mod
 from custom_backend.security import (
     EventTicketStore,
+    MultipartStructureRejected,
     UploadSizeLimitMiddleware,
     check_extension,
     clean_upload_name,
@@ -163,10 +164,11 @@ class UploadSecurityTests(unittest.TestCase):
             lock_path.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
-    # U5-P3：multipart 上传在解析请求体之前预检（411 无头 / 401 未认证 / 413 超限）
+    # U5-P3：multipart 上传在解析请求体之前预检（400 重复头/411 无头/
+    #        401 未认证/413 超限/413 文件 part 超数）
     # ------------------------------------------------------------------
     def test_u5p3_content_length_precheck_rejects_before_body_read(self):
-        rules = [(re.compile(r"^/api/tasks/[^/]+/import$"), 100)]
+        rules = [(re.compile(r"^/api/tasks/[^/]+/import$"), 100, 1)]
         seen = []
 
         async def stub_app(scope, receive, send):
@@ -225,6 +227,166 @@ class UploadSecurityTests(unittest.TestCase):
             run(multipart + [(b"content-length", b"101")],
                 token_validator=validator)[0]["status"], 401)
 
+    def test_u5p3_duplicate_content_type_cannot_bypass_prechecks(self):
+        """评审三轮手法：双 Content-Type（前 multipart 后 json）曾按后值放行。
+
+        Starlette Headers.get 取前值（multipart 照常解析），dict 覆盖后值
+        使中间件误判 application/json——411/401/413 全部失效。现重复的
+        Content-Type / Content-Length 一律 400。
+        """
+        rules = [(re.compile(r"^/api/tasks/[^/]+/import$"), 100, 1)]
+        seen = []
+
+        async def stub_app(scope, receive, send):  # pragma: no cover - 不应被调
+            seen.append(scope["path"])
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        def run(headers):
+            replies = []
+
+            async def receive():  # pragma: no cover
+                raise AssertionError("request body must not be read")
+
+            async def send(message):
+                replies.append(message)
+
+            middleware = UploadSizeLimitMiddleware(stub_app, rules)
+            asyncio.run(middleware(
+                {"type": "http", "method": "POST",
+                 "path": "/api/tasks/nope/import", "headers": headers},
+                receive, send))
+            return replies
+
+        ct_multipart = (b"content-type", b"multipart/form-data; boundary=x")
+        ct_json = (b"content-type", b"application/json")
+        # 双 Content-Type + 无 Content-Length（评审原始场景）：400，不进入内层
+        self.assertEqual(run([ct_multipart, ct_json])[0]["status"], 400)
+        # 双 Content-Type + 超限 Content-Length：仍 400（重复头先拒）
+        self.assertEqual(run([ct_multipart, ct_json, (b"content-length", b"999")])[0]["status"], 400)
+        # 反序（json 在前）同样 400；双 Content-Length 同样 400
+        self.assertEqual(run([ct_json, ct_multipart, (b"content-length", b"10")])[0]["status"], 400)
+        self.assertEqual(run([ct_multipart, (b"content-length", b"10"),
+                              (b"content-length", b"11")])[0]["status"], 400)
+        self.assertEqual(seen, [])
+
+    def test_u5p3_file_part_counter_streaming(self):
+        """文件 part 计数状态机：跨 chunk 分隔符/头部拆分、字段不计数。"""
+        from custom_backend.security import _MultipartFilePartCounter
+
+        def file_part(name, i):
+            return (f'--B\r\nContent-Disposition: form-data; name="{name}"; '
+                    f'filename="f{i}.csv"\r\nContent-Type: text/csv\r\n\r\n'
+                    f"content{i}\r\n").encode()
+
+        def field_part(name, value):
+            return (f"--B\r\nContent-Disposition: form-data; name=\"{name}\"\r\n"
+                    f"\r\n{value}\r\n").encode()
+
+        body = (file_part("files", 1) + file_part("files", 2)
+                + field_part("job_id", "j1") + field_part("source_ids", "[]")
+                + b"\r\n--B--\r\n")
+        # 整体一次 feed：2 个文件 part、max=2 不抛
+        counter = _MultipartFilePartCounter(b"B", 2)
+        counter.feed(body)
+        self.assertEqual(counter.files, 2)
+        # 3 个文件 part：第 3 个 part 头出现即抛（内容未进入解析器）
+        counter = _MultipartFilePartCounter(b"B", 2)
+        with self.assertRaises(MultipartStructureRejected):
+            counter.feed(file_part("files", 1) + file_part("files", 2)
+                         + file_part("files", 3) + b"X" * 1024 + b"\r\n--B--\r\n")
+        # 逐字节喂（分隔符/头部全部跨 chunk 拆分）：同样在第 3 个文件头抛
+        counter = _MultipartFilePartCounter(b"B", 2)
+        data = file_part("files", 1) + file_part("files", 2) + file_part("files", 3)
+        with self.assertRaises(MultipartStructureRejected):
+            for i in range(0, len(data), 7):
+                counter.feed(data[i:i + 7])
+        # 结束边界不算 opening；字段不计数
+        counter = _MultipartFilePartCounter(b"B", 2)
+        counter.feed(b"preamble\r\n" + file_part("files", 1) + field_part("a", "1")
+                     + b"\r\n--B--\r\nepilogue")
+        self.assertEqual(counter.files, 1)
+
+    def test_u5p3_file_part_overrun_stops_forwarding_before_spool(self):
+        """中间件层：超限文件 part 的内容不再转发给（解析器侧的）receive。"""
+        rules = [(re.compile(r"^/api/tasks/[^/]+/import-batch$"), 10 ** 9, 2)]
+        file_part = (b"--B\r\nContent-Disposition: form-data; name=\"files\"; "
+                     b"filename=\"f.csv\"\r\n\r\n")
+        big = b"z" * (1024 * 1024)  # 1MiB：超 Starlette spool 阈值
+        chunks = [
+            b"--B\r\nContent-Disposition: form-data; name=\"job_id\"\r\n\r\nj\r\n",
+            file_part + big + b"\r\n",
+            file_part + big + b"\r\n",
+            file_part + big + b"\r\n--B--\r\n",  # 第 3 个文件 part：超限
+        ]
+
+        async def stub_app(scope, receive, send):
+            while True:
+                message = await receive()
+                if message["type"] != "http.request":
+                    break
+                stub_app.forwarded.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    break
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        stub_app.forwarded = []
+        stream = iter(chunks)
+
+        async def receive():
+            try:
+                return {"type": "http.request", "body": next(stream), "more_body": True}
+            except StopIteration:
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):  # pragma: no cover - 异常先于响应
+            pass
+
+        middleware = UploadSizeLimitMiddleware(stub_app, rules)
+        with self.assertRaises(MultipartStructureRejected):
+            asyncio.run(middleware(
+                {"type": "http", "method": "POST",
+                 "path": "/api/tasks/t/import-batch",
+                 "headers": [(b"content-type", b"multipart/form-data; boundary=B"),
+                             (b"content-length", b"9999999")]},
+                receive, send))
+        # 转发给解析器的字节不含第 3 个文件 part（头与 1MiB 内容均未转发）
+        forwarded = b"".join(stub_app.forwarded)
+        self.assertEqual(forwarded.count(b'filename="f.csv"'), 2)
+        self.assertLess(len(forwarded), 3 * 1024 * 1024)
+
+    def test_u5p3_authenticated_21_parts_rejected_before_parse(self):
+        """评审三轮手法：已认证 21×1.1MiB import-batch 不得再全部 spool。
+
+        第 21 个文件 part 的头部进入 receive 层即被计数器中断（FastAPI 把
+        解析期异常统一映射 400 "There was an error parsing the body"）；
+        以 UploadFile 构造计数证明第 21 个 part 从未被创建/落盘——
+        评审实测的旧行为是 21 个 part 全部 spool 后才由端点 400。
+        """
+        from starlette.datastructures import UploadFile as _UploadFile
+        from unittest import mock
+        created = []
+
+        class _CountingUploadFile(_UploadFile):
+            def __init__(self, *args, **kwargs):
+                created.append(1)
+                super().__init__(*args, **kwargs)
+
+        payload = b"p" * int(1.1 * 1024 * 1024)
+        with mock.patch("starlette.formparsers.UploadFile", _CountingUploadFile):
+            r = self.client.post(
+                f"/api/tasks/{self.task}/import-batch",
+                files=[(f"files", (f"{i}.csv", payload, "text/csv"))
+                       for i in range(21)],
+                headers=self.auth())
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.json()["detail"], "There was an error parsing the body")
+        # 落盘的文件 part 数以端点声明上限（20）为界：TestClient 单块投递
+        # 时计数器在第 21 个 part 头进入解析器之前即中断（created==0）；
+        # 真实 uvicorn 分块传输时前 20 个（合法形状）可完成、第 21 个不建。
+        self.assertLessEqual(len(created), 20)
+
     def test_u5p3_chunked_multipart_rejected_411_without_spool(self):
         """评审手法复现：无 Content-Length（chunked）multipart 不得被解析落盘。"""
         from unittest import mock
@@ -258,54 +420,64 @@ class UploadSecurityTests(unittest.TestCase):
                       {k.lower() for k in r.headers.keys()})
 
     def test_u5p3_authenticated_batch_file_count_bounded_by_endpoint(self):
-        """已认证超文件数请求：解析后由端点 400（预检不收紧合法上限，落盘有界）。"""
+        """已认证超文件数请求（小文件同样）：第 21 个文件 part 头即中断。
+
+        端点侧 1..20 校验仍在（解析后兜底），但 >20 的结构不再进入解析器。
+        2 个合法文件数的请求不被预检拦截（进入端点正常处理路径）。
+        """
         r = self.client.post(
             f"/api/tasks/{self.task}/import-batch",
             files=[(f"files", (f"{i}.csv", b"zotero_key,decision\n", "text/csv"))
                    for i in range(21)],
             headers=self.auth())
+        # 计数器在解析层中断（FastAPI 统一 400 parse error），而不是端点
+        # 落盘后的 'Choose between 1 and 20'（那是旧行为的特征文案）
         self.assertEqual(r.status_code, 400, r.text)
-        self.assertIn("1 and 20", r.json()["detail"])
+        self.assertNotIn("Choose between 1 and 20", r.text)
+        # 2 个文件（在 1..20 内）：预检放行、multipart 正常解析，进入端点
+        # 导入流程（合法 CSV 导入成功）
+        r = self.client.post(
+            f"/api/tasks/{self.task}/import-batch",
+            files=[(f"files", (f"{i}.csv",
+                               f"zotero_key,Title,doi\nK{i},Study {i},10.1/{i}\n",
+                               "text/csv"))
+                   for i in range(2)],
+            headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("parsing the body", r.text)
 
     def test_u5p3_trace_110mib_package_enters_endpoint(self):
-        """评审回归：110MiB（101–128MiB 区间）合法 trace 包不得被预检误拒。"""
-        boundary = "probe110"
-        body = (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="package"; filename="p.zip"\r\n'
-            "Content-Type: application/zip\r\n\r\n"
-        ).encode("ascii") + b"not-a-zip" + f"\r\n--{boundary}--\r\n".encode("ascii")
-        replies = []
+        """评审回归：真实 110MiB trace 包不得被预检误拒（此前 101MiB 上限）。
 
-        async def receive():
-            return {"type": "http.request", "body": body, "more_body": False}
+        以受控大体积（110MiB 零字节包体）经 TestClient 发送，multipart
+        编码携带真实 Content-Length；包体非 zip 由端点业务层拒绝（400
+        invalid_trace_package），证明请求穿过了 129MiB 预检并进入端点。
+        """
+        package = b"\0" * (110 * 1024 * 1024)
+        r = self.client.post(
+            f"/api/tasks/{self.task}/trace/imports/preview",
+            files={"package": ("p.zip", package, "application/zip")},
+            headers=self.auth())
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.json()["detail"]["error_code"], "invalid_trace_package")
 
-        async def send(message):
-            replies.append(message)
+    def test_u5p3_trace_precheck_aligned_with_endpoint_body_limit(self):
+        """预检上限必须与端点 _body_within_limit 守卫同值（129MiB）。
 
-        async def drive():
-            await app({
-                "type": "http", "asgi": {"version": "3.0"}, "method": "POST",
-                "path": f"/api/tasks/{self.task}/trace/imports/preview",
-                "query_string": b"",
-                "headers": [
-                    (b"content-type", f"multipart/form-data; boundary={boundary}".encode()),
-                    # 声明 110MiB（超过旧预检 101MiB、低于端点 128MiB 真实上限）
-                    (b"content-length", str(110 * 1024 * 1024).encode()),
-                    (b"authorization", ("Bearer " + self.user["token"]).encode()),
-                ],
-            }, receive, send)
-
-        asyncio.run(drive())
-        status = replies[0]["status"]
-        # 进入端点（垃圾包被 handler 判 400 invalid_trace_package），
-        # 而不是被预检 413 / 未认证 401 拦下。
-        self.assertEqual(status, 400, replies[:1])
-        detail = b"".join(m.get("body", b"") for m in replies if m["type"] == "http.response.body")
-        self.assertIn(b"invalid_trace_package", detail)
+        大于该值时 129–130MiB 的请求会穿过预检、解析落盘后才 413
+        （评审三轮指出的 1MiB 缝隙）。
+        """
+        from custom_backend.main import _UPLOAD_SIZE_RULES
+        from custom_backend.research_trace_api import MAX_TRACE_BODY_BYTES
+        limits = {pattern.pattern: (limit, max_files)
+                  for pattern, limit, max_files in _UPLOAD_SIZE_RULES}
+        trace_limit, trace_files = limits[
+            r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"]
+        self.assertEqual(trace_limit, MAX_TRACE_BODY_BYTES)  # 129MiB，不多不少
+        self.assertEqual(trace_files, 1)
 
     def test_u5p3_every_upload_endpoint_has_size_rule(self):
-        """静态守护：新增 UploadFile 端点必须补 Content-Length 预检规则。"""
+        """静态守护：新增 UploadFile 端点必须补预检规则（字节 + 文件数）。"""
         import inspect
         from custom_backend.main import _UPLOAD_SIZE_RULES
         uncovered = []
@@ -320,8 +492,14 @@ class UploadSecurityTests(unittest.TestCase):
             if not any("UploadFile" in str(p.annotation) for p in params):
                 continue
             sample = re.sub(r"\{[^}]+\}", "x", route.path)
-            if not any(pattern.match(sample) for pattern, _ in _UPLOAD_SIZE_RULES):
+            matched = [rule for rule in _UPLOAD_SIZE_RULES if rule[0].match(sample)]
+            if not matched:
                 uncovered.append(route.path)
+            else:
+                _, limit, max_files = matched[0]
+                self.assertIsInstance(limit, int)
+                self.assertIsInstance(max_files, int)
+                self.assertGreaterEqual(max_files, 1)
         self.assertEqual(uncovered, [],
                          "这些上传端点缺少 Content-Length 预检规则")
 
@@ -330,16 +508,27 @@ class UploadSecurityTests(unittest.TestCase):
         from custom_backend.main import _UPLOAD_SIZE_RULES
         from coscreen.research_trace_export import MAX_PACKAGE_BYTES
         from coscreen.coding_evidence import MAX_UPLOAD_BYTES as EVIDENCE_MAX
-        limits = {pattern.pattern: limit for pattern, limit in _UPLOAD_SIZE_RULES}
-        trace = limits[r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"]
-        self.assertGreaterEqual(trace, MAX_PACKAGE_BYTES)          # 128MiB 包可进
-        self.assertLess(trace, MAX_PACKAGE_BYTES + 4 * 1024 * 1024)  # 但不虚高
-        evidence = limits[r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"]
-        self.assertEqual(evidence, EVIDENCE_MAX + 1024 * 1024)     # 端点 10MB
-        screening = limits[r"^/api/tasks/[^/]+/screening-arbitrations$"]
+        from custom_backend.research_trace_api import MAX_TRACE_BODY_BYTES
+        limits = {pattern.pattern: (limit, max_files)
+                  for pattern, limit, max_files in _UPLOAD_SIZE_RULES}
+        trace, trace_files = limits[r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"]
+        self.assertEqual(trace, MAX_TRACE_BODY_BYTES)               # 端点守卫同值（129MiB）
+        self.assertEqual(MAX_TRACE_BODY_BYTES, MAX_PACKAGE_BYTES + 1024 * 1024)
+        self.assertEqual(trace_files, 1)
+        evidence, evidence_files = limits[
+            r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"]
+        self.assertEqual(evidence, EVIDENCE_MAX + 1024 * 1024)      # 端点 10MB
+        self.assertEqual(evidence_files, 1)
+        screening, screening_files = limits[r"^/api/tasks/[^/]+/screening-arbitrations$"]
         self.assertEqual(screening, 9 * 100 * 1024 * 1024 + 1024 * 1024)  # 2..9 文件
-        living = limits[r"^/api/tasks/[^/]+/living-review/import-update$"]
-        self.assertLessEqual(living, 11 * 1024 * 1024)             # 不读文件的小上限
+        self.assertEqual(screening_files, 9)
+        batch, batch_files = limits[r"^/api/tasks/[^/]+/import-batch$"]
+        self.assertEqual(batch_files, 20)                           # review_imports 20 文件上限
+        single, single_files = limits[r"^/api/tasks/[^/]+/import$"]
+        self.assertEqual(single, 100 * 1024 * 1024 + 1024 * 1024)
+        self.assertEqual(single_files, 1)
+        living = limits[r"^/api/tasks/[^/]+/living-review/import-update$"][0]
+        self.assertLessEqual(living, 11 * 1024 * 1024)              # 不读文件的小上限
 
     # ------------------------------------------------------------------
     # U5-P5：限流 key 不信任 XFF；launcher 显式 proxy_headers=False
