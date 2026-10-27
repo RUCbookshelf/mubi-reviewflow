@@ -87,20 +87,26 @@ class RisTerminatorTests(unittest.TestCase):
         path.write_text(body, encoding="utf-8")
         return path
 
-    def test_mid_record_missing_er_rejected(self):
-        # 中部缺 ER：rispy 会把 Gamma 并入 Beta 生成嵌合记录，必须显式拒绝。
+    def test_mid_record_missing_er_warns_chimera(self):
+        # 中部缺 ER：rispy 不丢弃记录（返回数与 ER 数一致）而是生成嵌合记录
+        # （Beta 吸收 Gamma：作者污染、Gamma 标题静默消失）。r6 解析器泳道
+        # 按「预校验与 rispy 文法逐字对齐、只对 rispy 实际丢弃记录的场景
+        # 抛错」的方向改口径：不整文件拒绝，改为可定位的 stderr 告警。
         body = (
             "TY  - JOUR\nTI  - Alpha\nAU  - Alice\nDO  - 10.1/alpha\nER  -\n"
             "TY  - JOUR\nTI  - Beta\nAU  - Bob\nDO  - 10.1/beta\n"
             "TY  - JOUR\nTI  - Gamma\nAU  - Carol\nDO  - 10.1/gamma\nER  -\n"
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ParseError) as ctx:
-                from coscreen.parsers.ris_parser import parse_ris
+        from coscreen.parsers.ris_parser import parse_ris
+        from contextlib import redirect_stderr
+        from io import StringIO as _StringIO
 
-                parse_ris(self._write(tmp, body))
-        self.assertIn("缺少结束标签 ER", str(ctx.exception))
-        self.assertIn("第 2 条记录", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            err = _StringIO()
+            with redirect_stderr(err):
+                articles = parse_ris(self._write(tmp, body))
+        self.assertEqual([a.title for a in articles], ["Alpha", "Beta"])
+        self.assertIn("嵌合", err.getvalue())
 
     def test_last_record_missing_er_rejected(self):
         from coscreen.parsers.ris_parser import parse_ris
