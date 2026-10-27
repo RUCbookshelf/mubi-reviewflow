@@ -620,5 +620,23 @@ class AISuggestTests(unittest.TestCase):
         self.assertNotIn(".ai_keys", blob)
 
 
+class FrontendStaticGuardTests(unittest.TestCase):
+    """B8 浏览器回归发现的成员生成缺陷的源码钉子（不启动浏览器）。"""
+
+    def test_request_fields_use_task_whitelist_for_both_roles(self):
+        """requestFields 字段基不得按 owner/成员区分：成员基误用 FIELD_IDS（全 7 字段）
+        时，任务白名单只勾部分字段的成员生成会被 ai_field_not_allowed 整单 403
+        （B8 S3/S4 实测复现：状态行“以下字段未开放”，无任何建议卡）。"""
+        source = (Path(__file__).resolve().parents[2] / "custom_frontend" / "ai_suggest.js").read_text(
+            encoding="utf-8")
+        match = re.search(r"function requestFields\(\)\s*\{(.+?)\n\s{4}\}", source, re.S)
+        self.assertTrue(match, "ai_suggest.js 未找到 requestFields 源码")
+        body = match.group(1)
+        self.assertIn("detection.allowedFields || []", body,
+                      "字段基必须统一取任务白名单（owner=settings、成员=status）")
+        self.assertNotIn("detection.isOwner ? (detection.allowedFields", body,
+                          "不得按角色区分字段基（成员全字段请求会 403）")
+
+
 if __name__ == "__main__":
     unittest.main()

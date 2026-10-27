@@ -613,8 +613,12 @@
     }
 
     function requestFields() {
+      /* B8 回归修复：字段基统一取任务白名单（owner=settings、成员=status 端点，
+       * 两者同源）；原实现成员误用 FIELD_IDS（全部 7 字段），任务只勾部分白名单时
+       * 成员生成会被后端 ai_field_not_allowed 整单 403（B7 审查主场景实测复现）。
+       * 白名单为空时由 generate() 提示“任务未开放任何建议字段”。 */
       const subset = (detection.prefs && detection.prefs.field_ids) || [];
-      const base = detection.isOwner ? (detection.allowedFields || []) : FIELD_IDS;
+      const base = detection.allowedFields || [];
       const chosen = subset.length ? subset.filter(f => base.includes(f)) : base;
       return [...new Set(chosen)];
     }
