@@ -249,6 +249,36 @@ class RateLimiter:
             self._events[key] = bucket
             return True, 0
 
+    def peek(self, key: str, now: float | None = None) -> tuple[bool, int]:
+        """只判定是否放行，**不记录**本次尝试（R6-S1：成功登录不计数的
+        前置检查——bcrypt 校验前先挡掉已达阈值的对端，防口令猜解耗 CPU；
+        真实计数由 record() 在认证失败时补记）。
+        """
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            bucket = [t for t in self._events.get(key, []) if moment - t < self.window]
+            if len(bucket) >= self.max_events:
+                retry_after = max(1, int(self.window - (moment - bucket[0])) + 1)
+                self._events[key] = bucket
+                return False, retry_after
+            return True, 0
+
+    def record(self, key: str, now: float | None = None) -> None:
+        """补记一次失败尝试（与 peek 配对；成功路径不调用即不计数）。"""
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if len(self._events) >= self.max_keys:
+                self._evict(moment)
+            bucket = [t for t in self._events.get(key, []) if moment - t < self.window]
+            bucket.append(moment)
+            self._events[key] = bucket
+
+    def reset(self, key: str) -> None:
+        """成功登录/注册清零该对端计数（handoff：成功即清零，合法用户
+        输错几次后登成功不遗留满桶）。"""
+        with self._lock:
+            self._events.pop(key, None)
+
     def _evict(self, moment: float) -> None:
         """达到 key 上限时收缩存储：先清全过期桶，仍满则逐出最久未活跃桶。"""
         self._events = {

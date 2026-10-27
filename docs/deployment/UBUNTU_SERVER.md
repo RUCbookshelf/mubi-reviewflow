@@ -83,7 +83,22 @@ server {
     # /etc/nginx/conf.d/rf_auth_limit.conf，内容一行：
     #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
     # ），server 块内只放 limit_req 引用。
-    location ^~ /api/auth/ {
+    # R6-S1 修正：限流只覆盖登录/注册（写操作、有口令猜解面）；会话恢复
+    # GET /api/auth/me（前端每次启动调用）不得限流——此前 ^~ /api/auth/
+    # 前缀把 /me 也计入，多标签/频繁刷新的第 6 个请求被 nginx 429，
+    # 合法会话无法恢复。
+    location = /api/auth/login {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+    location = /api/auth/register {
         limit_req zone=rf_auth burst=5 nodelay;
         limit_req_status 429;
         proxy_pass http://127.0.0.1:8613;
@@ -148,8 +163,21 @@ location ^~ /api/ {
 # 反代后所有请求的对端都是 nginx 本机，应用层计数退化为单一共享桶。
 # zone 声明放在 http{} 上下文（如 /etc/nginx/conf.d/rf_auth_limit.conf：
 #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
-# ）。本 location 前缀比 /api/ 更长，仅覆盖 /api/auth/。
-location ^~ /api/auth/ {
+# ）。限流 location 用精确匹配只覆盖 login/register 两个写端点。
+# R6-S1 修正：限流只覆盖登录/注册两个写端点（精确匹配）；会话恢复
+# GET /api/auth/me 不限流（前端每次启动调用，限流会误伤多标签/刷新）。
+location = /api/auth/login {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
+}
+location = /api/auth/register {
     limit_req zone=rf_auth burst=5 nodelay;
     limit_req_status 429;
     proxy_pass http://127.0.0.1:8613;
@@ -197,7 +225,8 @@ sudo nginx -t && sudo systemctl reload nginx
   请求的对端都是反代机，应用层计数会退化成**单一共享桶**——限流必须
   由反代层按真实客户端 IP（`$binary_remote_addr`）完成，即上方两个示例
   配置中的 `limit_req` 块：`limit_req_zone` 声明放 `http{}` 上下文 +
-  `location ^~ /api/auth/` 内 `limit_req zone=rf_auth burst=5 nodelay` +
+  `location = /api/auth/login` 与 `location = /api/auth/register` 内
+  `limit_req zone=rf_auth burst=5 nodelay` +
   `limit_req_status 429`（与应用层 429 语义对齐；nginx 的 429 不带应用层
   的 Retry-After 头，客户端按默认间隔重试即可）。直连部署（start.sh /
   桌面启动器）不受影响：官方启动器已显式 `proxy_headers=False`，uvicorn
@@ -302,7 +331,22 @@ server {
     # containing exactly one line:
     #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
     # ); only the limit_req reference lives in the server block.
-    location ^~ /api/auth/ {
+    # R6-S1 修正：限流只覆盖登录/注册（写操作、有口令猜解面）；会话恢复
+    # GET /api/auth/me（前端每次启动调用）不得限流——此前 ^~ /api/auth/
+    # 前缀把 /me 也计入，多标签/频繁刷新的第 6 个请求被 nginx 429，
+    # 合法会话无法恢复。
+    location = /api/auth/login {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+    location = /api/auth/register {
         limit_req zone=rf_auth burst=5 nodelay;
         limit_req_status 429;
         proxy_pass http://127.0.0.1:8613;
@@ -368,7 +412,20 @@ location ^~ /api/ {
 # /etc/nginx/conf.d/rf_auth_limit.conf:
 #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
 # ). This longer prefix wins over /api/ for auth paths only.
-location ^~ /api/auth/ {
+# R6-S1 修正：限流只覆盖登录/注册两个写端点（精确匹配）；会话恢复
+# GET /api/auth/me 不限流（前端每次启动调用，限流会误伤多标签/刷新）。
+location = /api/auth/login {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
+}
+location = /api/auth/register {
     limit_req zone=rf_auth burst=5 nodelay;
     limit_req_status 429;
     proxy_pass http://127.0.0.1:8613;

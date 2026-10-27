@@ -1257,6 +1257,56 @@ class UploadSecurityTests(unittest.TestCase):
                          rate_limit_key("login", "testclient", None))
         login_limiter._events.clear()  # 不污染同进程其他用例的对端桶
 
+    def test_r6s1_successful_logins_not_counted_and_reset(self):
+        """复审（handoff「只对失败尝试计数，成功即清零」）：同一对端连续
+        6 次正确登录全部 200——修复前第 6 次合法登录被误拒（曾把
+        「正确密码也拒绝」固化成期望）；错误尝试仍计数（5 失败后第 6 次
+        429），成功一次即清零。"""
+        from custom_backend import auth as auth_mod
+        from custom_backend.security import login_limiter
+        username = "ratelimit-success-probe"
+        user = auth_mod.create_user(username, "Correct-Horse-9")
+        token = None
+        try:
+            headers = {"Content-Type": "application/json"}
+            codes = []
+            for _ in range(6):
+                r = self.client.post(
+                    "/api/auth/login",
+                    json={"username": username, "password": "Correct-Horse-9"},
+                    headers=headers)
+                codes.append(r.status_code)
+            self.assertEqual(codes, [200] * 6, codes)  # 成功不计入配额
+            # 5 次错误后：第 6 次被拒（失败计数仍在）
+            for _ in range(5):
+                self.client.post(
+                    "/api/auth/login",
+                    json={"username": username, "password": "WrongPass-8ch"},
+                    headers=headers)
+            r = self.client.post(
+                "/api/auth/login",
+                json={"username": username, "password": "Correct-Horse-9"},
+                headers=headers)
+            self.assertEqual(r.status_code, 429, r.text)
+        finally:
+            login_limiter._events.clear()
+            with __import__("sqlite3").connect(
+                    str(auth_mod._users_db())) as conn:
+                conn.execute("DELETE FROM users WHERE id=?", (user["id"],))
+                conn.commit()
+
+    def test_r6s1_start_sh_disables_proxy_headers(self):
+        """复审（真实 uvicorn 传输层）：uvicorn 默认 proxy_headers=True 会把
+        环回对端的 XFF 写进 request.client.host，应用层「按直连对端分桶」
+        被伪造 XFF 改写（真实 uvicorn 实测轮换 XFF 全 401 绕过计数）——
+        start.sh 必须显式 --no-proxy-headers（真实 uvicorn 行为无法在
+        pytest 内驱动，静态守护钉住启动参数）。"""
+        from pathlib import Path as _Path
+        start_sh = _Path(__file__).resolve().parents[2] / "custom_backend" / "start.sh"
+        text = start_sh.read_text(encoding="utf-8")
+        self.assertIn("--no-proxy-headers", text)
+        self.assertNotIn("--proxy-headers", text.replace("--no-proxy-headers", ""))
+
     # ------------------------------------------------------------------
     # R6-S5：中间件早拒响应（411/401/413/400/409）必须带安全头，跨域白名单
     # 内的 Origin 补 CORS 简单响应头（否则浏览器把上传错误吞成网络错误）

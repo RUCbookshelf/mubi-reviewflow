@@ -1328,11 +1328,14 @@ def app_update_check() -> dict:
 def register(body: CredentialsIn, request: Request) -> dict:
     # U5-P5/R6-S1：按直连对端 IP 分桶（XFF 一律不信任），见 rate_limit_key；
     # 429 文案标明计数维度，方便运维定位（反代部署应由反代层 limit_req）。
-    allowed, retry_after = login_limiter.check(rate_limit_key(
+    # 复审（handoff「只对失败尝试计数」）：peek 先挡已达阈值的对端（防批量
+    # 注册耗 CPU），失败才补记、成功即清零——合法用户连续成功不被挤占。
+    key = rate_limit_key(
         "register",
         request.client.host if request.client else None,
         request.headers.get("x-forwarded-for"),
-    ))
+    )
+    allowed, retry_after = login_limiter.peek(key)
     if not allowed:
         raise HTTPException(
             429, "注册尝试过于频繁，请稍后再试（按连接来源 IP 计数）。",
@@ -1340,23 +1343,30 @@ def register(body: CredentialsIn, request: Request) -> dict:
     try:
         user = auth.create_user(body.username, body.password)
     except auth.AuthError as exc:
+        login_limiter.record(key)
         raise _bad(str(exc)) from exc
+    login_limiter.reset(key)
     return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
 
 
 @app.post("/api/auth/login")
 def login(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(rate_limit_key(
+    # 复审（handoff「只对失败尝试计数，成功即清零」）：peek 前置挡掉已达
+    # 阈值的对端（bcrypt 校验前拒绝，防口令猜解耗 CPU），仅认证失败补记、
+    # 成功清零——同一对端 6 次连续正确登录不再在第 6 次被误拒。
+    key = rate_limit_key(
         "login",
         request.client.host if request.client else None,
         request.headers.get("x-forwarded-for"),
-    ))
+    )
+    allowed, retry_after = login_limiter.peek(key)
     if not allowed:
         raise HTTPException(
             429, "登录尝试过于频繁，请 1 分钟后再试（按连接来源 IP 计数）。",
             headers={"Retry-After": str(retry_after)})
     user = auth.authenticate(body.username, body.password)
     if user is None:
+        login_limiter.record(key)
         raise _bad("用户名或密码错误。", 401)
     # U4-P2：历史上已注册、但用户名与任务目录保留库名（collaboration.db）
     # 相撞的账号：不阻断登录、不破坏数据，在响应中给出改名指引。
@@ -1367,6 +1377,7 @@ def login(body: CredentialsIn, request: Request) -> dict:
             "团队协作功能不可用；请改用其他用户名注册新账号使用协作功能，"
             "本账号的历史数据保持不变。"
         )
+    login_limiter.reset(key)
     return {"token": auth.create_access_token(user["id"], user["username"]),
             "user": user, "warnings": warnings}
 
