@@ -376,6 +376,14 @@ async def _upload_rejected_handler(request: Request, exc: UploadRejected) -> JSO
     return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
 
 
+#: 协作库永久损坏（非 SQLite/镜像残缺）时的修复指引文案（R6-C4/#30）。
+#: desktop 模式下该故障映射 409 并给出删文件重建指引（而非误导性的 503
+#: “稍后重试”）；已注册 interface_locale.js 十语言双键。
+COLLABORATION_STORE_CORRUPT_MESSAGE = (
+    "任务的协作权限库（collaboration.db）已损坏。请先备份任务数据，"
+    "再删除或改名该文件后重启应用修复。")
+
+
 @app.exception_handler(collaboration_mod.OwnerUnavailableError)
 async def _collaboration_owner_unavailable_handler(
     request: Request, exc: collaboration_mod.OwnerUnavailableError
@@ -384,7 +392,15 @@ async def _collaboration_owner_unavailable_handler(
 
     不得折叠成“无 owner=legacy”：server 模式下 legacy 会走 409 迁移口径，
     desktop 模式下 legacy 保持可管理（fail-open）；解析失败必须显式重试。
+    例外（R6-C4/#30）：**永久损坏**（CollaborationStoreCorruptError）在
+    desktop 模式映射 409 + 修复指引（备份后删/改名 collaboration.db）——
+    “稍后重试”对损坏无益；server 模式维持 fail-closed 503。
     """
+    if isinstance(exc, collaboration_mod.CollaborationStoreCorruptError) and not _server_mode():
+        logger.error("Collaboration store corrupted on %s %s: %s",
+                     request.method, request.url.path, exc)
+        return JSONResponse(status_code=409,
+                            content={"detail": COLLABORATION_STORE_CORRUPT_MESSAGE})
     logger.warning("Collaboration owner unavailable on %s %s: %s",
                    request.method, request.url.path, exc)
     return JSONResponse(
@@ -1001,16 +1017,25 @@ def _dim_error(exc: ValueError) -> HTTPException:
     return _bad(str(exc), 404 if "不存在" in str(exc) else 400)
 
 
+#: server 模式下 legacy（无属主记录）任务管理操作的 409 文案（U4-P1/P6 复审
+#: #31：409 原文案要求“完成属主迁移”，但产品内并无属主迁移流程——文案改为
+#: 给出真实可行的操作：单机（desktop）模式下打开同一数据目录即可删除/重建。
+#: 已注册 interface_locale.js 十语言双键（errOf 经 payload.message -> T() 命中）。
+LEGACY_OWNER_UNSET_MESSAGE = (
+    "旧任务缺少协作属主记录，服务器模式下无法管理；"
+    "可在单机模式下打开同一数据目录完成删除或重建。")
+
+
 def _legacy_owner_migration_error() -> HTTPException:
     """server 模式下 legacy（无属主记录）任务的统一 409 口径（U4-P1/P6）。
 
-    与列表隐藏、协作管理、仲裁端点一致：提示走属主迁移流程，而非放行或
-    误报“不是参与者”。
+    与列表隐藏、协作管理、仲裁端点一致；文案给出可行操作（desktop 模式删除/
+    重建，见 LEGACY_OWNER_UNSET_MESSAGE）而非指向不存在的迁移流程。
     """
     return HTTPException(409, {"error_code": "collaboration_owner_unset",
                                 "message_key": "coding.collaboration_owner_unset", "params": {},
-                                "details": "Legacy task needs explicit owner migration",
-                                "message": "Legacy task needs explicit owner migration"})
+                                "details": "Legacy task has no registered collaboration owner",
+                                "message": LEGACY_OWNER_UNSET_MESSAGE})
 
 
 def _task_or_404(task_id: str) -> tasks_mod.TaskInfo:
@@ -1306,12 +1331,19 @@ def list_all_tasks(
     # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
     # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
     # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
+    # 例外（R6-C4/#30）：desktop 模式下协作库**永久损坏**的任务不再静默剔除
+    # （单机安装该故障修复前按 legacy 可见；管理操作会给明确的修库指引）；
+    # server 模式维持 fail-closed 不可见。
     visible = []
     for info in infos:
         try:
             if _task_visible_to(info, user):
                 visible.append(info)
-        except collaboration_mod.OwnerUnavailableError:
+        except collaboration_mod.OwnerUnavailableError as exc:
+            if (isinstance(exc, collaboration_mod.CollaborationStoreCorruptError)
+                    and not _server_mode()):
+                visible.append(info)
+                continue
             continue
     return {"tasks": [_task_payload(i) for i in visible]}
 
@@ -1338,22 +1370,29 @@ def _collaboration_store(info: tasks_mod.TaskInfo) -> Path:
     return path
 
 
-def _collaboration_owner_store(task_id: str, user: dict) -> Path:
-    # U4-P4：协作管理（邀请/授权/撤销/列表）整体仅服务器模式开放——门禁
-    # 收口在本助手内，覆盖按用户名与按 user_id 的全部入口。
+def _collaboration_owner_store(task_id: str, user: dict) -> tuple[tasks_mod.TaskInfo, Path]:
+    """协作管理入口的属主闸门；返回 (规范任务信息, 协作库路径)。
+
+    U4-P4：协作管理（邀请/授权/撤销/列表）整体仅服务器模式开放——门禁
+    收口在本助手内，覆盖按用户名与按 user_id 的全部入口。
+    R6-C3/#35：调用方一律以返回的 info.task_id 作为 grant/revoke/list 的
+    task_id（尾点别名与规范 id 同任务同键，修复前别名路径 500/折叠 legacy）。
+    """
     if not _server_mode():
         raise HTTPException(404, "团队协作仅在服务器模式下开放。")
     info = _task_or_404(task_id)
     path = _collaboration_store(info)
     try:
         owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise  # 全局处理器：desktop 409 修复指引 / server 503 fail-closed
     except collaboration_mod.OwnerUnavailableError as exc:
         raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
     if owner is None:
         raise _legacy_owner_migration_error()
     if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can manage collaborators.")
-    return path
+    return info, path
 
 
 def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
@@ -1383,11 +1422,15 @@ def _require_task_owner(task_id: str, user: dict) -> tasks_mod.TaskInfo:
     机制之前、迁移路径未定）按模式区分（U4-P6）：server 模式 fail-closed
     ——与列表隐藏、协作管理 409 同口径，提示走属主迁移流程；desktop 模式
     维持既有可管理性（单机向后兼容，见 task_collaboration 模块披露）。
-    属主解析失败（OwnerUnavailableError）映射 503，不折叠成 legacy。
+    属主解析失败（OwnerUnavailableError）映射 503，不折叠成 legacy；协作库
+    **永久损坏**（CollaborationStoreCorruptError）交全局处理器（desktop 409
+    修复指引 / server 503，R6-C4/#30）。
     """
     info = _task_or_404(task_id)
     try:
         owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
     except collaboration_mod.OwnerUnavailableError as exc:
         raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
     if owner is None:
@@ -1418,9 +1461,27 @@ def _run_coding_freeze(info: tasks_mod.TaskInfo, user: dict,
 
 @app.get("/api/tasks/{task_id}/collaboration/roles")
 def collaboration_roles(task_id: str, user: dict = Depends(require_user)) -> dict:
-    path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
     return {"roles": collaboration_mod.list_role_grants(
-        path, actor_user_id=user["user_id"], task_id=task_id)}
+        path, actor_user_id=user["user_id"], task_id=info.task_id)}
+
+
+#: 邀请/按 user_id 授权的目标用户名与 collaboration.db 保留名冲突时的 409 文案
+#: （U4-P2 复审 #29/#34：注册口已拒绝，存量撞名账号仍可被拉入协作——其个人库
+#: 与任务权限库同文件，成员侧队列 500、权限库被灌入整套表）。已注册
+#: interface_locale.js 十语言双键。
+COLLABORATION_RESERVED_NAME_MESSAGE = (
+    "该用户名与任务协作数据库保留文件名冲突，无法邀请其参与协作；"
+    "请对方更换用户名后再试。")
+
+
+def _reject_reserved_screener_collision(target: dict) -> None:
+    """邀请/授权目标账号的保留名校验（存量账号同口径，U4-P2 复审 #29/#34）。"""
+    if auth.reserved_screener_collision(target["username"]):
+        raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                  "message_key": "coding.collaboration_reserved_name", "params": {},
+                                  "details": "Username collides with the reserved collaboration database filename",
+                                  "message": COLLABORATION_RESERVED_NAME_MESSAGE})
 
 
 @app.post("/api/tasks/{task_id}/collaboration/invite", status_code=201)
@@ -1428,17 +1489,18 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
                          user: dict = Depends(require_user)) -> dict:
     if not _server_mode():
         raise HTTPException(404, "团队协作仅在服务器模式下开放。")
-    path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
     target = auth.get_user(body.username)
     if target is None:
         raise HTTPException(404, "该账号不存在。请对方先在此服务器注册。")
-    with app.state.review_workflow.lock(task_id):
+    _reject_reserved_screener_collision(target)
+    with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=target["id"],
-            role=body.role, task_id=task_id)
-        app.state.review_workflow.latch_team(task_id, user)
-    tasks_mod.register_screener(task_id, target["username"], DATA_DIR)
-    notify_tasks_changed(target["id"], "invited", _task_or_404(task_id).display_name)
+            role=body.role, task_id=info.task_id)
+        app.state.review_workflow.latch_team(info.task_id, user)
+    tasks_mod.register_screener(info.task_id, target["username"], DATA_DIR)
+    notify_tasks_changed(target["id"], "invited", info.display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
 
@@ -1448,12 +1510,14 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
         raise HTTPException(404, "团队进度仅在服务器模式下开放。")
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(store, task_id=task_id)
+    # R6-C3/#35：属主/参与者/授权查询统一 info.task_id（尾点别名同键，
+    # 修复前别名路径被折叠成 legacy -> 409 误报）。
+    owner = collaboration_mod.get_owner(store, task_id=info.task_id)
     if owner is None:
-        raise HTTPException(409, "旧任务需先完成属主迁移，才能使用团队进度。")
+        raise HTTPException(409, LEGACY_OWNER_UNSET_MESSAGE)
     try:
         ids = collaboration_mod.list_participant_ids(
-            store, actor_user_id=user["user_id"], task_id=task_id)
+            store, actor_user_id=user["user_id"], task_id=info.task_id)
     except PermissionError as exc:
         raise HTTPException(403, "当前账号不是该任务的参与者。") from exc
     accounts = [account for uid in ids
@@ -1461,10 +1525,10 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
-    members = list_team_progress(task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
-    grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=task_id)
+    members = list_team_progress(info.task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
+    grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=info.task_id)
     return {"members": [{**member, "user_id": user_ids[member["username"]],
-                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member['username']]})}
+                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member["username"]]})}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
             "grants": grants if can_manage else []}
@@ -1473,18 +1537,21 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
 @app.post("/api/tasks/{task_id}/collaboration/roles", status_code=201)
 def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
                              user: dict = Depends(require_user)) -> dict:
-    path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
     target = auth.get_user_by_id(body.user_id)
     if target is None:
         raise HTTPException(400, {"error_code": "collaborator_not_found",
                                   "message_key": "coding.collaborator_not_found", "params": {},
                                   "details": "Account ID does not exist", "message": "Account ID does not exist"})
-    with app.state.review_workflow.lock(task_id):
+    # U4-P2 复审 #29/#34：按 user_id 授权口对目标用户名做保留名校验（存量
+    # 撞名账号同口径拒绝），否则绕过用户名邀请口把撞名账号拉入协作。
+    _reject_reserved_screener_collision(target)
+    with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=body.user_id,
-            role=body.role, task_id=task_id)
-        app.state.review_workflow.latch_team(task_id, user)
-    notify_tasks_changed(body.user_id, "invited", _task_or_404(task_id).display_name)
+            role=body.role, task_id=info.task_id)
+        app.state.review_workflow.latch_team(info.task_id, user)
+    notify_tasks_changed(body.user_id, "invited", info.display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
 
@@ -1492,14 +1559,14 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
 def collaboration_revoke_role(task_id: str, target_user_id: int,
                               role: Literal["coder", "reconciler"],
                               user: dict = Depends(require_user)) -> dict:
-    path = _collaboration_owner_store(task_id, user)
-    with app.state.review_workflow.lock(task_id):
-        app.state.review_workflow.latch_team(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
+    with app.state.review_workflow.lock(info.task_id):
+        app.state.review_workflow.latch_team(info.task_id, user)
         revoked = collaboration_mod.revoke_role(
             path, actor_user_id=user["user_id"], user_id=target_user_id,
-            role=role, task_id=task_id)
+            role=role, task_id=info.task_id)
     if revoked:
-        notify_tasks_changed(target_user_id, "revoked", _task_or_404(task_id).display_name)
+        notify_tasks_changed(target_user_id, "revoked", info.display_name)
     return {"revoked": revoked}
 
 
@@ -1555,7 +1622,7 @@ def list_articles(
 ) -> dict:
     info = _task_or_404(task_id)
     if _server_mode():
-        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=task_id)
+        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
         if owner is not None and owner["owner_user_id"] != user["user_id"]:
             owner_db = info.dir / f"{tasks_mod.slugify_screener(owner['owner_username'])}.db"
             if owner_db.is_file():
@@ -2427,12 +2494,13 @@ async def merge_decisions_ep(
 def _arbitration_store(task_id: str, user: dict) -> Path:
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(store, task_id=task_id)
+    # R6-C3/#35：属主/授权查询统一 info.task_id（尾点别名同键）。
+    owner = collaboration_mod.get_owner(store, task_id=info.task_id)
     if owner is None:
         if _server_mode():
-            raise HTTPException(409, "旧任务需先完成属主迁移。")
+            raise _legacy_owner_migration_error()
     elif owner["owner_user_id"] != user["user_id"] and not collaboration_mod.authorize_action(
-            store, user["user_id"], "consensus:write", task_id=task_id):
+            store, user["user_id"], "consensus:write", task_id=info.task_id):
         raise HTTPException(403, "仅任务属主或仲裁员可以保存仲裁结果。")
     return store
 
@@ -5658,7 +5726,7 @@ def get_shared_ranking(
 
     info = _task_or_404(task_id)
     ctx = app.state.review_workflow.context(task_id, user)
-    if not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=task_id):
+    if not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=info.task_id):
         raise HTTPException(403, "Shared ranking requires an adjudicator.")
     if ctx.task_kind == "team" and any(v["mode"] != "paused" for v in app.state.review_workflow.settings(ctx)["stages"].values()):
         raise HTTPException(409, "Shared labels cannot be used during independent screening.")
