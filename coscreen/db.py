@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -550,10 +551,16 @@ def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
 
 
 def _connect(db_path: StrPath) -> sqlite3.Connection:
+    # 尚不存在的库文件由本次连接创建：库内不可能存在既有数据，自愈建表过程
+    # 免逐事务 fsync（synchronous=NORMAL）；断电最坏回到未建库状态，下次打开
+    # 由下方幂等自愈序列原样重建。既有库仍保持默认 FULL，行为不变。
+    creating = not os.path.exists(db_path)
     conn = sqlite3.connect(db_path)
     with _MIGRATE_LOCK:  # 连接初始化与自愈迁移序列进程内串行（跨进程由写事务串行）
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        if creating:
+            conn.execute("PRAGMA synchronous=NORMAL")
         # 稳态快路径：本进程已完成该库的自愈迁移且 schema cookie 未变
         # （PRAGMA schema_version 只随 DDL 变化，数据写入不影响）时跳过全部
         # DDL——读操作不再抢 SQLite 写锁。任何外部 schema 改动（含测试模拟
@@ -582,10 +589,16 @@ def _connect(db_path: StrPath) -> sqlite3.Connection:
         )
         # 旧库自愈（幂等）：highlights 补 rects_json 列（SPEC §16 页面级标注）。
         # 函数所有者在 coscreen.fulltext（合同位置）；此处延迟导入以打破
-        # db -> fulltext 的循环依赖（fulltext 反向复用本模块的连接工厂）。
+        # 循环依赖（fulltext 反向复用本模块的连接工厂）。db -> review_workflow
+        # 无环（后者仅依赖标准库），同样延迟导入以备将来引入反向依赖。
         from coscreen.fulltext import _ensure_rects_column  # noqa: PLC0415
+        from coscreen.review_workflow import note_freshly_created  # noqa: PLC0415
 
         _ensure_rects_column(conn)
+        if creating:
+            # 登记「本进程新建的库」：workflow 迁移链据此跳过空库升级前备份
+            # 与首建期逐事务 fsync（按文件身份生效，删除替换后自动失效）。
+            note_freshly_created(path)
         if schema_version is not None:
             try:
                 _MIGRATED_SCHEMAS[path] = int(

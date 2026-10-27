@@ -61,11 +61,13 @@ def _migrate_v4(db: str | Path) -> None:
     with closing(workflow.connect(db, read_only=True)) as conn:
         if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (VERSION,)).fetchone():
             return
-        backup = Path(db).with_name(Path(db).name + '.pre-source-v4.bak')
-        if not backup.exists():
-            with closing(sqlite3.connect(backup)) as target:
-                conn.backup(target)
-    with closing(workflow.connect(db)) as conn, conn:
+        # 备份只保护既有库；本进程新建、尚在首建链中的库没有可备份的数据。
+        if not workflow.is_fresh_database(db):
+            backup = Path(db).with_name(Path(db).name + '.pre-source-v4.bak')
+            if not backup.exists():
+                with closing(sqlite3.connect(backup)) as target:
+                    conn.backup(target)
+    with closing(workflow.connect_for_initial_migration(db)) as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
         conn.execute('''CREATE TABLE IF NOT EXISTS workflow_source_details(
             source_id TEXT PRIMARY KEY REFERENCES workflow_sources(id), identification TEXT NOT NULL,
@@ -183,11 +185,13 @@ def migrate(db: str | Path) -> None:
     with closing(workflow.connect(db, read_only=True)) as conn:
         if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=5').fetchone():
             return
-        backup = Path(db).with_name(Path(db).name + '.pre-filename-v5.bak')
-        if not backup.exists():
-            with closing(sqlite3.connect(backup)) as target:
-                conn.backup(target)
-    with closing(workflow.connect(db)) as conn, conn:
+        # 同 v4：首建链中的新库跳过空库备份，真实旧库照常备份。
+        if not workflow.is_fresh_database(db):
+            backup = Path(db).with_name(Path(db).name + '.pre-filename-v5.bak')
+            if not backup.exists():
+                with closing(sqlite3.connect(backup)) as target:
+                    conn.backup(target)
+    with closing(workflow.connect_for_initial_migration(db)) as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
         mapping, source_status = {}, {}
         if workflow.has_table(conn, 'workflow_source_records'):

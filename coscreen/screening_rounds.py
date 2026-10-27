@@ -11,11 +11,13 @@ def migrate(db: Path) -> None:
     with closing(store.connect(db, read_only=True)) as conn:
         if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=6').fetchone():
             return
-        backup = db.with_name(db.name + '.pre-rounds-v6.bak')
-        if not backup.exists():
-            with closing(sqlite3.connect(backup)) as target:
-                conn.backup(target)
-    with closing(store.connect(db)) as conn, conn:
+        # 备份只保护既有库；本进程新建、尚在首建链中的库没有可备份的数据。
+        if not store.is_fresh_database(db):
+            backup = db.with_name(db.name + '.pre-rounds-v6.bak')
+            if not backup.exists():
+                with closing(sqlite3.connect(backup)) as target:
+                    conn.backup(target)
+    with closing(store.connect_for_initial_migration(db)) as conn, conn:
         conn.execute('CREATE TABLE IF NOT EXISTS workflow_screen_rounds(id INTEGER PRIMARY KEY,round_number INTEGER NOT NULL,source_id TEXT,status TEXT NOT NULL,snapshot_json TEXT NOT NULL,created_at TEXT NOT NULL)')
         conn.execute("INSERT OR IGNORE INTO workflow_migrations VALUES(6,datetime('now'))")
 

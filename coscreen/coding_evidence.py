@@ -36,11 +36,13 @@ def migrate(db: str | Path) -> None:
     with closing(workflow.connect(path, read_only=True)) as source:
         if source.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (MIGRATION_VERSION,)).fetchone():
             return
-        backup = path.with_name(path.name + '.pre-workflow-v3.bak')
-        if not backup.exists():
-            with closing(sqlite3.connect(backup)) as target:
-                source.backup(target)
-    with closing(workflow.connect(db)) as conn, conn:
+        # 备份只保护既有库；本进程新建、尚在首建链中的库没有可备份的数据。
+        if not workflow.is_fresh_database(path):
+            backup = path.with_name(path.name + '.pre-workflow-v3.bak')
+            if not backup.exists():
+                with closing(sqlite3.connect(backup)) as target:
+                    source.backup(target)
+    with closing(workflow.connect_for_initial_migration(db)) as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
         if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (MIGRATION_VERSION,)).fetchone():
             return

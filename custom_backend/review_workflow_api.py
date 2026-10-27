@@ -61,7 +61,9 @@ class WorkflowRuntime:
             return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
         with self.lock(task_id):
             owner_db = self.screener_db(info, owner["owner_username"])
-            store.migrate(owner_db)
+            # 基础迁移由 import_sources.migrate 内部首步（_migrate_v4 先跑
+            # workflow.migrate）与 coding_evidence.ensure_fields 共同兜底，此处
+            # 不再单独调 store.migrate——每次请求省一次只读连接与版本查询。
             from coscreen import import_sources
             import_sources.migrate(owner_db)
             coding_evidence.ensure_fields(owner_db)
