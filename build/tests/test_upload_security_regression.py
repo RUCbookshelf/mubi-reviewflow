@@ -85,6 +85,8 @@ class UploadSecurityTests(unittest.TestCase):
 
     def tearDown(self):
         TaskLockMiddleware._held.clear()
+        TaskLockMiddleware._deleting.clear()
+        TaskLockMiddleware._list_readers = 0
         for path in list(tasks_mod._HELD_LOCKS):
             tasks_mod.release_task_lock(path, force=True)
 
@@ -368,6 +370,139 @@ class UploadSecurityTests(unittest.TestCase):
         r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
         self.assertEqual(r.status_code, 200, r.text)
         self.assertFalse(self.info.dir.exists())
+
+    # ------------------------------------------------------------------
+    # R6-S2 三轮：全局列表读（GET /api/tasks，打开所有任务的 task.json）
+    # 必须纳入删除互斥——列表持 task.json 时 DELETE 曾触发 copytree+rmtree
+    # 半删（评审实测：DELETE 500、collaboration.db 从原目录消失、.trash 全量副本）
+    # ------------------------------------------------------------------
+    def _holding_list_setup(self, hold_seconds):
+        """把 list_tasks 换成『打开 task.json → 阻塞 → 关闭』的评审手法。"""
+        import threading
+        entered = threading.Event()
+        holder = {"stop": threading.Event()}
+        original = tasks_mod.list_tasks
+
+        def holding_list(data_dir, include_archived=False, **kwargs):
+            handle = open(self.info.dir / "task.json", "r", encoding="utf-8")
+            try:
+                entered.set()
+                holder["stop"].wait(timeout=hold_seconds)
+            finally:
+                handle.close()
+            return original(data_dir, include_archived=include_archived, **kwargs)
+
+        def install():
+            tasks_mod.list_tasks = holding_list
+
+        def restore():
+            tasks_mod.list_tasks = original
+
+        return entered, holder, install, restore
+
+    def test_r6s2_list_read_delete_drains_then_moves(self):
+        """评审三轮手法回放：列表持 task.json 0.8s 内结束——DELETE 排空后
+        正常 move（不再 500/半删），列表请求自身 200。"""
+        import threading
+        entered, holder, install, restore = self._holding_list_setup(0.8)
+        result = {}
+        worker = None
+        install()
+        try:
+            def do_list():
+                client = TestClient(app)
+                try:
+                    result["list"] = client.get("/api/tasks", headers=self.auth())
+                except Exception as exc:  # noqa: BLE001
+                    result["list_error"] = exc
+
+            worker = threading.Thread(target=do_list)
+            worker.start()
+            self.assertTrue(entered.wait(timeout=10), "列表读未进入持有段")
+            r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+            holder["stop"].set()
+        finally:
+            holder["stop"].set()
+            if worker is not None:
+                worker.join(timeout=15)
+            restore()
+            TaskLockMiddleware._deleting.clear()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("list_error", result)
+        self.assertEqual(result["list"].status_code, 200, result["list"].text)
+        # 整目录原子移入 .trash（评审旧症状：collaboration.db 半删 + 全量副本）
+        self.assertFalse(self.info.dir.exists())
+        trash_root = backend_main.DATA_DIR / ".trash"
+        self.assertTrue(any(self.info.task_id in p.name for p in trash_root.iterdir()))
+        self.assertEqual(TaskLockMiddleware._deleting, set())
+        self.assertEqual(TaskLockMiddleware._list_readers, 0)
+
+    def test_r6s2_list_read_delete_timeout_keeps_task_intact(self):
+        """列表读超过排空上限：受控 409，目录原样、无 .trash 副本，重试成功。"""
+        import threading
+        from unittest import mock
+        entered, holder, install, restore = self._holding_list_setup(6.0)
+        before = sorted(p.name for p in self.info.dir.iterdir()
+                        if not p.name.endswith(".lock"))
+        worker = None
+        r = None
+        install()
+        try:
+            def do_list():
+                client = TestClient(app)
+                client.get("/api/tasks", headers=self.auth())
+
+            worker = threading.Thread(target=do_list)
+            worker.start()
+            self.assertTrue(entered.wait(timeout=10), "列表读未进入持有段")
+            with mock.patch.object(TaskLockMiddleware, "READ_DRAIN_TIMEOUT", 0.2):
+                r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+            after = sorted(p.name for p in self.info.dir.iterdir())
+            trash_root = backend_main.DATA_DIR / ".trash"
+            self.assertFalse(trash_root.exists()
+                             and any(self.info.task_id in p.name
+                                     for p in trash_root.iterdir()))
+        finally:
+            holder["stop"].set()
+            if worker is not None:
+                worker.join(timeout=15)
+            restore()
+            TaskLockMiddleware._deleting.clear()
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("仍有读取请求未完成", r.json()["detail"])
+        # 数据不被破坏：删除前的文件一个不少（半删/copytree 回退不得发生）
+        after_final = sorted(p.name for p in self.info.dir.iterdir())
+        self.assertTrue(set(before) <= set(after_final),
+                        f"{before} 不在 {after_final} 中")
+        # 列表结束后重试删除成功
+        r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(self.info.dir.exists())
+
+    def test_r6s2_list_endpoint_defers_during_delete(self):
+        """删除进行中（deleting 置位）时全局列表读延迟准入，标志清除后放行。"""
+        import threading
+        done = threading.Event()
+        result = {}
+
+        def do_list():
+            client = TestClient(app)
+            result["resp"] = client.get("/api/tasks", headers=self.auth())
+            done.set()
+
+        TaskLockMiddleware._begin_delete(self.info.task_id)
+        try:
+            worker = threading.Thread(target=do_list)
+            worker.start()
+            # 列表在 deleting 置位期间不得完成读（有界等待循环中）
+            self.assertFalse(done.wait(timeout=0.4),
+                             "删除进行中列表读不得立即完成")
+        finally:
+            TaskLockMiddleware._end_delete(self.info.task_id)
+        self.assertTrue(done.wait(timeout=15), "标志清除后列表读应完成")
+        worker.join(timeout=15)
+        self.assertEqual(result["resp"].status_code, 200, result["resp"].text)
+        self.assertEqual(TaskLockMiddleware._list_readers, 0)
 
     # ------------------------------------------------------------------
     # U5-P4：未认证请求不得取锁/回 409（占用状态预言机与锁文件操作面）

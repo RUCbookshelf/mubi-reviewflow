@@ -208,7 +208,14 @@ class TaskLockMiddleware:
       中间件对删除中任务的一切后续请求（含 GET）直接 409——收掉「检查
       通过到 shutil.move 之间」的窗口：此前暂停 move 期间并发 GET /articles
       仍 200、随后任务目录消失，并发导入可把数据写进已移入 .trash 的库。
-      跨进程场景仍由锁文件互斥兜底（本进程 DELETE 全程持锁）。
+      跨进程场景仍由锁文件互斥兜底（本进程 DELETE 全程持锁）；
+    - **R6-S2 三轮（读排空 + 全局列表互斥）**：move 前有界排空在途**读**
+      （读请求持 SQLite/文件句柄，Windows 上未排空即 move 会触发
+      shutil.move 的 copytree+rmtree 回退半删）；全局 ``GET /api/tasks``
+      列表读（不在 /api/tasks/{id}/** 计数内，但会打开所有任务的
+      task.json）经 ``try_enter_list_read`` 与 deleting 标记**同临界区**
+      原子准入——删除进行中列表先等、准入后登记、DELETE 排空等待，
+      双向无「已过检查未计数」窗口。
     """
 
     _PATH_RE = re.compile(r"^/api/tasks/([^/]+)")
@@ -224,6 +231,10 @@ class TaskLockMiddleware:
     # 删除进行中的规范 task_id（R6-S2）：置位期间中间件对该任务的一切
     # 请求（含 GET）回 409，move 完成或删除失败后清除。
     _deleting: set[str] = set()
+    # 在途的全局任务列表读数（R6-S2 三轮）：GET /api/tasks 不匹配
+    # /api/tasks/{id}/** 的中间件路径正则，但 list_tasks 会打开**所有**
+    # 任务的 task.json——必须让 DELETE 的排空同样等它。
+    _list_readers: int = 0
     _guard = threading.Lock()
 
     def __init__(self, app):  # noqa: ANN001  ASGI 约定
@@ -251,6 +262,36 @@ class TaskLockMiddleware:
         with cls._guard:
             entry = cls._held.get(task_id)
             return max(0, entry[0] - entry[2]) if entry else 0
+
+    @classmethod
+    def try_enter_list_read(cls) -> bool:
+        """全局任务列表读的**准入**（R6-S2 三轮；与 deleting 同临界区原子判定）。
+
+        列表读（``GET /api/tasks``，出货前端每 30s 轮询）会打开所有任务的
+        task.json，且不在 ``/api/tasks/{id}/**`` 中间件计数内——评审三轮
+        实测：列表持 task.json 时 DELETE 照样触发 copytree+rmtree 半删。
+        准入规则（与 ``_begin_delete`` 同一把 ``_guard``，无竞态窗口）：
+
+        - 任一任务删除进行中 → 返回 False（调用方有界等待后重试，等待上限
+          超过删除自身的排空超时 + 余量，删除失败/完成后标志即清）；
+        - 否则计入在途列表读并返回 True——DELETE 的排空据此等待，
+          「已过检查未计数」的窗口因同临界区而不存在。
+        """
+        with cls._guard:
+            if cls._deleting:
+                return False
+            cls._list_readers += 1
+            return True
+
+    @classmethod
+    def exit_list_read(cls) -> None:
+        with cls._guard:
+            cls._list_readers = max(0, cls._list_readers - 1)
+
+    @classmethod
+    def list_readers(cls) -> int:
+        with cls._guard:
+            return cls._list_readers
 
     @classmethod
     def _begin_delete(cls, task_id: str) -> None:
@@ -1392,19 +1433,34 @@ def _task_payload(info: tasks_mod.TaskInfo) -> dict:
 def list_all_tasks(
     include_archived: bool = False, user: dict = Depends(require_user)
 ) -> dict:
-    infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
-    # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
-    # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
-    # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
-    # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
-    visible = []
-    for info in infos:
-        try:
-            if _task_visible_to(info, user):
-                visible.append(info)
-        except collaboration_mod.OwnerUnavailableError:
-            continue
-    return {"tasks": [_task_payload(i) for i in visible]}
+    # R6-S2（评审三轮）：列表读打开**所有**任务的 task.json（出货前端每 30s
+    # 轮询 loadTasks），且不在 /api/tasks/{id}/** 的任务锁中间件计数内——
+    # 评审实测列表持 task.json 时 DELETE 触发 copytree+rmtree 半删。准入与
+    # deleting 标记同临界区：删除进行中先有界等待（上限=删除排空超时+余量，
+    # 异常长的删除下降级放行，轮询不得永阻），准入后登记在途列表读供
+    # DELETE 排空；finally 释放（可见性检查还要读各任务 collaboration.db，
+    # 同样在登记期内）。
+    deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT + 1.0
+    while not TaskLockMiddleware.try_enter_list_read():
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.02)
+    try:
+        infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
+        # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
+        # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
+        # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
+        # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
+        visible = []
+        for info in infos:
+            try:
+                if _task_visible_to(info, user):
+                    visible.append(info)
+            except collaboration_mod.OwnerUnavailableError:
+                continue
+        return {"tasks": [_task_payload(i) for i in visible]}
+    finally:
+        TaskLockMiddleware.exit_list_read()
 
 
 @app.post("/api/tasks", status_code=201)
@@ -1635,9 +1691,12 @@ def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
         if inflight > 1:
             raise _bad(f"任务有操作进行中（{inflight - 1} 个写请求未完成），请等待后再删除。", 409)
         deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT
-        while TaskLockMiddleware.read_inflight(info.task_id) > 0:
+        while (TaskLockMiddleware.read_inflight(info.task_id) > 0
+               or TaskLockMiddleware.list_readers() > 0):
+            # 排空对象含全局任务列表读（R6-S2 三轮：列表持 task.json 时
+            # move 同样半删）；排不空 → 受控 409，任务原样保留。
             if time.monotonic() >= deadline:
-                raise _bad("任务仍有读取请求未完成，请稍后重试删除。", 409)
+                raise _bad("任务或任务列表仍有读取请求未完成，请稍后重试删除。", 409)
             time.sleep(0.02)
         try:
             trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
