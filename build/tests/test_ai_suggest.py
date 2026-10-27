@@ -706,6 +706,11 @@ class AISuggestTests(unittest.TestCase):
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
+                # 先读完请求体再响应，否则 Windows 下连接在客户端发送途中被重置，
+                # 客户端拿到 ConnectionAbortedError 而非 302（flaky 根因）。
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
                 seen_headers.append(dict(self.headers))
                 if self.path.endswith("/chat/completions"):
                     self.send_response(302)
