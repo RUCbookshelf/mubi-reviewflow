@@ -770,6 +770,77 @@ class AISuggestTests(unittest.TestCase):
         self.assertLessEqual(len(message), ai_suggest_api.MAX_CONTEXT_CHARS + len(prefix))
 
 
+    # ---- B9 R 轮（pass_with_notes）修复回归 -----------------------------------
+
+    def test_b9_r1_prefix_fabricated_tail_is_partial(self):
+        """B9 R-1：真前缀+编造尾段 -> 保留但标注 partial；不再冒充完全核验。"""
+        pages = [("real prefix " * 9).strip() + " and more real content continues here", "other page"]
+        fabricated = "real prefix " * 9 + " THEN A COMPLETELY FABRICATED TAIL THAT IS NOT IN THE SOURCE"
+        content = json.dumps({"study_design": {"value": "X", "quote": fabricated, "pages": []}}, ensure_ascii=False)
+        kept, warnings, dropped = ai_suggest_api._parse_provider_content(content, ["study_design"], pages, "")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["verified"], "partial")
+        self.assertIn("partial_quote:study_design", warnings)
+        self.assertEqual(dropped, 0)
+
+    def test_b9_r1_short_quote_exact_match_allowed(self):
+        """B9 R-1：>=3 字符的短引文走完整精确匹配（不被 8 字门槛误杀）。"""
+        pages = ["mentions 6 centres and other things"]
+        content = json.dumps({"study_design": {"value": "X", "quote": "6 centres", "pages": [3]}}, ensure_ascii=False)
+        kept, _warnings, dropped = ai_suggest_api._parse_provider_content(content, ["study_design"], pages, "")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["verified"], "full")
+        self.assertEqual(kept[0]["pages"], [1])   # 服务端定位，模型自报 [3] 不采信
+        self.assertEqual(dropped, 0)
+        # 原文中不存在的短引文仍被丢弃
+        content2 = json.dumps({"study_design": {"value": "X", "quote": "zz9 plural", "pages": []}}, ensure_ascii=False)
+        kept2, warnings2, _ = ai_suggest_api._parse_provider_content(content2, ["study_design"], pages, "")
+        self.assertEqual(kept2, [])
+        self.assertIn("unverified_quote:study_design", warnings2)
+
+    def test_b9_r10_warnings_separate_no_quote_and_unverified(self):
+        """B9 R-10：dropped_no_quote 只计无引文；unverified 独立成 warning。"""
+        pages = ["source text about centres exists here"]
+        content = json.dumps({
+            "study_design": {"value": "X", "quote": "NOT IN SOURCE AT ALL", "pages": []},
+            "funding_source": {"value": "Y", "quote": "", "pages": []},
+        }, ensure_ascii=False)
+        kept, warnings, dropped = ai_suggest_api._parse_provider_content(
+            content, ["study_design", "funding_source"], pages, "")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, 1)                       # 仅 funding_source（无引文）
+        self.assertIn("unverified_quote:study_design", warnings)
+
+    def test_b9_r6_metadata_bypass_literals_blocked(self):
+        """B9 R-6：IPv6 ULA/映射、十进制 IPv4、尾点域名等字面变体全部拦截。"""
+        for bad in ("http://[fc00::1]/v1", "http://[fd12::1]/v1",
+                    "http://[::ffff:169.254.169.254]/v1",
+                    "http://metadata.google.internal.:8080/v1",
+                    "http://2852039166/v1", "http://169.254.169.254/v1"):
+            with self.assertRaises(ai_keys.KeyShapeError, msg=bad):
+                ai_keys.base_url_of({"base_url": bad})
+        # 回环保留（本地模型）；私网段按 accept 披露保留（企业内网网关是合法场景）
+        for ok in ("http://127.0.0.1:11434/v1", "http://10.0.0.5/v1"):
+            self.assertTrue(ai_keys.base_url_of({"base_url": ok}))
+
+    def test_b9_r10_methods_report_lists_models(self):
+        self.enable_task()
+        self.put_personal_key()
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate()):
+            sid = self.suggestions().json()["suggestions"][0]["id"]
+        self.client.post(f"{self.base}/coding/ai-suggestions/{sid}/decision",
+                         json={"status": "adopted"}, headers=self.auth(0))
+        body = self.client.get(f"{self.base}/ai-suggestions/methods-report", headers=self.auth(0)).json()
+        self.assertIn("gpt-test", body["report_zh"])       # 模型清单（B9 R-10）
+        self.assertIn("gpt-test", body["report_en"])
+
+    def test_b9_r10_migration_backup_never_touches_vault(self):
+        """B9 R-10/B5a-3：迁移/删除走显式文件清单，永不触碰 .ai_keys。"""
+        tasks_src = (Path(__file__).resolve().parents[2] / "coscreen" / "tasks.py").read_text(encoding="utf-8")
+        self.assertNotIn(".ai_keys", tasks_src)
+        self.assertIn("def _backup_zip(files", tasks_src)   # 显式清单打包
+
+
 class FrontendStaticGuardTests(unittest.TestCase):
     """B8 浏览器回归发现的成员生成缺陷的源码钉子（不启动浏览器）。"""
 

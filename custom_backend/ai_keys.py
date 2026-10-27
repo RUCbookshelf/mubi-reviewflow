@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -20,6 +21,10 @@ from datetime import datetime
 from pathlib import Path
 
 from custom_backend.auth import data_dir
+
+#: base_url 出站缓解用的地址段（B9 R-6）：IPv6 唯一本地与 IPv4 链路本地（169.254/16）。
+_ULA_V6 = ipaddress.IPv6Network("fc00::/7")
+_LINK_LOCAL_V4 = ipaddress.IPv4Network("169.254.0.0/16")
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -118,15 +123,43 @@ def _clean_base_url(base_url: str | None) -> str:
     parts = urlsplit(text)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise KeyShapeError("base_url 必须是 http(s) URL（本地 Ollama 可填 http://127.0.0.1:11434/v1）。")
-    # B9 F12 缓解：默认阻断链路本地与云元数据地址（loopback 保留——本地模型是一期卖点）。
-    host = (parts.hostname or "").strip().strip("[]").lower()
-    if (host.startswith("169.254.") or host.startswith("fe80:") or host.startswith("fd00:")
-            or host in ("metadata.google.internal", "metadata.goog",
-                        "100.100.100.100", "100.100.100.200")):
+    # B9 F12/R-6 缓解：默认阻断链路本地与云元数据地址（含 IPv6 映射/十进制 IPv4/
+    # 尾点等字面变体；不做 DNS 解析——域名绕过按 accept 披露，见 docs）。
+    # loopback 保留——本地模型是一期卖点。
+    host = (parts.hostname or "").strip().strip("[]").lower().rstrip(".")
+    if host in ("metadata.google.internal", "metadata.goog",
+                "100.100.100.100", "100.100.100.200"):
         raise KeyShapeError("base_url 不允许指向链路本地/云元数据地址。")
+    addr = _parse_ip_literal(host)
+    if addr is not None:
+        mapped = getattr(addr, "ipv4_mapped", None)  # ::ffff:a.b.c.d -> 检查内层 v4
+        target = mapped if mapped is not None else addr
+        if not target.is_loopback and (
+                target.is_link_local
+                or (target.version == 6 and target in _ULA_V6)
+                or (target.version == 4 and target in _LINK_LOCAL_V4)):
+            raise KeyShapeError("base_url 不允许指向链路本地/云元数据地址。")
     if len(text) > 500:
         raise KeyShapeError("base_url 过长（上限 500 字符）。")
     return text.rstrip("/")
+
+
+def _parse_ip_literal(host: str):
+    """把字面 IP（含十进制 IPv4 与 IPv6 映射）解析为 ipaddress 对象；非字面返回 None。"""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    if host.isdigit():
+        import socket
+
+        try:
+            return ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(host)))
+        except (OSError, ValueError):
+            return None
+    return None
 
 
 def _clean_model(model: str | None) -> str:

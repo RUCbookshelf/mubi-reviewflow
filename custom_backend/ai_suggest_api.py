@@ -393,28 +393,40 @@ def _parse_provider_content(content: str, field_ids: list[str],
     normalized_pages = [_normalize_text(p) for p in page_texts]
     normalized_abstract = _normalize_text(abstract)
 
-    def locate_quote(quote: str) -> list[int] | None:
-        """核验引文来源：返回页号列表（摘要命中=[]），原文中不存在返回 None（伪造）。
+    def locate_quote(quote: str) -> tuple[list[int], str] | None:
+        """核验引文来源（B9 R-1 收紧）。
 
-        宽容度：先试全文匹配，再试前 80 字符，再试去掉结尾标点的两个变体
-        （真实引文常以句号结尾而原文后续还有字——尾标点不匹配不应误杀）。
+        返回 ``(pages, verified)``：pages 为页号列表（摘要命中=[]）；
+        verified ∈ {"full","partial"}。原文中完全找不到返回 None（伪造）。
+
+        - full：完整归一化引文（允许去尾标点变体）逐字命中；≥3 字符的短引文
+          只走完整匹配（精确放行，不被 8 字门槛误杀）；
+        - partial：仅当引文超过 80 字符时，允许前 80 字符前缀命中——此时建议
+          保留但标注"部分核验"（真前缀+编造尾段无法冒充 full）。
         """
         needle = _normalize_text(quote)
-        variants = []
-        for base in (needle, needle[:80]):
-            variants.append(base)
-            stripped = base.rstrip(".,;:!?'\u201d\u2019。，；：！？\u201d\u3002\u201d\u2019")
-            if stripped != base:
-                variants.append(stripped)
-        for candidate in variants:
-            if len(candidate) < 8:
-                continue
+        strip_punct = lambda s: s.rstrip(".,;:!?'\u201d\u2019。，；：！？\u3002")  # noqa: E731
+
+        def find(candidate: str) -> list[int] | None:
             hits = sorted({i for i, page in enumerate(normalized_pages, start=1)
                            if candidate in page})
             if hits:
                 return hits
             if candidate in normalized_abstract:
                 return []
+            return None
+
+        for exact in (needle, strip_punct(needle)):
+            if len(exact) >= 3:
+                found = find(exact)
+                if found is not None:
+                    return found, "full"
+        if len(needle) > 80:
+            for prefix in (needle[:80], strip_punct(needle[:80])):
+                if len(prefix) >= 8:
+                    found = find(prefix)
+                    if found is not None:
+                        return found, "partial"
         return None
 
     kept: list[dict] = []
@@ -435,15 +447,21 @@ def _parse_provider_content(content: str, field_ids: list[str],
             continue
         located = locate_quote(quote)
         if located is None:
-            dropped += 1  # B9 F1：引文核验不过（不在任何一页也不在摘要）-> 丢弃
+            # 引文核验不过（不在任何一页也不在摘要）-> 丢弃；计数走
+            # unverified_quote warnings，与"无引文"分开（B9 R-10）。
             warnings.append(f"unverified_quote:{fid}")
             continue
-        kept.append({
+        pages, verified = located
+        item = {
             "field_id": fid,
             "value": str(value).strip()[:MAX_VALUE_CHARS],
             "quote": quote[:MAX_QUOTE_CHARS],
-            "pages": located,
-        })
+            "pages": pages,
+            "verified": verified,
+        }
+        if verified == "partial":
+            warnings.append(f"partial_quote:{fid}")
+        kept.append(item)
     return kept, warnings, dropped
 
 
@@ -982,18 +1000,23 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                 "SUM(status='pending') AS pending, MIN(created_at) AS first_at, "
                 "MAX(created_at) AS last_at FROM ai_suggestions WHERE task_id=? AND actor_id=?",
                 (info.task_id, str(user["user_id"]))).fetchone()
+            models = [r[0] for r in conn.execute(
+                "SELECT DISTINCT model FROM ai_suggestions WHERE task_id=? AND actor_id=? "
+                "ORDER BY model", (info.task_id, str(user["user_id"]))).fetchall()]
         total, adopted = int(row["total"] or 0), int(row["adopted"] or 0)
         fields = ", ".join(FIELD_WHITELIST[f]["label"] for f in settings.get("allowed_field_ids") or []) or "（未启用字段）"
         span = f'{row["first_at"]} 至 {row["last_at"]}' if total else "（尚无建议记录）"
         shared_note = ("任务共享钥匙（由任务负责人配置，以任务名义经服务器发出）"
                        if settings.get("key_mode") == "shared" else "成员各自携带钥匙（BYOK）")
+        models_note = "；所用模型：" + "、".join(m for m in models if m) if models else ""
         report_zh = (
             f"本段统计为当前登录成员本人的 AI 建议使用记录（按成员分别统计；团队汇总请各成员各自导出）。"
             f"本综述在编码阶段使用了木笔 ReviewFlow（v{app_version}）的 AI 抽取建议功能。"
             f"建议由大语言模型生成（提示词版本 {PROMPT_VERSION}），仅覆盖研究特征类字段：{fields}。"
             f"使用期间：{span}；共生成 {total} 条建议，其中 {adopted} 条被直接采纳、"
             f'{int(row["edited"] or 0)} 条经人工编辑后采纳、{int(row["ignored"] or 0)} 条被忽略。'
-            f"密钥模式：{shared_note}。每条建议均附原文引文与页码，无引文的建议在服务端被丢弃；"
+            f"密钥模式：{shared_note}{models_note}。每条建议均附原文引文与页码，"
+            "无引文或引文未能在原文中核验的建议在服务端被丢弃（超长引文按可核验前缀放行并标注部分核验）；"
             "采纳由人工逐条确认，最终编码值均由研究者经既有保存链路写入并计入研究轨迹。"
             "模型输出未经独立验证，仅作辅助参考（验证方式：__________）。")
         report_en = (
@@ -1005,9 +1028,12 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             f"fields: {fields}. Period: {span}; {total} suggestions were generated, of which "
             f'{adopted} were adopted directly, {int(row["edited"] or 0)} adopted after manual '
             f'editing, and {int(row["ignored"] or 0)} dismissed. Key mode: '
-            f"{'a task-shared key configured by the task owner' if settings.get('key_mode') == 'shared' else 'bring-your-own-key (BYOK)'}. "
-            "Every suggestion carried a verbatim quote and page numbers; suggestions without a "
-            "quote were discarded server-side. Adoption required per-item human confirmation, and "
+            f"{'a task-shared key configured by the task owner' if settings.get('key_mode') == 'shared' else 'bring-your-own-key (BYOK)'}"
+            f"{' (models: ' + ', '.join(m for m in models if m) + ')' if models else ''}. "
+            "Every suggestion carried a source quote and page numbers; suggestions without a "
+            "quote, or whose quote could not be verified against the source text, were discarded "
+            "server-side (overlong quotes are accepted on a verifiable prefix and flagged as "
+            "partially verified). Adoption required per-item human confirmation, and "
             "final coding values were saved by researchers through the regular audit-trailed "
             "workflow. Model outputs were not independently validated and served as assistance "
             "only (validation: __________).")

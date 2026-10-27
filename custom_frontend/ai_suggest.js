@@ -148,7 +148,11 @@
       ["已复制并采纳", "Copied & adopted", "Copié et adopté", "Скопировано и принято", "Copiado y adoptado", "コピーして採用", "Copiado e adotado", "Kopiert & übernommen", "Копирано и прихваћено", "복사하고 채택"],
       ["请按 Ctrl+C 复制选中内容后再采纳。", "Press Ctrl+C to copy the selected text, then adopt.", "Appuyez sur Ctrl+C pour copier le texte sélectionné, puis adoptez.", "Нажмите Ctrl+C, чтобы скопировать выделенное, затем примите.", "Pulse Ctrl+C para copiar el texto seleccionado y luego adopte.", "Ctrl+C で選択内容をコピーしてから採用してください。", "Pressione Ctrl+C para copiar o texto selecionado e depois adote.", "Kopieren Sie mit Strg+C den markierten Text und übernehmen Sie dann.", "Притисните Ctrl+C да копирате означени текст, па прихватите.", "Ctrl+C로 선택한 내용을 복사한 뒤 채택하세요."],
       ["自动复制失败：已选中建议值，请按 Ctrl+C，再点击“已复制并采纳”。", "Auto-copy failed: the suggested value is selected — press Ctrl+C, then click \"Copied & adopted\".", "Copie automatique échouée : la valeur suggérée est sélectionnée — appuyez sur Ctrl+C, puis cliquez sur « Copié et adopté ».", "Автокопирование не удалось: предложенное значение выделено — нажмите Ctrl+C, затем нажмите «Скопировано и принято».", "La copia automática falló: el valor sugerido está seleccionado; pulse Ctrl+C y luego “Copiado y adoptado”.", "自動コピーに失敗しました。提案値を選択済みです。Ctrl+C を押してから「コピーして採用」をクリックしてください。", "A cópia automática falhou: o valor sugerido está selecionado — pressione Ctrl+C e clique em “Copiado e adotado”.", "Automatisches Kopieren fehlgeschlagen: der vorgeschlagene Wert ist markiert — Strg+C drücken, dann „Kopiert & übernommen“ klicken.", "Аутоматско копирање није успело: предложена вредност је изабрана — притисните Ctrl+C, па кликните „Копирано и прихваћено“.", "자동 복사 실패: 제안 값이 선택되었습니다. Ctrl+C를 누른 뒤 '복사하고 채택'을 클릭하세요."],
-      ["此任务为升级前创建（无负责人），请先在协作设置中认领负责人后再启用 AI。", "This task predates team features (no owner). Claim ownership in collaboration settings before enabling AI.", "Cette tâche est antérieure aux fonctions d’équipe (aucun responsable). Réclamez la propriété dans les réglages de collaboration avant d’activer l’IA.", "Эта задача создана до появления командных функций (без владельца). Сначала заявите права владельца в настройках совместной работы, затем включайте ИИ.", "Esta tarea es anterior a las funciones de equipo (sin responsable). Reclame la propiedad en la configuración de colaboración antes de activar la IA.", "このタスクはチーム機能より前の作成で（責任者なし）。AI を有効化する前に共同設定で責任者を設定してください。", "Esta tarefa é anterior aos recursos de equipe (sem responsável). Assuma a propriedade nas configurações de colaboração antes de ativar a IA.", "Diese Aufgabe stammt aus der Zeit vor den Teamfunktionen (kein Eigentümer). Übernehmen Sie zuerst das Eigentum in den Kollaborationseinstellungen, bevor Sie KI aktivieren.", "Овај задатак је настао пре тимских функција (без власника). Пре укључивања АИ преузмите власништво у подешавањима сарадње.", "이 작업은 팀 기능 이전에 생성되어(소유자 없음) AI를 켜기 전에 협업 설정에서 소유자를 지정해야 합니다."],
+      ["此任务为升级前创建（无负责人）。当前版本暂无自助认领入口：可在桌面版重建任务协作，或联系服务器管理员处理。", "This task predates team features (no owner). There is no self-service way to claim ownership in this version: recreate the task collaboration on desktop, or contact your server administrator.", "Cette tâche est antérieure aux fonctions d’équipe (aucun responsable). Aucune procédure autonome de réclamation n’existe dans cette version : recréez la collaboration de tâche en version bureautique ou contactez l’administrateur du serveur.", "Эта задача создана до появления командных функций (без владельца). Самостоятельно заявить права в этой версии нельзя: пересоздайте совместную задачу в настольной версии или обратитесь к администратору сервера.", "Esta tarea es anterior a las funciones de equipo (sin responsable). Esta versión no ofrece una vía autónoma para reclamar la propiedad: recree la colaboración de la tarea en la versión de escritorio o contacte al administrador del servidor.", "このタスクはチーム機能より前の作成で（責任者なし）。現バージョンに自助での引継ぎ手段はありません。デスクトップ版でタスク协作を再作成するか、サーバー管理者に連絡してください。", "Esta tarefa é anterior aos recursos de equipe (sem responsável). Esta versão não oferece meio autônomo de assumir a propriedade: recrie a colaboração da tarefa na versão desktop ou contate o administrador do servidor.", "Diese Aufgabe stammt aus der Zeit vor den Teamfunktionen (kein Eigentümer). Diese Version bietet keinen Self-Service-Weg zum Übernehmen: Legen Sie die Aufgabenkollaboration in der Desktop-Version neu an oder wenden Sie sich an den Serveradministrator.", "Овај задатак је настао пре тимских функција (без власника). У овој верзији нема самосталног преузимања: поново направите сарадњу задатка у радној верзији или контактирајте администратора сервера.", "이 작업은 팀 기능 이전에 생성되어(소유자 없음) 이 버전에는 셀프 인계 기능이 없습니다. 데스크톱 버전에서 작업 협업을 다시 만들거나 서버 관리자에게 문의하세요."],
+      ["任务已启用 AI 建议（使用你的个人钥匙）。", "AI suggestions are enabled for this task (using your personal key).", "Les suggestions IA sont activées pour cette tâche (avec votre clé personnelle).", "ИИ-подсказки включены для этой задачи (используется ваш личный ключ).", "Las sugerencias de IA están activadas para esta tarea (con su clave personal).", "このタスクでは AI 提案が有効です（あなたの個人キーを使用）。", "As sugestões de IA estão ativadas para esta tarefa (usando sua chave pessoal).", "KI-Vorschläge sind für diese Aufgabe aktiviert (mit Ihrem persönlichen Schlüssel).", "АИ предлози су укључени за овај задатак (користи ваш лични кључ).", "이 작업에 AI 제안이 활성화되어 있습니다(개인 키 사용)."],
+      ["我已手动复制，采纳", "I copied it manually, adopt", "J’ai copié manuellement, adopter", "Я скопировал вручную — принять", "Lo copié manualmente, adoptar", "手動コピーしたので採用", "Copiei manualmente, adotar", "Habe manuell kopiert, übernehmen", "Ручно сам копирао, прихвати", "수동으로 복사했으니 채택"],
+      ["部分核验", "Partially verified", "Vérification partielle", "Частичная проверка", "Verificación parcial", "部分検証", "Verificação parcial", "Teilweise verifiziert", "Делимично проверено", "부분 검증"],
+      ["有建议按可核验前缀放行（部分核验）。", "Some suggestions were accepted on a verifiable prefix (partially verified).", "Des suggestions ont été acceptées sur un préfixe vérifiable (vérification partielle).", "Часть предложений принята по проверяемому префиксу (частичная проверка).", "Algunas sugerencias se aceptaron por un prefijo verificable (verificación parcial).", "検証可能な前置きに基づき受理された提案があります（部分検証）。", "Algumas sugestões foram aceitas com base em um prefixo verificável (verificação parcial).", "Einige Vorschläge wurden anhand eines verifizierbaren Präfixes akzeptiert (teilweise verifiziert).", "Неки предлози су прихваћени по проверивом префиксу (делимично проверено).", "검증 가능한 접두사 기준으로 허용된 제안이 있습니다(부분 검증)."],
       ["任务已启用 AI，你尚未配置可用钥匙（个人或共享）。", "AI is enabled for this task, but you have no usable key yet (personal or shared).", "L’IA est activée pour cette tâche, mais vous n’avez pas encore de clé utilisable (personnelle ou partagée).", "ИИ включён для этой задачи, но у вас пока нет доступного ключа (личного или общего).", "La IA está activada para esta tarea, pero aún no tiene una clave utilizable (personal o compartida).", "このタスクでは AI が有効ですが、利用可能なキー（個人または共有）がまだありません。", "A IA está ativada para esta tarefa, mas você ainda não tem uma chave utilizável (pessoal ou compartilhada).", "KI ist für diese Aufgabe aktiviert, aber Sie haben noch keinen nutzbaren Schlüssel (persönlich oder geteilt).", "АИ је укључен за овај задатак, али још немате употребљив кључ (лични или дељени).", "이 작업에 AI가 활성화되어 있지만 아직 사용 가능한 키(개인 또는 공유)가 없습니다."],
       ["统计载入中…", "Loading statistics…", "Chargement des statistiques…", "Загрузка статистики…", "Cargando estadísticas…", "統計を読み込み中…", "Carregando estatísticas…", "Statistiken werden geladen…", "Учитавање статистике…", "통계를 불러오는 중…"],
       ["本人已生成 {0} 条 · 采纳 {1} · 编辑后采纳 {2} · 忽略 {3}", "Your record: {0} generated · {1} adopted · {2} adopted after editing · {3} dismissed", "Votre relevé : {0} générées · {1} adoptées · {2} adoptées après modification · {3} ignorées", "Ваша статистика: сгенерировано {0} · принято {1} · принято с правкой {2} · отклонено {3}", "Su registro: {0} generadas · {1} adoptadas · {2} adoptadas tras editar · {3} descartadas", "本人の記録：生成 {0} · 採用 {1} · 編集後採用 {2} · 無視 {3}", "Seu registro: {0} geradas · {1} adotadas · {2} adotadas após edição · {3} descartadas", "Ihre Auswertung: {0} erzeugt · {1} übernommen · {2} nach Bearbeitung übernommen · {3} verworfen", "Ваш запис: {0} генерисано · {1} прихваћено · {2} прихваћено након измене · {3} одбачено", "본인 기록: 생성 {0} · 채택 {1} · 편집 후 채택 {2} · 무시 {3}"],
@@ -410,6 +414,8 @@
       if (m) return T('{0} 条建议因缺少原文引文被丢弃。', m[1]);
       if (/^unverified_quote:/.test(String(warning || '')))
         return T('有建议因引文未能在原文中定位被丢弃。');   /* B9 F1：服务端引文核验 */
+      if (/^partial_quote:/.test(String(warning || '')))
+        return T('有建议按可核验前缀放行（部分核验）。');   /* B9 R-1 */
       const t = /^context_truncated:(\d+)$/.exec(String(warning || ''));
       if (t) return T('原文过长，已截断 {0} 字。', t[1]);
       if (warning === 'ai_key_missing') return T('未配置可用的 AI 钥匙，请先在设置页配置。');
@@ -435,8 +441,9 @@
         }
         card.append(row);
       }
-      /* P1：AI 身份留痕角标 */
-      card.append(literal('div', [item.provider, item.model, item.prompt_version].filter(Boolean).join(' · '), { class: 'rf-ai-meta' }));
+      /* P1：AI 身份留痕角标；B9 R-1：部分核验（仅前缀可核验）显式标注 */
+      card.append(literal('div', [item.provider, item.model, item.prompt_version,
+        item.verified === 'partial' ? T('部分核验') : null].filter(Boolean).join(' · '), { class: 'rf-ai-meta' }));
       const actions = el('div', { class: 'rf-ai-actions' });
       if (!pending) {
         const badgeText = item.status === 'adopted' ? '已采纳' : item.status === 'edited' ? '已编辑' : item.status === 'ignored' ? '已忽略' : '未处理';
@@ -586,6 +593,7 @@
           if (!copied) { input.select(); toast(T('请按 Ctrl+C 复制选中内容后再采纳。'), 'warn'); return; }
           await decideItem(item, 'adopted', null);
         }, 'btn b-inc sm'),
+        btn('我已手动复制，采纳', () => decideItem(item, 'adopted', null), 'btn b-out sm'),  /* B9 R-7 */
         btn('取消', () => renderSuggestions(), 'btn sm'));
       input.focus(); input.select();
       toast(T('自动复制失败：已选中建议值，请按 Ctrl+C，再点击“已复制并采纳”。'), 'warn');
@@ -987,14 +995,16 @@
     }
 
     function renderMemberBlock() {
-      /* B9 F13：升级前创建的无负责人任务给出迁移提示，而非笼统的"未启用"。 */
+      /* B9 F13/R-5：升级前任务如实说明（无自助认领入口），不指向不存在的操作。 */
       if (detection.owner_unset) {
-        taskCard.append(node('p', '此任务为升级前创建（无负责人），请先在协作设置中认领负责人后再启用 AI。', { class: 'hint' }));
+        taskCard.append(node('p', '此任务为升级前创建（无负责人）。当前版本暂无自助认领入口：可在桌面版重建任务协作，或联系服务器管理员处理。', { class: 'hint' }));
         return;
       }
       if (detection.sharedAvailable) {
         taskCard.append(literal('p', T('共享钥匙已启用：{0}', detection.sharedProviderName || '—'), { class: 'hint' }));
         taskCard.append(el('span', { class: 'rf-ai-disclosure', text: T('本任务由负责人启用了 AI（{0}），请求以任务名义发出。', detection.sharedProviderName || '—'), style: 'display:block;font-size:.75rem;color:var(--muted);margin:4px 0' }));
+      } else if (detection.active && detection.keyAvailable) {
+        taskCard.append(node('p', '任务已启用 AI 建议（使用你的个人钥匙）。', { class: 'hint' }));  /* B9 R-4 */
       } else if (detection.active) {
         taskCard.append(node('p', '任务已启用 AI，你尚未配置可用钥匙（个人或共享）。', { class: 'hint' }));  /* B9 F20 */
       } else {
@@ -1049,17 +1059,26 @@
       taskCard.append(el('div', { class: 'rf-ai-actions' }, save, status));
     }
 
+    /* B9 R-3：计数懒加载——仅任务启用时请求一次并按 scope 缓存；未启用零请求（R1 口径） */
+    let auditCountsCache = { scope: null, text: '' };
     function renderAuditBlock() {
       taskCard.append(node('h4', '审计与报告'));
-      /* B9 F6：P10 先验证后放量——展示本人使用计数与小样评估引导（不依赖任务开关，F4）。 */
-      const countsLine = el('p', { class: 'rf-ai-hint', role: 'status', text: T('统计载入中…') });
-      api(taskApi() + '/ai-suggestions/methods-report').then(safe(result => {
-        const c = (result && result.counts) || null;
-        countsLine.textContent = c
-          ? T('本人已生成 {0} 条 · 采纳 {1} · 编辑后采纳 {2} · 忽略 {3}',
-              String(c.total ?? 0), String(c.adopted ?? 0), String(c.edited ?? 0), String(c.ignored ?? 0))
-          : T('尚无建议记录。');
-      })).catch(safe(() => { countsLine.textContent = ''; }));
+      /* B9 F6：P10 先验证后放量——展示本人使用计数与小样评估引导（审计区不依赖任务开关，F4）。 */
+      const countsLine = el('p', { class: 'rf-ai-hint', role: 'status' });
+      const scope = scopeKey();
+      if (auditCountsCache.scope === scope) {
+        countsLine.textContent = auditCountsCache.text;
+      } else if (detection.active) {
+        api(taskApi() + '/ai-suggestions/methods-report').then(safe(result => {
+          const c = (result && result.counts) || null;
+          const text = c
+            ? T('本人已生成 {0} 条 · 采纳 {1} · 编辑后采纳 {2} · 忽略 {3}',
+                String(c.total ?? 0), String(c.adopted ?? 0), String(c.edited ?? 0), String(c.ignored ?? 0))
+            : T('尚无建议记录。');
+          auditCountsCache = { scope, text };
+          countsLine.textContent = text;
+        })).catch(safe(() => { auditCountsCache = { scope, text: '' }; }));
+      }
       const box = el('div', { class: 'rf-ai-methods', hidden: '' });
       const csv = btn('导出决策记录（CSV）', () => exportDecisions('csv'));
       const json = btn('导出决策记录（JSON）', () => exportDecisions('json'));
