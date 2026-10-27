@@ -4,8 +4,10 @@
 - U1-P5 残余：normalize_doi 剥离 CJK 尾标点（。，、”）】）；
 - U2 新发现：parse_csv GBK 解码回退与不可解码指引、仅表头 CSV 语义、
   CLI import 对 0 条记录的 stderr 警告（与 RIS ParseError 口径对称）；
-- U6-P8：prisma_form._esc 转义 CR/LF，DOT 引号串不再裸断行；
-- PRISMA 契约：/api/prisma/generate 对非法表单（ok=False）不产出 dot/json；
+- U6-P8：prisma_form._esc 转义 CR/LF，DOT 引号串不再裸断行（引号计数
+  改为转义感知，r5 复审 #54）；
+- PRISMA 契约（r5 复审 #51 修正）：/api/prisma/generate 对 ok=False 的
+  表单仍返回降级 dot/json（前端仅在 ok 分支消费）；
 - living_review：混合候选组（模糊 + 键冲突）标注为 mixed，键冲突来源
   不再被 fuzzy 标签吞掉。
 """
@@ -188,6 +190,22 @@ class PrismaEscTests(unittest.TestCase):
         self.assertEqual(_esc("a\rb"), "a\\nb")
         self.assertEqual(_esc('say "hi"\\x'), 'say \\"hi\\"\\\\x')
 
+    @staticmethod
+    def _count_unescaped_quotes(line: str) -> int:
+        # r5 复审 #54：naive line.count('"') 把合法转义 \" 也计入——合法表单
+        # 标签含奇数个双引号（如来源名 'He said "hi'）时旧断言会误报 FAIL。
+        # 改为跳过反斜杠转义后再计数。
+        count = 0
+        escaped = False
+        for ch in line:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                count += 1
+        return count
+
     def test_prisma_form_dot_no_bare_newline_in_labels(self):
         from coscreen.stats.prisma_form import (
             IdentifiedRow,
@@ -202,32 +220,85 @@ class PrismaEscTests(unittest.TestCase):
         )
         dot = prisma_form_dot(form, merge_note="合并说明一\n合并说明二")
         for line in dot.splitlines():
-            # 引号串内的裸换行已被转义：每行引号数应为偶数（复审同法扫描）。
+            # 引号串内的裸换行已被转义：每行「未转义引号」数应为偶数。
             self.assertEqual(
-                line.count('"') % 2, 0, f"引号未闭合的行: {line!r}"
+                self._count_unescaped_quotes(line) % 2, 0, f"引号未闭合的行: {line!r}"
             )
+
+    def test_escaped_quote_in_label_keeps_lines_closed(self):
+        # r5 复审 #54 回放：来源名含单个双引号（DOT 内转义为 \"），整行合法；
+        # naive 计数为奇会把这条合法表单误判为引号未闭合。
+        from coscreen.stats.prisma_form import (
+            IdentifiedRow,
+            PrismaFormData,
+            prisma_form_dot,
+        )
+
+        form = PrismaFormData(
+            identified_rows_db=[IdentifiedRow("database", 'He said "hi', 10)],
+        )
+        dot = prisma_form_dot(form)
+        naive = [line.count('"') for line in dot.splitlines()]
+        self.assertTrue(any(c % 2 == 1 for c in naive))  # 奇数裸计数存在（复现前提）
+        for line, unescaped in zip(dot.splitlines(), map(self._count_unescaped_quotes, dot.splitlines())):
+            self.assertEqual(unescaped % 2, 0, f"引号未闭合的行: {line!r}")
 
 
 class PrismaGenerateContractTests(unittest.TestCase):
-    """PRISMA 契约缺口：validate docstring 承诺 error 阻止导出，API 却仍返回 dot/json。
+    """PRISMA API 契约（r5 复审 #51 修正）：ok=False 时仍返回降级导出物。
 
+    fa12f16 曾改为 ok=False 一律 dot/json=None；叠加上游校验 error（如
+    R13 对官方模板「仅报总数」的误判）后，合规表单在 API 层也拿不到导出
+    物且无降级路径。现改为恒返回 dot/json：前端 prRenderResult 仅在 d.ok
+    分支渲染与启用下载（行为不变），直连 API 客户端可自行取舍。
     直调端点函数（不启动 TestClient、不改全局 DATA_DIR），避免与套件中
     其他依赖环境变量的集成测试产生目录生命周期干扰。
     """
 
-    def test_invalid_form_returns_no_export_artifacts(self):
+    def test_invalid_form_still_returns_degraded_exports(self):
         from custom_backend.main import PrismaFormIn, PrismaGenerateIn, prisma_generate
 
-        # 空表单缺识别来源行 → R1 error → ok=False，不得产出 dot/json。
+        # 空表单缺识别来源行 → R1 error → ok=False，但降级导出物仍返回。
         payload = prisma_generate(
             PrismaGenerateIn(form=PrismaFormIn()),
             user={"user_id": "probe", "username": "probe"},
         )
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["errors"])
-        self.assertIsNone(payload["dot"])
-        self.assertIsNone(payload["json"])
+        self.assertIsNotNone(payload["dot"])
+        self.assertIn("digraph PRISMA2020", payload["dot"])
+        self.assertIsNotNone(payload["json"])
+        self.assertIn("identified_rows_db", payload["json"])
         self.assertIsNotNone(payload["form"])
+
+    def test_official_template_form_gets_ok_and_exports(self):
+        # r5 复审 #51 同法：官方模板式表单（题摘排除仅报总数）修复前
+        # ok=False、唯一 error R13、dot=None、json=None；现 ok=True 直接
+        # 拿到导出物（R13 降级为 warning，U6-P9）。
+        from custom_backend.main import PrismaFormIn, PrismaGenerateIn, prisma_generate
+
+        payload = prisma_generate(
+            PrismaGenerateIn(form=PrismaFormIn(
+                identified_rows_db=[
+                    {"source_type": "database", "name": "Medline", "n": 120},
+                    {"source_type": "database", "name": "Embase", "n": 30},
+                ],
+                duplicates_removed=20,
+                removed_other=10,
+                records_screened=120,
+                records_excluded_screening=30,
+                reports_sought_db=90,
+                reports_not_retrieved_db=10,
+                reports_assessed_db=80,
+                exclusion_reasons_db=[{"reason": "design", "n": 30}],
+                studies_included=40,
+                reports_of_included_studies=50,
+            )),
+            user={"user_id": "probe", "username": "probe"},
+        )
+        self.assertTrue(payload["ok"], payload["errors"])
+        self.assertIn("digraph PRISMA2020", payload["dot"])
+        self.assertIsNotNone(payload["json"])
 
 
 class CandidateReviewGroupLabelTests(unittest.TestCase):
