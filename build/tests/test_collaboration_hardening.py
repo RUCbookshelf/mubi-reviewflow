@@ -397,7 +397,9 @@ class CollaborationHardeningTests(unittest.TestCase):
         # 复审 R6-C1（create_task 口）：撞 collaboration.db 保留名的账号
         # 不得成为属主（曾 201 并把整套筛选表灌进协作库）。
         collab_user = auth_mod.create_user("collab-owner@example.test", "Collab-2026-x")
-        with closing(sqlite3.connect(str(DATA_DIR / "users.db"))) as conn:
+        # _users_db() 而非 DATA_DIR 直拼：全套 pytest 下 main.DATA_DIR 绑定在
+        # 首个导入模块的 fixture 目录，先跑模块的 cleanup 会删掉它
+        with closing(sqlite3.connect(str(auth_mod._users_db()))) as conn:
             conn.execute("UPDATE users SET username='collaboration' WHERE id=?",
                          (collab_user["id"],))
             conn.commit()
@@ -409,7 +411,7 @@ class CollaborationHardeningTests(unittest.TestCase):
             self.assertEqual(r.json()["detail"]["error_code"], "collaboration_reserved_name")
         finally:
             # 清理：不清理会让后续用例（u4p2 直插 'collaboration'）撞 UNIQUE
-            with closing(sqlite3.connect(str(DATA_DIR / "users.db"))) as conn:
+            with closing(sqlite3.connect(str(auth_mod._users_db()))) as conn:
                 conn.execute("DELETE FROM users WHERE id=?", (collab_user["id"],))
                 conn.commit()
 
