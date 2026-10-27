@@ -21,6 +21,19 @@
   （时长与内存断言放宽阈值）；
 - 复审 #5（living_review 口径）：duplicates_removed 只按 is_duplicate_of
   标记计，待审候选归 pending_candidates，与 prisma_task_metrics 统一。
+
+评审 R1 返修（faithful 2.1.3 旧库兼容 + CLI 副作用）：
+- FB1/FB3：旧库行身份匹配分层——raw["_fallback_id"]（字节相同文件）→
+  content_hash（2.1.3 起持久化，不受 authors 缺失/年份口径漂移影响）→
+  （标题+姓氏+年份）；预置库一律 faithful（CSV authors 空、2.1.3 年份
+  口径、raw 标记齐备），重导同一文件断言零新增行；
+- FB2：单侧缺作者=元数据补全（基线 4a06688 同为 True），保留键走
+  UPDATE + 显式警告；
+- FB4：模糊层只扫本批、候选展示只保留含本批 key 的配对；
+- FB5：多条记录匹配同一库内行→坍缩语义保留（零新增）+ 显式警告；
+- FB6：沿用库内键/同键更新的行不计入"进入筛选"；
+- FB7：自指配对在调用方 report 列表赋值处真正过滤，经真实 CLI/
+  living_review 路径 spy upsert 实参断言。
 """
 
 from __future__ import annotations
@@ -59,7 +72,7 @@ def _write_ris(path: Path, records: list[dict]) -> None:
     lines: list[str] = []
     for rec in records:
         lines.append("TY  - JOUR")
-        for tag in ("au", "ti", "py", "do", "id"):
+        for tag in ("au", "ti", "py", "jo", "do", "id"):
             if rec.get(tag):
                 lines.append(f"{tag.upper()}  - {rec[tag]}")
         lines.append("ER  -\n")
@@ -136,15 +149,25 @@ class KeyMergeStrictTests(unittest.TestCase):
         self.assertEqual(len(kept), 2)
         self.assertEqual(len(report.key_conflict_pairs), 1)
 
-    def test_same_title_one_side_author_missing_conflicts(self):
-        # 缺作者 ≠ 作者相同（与模糊层作者门同一口径）：单侧缺作者不合并。
+    def test_same_title_one_side_author_missing_merges_as_completion(self):
+        # 评审 R1 返修·FB2：单侧缺作者=元数据补全，不再判冲突（基线
+        # 4a06688 的 _key_merge_confirmed 对同对为 True——标题 token>=100
+        # 即合并，作者不参与裁决；2.1.3 库 CSV 行 authors 恒空，U2-P1）。
+        # 模糊层作者门不受影响：缺作者仍不放行标题相似候选。
         arts = [
             _article("SHARE", "Same Title Here", "Smith, John"),
             _article("SHARE", "Same Title Here", ""),
         ]
         kept, report = find_duplicates(arts)
-        self.assertEqual(len(kept), 2)
-        self.assertEqual(len(report.key_conflict_pairs), 1)
+        self.assertEqual(len(kept), 1)              # 同键+标题完全相等 → 合并
+        self.assertEqual(report.key_conflict_pairs, [])
+        # 双方都有作者且不相似才冲突（Smith vs Jones）
+        conflict = [
+            _article("SHARE", "Same Title Here", "Smith, John"),
+            _article("SHARE", "Same Title Here", "Jones, Anna"),
+        ]
+        _, report2 = find_duplicates(conflict)
+        self.assertEqual(len(report2.key_conflict_pairs), 1)
 
     def test_identical_records_still_auto_merge(self):
         # 全同记录（标题完全相等 + 首作者兼容）仍自动合并——重导幂等保留。
@@ -201,17 +224,40 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
     """auto-* 键公式变更后，旧库按内容匹配沿用既有键，重导幂等。"""
 
     @staticmethod
-    def _preset_legacy_db(db: str, articles: list, keys: list) -> None:
-        """按 2.1.3 键形态预置库内行（模拟旧版本入库结果）。"""
+    def _preset_legacy_db(db: str, articles: list, keys: list, *,
+                          authors: str | None = None, raw_markers: bool = True,
+                          content_hash: str | None = None,
+                          year_override: int | None = None) -> None:
+        """按 2.1.3 键形态预置库内行（模拟旧版本入库结果，评审 R1 返修·FB1）。
+
+        faithful 要点（git show 501e1f3 核对）：
+        - 2.1.3 对无 Key 行写 raw["_generated_key"/"_fallback_key"/
+          "_fallback_id"]（与当前同格式），raw_markers=True 时如实预置；
+        - 2.1.3 的 CSV "Author" 列不映射（U2-P1）→ 旧行 authors=''——
+          authors="" 显式模拟该形态（authors=None 用当前解析值，RIS 在
+          2.1.3 即解析作者，faithful）；
+        - 2.1.3 的 extract_year 取首个 1500-2100 年份（当前为括号/句末
+          优先，FB3）——year_override 显式模拟旧口径取值；
+        - content_hash 可显式覆盖（模拟哈希不一致旧行，验证降级匹配层）。
+        """
         db_mod.init_db(db)
         preset = []
         for art, key in zip(articles, keys):
+            raw = {}
+            if raw_markers:
+                raw = {
+                    "_generated_key": True,
+                    "_fallback_key": key,
+                    "_fallback_id": str(art.raw.get("_fallback_id") or ""),
+                }
             preset.append(Article(
                 zotero_key=key, item_type=art.item_type, title=art.title,
-                authors=art.authors, journal=art.journal, year=art.year,
+                authors=art.authors if authors is None else authors,
+                journal=art.journal,
+                year=year_override if year_override is not None else art.year,
                 doi=art.doi, abstract=art.abstract, url=art.url,
-                source_format=art.source_format, raw={},
-                content_hash=art.content_hash,
+                source_format=art.source_format, raw=raw,
+                content_hash=content_hash if content_hash is not None else art.content_hash,
             ))
         db_mod.upsert_articles(db, preset, [])
 
@@ -234,6 +280,7 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
             proc = _run_cli(["import", "--file", str(ris), "--db", db])
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("新增 0 条", proc.stdout)   # R1：零新增行
+            self.assertIn("进入筛选 0 条", proc.stdout)  # FB6：沿用键更新不计入
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
@@ -257,13 +304,18 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
             proc = _run_cli(["import", "--file", str(ris), "--db", db])
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("新增 0 条", proc.stdout)
+            self.assertIn("进入筛选 0 条", proc.stdout)  # FB6
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall()
             self.assertEqual(sorted(r[0] for r in rows), sorted(legacy_keys))
             self.assertEqual([r[1] for r in rows], [None, None])
 
-    def test_csv_no_key_reimport_zero_new_rows(self):
+    def test_csv_no_key_reimport_zero_new_rows_faithful(self):
+        # 评审 R1 返修·FB1（阻断）：faithful 2.1.3 形态——"Author" 列在
+        # 2.1.3 不映射（U2-P1），旧行 authors=''，（标题+姓氏+年份）匹配
+        # 必然落空；由 _fallback_id（字节相同文件）→ content_hash 分层命中，
+        # 重导零新增行。此前的预置用了当前解析的 authors，属假通过。
         with tempfile.TemporaryDirectory(prefix="rf_r6d2c_") as tmp:
             csv_path = Path(tmp) / "leg.csv"
             db = str(Path(tmp) / "leg.db")
@@ -274,15 +326,17 @@ class LegacyAutoKeyReimportTests(unittest.TestCase):
                 encoding="utf-8",
             )
             articles = parse_file(csv_path)
+            self.assertEqual(articles[0].authors, "Wang, Wei")  # 当前解析有作者
             legacy_keys = [_legacy_auto_key(a.doi, a.title) for a in articles]
-            self._preset_legacy_db(db, articles, legacy_keys)
+            self._preset_legacy_db(db, articles, legacy_keys, authors="")  # 旧行 authors 空
 
             proc = _run_cli(["import", "--file", str(csv_path), "--db", db])
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("新增 0 条", proc.stdout)
+            self.assertIn("新增 0 条", proc.stdout)          # R1：零新增行
+            self.assertIn("进入筛选 0 条", proc.stdout)       # FB6：沿用键更新不计入
             with closing(sqlite3.connect(db)) as conn:
                 keys = {r[0] for r in conn.execute("SELECT zotero_key FROM articles")}
-            self.assertEqual(keys, set(legacy_keys))
+            self.assertEqual(keys, set(legacy_keys))          # 沿用旧键
 
     def test_living_review_legacy_reimport_no_new_articles(self):
         # 复审 #6：living_review 同样复制新行；现沿用库内键，new_articles=[]。
@@ -571,6 +625,272 @@ class LivingReviewCountingTests(unittest.TestCase):
                 marks = dict(conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
             self.assertEqual(marks, {"K1": None, "K2": "K1"})
+
+
+# ---------------------------------------------------------------------------
+# 评审 R1 返修：faithful 2.1.3 旧库兼容（FB1/FB2/FB3）与 CLI 副作用（FB4-FB7）
+# ---------------------------------------------------------------------------
+
+class ReviewFeedbackR1Tests(unittest.TestCase):
+    """按评审探针手法原样回放：faithful 预置 + 真实 CLI。"""
+
+    def test_source_key_csv_legacy_row_author_completion_zero_new(self):
+        # FB2：2.1.3 CSV 有 Source Key（Key 列映射不变）但 "Author" 列不映射
+        # → 旧行 authors=''。重导同一文件（当前解析 authors='Kim, Lee'）曾因
+        # 单侧缺作者被判冲突，输出「键消歧 1 处 + 键冲突候选 + 新增 1 条」，
+        # DB 2 行。现按元数据补全：保留键走 UPDATE + 显式警告 + 零新增
+        # （与基线 4a06688 的 _key_merge_confirmed=True 口径一致）。
+        from coscreen.dedup import _key_merge_confirmed
+
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb2_") as tmp:
+            csv_path = Path(tmp) / "k.csv"
+            db = str(Path(tmp) / "k.db")
+            csv_path.write_text(
+                "Key,Title,Author,DOI\n"
+                "K1,Some study on statins,\"Kim, Lee\",10.9/x\n",
+                encoding="utf-8",
+            )
+            articles = parse_file(csv_path)
+            self.assertEqual(articles[0].zotero_key, "K1")
+            self.assertEqual(articles[0].authors, "Kim, Lee")
+            # faithful 旧行：Key/Title/DOI 已解析，Author 列丢失 → authors=''
+            self._preset_articles(db, [
+                Article(zotero_key="K1", title=articles[0].title,
+                        authors="", doi=articles[0].doi,
+                        content_hash=articles[0].content_hash),
+            ])
+            # 基线口径对照：同一对在基线（token>=90 即合并）为 True，
+            # 收紧后仍须为 True（单侧缺作者=元数据补全，不判冲突）
+            known = db_mod.list_articles(db, include_duplicates=True)
+            self.assertEqual(known[0].authors, "")
+            self.assertTrue(_key_merge_confirmed(known[0], articles[0]))
+
+            proc = _run_cli(["import", "--file", str(csv_path), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)
+            self.assertNotIn("键消歧", proc.stdout)
+            self.assertNotIn("键冲突候选", proc.stdout)
+            self.assertIn("补全", proc.stderr)  # 元数据补全显式警告（R3）
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, authors FROM articles").fetchall()
+            self.assertEqual(rows, [("K1", "Kim, Lee")])  # 单行，元数据已补全
+
+            # 对照组："Creator" 列（2.1.3 也解析作者）→ 同样零新增
+            csv2 = Path(tmp) / "creator.csv"
+            db2 = str(Path(tmp) / "creator.db")
+            csv2.write_text(
+                "Key,Title,Creator,DOI\n"
+                "K1,Some study on statins,\"Kim, Lee\",10.9/x\n",
+                encoding="utf-8",
+            )
+            articles2 = parse_file(csv2)
+            self.assertEqual(articles2[0].authors, "Kim, Lee")
+            self._preset_articles(db2, [
+                Article(zotero_key="K1", title=articles2[0].title,
+                        authors="Kim, Lee", doi=articles2[0].doi,
+                        content_hash=articles2[0].content_hash),
+            ])
+            proc2 = _run_cli(["import", "--file", str(csv2), "--db", db2])
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("新增 0 条", proc2.stdout)
+            self.assertIn("更新 1 条", proc2.stdout)
+            self.assertNotIn("键消歧", proc2.stdout)
+
+    @staticmethod
+    def _preset_articles(db: str, articles: list) -> None:
+        db_mod.init_db(db)
+        db_mod.upsert_articles(db, articles, [])
+
+    def test_year_extraction_drift_anchors_zero_new_rows(self):
+        # FB3：2.1.3 的 extract_year 取首个 1500-2100 年份，当前实现括号/
+        # 句末优先——PY='Volume 1850, issued 2019'（1850→2019）与
+        # 'Reprint of the 1905 original (2012)'（1905→2012）均使（标题+
+        # 姓氏+年份）匹配落空；content_hash/_fallback_id 分层命中后重导
+        # 零新增。两锚点分别覆盖 _fallback_id 层与 content_hash 层。
+        from coscreen.normalize import extract_year
+
+        self.assertEqual(extract_year("Volume 1850, issued 2019"), 2019)
+        self.assertEqual(extract_year("Reprint of the 1905 original (2012)"), 2012)
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb3_") as tmp:
+            # 锚点一（faithful raw：_fallback_id 命中，字节相同文件）
+            ris1 = Path(tmp) / "y1.ris"
+            db1 = str(Path(tmp) / "y1.db")
+            _write_ris(ris1, [
+                {"au": "Wang, Wei", "ti": "Statin therapy outcomes",
+                 "py": "Volume 1850, issued 2019"},
+            ])
+            arts1 = parse_file(ris1)
+            self.assertEqual(arts1[0].year, 2019)  # 当前口径
+            legacy1 = _legacy_auto_key(arts1[0].doi, arts1[0].title)
+            LegacyAutoKeyReimportTests._preset_legacy_db(
+                db1, arts1, [legacy1], year_override=1850)  # 2.1.3 取 1850
+            proc = _run_cli(["import", "--file", str(ris1), "--db", db1])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)
+            with closing(sqlite3.connect(db1)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+
+            # 锚点二（raw 无 _fallback_id：模拟行级标识缺失的旧库，
+            # 退到 content_hash 层命中；2.1.3 取 1905 / 当前 2012）
+            ris2 = Path(tmp) / "y2.ris"
+            db2 = str(Path(tmp) / "y2.db")
+            _write_ris(ris2, [
+                {"au": "Park, Su", "ti": "Metformin long term safety",
+                 "py": "Reprint of the 1905 original (2012)"},
+            ])
+            arts2 = parse_file(ris2)
+            self.assertEqual(arts2[0].year, 2012)
+            legacy2 = _legacy_auto_key(arts2[0].doi, arts2[0].title)
+            LegacyAutoKeyReimportTests._preset_legacy_db(
+                db2, arts2, [legacy2], year_override=1905, raw_markers=False)
+            proc2 = _run_cli(["import", "--file", str(ris2), "--db", db2])
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("新增 0 条", proc2.stdout)
+            with closing(sqlite3.connect(db2)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+
+    def test_title_author_year_tier_still_matches_when_hash_differs(self):
+        # 分层兜底：content_hash 不一致（旧库行被外部改写）时退回
+        # （标题+姓氏+年份）——三层的最后一层仍保证身份连续。
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb3b_") as tmp:
+            ris = Path(tmp) / "t3.ris"
+            db = str(Path(tmp) / "t3.db")
+            _write_ris(ris, [
+                {"au": "Roe, Rae", "ti": "Distinct cohort follow up", "py": "2018"},
+            ])
+            arts = parse_file(ris)
+            legacy = _legacy_auto_key(arts[0].doi, arts[0].title)
+            LegacyAutoKeyReimportTests._preset_legacy_db(
+                db, arts, [legacy], raw_markers=False,
+                content_hash="0" * 40)  # 哈希不一致：前两层落空
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+
+    def test_unrelated_import_into_similar_library_prints_no_candidates(self):
+        # FB4：库内已有 WM1/WM2（相似标题对），导入无关 P1 不得把库内
+        # 既有配对当本批候选打印（living_review/_title_review_groups 均
+        # 过滤"无本批成员"的组，CLI 此前未过滤且对全库重复 O(n^2) 扫描）。
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb4_") as tmp:
+            lib = Path(tmp) / "lib.ris"
+            other = Path(tmp) / "p1.ris"
+            db = str(Path(tmp) / "lib.db")
+            _write_ris(lib, [
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in women", "py": "2005", "id": "WM1"},
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in men", "py": "2006", "id": "WM2"},
+            ])
+            _write_ris(other, [{"au": "Doe, Jane", "ti": "Unrelated paper on statins", "py": "2020", "id": "P1"}])
+            first = _run_cli(["import", "--file", str(lib), "--db", db])
+            self.assertIn("模糊候选 1 条", first.stdout)  # 首导批内候选照常
+            proc = _run_cli(["import", "--file", str(other), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("模糊候选", proc.stdout)     # 库内既有对不重印
+            self.assertNotIn("WM1", proc.stdout)
+            self.assertNotIn("WM2", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 3)
+
+    def test_multiple_records_matching_same_library_row_warns(self):
+        # FB5：同一库内行被本批多条记录命中时沿用旧版坍缩语义（零新增行，
+        # 满足 R1 验收），但必须显式警告"后写覆盖前写"（R3），不得静默。
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb5_") as tmp:
+            ris = Path(tmp) / "dup.ris"
+            db = str(Path(tmp) / "legacy.db")
+            _write_ris(ris, [
+                {"au": "Doe, Jane", "ti": "Shared cohort analysis", "py": "2020",
+                 "jo": "Journal One"},
+                {"au": "Doe, Jane", "ti": "Shared cohort analysis", "py": "2020",
+                 "jo": "Journal Two"},
+            ])
+            arts = parse_file(ris)
+            self.assertEqual(arts[0].zotero_key, arts[1].zotero_key)  # 公式输入全同
+            legacy = _legacy_auto_key(arts[0].doi, arts[0].title)
+            LegacyAutoKeyReimportTests._preset_legacy_db(db, arts[:1], [legacy])
+
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)                  # 零新增（R1 兼容）
+            self.assertIn("更新 2 条", proc.stdout)
+            self.assertIn("匹配到同一库内行", proc.stderr)             # 显式警告
+            self.assertIn("覆盖", proc.stderr)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, journal, COUNT(*) FROM articles"
+                    " GROUP BY zotero_key, journal").fetchall()
+            self.assertEqual(rows, [(legacy, "Journal Two", 1)])     # 1 行，后写生效
+
+            # 对照：同一文件导入空库 → 两行共存（批内消歧后缀）
+            db2 = str(Path(tmp) / "fresh.db")
+            proc2 = _run_cli(["import", "--file", str(ris), "--db", db2])
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("键消歧 1 处", proc2.stdout)
+            with closing(sqlite3.connect(db2)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 2)
+
+    def test_mark_pairs_contain_no_self_pairs_through_real_cli(self):
+        # FB7：自指配对过滤必须落到调用方真正消费的 report 列表——经真实
+        # CLI 路径 spy upsert 的 duplicate_pairs 实参断言（同键同 DOI 两条
+        # 的自然坍缩会产生自指事件）。
+        from unittest import mock as _mock
+
+        recorded: dict = {}
+        real = db_mod.upsert_articles
+
+        def spy(db, arts, pairs, *args, **kwargs):
+            recorded["pairs"] = list(pairs)
+            return real(db, arts, pairs, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb7_") as tmp:
+            ris = Path(tmp) / "same.ris"
+            db = str(Path(tmp) / "same.db")
+            _write_ris(ris, [
+                {"au": "Kim, Lee", "ti": "Title One", "do": "10.9/same", "id": "K1"},
+                {"au": "Kim, Lee", "ti": "Title One", "do": "10.9/SAME ", "id": "K1"},
+            ])
+            with _mock.patch.object(db_mod, "upsert_articles", side_effect=spy):
+                proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            for pair in recorded["pairs"]:
+                self.assertNotEqual(pair.kept_key, pair.dup_key, pair)
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+
+    def test_living_review_passes_no_self_pairs_to_upsert(self):
+        # FB7·living 路径：process_incremental_articles 传给 upsert 的
+        # exact_pairs 不含自指配对（同键同 DOI 坍缩不产生标记）。
+        from unittest import mock as _mock
+
+        recorded: dict = {}
+        real = db_mod.upsert_articles
+
+        def spy(db, arts, pairs, *args, **kwargs):
+            recorded.setdefault("pairs", []).extend(pairs)
+            return real(db, arts, pairs, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="rf_r6fb7b_") as tmp:
+            db = str(Path(tmp) / "lr.db")
+            db_mod.init_db(db)
+            incoming = [
+                _article("K1", "Title A", "Smith, John", "10.9/same"),
+                _article("K1", "Title A", "Smith, John", "10.9/SAME "),
+            ]
+            with _mock.patch.object(db_mod, "upsert_articles", side_effect=spy):
+                process_incremental_articles(
+                    db, incoming, "A vs B", "mortality", "12 months", "RR")
+            for pair in recorded["pairs"]:
+                self.assertNotEqual(pair.kept_key, pair.dup_key, pair)
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

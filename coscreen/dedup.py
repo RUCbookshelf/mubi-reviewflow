@@ -151,18 +151,21 @@ def _first_author_token(authors: str) -> str:
 
 
 def _first_authors_compatible(a: Article, b: Article) -> bool:
-    """首作者是否兼容（R6-D1）：双方姓氏均在且相似度达标，或双方均无作者。
+    """首作者是否兼容（R6-D1 + 评审 R1 返修·FB2）。
 
-    - 单侧缺作者不视为兼容（缺作者 ≠ 作者相同，与模糊层作者门同一口径）；
-    - 双方均无作者视为兼容——"键相等 + 标题完全相等 + 双方无作者"是无作者
-      元数据记录重导的常见形态（全同记录仍需自动合并保持幂等）。
+    - 双方姓氏均在：相似度达标才兼容（Smith vs Jones 不兼容）；
+    - **单侧缺作者视为兼容（元数据补全口径）**：旧版本库（2.1.3 的 CSV
+      "Author" 列不映射，U2-P1）行 authors 为空，同键 + 标题完全相等的
+      重导不得因作者缺失被判为不同文献（基线 4a06688 的 _key_merge_confirmed
+      同样为 True——标题 token>=100 即合并，作者不参与裁决）。库行缺作者
+      而本批带作者时由 stabilize 发"元数据补全"警告，不改变合并行为；
+    - 双方均无作者视为兼容——无作者元数据记录重导的常见形态。
     """
     surname_a = _first_author_token(a.authors)
     surname_b = _first_author_token(b.authors)
-    if not surname_a and not surname_b:
-        return True
     if not surname_a or not surname_b:
-        return False
+        # 任一侧缺作者：不能证明"作者不同"，按元数据补全处理（不阻断合并）
+        return True
     return fuzz.ratio(surname_a, surname_b) >= config.FUZZY_AUTHOR_THRESHOLD
 
 
@@ -434,6 +437,7 @@ def stabilize_conflicting_keys(
     pairs: list[DuplicatePair],
     *,
     known: list[Article] | None = None,
+    warnings: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """为"键相同但未合并"的条目就地生成消歧键，返回 (旧键, 新键) 列表。
 
@@ -446,10 +450,16 @@ def stabilize_conflicting_keys(
     - **成员消歧加后缀而非改名为组键**（复审 #9）：被其他组占用或与库内
       同键条目冲突的成员，后缀自己的键成为独立行（由 is_duplicate_of
       标记），不再坍缩到组代表的键上覆盖代表行内容；
-    - **生成键身份连续**（R6-D2 方案2，R1 铁律）：无来源 Key 的记录在
-      入库前按（规范化标题 + 首作者姓氏 + 年份）在库内既有行中匹配
-      （不看键形，DOI 冲突除外），命中沿用库内键走 UPDATE 路径；与库内
-      行同组合并的生成键成员同样沿用库内键。既有库主键永不重写。
+    - **生成键身份连续**（R6-D2 方案2，R1 铁律；评审 R1 返修·FB1/FB3）：
+      无来源 Key 的记录入库前在库内既有行中匹配（不看键形），优先级为
+      raw["_fallback_id"]（字节相同文件的同一行）→ content_hash（2.1.3
+      起即持久化的 sha1(doi|title)，不受 authors 缺失/年份抽取口径漂移
+      影响）→（规范化标题+首作者姓氏+年份）。命中沿用库内键走 UPDATE
+      路径；与库内行同组合并的生成键成员同样沿用库内键。既有库主键
+      永不重写。
+    - ``warnings``（可选出参）：收集需向用户显式提示的事件——多条本批
+      记录内容匹配到同一库内行（后写覆盖前写，R3 显式警告不改变行为）、
+      库内行缺作者而本批补全元数据（FB2/FB5）。
     """
     n = len(articles)
     uf = _UnionFind(n)
@@ -457,26 +467,68 @@ def stabilize_conflicting_keys(
         if pair.method in ("exact_doi", "exact_key") and 0 <= pair.kept_index < n and 0 <= pair.dup_index < n:
             uf.union(pair.kept_index, pair.dup_index)
 
+    def _warn(message: str) -> None:
+        if warnings is not None:
+            warnings.append(message)
+
+    def _metadata_completion_note(key: str, db_art: Article, art: Article) -> None:
+        """库内行缺作者而本批记录带作者：按元数据补全处理并显式警告（FB2）。"""
+        if not _first_author_token(db_art.authors) and _first_author_token(art.authors):
+            _warn(
+                f"库内行 {key} 缺作者，本批导入补全了该行元数据"
+                "（同一文献，保留键走更新路径）"
+            )
+
     known_by_key: dict[str, Article] = {}
     if known:
         for art in known:
             known_by_key.setdefault(art.zotero_key, art)
     known_ids = {id(art) for art in known or ()}
 
-    # ---- 生成键内容匹配：沿用库内键，保持跨公式版本的身份连续 ----
+    # ---- 生成键身份匹配：沿用库内键，保持跨公式版本的身份连续 ----
+    # 2.1.3 旧行的 authors 可能为空（CSV "Author" 列不映射，U2-P1）、年份
+    # 取值口径不同（extract_year 括号/句末优先），故（标题+姓氏+年份）只是
+    # 最后一级；content_hash 与 _fallback_id 不受两者影响（FB1/FB3）。
+    fallback_index: dict[str, str] = {}   # raw["_fallback_id"] -> 库内键
+    hash_index: dict[str, str] = {}       # content_hash -> 库内键
     content_index: dict[tuple[str, str, object], str] = {}
     for key_text, art in known_by_key.items():
+        raw = art.raw if isinstance(art.raw, dict) else {}
+        fallback_id = str(raw.get("_fallback_id") or "").strip()
+        if fallback_id:
+            fallback_index.setdefault(fallback_id, key_text)
+        if art.content_hash:
+            hash_index.setdefault(art.content_hash, key_text)
         match_key = _content_match_key(art)
         if match_key[0]:  # 空标题不参与内容匹配（空标题无区分度）
             content_index.setdefault(match_key, key_text)
     key_positions: dict[str, int] = {}
     for i, art in enumerate(articles):
         key_positions.setdefault(art.zotero_key, i)
+
+    def _match_legacy_key(art: Article) -> str | None:
+        """按分层在库内既有行中匹配旧身份，返回库内目标键；无命中返回 None。
+
+        层级：raw["_fallback_id"]（字节相同文件的同一行）→ content_hash
+        （2.1.3 起持久化，不受 authors 缺失/年份口径漂移影响）→
+        （规范化标题+首作者姓氏+年份）。
+        """
+        raw = art.raw if isinstance(art.raw, dict) else {}
+        fallback_id = str(raw.get("_fallback_id") or "").strip()
+        if fallback_id and fallback_id in fallback_index:
+            return fallback_index[fallback_id]
+        if art.content_hash and art.content_hash in hash_index:
+            return hash_index[art.content_hash]
+        match_key = _content_match_key(art)
+        if match_key[0] and match_key in content_index:
+            return content_index[match_key]
+        return None
+
+    adopted_targets: dict[str, list[int]] = {}  # 库内键 -> 命中的本批下标
     for i, art in enumerate(articles):
         if not _is_generated_key_article(art):
             continue
-        match_key = _content_match_key(art)
-        target = content_index.get(match_key) if match_key[0] else None
+        target = _match_legacy_key(art)
         if target is None:
             continue
         db_art = known_by_key.get(target)
@@ -484,6 +536,9 @@ def stabilize_conflicting_keys(
             doi_known, doi_new = _norm_doi(db_art.doi), _norm_doi(art.doi)
             if doi_known and doi_new and doi_known != doi_new:
                 continue  # DOI 冲突：不同文献，不沿用库内键
+        # 记账所有命中（含 _fallback_id 层）：不同分层（同文件行 vs 哈希/
+        # 内容）仍可能命中同一库内行，坍缩警告按目标键计数（FB5）。
+        adopted_targets.setdefault(target, []).append(i)
         j = key_positions.get(target)
         if j is not None and j != i:
             # 库内行同在本列表（combined 调用形态）：并组，走更新路径
@@ -491,6 +546,15 @@ def stabilize_conflicting_keys(
         elif j is None:
             # 分离传参形态（known 不在 articles 内）：直接沿用库内键
             art.zotero_key = target
+    for target, hits in adopted_targets.items():
+        if len(hits) > 1:
+            # 多条本批记录匹配到同一库内行：保留 2.1.3 的坍缩语义（不新增
+            # 行，满足零新增行验收），但必须显式警告后写覆盖前写（R3）。
+            _warn(
+                f"本批 {len(hits)} 条记录内容匹配到同一库内行 {target}："
+                "后写将覆盖前写（沿用旧版坍缩语义，零新增行）；"
+                "若非同一文献请人工核对"
+            )
 
     # ---- 组键决策：保留键全集进占用集 + 确定性后缀 ----
     groups: dict[int, list[int]] = {}
@@ -511,6 +575,10 @@ def stabilize_conflicting_keys(
             rep.zotero_key = chosen
         else:
             chosen = key
+            if db_art is not None:
+                # 与库内同键条目兼容（同一文献）保留原键：库行缺作者时
+                # 本批元数据补全，显式警告（FB2）
+                _metadata_completion_note(key, db_art, rep)
         occupied[chosen] = root
         final_key[root] = chosen
 
@@ -547,6 +615,10 @@ def stabilize_conflicting_keys(
             else:
                 # 保留自己的键：重复成员单独成行，由 is_duplicate_of 标记；
                 # 该键计入本组保留键全集，阻止后续组再占用。
+                if db_art is not None:
+                    # 与库内同键条目兼容保留原键（更新路径）：库行缺作者时
+                    # 本批元数据补全，显式警告（FB2）
+                    _metadata_completion_note(art.zotero_key, db_art, art)
                 occupied.setdefault(art.zotero_key, root)
 
     # 同步全部配对的键（含 fuzzy/exact_key_conflict 候选对）。改名后自指的
