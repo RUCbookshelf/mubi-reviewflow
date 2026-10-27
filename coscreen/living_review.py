@@ -373,12 +373,18 @@ def _candidate_review_groups(
             if key in articles_by_key:
                 parent.setdefault(key, key)
     fuzzy_keys: set[str] = set()
+    conflict_keys: set[str] = set()
     for pair in candidate_pairs:
         if pair.kept_key in parent and pair.dup_key in parent:
             union(pair.kept_key, pair.dup_key)
             keys = {pair.kept_key, pair.dup_key}
             if pair.method == "fuzzy":
                 fuzzy_keys |= keys
+            else:
+                # 键冲突边（exact_key_conflict）与模糊边分别记账，混合组
+                # 不再被整体吞进 "fuzzy" 标签（复审：人工复核界面无法区分
+                # 该组含键冲突）。
+                conflict_keys |= keys
 
     components: dict[str, list[Article]] = {}
     for key in parent:
@@ -390,6 +396,7 @@ def _candidate_review_groups(
         if len(group) < 2 or not any(key in incoming_keys for key in keys):
             continue
         is_fuzzy = any(key in fuzzy_keys for key in keys)
+        is_conflict = any(key in conflict_keys for key in keys)
         members = []
         for article in sorted(group, key=lambda a: a.zotero_key):
             raw = article.raw if isinstance(article.raw, dict) else {}
@@ -401,12 +408,20 @@ def _candidate_review_groups(
                 "journal": article.journal,
                 "doi": article.doi,
                 "imported_in_batch": article.zotero_key in incoming_keys,
-                "match_kind": "fuzzy" if is_fuzzy else "title",
+                # 成员级证据：同时挂在模糊边与冲突边上的桥接成员记 "fuzzy"
+                # （前端 fuzzy 检测命中）；纯键冲突成员记 "key_conflict"。
+                "match_kind": "fuzzy" if article.zotero_key in fuzzy_keys else "key_conflict",
                 "raw": {k: v for k, v in raw.items() if not str(k).startswith("_")},
             })
         digest = hashlib.sha256("\0".join(keys).encode("utf-8")).hexdigest()[:20]
+        if is_fuzzy and is_conflict:
+            prefix = "mixed"
+        elif is_fuzzy:
+            prefix = "fuzzy"
+        else:
+            prefix = "key-conflict"
         result.append({
-            "normalized_title": f"{'fuzzy' if is_fuzzy else 'key-conflict'}:{digest}",
+            "normalized_title": f"{prefix}:{digest}",
             "members": members,
         })
     return result
