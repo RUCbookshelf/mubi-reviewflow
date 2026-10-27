@@ -292,8 +292,20 @@ class TaskLockMiddleware:
 app.add_middleware(TaskLockMiddleware)
 
 #: U5-P3：multipart 上传在请求体解析/落盘前的 Content-Length 预检。
-#: 单文件端点 = 100MB + 1MB 余量（boundary/文件名/表单字段）；多文件端点按
-#: 各自文件数上限（import-batch 20、合并/一致性/仲裁 9 或 20）× 100MB + 余量。
+#: **上限取各端点真实限制 + multipart 开销余量**（boundary/文件名/表单字段），
+#: 只提前拒绝超限流量，不收紧也不放宽端点既有校验：
+#: - 文本导入/PDF 全文：security.MAX_UPLOAD_BYTES（100MB/文件）；
+#: - import-batch：20 文件 × 100MB（review_imports_api 的文件数上限）；
+#: - 合并/一致性/仲裁：2..9 文件 × 100MB（端点文件数校验）；
+#: - trace 导入包：MAX_PACKAGE_BYTES=128MB（coscreen/research_trace_export），
+#:   端点自身守卫允许 128MB+1MB，预检取 128MB+2MB 余量（101MB 曾把
+#:   101–128MB 的合法包误拒，评审回归）；
+#: - 编码证据：coscreen/coding_evidence.MAX_UPLOAD_BYTES=10MB；
+#: - living-review/import-update：端点从不读文件（固定 409 引导到受保护
+#:   导入），出货前端无调用，给 10MB 小上限封住无效落盘面。
+from coscreen.research_trace_export import MAX_PACKAGE_BYTES as _TRACE_PACKAGE_MAX_BYTES
+from coscreen.coding_evidence import MAX_UPLOAD_BYTES as _CODING_EVIDENCE_MAX_BYTES
+
 _UPLOAD_SLACK_BYTES = 1024 * 1024
 _BATCH_IMPORT_MAX_FILES = 20
 _MULTI_CSV_MAX_FILES = 9
@@ -303,7 +315,7 @@ _UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int]] = [
     (re.compile(r"^/api/tasks/[^/]+/import-batch$"),
      _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/tasks/[^/]+/screening-arbitrations$"),
-     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/merge/decisions$"),
      _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/coding/agreement$"),
@@ -312,14 +324,19 @@ _UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int]] = [
     (re.compile(r"^/api/tasks/[^/]+/fulltext/[^/]+/upload$"),
      MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/tasks/[^/]+/living-review/import-update$"),
-     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     10 * 1024 * 1024 + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"),
-     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     _CODING_EVIDENCE_MAX_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"),
-     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+     _TRACE_PACKAGE_MAX_BYTES + 2 * _UPLOAD_SLACK_BYTES),
 ]
 
-app.add_middleware(UploadSizeLimitMiddleware, rules=_UPLOAD_SIZE_RULES)
+app.add_middleware(
+    UploadSizeLimitMiddleware,
+    rules=_UPLOAD_SIZE_RULES,
+    # 未认证的 multipart 在解析/落盘前直接 401（全部上传端点都要求登录）
+    token_validator=lambda token: auth.decode_access_token(token) is not None,
+)
 
 # U5-P2：任务删除的同进程在途防线——coscreen 层通过该钩子读取当前任务的
 # 在途请求数（DELETE 请求自身占 1，>1 即还有导入/分析等操作在跑）。
@@ -1226,12 +1243,12 @@ async def task_events(request: Request,
         user = {"user_id": payload["user_id"], "username": payload["username"]}
     else:
         # 兼容期：仍接受旧 token 查询参数（前端 EventSource 迁移到票据前不
-        # 可断），但响应头明确提醒弃用，新客户端一律使用票据。
+        # 可断），但响应头明确提醒弃用并在未来版本移除，新客户端一律用票据。
         if token is not None:
             headers["Deprecation"] = "true"
             headers["Warning"] = (
-                '299 reviewflow "token query parameter is deprecated; '
-                'use POST /api/events/ticket"'
+                '299 reviewflow "token query parameter is deprecated and '
+                'will be removed; use POST /api/events/ticket"'
             )
         # EventSource cannot set a Bearer header. Reuse all normal auth checks.
         user = require_user(request, authorization or (f"Bearer {token}" if token else None))

@@ -143,9 +143,13 @@ sudo nginx -t && sudo systemctl reload nginx
   批量导入端点单请求最多 20 个文件，若确需一次提交总大小超过 100MB 的多文件
   批量导入，需有意调大该值（例如 `2000m`）——但要注意代理层会先把请求体缓
   冲到自身临时磁盘，调大即放大临时盘占用面；更稳妥的做法是分多次提交。
-  应用层在解析请求体**之前**会按 Content-Length 预检（单文件端点 100MB、
-  批量导入 20×100MB、合并/一致性等多文件端点 9×100MB，均含余量），超限
-  直接 413，不落入服务器临时盘。
+  应用层在解析请求体**之前**会按 Content-Length 预检，超限直接 413，
+  不落入服务器临时盘；预检上限与各端点真实限制一致（均含余量）：单文件
+  文本/PDF 导入 100MB、批量导入 20×100MB、合并/一致性/仲裁多文件端点
+  9×100MB、trace 导入包 128MB、编码证据 10MB。缺 Content-Length 的
+  multipart（chunked）与未认证的 multipart 请求在解析前即被 411/401
+  拒绝。注意：trace 导入包（≤128MB+余量）若经反代提交，需将
+  `client_max_body_size` 相应调大（如 `client_max_body_size 130m`）。
 - **登录/注册限流**：应用层的限流按**直连对端 IP**计数，且**不信任
   `X-Forwarded-For`**（该头可被客户端伪造轮换）。经反向代理访问时，所有
   请求的对端都是反代机，应用层限流退化为全局共享桶——请在反代层为
@@ -300,7 +304,7 @@ Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. O
 
 **Upload and rate-limit notes (reverse-proxy deployments):**
 
-- **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body (100MB for single-file endpoints, 20×100MB for batch import, 9×100MB for the multi-file merge/agreement endpoints, each with slack) and rejects oversized requests with 413 immediately.
+- **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked) and unauthenticated multipart requests are rejected with 411/401 before parsing. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
 - **Login/register rate limiting**: the app rate-limits by *direct peer IP* and does **not** trust `X-Forwarded-For` (it is client-forgeable). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — add `limit_req` at the proxy for `/api/auth/`, e.g. `limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;` plus `limit_req zone=rf_auth burst=5 nodelay;` in the `/api/auth/` location.
 - **PDF upload checks are a format gate, not a content-security boundary**: the `%PDF-` header and pypdf parseability checks reject malformed files, but a maliciously crafted PDF could still exploit reader bugs. Keep same-origin playback (the default), `X-Content-Type-Options: nosniff` and CSP (enabled by default); do not mix the playback origin with your main site domain.
 

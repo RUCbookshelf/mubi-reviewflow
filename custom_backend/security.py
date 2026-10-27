@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import secrets
 import threading
@@ -249,6 +250,10 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 #: 清洗后文件名总长上限（含扩展名）
 _MAX_NAME_LENGTH = 180
 
+#: 视为"扩展名"的最大长度（含点）；超过即按无扩展名整体截断（评审回归：
+#: 'a.'+'b'*300 这类"扩展名本身超长"的名字此前会突破 180 上限）
+_MAX_EXTENSION_LENGTH = 40
+
 
 def clean_upload_name(filename: str, fallback: str = "upload") -> str:
     """清洗上传文件名：去目录成分、去控制字符、去 ".."、规避保留设备名、限长。
@@ -258,12 +263,13 @@ def clean_upload_name(filename: str, fallback: str = "upload") -> str:
 
     def _truncate(name: str) -> str:
         # U5-P8：先取最后一个扩展名再截断主体，保证 ".csv" 等合法后缀
-        # 不会被截掉（截掉后 check_extension 会把超长文件名误判 415）。
-        stem, dot, ext = name.rpartition(".")
-        if not stem:  # 无扩展名或隐藏文件（".csv"）——整体按主体处理
-            return name[:_MAX_NAME_LENGTH]
+        # 不会被截掉（截掉后 check_extension 会把超长文件名误判 415）；
+        # "扩展名"本身超长时按无扩展名整体截断，保证结果恒 ≤ 180。
         if len(name) <= _MAX_NAME_LENGTH:
             return name
+        stem, dot, ext = name.rpartition(".")
+        if not stem or len(dot) + len(ext) > _MAX_EXTENSION_LENGTH:
+            return name[:_MAX_NAME_LENGTH]
         return stem[: _MAX_NAME_LENGTH - (len(dot) + len(ext))] + dot + ext
 
     name = (filename or "").replace("\\", "/").split("/")[-1]
@@ -359,23 +365,64 @@ def safe_path_under(root: Path, *parts: str) -> Path:
 # ---------------------------------------------------------------------------
 
 class UploadSizeLimitMiddleware:
-    """multipart 上传的 Content-Length 预检：**解析请求体之前**直接 413。
+    """multipart 上传的 ASGI 级预检：**解析请求体之前**拒绝异常请求。
 
     背景：FastAPI/Starlette 在进入端点/依赖前已完整解析 multipart，>1MB 的
     文件 part 会 spool 到系统临时目录——端点内的 ``check_size`` 永远发生在
-    落盘之后。本中间件在 ASGI 层（解析发生前）读取 Content-Length，超限
-    立即回 413，不读请求体（G3/U5-P3 同一根因的上传端点形态）。
+    落盘之后（G3/U5-P3 同一根因的上传端点形态）。本中间件在解析发生前依次
+    检查（顺序：411 → 401 → 413）：
 
-    - ``rules``：``[(路径正则, 该路径允许的最大请求体字节数), ...]``，按序
-      首个命中生效（应用层用 MAX_UPLOAD_BYTES + multipart 开销余量构造）；
-    - 只拦 ``multipart/form-data`` 的请求（JSON 端点不受影响）；
-    - 无 Content-Length（chunked 编码）放行，仍由端点读后校验兜底；
-    - 预检只是提前拒绝，不是完整上限：分块/无头请求由端点读后校验兜底。
+    1. **无/非法 Content-Length 的 multipart → 411**：浏览器与 fetch 发送
+       multipart 表单必然携带 Content-Length；无头（chunked）multipart 只会
+       来自异常客户端。此前这类请求会被 Starlette 照常解析并把 >1MB 的
+       part spool 到系统临时盘（评审实测：未认证 2MiB chunked 请求即落盘），
+       411 把这条耗尽路径在解析前关死；
+    2. **无有效 Bearer 凭据 → 401**（``token_validator`` 注入时启用）：全部
+       上传端点都要求登录，与端点 401 语义一致；未认证请求不解析请求体、
+       不 spool、不触任务锁（评审实测：未认证 21×1.1MiB 的 import-batch
+       曾在 401 前把 21 个 part 全部 spool）；
+    3. **Content-Length 超过路径上限 → 413**：``rules`` =
+       ``[(路径正则, 该路径允许的最大请求体字节数), ...]``，上限取各端点
+       **真实限制 + multipart 开销余量**（与端点读后校验一致，不收紧也不
+       放宽合法流量）。
+
+    只拦 ``multipart/form-data`` 的 POST/PUT（JSON 端点不受影响）。预检是
+    提前拒绝而非完整校验：文件数/part 数等结构校验仍在端点解析后进行，
+    但被 401/411/413 挡在解析前，已认证请求的落盘量也以路径上限为界。
     """
 
-    def __init__(self, app, rules: list[tuple[re.Pattern[str], int]]):  # noqa: ANN001
+    def __init__(self, app, rules: list[tuple[re.Pattern[str], int]],
+                 token_validator=None):  # noqa: ANN001
         self.app = app
         self.rules = rules
+        self.token_validator = token_validator
+
+    @staticmethod
+    def _bearer_token(scope) -> str | None:  # noqa: ANN001
+        """从 ASGI scope 提取 Bearer 令牌；无/形状不符返回 None。"""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"authorization":
+                try:
+                    authorization = value.decode("latin-1")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+                if not authorization.lower().startswith("bearer "):
+                    return None
+                token = authorization[7:].strip()
+                return token or None
+        return None
+
+    async def _reject(self, send, status: int, detail: str,
+                      extra_headers: list = None) -> None:  # noqa: ANN001
+        body = json.dumps({"detail": detail}, ensure_ascii=False).encode("utf-8")
+        headers = [(b"content-type", b"application/json"),
+                   (b"content-length", str(len(body)).encode("ascii")),
+                   (b"connection", b"close")]
+        headers.extend(extra_headers or [])
+        # 未读请求体即应答：要求关闭连接，避免服务端继续吸收数据。
+        await send({"type": "http.response.start", "status": status,
+                    "headers": headers})
+        await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http":
@@ -391,26 +438,25 @@ class UploadSizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
         raw_length = headers.get(b"content-length")
-        if raw_length is None:
-            await self.app(scope, receive, send)  # chunked：交给端点读后校验
-            return
         try:
-            content_length = int(raw_length)
+            content_length = int(raw_length) if raw_length is not None else None
         except ValueError:
-            await self.app(scope, receive, send)
+            content_length = None
+        if content_length is None:
+            # chunked/无头/非法 Content-Length 的 multipart：411 拒绝（不解析）。
+            await self._reject(send, 411, "上传请求缺少有效的 Content-Length，无法预检大小。")
             return
+        if self.token_validator is not None:
+            token = self._bearer_token(scope)
+            if token is None or not self.token_validator(token):
+                await self._reject(
+                    send, 401, "未登录或缺少访问令牌。",
+                    extra_headers=[(b"www-authenticate", b"Bearer")])
+                return
         path = scope.get("path", "")
         for pattern, limit in self.rules:
             if pattern.match(path) and content_length > limit:
-                body = (
-                    '{"detail":"上传请求体超过大小上限，请在压缩或减少文件数量后重试。"}'
-                ).encode("utf-8")
-                # 未读请求体即应答：要求关闭连接，避免服务端继续吸数据。
-                await send({"type": "http.response.start", "status": 413,
-                            "headers": [(b"content-type", b"application/json"),
-                                        (b"content-length", str(len(body)).encode("ascii")),
-                                        (b"connection", b"close")]})
-                await send({"type": "http.response.body", "body": body})
+                await self._reject(send, 413, "上传请求体超过大小上限，请在压缩或减少文件数量后重试。")
                 return
         await self.app(scope, receive, send)
 
