@@ -5513,18 +5513,35 @@ function teamMemberActions(taskId, member, grants, isOwner) {
   actions.append(trigger, menu);
   return actions;
 }
+let eventsRetryTimer = null;
+let eventsGeneration = 0;
 function closeEvents() {
+  eventsGeneration++;
+  if (eventsRetryTimer) { clearTimeout(eventsRetryTimer); eventsRetryTimer = null; }
   if (taskEvents) taskEvents.close();
   taskEvents = null;
   taskListVersion++; teamVersion++;
 }
-function connectEvents() {
+async function connectEvents() {
   closeEvents();
   if (runtimeMode !== 'server' || !S.user || !AUTH_TOKEN || !window.EventSource) return;
-  const token = AUTH_TOKEN;
+  const token = AUTH_TOKEN, generation = eventsGeneration;
+  let ticket = null;
   try {
-    const source = new EventSource(API_BASE + '/api/events?token=' + encodeURIComponent(token));
+    /* U5-P12/R6-S4：先凭 Bearer 换 5 分钟一次性票据再连流——24h JWT 不再
+       进入 URL/反代访问日志/浏览器历史；换票失败（含会话过期 401）静默回退到轮询。 */
+    ticket = (await api('/api/events/ticket', {method: 'POST'})).ticket;
+  } catch (_) { return; }
+  if (generation !== eventsGeneration || AUTH_TOKEN !== token || !ticket) return;
+  try {
+    const source = new EventSource(API_BASE + '/api/events?ticket=' + encodeURIComponent(ticket));
     taskEvents = source;
+    /* 票据一次性：断线后原 URL 自动重连必然 401，改为关流并延迟整链重连换新票。 */
+    source.onerror = () => {
+      if (taskEvents !== source) return;
+      closeEvents();
+      eventsRetryTimer = setTimeout(connectEvents, 15000);
+    };
     let lastNotice = null;
     source.addEventListener('task-workflow-changed', event => {
       if (taskEvents !== source || AUTH_TOKEN !== token) return;

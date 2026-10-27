@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 import tempfile
 import threading
@@ -127,10 +128,12 @@ from custom_backend.security import (
     EventTicketStore,
     UploadRejected,
     UploadSizeLimitMiddleware,
+    apply_security_headers,
     check_extension,
     check_pdf_bytes,
     check_text_bytes,
     clean_upload_name,
+    cors_response_headers,
     is_within,
     login_limiter,
     rate_limit_key,
@@ -196,14 +199,42 @@ class TaskLockMiddleware:
     - **U5-P4 鉴权前置**：无有效 Bearer 凭据的请求**不取锁**直接放行给
       端点（由 require_user 统一回 401），消除未认证的 409 占用状态预言机
       与未认证锁文件操作；
-    - **U5-P2 在途计数**：``inflight()`` 暴露任务当前在途请求数，DELETE
-      端点据此对同进程并发操作（导入进行中删除任务）回 409。
+    - **U5-P2/R6-S2 在途计数（写口径）**：``inflight()`` 只统计**写方法**
+      （POST/PUT/PATCH/DELETE）——此前把 GET 也计入，前端后台轮询进行中
+      会让 DELETE 误报 409「任务有操作进行中」；DELETE 端点据此对同进程
+      并发写操作（导入进行中删除任务）回 409；
+    - **R6-S2 删除中标记**：DELETE 端点在检查在途计数**之前**先置
+      ``deleting`` 标记（``_begin_delete``/``_end_delete``，进程内注册表），
+      中间件对删除中任务的一切后续请求（含 GET）直接 409——收掉「检查
+      通过到 shutil.move 之间」的窗口：此前暂停 move 期间并发 GET /articles
+      仍 200、随后任务目录消失，并发导入可把数据写进已移入 .trash 的库。
+      跨进程场景仍由锁文件互斥兜底（本进程 DELETE 全程持锁）；
+    - **R6-S2 三轮（读排空 + 全局列表互斥）**：move 前有界排空在途**读**
+      （读请求持 SQLite/文件句柄，Windows 上未排空即 move 会触发
+      shutil.move 的 copytree+rmtree 回退半删）；全局 ``GET /api/tasks``
+      列表读（不在 /api/tasks/{id}/** 计数内，但会打开所有任务的
+      task.json）经 ``try_enter_list_read`` 与 deleting 标记**同临界区**
+      原子准入——删除进行中列表先等、准入后登记、DELETE 排空等待，
+      双向无「已过检查未计数」窗口。
     """
 
     _PATH_RE = re.compile(r"^/api/tasks/([^/]+)")
-    # 规范 task_id -> [在途请求数, 锁路径]：同任务并发请求共享一把锁，
-    # 最后一个在途请求结束时释放（无论谁最初获取）。
+    _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    #: DELETE 置 deleting 标记后等待在途**读**请求排空的上限秒数（评审二轮：
+    #: 读请求持有 SQLite 文件句柄，不排空就在 Windows 上触发 shutil.move 的
+    #: copytree+rmtree 回退——半删原目录 + .trash 全量副本 + 500）。
+    READ_DRAIN_TIMEOUT = 5.0
+    # 规范 task_id -> [在途请求数(全部方法), 锁路径, 在途写请求数]：
+    # 同任务并发请求共享一把锁，最后一个在途请求结束时释放（无论谁最初
+    # 获取）；第三位只计写方法，供 DELETE 端点与 coscreen 层删除防线使用。
     _held: dict[str, list] = {}
+    # 删除进行中的规范 task_id（R6-S2）：置位期间中间件对该任务的一切
+    # 请求（含 GET）回 409，move 完成或删除失败后清除。
+    _deleting: set[str] = set()
+    # 在途的全局任务列表读数（R6-S2 三轮）：GET /api/tasks 不匹配
+    # /api/tasks/{id}/** 的中间件路径正则，但 list_tasks 会打开**所有**
+    # 任务的 task.json——必须让 DELETE 的排空同样等它。
+    _list_readers: int = 0
     _guard = threading.Lock()
 
     def __init__(self, app):  # noqa: ANN001  ASGI 约定
@@ -211,10 +242,66 @@ class TaskLockMiddleware:
 
     @classmethod
     def inflight(cls, task_id: str) -> int:
-        """该（规范）任务当前在本进程内的在途请求数（无则 0）。"""
+        """该（规范）任务当前在本进程内的**在途写请求**数（无则 0）。
+
+        只计 POST/PUT/PATCH/DELETE：读请求与后台轮询不占用删除配额，
+        DELETE 不再因 GET 轮询误报 409（R6-S2）。
+        """
         with cls._guard:
             entry = cls._held.get(task_id)
-            return entry[0] if entry else 0
+            return entry[2] if entry else 0
+
+    @classmethod
+    def read_inflight(cls, task_id: str) -> int:
+        """该任务当前在本进程内的**在途读请求**数（总在途 − 写在途）。
+
+        DELETE 不以读请求作为 409 依据（R6-S2），但 move 前必须等它排空
+        （见 DELETE 端点）——否则打开的 SQLite 句柄会触发 shutil.move 的
+        copytree+rmtree 回退（Windows 上数据破坏）。
+        """
+        with cls._guard:
+            entry = cls._held.get(task_id)
+            return max(0, entry[0] - entry[2]) if entry else 0
+
+    @classmethod
+    def try_enter_list_read(cls) -> bool:
+        """全局任务列表读的**准入**（R6-S2 三轮；与 deleting 同临界区原子判定）。
+
+        列表读（``GET /api/tasks``，出货前端每 30s 轮询）会打开所有任务的
+        task.json，且不在 ``/api/tasks/{id}/**`` 中间件计数内——评审三轮
+        实测：列表持 task.json 时 DELETE 照样触发 copytree+rmtree 半删。
+        准入规则（与 ``_begin_delete`` 同一把 ``_guard``，无竞态窗口）：
+
+        - 任一任务删除进行中 → 返回 False（调用方有界等待后重试，等待上限
+          超过删除自身的排空超时 + 余量，删除失败/完成后标志即清）；
+        - 否则计入在途列表读并返回 True——DELETE 的排空据此等待，
+          「已过检查未计数」的窗口因同临界区而不存在。
+        """
+        with cls._guard:
+            if cls._deleting:
+                return False
+            cls._list_readers += 1
+            return True
+
+    @classmethod
+    def exit_list_read(cls) -> None:
+        with cls._guard:
+            cls._list_readers = max(0, cls._list_readers - 1)
+
+    @classmethod
+    def list_readers(cls) -> int:
+        with cls._guard:
+            return cls._list_readers
+
+    @classmethod
+    def _begin_delete(cls, task_id: str) -> None:
+        with cls._guard:
+            cls._deleting.add(task_id)
+
+    @classmethod
+    def _end_delete(cls, task_id: str) -> None:
+        with cls._guard:
+            cls._deleting.discard(task_id)
 
     @staticmethod
     def _bearer_token(scope) -> str | None:  # noqa: ANN001
@@ -230,6 +317,25 @@ class TaskLockMiddleware:
                 token = authorization[7:].strip()
                 return token or None
         return None
+
+    @staticmethod
+    def _origin_of(scope) -> str | None:  # noqa: ANN001
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"origin":
+                try:
+                    return value.decode("ascii")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+        return None
+
+    @classmethod
+    def _busy_response(cls, scope, detail: str) -> JSONResponse:  # noqa: ANN001
+        """409 早拒响应（R6-S5：同样带安全头；跨域白名单补 CORS 头）。"""
+        response = JSONResponse(status_code=409, content={"detail": detail})
+        headers = apply_security_headers(list(response.raw_headers))
+        headers.extend(cors_response_headers(cls._origin_of(scope), _cors_origins()))
+        response.raw_headers = headers
+        return response
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
@@ -251,7 +357,8 @@ class TaskLockMiddleware:
         task_id = match.group(1)
         canonical = None
         entry = None
-        busy_response = None
+        early_response = None
+        is_write = scope.get("method", "") in self._WRITE_METHODS
         info = tasks_mod.find_task(task_id, DATA_DIR)
         if info is not None:
             # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在规范
@@ -259,22 +366,31 @@ class TaskLockMiddleware:
             # 出 `{task_id}..lock` 之类的第二把锁。
             canonical = info.task_id
             with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
-                entry = self._held.get(canonical)
-                if entry is None:
-                    lock_path = tasks_mod.acquire_task_lock(
-                        canonical, DATA_DIR,
-                        task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
-                    )
-                    if lock_path is None:
-                        busy_response = JSONResponse(status_code=409, content={
-                            "detail": "任务正被其他窗口（另一个后端进程）使用，请稍后重试。"})
-                    else:
-                        entry = [0, lock_path]
-                        self._held[canonical] = entry
-                if entry is not None:
-                    entry[0] += 1
-        if busy_response is not None:
-            await busy_response(scope, receive, send)
+                if canonical in self._deleting:
+                    # R6-S2：删除进行中——一切请求（含 GET）直接 409，
+                    # 不再进入端点读到「半消失」的任务目录。
+                    early_response = "任务正在被删除，请稍后重试。"
+                else:
+                    entry = self._held.get(canonical)
+                    if entry is None:
+                        # 锁文件获取放到 _guard 外做会引入竞态；acquire 内部
+                        # 对同进程同锁幂等（_HELD_LOCKS），不会自锁。
+                        lock_path = tasks_mod.acquire_task_lock(
+                            canonical, DATA_DIR,
+                            task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
+                        )
+                        if lock_path is None:
+                            early_response = (
+                                "任务正被其他窗口（另一个后端进程）使用，请稍后重试。")
+                        else:
+                            entry = [0, lock_path, 0]
+                            self._held[canonical] = entry
+                    if entry is not None:
+                        entry[0] += 1
+                        if is_write:
+                            entry[2] += 1
+        if early_response is not None:
+            await self._busy_response(scope, early_response)(scope, receive, send)
             return
         try:
             await self.app(scope, receive, send)
@@ -282,6 +398,8 @@ class TaskLockMiddleware:
             if entry is not None:
                 with self._guard:
                     entry[0] -= 1
+                    if is_write:
+                        entry[2] = max(0, entry[2] - 1)
                     last = entry[0] <= 0
                     if last and canonical is not None:
                         self._held.pop(canonical, None)
@@ -303,7 +421,10 @@ app.add_middleware(TaskLockMiddleware)
 #: - living-review/import-update：端点从不读文件（固定 409 引导到受保护
 #:   导入），出货前端无调用，给 10MB 小上限封住无效落盘面。
 #: 文件 part 数（第三列）= 各端点声明的文件数上限；超出者其内容不再进入
-#: 解析器（security._MultipartFilePartCounter 在 receive 层流式拦截）。
+#: 解析器（security._MultipartPartCounter 在 receive 层流式拦截）。字段
+#: part 的数量（16）与单字段大小（1MB+余量）上限为全局常量，见
+#: security.MAX_FIELD_PARTS / MAX_FIELD_PART_BYTES（R6-S3：字段在端点校验
+#: 前整体进内存，本产品全部端点表单字段 ≤4 个，16 为 4 倍余量）。
 from coscreen.research_trace_export import MAX_PACKAGE_BYTES as _TRACE_PACKAGE_MAX_BYTES
 from coscreen.coding_evidence import MAX_UPLOAD_BYTES as _CODING_EVIDENCE_MAX_BYTES
 
@@ -345,10 +466,14 @@ app.add_middleware(
     rules=_UPLOAD_SIZE_RULES,
     # 未认证的 multipart 在解析/落盘前直接 401（全部上传端点都要求登录）
     token_validator=lambda token: auth.decode_access_token(token) is not None,
+    # R6-S5：早拒响应对跨域前端（8614/8615 独立前端）补 CORS 简单响应头，
+    # 否则浏览器把上传 401/411/413 吞成网络错误，掩盖真实原因。
+    cors_origins=_cors_origins(),
 )
 
-# U5-P2：任务删除的同进程在途防线——coscreen 层通过该钩子读取当前任务的
-# 在途请求数（DELETE 请求自身占 1，>1 即还有导入/分析等操作在跑）。
+# U5-P2/R6-S2：任务删除的同进程在途防线——coscreen 层通过该钩子读取当前
+# 任务的**在途写请求**数（DELETE 请求自身占 1，>1 即还有导入/分析等写操作
+# 在跑；GET 轮询不计入，避免误报 409）。
 tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
 
 
@@ -1201,14 +1326,17 @@ def app_update_check() -> dict:
 
 @app.post("/api/auth/register")
 def register(body: CredentialsIn, request: Request) -> dict:
-    # U5-P5：XFF 存在时不信任其值（可伪造轮换绕过按 IP 限流），见 rate_limit_key。
+    # U5-P5/R6-S1：按直连对端 IP 分桶（XFF 一律不信任），见 rate_limit_key；
+    # 429 文案标明计数维度，方便运维定位（反代部署应由反代层 limit_req）。
     allowed, retry_after = login_limiter.check(rate_limit_key(
         "register",
         request.client.host if request.client else None,
         request.headers.get("x-forwarded-for"),
     ))
     if not allowed:
-        raise HTTPException(429, "注册尝试过于频繁，请稍后再试。", headers={"Retry-After": str(retry_after)})
+        raise HTTPException(
+            429, "注册尝试过于频繁，请稍后再试（按连接来源 IP 计数）。",
+            headers={"Retry-After": str(retry_after)})
     try:
         user = auth.create_user(body.username, body.password)
     except auth.AuthError as exc:
@@ -1224,7 +1352,9 @@ def login(body: CredentialsIn, request: Request) -> dict:
         request.headers.get("x-forwarded-for"),
     ))
     if not allowed:
-        raise HTTPException(429, "登录尝试过于频繁，请 1 分钟后再试。", headers={"Retry-After": str(retry_after)})
+        raise HTTPException(
+            429, "登录尝试过于频繁，请 1 分钟后再试（按连接来源 IP 计数）。",
+            headers={"Retry-After": str(retry_after)})
     user = auth.authenticate(body.username, body.password)
     if user is None:
         raise _bad("用户名或密码错误。", 401)
@@ -1276,8 +1406,10 @@ async def task_events(request: Request,
                                 headers={"WWW-Authenticate": "Bearer"})
         user = {"user_id": payload["user_id"], "username": payload["username"]}
     else:
-        # 兼容期：仍接受旧 token 查询参数（前端 EventSource 迁移到票据前不
-        # 可断），但响应头明确提醒弃用并在未来版本移除，新客户端一律用票据。
+        # 兼容期：仍接受旧 token 查询参数（出货前端已改为票据流——先
+        # POST /api/events/ticket 换一次性票据再连流；旧 token 路径仅为
+        # 已发布的旧客户端/第三方集成保留），响应头明确提醒弃用并在未来
+        # 版本移除（先 Deprecation 头、后 410），新客户端一律用票据。
         if token is not None:
             headers["Deprecation"] = "true"
             headers["Warning"] = (
@@ -1326,40 +1458,85 @@ def _task_payload(info: tasks_mod.TaskInfo) -> dict:
 def list_all_tasks(
     include_archived: bool = False, user: dict = Depends(require_user)
 ) -> dict:
-    infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
-    # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
-    # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
-    # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
-    # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
-    # 例外（R6-C4/#30）：desktop 模式下协作库**永久损坏**的任务不再静默剔除
-    # （单机安装该故障修复前按 legacy 可见；管理操作会给明确的修库指引）；
-    # server 模式维持 fail-closed 不可见。
-    visible = []
-    for info in infos:
-        try:
-            if _task_visible_to(info, user):
-                visible.append(info)
-        except collaboration_mod.OwnerUnavailableError as exc:
-            if (isinstance(exc, collaboration_mod.CollaborationStoreCorruptError)
-                    and not _server_mode()):
-                visible.append(info)
+    # R6-S2（评审三轮）：列表读打开**所有**任务的 task.json（出货前端每 30s
+    # 轮询 loadTasks），且不在 /api/tasks/{id}/** 的任务锁中间件计数内——
+    # 评审实测列表持 task.json 时 DELETE 触发 copytree+rmtree 半删。准入与
+    # deleting 标记同临界区：删除进行中先有界等待（上限=删除排空超时+余量），
+    # 准入后登记在途列表读供 DELETE 排空；finally 释放（可见性检查还要读各
+    # 任务 collaboration.db，同样在登记期内）。
+    # 集成对账（复审 S2 洞 a/c）：等待超时说明删除异常长（半删目录仍在移动），
+    # 此时**不得未登记就放行**去读半删列表——改 fail-closed 503（前端 30s
+    # 轮询会自动重试）；且只有真正 enter 成功才在 finally 退出，防止把仍在
+    # 活动读者的计数减穿（洞 c）。
+    deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT + 1.0
+    entered = False
+    while not TaskLockMiddleware.try_enter_list_read():
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                503, "任务列表暂时不可用（正在执行删除），请稍后重试")
+        time.sleep(0.02)
+    entered = True
+    try:
+        infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
+        # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
+        # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
+        # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
+        # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
+        # 例外（R6-C4/#30）：desktop 模式下协作库**永久损坏**的任务不再静默剔除
+        # （单机安装该故障修复前按 legacy 可见；管理操作会给明确的修库指引）；
+        # server 模式维持 fail-closed 不可见。
+        visible = []
+        for info in infos:
+            try:
+                if _task_visible_to(info, user):
+                    visible.append(info)
+            except collaboration_mod.OwnerUnavailableError as exc:
+                if (isinstance(exc, collaboration_mod.CollaborationStoreCorruptError)
+                        and not _server_mode()):
+                    visible.append(info)
+                    continue
                 continue
-            continue
-    return {"tasks": [_task_payload(i) for i in visible]}
+        return {"tasks": [_task_payload(i) for i in visible]}
+    finally:
+        if entered:
+            TaskLockMiddleware.exit_list_read()
 
 
 @app.post("/api/tasks", status_code=201)
 def create_task(body: TaskCreateIn, user: dict = Depends(require_user)) -> dict:
+    # R6-C1（复审收口：create_task 口）：保留名 'collaboration' 撞协作库文件名
+    # （slug 同名 collaboration.db），撞名账号一旦成为属主会把整套筛选表灌进
+    # 协作库（实测 2→50 张表）并使成员请求 500——与 invite/roles 同文案拒绝。
+    if auth.reserved_screener_collision(user["username"]):
+        raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                  "message_key": "coding.collaboration_reserved_name", "params": {},
+                                  "detail": "该用户名与系统保留的协作库名冲突，无法创建任务。"})
+    # R6-S2（复审洞 b）：create_task 内部 list_tasks 会读全部 task.json（查重
+    # 名），与 GET /api/tasks 同样纳入删除互斥门，不读半删目录。
+    deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT + 1.0
+    while not TaskLockMiddleware.try_enter_list_read():
+        if time.monotonic() >= deadline:
+            raise HTTPException(503, "任务列表暂时不可用（正在执行删除），请稍后重试")
+        time.sleep(0.02)
     try:
         info = tasks_mod.create_task(body.name, body.description, DATA_DIR)
-        collaboration_mod.initialize_task_store(
-            info.dir, task_id=info.task_id, owner_user_id=user["user_id"],
-            owner_username=user["username"],
-        )
-        tasks_mod.register_screener(info.task_id, user["username"], DATA_DIR)
+        try:
+            collaboration_mod.initialize_task_store(
+                info.dir, task_id=info.task_id, owner_user_id=user["user_id"],
+                owner_username=user["username"],
+            )
+            tasks_mod.register_screener(info.task_id, user["username"], DATA_DIR)
+        except (sqlite3.Error, OSError) as exc:
+            # R6-C2（复审）：initialize_task_store 半途失败会留下无协作库的
+            # 「幽灵任务」目录（列表隐藏/删除 409/重名重建 409）。回滚刚建
+            # 的任务目录后以可操作 500 失败，不留半初始化状态。
+            shutil.rmtree(info.dir, ignore_errors=True)
+            raise HTTPException(500, f"任务初始化失败已回滚，请重试：{exc}") from exc
         info = tasks_mod.find_task(info.task_id, DATA_DIR) or info
     except ValueError as exc:
         raise _bad(str(exc), 409) from exc
+    finally:
+        TaskLockMiddleware.exit_list_read()
     return _task_payload(info)
 
 
@@ -1596,16 +1773,34 @@ def update_task(
 @app.delete("/api/tasks/{task_id}")
 def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
     info = _require_task_owner(task_id, user)
-    # U5-P2：单进程部署下中间件对同任务并发只做引用计数，此前本进程持锁
-    # 时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
-    # 在途计数 >1 说明除了本 DELETE 请求还有别的操作在跑（导入/分析等）。
-    inflight = TaskLockMiddleware.inflight(info.task_id)
-    if inflight > 1:
-        raise _bad(f"任务有操作进行中（{inflight - 1} 个请求未完成），请等待后再删除。", 409)
+    # U5-P2/R6-S2：单进程部署下中间件对同任务并发只做引用计数，此前本进程
+    # 持锁时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
+    # 顺序：①置「删除中」标记（中间件对后续一切请求——含 GET/导入——直接
+    # 409）→ ②查在途写计数（DELETE 自身占 1，>1 说明还有导入/分析等写操作
+    # 在跑；只读轮询不计入，不再误报）→ ③**排空在途读**（评审二轮实测回归：
+    # 读请求持有 SQLite 文件句柄，未排空即 move 会在 Windows 上 os.rename
+    # 失败→shutil.move 回退 copytree+rmtree→在打开的 .db 上半删原目录、
+    # .trash 留全量副本、端点 500）→ ④真正 move。读排空有界：超时受控 409
+    # （任务原样保留），绝不落入破坏性回退路径。
+    TaskLockMiddleware._begin_delete(info.task_id)
     try:
-        trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
-    except ValueError as exc:
-        raise _bad(str(exc), 409) from exc
+        inflight = TaskLockMiddleware.inflight(info.task_id)
+        if inflight > 1:
+            raise _bad(f"任务有操作进行中（{inflight - 1} 个写请求未完成），请等待后再删除。", 409)
+        deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT
+        while (TaskLockMiddleware.read_inflight(info.task_id) > 0
+               or TaskLockMiddleware.list_readers() > 0):
+            # 排空对象含全局任务列表读（R6-S2 三轮：列表持 task.json 时
+            # move 同样半删）；排不空 → 受控 409，任务原样保留。
+            if time.monotonic() >= deadline:
+                raise _bad("任务或任务列表仍有读取请求未完成，请稍后重试删除。", 409)
+            time.sleep(0.02)
+        try:
+            trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
+        except ValueError as exc:
+            raise _bad(str(exc), 409) from exc
+    finally:
+        TaskLockMiddleware._end_delete(info.task_id)
     return {"deleted": True, "trash": trash_path.name}
 
 
