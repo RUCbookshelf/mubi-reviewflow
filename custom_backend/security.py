@@ -463,6 +463,14 @@ class _MultipartPartCounter:
     键区分文件/字段。已知边界：名字恰为 "filename" 的**表单字段**也会被
     计入文件——本产品各端点的表单字段名均不含该词，误报只可能来自
     攻击者自伤。
+
+    首边界的识别（评审二轮实测绕过）：RFC 7578 首边界**无前导 CRLF**，
+    且可能跨任意 chunk 拆分——此前只在首个 feed 块以完整 ``--boundary``
+    开头时识别，首块 ``'-'``、boundary 前缀或逐字节滴灌时第一个 part
+    完全不被计数（2 个文件 part、max=1 放行）。现改为：见到首个 part
+    之前持续查找 ``--boundary``（缓冲跨 chunk 拼接，lead 之前按
+    preamble 跳过，与 python-multipart 行为一致），之后的边界仍按
+    ``\\r\\n--boundary`` 匹配。
     """
 
     _SCAN = 0
@@ -484,9 +492,9 @@ class _MultipartPartCounter:
         self._field_bytes = 0
         self._state = self._SCAN
         self._buf = b""        # 尚未判定的观察窗口（字节本身仍原样转发）
-        self._body_started = False
+        self._part_seen = False    # 是否已见到首个 part 的开始边界
         self._in_file_part = False  # 当前 part 是否按文件 part 计数
-        self._part_active = False   # 是否已进入某个 part（前导区不计数）
+        self._part_active = False   # 是否已进入某个 part（preamble 不计数）
 
     def _bump_file(self) -> None:
         self.files += 1
@@ -522,12 +530,26 @@ class _MultipartPartCounter:
         data = self._buf + chunk
         self._buf = b""
         pos = 0
-        if not self._body_started:
-            self._body_started = True
-            if data.startswith(self._lead):  # 正文直接以首边界开头（无前导 CRLF）
-                pos = len(self._lead)
-                self._state = self._HEADERS
         while self._state != self._DONE:
+            if not self._part_seen:
+                # 首个 part 开始前：查找无前导 CRLF 的首边界 --boundary
+                # （跨 chunk 拼接、前导 preamble 均可识别）。未找到则保留
+                # 尾部窗口等下一个 chunk 补全，其余按 preamble 丢弃。
+                idx = data.find(self._lead, pos)
+                if idx < 0:
+                    keep = len(self._lead) - 1
+                    if len(data) - pos > keep:
+                        self._buf = data[-keep:]
+                    else:
+                        self._buf = data[pos:]
+                    return
+                pos = idx + len(self._lead)
+                if data[pos:pos + 2] == b"--":  # 空 multipart：--boundary--
+                    self._state = self._DONE
+                    return
+                self._part_seen = True
+                self._state = self._HEADERS
+                continue
             if self._state == self._SCAN:
                 idx = data.find(self._delim, pos)
                 if idx < 0:

@@ -142,13 +142,19 @@ class UploadSecurityTests(unittest.TestCase):
             TaskLockMiddleware._held.clear()
             tasks_mod.release_task_lock(lock, force=True)
         # R6-S2：在途的是只读轮询（ref=1/writes=0，DELETE 自身 +1 后 writes=1）
-        # ——删除不再因 GET 轮询误报 409
+        # ——写口径不触发「任务有操作进行中」；但合成的在途读永不结束，
+        # 会在排空超时后按读排空口径 409（真实读请求的排空→200 路径由
+        # test_r6s2_inflight_read_delete_drains_then_moves 覆盖）。
+        from unittest import mock
         lock = tasks_mod.acquire_task_lock(self.info.task_id, backend_main.DATA_DIR)
         TaskLockMiddleware._held[self.info.task_id] = [1, lock, 0]
         try:
-            r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
-            self.assertEqual(r.status_code, 200, r.text)
-            self.assertFalse(self.info.dir.exists())
+            with mock.patch.object(TaskLockMiddleware, "READ_DRAIN_TIMEOUT", 0.1):
+                r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+            self.assertEqual(r.status_code, 409, r.text)
+            self.assertIn("仍有读取请求未完成", r.json()["detail"])
+            self.assertNotIn("任务有操作进行中", r.json()["detail"])
+            self.assertTrue(self.info.dir.is_dir(), "任务目录不得被移动/半删")
         finally:
             TaskLockMiddleware._held.clear()
             tasks_mod.release_task_lock(lock, force=True)
@@ -247,6 +253,121 @@ class UploadSecurityTests(unittest.TestCase):
             None, send))
         self.assertEqual(replies[0]["status"], 200)
         self.assertEqual(hits, [f"/api/tasks/{self.task}/articles"])
+
+    # ------------------------------------------------------------------
+    # R6-S2 评审二轮：在途读 + DELETE——读请求持有 SQLite 句柄时不得触发
+    # shutil.move 的 copytree+rmtree 回退（半删原目录 + .trash 全量副本 + 500）
+    # ------------------------------------------------------------------
+    def _holding_read_setup(self):
+        """把 list_articles 换成『打开 SQLite 连接 → 阻塞 → 关闭』的复现手法。"""
+        import sqlite3
+        import threading
+        entered = threading.Event()
+        original = db_mod.list_articles
+
+        def holding_read(db_path, include_duplicates=False, hold_seconds=0.6):
+            conn = sqlite3.connect(db_path)  # 持有任务库文件句柄（评审手法）
+            try:
+                entered.set()
+                time_holder["stop"].wait(timeout=hold_seconds)
+            finally:
+                conn.close()
+            return original(db_path, include_duplicates)
+
+        time_holder = {"stop": threading.Event()}
+
+        def install():
+            backend_main.db_mod.list_articles = holding_read
+
+        def restore():
+            backend_main.db_mod.list_articles = original
+
+        return entered, time_holder, install, restore
+
+    def test_r6s2_inflight_read_delete_drains_then_moves(self):
+        """在途读 0.6s 内结束：DELETE 排空后正常 move——无 500、无半删。"""
+        import threading
+        entered, holder, install, restore = self._holding_read_setup()
+        result = {}
+        worker = None
+        install()
+        try:
+            def do_get():
+                client = TestClient(app)
+                try:
+                    result["get"] = client.get(
+                        f"/api/tasks/{self.task}/articles", headers=self.auth())
+                except Exception as exc:  # noqa: BLE001
+                    result["get_error"] = exc
+
+            worker = threading.Thread(target=do_get)
+            worker.start()
+            self.assertTrue(entered.wait(timeout=10), "读请求未进入持有段")
+            # 读在途（句柄打开）时发 DELETE：drain 等待读完成再 move
+            r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+            worker.join(timeout=15)
+        finally:
+            holder["stop"].set()
+            if worker is not None:
+                worker.join(timeout=15)
+            restore()
+            TaskLockMiddleware._deleting.clear()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("get_error", result)
+        self.assertEqual(result["get"].status_code, 200, result["get"].text)
+        # 整目录移入 .trash（原子 move，无半删残留）
+        self.assertFalse(self.info.dir.exists())
+        trash_root = backend_main.DATA_DIR / ".trash"
+        self.assertTrue(any(self.info.task_id in p.name for p in trash_root.iterdir()))
+        self.assertEqual(TaskLockMiddleware._deleting, set())
+
+    def test_r6s2_inflight_read_delete_timeout_keeps_task_intact(self):
+        """在途读超过排空上限：受控 409，任务目录原样、无 .trash 副本。"""
+        import threading
+        from unittest import mock
+        entered, holder, install, restore = self._holding_read_setup()
+        # 快照在读请求进入前拍（任务锁文件由中间件创建/释放，属簿记而非数据）
+        before = sorted(p.name for p in self.info.dir.iterdir()
+                        if not p.name.endswith(".lock"))
+        worker = None
+        install()
+        try:
+            def do_get():
+                client = TestClient(app)
+                try:
+                    result["get"] = client.get(
+                        f"/api/tasks/{self.task}/articles", headers=self.auth())
+                except Exception as exc:  # noqa: BLE001
+                    result["get_error"] = exc
+
+            result = {}
+            worker = threading.Thread(target=do_get)
+            worker.start()
+            self.assertTrue(entered.wait(timeout=10), "读请求未进入持有段")
+            with mock.patch.object(TaskLockMiddleware, "READ_DRAIN_TIMEOUT", 0.2):
+                r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+            holder["stop"].set()
+            worker.join(timeout=15)
+        finally:
+            holder["stop"].set()
+            if worker is not None:
+                worker.join(timeout=15)
+            restore()
+            TaskLockMiddleware._deleting.clear()
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("仍有读取请求未完成", r.json()["detail"])
+        # 数据不被破坏：删除前的文件一个不少（读请求自建 screening 库属正常
+        # 新增），.trash 没有本任务副本——半删/copytree 回退不得发生
+        after = sorted(p.name for p in self.info.dir.iterdir())
+        self.assertTrue(set(before) <= set(after), f"{before} 不在 {after} 中")
+        trash_root = backend_main.DATA_DIR / ".trash"
+        self.assertFalse(trash_root.exists()
+                         and any(self.info.task_id in p.name for p in trash_root.iterdir()))
+        self.assertNotIn("get_error", result)
+        # 读结束后重试删除成功
+        r = self.client.delete(f"/api/tasks/{self.task}", headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(self.info.dir.exists())
 
     # ------------------------------------------------------------------
     # U5-P4：未认证请求不得取锁/回 409（占用状态预言机与锁文件操作面）
@@ -544,6 +665,109 @@ class UploadSecurityTests(unittest.TestCase):
                   b"filename=\"f3.csv\"\r\n\r\nc\r\n\r\n--;abc--\r\n")
         with self.assertRaises(MultipartStructureRejected):
             run(b'multipart/form-data; boundary=";abc"', [quoted])
+
+    def test_r6s3_first_boundary_recognized_across_chunks(self):
+        """R6-S3 评审二轮实测绕过（handoff 原构造）：首边界跨 chunk。
+
+        旧实现只在**首个 feed 块**以完整 ``--boundary`` 开头时识别首 part，
+        之后只匹配带前导 CRLF 的 ``\\r\\n--boundary``——首块 '-'、boundary
+        前缀或逐字节滴灌时第一个 part 永不被计数（38 字节 boundary、2 个
+        文件 part、max=1 实测 files=1 放行；ASGI 层 1 字节首块同样放行
+        2 个 filename part 到解析器）。
+        """
+        boundary = b"----WebKitFormBoundary" + b"X" * 17  # 38 字节真实形状
+        lead = b"--" + boundary
+
+        def file_part(i):
+            return (lead + b'\r\nContent-Disposition: form-data; name="files"; '
+                    b'filename="f' + str(i).encode("ascii")
+                    + b'.csv"\r\n\r\nk,v\r\n')
+
+        def field_part(name, value=b"v"):
+            return (lead + b'\r\nContent-Disposition: form-data; name="'
+                    + name.encode("ascii") + b'"\r\n\r\n' + value + b"\r\n")
+
+        body = file_part(1) + file_part(2) + b"\r\n" + lead + b"--\r\n"
+
+        def attempt(chunks):
+            counter = _MultipartPartCounter(boundary, 1)
+            try:
+                for chunk in chunks:
+                    counter.feed(chunk)
+                return None, counter.files
+            except MultipartStructureRejected as exc:
+                return exc, counter.files
+
+        # 对照：整包一次 feed → 拒
+        exc, _ = attempt([body])
+        self.assertIsNotNone(exc)
+        # 评审实测的三种绕过构造：全部必须在计数层拒绝
+        exc, files = attempt([b"-", body[1:]])
+        self.assertIsNotNone(exc, "首块 '-' 不得放行第 2 个文件 part")
+        exc, files = attempt([body[:10], body[10:]])
+        self.assertIsNotNone(exc, "首块 10 字节 lead 前缀不得放行")
+        exc, files = attempt([body[i:i + 1] for i in range(len(body))])
+        self.assertIsNotNone(exc, "1 字节滴灌不得放行")
+        # 首个 part 是字段：数量与大小同样从第 1 个 part 起计入
+        fields17 = b"".join(field_part(f"f{i}") for i in range(17)) + b"\r\n" + lead + b"--\r\n"
+        counter = _MultipartPartCounter(boundary, 2)
+        with self.assertRaises(MultipartStructureRejected):
+            for i in range(0, len(fields17), 3):  # 滴灌跨首边界
+                counter.feed(fields17[i:i + 3])
+        big_field = field_part("big", b"v" * (MAX_FIELD_PART_BYTES + 1)) + b"\r\n" + lead + b"--\r\n"
+        counter = _MultipartPartCounter(boundary, 2)
+        with self.assertRaises(MultipartStructureRejected):
+            for i in range(0, len(big_field), 8192):
+                counter.feed(big_field[i:i + 8192])
+        # 正常单文件 + 前导 preamble：不误拒
+        counter = _MultipartPartCounter(boundary, 1)
+        counter.feed(b"preamble\r\n" + file_part(1) + b"\r\n" + lead + b"--\r\n")
+        self.assertEqual(counter.files, 1)
+        # 空 multipart（--boundary-- 直接结束）：零 part、不抛
+        counter = _MultipartPartCounter(boundary, 1)
+        counter.feed(lead + b"--\r\n")
+        self.assertEqual((counter.files, counter.fields), (0, 0))
+
+        # ASGI 中间件层复现：1 字节首块 receive —— 第 2 个文件 part 的头部
+        # 进入解析器之前必须被拒（评审实测旧代码放行 2 个 filename part）
+        rules = [(re.compile(r"^/api/tasks/[^/]+/import-batch$"), 10 ** 9, 1)]
+        forwarded = []
+
+        async def stub_app(scope, receive, send):
+            while True:
+                message = await receive()
+                if message["type"] != "http.request":
+                    break
+                forwarded.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    break
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        stream = iter([body[:1]] + [body[i:i + 4096] for i in range(1, len(body), 4096)])
+
+        async def receive():
+            try:
+                return {"type": "http.request", "body": next(stream), "more_body": True}
+            except StopIteration:
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):  # pragma: no cover - 异常先于响应
+            pass
+
+        middleware = UploadSizeLimitMiddleware(stub_app, rules)
+        with self.assertRaises(MultipartStructureRejected):
+            asyncio.run(middleware(
+                {"type": "http", "method": "POST",
+                 "path": "/api/tasks/t/import-batch",
+                 "headers": [(b"content-type", b"multipart/form-data; boundary=" + boundary),
+                             (b"content-length", str(len(body)).encode())]},
+                receive, send))
+        # 评审实测旧代码放行 2 个 filename part；现在第 2 个文件 part 的
+        # 头部到达解析器之前即中断（拒绝发生在含该头部的 chunk 转发前，
+        # 转发量 ≤ 1 个 filename——此处 1 字节首块场景实际为 0）
+        self.assertLess(b"".join(forwarded).count(b"filename"), 2,
+                        "第 2 个文件 part 的头部不得再进入解析器")
 
     def test_r6s3_missing_or_empty_boundary_rejected_400(self):
         """R6-S3：boundary 缺失/空值 → 400（Starlette 解析期本就 400，提前到落盘前）。"""

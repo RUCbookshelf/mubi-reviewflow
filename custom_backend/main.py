@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 import tempfile
 import threading
@@ -212,6 +213,10 @@ class TaskLockMiddleware:
 
     _PATH_RE = re.compile(r"^/api/tasks/([^/]+)")
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    #: DELETE 置 deleting 标记后等待在途**读**请求排空的上限秒数（评审二轮：
+    #: 读请求持有 SQLite 文件句柄，不排空就在 Windows 上触发 shutil.move 的
+    #: copytree+rmtree 回退——半删原目录 + .trash 全量副本 + 500）。
+    READ_DRAIN_TIMEOUT = 5.0
     # 规范 task_id -> [在途请求数(全部方法), 锁路径, 在途写请求数]：
     # 同任务并发请求共享一把锁，最后一个在途请求结束时释放（无论谁最初
     # 获取）；第三位只计写方法，供 DELETE 端点与 coscreen 层删除防线使用。
@@ -234,6 +239,18 @@ class TaskLockMiddleware:
         with cls._guard:
             entry = cls._held.get(task_id)
             return entry[2] if entry else 0
+
+    @classmethod
+    def read_inflight(cls, task_id: str) -> int:
+        """该任务当前在本进程内的**在途读请求**数（总在途 − 写在途）。
+
+        DELETE 不以读请求作为 409 依据（R6-S2），但 move 前必须等它排空
+        （见 DELETE 端点）——否则打开的 SQLite 句柄会触发 shutil.move 的
+        copytree+rmtree 回退（Windows 上数据破坏）。
+        """
+        with cls._guard:
+            entry = cls._held.get(task_id)
+            return max(0, entry[0] - entry[2]) if entry else 0
 
     @classmethod
     def _begin_delete(cls, task_id: str) -> None:
@@ -1605,14 +1622,23 @@ def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
     info = _require_task_owner(task_id, user)
     # U5-P2/R6-S2：单进程部署下中间件对同任务并发只做引用计数，此前本进程
     # 持锁时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
-    # 先置「删除中」标记（中间件对后续一切请求——含 GET/导入——直接 409），
-    # 再查在途写计数（DELETE 自身占 1，>1 说明还有导入/分析等写操作在跑；
-    # 只读轮询不计入，不再误报），最后才真正 move。
+    # 顺序：①置「删除中」标记（中间件对后续一切请求——含 GET/导入——直接
+    # 409）→ ②查在途写计数（DELETE 自身占 1，>1 说明还有导入/分析等写操作
+    # 在跑；只读轮询不计入，不再误报）→ ③**排空在途读**（评审二轮实测回归：
+    # 读请求持有 SQLite 文件句柄，未排空即 move 会在 Windows 上 os.rename
+    # 失败→shutil.move 回退 copytree+rmtree→在打开的 .db 上半删原目录、
+    # .trash 留全量副本、端点 500）→ ④真正 move。读排空有界：超时受控 409
+    # （任务原样保留），绝不落入破坏性回退路径。
     TaskLockMiddleware._begin_delete(info.task_id)
     try:
         inflight = TaskLockMiddleware.inflight(info.task_id)
         if inflight > 1:
             raise _bad(f"任务有操作进行中（{inflight - 1} 个写请求未完成），请等待后再删除。", 409)
+        deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT
+        while TaskLockMiddleware.read_inflight(info.task_id) > 0:
+            if time.monotonic() >= deadline:
+                raise _bad("任务仍有读取请求未完成，请稍后重试删除。", 409)
+            time.sleep(0.02)
         try:
             trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
         except ValueError as exc:
