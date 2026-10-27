@@ -1,0 +1,672 @@
+"""2.1.4 去重引擎（U1）泳道回归测试 —— 复现夜间首审的实测手法。
+
+对应 core_audit_findings.md 单元 1 的 13 条结论（U1-P7 为验证性结论，无需
+修复，此处保留传递闭包/重排确定性的守护断言）。所有行为断言都用真实
+parse_ris / find_duplicates / db.upsert_articles / CLI 子进程复现首审证据：
+
+- U1-P1/P10：模糊证据（仅标题相似）不再静默自动合并，只报候选；
+- U1-P2/P11：第一作者门识别两种姓名顺序、剥 van/de 助词、空作者不通过、
+  机构作者整串比；
+- U1-P3：键相等先校验 DOI/标题冲突，冲突走候选并消歧键；
+- U1-P4/P12：duplicates 计数改 total-unique 口径，PRISMA 勾稽恒成立；
+- U1-P5/P8/P9：normalize_doi 删 Cf 类不可见字符、NFKC 折叠全角、剥
+  scheme-less doi.org 前缀、去尾部标点，dedup._norm_doi 统一走它；
+- U1-P6：auto 键掺入第一作者与年份；CLI 导入前调用键消歧；
+- U1-P13：extract_year 保守化（括号/句末优先，无法确定返回 None）。
+
+既有库兼容性：键生成算法只影响新导入（build_zotero_key 仅在解析时调用），
+stabilize_conflicting_keys 对"与库内同键且兼容"的条目保留原键走更新路径，
+不重写任何已有主键——由 test_stabilize_keeps_compatible_db_key 等钉住。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import json
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import unittest
+from contextlib import closing, redirect_stdout, redirect_stderr
+from io import StringIO
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from coscreen import db as db_mod
+from coscreen.dedup import (
+    DedupReport,
+    DuplicatePair,
+    find_duplicates,
+    stabilize_conflicting_keys,
+    _norm_doi,
+)
+from coscreen.living_review import process_incremental_articles
+from coscreen.models import Article, compute_content_hash
+from coscreen.normalize import (
+    build_zotero_key,
+    extract_year,
+    first_author_surname,
+    normalize_doi,
+)
+from coscreen.parsers import parse_file
+from coscreen.stats.prisma import prisma_from_merge
+
+
+def _article(key: str, title: str, authors: str = "", doi: str = "",
+             year: int | None = None, raw: dict | None = None) -> Article:
+    return Article(zotero_key=key, title=title, authors=authors, doi=doi,
+                   year=year, raw=raw if raw is not None else {})
+
+
+def _write_ris(path: Path, records: list[dict]) -> None:
+    """写一个最小 RIS 文件：records 每项为 {au,ti,py,do,id} 的可选键。"""
+    lines: list[str] = []
+    for rec in records:
+        lines.append("TY  - JOUR")
+        if rec.get("au"):
+            lines.append(f"AU  - {rec['au']}")
+        if rec.get("ti"):
+            lines.append(f"TI  - {rec['ti']}")
+        if rec.get("py"):
+            lines.append(f"PY  - {rec['py']}")
+        if rec.get("do"):
+            lines.append(f"DO  - {rec['do']}")
+        if rec.get("id"):
+            lines.append(f"ID  - {rec['id']}")
+        lines.append("ER  -\n")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# U1-P5 / U1-P8 / U1-P9：DOI 规范化
+# ---------------------------------------------------------------------------
+
+class NormalizeDoiTests(unittest.TestCase):
+    """normalize_doi 边界与 dedup._norm_doi 统一口径（首审实测值逐条钉住）。"""
+
+    def test_fullwidth_and_prefix_variants_fold_to_canonical(self):
+        cases = {
+            "DOI：10.1000/abc": "10.1000/abc",          # 全角冒号（首审原样保留）
+            "doi：10.1000/abc": "10.1000/abc",
+            "１０.１０００/abc": "10.1000/abc",           # 全角数字（首审原样保留）
+            "doi.org/10.1000/abc": "10.1000/abc",       # scheme-less（首审原样保留）
+            "dx.doi.org/10.5555/fw": "10.5555/fw",
+            "https://www.doi.org/10.1000/abc": "10.1000/abc",
+            " https://doi.org/10.1000/ABC ": "10.1000/abc",
+            "https://doi.org/doi:10.1000/abc": "10.1000/abc",  # 双前缀
+            "10.1000/abc.": "10.1000/abc",              # 尾部句点
+            "10.1000/abc,": "10.1000/abc",
+            "doi: 10.1000 /abc": "10.1000/abc",         # 内部空白
+            "10.9/x": "10.9/x",
+            "": "",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_doi(raw), expected)
+
+    def test_invisible_cf_characters_removed(self):
+        # U+200B 零宽空格 / U+200D 零宽连接符 / U+FEFF BOM / U+00AD 软连字符
+        # 均为 Cf 类，\s 不匹配；首审实测它们原样穿透两层去重。
+        for ch in ("\u200b", "\u200d", "\ufeff", "\u00ad", "\u2060"):
+            with self.subTest(ch=hex(ord(ch))):
+                self.assertEqual(normalize_doi(f"10.1234/abc{ch}"), "10.1234/abc")
+                self.assertEqual(normalize_doi(f"{ch}10.1234/abc"), "10.1234/abc")
+
+    def test_trailing_unbalanced_bracket_stripped_balanced_kept(self):
+        self.assertEqual(normalize_doi("10.1000/(abc).def)"), "10.1000/(abc).def")
+        self.assertEqual(normalize_doi("10.1000/abc]"), "10.1000/abc")
+
+    def test_dedup_norm_doi_delegates_to_normalize_doi(self):
+        for raw in ("https://doi.org/10.1000/ABC", "doi.org/10.9/x", "10.1/x​"):
+            with self.subTest(raw=raw):
+                self.assertEqual(_norm_doi(raw), normalize_doi(raw))
+        self.assertEqual(_norm_doi("https://doi.org/10.1000/ABC"), "10.1000/abc")
+
+    def test_doi_variants_now_merge_in_exact_layer(self):
+        # 首审 probe2：URL 形态 vs 裸形态曾返回 kept=2、0 对。
+        arts = [
+            _article("K1", "Some title", "Smith, John", "https://doi.org/10.1000/ABC"),
+            _article("K2", "Some title", "Smith, John", "10.1000/ABC"),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual([p.method for p in report.exact_pairs], ["exact_doi"])
+
+    def test_zero_width_doi_penetrating_both_layers_fixed(self):
+        # 首审 U1-P8 实测：同标题同作者、DOI 仅差尾部 ZWSP → unique=2 无任何
+        # 标记。规范化后精确层命中。
+        arts = [
+            _article("K1", "Same title", "Smith, John", "10.1234/abc\u200b"),
+            _article("K2", "Same title", "Smith, John", "10.1234/abc"),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(report.unique, 1)
+        self.assertTrue(any(p.method == "exact_doi" for p in report.exact_pairs))
+
+
+# ---------------------------------------------------------------------------
+# U1-P2 / U1-P11：第一作者门
+# ---------------------------------------------------------------------------
+
+class FirstAuthorTokenTests(unittest.TestCase):
+    def test_order_and_particle_handling(self):
+        pairs_equal = [
+            ("Smith, John", "John Smith"),          # 首审 P2(b)：曾漏配
+            ("Smith, John", "Smith J"),
+            ("von Neumann, John", "Neumann, J."),   # 首审 P11：曾漏配
+            ("van der Berg, J.", "Berg, J."),
+            ("de la Cruz, Maria", "Maria de la Cruz"),
+            ("van Dijk", "Dijk, A."),               # "van Dijk" 无逗号
+        ]
+        for left, right in pairs_equal:
+            with self.subTest(left=left, right=right):
+                self.assertEqual(first_author_surname(left), first_author_surname(right))
+
+    def test_distinct_particles_distinguishable(self):
+        # 首审 P2(c)：'van der Berg' 与 'van Dijk' 曾都归一为 'van'（100 放行）。
+        self.assertNotEqual(first_author_surname("van der Berg, J."),
+                            first_author_surname("van Dijk, A."))
+        self.assertEqual(first_author_surname("van der Berg, J."), "berg")
+        self.assertEqual(first_author_surname("van Dijk, A."), "dijk")
+
+    def test_institutional_authors_compared_whole(self):
+        self.assertEqual(first_author_surname("The Cochrane Collaboration"),
+                         "the cochrane collaboration")
+        self.assertEqual(first_author_surname("World Health Organization"),
+                         "world health organization")
+        # 机构 vs 人名姓氏不再坍缩成 'the'/'collaboration' 一词
+        self.assertNotEqual(first_author_surname("The Cochrane Collaboration"),
+                            first_author_surname("Cochrane, Tom"))
+
+    def test_empty_authors_return_empty_string(self):
+        self.assertEqual(first_author_surname(""), "")
+        self.assertEqual(first_author_surname(None), "")
+        self.assertEqual(first_author_surname("; "), "")
+
+    def test_fuzzy_gate_empty_authors_not_merged(self):
+        # 首审 P2(a)/P11：双空作者 fuzz.ratio('','')=100 仅凭标题合并；单空
+        # 则漏配。现在任一侧缺失都不产生候选合并（不自动合并、也不建议合并）。
+        for authors in ("", "Smith, John"):
+            arts = [
+                _article("K1", "Same title both empty gate", authors),
+                _article("K2", "Same title both empty gate", ""),
+            ]
+            with self.subTest(authors=authors):
+                _, report = find_duplicates(arts)
+                self.assertEqual(report.fuzzy_pairs, [])
+
+    def test_fuzzy_gate_order_flip_now_matches_as_candidate(self):
+        # 首审 P11：'Smith, John' vs 'John Smith' 同标题曾因 ratio=22 漏配；
+        # 现在作者门通过、进入候选（不自动合并）。
+        arts = [
+            _article("K1", "Identical Title For Author Order Test", "Smith, John"),
+            _article("K2", "Identical Title For Author Order Test", "John Smith"),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(len(report.fuzzy_pairs), 1)
+        self.assertEqual(report.fuzzy_pairs[0].kept_key, "K1")
+        self.assertEqual(report.fuzzy_pairs[0].dup_key, "K2")
+
+
+# ---------------------------------------------------------------------------
+# U1-P1 / U1-P10：模糊层只出候选，不再自动合并
+# ---------------------------------------------------------------------------
+
+class FuzzyCandidatesOnlyTests(unittest.TestCase):
+    def test_companion_studies_not_merged(self):
+        # 首审实测：token_set_ratio('...in women','...in men')=98.41 被自动
+        # 合并，men 论文不再进入筛选。现在两条都保留，仅列候选。
+        arts = [
+            _article("K1", "Effects of drug X on mortality in women", "Wang, Wei", year=2005),
+            _article("K2", "Effects of drug X on mortality in men", "Wang, Wei", year=2006),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual([a.zotero_key for a in kept], ["K1", "K2"])
+        self.assertEqual(report.unique, 2)
+        self.assertEqual(len(report.fuzzy_pairs), 1)
+        self.assertEqual(report.fuzzy_pairs[0].method, "fuzzy")
+
+    def test_word_order_and_subset_titles_are_candidates_only(self):
+        # 首审实测词序反转=100 / token 子集=100 曾被合并。
+        evidence_pairs = [
+            ("Impact of diabetes on blood pressure control",
+             "Impact of blood pressure control on diabetes"),
+            ("deep learning review",
+             "a review of deep learning methods"),
+        ]
+        for title_a, title_b in evidence_pairs:
+            arts = [
+                _article("K1", title_a, "Li, Ming"),
+                _article("K2", title_b, "Li, Ming"),
+            ]
+            with self.subTest(titles=(title_a, title_b)):
+                kept, report = find_duplicates(arts)
+                self.assertEqual(report.unique, 2)
+                self.assertEqual(len(report.fuzzy_pairs), 1)
+
+    def test_identical_titles_also_require_human_confirmation(self):
+        # 完全同标题同作者（无 DOI/键证据）也只是候选：自动合并仅保留
+        # 规范化 DOI 相等与不冲突的键相等两类证据。
+        arts = [
+            _article("K1", "Exactly the same title", "Smith, John"),
+            _article("K2", "Exactly the same title", "Smith, John"),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(report.unique, 2)
+        self.assertEqual(len(report.fuzzy_pairs), 1)
+
+    def test_template_titles_not_collapsed(self):
+        # 首审 probe10：70 条 'Filler paper number N about topic N' 模板标题
+        # 曾合并成 1 组。取 8 条验证：全部保留、仅出候选。
+        arts = [
+            _article(f"K{i}", f"Filler paper number {i} about topic {i}", "Doe, Jane")
+            for i in range(1, 9)
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(report.unique, 8)
+        self.assertTrue(all(p.method == "fuzzy" for p in report.fuzzy_pairs))
+
+
+# ---------------------------------------------------------------------------
+# U1-P3：键冲突校验与消歧键
+# ---------------------------------------------------------------------------
+
+class ExactKeyConflictTests(unittest.TestCase):
+    def test_same_key_different_doi_conflicts(self):
+        # 首审实测：RIS 'ID - 1' 两条不同文献曾判 exact_key 且 CLI 覆盖丢行。
+        arts = [
+            _article("1", "Metformin and renal outcomes in type 2 diabetes",
+                     "Smith, John", "10.1000/aaa"),
+            _article("1", "Aspirin and cardiovascular outcomes in the elderly",
+                     "Jones, Anna", "10.1000/bbb"),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(len(report.key_conflict_pairs), 1)
+        self.assertEqual(report.key_conflict_pairs[0].method, "exact_key_conflict")
+        self.assertEqual(report.exact_pairs, [])
+
+    def test_same_key_case_variant_doi_merges(self):
+        arts = [
+            _article("REAL1", "Title One", "Smith, John", "10.5555/dup"),
+            _article("REAL1", "Title One", "Smith, John", "10.5555/DUP "),
+        ]
+        kept, _ = find_duplicates(arts)
+        self.assertEqual(len(kept), 1)
+
+    def test_same_key_title_adjudicates_when_doi_absent(self):
+        merged = [
+            _article("K1", "Alpha beta gamma study"),
+            _article("K1", "Alpha beta gamma study"),          # 同标题 → 合并
+        ]
+        kept, report = find_duplicates(merged)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(report.key_conflict_pairs, [])
+
+        conflict = [
+            _article("K1", "Alpha beta gamma study"),
+            _article("K1", "Completely different subject matter"),  # 相似度不足
+        ]
+        kept, report = find_duplicates(conflict)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(len(report.key_conflict_pairs), 1)
+
+    def test_stabilize_renames_conflicting_batch_keys_deterministically(self):
+        arts = [
+            _article("1", "Title A", "Smith, John", "10.1000/aaa"),
+            _article("1", "Title B", "Jones, Anna", "10.1000/bbb"),
+        ]
+        _, report = find_duplicates(arts)
+        renames = stabilize_conflicting_keys(
+            arts, report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs)
+        self.assertEqual(len(renames), 1)
+        self.assertEqual(arts[0].zotero_key, "1")
+        self.assertTrue(arts[1].zotero_key.startswith("1-"))
+        # 确定性：同一输入重建得到同一后缀（重复导入稳定）
+        again = [
+            _article("1", "Title A", "Smith, John", "10.1000/aaa"),
+            _article("1", "Title B", "Jones, Anna", "10.1000/bbb"),
+        ]
+        _, report2 = find_duplicates(again)
+        stabilize_conflicting_keys(again, report2.exact_pairs + report2.fuzzy_pairs + report2.key_conflict_pairs)
+        self.assertEqual(again[1].zotero_key, arts[1].zotero_key)
+        # 冲突对键已同步刷新
+        self.assertEqual(report.key_conflict_pairs[0].dup_key, arts[1].zotero_key)
+
+    def test_stabilize_member_follows_renamed_group(self):
+        # A(1,d1) 与 B(1,d2) 键冲突；C(2,d2) 与 B 同 DOI 合并。B 组消歧后
+        # C 保留自己的键（2）作为重复行标记，不覆盖 A 的行。
+        arts = [
+            _article("1", "Title A", "Smith, John", "10.1/d1"),
+            _article("1", "Title B", "Jones, Anna", "10.1/d2"),
+            _article("2", "Title B two", "Jones, Anna", "10.1/d2"),
+        ]
+        _, report = find_duplicates(arts)
+        stabilize_conflicting_keys(
+            arts, report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs)
+        self.assertEqual(arts[0].zotero_key, "1")
+        self.assertTrue(arts[1].zotero_key.startswith("1-"))
+        self.assertEqual(arts[2].zotero_key, "2")
+        doi_pair = next(p for p in report.exact_pairs if p.method == "exact_doi")
+        self.assertEqual(doi_pair.kept_key, arts[1].zotero_key)
+        self.assertEqual(doi_pair.dup_key, "2")
+
+    def test_stabilize_keeps_compatible_db_key_for_update_path(self):
+        # 与库内同键且 DOI 相等（重导同一文献）：保留原键走 upsert 更新，
+        # 既有库主键不被重写。
+        db_art = _article("WM1", "Effects of drug X on mortality in women",
+                          "Wang, Wei", "10.9/wm1")
+        incoming = [_article("WM1", "Effects of drug X on mortality in women",
+                             "Wang, Wei", "10.9/wm1")]
+        renames = stabilize_conflicting_keys(incoming, [], known=[db_art])
+        self.assertEqual(renames, [])
+        self.assertEqual(incoming[0].zotero_key, "WM1")
+
+    def test_stabilize_disambiguates_conflicting_db_key(self):
+        # 跨批次：库内 WM1 与新文件 WM1 是不同文献（DOI/标题都不符）→
+        # 新条目加后缀，不再覆盖库内行。
+        db_art = _article("WM1", "Effects of drug X on mortality in women",
+                          "Wang, Wei")
+        incoming = [_article("WM1", "A totally different study on statins",
+                             "Doe, Jane", "10.1000/zzz")]
+        renames = stabilize_conflicting_keys(incoming, [], known=[db_art])
+        self.assertEqual(len(renames), 1)
+        self.assertEqual(renames[0][0], "WM1")
+        self.assertTrue(incoming[0].zotero_key.startswith("WM1-"))
+
+
+# ---------------------------------------------------------------------------
+# U1-P4 / U1-P12：重复计数口径
+# ---------------------------------------------------------------------------
+
+class DuplicateCountingTests(unittest.TestCase):
+    def test_same_doi_and_key_counted_once_by_record(self):
+        # 首审 probe3/probe8：两条 key 与 DOI 完全相同的记录曾产生
+        # exact_doi+exact_key 两条事件、n_duplicates()=2。
+        arts = [
+            _article("K1", "Title X", "Smith, John", "10.1000/x"),
+            _article("K1", "Title X", "Smith, John", "10.1000/x"),
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(len(report.exact_pairs), 2)  # 事件保留（透明）
+        self.assertEqual(report.n_duplicates(), 1)    # 记录口径
+        self.assertEqual(report.n_duplicates(), report.total - report.unique)
+
+    def test_prisma_flow_identity_invariant_holds(self):
+        # 首审实测 prisma_from_merge 曾返回 identified=2, duplicates=2,
+        # screened=1（2-2 != 1）。现在 identified - duplicates == screened。
+        import pandas as pd
+
+        arts = [
+            _article("K1", "Title X", "Smith, John", "10.1000/x"),
+            _article("K1", "Title X", "Smith, John", "10.1000/x"),
+        ]
+        _, report = find_duplicates(arts)
+        merged = pd.DataFrame({"status": ["agree"], "decision_A": ["include"]})
+        flow = prisma_from_merge(merged, report)
+        self.assertEqual(flow.identified - flow.duplicates_removed, flow.screened)
+        self.assertEqual((flow.identified, flow.duplicates_removed, flow.screened), (2, 1, 1))
+
+    def test_n_duplicates_never_negative(self):
+        report = DedupReport(total=0, unique=0)
+        self.assertEqual(report.n_duplicates(), 0)
+
+
+# ---------------------------------------------------------------------------
+# U1-P6：auto 键掺入第一作者与年份
+# ---------------------------------------------------------------------------
+
+class BuildZoteroKeyTests(unittest.TestCase):
+    def test_same_title_different_authors_get_distinct_keys(self):
+        # 首审 probe9：两条无 ID 无 DOI 的 'Editorial' 曾同为 auto-ab84b05d60c2。
+        content_hash = compute_content_hash("", "Editorial")
+        key_smith = build_zotero_key({}, content_hash, authors="Smith, John", year=2020)
+        key_jones = build_zotero_key({}, content_hash, authors="Jones, Anna", year=2021)
+        self.assertTrue(key_smith.startswith("auto-"))
+        self.assertNotEqual(key_smith, key_jones)
+
+    def test_same_title_same_author_different_year_distinct(self):
+        content_hash = compute_content_hash("", "Editorial")
+        self.assertNotEqual(
+            build_zotero_key({}, content_hash, authors="Smith, John", year=2020),
+            build_zotero_key({}, content_hash, authors="Smith, John", year=2021),
+        )
+
+    def test_raw_lookup_ris_style_record(self):
+        # rispy 记录：authors 列表 + year 字段；不传显式参数也能掺入作者/年份。
+        content_hash = compute_content_hash("", "Editorial")
+        key = build_zotero_key({"authors": ["Smith, John"], "year": "2020"}, content_hash)
+        self.assertEqual(
+            key,
+            build_zotero_key({}, content_hash, authors="Smith, John", year=2020),
+        )
+        self.assertNotEqual(
+            key, build_zotero_key({"authors": ["Jones, Anna"], "year": "2020"}, content_hash)
+        )
+
+    def test_deterministic_and_source_key_preferred(self):
+        content_hash = compute_content_hash("", "Editorial")
+        self.assertEqual(
+            build_zotero_key({}, content_hash, authors="Smith, John", year=2020),
+            build_zotero_key({}, content_hash, authors="Smith, John", year=2020),
+        )
+        self.assertEqual(build_zotero_key({"id": "SOURCE1"}, content_hash), "SOURCE1")
+
+    def test_ris_same_title_different_authors_both_imported(self):
+        # 首审 probe9 端到端：ed.ris 两条同名 'Editorial' 曾只入库 1 条。
+        with tempfile.TemporaryDirectory(prefix="rf_u1p6_") as tmp:
+            ris = Path(tmp) / "ed.ris"
+            _write_ris(ris, [
+                {"au": "Smith, John", "ti": "Editorial", "py": "2020"},
+                {"au": "Jones, Anna", "ti": "Editorial", "py": "2021"},
+            ])
+            articles = parse_file(ris)
+            self.assertNotEqual(articles[0].zotero_key, articles[1].zotero_key)
+            db = str(Path(tmp) / "ed.db")
+            db_mod.init_db(db)
+            _, report = find_duplicates(articles)
+            db_mod.upsert_articles(db, articles, report.exact_pairs)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, authors FROM articles").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(report.unique, 2)
+
+
+# ---------------------------------------------------------------------------
+# U1-P13：extract_year 保守化
+# ---------------------------------------------------------------------------
+
+class ExtractYearTests(unittest.TestCase):
+    def test_evidence_cases(self):
+        cases = {
+            "Reprint of the 1905 original (2012)": 2012,   # 首审取错为 1905
+            "Volume 1850, issued 2019": 2019,              # 首审取错为 1850
+            "2020-12-01": 2020,
+            "April 2021": 2021,
+            "1999/05": 1999,
+            "© 2011 Springer": 2011,
+            "2020": 2020,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(extract_year(text), expected)
+
+    def test_undeterminable_returns_none(self):
+        # 多个候选且无括号/句末信号 → 宁缺毋错，不再取首个数字。
+        self.assertIsNone(extract_year("1905 original 2012 reprint"))
+        self.assertIsNone(extract_year("serial numbers 12345 and 67890"))
+        self.assertIsNone(extract_year(""))
+        self.assertIsNone(extract_year(None))
+
+
+# ---------------------------------------------------------------------------
+# U1-P7（验证性守护）：传递闭包与重排确定性
+# ---------------------------------------------------------------------------
+
+class UnionFindGuardsTests(unittest.TestCase):
+    def test_transitive_closure_keeps_first_record(self):
+        arts = [
+            _article("K1", "Alpha beta gamma"),
+            _article("K1", "Alpha beta gamma", doi="10.1/d2"),   # 键合并（无 DOI 冲突）
+            _article("K3", "Totally other", doi="10.1/d2"),      # DOI 合并
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual([a.zotero_key for a in kept], ["K1"])
+        self.assertEqual(
+            [(p.kept_key, p.dup_key, p.method) for p in report.exact_pairs],
+            [("K1", "K1", "exact_key"), ("K1", "K3", "exact_doi")],
+        )
+
+    def test_reordering_is_deterministic(self):
+        arts = [
+            _article("K1", "Alpha beta gamma"),
+            _article("K1", "Alpha beta gamma", doi="10.1/d2"),
+            _article("K3", "Totally other", doi="10.1/d2"),
+        ]
+        kept, _ = find_duplicates(list(reversed(arts)))
+        self.assertEqual([a.zotero_key for a in kept], ["K3"])
+
+
+# ---------------------------------------------------------------------------
+# CLI 与活体综述对接（真实子进程/真实管线）
+# ---------------------------------------------------------------------------
+
+def _run_cli(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "coscreen", *args],
+        capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+    )
+
+
+class CliImportSemanticsTests(unittest.TestCase):
+    def test_fuzzy_candidates_not_auto_merged_by_default(self):
+        # 首审实测：wm.ris 曾输出 men 论文 is_duplicate_of=women 论文。
+        with tempfile.TemporaryDirectory(prefix="rf_u1cli_") as tmp:
+            ris = Path(tmp) / "wm.ris"
+            db = str(Path(tmp) / "wm.db")
+            _write_ris(ris, [
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in women", "py": "2005", "id": "WM1"},
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in men", "py": "2006", "id": "WM2"},
+            ])
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("模糊候选 1 条", proc.stdout)
+            self.assertIn("未自动合并", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(rows, [("WM1", None), ("WM2", None)])
+
+    def test_auto_merge_fuzzy_flag_restores_legacy_marking(self):
+        with tempfile.TemporaryDirectory(prefix="rf_u1cli2_") as tmp:
+            ris = Path(tmp) / "wm.ris"
+            db = str(Path(tmp) / "wm.db")
+            _write_ris(ris, [
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in women", "py": "2005", "id": "WM1"},
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in men", "py": "2006", "id": "WM2"},
+            ])
+            proc = _run_cli(["import", "--file", str(ris), "--db", db, "--auto-merge-fuzzy"])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("已自动合并", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                dup_of = dict(conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
+            self.assertEqual(dup_of, {"WM1": None, "WM2": "WM1"})
+
+    def test_same_id_different_articles_both_survive(self):
+        # 首审实测：两条 ID - 1 不同文献曾静默覆盖只剩一条。
+        with tempfile.TemporaryDirectory(prefix="rf_u1cli3_") as tmp:
+            ris = Path(tmp) / "id.ris"
+            db = str(Path(tmp) / "id.db")
+            _write_ris(ris, [
+                {"au": "Smith, John", "ti": "Aspirin and cardiovascular outcomes in the elderly", "do": "10.1000/aaa", "id": "1"},
+                {"au": "Jones, Anna", "ti": "Metformin and renal outcomes in type 2 diabetes", "do": "10.1000/bbb", "id": "1"},
+            ])
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("键消歧 1 处", proc.stdout)
+            self.assertIn("键冲突候选 1 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, title, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0][0], "1")
+            self.assertTrue(rows[1][0].startswith("1-"))
+            self.assertEqual([r[2] for r in rows], [None, None])
+            # 重导同一文件幂等（不冲突不重复消歧，行数不变）
+            proc2 = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 2)
+
+    def test_cross_file_key_clash_does_not_overwrite_db_row(self):
+        with tempfile.TemporaryDirectory(prefix="rf_u1cli4_") as tmp:
+            first = Path(tmp) / "a.ris"
+            second = Path(tmp) / "b.ris"
+            db = str(Path(tmp) / "clash.db")
+            _write_ris(first, [{"au": "Wang, Wei", "ti": "Effects of drug X on mortality in women", "py": "2005", "id": "WM1"}])
+            _write_ris(second, [{"au": "Doe, Jane", "ti": "A totally different study on statins", "do": "10.1000/zzz", "id": "WM1"}])
+            self.assertEqual(_run_cli(["import", "--file", str(first), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(second), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute("SELECT zotero_key, title FROM articles ORDER BY import_order").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0][0], "WM1")
+            self.assertTrue(rows[1][0].startswith("WM1-"))
+            self.assertIn("Effects", rows[0][1])  # 库内原行未被覆盖
+
+
+class LivingReviewCandidateTests(unittest.TestCase):
+    def test_fuzzy_goes_to_candidate_list_exact_still_merges(self):
+        with tempfile.TemporaryDirectory(prefix="rf_u1lr_") as tmp:
+            db = str(Path(tmp) / "lr.db")
+            db_mod.init_db(db)
+            db_mod.upsert_articles(db, [
+                _article("WM1", "Effects of drug X on mortality in women",
+                         "Wang, Wei", year=2005),
+            ], [])
+            incoming = [
+                _article("WM2", "Effects of drug X on mortality in men",
+                         "Wang, Wei", year=2006),
+                _article("EX1", "Some existing study", "Kim, Lee", "10.9/ex1"),
+                _article("EX1B", "Some existing study", "Kim, Lee", "10.9/EX1"),
+                _article("NEW1", "Brand new trial on statins", "Park, Su", "10.9/new1"),
+            ]
+            result = process_incremental_articles(
+                db, incoming, "A vs B", "mortality", "12 months", "RR")
+
+            # 精确 DOI 重复仍合并计入 removed；模糊只进候选
+            self.assertEqual(result.duplicates_removed, 1)
+            self.assertEqual(result.pending_candidates, 1)
+            self.assertEqual(result.to_dict()["pending_candidates"], 1)
+            self.assertEqual(
+                sorted(a["zotero_key"] for a in result.new_articles),
+                ["EX1", "NEW1", "WM2"])
+
+            with closing(sqlite3.connect(db)) as conn:
+                arts = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+                reviews = conn.execute(
+                    "SELECT normalized_title, status FROM title_duplicate_reviews").fetchall()
+                members = conn.execute(
+                    "SELECT zotero_key, imported_in_batch FROM title_duplicate_members").fetchall()
+            self.assertEqual(arts, [
+                ("WM1", None), ("WM2", None),
+                ("EX1", None), ("EX1B", "EX1"), ("NEW1", None)])
+            self.assertEqual(len(reviews), 1)
+            self.assertTrue(reviews[0][0].startswith("fuzzy:"))
+            self.assertEqual(reviews[0][1], "pending")
+            self.assertEqual(sorted(members), [("WM1", 0), ("WM2", 1)])
+            self.assertIn("待确认候选：1 组", result.change_report)
+
+
+if __name__ == "__main__":
+    unittest.main()

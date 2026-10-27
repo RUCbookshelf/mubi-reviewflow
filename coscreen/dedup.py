@@ -1,13 +1,23 @@
-"""文献去重 —— 两层去重（精确 DOI/Key + 模糊标题/作者）与传递闭包（见 SPEC.md §4）。
+"""文献去重 —— 两层去重（精确 DOI/Key + 模糊标题/作者候选）与传递闭包（见 SPEC.md §4）。
 
-第 1 层 精确：规范化 DOI 非空且相等，或 zotero_key 相等（保留输入顺序靠前者）。
-第 2 层 模糊：仅对精确层存活且双方 DOI 均为空的条目做 O(n^2) 两两扫描，
-    标题相似度（rapidfuzz.fuzz.token_set_ratio，小写 + 空白折叠形式）>= 90
-    且第一作者（authors 按 ";" 取首段、再按逗号/空白取第一词）fuzz.ratio >= 80。
-传递闭包：A~B、B~C 时 B、C 均指向最终保留的 A（并查集实现，根即保留条目）。
+第 1 层 精确（自动合并仅保留可机器核验的证据，U1-P1/U1-P3，与 Web 导入的
+    受保护核验/人工候选哲学对齐）：
+    a) 规范化 DOI 非空且相等；或
+    b) zotero_key 相等且 DOI/标题不冲突（双方 DOI 均非空时以 DOI 裁决，
+       否则要求标题 token_set_ratio >= 阈值）。
+    键相等但 DOI 不等或标题相似度不足 → key_conflict_pairs 候选（不合并，
+    由 stabilize_conflicting_keys 消歧键后各自入库）。
+第 2 层 模糊（U1-P1/U1-P10）：仅对精确层存活且双方 DOI 均为空的条目做
+    O(n^2) 两两扫描，标题相似度（rapidfuzz.fuzz.token_set_ratio，小写 +
+    空白折叠形式）>= 90 且第一作者门（first_author_surname 相似度 >= 80，
+    任一侧作者缺失则门控不通过）达标。模糊证据只报告 fuzzy_pairs 候选，
+    不再自动合并——由调用方进入人工确认（Web/活体综述候选清单、CLI 打印）。
+传递闭包：A~B、B~C 时 B、C 均指向最终保留的 A（并查集实现，根即保留条目）；
+    仅精确层参与并查集。
 
-比较用规范化在模块内本地实现（小写 + 空白折叠），不依赖 coscreen.normalize，
-以保证无论解析层清洗策略如何变化，去重行为始终确定、可复现。
+比较用规范化统一委托 coscreen.normalize（DOI 走 normalize_doi，与解析层
+存储形态同一口径，U1-P5/U1-P8/U1-P9）；标题/作者的比较形式在 normalize
+中同样是纯函数，行为保持确定、可复现。
 
 复杂度说明：模糊层仍需比较所有可能匹配的候选对，但通过 RapidFuzz 原生批量
 计算和分块控制内存；文献数量不再作为跳过模糊去重的理由。
@@ -15,50 +25,69 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
-import unicodedata
 from collections.abc import Callable
+import unicodedata
 
 from rapidfuzz import fuzz, process
 
 from coscreen import config
 from coscreen.models import Article
+from coscreen.normalize import first_author_surname, normalize_doi
 
 #: 每次交给 RapidFuzz 的标题查询分块行数；分块限制临时矩阵内存，不限制总量。
 FUZZY_CHUNK_SIZE = 64
 
 #: DuplicatePair.method 的合法取值
-METHODS = ("exact_doi", "exact_key", "fuzzy")
+METHODS = ("exact_doi", "exact_key", "fuzzy", "exact_key_conflict")
 
 
 @dataclass
 class DuplicatePair:
-    """一条重复关系：dup_key 指向最终保留条目 kept_key。"""
+    """一条重复/候选关系：dup_key 指向最终保留条目 kept_key。
+
+    kept_index/dup_index 为 find_duplicates 输入列表中的下标（-1 表示未提供，
+    如外部手工构造的配对），供 stabilize_conflicting_keys 重建合并组。
+    method 为 "exact_doi" | "exact_key" | "fuzzy" | "exact_key_conflict"；
+    fuzzy 与 exact_key_conflict 是待人工确认的候选，不是已合并证据。
+    """
 
     kept_key: str
     dup_key: str
-    method: str  # "exact_doi" | "exact_key" | "fuzzy"
+    method: str
+    kept_index: int = -1
+    dup_index: int = -1
 
 
 @dataclass
 class DedupReport:
-    """去重报告：总数、保留数、两层配对清单。
+    """去重报告：总数、保留数、精确合并清单与候选清单。
 
-    note 为兼容报告保留的扩展字段；当前不因输入规模跳过模糊去重。
+    exact_pairs 为已自动合并的证据事件；fuzzy_pairs（标题相似）与
+    key_conflict_pairs（键相等但 DOI/标题冲突）为待人工确认的候选，
+    不参与自动合并。note 为兼容报告保留的扩展字段。
     """
 
     total: int = 0
     unique: int = 0
     exact_pairs: list[DuplicatePair] = field(default_factory=list)
     fuzzy_pairs: list[DuplicatePair] = field(default_factory=list)
+    key_conflict_pairs: list[DuplicatePair] = field(default_factory=list)
     note: str = ""
 
     def n_duplicates(self) -> int:
-        return len(self.exact_pairs) + len(self.fuzzy_pairs)
+        """按记录口径返回重复数（total − unique）。
+
+        事件清单可能对同一条重复双计（同 DOI 且同键的行同时产生
+        exact_doi 与 exact_key 两条事件，U1-P4/U1-P12）；此处以记录数
+        为准，保证 identified − duplicates_removed = screened 可勾稽。
+        """
+        return max(0, self.total - self.unique)
 
 
 # ---------------------------------------------------------------------------
-# 比较用规范化（本地实现，保持确定性）
+# 比较用规范化（委托 coscreen.normalize，保持确定性）
 # ---------------------------------------------------------------------------
 
 def _norm_title(title: str) -> str:
@@ -94,21 +123,36 @@ def find_title_candidate_groups(articles: list[Article]) -> list[list[Article]]:
 
 
 def _norm_doi(doi: str) -> str:
-    """DOI 比较形式：去首尾空白 + 转小写（解析层已做前缀/空白清洗，此处兜底）。"""
-    return doi.strip().lower()
+    """DOI 比较形式：统一走 normalize.normalize_doi（U1-P5/U1-P8/U1-P9）。
+
+    与解析层存储形态同一口径（剥前缀/删不可见字符/NFKC 折叠全角/去尾部
+    标点），未规范化的 DOI 不再同时关闭精确与模糊两条路径。
+    """
+    return normalize_doi(doi or "")
 
 
 def _first_author_token(authors: str) -> str:
-    """第一作者比较形式：按 ";" 取首段，再按逗号/空白取第一词，转小写。
+    """第一作者比较形式：委托 normalize.first_author_surname（U1-P2/U1-P11）。
 
-    例："Smith, John; Lee, Anna" -> "smith"；"Smith J" -> "smith"；"" -> ""。
+    识别 'Last, First' 与 'First Last' 两种顺序、剥离 van/de/der 等助词、
+    机构作者按整串比；空作者返回 ""，由模糊层门控视为不通过。
     """
-    if not authors:
-        return ""
-    head = authors.split(";")[0]
-    for token in head.replace(",", " ").split():
-        return token.lower()
-    return ""
+    return first_author_surname(authors)
+
+
+def _key_merge_confirmed(a: Article, b: Article) -> bool:
+    """键相等时是否允许自动合并（U1-P3）：DOI/标题不得冲突。
+
+    双方规范化 DOI 均非空时以 DOI 裁决（相等才合并）；否则要求标题
+    token_set_ratio >= FUZZY_TITLE_THRESHOLD。与 Web 导入路径对
+    identity_conflict 的判定语义一致：证据不足就不静默合并。
+    """
+    doi_a, doi_b = _norm_doi(a.doi), _norm_doi(b.doi)
+    if doi_a and doi_b:
+        return doi_a == doi_b
+    if not _norm_title(a.title) or not _norm_title(b.title):
+        return False
+    return fuzz.token_set_ratio(_norm_title(a.title), _norm_title(b.title)) >= config.FUZZY_TITLE_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -149,18 +193,23 @@ def find_duplicates(
 ) -> tuple[list[Article], DedupReport]:
     """返回 (去重后保留的 Article 列表, 报告)。不修改输入。
 
-    - DOI 与真实数据库 Key 用于精确匹配；生成的 auto-* 内部键不视为来源标识。
+    - 自动合并仅凭两类可机器核验的证据：规范化 DOI 非空且相等；zotero_key
+      相等且 DOI/标题不冲突。生成的 auto-* 内部键不视为来源标识。
+    - 模糊层证据只进 fuzzy_pairs 候选，不自动合并（U1-P1/U1-P10）；键冲突
+      进 key_conflict_pairs 候选（U1-P3）。二者均需人工确认。
     - 保留条目按输入顺序排列；每组重复只保留输入顺序靠前的首条。
-    - include_fuzzy=False 时只做 DOI/Key 匹配，供标题候选人工核验流程使用。
+    - include_fuzzy=False 时跳过模糊扫描，供精确核验流程使用。
     - progress_callback(stage, completed, total) 用于报告分块匹配进度。
-    - DuplicatePair.kept_key 始终指向最终保留条目（含传递闭包情形）。
+    - DuplicatePair.kept_key 始终指向最终保留条目（含传递闭包情形）；
+      候选对（fuzzy/exact_key_conflict）指向配对中输入顺序靠前的一方。
     """
     n = len(articles)
     uf = _UnionFind(n)
     exact_events: list[tuple[int, int, str]] = []  # (组内代表索引, 重复索引, method)
+    conflict_events: list[tuple[int, int, str]] = []
     fuzzy_events: list[tuple[int, int, str]] = []
 
-    # ---- 第 1 层：精确去重（规范化 DOI 非空相等，或 zotero_key 相等）----
+    # ---- 第 1 层：精确去重（规范化 DOI 非空相等，或键相等且不冲突）----
     doi_first: dict[str, int] = {}
     key_first: dict[str, int] = {}
     for i, art in enumerate(articles):
@@ -179,14 +228,17 @@ def find_duplicates(
             leader = key_first.get(key)
             if leader is None:
                 key_first[key] = i
-            else:
+            elif _key_merge_confirmed(articles[leader], art):
                 uf.union(leader, i)
                 exact_events.append((leader, i, "exact_key"))
+            else:
+                # 键相等但 DOI 不等或标题相似度不足：候选待确认，不合并
+                conflict_events.append((leader, i, "exact_key_conflict"))
 
     if progress_callback:
         progress_callback("exact", n, n)
 
-    # ---- 第 2 层：模糊去重（仅存活条目、双方 DOI 均为空）----
+    # ---- 第 2 层：模糊扫描（仅存活条目、双方 DOI 均为空；只出候选）----
     note = ""
     survivors = [i for i in range(n) if uf.find(i) == i]
     fuzzy_candidates = [
@@ -208,25 +260,26 @@ def find_duplicates(
             for local_i, row in enumerate(scores):
                 i_pos = start + local_i
                 i = fuzzy_candidates[i_pos]
-                # cdist zeroes scores below score_cutoff. Only visit title candidates,
-                # then retain the original input-order union semantics.
+                # cdist zeroes scores below score_cutoff. Only visit title candidates.
                 for local_j in row.nonzero()[0]:
                     j_pos = start + int(local_j)
                     if j_pos <= i_pos:
                         continue
                     j = fuzzy_candidates[j_pos]
-                    if uf.find(i) == uf.find(j):
+                    # 作者门（U1-P2/U1-P11）：任一侧第一作者缺失/不可解析
+                    # 即不通过——缺作者不等于作者相同，双空也不再放行。
+                    if not first_authors[i_pos] or not first_authors[j_pos]:
                         continue
                     if fuzz.ratio(first_authors[i_pos], first_authors[j_pos]) < config.FUZZY_AUTHOR_THRESHOLD:
                         continue
-                    uf.union(i, j)
+                    # 候选待确认（不 union）：写入 fuzzy_events 供人工清单使用
                     fuzzy_events.append((i, j, "fuzzy"))
             if progress_callback:
                 progress_callback("fuzzy", end, total_candidates)
     elif progress_callback:
         progress_callback("fuzzy", total_candidates, total_candidates)
 
-    # ---- 汇总：根节点为保留条目 ----
+    # ---- 汇总：根节点为保留条目（仅精确层合并）----
     kept = [articles[i] for i in range(n) if uf.find(i) == i]
     report = DedupReport(total=n, unique=len(kept), note=note)
 
@@ -235,8 +288,108 @@ def find_duplicates(
             kept_key=articles[uf.find(leader)].zotero_key,
             dup_key=articles[dup].zotero_key,
             method=method,
+            kept_index=leader,
+            dup_index=dup,
         )
 
     report.exact_pairs = [to_pair(leader, dup, m) for leader, dup, m in exact_events]
     report.fuzzy_pairs = [to_pair(leader, dup, m) for leader, dup, m in fuzzy_events]
+    report.key_conflict_pairs = [to_pair(leader, dup, m) for leader, dup, m in conflict_events]
     return kept, report
+
+
+# ---------------------------------------------------------------------------
+# 键消歧（U1-P3/U1-P6）：复用后端 _stabilize_generated_import_keys 的思路
+# ---------------------------------------------------------------------------
+
+def _conflict_suffix_key(key: str, art: Article, occupied: set[str]) -> str:
+    """为冲突键生成确定性后缀键：键 + "-" + sha256(键|稳定内容标识)[:12]。
+
+    稳定内容标识优先用解析器写入的 raw["_fallback_id"]（源文件摘要:行号），
+    否则用 DOI|标题|作者|年份；同一文件重复导入得到同一后缀。
+    """
+    raw = art.raw if isinstance(art.raw, dict) else {}
+    base_id = str(raw.get("_fallback_id") or "").strip()
+    if not base_id:
+        base_id = f"{art.doi}|{art.title}|{art.authors}|{art.year}"
+    suffix = hashlib.sha256(f"{key}|{base_id}".encode("utf-8")).hexdigest()[:12]
+    candidate = f"{key}-{suffix}"
+    serial = 2
+    while candidate in occupied:
+        candidate = f"{key}-{suffix}-{serial}"
+        serial += 1
+    return candidate
+
+
+def stabilize_conflicting_keys(
+    articles: list[Article],
+    pairs: list[DuplicatePair],
+    *,
+    known: list[Article] | None = None,
+) -> list[tuple[str, str]]:
+    """为"键相同但未合并"的条目就地生成消歧键，返回 (旧键, 新键) 列表。
+
+    - 从 pairs 中 method 为 exact_doi/exact_key 的事件按下标重建合并组
+      （fuzzy/exact_key_conflict 候选对不参与组重建，但键会同步刷新）；
+      组代表（输入顺序靠前者）保留原键，同组其余成员随主键 upsert 自然坍缩；
+    - 批内两组同键（即 find_duplicates 报告键冲突的场景）→ 后到组加
+      sha256 后缀；组内与代表同字的成员跟随改为组最终键，避免 upsert
+      时覆盖别的组；
+    - known 给出库内既有条目（CLI 跨批次导入场景）：组键与库内同键条目
+      冲突（DOI 不等且标题相似度不足）才消歧；兼容（DOI 相等或标题相似
+      达标）则保留原键，走 upsert 更新路径——既有库主键不被重写。
+    """
+    n = len(articles)
+    uf = _UnionFind(n)
+    for pair in pairs:
+        if pair.method in ("exact_doi", "exact_key") and 0 <= pair.kept_index < n and 0 <= pair.dup_index < n:
+            uf.union(pair.kept_index, pair.dup_index)
+
+    known_by_key: dict[str, Article] = {}
+    if known:
+        for art in known:
+            known_by_key.setdefault(art.zotero_key, art)
+
+    occupied: dict[str, int] = {}  # 最终键 -> 组根下标
+    final_key: dict[int, str] = {}  # 组根下标 -> 最终键
+    for i, art in enumerate(articles):
+        root = uf.find(i)
+        if root != i:
+            continue  # 仅组代表决定本组键
+        key = art.zotero_key
+        chosen = key
+        db_art = known_by_key.get(key)
+        if db_art is not None and not _key_merge_confirmed(db_art, art):
+            # 与库内同键条目冲突：本批不得占用该键（兼容则保留，走更新）
+            chosen = _conflict_suffix_key(key, art, set(occupied))
+        if chosen in occupied:
+            # 批内先到组已占用同键（键冲突候选的场景）
+            chosen = _conflict_suffix_key(key, art, set(occupied))
+        occupied[chosen] = root
+        final_key[root] = chosen
+
+    renames: list[tuple[str, str]] = []
+    for i, art in enumerate(articles):
+        root = uf.find(i)
+        target = final_key[root]
+        if art.zotero_key == target:
+            continue
+        owner = occupied.get(art.zotero_key)
+        occupied_elsewhere = (
+            (owner is not None and owner != root)
+            # 本条目的字面键是库内既有键、而本组已被消歧：跟随本组最终键，
+            # 否则 upsert 主键会覆盖库内该键的行（跨批次冲突场景）。
+            or (art.zotero_key in known_by_key)
+        )
+        if occupied_elsewhere:
+            renames.append((art.zotero_key, target))
+            art.zotero_key = target
+        # 否则保留自己的键：重复成员单独成行，由 is_duplicate_of 标记
+
+    # 同步全部配对的键（含 fuzzy/exact_key_conflict 候选对）
+    for pair in pairs:
+        if 0 <= pair.kept_index < n:
+            pair.kept_key = articles[uf.find(pair.kept_index)].zotero_key
+        if 0 <= pair.dup_index < n:
+            pair.dup_key = articles[pair.dup_index].zotero_key
+    return renames
