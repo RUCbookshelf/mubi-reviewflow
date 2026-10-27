@@ -376,6 +376,27 @@ def _disambiguation_key(
     return candidate
 
 
+def _is_generated_key_article(art: Article) -> bool:
+    """是否为无来源 Key 的内部生成键（auto-*）记录。
+
+    解析器对无 Key 行写入 raw["_generated_key"]=True；库内旧行以
+    "auto-" 前缀识别（2.1.3 及更早的行没有该 raw 标记）。
+    """
+    raw = art.raw if isinstance(art.raw, dict) else {}
+    return bool(raw.get("_generated_key")) or art.zotero_key.startswith("auto-")
+
+
+def _content_match_key(art: Article) -> tuple[str, str, object]:
+    """内容匹配键（R6-D2 方案2）：规范化标题 + 首作者姓氏 + 年份。"""
+    year = art.year
+    if year is not None:
+        try:
+            year = int(year)
+        except (TypeError, ValueError):
+            year = str(year).strip()
+    return (_norm_title(art.title), _first_author_token(art.authors), year)
+
+
 def stabilize_conflicting_keys(
     articles: list[Article],
     pairs: list[DuplicatePair],
@@ -393,8 +414,10 @@ def stabilize_conflicting_keys(
     - **成员消歧加后缀而非改名为组键**（复审 #9）：被其他组占用或与库内
       同键条目冲突的成员，后缀自己的键成为独立行（由 is_duplicate_of
       标记），不再坍缩到组代表的键上覆盖代表行内容；
-    - 既有库主键永不重写（R1）：与库内同键条目兼容（同一文献）时保留
-      原键走 upsert 更新路径。
+    - **生成键身份连续**（R6-D2 方案2，R1 铁律）：无来源 Key 的记录在
+      入库前按（规范化标题 + 首作者姓氏 + 年份）在库内既有行中匹配
+      （不看键形，DOI 冲突除外），命中沿用库内键走 UPDATE 路径；与库内
+      行同组合并的生成键成员同样沿用库内键。既有库主键永不重写。
     """
     n = len(articles)
     uf = _UnionFind(n)
@@ -406,6 +429,36 @@ def stabilize_conflicting_keys(
     if known:
         for art in known:
             known_by_key.setdefault(art.zotero_key, art)
+    known_ids = {id(art) for art in known or ()}
+
+    # ---- 生成键内容匹配：沿用库内键，保持跨公式版本的身份连续 ----
+    content_index: dict[tuple[str, str, object], str] = {}
+    for key_text, art in known_by_key.items():
+        match_key = _content_match_key(art)
+        if match_key[0]:  # 空标题不参与内容匹配（空标题无区分度）
+            content_index.setdefault(match_key, key_text)
+    key_positions: dict[str, int] = {}
+    for i, art in enumerate(articles):
+        key_positions.setdefault(art.zotero_key, i)
+    for i, art in enumerate(articles):
+        if not _is_generated_key_article(art):
+            continue
+        match_key = _content_match_key(art)
+        target = content_index.get(match_key) if match_key[0] else None
+        if target is None:
+            continue
+        db_art = known_by_key.get(target)
+        if db_art is not None:
+            doi_known, doi_new = _norm_doi(db_art.doi), _norm_doi(art.doi)
+            if doi_known and doi_new and doi_known != doi_new:
+                continue  # DOI 冲突：不同文献，不沿用库内键
+        j = key_positions.get(target)
+        if j is not None and j != i:
+            # 库内行同在本列表（combined 调用形态）：并组，走更新路径
+            uf.union(j, i)
+        elif j is None:
+            # 分离传参形态（known 不在 articles 内）：直接沿用库内键
+            art.zotero_key = target
 
     # ---- 组键决策：保留键全集进占用集 + 确定性后缀 ----
     groups: dict[int, list[int]] = {}
@@ -433,6 +486,14 @@ def stabilize_conflicting_keys(
             if i == root:
                 continue
             art = articles[i]
+            if (_is_generated_key_article(art) and id(articles[root]) in known_ids
+                    and id(art) not in known_ids):
+                # 生成键成员并入**库内行**为根的组（DOI/内容匹配）：沿用
+                # 库内键走更新路径（身份连续，不计入消歧清单）。库内行自身
+                # 绝不改键（R1：既有库主键永不重写）。
+                if final_key[root] != art.zotero_key:
+                    art.zotero_key = final_key[root]
+                continue
             # 以下两种情况必须改名，否则 upsert 主键会覆盖别的行：
             # 1) 本条目的字面键被批内其他合并组占用为保留键；
             # 2) 本条目的字面键在库内（known）对应的是"另一篇文献"（DOI/

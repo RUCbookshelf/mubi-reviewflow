@@ -306,3 +306,95 @@ class StabilizeMemberOverwriteTests(unittest.TestCase):
         self.assertEqual(len(set(keys)), 4)             # 无键坍缩
         self.assertEqual(renames, [("SHARED", arts[3].zotero_key)])
         self.assertTrue(arts[3].zotero_key.startswith("SHARED-"))
+
+# ---------------------------------------------------------------------------
+# R6-D2 方案 2（复审 #8/#15）：2.1.3 公式预置库重导同一文件零新增行（R1）
+# ---------------------------------------------------------------------------
+
+class LegacyAutoKeyReimportTests(unittest.TestCase):
+    """auto-* 键公式变更后，旧库按内容匹配沿用既有键，重导幂等。"""
+
+    @staticmethod
+    def _preset_legacy_db(db: str, articles: list, keys: list) -> None:
+        """按 2.1.3 键形态预置库内行（模拟旧版本入库结果）。"""
+        db_mod.init_db(db)
+        preset = []
+        for art, key in zip(articles, keys):
+            preset.append(Article(
+                zotero_key=key, item_type=art.item_type, title=art.title,
+                authors=art.authors, journal=art.journal, year=art.year,
+                doi=art.doi, abstract=art.abstract, url=art.url,
+                source_format=art.source_format, raw={},
+                content_hash=art.content_hash,
+            ))
+        db_mod.upsert_articles(db, preset, [])
+
+    def test_ris_no_key_no_doi_reimport_zero_new_rows(self):
+        # 复审 #15 实测复现：预置 auto-<sha1(doi|title)> 旧行后重导同一
+        # RIS 曾得到新公式键并"新增 1 条"致同内容两行。
+        with tempfile.TemporaryDirectory(prefix="rf_r6d2a_") as tmp:
+            ris = Path(tmp) / "leg.ris"
+            db = str(Path(tmp) / "leg.db")
+            _write_ris(ris, [
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in women", "py": "2005"},
+                {"au": "Park, Su", "ti": "Brand new trial on statins", "py": "2006"},
+            ])
+            articles = parse_file(ris)
+            legacy_keys = [_legacy_auto_key(a.doi, a.title) for a in articles]
+            self.assertTrue(all(k.startswith("auto-") for k in legacy_keys))
+            self.assertNotEqual(legacy_keys[0], articles[0].zotero_key)  # 公式确已不同
+            self._preset_legacy_db(db, articles, legacy_keys)
+
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)   # R1：零新增行
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles ORDER BY import_order"
+                ).fetchall()
+            self.assertEqual([r[0] for r in rows], legacy_keys)  # 沿用旧键
+            self.assertEqual([r[1] for r in rows], [None, None])
+
+    def test_ris_no_key_with_doi_reimport_zero_new_rows(self):
+        # 带 DOI 的无 Key 记录：exact_doi 并入库内行 + 生成键成员沿用库内键。
+        with tempfile.TemporaryDirectory(prefix="rf_r6d2b_") as tmp:
+            ris = Path(tmp) / "doi.ris"
+            db = str(Path(tmp) / "doi.db")
+            _write_ris(ris, [
+                {"au": "Kim, Lee", "ti": "Title One", "py": "2020", "do": "10.9/t1"},
+                {"au": "Roe, Rae", "ti": "Title Two", "py": "2021", "do": "10.9/t2"},
+            ])
+            articles = parse_file(ris)
+            legacy_keys = [_legacy_auto_key(a.doi, a.title) for a in articles]
+            self._preset_legacy_db(db, articles, legacy_keys)
+
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles").fetchall()
+            self.assertEqual(sorted(r[0] for r in rows), sorted(legacy_keys))
+            self.assertEqual([r[1] for r in rows], [None, None])
+
+    def test_csv_no_key_reimport_zero_new_rows(self):
+        with tempfile.TemporaryDirectory(prefix="rf_r6d2c_") as tmp:
+            csv_path = Path(tmp) / "leg.csv"
+            db = str(Path(tmp) / "leg.db")
+            csv_path.write_text(
+                "Title,Author,Publication Year\n"
+                "Effects of drug X on mortality in women,\"Wang, Wei\",2005\n"
+                "Brand new trial on statins,\"Park, Su\",2006\n",
+                encoding="utf-8",
+            )
+            articles = parse_file(csv_path)
+            legacy_keys = [_legacy_auto_key(a.doi, a.title) for a in articles]
+            self._preset_legacy_db(db, articles, legacy_keys)
+
+            proc = _run_cli(["import", "--file", str(csv_path), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                keys = {r[0] for r in conn.execute("SELECT zotero_key FROM articles")}
+            self.assertEqual(keys, set(legacy_keys))
+
