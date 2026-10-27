@@ -297,10 +297,14 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
             if did in values:
                 value = coding._normalize_value(dim, values[did])
                 old = before['values'][str(did)]
-                conn.execute('INSERT INTO coding_values(dimension_id,zotero_key,value,updated_at) VALUES(?,?,?,?) ON CONFLICT(dimension_id,zotero_key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
-                             (did, key, value, coding._now()))
-                trace.capture_event(conn, context, stage='coding', action='coding_value_changed' if old else 'coding_value_created',
-                    subject_id=key, before={'value': old[0] if old else ''}, after={'value': value}, field=field)
+                # 幂等保存（R6-U2/#23）：业务值与库内一致时不刷新 updated_at、
+                # 不产生 trace 事件——同值重存只动时间戳，会使既有 screen/
+                # fulltext 撤销条目被守卫误报"下游已变更"。
+                if old is None or value != old[0]:
+                    conn.execute('INSERT INTO coding_values(dimension_id,zotero_key,value,updated_at) VALUES(?,?,?,?) ON CONFLICT(dimension_id,zotero_key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                                 (did, key, value, coding._now()))
+                    trace.capture_event(conn, context, stage='coding', action='coding_value_changed' if old else 'coding_value_created',
+                        subject_id=key, before={'value': old[0] if old else ''}, after={'value': value}, field=field)
             if did not in notes and did not in evidence:
                 continue
             if did in notes and (not isinstance(notes[did], str) or len(notes[did]) > 100000):
@@ -308,12 +312,23 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
             old_note = before['evidence'][str(did)]['note']
             text = notes.get(did, old_note[3] if old_note else '')
             now = coding._now()
-            conn.execute('INSERT INTO coding_notes(dimension_id,zotero_key,text,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(dimension_id,zotero_key) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at', (did, key, text, now, now))
-            nid = conn.execute('SELECT id FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (did, key)).fetchone()[0]
-            if did in notes:
+            # 同口径幂等（R6-U2/#23）：备注文本未变化时不刷新 updated_at——
+            # 时间戳是守卫摘要的一部分（见 workspace_undo._evidence_digest），
+            # 同值重存不得使其漂移。
+            note_changed = did in notes and (old_note is None or text != old_note[3])
+            if note_changed:
+                conn.execute('INSERT INTO coding_notes(dimension_id,zotero_key,text,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(dimension_id,zotero_key) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at', (did, key, text, now, now))
                 trace.capture_event(conn, context, stage='coding', action='coding_note_changed' if old_note else 'coding_note_created',
                     subject_id=key, before={'text': old_note[3] if old_note else ''}, after={'text': text}, field=field)
             if did in evidence:
+                row = conn.execute('SELECT id FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (did, key)).fetchone()
+                if row is None:
+                    # evidence-only 首次保存且无备注行：补一行承载图片（不改变
+                    # 既有行为——旧代码同样会先建行）。
+                    conn.execute('INSERT INTO coding_notes(dimension_id,zotero_key,text,created_at,updated_at) VALUES(?,?,?,?,?)',
+                                 (did, key, text, now, now))
+                    row = conn.execute('SELECT id FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (did, key)).fetchone()
+                nid = row[0]
                 intent = evidence[did]
                 existing = {r[0]: r for r in conn.execute('SELECT id,sha256 FROM coding_note_images WHERE note_id=?', (nid,))}
                 keep = set(intent.get('keep_image_ids', []))

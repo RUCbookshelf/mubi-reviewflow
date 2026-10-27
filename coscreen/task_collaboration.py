@@ -37,6 +37,16 @@ class OwnerUnavailableError(RuntimeError):
     为 503（可重试）而不是放行或 409 迁移提示。
     """
 
+
+class CollaborationStoreCorruptError(OwnerUnavailableError):
+    """协作库文件存在但不是可读的 SQLite 库（永久损坏，重试无益）。
+
+    典型成因：collaboration.db 被截断/写坏/被非 SQLite 内容覆盖。与锁超时
+    等**暂时性** OwnerUnavailableError 区分：HTTP 层在 desktop 模式下映射为
+    409 并给出修复指引（备份后删除或改名该文件即可重建），server 模式维持
+    fail-closed（503/409 均不放行）。
+    """
+
 _ACTION_ROLES = {
     "coding:submit": "coder",
     "coding:read_all": "reconciler",
@@ -227,6 +237,13 @@ def get_owner(
     except ValueError:
         # 无属主行 / task_id 不匹配 / 表未初始化 -> legacy。
         return None
+    except sqlite3.OperationalError as exc:
+        # 锁超时/忙 等**暂时性**失败：可重试语义（503）。
+        raise OwnerUnavailableError(f"task owner lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        # "file is not a database" / "database disk image is malformed" 等
+        # **永久损坏**：重试无益，需人工修库（删除/改名 collaboration.db）。
+        raise CollaborationStoreCorruptError(f"task collaboration store is unreadable: {exc}") from exc
     except (OSError, sqlite3.Error) as exc:
         raise OwnerUnavailableError(f"task owner lookup failed: {exc}") from exc
 
@@ -246,7 +263,14 @@ def is_owner(
 def is_participant(
     store: str | Path, user_id: int, *, task_id: str | None = None
 ) -> bool:
-    """Owner or holder of any granted role (coder/reconciler); False for legacy/unowned."""
+    """Owner or holder of any granted role (coder/reconciler); False for legacy/unowned.
+
+    异常口径与 get_owner 对齐（#36/R6-C6）：只有"确无属主/角色"（无属主行、
+    task_id 绑定不匹配、库未初始化/不存在）返回 False；锁超时/读失败抛
+    OwnerUnavailableError（HTTP 层 503 重试语义）、库永久损坏抛
+    CollaborationStoreCorruptError——读取失败不得折叠成"不是参与者"（403），
+    那会把可重试/可修复的故障误报成权限拒绝。
+    """
     user_id = _user_id(user_id)
     try:
         with closing(_connect(Path(store), read_only=True)) as conn:
@@ -258,8 +282,17 @@ def is_participant(
                 (user_id,),
             ).fetchone()
             return row is not None
-    except (OSError, sqlite3.Error, ValueError):
-        return False
+    except FileNotFoundError:
+        return False  # 库不存在 = legacy：确无参与者角色
+    except ValueError:
+        return False  # 无属主行 / 绑定不匹配 / 表未初始化：确无角色
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"participant lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"participant lookup failed: {exc}") from exc
 
 
 def grant_role(

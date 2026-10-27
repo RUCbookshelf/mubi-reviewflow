@@ -46,6 +46,11 @@ class WorkflowRuntime:
 
     def context(self, task_id: str, user: dict) -> WorkflowContext:
         info = self.task_lookup(task_id)
+        # R6-C3/#35：锁与权限键统一规范 task_id——find_task 会把尾点别名解析到
+        # 同一物理任务（Windows 'T.' 与 'T' 同目录），但字符串 id 不同会把
+        # get_owner 判成 legacy（owner paused 守卫被绕过）、锁分键（写互斥失效）。
+        # 对外路径不再以原始字符串作为权限/锁键；find_task 本身保留别名解析。
+        task_id = info.task_id
         if not self.visible(info, user):
             raise HTTPException(403, "Task access denied.")
         collab = task_collaboration.shared_store_path(info.dir)
@@ -78,6 +83,7 @@ class WorkflowRuntime:
             conn.execute("UPDATE workflow_state SET team_latched=1 WHERE singleton=1 AND team_latched=0")
 
     def latch_team(self, task_id: str, user: dict) -> None:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             # context discovers only non-owner grants; a self-grant must not
             # change the task kind. Call before revoking an existing grant.
@@ -118,6 +124,7 @@ class WorkflowRuntime:
 
     @contextmanager
     def schema_guard(self, task_id: str, user: dict, db: Path):
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if ctx.actor_db.resolve() != db.resolve():
@@ -126,12 +133,15 @@ class WorkflowRuntime:
             yield ctx
             coding_evidence.ensure_fields(db)
             if before != coding_evidence.field_rows(db):
-                if not ctx.can_manage:
-                    # U4-P3：成员编辑的是自己的私有 coding scheme，其他参与者
-                    # 既不可见也不依赖它——不 bump owner 库 workflow_state.version
-                    # （那是 owner 的全局乐观锁），也不向全员广播 coding-scheme，
-                    # 避免一名成员反复让全员的后续写请求 409。owner 版本只由
-                    # owner 级写操作推进（owner 改方案仍 bump+广播，成员需重映射）。
+                if not ctx.can_manage and ctx.owner is not None:
+                    # U4-P3：**团队**成员编辑的是自己的私有 coding scheme，其他
+                    # 参与者既不可见也不依赖它——不 bump owner 库 workflow_state
+                    # .version（那是 owner 的全局乐观锁），也不向全员广播
+                    # coding-scheme，避免一名成员反复让全员的后续写请求 409。
+                    # owner 版本只由 owner 级写操作推进。
+                    # legacy（owner=None）单机任务不属该口径（#33）：actor 即
+                    # 唯一用户，方案编辑恢复 bump（修复前行为），版本随方案
+                    # 变化推进、依赖版本号的写互斥保持有效。
                     return
                 with closing(store.connect(ctx.owner_db)) as conn, conn:
                     self.bump_version(conn)
@@ -149,6 +159,7 @@ class WorkflowRuntime:
     def trace_actions(self, task_id: str, user: dict, events: list[dict]) -> None:
         from coscreen import workspace_undo
         from coscreen.research_trace import TraceContext
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键/journal 查询用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             context = TraceContext(task_id=task_id, actor_id=user['user_id'])
@@ -382,6 +393,9 @@ class WorkflowRuntime:
                     expected_version: int | None = None, *, canonical_only: bool = False):
         if stage not in store.STAGES:
             raise HTTPException(400, "Unknown workflow stage.")
+        # R6-C3/#22：任务锁键统一规范 task_id（尾点别名与规范 id 互斥），
+        # 与撤销/保存路径持同一把锁。
+        task_id = self.task_lookup(task_id).task_id
         # Same-process RLock is held through the caller's actual save/commit. It
         # complements SQLite transactions and the preexisting task file lock.
         with self.lock(task_id):
@@ -414,6 +428,7 @@ class WorkflowRuntime:
 
     def queue(self, task_id: str, user: dict, stage: str, source_id: str | None = None,
               order: str = "import", *, shuffle: bool = False) -> dict:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             self.sync_catalog(ctx)
@@ -458,6 +473,7 @@ class WorkflowRuntime:
                     "paused": state["stages"][stage]["mode"] == "paused"}
 
     def submission_evidence_queue(self, task_id: str, user: dict, source_id: str | None = None) -> dict:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if not self.can_submit_coding(ctx):
@@ -483,6 +499,7 @@ class WorkflowRuntime:
                     'submission_evidence': self.submission_evidence_capability(ctx)}
 
     def work_item(self, task_id: str, user: dict, stage: str, key: str, *, submission_evidence: bool = False) -> dict:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if submission_evidence and (stage != 'coding' or not self.can_submit_coding(ctx)):
