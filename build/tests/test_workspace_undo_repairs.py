@@ -373,6 +373,115 @@ class UndoRepairTests(unittest.TestCase):
             remaining = conn.execute('SELECT COUNT(*) FROM workflow_evidence_uploads').fetchone()[0]
         self.assertEqual(remaining, 1)  # 仍被 coding_note_images 引用，永不回收
 
+    # ------------------------------------------------------------------
+    # 评审回归 U3-P3：choice 维度（options 必为非空列表）——_definition_view
+    # 非幂等曾使第二次归一化抛 TypeError，正式 API 只捕获 ValueError 会 500。
+    # ------------------------------------------------------------------
+    def test_choice_dimension_undo_after_direct_save(self):
+        dim = coding.add_dimension(self.db, '选择字段', 'choice', ['A', 'B'])
+        coding.save_coding_value(self.db, dim, 'K1', 'A', trace_context=self.ctx())
+        entry = self.latest_entry('coding')
+        result = workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
+        self.assertTrue(result['undone'])
+        with closing(_connect(self.db)) as conn:
+            self.assertIsNone(conn.execute(
+                'SELECT 1 FROM coding_values WHERE zotero_key=? AND dimension_id=?', ('K1', dim)).fetchone())
+
+    def test_choice_dimension_undo_after_form_save(self):
+        dim = coding.add_dimension(self.db, '选择字段', 'choice', ['A', 'B'])
+        coding_evidence.save_form(self.db, 'K1', {dim: 'A'}, notes={dim: 'n'}, evidence=None,
+                                  trace_context=self.ctx())
+        entry = self.latest_entry('coding')
+        result = workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
+        self.assertTrue(result['undone'])
+        with closing(_connect(self.db)) as conn:
+            self.assertIsNone(conn.execute(
+                'SELECT 1 FROM coding_values WHERE zotero_key=? AND dimension_id=?', ('K1', dim)).fetchone())
+
+    def test_choice_dimension_section_edit_undo(self):
+        dim = coding.add_dimension(self.db, '选择字段', 'choice', ['A', 'B'])
+        coding.save_coding_value(self.db, dim, 'K1', 'A', trace_context=self.ctx())
+        entry = self.latest_entry('coding')
+        coding.update_dimension(self.db, dim, section='新分组', position=7, trace_context=self.ctx())
+        result = workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
+        self.assertTrue(result['undone'])
+
+    def test_choice_dimension_description_edit_blocks_without_crash(self):
+        dim = coding.add_dimension(self.db, '选择字段', 'choice', ['A', 'B'])
+        coding.save_coding_value(self.db, dim, 'K1', 'A', trace_context=self.ctx())
+        entry = self.latest_entry('coding')
+        coding.update_dimension(self.db, dim, description='新说明', trace_context=self.ctx())
+        with self.assertRaises(ValueError) as caught:
+            workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
+        self.assertIn('downstream work has changed', str(caught.exception))
+
+    def test_legacy_fullrow_journal_with_choice_dimension(self):
+        """旧版整行 definitions 快照（SELECT * 含 options_json 字符串）不崩溃。"""
+        dim = coding.add_dimension(self.db, '选择字段', 'choice', ['A', 'B'])
+        coding.save_coding_value(self.db, dim, 'K1', 'A')  # 不带轨迹：不产生新条目
+        with closing(_connect(self.db)) as conn, conn:
+            workspace_undo.begin_save(conn)
+            after = workspace_undo.snapshot(conn, 'coding', 'K1', [dim], evidence=True)
+            full = list(conn.execute('SELECT * FROM coding_dimensions WHERE id=?', (dim,)).fetchone())
+            self.assertEqual(len(full), 10)  # 旧整行形态（含布局列）
+            before = json.loads(json.dumps(after))
+            before['values'][str(dim)] = None
+            for doc in (before, after):
+                doc['definitions'] = {str(dim): full}
+            conn.execute(
+                'INSERT INTO workspace_undo(task_id,actor_id,stage,zotero_key,before_json,after_json,request_id) '
+                'VALUES(?,?,?,?,?,?,?)',
+                (TASK, str(ACTOR), 'coding', 'K1', json.dumps(before, ensure_ascii=False),
+                 json.dumps(after, ensure_ascii=False), None))
+            self.assertTrue(workspace_undo.snapshot_matches(conn, 'coding', 'K1', before, after))
+            entry = conn.execute(
+                'SELECT id FROM workspace_undo WHERE stage=? ORDER BY id DESC LIMIT 1', ('coding',)).fetchone()[0]
+        result = workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)
+        self.assertTrue(result['undone'])
+        with closing(_connect(self.db)) as conn:
+            self.assertIsNone(conn.execute(
+                'SELECT 1 FROM coding_values WHERE zotero_key=? AND dimension_id=?', ('K1', dim)).fetchone())
+
+    # ------------------------------------------------------------------
+    # 评审收口 U3-P5：superseded 条目不参与 latest/状态接口/trace_actions
+    # （can_undo 只在 latest['entry_id']==operation[0] 时为 True，
+    #  review_workflow_api.py:199-201 即调用 _latest）。
+    # ------------------------------------------------------------------
+    def test_latest_is_none_after_undoing_whole_active_window(self):
+        for i in range(55):
+            articles_db.save_decision(self.db, 'K1', 'include', notes=f'n{i}', trace_context=self.ctx())
+        self.assertEqual(workspace_undo.latest(self.db, self.ctx(), 'screen')['entry_id'], 55)
+        for _ in range(50):  # 撤销全部 50 条活动条目
+            entry = workspace_undo.latest(self.db, self.ctx(), 'screen')['entry_id']
+            self.assertGreaterEqual(entry, 6)  # 中途 latest 绝不指向 superseded（1-5）
+            workspace_undo.undo(self.db, self.ctx(source='undo'), 'screen', entry)
+        # 状态接口路径：不再提供可撤销条目（修复前会回退指向 superseded 第 5 条）
+        self.assertIsNone(workspace_undo.latest(self.db, self.ctx(), 'screen'))
+        # trace_actions 路径：同一 _latest，经只读连接（mode=ro，无自愈）
+        from coscreen import review_workflow as workflow_store
+        with closing(workflow_store.connect(self.db, read_only=True)) as conn:
+            self.assertIsNone(workspace_undo._latest(conn, self.ctx(), 'screen'))
+
+    def test_latest_falls_back_on_legacy_db_without_superseded_column(self):
+        """旧库 workspace_undo 缺 superseded 列：只读连接（trace_actions 路径）
+        按 PRAGMA 探测回退为不过滤，不抛 no such column。"""
+        legacy = self.root / 'legacy.db'
+        articles_db.init_db(legacy)
+        with closing(_connect(legacy)) as conn, conn:
+            conn.execute(
+                'CREATE TABLE workspace_undo (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, '
+                'actor_id TEXT NOT NULL, stage TEXT NOT NULL, zotero_key TEXT NOT NULL, before_json TEXT NOT NULL, '
+                'after_json TEXT NOT NULL, undone INTEGER NOT NULL DEFAULT 0, request_id TEXT)')
+            conn.execute(
+                'INSERT INTO workspace_undo(task_id,actor_id,stage,zotero_key,before_json,after_json) '
+                "VALUES(?,?,?,?,?,'{}')", (TASK, str(ACTOR), 'coding', 'K1', '{}'))
+        from coscreen import review_workflow as workflow_store
+        with closing(workflow_store.connect(legacy, read_only=True)) as conn:
+            found = workspace_undo._latest(conn, self.ctx(), 'coding')
+        self.assertIsNotNone(found)
+        self.assertEqual(found['entry_id'], 1)
+        self.assertIsNotNone(workspace_undo.latest(legacy, self.ctx(), 'coding'))
+
 
 if __name__ == '__main__':
     unittest.main()

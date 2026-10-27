@@ -139,15 +139,22 @@ def _definition_view(row):
     """维度定义的语义键集视图：name/dtype/options/multi_select/unit/description。
 
     兼容历史整行快照（``SELECT *`` 含 section/position/created_at 布局列）；
-    布局编辑不改变已保存值/备注的语义，不参与守卫比较（U3-P3）。"""
+    布局编辑不改变已保存值/备注的语义，不参与守卫比较（U3-P3）。幂等：
+    snapshot() 落库前与 _guard_state() 比较前都会经过本函数，对已是语义
+    视图（options 为列表）的行不再重复解析（choice 维度 options 必非空，
+    json.loads(列表) 会抛 TypeError）。"""
     from coscreen.coding import _DIM_COLUMNS
     if not isinstance(row, list):
         return row
     columns = (_DIM_COLUMNS if len(row) == len(_DIM_COLUMNS) else _SEMANTIC_DEFINITION_COLUMNS)
     dim = dict(zip(columns, row))
-    try:
-        options = json.loads(dim.get('options_json') or '[]')
-    except ValueError:
+    options = dim.get('options_json')
+    if isinstance(options, str):
+        try:
+            options = json.loads(options or '[]')
+        except ValueError:
+            options = []
+    if not isinstance(options, list):
         options = []
     return [dim.get('name') or '', dim.get('dtype') or 'text', [str(o) for o in options],
             bool(dim.get('multi_select')), dim.get('unit') or '', dim.get('description') or '']
@@ -228,9 +235,14 @@ def snapshot_matches(conn: sqlite3.Connection, stage: str, key: str, before: dic
 def _latest(conn: sqlite3.Connection, context: TraceContext, stage: str) -> dict | None:
     if not _exists(conn):
         return None
+    # superseded 条目不再参与比较/恢复（U3-P5）。latest()/状态接口/trace_actions
+    # 走只读连接、不经过 begin_save 自愈：旧库缺列时按 PRAGMA 探测回退为不过滤
+    # （旧库既有行均视为未 superseded，回退语义安全）。
+    columns = {r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
+    superseded = 'AND superseded=0 ' if 'superseded' in columns else ''
     row = conn.execute(
-        "SELECT id,zotero_key,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? AND stage=? "
-        "AND undone=0 ORDER BY id DESC LIMIT 1", (context.task_id, str(context.actor_id), stage),
+        f"SELECT id,zotero_key,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? AND stage=? "
+        f"AND undone=0 {superseded}ORDER BY id DESC LIMIT 1", (context.task_id, str(context.actor_id), stage),
     ).fetchone()
     if not row:
         return None
