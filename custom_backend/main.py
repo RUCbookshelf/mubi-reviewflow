@@ -1604,7 +1604,10 @@ def _exact_duplicate_metrics(report, incoming_keys: set | None = None,
         if previous_report is not None else 0
     )
     return {
-        "exact_match_hits": len(hits),
+        # U1-P12：按记录去重计数（distinct dup_key）——同 DOI 且同键的一对
+        # 重复行产生 exact_doi+exact_key 两条事件但只有 1 条记录，与
+        # exact_duplicate_excess（total-unique 口径）一致，不再翻倍。
+        "exact_match_hits": len({p.dup_key for p in hits}),
         "exact_duplicate_groups": len(groups),
         "exact_duplicate_excess": max(
             0, report.total - report.unique - previous_excess

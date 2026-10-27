@@ -341,7 +341,10 @@ class ImportRuntime:
             incoming_keys = {a.zotero_key for a in legacy['incoming']}
             hits = [pair for pair in metric_report.exact_pairs if batch or pair.dup_key in incoming_keys]
             previous_excess = 0 if batch else legacy['previous'].total - legacy['previous'].unique
-            result.update(exact_match_hits=len(hits), exact_duplicate_groups=len({pair.kept_key for pair in hits}),
+            # U1-P12：exact_match_hits 按记录去重（distinct dup_key），与
+            # 行口径（:327 exact_rows）及 total-unique 口径一致，不再按
+            # 事件计数翻倍。
+            result.update(exact_match_hits=len({pair.dup_key for pair in hits}), exact_duplicate_groups=len({pair.kept_key for pair in hits}),
                           exact_duplicate_excess=max(0, metric_report.total-metric_report.unique-previous_excess),
                           fuzzy_candidate_excess=sum(pair.dup_key in incoming_keys for pair in legacy['fuzzy'].fuzzy_pairs),
                           title_candidate_groups_including_exact=len(legacy['all_title_groups']),

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from coscreen import db as articles_db, review_workflow as workflow
-from coscreen.dedup import _norm_doi, find_duplicates
+from coscreen.dedup import _key_merge_confirmed, _norm_doi, find_duplicates
 from coscreen.models import Article
 
 MIGRATION_VERSION = 2
@@ -196,14 +196,17 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
             conflicting = False
             if key_row:
                 key_refs.add(('active', canonical(conn, key)))
-                old_doi = _norm_doi(key_row['doi'])
-                conflicting = bool(doi and old_doi and doi != old_doi)
+                # U1-P3（web）：同键链接前校验 DOI/标题冲突，与去重层
+                # _key_merge_confirmed 同一谓词——双方 DOI 均非空以 DOI
+                # 裁决；否则标题 token_set_ratio<90 即冲突。DOI 均为空的
+                # 同键不同文献不再静默走 exact_key，改报 identity_conflict。
+                conflicting = not _key_merge_confirmed(Article.from_dict(key_row), art)
             # Inspect every retained external-key alias before taking a DOI
             # shortcut. An alias may already point at an active canonical row
             # whose physical key differs from the uploaded source key.
             for prior_row in key_priors:
-                old_doi = _norm_doi(json.loads(prior_row['article_json']).get('doi'))
-                conflicting = conflicting or bool(doi and old_doi and doi != old_doi)
+                conflicting = conflicting or not _key_merge_confirmed(
+                    Article.from_dict(json.loads(prior_row['article_json'])), art)
                 prior_key, prior_root = record_target(conn, prior_row['id'])
                 key_refs.add(('active', prior_key) if prior_key else ('record', prior_root))
             prior = pending_dois.get(doi) if doi else None
