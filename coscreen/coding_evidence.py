@@ -72,7 +72,11 @@ def field_rows(db: str | Path) -> list[dict]:
 def current_owner_db(db: str | Path) -> Path:
     from coscreen import task_collaboration, tasks
     path = Path(db)
-    owner = task_collaboration.get_owner(task_collaboration.shared_store_path(path.parent))
+    # U4-P8：get_owner 必传 task_id（任务目录名），使属主-任务绑定校验与
+    # review_workflow_api.context 同口径：库文件被错拷/恢复到错误任务目录时
+    # 不再把数据路径重定向到 owner 的个人库，而是回退原路径。
+    owner = task_collaboration.get_owner(
+        task_collaboration.shared_store_path(path.parent), task_id=path.parent.name)
     candidate = path.parent / (tasks.slugify_screener(owner['owner_username']) + '.db') if owner else path
     return candidate if candidate.is_file() else path
 

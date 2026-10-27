@@ -3,10 +3,20 @@
 The host creates this store once when creating a new task, using the
 authenticated user's ID. Ordinary access checks never create or claim a store,
 so existing tasks remain unowned until an explicit migration path is chosen.
+
+Legacy（无属主记录）任务的处理口径（2.1.4 披露）：
+- server 模式：legacy 任务在列表中不可见，改名/归档/删除等管理操作与
+  协作/仲裁写一律 409 fail-closed（error_code=collaboration_owner_unset，
+  需先完成属主迁移），与协作管理端点口径一致；
+- desktop 模式：单机安装维持历史行为（legacy 任务对本机可见、可管理），
+  属有意保留的向后兼容，不构成多用户安全边界；
+- 属主解析异常（锁超时/读失败/库损坏）不再折叠成“无 owner=legacy”，
+  而是抛 OwnerUnavailableError（HTTP 层映射 503 重试语义）。
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -15,6 +25,17 @@ from typing import Iterator
 
 DB_FILENAME = "collaboration.db"
 ROLES = frozenset({"coder", "reconciler"})
+
+logger = logging.getLogger(__name__)
+
+
+class OwnerUnavailableError(RuntimeError):
+    """Owner lookup could not be completed (lock timeout / read failure).
+
+    与“无属主记录的 legacy 任务”（get_owner 返回 None）不同：这是暂时或
+    需人工介入的读取失败，调用方不得把它当成 legacy 处理；HTTP 层应映射
+    为 503（可重试）而不是放行或 409 迁移提示。
+    """
 
 _ACTION_ROLES = {
     "coding:submit": "coder",
@@ -161,13 +182,18 @@ def initialize_task_store(
 
 
 def _owner(conn: sqlite3.Connection, task_id: str | None) -> sqlite3.Row:
-    try:
-        row = conn.execute(
-            "SELECT task_id, owner_user_id, owner_username, created_at "
-            "FROM collaboration_task WHERE singleton=1"
-        ).fetchone()
-    except sqlite3.OperationalError as exc:
-        raise ValueError("task has no registered collaboration owner") from exc
+    # 先判表存在再查询：把“库未初始化（无 collaboration_task 表）”归为
+    # legacy（ValueError），而锁超时/读失败（OperationalError 等）原样上抛，
+    # 由调用方决定是 fail-closed 布尔、还是 OwnerUnavailableError。
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_task'"
+    ).fetchone()
+    if has_table is None:
+        raise ValueError("task has no registered collaboration owner")
+    row = conn.execute(
+        "SELECT task_id, owner_user_id, owner_username, created_at "
+        "FROM collaboration_task WHERE singleton=1"
+    ).fetchone()
     if row is None or (task_id is not None and row["task_id"] != _task_id(task_id)):
         raise ValueError("task has no registered collaboration owner")
     return row
@@ -176,7 +202,16 @@ def _owner(conn: sqlite3.Connection, task_id: str | None) -> sqlite3.Row:
 def get_owner(
     store: str | Path, *, task_id: str | None = None
 ) -> dict[str, object] | None:
-    """Return registered owner identity; legacy/uninitialized tasks return None."""
+    """Return registered owner identity; legacy/uninitialized tasks return None.
+
+    ``task_id`` 现为必传语义：属主-任务绑定校验不可静默跳过。参数保留
+    ``None`` 默认仅为签名兼容——不传时绑定无法核实，直接按不可确认属主
+    处理（返回 None，fail-closed），不再退化为“跳过绑定校验”的旧默认。
+    读取失败（锁超时/IO/库损坏）抛 OwnerUnavailableError（503 重试语义），
+    不折叠成“无 owner=legacy”。
+    """
+    if task_id is None:
+        return None
     try:
         with closing(_connect(Path(store), read_only=True)) as conn:
             row = _owner(conn, task_id)
@@ -186,8 +221,14 @@ def get_owner(
                 "owner_username": row["owner_username"],
                 "created_at": row["created_at"],
             }
-    except (OSError, sqlite3.Error, ValueError):
+    except FileNotFoundError:
+        # 库文件不存在 = 任务从未启用协作机制 -> legacy。
         return None
+    except ValueError:
+        # 无属主行 / task_id 不匹配 / 表未初始化 -> legacy。
+        return None
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"task owner lookup failed: {exc}") from exc
 
 
 def is_owner(
@@ -302,16 +343,27 @@ def list_role_grants(
 def list_participant_ids(
     store: str | Path, *, actor_user_id: int, task_id: str
 ) -> list[int]:
-    """Return task member IDs only to a member of a verified task."""
+    """Return task member IDs only to a member of a verified task.
+
+    异常契约与同文件其他公开函数对齐：store 未初始化/读失败/task_id 不
+    匹配（OSError/sqlite3.Error/ValueError）按“无参与者”降级处理并记日志
+    （notify/team_progress 不再 500）；非参与者仍抛 PermissionError。
+    """
     actor_user_id = _user_id(actor_user_id, "actor_user_id")
-    with closing(_connect(Path(store), read_only=True)) as conn:
-        owner = _owner(conn, task_id)
-        ids = {int(owner["owner_user_id"])}
-        ids.update(int(row[0]) for row in conn.execute(
-            "SELECT DISTINCT user_id FROM collaboration_role_grants"))
-        if actor_user_id not in ids:
-            raise PermissionError("task membership required")
-        return sorted(ids)
+    try:
+        with closing(_connect(Path(store), read_only=True)) as conn:
+            owner = _owner(conn, task_id)
+            ids = {int(owner["owner_user_id"])}
+            ids.update(int(row[0]) for row in conn.execute(
+                "SELECT DISTINCT user_id FROM collaboration_role_grants"))
+            if actor_user_id not in ids:
+                raise PermissionError("task membership required")
+            return sorted(ids)
+    except PermissionError:
+        raise
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.warning("list_participant_ids degraded to no participants: %s", exc)
+        return []
 
 
 def authorize_action(

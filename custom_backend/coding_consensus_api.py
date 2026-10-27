@@ -90,6 +90,21 @@ def register_coding_consensus_routes(
             raise HTTPException(401, "Authenticated user ID is missing.")
         return info, store_path(info), user["user_id"]
 
+    def guarded_consensus_write(task_id: str, info, user: dict, action: str, write: Callable[[], Any]):
+        """consensus/freeze 写路径的授权复查（U4-P5，对齐 rater 路径 write_guard 模式）。
+
+        撤销端点（roles DELETE）在同一把 ``review_workflow.lock`` 内完成撤销；
+        本路径在写前于同一把锁内复查 ``authorize_task``，使“授权读 -> 写入”
+        与“撤销”串行化：context() 首次授权读之后被撤销的角色，写入被 403 拒绝。
+        存储函数（append_consensus_record/freeze_consensus）自持连接并自行
+        BEGIN IMMEDIATE，外层再持独立写事务会与存储写自锁，故按 rater 记录
+        路径的同款进程内任务锁 + 锁内复查实现。
+        """
+        with app.state.review_workflow.lock(task_id):
+            if authorize_task(info, user, action) is not True:
+                raise HTTPException(403, "Task access denied.")
+            return write()
+
     @app.post("/api/tasks/{task_id}/coding/records", status_code=201, dependencies=[Depends(_body_within_limit)])
     def append_rater_record(task_id: str, body: RaterRecordIn, user: dict = Depends(require_user)):
         info, path, actor_id = context(task_id, user, "coding:submit", body.item_key, body.field_key)
@@ -159,12 +174,15 @@ def register_coding_consensus_routes(
         if validate_value and not isinstance(field, dict):
             raise HTTPException(400, "Value does not match the canonical coding field.")
         try:
-            return coding_consensus.append_consensus_record(
-                path, item_key=body.item_key, field_key=body.field_key,
-                reconciler_id=actor_id, value=body.value,
-                source={**body.source, "_reviewflow_field": field} if field else body.source,
-                rationale=body.rationale, rater_record_ids=body.rater_record_ids,
-            )
+            # U4-P5：写前在任务锁内复查授权，撤销后落地被拒。
+            return guarded_consensus_write(
+                task_id, info, user, "consensus:write",
+                lambda: coding_consensus.append_consensus_record(
+                    path, item_key=body.item_key, field_key=body.field_key,
+                    reconciler_id=actor_id, value=body.value,
+                    source={**body.source, "_reviewflow_field": field} if field else body.source,
+                    rationale=body.rationale, rater_record_ids=body.rater_record_ids,
+                ))
         except ValueError as exc:
             raise bad(str(exc)) from exc
 
@@ -182,9 +200,12 @@ def register_coding_consensus_routes(
     def freeze(task_id: str, body: FreezeIn, user: dict = Depends(require_user)):
         info, path, actor_id = context(task_id, user, "consensus:freeze")
         try:
-            return coding_consensus.freeze_consensus(
-                path, name=body.name, frozen_by=actor_id, consensus_ids=body.consensus_ids
-            )
+            # U4-P5：写前在任务锁内复查授权，撤销后冻结被拒。
+            return guarded_consensus_write(
+                task_id, info, user, "consensus:freeze",
+                lambda: coding_consensus.freeze_consensus(
+                    path, name=body.name, frozen_by=actor_id, consensus_ids=body.consensus_ids
+                ))
         except ValueError as exc:
             raise bad(str(exc)) from exc
 
