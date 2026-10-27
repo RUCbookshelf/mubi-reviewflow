@@ -12,13 +12,11 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -211,41 +209,20 @@ class PrismaEscTests(unittest.TestCase):
 
 
 class PrismaGenerateContractTests(unittest.TestCase):
-    """PRISMA 契约缺口：validate docstring 承诺 error 阻止导出，API 却仍返回 dot/json。"""
+    """PRISMA 契约缺口：validate docstring 承诺 error 阻止导出，API 却仍返回 dot/json。
 
-    @classmethod
-    def setUpClass(cls):
-        # 全局 DATA_DIR 单例下，运行期覆盖环境变量必须可回滚：恢复 import
-        # 时序下其他测试模块设置的目录，避免 teardown 清理后连锁 KeyError。
-        cls._env_before = os.environ.get("COBOOKSHELF_DATA_DIR")
-        cls._fixture = tempfile.TemporaryDirectory(prefix="rf_prisma_r6_")
-        os.environ["COBOOKSHELF_DATA_DIR"] = cls._fixture.name
-        from fastapi.testclient import TestClient
-
-        from custom_backend.main import app
-
-        cls.client = TestClient(app)
-        cls.client.__enter__()
-        result = cls.client.post(
-            "/api/auth/register",
-            json={"username": "prisma-r6@example.test", "password": "Prisma-R6-2026"},
-        ).json()
-        cls.client.headers["Authorization"] = "Bearer " + result["token"]
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.client.__exit__(None, None, None)
-        os.environ["COBOOKSHELF_DATA_DIR"] = cls._env_before or ""
-        import gc
-
-        gc.collect()
-        cls._fixture.cleanup()
+    直调端点函数（不启动 TestClient、不改全局 DATA_DIR），避免与套件中
+    其他依赖环境变量的集成测试产生目录生命周期干扰。
+    """
 
     def test_invalid_form_returns_no_export_artifacts(self):
+        from custom_backend.main import PrismaFormIn, PrismaGenerateIn, prisma_generate
+
         # 空表单缺识别来源行 → R1 error → ok=False，不得产出 dot/json。
-        response = self.client.post("/api/prisma/generate", json={"form": {}})
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
+        payload = prisma_generate(
+            PrismaGenerateIn(form=PrismaFormIn()),
+            user={"user_id": "probe", "username": "probe"},
+        )
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["errors"])
         self.assertIsNone(payload["dot"])
