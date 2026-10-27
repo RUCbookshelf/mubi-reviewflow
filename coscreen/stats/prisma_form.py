@@ -750,11 +750,17 @@ def validate(form: PrismaFormData) -> ValidationResult:
             f" records excluded({form.records_excluded_screening}) (explainable in a note)",
         ))
     if human is None and auto is None and form.automation_ineligible > 0:
+        # 第三处 R10 提醒同样用 R10W token（r6 评审反馈·三轮：前端 R10 分支
+        # 会把它静态重写成「脚注拆分不符…」，要求补填产品页不存在的输入）。
+        # 注意开头措辞避开 PR_MSG_RULES 的「^使用了自动化工具（筛前移除 N 条）」
+        # 前缀模式（该模式不锚定结尾，句尾追加说明仍会被旧模板吞掉）。
         warnings.append(Issue(
-            "R10",
-            f"使用了自动化工具（筛前移除 {form.automation_ineligible} 条）但未提供脚注**拆分——建议补填人工/自动化各排除多少",
-            f"automation tools used ({form.automation_ineligible} records removed pre-screening) but no footnote**"
-            f" split given — consider reporting human vs automation exclusions",
+            "R10W",
+            f"自动化工具筛前移除了 {form.automation_ineligible} 条，但未提供脚注**拆分"
+            "——建议补填人工/自动化各排除多少（可在备注中说明）",
+            f"automation tools removed {form.automation_ineligible} records before screening"
+            " but no footnote** split was given — consider reporting human vs automation"
+            " exclusions (explainable in a note)",
         ))
 
     # ---- R11：DTA meta-analysis 计数 ≤ 纳入研究数 ----

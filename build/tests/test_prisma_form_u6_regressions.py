@@ -260,6 +260,17 @@ class StepFieldCoverageTests(unittest.TestCase):
         self.assertTrue(result.ok, [i.text for i in result.errors])
         self.assertIn("R10W", [i.rule for i in result.warnings])
 
+    def test_r10_automation_advice_is_r10w_with_note_hint(self):
+        # r6 评审反馈（三轮·blocking）：第三处 R10 提醒（human/auto 均 None
+        # 且 automation_ineligible>0，产品页 #prAutoInelig 可达）曾发裸 R10
+        # token 且无「可在备注中说明」，zh-CN 下被 prFriendlyMsg 静态重写为
+        # 「脚注拆分不符…」。现改发 R10W 并在文案补说明。
+        form = _legal_v1_form(duplicates_removed=10, automation_ineligible=10)
+        result = validate(form)
+        self.assertTrue(result.ok, [i.text for i in result.errors])
+        self.assertEqual([i.rule for i in result.warnings], ["R10W"])
+        self.assertIn("可在备注中说明", [i.text for i in result.warnings][0])
+
 
 # ---------------------------------------------------------------------------
 # U6-P9：官方模板合规（R13 仅报总数 → warning）

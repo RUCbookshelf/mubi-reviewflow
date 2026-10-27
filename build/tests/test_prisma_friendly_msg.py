@@ -188,6 +188,14 @@ class FriendlyMsgIntegrationTests(unittest.TestCase):
             "text": _by_rule(r10w_half.warnings, "R10W"),
             "vals": {"prExcScreen": 60},
         })
+        # R10W 第三分支：使用了自动化工具但未提供拆分（r6 评审反馈·三轮
+        # blocking——曾发裸 R10 token，zh-CN 被 prFriendlyMsg 静态重写）。
+        r10w_adv = validate(_v1_form(duplicates_removed=10, automation_ineligible=10))
+        scenarios.append({
+            "name": "R10W_advice",
+            "text": _by_rule(r10w_adv.warnings, "R10W"),
+            "vals": {"prExcScreen": 60},
+        })
         # R14 error（本就走 default=null，钉住不被重写）
         r14 = validate(_v1_form(
             exclusion_reasons_db=[ReasonRow("design", 18)],
@@ -269,11 +277,23 @@ class FriendlyMsgIntegrationTests(unittest.TestCase):
         self.assertNotIn("差 30 篇", row["msg"])
 
     def test_r10w_warnings_keep_note_hint(self):
-        for name in ("R10W_mismatch", "R10W_half"):
+        for name in ("R10W_mismatch", "R10W_half", "R10W_advice"):
             row = self.results[name]
             self.assertIsNone(row["friendly"], name)
             self.assertIn("可在备注中说明", row["msg"], name)
             self.assertNotIn("脚注拆分不符", row["msg"], name)
+
+    def test_r10w_automation_advice_not_rewritten(self):
+        # r6 评审反馈·三轮探针同法（automation_ineligible=10、human/auto
+        # =None）：zh-CN 显示曾为「脚注拆分不符：…且两者之和应等于初筛
+        # 排除总数」。现须原文直显且含「可在备注中说明」；注意 PR_MSG_
+        # RULES 的「^使用了自动化工具（筛前移除 N 条）」前缀模式不锚定
+        # 结尾，后端开头措辞已避开该模式，不会被旧模板重写。
+        row = self.results["R10W_advice"]
+        self.assertIsNone(row["friendly"])
+        self.assertIn("自动化工具筛前移除了 10 条", row["msg"])
+        self.assertIn("可在备注中说明", row["msg"])
+        self.assertNotIn("两者之和应等于初筛排除总数", row["msg"])
 
     def test_r14_not_rewritten(self):
         row = self.results["R14_studies"]
