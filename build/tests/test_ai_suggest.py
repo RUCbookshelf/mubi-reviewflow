@@ -858,6 +858,27 @@ class FrontendStaticGuardTests(unittest.TestCase):
         self.assertNotIn("detection.isOwner ? (detection.allowedFields", body,
                           "不得按角色区分字段基（成员全字段请求会 403）")
 
+    def test_lang_register_entries_all_iterable(self):
+        """B8 v2 回归发现（feat/ai-extract @ 22a8f3a 前端整体失效）：词条数组漏逗号
+        会被 JS 解析成 A[B] 成员访问（语法合法、node --check 通过），RFLang.register
+        遍历到 undefined 词条抛 TypeError 且被模块末尾吞异常——整个 AI 前端静默失效
+        （无设置卡/无建议按钮/零判定请求）。锁死：register 实参必须是数组字面量的
+        列表，且中文源串互不重复（重复键会让后注册词条覆盖先注册词条）。"""
+        source = (Path(__file__).resolve().parents[2] / "custom_frontend" / "ai_suggest.js").read_text(
+            encoding="utf-8")
+        match = re.search(r"RFLang\.register\(\[(.*?)\]\);", source, re.S)
+        self.assertTrue(match, "ai_suggest.js 未找到 RFLang.register 调用")
+        inner = re.sub(r",\s*$", "", match.group(1).rstrip())
+        entries = json.loads("[" + inner + "]")   # 漏逗号/多余逗号以外的问题在这里抛
+        self.assertTrue(entries, "词条数组不得为空")
+        for entry in entries:
+            self.assertIsInstance(entry, list, f"词条必须是数组（发现不可迭代项）：{entry!r}")
+            self.assertTrue(entry, "词条不得为空数组")
+        zh_keys = [entry[0] for entry in entries]
+        duplicates = {key for key in zh_keys if zh_keys.count(key) > 1}
+        self.assertEqual(len(zh_keys), len(set(zh_keys)),
+                         f"中文源串重复（后注册覆盖先注册）：{sorted(duplicates)}")
+
 
 if __name__ == "__main__":
     unittest.main()

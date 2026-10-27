@@ -143,7 +143,7 @@
       ["载入失败：{0}", "Load failed: {0}", "Échec du chargement : {0}", "Не удалось загрузить: {0}", "Error al cargar: {0}", "読み込みに失敗：{0}", "Falha ao carregar: {0}", "Laden fehlgeschlagen: {0}", "Учитавање није успело: {0}", "불러오기 실패: {0}"],
       ["服务商与 API Key 不能为空。", "Provider and API key are required.", "Le fournisseur et la clé API sont obligatoires.", "Укажите провайдера и API-ключ.", "El proveedor y la clave API son obligatorios.", "プロバイダーとAPIキーは必須です。", "O provedor e a chave de API são obrigatórios.", "Anbieter und API-Schlüssel sind erforderlich.", "Провајдер и АПИ кључ су обавезни.", "공급자와 API 키는 필수입니다."],
       ["确认删除个人 AI 钥匙？", "Delete your personal AI key?", "Supprimer votre clé IA personnelle ?", "Удалить ваш личный ИИ-ключ?", "¿Eliminar su clave de IA personal?", "個人のAIキーを削除しますか？", "Excluir sua chave de IA pessoal?", "Ihren persönlichen KI-Schlüssel löschen?", "Обрисати ваш лични АИ кључ?", "개인 AI 키를 삭제할까요?"],
-      ["确认删除任务共享钥匙？", "Delete the task shared key?", "Supprimer la clé partagée de la tâche ?", "Удалить общий ключ задачи?", "¿Eliminar la clave compartida de la tarea?", "タスク共有キーを削除しますか？", "Excluir a chave compartilhada da tarefa?", "Den gemeinsamen Aufgabenschlüssel löschen?", "Обрисати заједнички кључ задатка?", "작업 공유 키를 삭제할까요?"]
+      ["确认删除任务共享钥匙？", "Delete the task shared key?", "Supprimer la clé partagée de la tâche ?", "Удалить общий ключ задачи?", "¿Eliminar la clave compartida de la tarea?", "タスク共有キーを削除しますか？", "Excluir a chave compartilhada da tarefa?", "Den gemeinsamen Aufgabenschlüssel löschen?", "Обрисати заједнички кључ задатка?", "작업 공유 키를 삭제할까요?"],
       ["有建议因引文未能在原文中定位被丢弃。", "Some suggestions were discarded because their quotes could not be located in the source text.", "Des suggestions ont été écartées car leurs citations sont introuvables dans le texte source.", "Часть предложений отброшена: цитаты не найдены в исходном тексте.", "Se descartaron sugerencias porque sus citas no se localizaron en el texto original.", "原文内に引用が見つからなかったため、破棄された提案があります。", "Algumas sugestões foram descartadas porque suas citações não foram localizadas no texto original.", "Einige Vorschläge wurden verworfen, da ihre Zitate im Originaltext nicht gefunden wurden.", "Неки предлози су одбачени јер њихови цитати нису пронађени у изворном тексту.", "원문에서 인용을 찾을 수 없어 버려진 제안이 있습니다."],
       ["已复制并采纳", "Copied & adopted", "Copié et adopté", "Скопировано и принято", "Copiado y adoptado", "コピーして採用", "Copiado e adotado", "Kopiert & übernommen", "Копирано и прихваћено", "복사하고 채택"],
       ["请按 Ctrl+C 复制选中内容后再采纳。", "Press Ctrl+C to copy the selected text, then adopt.", "Appuyez sur Ctrl+C pour copier le texte sélectionné, puis adoptez.", "Нажмите Ctrl+C, чтобы скопировать выделенное, затем примите.", "Pulse Ctrl+C para copiar el texto seleccionado y luego adopte.", "Ctrl+C で選択内容をコピーしてから採用してください。", "Pressione Ctrl+C para copiar o texto selecionado e depois adote.", "Kopieren Sie mit Strg+C den markierten Text und übernehmen Sie dann.", "Притисните Ctrl+C да копирате означени текст, па прихватите.", "Ctrl+C로 선택한 내용을 복사한 뒤 채택하세요."],
@@ -1059,8 +1059,11 @@
       taskCard.append(el('div', { class: 'rf-ai-actions' }, save, status));
     }
 
-    /* B9 R-3：计数懒加载——仅任务启用时请求一次并按 scope 缓存；未启用零请求（R1 口径） */
+    /* B9 R-3：计数懒加载——仅任务启用时请求一次并按 scope 缓存；未启用零请求（R1 口径）。
+     * B8 v2 修复：首屏连续重绘（boot 判定+workspace-changed 各渲染一次）时，计数请求
+     * 在缓存落定前会重复发出——补在途（flight）判定，同一 scope 至多一次在途请求。 */
     let auditCountsCache = { scope: null, text: '' };
+    let auditCountsFlight = '';
     function renderAuditBlock() {
       taskCard.append(node('h4', '审计与报告'));
       /* B9 F6：P10 先验证后放量——展示本人使用计数与小样评估引导（审计区不依赖任务开关，F4）。 */
@@ -1068,7 +1071,8 @@
       const scope = scopeKey();
       if (auditCountsCache.scope === scope) {
         countsLine.textContent = auditCountsCache.text;
-      } else if (detection.active) {
+      } else if (detection.active && auditCountsFlight !== scope) {
+        auditCountsFlight = scope;
         api(taskApi() + '/ai-suggestions/methods-report').then(safe(result => {
           const c = (result && result.counts) || null;
           const text = c
@@ -1076,8 +1080,9 @@
                 String(c.total ?? 0), String(c.adopted ?? 0), String(c.edited ?? 0), String(c.ignored ?? 0))
             : T('尚无建议记录。');
           auditCountsCache = { scope, text };
+          auditCountsFlight = '';
           countsLine.textContent = text;
-        })).catch(safe(() => { auditCountsCache = { scope, text: '' }; }));
+        })).catch(safe(() => { auditCountsCache = { scope, text: '' }; auditCountsFlight = ''; }));
       }
       const box = el('div', { class: 'rf-ai-methods', hidden: '' });
       const csv = btn('导出决策记录（CSV）', () => exportDecisions('csv'));
