@@ -174,6 +174,16 @@ def cmd_import(args: argparse.Namespace) -> int:
     except ParseError as exc:
         print(f"导入失败：{exc}", file=sys.stderr)
         return 2
+    if not articles:
+        # 仅表头的 CSV（下载截断/空导出）与 RIS 的"未找到任何记录"不同：
+        # 合法空导出也长这样，不阻断导入，但必须给出可自查的警告，
+        # 避免用户把截断文件当成功导入（与 RIS 的 ParseError 口径对称）。
+        print(
+            f"警告：{Path(args.file).name} 未解析到任何数据记录"
+            f"（{Path(args.file).suffix.lstrip('.').upper()} 仅含表头或内容为空）；"
+            "若非有意导入空文件，请检查文件是否被截断。",
+            file=sys.stderr,
+        )
 
     # 全部条目入库：重复条目按 duplicate_pairs 标记 is_duplicate_of（SPEC §5），
     # 进度统计（get_progress）只计非重复条目，故此处仅取去重报告。
