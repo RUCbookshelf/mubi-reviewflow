@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS ai_suggestions(
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
+  verified TEXT NOT NULL DEFAULT 'full' CHECK(verified IN ('full','partial')),
   final_value TEXT,
   status TEXT NOT NULL CHECK(status IN ('pending','adopted','ignored','edited')),
   created_at TEXT NOT NULL,
@@ -198,6 +199,11 @@ def _connect(db: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=15000")
     conn.executescript(_SUGGESTIONS_SCHEMA)
+    try:  # 旧库补列（一期均为临时库，防御性兼容；列已存在则忽略）
+        conn.execute("ALTER TABLE ai_suggestions "
+                     "ADD COLUMN verified TEXT NOT NULL DEFAULT 'full'")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -875,12 +881,12 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             for suggestion in kept:
                 cursor = conn.execute(
                     "INSERT INTO ai_suggestions(task_id,actor_id,zotero_key,field_id,value,quote,"
-                    "pages_json,provider,model,prompt_version,final_value,status,created_at,decided_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,NULL,'pending',?,NULL)",
+                    "pages_json,provider,model,prompt_version,verified,final_value,status,created_at,decided_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,'pending',?,NULL)",
                     (info.task_id, str(user["user_id"]), body.zotero_key, suggestion["field_id"],
                      suggestion["value"], suggestion["quote"],
                      json.dumps(suggestion["pages"]), provider, model_used,
-                     PROMPT_VERSION, generated_at))
+                     PROMPT_VERSION, suggestion.get("verified", "full"), generated_at))
                 stored.append({**suggestion, "id": int(cursor.lastrowid),
                                "status": "pending", "generated_at": generated_at})
             _trace_generated(conn, info.task_id, user, body.zotero_key, kept,

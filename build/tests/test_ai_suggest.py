@@ -771,6 +771,33 @@ class AISuggestTests(unittest.TestCase):
 
 
     # ---- B9 R 轮（pass_with_notes）修复回归 -----------------------------------
+    def test_b8r2_obs1_verified_persists_for_history_reload(self):
+        """B8 v2 观察项：verified（部分核验）入库，历史重载角标不丢。"""
+        # 单元层：partial 判定成立（>80 字真前缀+假尾段）
+        pages = [("real prefix " * 9).strip() + " and more real content continues here"]
+        fabricated = "real prefix " * 9 + " THEN A COMPLETELY FABRICATED TAIL NOT IN SOURCE"
+        content = json.dumps({"study_design": {"value": "X", "quote": fabricated, "pages": []}}, ensure_ascii=False)
+        kept, warnings, _ = ai_suggest_api._parse_provider_content(content, ["study_design"], pages, "")
+        self.assertEqual(kept[0]["verified"], "partial")
+        self.assertIn("partial_quote:study_design", warnings)
+        # API 层（无 PDF 走摘要，full 路径）：verified 随建议入库并可在历史接口回读
+        api_content = json.dumps({"study_design": {
+            "value": "随机对照试验", "quote": "a randomised controlled trial was conducted", "pages": [3]}}, ensure_ascii=False)
+        self.enable_task(key_mode="personal", field_ids=["study_design"])
+        self.put_personal_key()
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate(api_content)):
+            body = self.suggestions(field_ids=["study_design"]).json()
+        self.assertEqual(body["suggestions"][0]["verified"], "full")
+        listed = self.client.get(
+            f"{self.base}/coding/ai-suggestions/A1", headers=self.auth(0)).json()["suggestions"]
+        self.assertEqual([x["verified"] for x in listed], ["full"])
+        # 旧库兼容：手工删列场景由 ALTER 守卫覆盖；此处断言 schema 含列
+        ctx = app.state.review_workflow.context(self.task, self.users[0])
+        with closing(sqlite3.connect(str(ctx.actor_db))) as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(ai_suggestions)").fetchall()]
+        self.assertIn("verified", cols)
+
+
 
     def test_b9_r1_prefix_fabricated_tail_is_partial(self):
         """B9 R-1：真前缀+编造尾段 -> 保留但标注 partial；不再冒充完全核验。"""
