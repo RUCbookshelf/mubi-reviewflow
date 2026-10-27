@@ -22,7 +22,9 @@ stabilize_conflicting_keys 对"与库内同键且兼容"的条目保留原键走
 from __future__ import annotations
 
 from pathlib import Path
+import gc
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -744,6 +746,105 @@ class LivingReviewCandidateTests(unittest.TestCase):
             self.assertEqual(reviews[0][1], "pending")
             self.assertEqual(sorted(members), [("WM1", 0), ("WM2", 1)])
             self.assertIn("待确认候选：1 组", result.change_report)
+
+
+class WebImportConflictRegressionTests(unittest.TestCase):
+    """授权窄范围两条的 TestClient 回归（真实 /import 端点）。
+
+    - U1-P3-web：同键、双方无 DOI、标题冲突的两条文献，第二条必须进
+      identity_conflict 候选（而非静默 exact_key 链接），判定后可作为
+      独立文献激活；
+    - U1-P12-web：exact_match_hits 按记录去重（同键+同 DOI 的两条事件
+      只计 1），与 exact_duplicate_excess/canonical_unique 一致。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._fixture = tempfile.TemporaryDirectory(prefix="rf_u1_web_")
+        os.environ["COBOOKSHELF_DATA_DIR"] = cls._fixture.name
+        from fastapi.testclient import TestClient
+        from custom_backend.main import app
+        import custom_backend.auth as auth_mod
+
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        # 直接建用户签令牌，避开全套 pytest 共享限流桶（同
+        # test_ux_frontend_review_fixes 的做法）
+        user = auth_mod.create_user("u1web@example.test", "U1Web-2026-x")
+        token = auth_mod.create_access_token(user["id"], user["username"])
+        cls.client.headers["Authorization"] = "Bearer " + token
+        cls.task = cls.client.post("/api/tasks", json={"name": "u1-web-reg"}).json()["task_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        gc.collect()
+        cls._fixture.cleanup()
+
+    @staticmethod
+    def _ris(entries):
+        return "".join(
+            "TY  - JOUR\n" + "".join(f"{t}  - {v}\n" for t, v in e.items()) + "ER  -\n"
+            for e in entries)
+
+    def _upload(self, name, text):
+        resp = self.client.post(
+            f"/api/tasks/{self.task}/import",
+            files={"file": (name, text.encode("utf-8"), "application/octet-stream")})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()
+
+    def test_same_key_no_doi_title_conflict_becomes_candidate(self):
+        # 评审实测复现：第二条曾 outcome=exact_key 静默链接（无候选、仅
+        # 1 条 metadata 提案），无法作为独立文献激活。
+        first = self._upload("w1.ris", self._ris([
+            {"AU": "Smith, Ann", "TI": "Alpha study on glucose", "ID": "SHARE"}]))
+        self.assertEqual(first["candidate_groups"], 0)
+        second = self._upload("w2.ris", self._ris([
+            {"AU": "Doe, Jane", "TI": "Beta trial on renal outcomes", "ID": "SHARE"}]))
+        self.assertEqual(second["exact_match_hits"], 0)
+        self.assertEqual(second["metadata_review_count"], 0)  # 不再静默提案
+        self.assertGreaterEqual(second["pending_candidate_groups"], 1)
+        batch_id = second["batch_id"]
+        cands = self.client.get(
+            f"/api/tasks/{self.task}/import-batches/{batch_id}/candidates?view=all"
+        ).json()["candidates"]
+        kinds = {c["kind"] for c in cands}
+        self.assertIn("identity_conflict", kinds)
+
+        # 判定 not_duplicate 后可激活为独立文献
+        detail = self.client.get(
+            f"/api/tasks/{self.task}/import-batches/{batch_id}?view=all&limit=200").json()
+        conflict = next(c for c in cands if c["kind"] == "identity_conflict")
+        decide = self.client.post(
+            f"/api/tasks/{self.task}/import-batches/{batch_id}/candidates/{conflict['review_id']}",
+            json={"status": "not_duplicate", "expected_policy_version": detail["policy_version"]})
+        self.assertEqual(decide.status_code, 200, decide.text)
+        detail = self.client.get(
+            f"/api/tasks/{self.task}/import-batches/{batch_id}?view=all&limit=200").json()
+        activate = self.client.post(
+            f"/api/tasks/{self.task}/import-batches/{batch_id}/activate",
+            json={"expected_policy_version": detail["policy_version"]})
+        self.assertEqual(activate.status_code, 200, activate.text)
+        self.assertGreaterEqual(activate.json().get("activated_new", 0), 1)
+        rows = self.client.get(f"/api/tasks/{self.task}/articles?limit=50").json()
+        arts = rows.get("articles") if isinstance(rows, dict) else rows
+        titles = sorted(a.get("title") for a in arts)
+        self.assertIn("Alpha study on glucose", titles)
+        self.assertIn("Beta trial on renal outcomes", titles)
+
+    def test_same_key_same_doi_variant_hits_counted_by_record(self):
+        # 评审实测复现：两行同键同 DOI（大小写/空白变体）曾
+        # exact_match_hits=2（事件口径），DB 实际 1 条 canonical。
+        result = self._upload("w3.ris", self._ris([
+            {"AU": "Kim, Lee", "TI": "Title One", "DO": "10.5555/dup", "ID": "REAL1"},
+            {"AU": "Kim, Lee", "TI": "Title One", "DO": "10.5555/DUP ", "ID": "REAL1"},
+        ]))
+        self.assertEqual(result["input_rows"], 2)
+        self.assertEqual(result["canonical_unique"], 1)
+        self.assertEqual(result["exact_match_hits"], 1)      # 记录口径
+        self.assertEqual(result["exact_duplicate_groups"], 1)
+        self.assertEqual(result["exact_duplicate_excess"], 1)
 
 
 if __name__ == "__main__":
