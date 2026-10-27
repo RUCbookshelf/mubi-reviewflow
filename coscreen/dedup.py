@@ -4,9 +4,10 @@
     受保护核验/人工候选哲学对齐）：
     a) 规范化 DOI 非空且相等；或
     b) zotero_key 相等且 DOI/标题不冲突（双方 DOI 均非空时以 DOI 裁决，
-       否则要求标题 token_set_ratio >= 阈值）。
-    键相等但 DOI 不等或标题相似度不足 → key_conflict_pairs 候选（不合并，
-    由 stabilize_conflicting_keys 消歧键后各自入库）。
+       否则要求标题规范化后**完全相等**且首作者兼容，R6-D1——一词之差
+       如 women/men、phase2/phase3 不再凭 token_set_ratio>=90 自动合并）。
+    键相等但 DOI 不等、标题不完全相等或首作者不兼容 → key_conflict_pairs
+    候选（不合并，由 stabilize_conflicting_keys 消歧键后各自入库）。
 第 2 层 模糊（U1-P1/U1-P10）：仅对精确层存活且双方 DOI 均为空的条目做
     O(n^2) 两两扫描，标题相似度（rapidfuzz.fuzz.token_set_ratio，小写 +
     空白折叠形式）>= 90 且第一作者门（first_author_surname 相似度 >= 80，
@@ -140,19 +141,43 @@ def _first_author_token(authors: str) -> str:
     return first_author_surname(authors)
 
 
-def _key_merge_confirmed(a: Article, b: Article) -> bool:
-    """键相等时是否允许自动合并（U1-P3）：DOI/标题不得冲突。
+def _first_authors_compatible(a: Article, b: Article) -> bool:
+    """首作者是否兼容（R6-D1）：双方姓氏均在且相似度达标，或双方均无作者。
 
-    双方规范化 DOI 均非空时以 DOI 裁决（相等才合并）；否则要求标题
-    token_set_ratio >= FUZZY_TITLE_THRESHOLD。与 Web 导入路径对
-    identity_conflict 的判定语义一致：证据不足就不静默合并。
+    - 单侧缺作者不视为兼容（缺作者 ≠ 作者相同，与模糊层作者门同一口径）；
+    - 双方均无作者视为兼容——"键相等 + 标题完全相等 + 双方无作者"是无作者
+      元数据记录重导的常见形态（全同记录仍需自动合并保持幂等）。
+    """
+    surname_a = _first_author_token(a.authors)
+    surname_b = _first_author_token(b.authors)
+    if not surname_a and not surname_b:
+        return True
+    if not surname_a or not surname_b:
+        return False
+    return fuzz.ratio(surname_a, surname_b) >= config.FUZZY_AUTHOR_THRESHOLD
+
+
+def _key_merge_confirmed(a: Article, b: Article) -> bool:
+    """键相等时是否允许自动合并（U1-P3，R6-D1 收紧）。
+
+    - 双方规范化 DOI 均非空时以 DOI 裁决（相等才合并）；
+    - 否则要求**标题规范化后完全相等**且**首作者兼容**才允许自动合并。
+      此前"标题 token_set_ratio >= 90 即合并"的口径对一词之差几乎不敏感
+      （women/men=98.41、phase2/3=93.18、retraction 前缀=100、词序反转=100），
+      同键 + 双方 DOI 为空时不同文献被静默合并并覆盖；现一律改报
+      exact_key_conflict 候选（两条都进筛选，不覆盖）。
+    - 与 Web 导入路径（review_imports）对 identity_conflict 的判定共用本
+      谓词，两处口径不分叉。
     """
     doi_a, doi_b = _norm_doi(a.doi), _norm_doi(b.doi)
     if doi_a and doi_b:
         return doi_a == doi_b
-    if not _norm_title(a.title) or not _norm_title(b.title):
+    title_a, title_b = _norm_title(a.title), _norm_title(b.title)
+    if not title_a or not title_b:
         return False
-    return fuzz.token_set_ratio(_norm_title(a.title), _norm_title(b.title)) >= config.FUZZY_TITLE_THRESHOLD
+    if title_a != title_b:
+        return False
+    return _first_authors_compatible(a, b)
 
 
 # ---------------------------------------------------------------------------
