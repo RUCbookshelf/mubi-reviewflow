@@ -190,13 +190,14 @@ def is_global_stable_identifier(key: str) -> bool:
     不同文献互相覆盖（r2 评审实测：两个单记录文件同 AN "Box 3"，第二
     次导入「更新 1 条」，DB 只剩 Men，Women 被静默覆盖）。保守判定，
     只降级明显非标识的形态，合法紧凑标识（Zotero 8 位键、WOS:…、
-    PMC…、6 位以上纯数字 PMID）不受影响：
+    PMC…、3 位及以上纯数字 PMID 形态）不受影响：
     - 含任意空白字符（archiveLocation 类自由文本，如 "Box 3"）；
-    - 纯数字且长度 <= 5（逐条序号）。
+    - 纯数字且长度 <= 2（逐条序号；r3 评审裁定 5 位纯数字 '12345' 是
+      合法 PMID 形态的全局稳定标识，不得降级——阈值从 <=5 收窄）。
     """
     if any(ch.isspace() for ch in key):
         return False
-    if key.isdigit() and len(key) <= 5:
+    if key.isdigit() and len(key) <= 2:
         return False
     return True
 
