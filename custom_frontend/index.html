@@ -7679,12 +7679,30 @@ function prAttrMap(str) {
   while ((m = re.exec(str))) out[m[1]] = m[2];
   return out;
 }
+/* r5 复审 #53：属性块可跨行（graph 级）且 label 内可含 ']'（来源名如
+   'CINAHL [Ebsco]'、自由文本 'see [Annex 1]'）。[^\]]* 字符组会在标签内
+   首个 ']' 处截断——改用引号感知扫描到配对的 ']'（转义与引号成对）。 */
+function prAttrBlock(text, kw) {
+  const head = text.match(new RegExp('(?:^|\\n)[ \\t]*' + kw + '[ \\t]*\\['));
+  if (!head) return null;
+  let i = head.index + head[0].length, out = '', q = false, esc = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (esc) { out += c; esc = false; }
+    else if (c === '\\') { out += c; esc = true; }
+    else if (c === '"') { out += c; q = !q; }
+    else if (c === ']' && !q) break;
+    else out += c;
+    i++;
+  }
+  return out;
+}
 function prParseDot(src) {
   const res = { nodes: {}, edges: [], groups: [], label: '' };
   const text = String(src);
   /* graph 级 label（页脚署名） */
-  const g = text.match(/graph\s*\[([^\]]*)\]/s);
-  if (g) { const a = prAttrMap(g[1]); if (a.label) res.label = prUnescapeDot(a.label); }
+  const g = prAttrBlock(text, 'graph');
+  if (g) { const a = prAttrMap(g); if (a.label) res.label = prUnescapeDot(a.label); }
   /* 节点默认属性（配色口径与后端一致） */
   res.defaults = { fillcolor: '#E3F2F0', color: '#2F6F6A', fontcolor: '#1F2A37' };
   const nd = text.match(/(?:^|\n)\s*node\s*\[([^\]]*)\]/);
@@ -7696,8 +7714,11 @@ function prParseDot(src) {
   /* rank=same 组 */
   const rankRe = /\{\s*rank\s*=\s*same;\s*([^}]*)\}/g;
   while ((m = rankRe.exec(text))) res.groups.push(m[1].split(';').map(s => s.trim()).filter(Boolean));
-  /* 节点语句（跳过 graph/node/edge 关键字行） */
-  const nodeRe = /(?:^|\n)\s*([A-Za-z_]\w*)\s*\[([^\]]*)\]\s*;/g;
+  /* 节点语句（跳过 graph/node/edge 关键字行）。r5 复审 #53：生成器每条
+     语句独占一行、标签经后端转义（引号成对、换行转义），故按行贪婪匹配
+     到行尾最后一个 ']'——含 ']' 的来源名（如 'CINAHL [Ebsco]'）不再使
+     整条语句失配而丢框；属性值仍由 prAttrMap 按引号配对提取（转义感知）。 */
+  const nodeRe = /(?:^|\n)[ \t]*([A-Za-z_]\w*)[ \t]*\[(.*)\][ \t]*;/g;
   while ((m = nodeRe.exec(text))) {
     const name = m[1];
     if (name === 'graph' || name === 'node' || name === 'edge') continue;
