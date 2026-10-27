@@ -77,6 +77,24 @@ server {
     # （PDF 全文等，应用层单文件上限 100MB）会被代理层直接 413。
     client_max_body_size 100m;
 
+    # 登录/注册限流（反代场景必须由 nginx 完成，见下方安全说明）：
+    # 应用层按直连对端 IP 分桶，反代后所有请求的对端都是 nginx 本机。
+    # zone 声明必须放在 http{} 上下文（例如新建
+    # /etc/nginx/conf.d/rf_auth_limit.conf，内容一行：
+    #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+    # ），server 块内只放 limit_req 引用。
+    location ^~ /api/auth/ {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8613;
         proxy_http_version 1.1;
@@ -125,6 +143,23 @@ location ^~ /api/ {
     # 上传走 /api/：默认 1m 会把 >1MB 的正常上传拦成 413（应用层单文件上限 100MB）
     client_max_body_size 100m;
 }
+
+# 登录/注册限流（反代场景必须由 nginx 完成）：应用层按直连对端 IP 分桶，
+# 反代后所有请求的对端都是 nginx 本机，应用层计数退化为单一共享桶。
+# zone 声明放在 http{} 上下文（如 /etc/nginx/conf.d/rf_auth_limit.conf：
+#   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+# ）。本 location 前缀比 /api/ 更长，仅覆盖 /api/auth/。
+location ^~ /api/auth/ {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
+}
 ```
 
 注意两个 `proxy_pass` 的尾部不同：页面代理带 `/`，会移除 `/reviewflow/` 前缀；API 代理不带尾部 `/`，会保留完整 `/api/...` 路径。若其他应用也使用 `/api/`，确认具体 API 前缀不冲突；Nginx 会优先采用更长的匹配前缀。
@@ -148,15 +183,25 @@ sudo nginx -t && sudo systemctl reload nginx
   文本/PDF 导入 100MB、批量导入 20×100MB、合并/一致性/仲裁多文件端点
   9×100MB、trace 导入包 128MB、编码证据 10MB。缺 Content-Length 的
   multipart（chunked）、未认证的 multipart、以及重复 Content-Type/
-  Content-Length 头的请求在解析前即被 411/401/400 拒绝；文件 part 数
-  超过端点声明上限（如批量导入 20 个）的请求同样在落盘前被截断。注意：trace 导入包（≤128MB+余量）若经反代提交，需将
+  Content-Length 头的请求在解析前即被 411/401/400 拒绝；multipart 的
+  boundary 缺失或不可解析同样直接 400（解析对齐 Starlette：重复参数取
+  最后一个、引号去引号）。文件 part 数超过端点声明上限（如批量导入
+  20 个）、字段 part 超过 16 个、或单个表单字段超过 1MB 的请求，同样
+  在多余内容落盘/进内存前被截断（413）；无法分类的超长 part 头按
+  「可能是文件 part」保守计数，宁可误拒畸形请求、不放过漏计。
+  注意：trace 导入包（≤128MB+余量）若经反代提交，需将
   `client_max_body_size` 相应调大（如 `client_max_body_size 130m`）。
-- **登录/注册限流**：应用层的限流按**直连对端 IP**计数，且**不信任
-  `X-Forwarded-For`**（该头可被客户端伪造轮换）。经反向代理访问时，所有
-  请求的对端都是反代机，应用层限流退化为全局共享桶——请在反代层为
-  `/api/auth/` 追加 `limit_req` 限流，例如：
-  `limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;` 并在
-  `/api/auth/` location 中 `limit_req zone=rf_auth burst=5 nodelay;`。
+- **登录/注册限流（应用层按 peer 分桶，反代后应由反代限流）**：应用层的
+  限流按**直连对端 IP**分桶计数，且**完全忽略 `X-Forwarded-For`**（该头
+  可被客户端伪造轮换，不可作为分桶依据）。因此经反向代理访问时，所有
+  请求的对端都是反代机，应用层计数会退化成**单一共享桶**——限流必须
+  由反代层按真实客户端 IP（`$binary_remote_addr`）完成，即上方两个示例
+  配置中的 `limit_req` 块：`limit_req_zone` 声明放 `http{}` 上下文 +
+  `location ^~ /api/auth/` 内 `limit_req zone=rf_auth burst=5 nodelay` +
+  `limit_req_status 429`（与应用层 429 语义对齐；nginx 的 429 不带应用层
+  的 Retry-After 头，客户端按默认间隔重试即可）。直连部署（start.sh /
+  桌面启动器）不受影响：官方启动器已显式 `proxy_headers=False`，uvicorn
+  不会用可伪造的 XFF 改写对端地址，按对端 IP 分桶即按真实客户端 IP 分桶。
 - **PDF 上传校验的边界**：应用层对 PDF 的 `%PDF-` 文件头与 pypdf 可解析性
   校验是**格式门槛，不是内容安全边界**——恶意构造的 PDF 内容本身仍可能
   利用阅读器漏洞。部署时应保持同源回放（本应用即是）、`X-Content-Type-
@@ -250,6 +295,25 @@ server {
     # uploads (PDF full text etc.; the app allows 100MB per file).
     client_max_body_size 100m;
 
+    # Login/register rate limiting MUST be done at nginx when proxied (see the
+    # notes below): the app rate-limits by direct peer IP, and behind a proxy
+    # every request peers with nginx itself. The zone declaration belongs in
+    # the http{} context (e.g. a new /etc/nginx/conf.d/rf_auth_limit.conf
+    # containing exactly one line:
+    #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+    # ); only the limit_req reference lives in the server block.
+    location ^~ /api/auth/ {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8613;
         proxy_http_version 1.1;
@@ -297,6 +361,24 @@ location ^~ /api/ {
     # upload (the app allows 100MB per file).
     client_max_body_size 100m;
 }
+
+# Login/register rate limiting must be done at nginx when proxied: the app
+# rate-limits by direct peer IP, which degenerates to one shared bucket behind
+# a proxy. Put the zone declaration in the http{} context (e.g.
+# /etc/nginx/conf.d/rf_auth_limit.conf:
+#   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+# ). This longer prefix wins over /api/ for auth paths only.
+location ^~ /api/auth/ {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
+}
 ```
 
 The page `proxy_pass` ends with `/`, removing the `/reviewflow/` prefix; the API target has no trailing slash, preserving `/api/...`. If another app also uses `/api/`, check for route conflicts. Nginx selects the more specific longer prefix.
@@ -305,8 +387,8 @@ Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. O
 
 **Upload and rate-limit notes (reverse-proxy deployments):**
 
-- **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked), unauthenticated multipart requests, and requests with duplicate Content-Type/Content-Length headers are rejected with 411/401/400 before parsing; requests whose file-part count exceeds the endpoint's declared maximum (e.g. 20 for batch import) are cut off before the excess parts touch the disk. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
-- **Login/register rate limiting**: the app rate-limits by *direct peer IP* and does **not** trust `X-Forwarded-For` (it is client-forgeable). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — add `limit_req` at the proxy for `/api/auth/`, e.g. `limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;` plus `limit_req zone=rf_auth burst=5 nodelay;` in the `/api/auth/` location.
+- **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked), unauthenticated multipart requests, and requests with duplicate Content-Type/Content-Length headers are rejected with 411/401/400 before parsing; a multipart request whose boundary is missing or unparseable is likewise rejected with 400 immediately (boundary parsing matches Starlette: the last duplicate parameter wins, quoted values are unquoted). Requests whose file-part count exceeds the endpoint's declared maximum (e.g. 20 for batch import), whose field parts exceed 16, or whose single form field exceeds 1MB are cut off before the excess parts touch the disk or memory (413); an unclassifiable oversized part header is conservatively counted as a file part — malformed requests are rejected rather than under-counted. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
+- **Login/register rate limiting (the app buckets by direct peer IP; behind a proxy the proxy must do the limiting)**: the app rate-limits by *direct peer IP* and **completely ignores `X-Forwarded-For`** (it is client-forgeable and cannot be trusted as a bucketing key). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — throttling must be done at the proxy by real client IP (`$binary_remote_addr`), exactly the `limit_req` blocks in the two example configs above: the `limit_req_zone` declaration in the `http{}` context plus `limit_req zone=rf_auth burst=5 nodelay;` and `limit_req_status 429;` inside `location ^~ /api/auth/` (429 aligns with the app's own semantics; nginx's 429 carries no Retry-After, clients retry at their default interval). Direct deployments (start.sh / the desktop launcher) are unaffected: the launcher passes `proxy_headers=False` explicitly, so uvicorn never rewrites the peer address from a forgeable XFF, and peer-IP bucketing equals real-client-IP bucketing.
 - **PDF upload checks are a format gate, not a content-security boundary**: the `%PDF-` header and pypdf parseability checks reject malformed files, but a maliciously crafted PDF could still exploit reader bugs. Keep same-origin playback (the default), `X-Content-Type-Options: nosniff` and CSP (enabled by default); do not mix the playback origin with your main site domain.
 
 ### 6. Enable team collaboration
