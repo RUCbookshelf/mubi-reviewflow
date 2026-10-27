@@ -191,3 +191,118 @@ class KeyMergeStrictTests(unittest.TestCase):
             self.assertIn("women", rows[0][0])
             self.assertIn("men", rows[1][0])
             self.assertEqual([r[1] for r in rows], [None, None])  # 无覆盖/无标记
+
+# ---------------------------------------------------------------------------
+# 复审 #2/#9：stabilize 成员覆盖（保留键全集 + 后缀消歧 + 自指禁）
+# ---------------------------------------------------------------------------
+
+class StabilizeMemberOverwriteTests(unittest.TestCase):
+    def test_two_exact_groups_shared_member_key_all_rows_survive(self):
+        # 复审 #2 实测复现（KA/SHARED×d1、KC/SHARED×d2）：SHARED 行内容曾由
+        # Alpha 被静默覆盖成 Gamma、Alpha 重复行消失（DB 只剩 3 行）。
+        with tempfile.TemporaryDirectory(prefix="rf_r6ov1_") as tmp:
+            ris = Path(tmp) / "shared.ris"
+            db = str(Path(tmp) / "shared.db")
+            _write_ris(ris, [
+                {"au": "Alpha, Ann", "ti": "Unrelated Paper Alpha", "do": "10.9/d1", "id": "KA"},
+                {"au": "Alpha, Ann", "ti": "Shared Study One", "do": "10.9/d1", "id": "SHARED"},
+                {"au": "Gamma, Gina", "ti": "Unrelated Paper Gamma", "do": "10.9/d2", "id": "KC"},
+                {"au": "Gamma, Gina", "ti": "Shared Study Two", "do": "10.9/d2", "id": "SHARED"},
+            ])
+            proc = _run_cli(["import", "--file", str(ris), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("重复标记 2 条", proc.stdout)
+            self.assertIn("键消歧 1 处", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = dict(conn.execute(
+                    "SELECT zotero_key, title FROM articles").fetchall())
+                dup_of = dict(conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
+            self.assertEqual(len(rows), 4)               # 4 行全部共存
+            shared_keys = [k for k in rows if k.startswith("SHARED")]
+            self.assertEqual(len(shared_keys), 2)        # 一个原键 + 一个后缀键
+            suffixed = next(k for k in shared_keys if k != "SHARED")
+            self.assertTrue(suffixed.startswith("SHARED-"))
+            self.assertEqual(rows["SHARED"], "Shared Study One")   # Alpha 内容未被覆盖
+            self.assertEqual(rows[suffixed], "Shared Study Two")   # Gamma 内容保留
+            self.assertEqual(dup_of["SHARED"], "KA")
+            self.assertEqual(dup_of[suffixed], "KC")
+
+    def test_members_renamed_to_own_suffix_not_group_key(self):
+        # 复审 #9 实测复现：库含 K2/K3 无关文献，导入 K1/K2/K3 三条同 DOI
+        # 曾被统一改名为组键 K1 → 互相覆盖只剩 ('K1','Title Three')，组根
+        # Title One/Two 全丢，pairs 自指 ('K1','K1') 致重复标记被跳过。
+        with tempfile.TemporaryDirectory(prefix="rf_r6ov2_") as tmp:
+            seed = Path(tmp) / "seed.ris"
+            batch = Path(tmp) / "batch.ris"
+            db = str(Path(tmp) / "grp.db")
+            _write_ris(seed, [
+                {"au": "Doe, Jane", "ti": "Unrelated Paper Alpha", "id": "K2"},
+                {"au": "Ray, Ruth", "ti": "Unrelated Paper Beta", "id": "K3"},
+            ])
+            _write_ris(batch, [
+                {"au": "Smith, Ann", "ti": "Title One", "do": "10.1/d1", "id": "K1"},
+                {"au": "Jones, Jake", "ti": "Title Two", "do": "10.1/d1", "id": "K2"},
+                {"au": "Kim, Kai", "ti": "Title Three", "do": "10.1/d1", "id": "K3"},
+            ])
+            self.assertEqual(_run_cli(["import", "--file", str(seed), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(batch), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("键消歧 2 处", proc.stdout)
+            self.assertIn("重复标记 2 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = dict(conn.execute(
+                    "SELECT zotero_key, title FROM articles").fetchall())
+                dup_of = dict(conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
+            self.assertEqual(len(rows), 5)               # 库内 2 + 本批 3，零丢失
+            self.assertEqual(rows["K1"], "Title One")    # 组根内容未被成员覆盖
+            self.assertEqual(rows["K2"], "Unrelated Paper Alpha")  # 库内原行未被触碰
+            self.assertEqual(rows["K3"], "Unrelated Paper Beta")
+            new_k2 = next(k for k in rows if k.startswith("K2-"))
+            new_k3 = next(k for k in rows if k.startswith("K3-"))
+            self.assertEqual(rows[new_k2], "Title Two")
+            self.assertEqual(rows[new_k3], "Title Three")
+            self.assertEqual(dup_of["K1"], None)
+            self.assertEqual(dup_of[new_k2], "K1")       # 成员后缀独立行 + 标记
+            self.assertEqual(dup_of[new_k3], "K1")
+
+            # 消歧后缀确定性：重导同一批文件沿用后缀键，行数不变（幂等）
+            proc2 = _run_cli(["import", "--file", str(batch), "--db", db])
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("新增 0 条", proc2.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 5)
+
+    def test_stabilize_never_produces_self_referential_pairs(self):
+        # pairs 刷新禁自指：改名后 kept_key == dup_key 的配对从清单剔除。
+        arts = [
+            _article("K2", "Unrelated Paper Alpha", "Doe, Jane"),
+            _article("K1", "Title One", "Smith, Ann", "10.1/d1"),
+            _article("K2", "Title Two", "Jones, Jake", "10.1/d1"),
+        ]
+        known = [arts[0]]
+        batch = arts[1:]
+        _, report = find_duplicates(batch)
+        pairs = report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs
+        stabilize_conflicting_keys(arts, pairs, known=known)
+        for pair in pairs:
+            self.assertNotEqual(pair.kept_key, pair.dup_key, pair)
+
+    def test_stabilize_dedupes_redundant_group_edges(self):
+        # 复审 #2 的 stabilize 直调视角：两个 exact 组 + 一条键冲突边，
+        # 成员 SHARED 键被两组使用时后到组加后缀。
+        arts = [
+            _article("KA", "Unrelated Paper Alpha", "Alpha, Ann", "10.9/d1"),
+            _article("SHARED", "Shared Study One", "Alpha, Ann", "10.9/d1"),
+            _article("KC", "Unrelated Paper Gamma", "Gamma, Gina", "10.9/d2"),
+            _article("SHARED", "Shared Study Two", "Gamma, Gina", "10.9/d2"),
+        ]
+        _, report = find_duplicates(arts)
+        pairs = report.exact_pairs + report.key_conflict_pairs
+        renames = stabilize_conflicting_keys(arts, pairs)
+        keys = [a.zotero_key for a in arts]
+        self.assertEqual(len(set(keys)), 4)             # 无键坍缩
+        self.assertEqual(renames, [("SHARED", arts[3].zotero_key)])
+        self.assertTrue(arts[3].zotero_key.startswith("SHARED-"))

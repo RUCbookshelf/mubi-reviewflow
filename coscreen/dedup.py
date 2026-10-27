@@ -342,18 +342,33 @@ def merged_group_roots(count: int, pairs: Sequence[DuplicatePair]) -> list[int]:
     return [uf.find(i) for i in range(count)]
 
 
-def _conflict_suffix_key(key: str, art: Article, occupied: set[str]) -> str:
-    """为冲突键生成确定性后缀键：键 + "-" + sha256(键|稳定内容标识)[:12]。
-
-    稳定内容标识优先用解析器写入的 raw["_fallback_id"]（源文件摘要:行号），
-    否则用 DOI|标题|作者|年份；同一文件重复导入得到同一后缀。
-    """
+def _stable_content_id(art: Article) -> str:
+    """记录级稳定内容标识：优先解析器写入的 raw["_fallback_id"]，否则
+    DOI|标题|作者|年份。同一文件重复导入得到同一标识。"""
     raw = art.raw if isinstance(art.raw, dict) else {}
     base_id = str(raw.get("_fallback_id") or "").strip()
     if not base_id:
         base_id = f"{art.doi}|{art.title}|{art.authors}|{art.year}"
-    suffix = hashlib.sha256(f"{key}|{base_id}".encode("utf-8")).hexdigest()[:12]
+    return base_id
+
+
+def _disambiguation_key(
+    key: str, art: Article, occupied: set[str],
+    known_by_key: dict[str, Article],
+) -> str:
+    """为冲突键生成确定性消歧键：键 + "-" + sha256(键|稳定内容标识)[:12]。
+
+    后缀若命中**库内同一文献的既往消歧行**（_key_merge_confirmed 成立）则
+    直接沿用——重导同一文件时后缀与首导一致，走 upsert 更新而非再插新行
+    （重导幂等；复审 #2/#9 场景的跨批次稳定性）。仍冲突时按 serial 递增。
+    """
+    suffix = hashlib.sha256(
+        f"{key}|{_stable_content_id(art)}".encode("utf-8")
+    ).hexdigest()[:12]
     candidate = f"{key}-{suffix}"
+    db_art = known_by_key.get(candidate)
+    if db_art is not None and _key_merge_confirmed(db_art, art):
+        return candidate  # 同一文献首导时的消歧键：沿用走更新路径
     serial = 2
     while candidate in occupied:
         candidate = f"{key}-{suffix}-{serial}"
@@ -371,13 +386,15 @@ def stabilize_conflicting_keys(
 
     - 从 pairs 中 method 为 exact_doi/exact_key 的事件按下标重建合并组
       （fuzzy/exact_key_conflict 候选对不参与组重建，但键会同步刷新）；
-      组代表（输入顺序靠前者）保留原键，同组其余成员随主键 upsert 自然坍缩；
-    - 批内两组同键（即 find_duplicates 报告键冲突的场景）→ 后到组加
-      sha256 后缀；组内与代表同字的成员跟随改为组最终键，避免 upsert
-      时覆盖别的组；
-    - known 给出库内既有条目（CLI 跨批次导入场景）：组键与库内同键条目
-      冲突（DOI 不等且标题相似度不足）才消歧；兼容（DOI 相等或标题相似
-      达标）则保留原键，走 upsert 更新路径——既有库主键不被重写。
+    - **组保留键全集进占用集**（复审 #2/#9）：每个精确组按组根顺序决策，
+      组代表保留原键，组内每个成员的字面键只要不与其他组/库内冲突都
+      计入占用集——两个不同组各有一成员持同一字面键时，后到组的该成员
+      加确定性后缀，绝不互相覆盖；
+    - **成员消歧加后缀而非改名为组键**（复审 #9）：被其他组占用或与库内
+      同键条目冲突的成员，后缀自己的键成为独立行（由 is_duplicate_of
+      标记），不再坍缩到组代表的键上覆盖代表行内容；
+    - 既有库主键永不重写（R1）：与库内同键条目兼容（同一文献）时保留
+      原键走 upsert 更新路径。
     """
     n = len(articles)
     uf = _UnionFind(n)
@@ -390,51 +407,67 @@ def stabilize_conflicting_keys(
         for art in known:
             known_by_key.setdefault(art.zotero_key, art)
 
-    occupied: dict[str, int] = {}  # 最终键 -> 组根下标
+    # ---- 组键决策：保留键全集进占用集 + 确定性后缀 ----
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(uf.find(i), []).append(i)
+
+    occupied: dict[str, int] = {}  # 最终保留键（含成员保留键全集）-> 组根下标
     final_key: dict[int, str] = {}  # 组根下标 -> 最终键
-    for i, art in enumerate(articles):
-        root = uf.find(i)
-        if root != i:
-            continue  # 仅组代表决定本组键
-        key = art.zotero_key
-        chosen = key
+    renames: list[tuple[str, str]] = []
+    for root in sorted(groups):
+        rep = articles[root]
+        key = rep.zotero_key
         db_art = known_by_key.get(key)
-        if db_art is not None and not _key_merge_confirmed(db_art, art):
-            # 与库内同键条目冲突：本批不得占用该键（兼容则保留，走更新）
-            chosen = _conflict_suffix_key(key, art, set(occupied))
-        if chosen in occupied:
-            # 批内先到组已占用同键（键冲突候选的场景）
-            chosen = _conflict_suffix_key(key, art, set(occupied))
+        if (db_art is not None and not _key_merge_confirmed(db_art, rep)) or key in occupied:
+            # 与库内同键条目冲突，或被本批先到组占用：加确定性后缀
+            chosen = _disambiguation_key(key, rep, set(occupied), known_by_key)
+            renames.append((key, chosen))
+            rep.zotero_key = chosen
+        else:
+            chosen = key
         occupied[chosen] = root
         final_key[root] = chosen
 
-    renames: list[tuple[str, str]] = []
-    for i, art in enumerate(articles):
-        root = uf.find(i)
-        target = final_key[root]
-        if art.zotero_key == target:
-            continue
-        # 以下两种情况必须改名，否则 upsert 主键会覆盖别的行：
-        # 1) 本条目的字面键被批内其他合并组占用为最终键；
-        # 2) 本条目的字面键在库内（known）对应的是"另一篇文献"（DOI/标题
-        #    冲突）。库内同键若与本条目是同一文献（_key_merge_confirmed
-        #    为真），则保留成员原键：upsert 走既有行的更新路径，重复关系
-        #    由 is_duplicate_of 标记表达，组代表的键不抢占成员键。
-        owner = occupied.get(art.zotero_key)
-        db_art = known_by_key.get(art.zotero_key)
-        occupied_elsewhere = (
-            (owner is not None and owner != root)
-            or (db_art is not None and not _key_merge_confirmed(db_art, art))
-        )
-        if occupied_elsewhere:
-            renames.append((art.zotero_key, target))
-            art.zotero_key = target
-        # 否则保留自己的键：重复成员单独成行，由 is_duplicate_of 标记
+        for i in groups[root]:
+            if i == root:
+                continue
+            art = articles[i]
+            # 以下两种情况必须改名，否则 upsert 主键会覆盖别的行：
+            # 1) 本条目的字面键被批内其他合并组占用为保留键；
+            # 2) 本条目的字面键在库内（known）对应的是"另一篇文献"（DOI/
+            #    标题/作者冲突）。库内同键若与本条目是同一文献，则保留成员
+            #    原键：upsert 走既有行的更新路径，重复关系由 is_duplicate_of
+            #    标记表达。改名一律加后缀成为独立行，绝不改名为组键。
+            keeper = occupied.get(art.zotero_key)
+            db_art = known_by_key.get(art.zotero_key)
+            occupied_elsewhere = (
+                (keeper is not None and keeper != root)
+                or (db_art is not None and not _key_merge_confirmed(db_art, art))
+            )
+            if occupied_elsewhere:
+                new_key = _disambiguation_key(
+                    art.zotero_key, art, set(occupied), known_by_key)
+                renames.append((art.zotero_key, new_key))
+                art.zotero_key = new_key
+                occupied[new_key] = root
+            else:
+                # 保留自己的键：重复成员单独成行，由 is_duplicate_of 标记；
+                # 该键计入本组保留键全集，阻止后续组再占用。
+                occupied.setdefault(art.zotero_key, root)
 
-    # 同步全部配对的键（含 fuzzy/exact_key_conflict 候选对）
+    # 同步全部配对的键（含 fuzzy/exact_key_conflict 候选对）。改名后自指的
+    # 配对（双方归一到同一键，如同键同 DOI 的自然坍缩）从清单剔除：它们
+    # 不产生标记，留下只会让"精确重复 N"与"重复标记 N"两条口径失真
+    # （复审 #9：自指配对曾使重复标记被静默跳过且无迹可查）。
+    refreshed: list[DuplicatePair] = []
     for pair in pairs:
         if 0 <= pair.kept_index < n:
             pair.kept_key = articles[uf.find(pair.kept_index)].zotero_key
         if 0 <= pair.dup_index < n:
             pair.dup_key = articles[pair.dup_index].zotero_key
+        both_indexed = 0 <= pair.kept_index < n and 0 <= pair.dup_index < n
+        if not (both_indexed and pair.kept_key == pair.dup_key):
+            refreshed.append(pair)
+    pairs[:] = refreshed
     return renames
