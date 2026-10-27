@@ -44,7 +44,7 @@ from contextlib import closing
 from urllib.parse import quote
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from coscreen.security import sanitize_component
 
@@ -477,11 +477,19 @@ def delete_task(task_id: str, data_dir: str | Path = "data") -> Path:
     """删除任务 = 整目录移入 ``{data_dir}/.trash/{ts}_{taskId}/``（可手工找回）。
 
     任务被其他活进程持锁时拒绝删除（ValueError）；返回隔离区内的目标路径。
+
+    - **U5-P1**：锁检查按规范任务目录（``tasks_root/{info.task_id}``）进行，
+      ``task.`` 等 Windows 别名路径不再绕过/错检规范锁；
+    - **U5-P2**：本进程持锁（后端请求期任务锁）且规范名在途计数 >1 时同样
+      拒绝——DELETE 请求自身占 1，>1 说明还有导入/分析等操作在跑。计数钩子
+      由 ``register_inflight_counter`` 注册（custom_backend 中间件）；未注册
+      （CLI/测试直调）时保持旧行为（本进程持锁不算占用）。
     """
     info = find_task(task_id, data_dir)
     if info is None:
         raise ValueError(f"任务不存在：{task_id}")
-    lock_path = info.dir / f"{info.task_id}{LOCK_SUFFIX}"
+    canonical_dir = tasks_root(data_dir) / info.task_id
+    lock_path = canonical_dir / f"{info.task_id}{LOCK_SUFFIX}"
     holder = lock_holder(lock_path)
     # 本进程持锁（后端请求期任务锁，见 custom_backend 路由中间件）不算占用；
     # 仅其他存活进程持有时拒绝。
@@ -490,7 +498,16 @@ def delete_task(task_id: str, data_dir: str | Path = "data") -> Path:
         raise ValueError(
             f"任务正被其他窗口使用（PID {holder.get('pid')}），请先关闭后再删除。"
         )
-    dst = trash_root(data_dir) / f"{_now_iso().replace(':', '')}_{task_id}"
+    if holder and holder.get("pid") == os.getpid():
+        inflight = 0
+        if _inflight_requests is not None:
+            try:  # 计数钩子异常不阻断删除（退回旧行为：仅本请求持锁）
+                inflight = int(_inflight_requests(info.task_id))
+            except Exception:  # noqa: BLE001  防御性兜底
+                inflight = 0
+        if inflight > 1:
+            raise ValueError("任务有操作进行中（导入/分析等），请等待完成后再删除。")
+    dst = trash_root(data_dir) / f"{_now_iso().replace(':', '')}_{info.task_id}"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(info.dir), str(dst))
     return dst
@@ -536,6 +553,16 @@ def screener_options(
 
 #: 本进程持有的锁（路径 -> PID），atexit 兜底释放
 _HELD_LOCKS: dict[Path, int] = {}
+
+#: 同进程在途请求计数钩子（U5-P2：custom_backend 中间件注册；返回该任务
+#: 规范名当前在途请求数。未注册时 delete_task 保持旧行为）。
+_inflight_requests: Callable[[str], int] | None = None
+
+
+def register_inflight_counter(fn: Callable[[str], int] | None) -> None:
+    """注册/注销同进程任务在途请求计数函数（delete_task 的互斥依据）。"""
+    global _inflight_requests
+    _inflight_requests = fn
 
 
 def pid_alive(pid: int) -> bool:

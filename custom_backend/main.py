@@ -124,13 +124,16 @@ from custom_backend.source_provenance import source_articles
 from custom_backend.security import (
     MAX_UPLOAD_BYTES,  # noqa: F401  上限常量随模块口径导出
     TEXT_EXTENSIONS,
+    EventTicketStore,
     UploadRejected,
+    UploadSizeLimitMiddleware,
     check_extension,
     check_pdf_bytes,
     check_text_bytes,
     clean_upload_name,
     is_within,
     login_limiter,
+    rate_limit_key,
     stem_of,
 )
 from custom_backend.security import SecurityHeadersMiddleware
@@ -186,16 +189,47 @@ class TaskLockMiddleware:
     防线是死代码（审查 P1-3）。现按路径统一 acquire/release：另一存活后端
     进程正在处理同一任务时返回 409（同进程并发请求按引用计数共享一把锁，
     锁只在最后一个在途请求结束后释放）。
+
+    - **U5-P1 锁别名**：锁键与锁文件一律用 ``find_task`` 解析出的规范
+      ``info.task_id``（来自 task.json），Windows 上 ``task.`` 与 ``task``
+      会解析到同一任务目录——URL 里的别名不再派生第二个锁文件；
+    - **U5-P4 鉴权前置**：无有效 Bearer 凭据的请求**不取锁**直接放行给
+      端点（由 require_user 统一回 401），消除未认证的 409 占用状态预言机
+      与未认证锁文件操作；
+    - **U5-P2 在途计数**：``inflight()`` 暴露任务当前在途请求数，DELETE
+      端点据此对同进程并发操作（导入进行中删除任务）回 409。
     """
 
     _PATH_RE = re.compile(r"^/api/tasks/([^/]+)")
-    # task_id -> [在途请求数, 锁路径]：同任务并发请求共享一把锁，最后一个
-    # 在途请求结束时释放（无论谁最初获取）。
+    # 规范 task_id -> [在途请求数, 锁路径]：同任务并发请求共享一把锁，
+    # 最后一个在途请求结束时释放（无论谁最初获取）。
     _held: dict[str, list] = {}
     _guard = threading.Lock()
 
     def __init__(self, app):  # noqa: ANN001  ASGI 约定
         self.app = app
+
+    @classmethod
+    def inflight(cls, task_id: str) -> int:
+        """该（规范）任务当前在本进程内的在途请求数（无则 0）。"""
+        with cls._guard:
+            entry = cls._held.get(task_id)
+            return entry[0] if entry else 0
+
+    @staticmethod
+    def _bearer_token(scope) -> str | None:  # noqa: ANN001
+        """从 ASGI scope 提取 Bearer 令牌；无/形状不符返回 None。"""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"authorization":
+                try:
+                    authorization = value.decode("latin-1")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+                if not authorization.lower().startswith("bearer "):
+                    return None
+                token = authorization[7:].strip()
+                return token or None
+        return None
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
@@ -209,22 +243,34 @@ class TaskLockMiddleware:
         if not match:
             await self.app(scope, receive, send)
             return
+        # U5-P4：先做凭据存在性+有效性检查，未认证请求不触碰任务锁。
+        token = self._bearer_token(scope)
+        if token is None or auth.decode_access_token(token) is None:
+            await self.app(scope, receive, send)  # 端点 require_user 统一回 401
+            return
         task_id = match.group(1)
+        canonical = None
         entry = None
         busy_response = None
         info = tasks_mod.find_task(task_id, DATA_DIR)
         if info is not None:
+            # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在规范
+            # 任务目录（tasks_root/{info.task_id}），URL 尾点等别名不再派生
+            # 出 `{task_id}..lock` 之类的第二把锁。
+            canonical = info.task_id
             with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
-                entry = self._held.get(task_id)
+                entry = self._held.get(canonical)
                 if entry is None:
                     lock_path = tasks_mod.acquire_task_lock(
-                        task_id, DATA_DIR, task_dir=info.dir)
+                        canonical, DATA_DIR,
+                        task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
+                    )
                     if lock_path is None:
                         busy_response = JSONResponse(status_code=409, content={
                             "detail": "任务正被其他窗口（另一个后端进程）使用，请稍后重试。"})
                     else:
                         entry = [0, lock_path]
-                        self._held[task_id] = entry
+                        self._held[canonical] = entry
                 if entry is not None:
                     entry[0] += 1
         if busy_response is not None:
@@ -237,13 +283,47 @@ class TaskLockMiddleware:
                 with self._guard:
                     entry[0] -= 1
                     last = entry[0] <= 0
-                    if last:
-                        self._held.pop(task_id, None)
+                    if last and canonical is not None:
+                        self._held.pop(canonical, None)
                 if last:
                     tasks_mod.release_task_lock(entry[1])
 
 
 app.add_middleware(TaskLockMiddleware)
+
+#: U5-P3：multipart 上传在请求体解析/落盘前的 Content-Length 预检。
+#: 单文件端点 = 100MB + 1MB 余量（boundary/文件名/表单字段）；多文件端点按
+#: 各自文件数上限（import-batch 20、合并/一致性/仲裁 9 或 20）× 100MB + 余量。
+_UPLOAD_SLACK_BYTES = 1024 * 1024
+_BATCH_IMPORT_MAX_FILES = 20
+_MULTI_CSV_MAX_FILES = 9
+
+#: 预检规则表（模块级常量供回归测试核对：新增上传端点必须补对应规则）
+_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int]] = [
+    (re.compile(r"^/api/tasks/[^/]+/import-batch$"),
+     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/tasks/[^/]+/screening-arbitrations$"),
+     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/merge/decisions$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/coding/agreement$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/tasks/[^/]+/import$"), MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/tasks/[^/]+/fulltext/[^/]+/upload$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/tasks/[^/]+/living-review/import-update$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+    (re.compile(r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
+]
+
+app.add_middleware(UploadSizeLimitMiddleware, rules=_UPLOAD_SIZE_RULES)
+
+# U5-P2：任务删除的同进程在途防线——coscreen 层通过该钩子读取当前任务的
+# 在途请求数（DELETE 请求自身占 1，>1 即还有导入/分析等操作在跑）。
+tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
 
 
 @app.exception_handler(Exception)
@@ -967,13 +1047,15 @@ def _run_export(exporter, suffix: str) -> bytes:
 def _file_response(data: bytes, media_type: str, filename: str) -> Response:
     safe_name = clean_upload_name(filename, "download")
     ascii_name = safe_name.encode("ascii", "ignore").decode("ascii") or "download"
+    # U5-P6：非 ASCII 文件名必须百分号编码后再进头部（starlette 只接受
+    # latin-1，中文任务名/文献名直接拼接会 UnicodeEncodeError -> 500）。
     return Response(
         content=data,
         media_type=media_type,
         headers={
             "Content-Disposition": (
                 f"attachment; filename=\"{ascii_name}\"; "
-                f"filename*=UTF-8''{safe_name}"
+                f"filename*=UTF-8''{quote(safe_name, safe='')}"
             )
         },
     )
@@ -1068,7 +1150,12 @@ def app_update_check() -> dict:
 
 @app.post("/api/auth/register")
 def register(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(f"register:{request.client.host if request.client else '?'}")
+    # U5-P5：XFF 存在时不信任其值（可伪造轮换绕过按 IP 限流），见 rate_limit_key。
+    allowed, retry_after = login_limiter.check(rate_limit_key(
+        "register",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    ))
     if not allowed:
         raise HTTPException(429, "注册尝试过于频繁，请稍后再试。", headers={"Retry-After": str(retry_after)})
     try:
@@ -1080,7 +1167,11 @@ def register(body: CredentialsIn, request: Request) -> dict:
 
 @app.post("/api/auth/login")
 def login(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(f"login:{request.client.host if request.client else '?'}")
+    allowed, retry_after = login_limiter.check(rate_limit_key(
+        "login",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    ))
     if not allowed:
         raise HTTPException(429, "登录尝试过于频繁，请 1 分钟后再试。", headers={"Retry-After": str(retry_after)})
     user = auth.authenticate(body.username, body.password)
@@ -1104,11 +1195,46 @@ def me(user: dict = Depends(require_user)) -> dict:
     return {"user_id": user["user_id"], "username": user["username"]}
 
 
+#: U5-P10：SSE 事件流短期票据（5 分钟一次性，EventSource 无法设 Authorization 头）
+_event_tickets = EventTicketStore(ttl_seconds=300)
+
+
+@app.post("/api/events/ticket")
+def issue_event_ticket(user: dict = Depends(require_user)) -> dict:
+    """凭 Bearer 换一次性短期票据（5 分钟），供 EventSource 连接 /api/events。
+
+    取代把 24h JWT 放进 URL 查询参数的旧方案（完整凭据进入反代/访问日志
+    与浏览器历史）；票据一次性、短时效，泄露不可重放。
+    """
+    ticket, expires_in = _event_tickets.issue(user["user_id"], user["username"])
+    return {"ticket": ticket, "expires_in": expires_in}
+
+
 @app.get("/api/events")
-async def task_events(request: Request, token: str | None = Query(default=None),
+async def task_events(request: Request,
+                      ticket: str | None = Query(default=None),
+                      token: str | None = Query(default=None),
                       authorization: str | None = Header(default=None)):
-    # EventSource cannot set a Bearer header. Reuse all normal auth checks.
-    user = require_user(request, authorization or (f"Bearer {token}" if token else None))
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if ticket is not None:
+        # U5-P10：短期一次性票据（POST /api/events/ticket 换取）。签发时已
+        # 走完整 require_user 校验，这里只恢复身份并立即消费（防重放）。
+        payload = _event_tickets.consume(ticket)
+        if payload is None:
+            raise HTTPException(401, "事件票据无效或已过期，请重新获取。",
+                                headers={"WWW-Authenticate": "Bearer"})
+        user = {"user_id": payload["user_id"], "username": payload["username"]}
+    else:
+        # 兼容期：仍接受旧 token 查询参数（前端 EventSource 迁移到票据前不
+        # 可断），但响应头明确提醒弃用，新客户端一律使用票据。
+        if token is not None:
+            headers["Deprecation"] = "true"
+            headers["Warning"] = (
+                '299 reviewflow "token query parameter is deprecated; '
+                'use POST /api/events/ticket"'
+            )
+        # EventSource cannot set a Bearer header. Reuse all normal auth checks.
+        user = require_user(request, authorization or (f"Bearer {token}" if token else None))
 
     async def stream():
         queue = BUS.subscribe(user["user_id"])
@@ -1125,7 +1251,7 @@ async def task_events(request: Request, token: str | None = Query(default=None),
             BUS.unsubscribe(user["user_id"], queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -1376,7 +1502,13 @@ def update_task(
 
 @app.delete("/api/tasks/{task_id}")
 def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
-    _require_task_owner(task_id, user)
+    info = _require_task_owner(task_id, user)
+    # U5-P2：单进程部署下中间件对同任务并发只做引用计数，此前本进程持锁
+    # 时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
+    # 在途计数 >1 说明除了本 DELETE 请求还有别的操作在跑（导入/分析等）。
+    inflight = TaskLockMiddleware.inflight(info.task_id)
+    if inflight > 1:
+        raise _bad(f"任务有操作进行中（{inflight - 1} 个请求未完成），请等待后再删除。", 409)
     try:
         trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
     except ValueError as exc:
@@ -4474,12 +4606,17 @@ def fulltext_pdf(task_id: str, zotero_key: str, screener: str | None = None,
     )
     if data is None or not inside:
         raise _bad("PDF 文件不存在或已移动。", 404)
+    # U5-P6：inline PDF 的文件名同样走「ASCII 回退 + 百分号编码 UTF-8」双写
+    # （对齐 download_import_file 的既有正确写法），中文文献键不再 500。
+    display_name = clean_upload_name(meta.filename, "document.pdf")
+    ascii_name = display_name.encode("ascii", "ignore").decode("ascii") or "document.pdf"
     return Response(
         content=data,
         media_type="application/pdf",
         headers={
             "Content-Disposition": (
-                f"inline; filename=\"{clean_upload_name(meta.filename, 'document.pdf')}\""
+                f"inline; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quote(display_name, safe='')}"
             )
         },
     )
@@ -4498,6 +4635,10 @@ async def upload_pdf(task_id: str, zotero_key: str, file: UploadFile = File(...)
         meta = save_pdf(db, zotero_key, data, pdfs_dir=_pdfs_dir(info), trace_context=_trace_context(info, user))
     except ValueError as exc:
         raise _bad(exc) from exc
+    except sqlite3.IntegrityError as exc:
+        # U5-P7：zotero_key 不在 articles 表时外键插入失败——按文献不存在
+        # 映射 4xx（对齐 add_highlights 的既有处理），不再 500 刷服务端日志。
+        raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
     return {
         "zotero_key": meta.zotero_key,
         "filename": meta.filename,
