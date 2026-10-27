@@ -43,7 +43,7 @@ from coscreen.dedup import (
     stabilize_conflicting_keys,
     _norm_doi,
 )
-from coscreen.living_review import process_incremental_articles
+from coscreen.living_review import process_incremental_articles, process_incremental_update
 from coscreen.models import Article, compute_content_hash
 from coscreen.normalize import (
     build_zotero_key,
@@ -845,6 +845,50 @@ class WebImportConflictRegressionTests(unittest.TestCase):
         self.assertEqual(result["exact_match_hits"], 1)      # 记录口径
         self.assertEqual(result["exact_duplicate_groups"], 1)
         self.assertEqual(result["exact_duplicate_excess"], 1)
+
+
+    def test_same_key_hits_library_duplicate_row_not_overwritten(self):
+        # 评审反馈（R3·U1-P3）：同键命中的是库内"已标记重复的组成员行"
+        # （键不占任何合并组最终键）时，living_review 曾不消歧——upsert
+        # 按主键把库内重复行内容覆盖成新文献且保留 is_duplicate_of，新
+        # 文献永久不可筛选。修复：stabilize 传 known=existing。
+        with tempfile.TemporaryDirectory(prefix="rf_u1lr3_") as tmp:
+            db = str(Path(tmp) / "lr.db")
+            db_mod.init_db(db)
+            # 库内：Y1 与 Y2 同 DOI，Y2 已标记为 Y1 的重复（真实 upsert）
+            db_mod.upsert_articles(db, [
+                _article("Y1", "Canon", "Kim, Lee", "10.6/y"),
+                _article("Y2", "Canon", "Kim, Lee", "10.6/y"),
+            ], [DuplicatePair(kept_key="Y1", dup_key="Y2", method="exact_doi")])
+
+            # 增量 RIS（真实文件路径入口）：ID - Y2、不同标题、无 DOI
+            inc = Path(tmp) / "inc.ris"
+            _write_ris(inc, [{"au": "Park, Su", "ti": "A totally different paper", "id": "Y2"}])
+            result = process_incremental_update(
+                db, str(inc), "A vs B", "mortality", "12 months", "RR")
+
+            # 新条目为后缀独立键、进入新增；既有重复行内容/标记不变
+            new_keys = [a["zotero_key"] for a in result.new_articles]
+            self.assertEqual(len(new_keys), 1)
+            self.assertTrue(new_keys[0].startswith("Y2-"), new_keys)
+            self.assertNotEqual(new_keys[0], "Y2")
+            self.assertEqual(result.duplicates_removed, 0)
+            self.assertEqual(result.pending_candidates, 1)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = dict(conn.execute(
+                    "SELECT zotero_key, (title || '|' || COALESCE(doi,'') || '|' ||"
+                    " COALESCE(is_duplicate_of,'')) FROM articles").fetchall())
+            self.assertEqual(rows["Y1"], "Canon|10.6/y|")
+            self.assertEqual(rows["Y2"], "Canon|10.6/y|Y1")  # 原行未被覆盖
+            self.assertEqual(rows[new_keys[0]], "A totally different paper||")
+
+            # 候选判定 not_duplicate 后新条目可筛选（list_articles 可见）
+            with closing(sqlite3.connect(db)) as conn:
+                review_id = conn.execute(
+                    "SELECT review_id FROM title_duplicate_reviews").fetchone()[0]
+            self.assertTrue(db_mod.decide_title_duplicate_review(db, review_id, "not_duplicate"))
+            screenable = {a.zotero_key for a in db_mod.list_articles(db)}
+            self.assertEqual(screenable, {"Y1", new_keys[0]})
 
 
 if __name__ == "__main__":

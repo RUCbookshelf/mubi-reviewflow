@@ -450,7 +450,11 @@ def process_incremental_articles(
     candidate_pairs = report.fuzzy_pairs + report.key_conflict_pairs
     # 键消歧（U1-P3/U1-P6）：combined 中 existing 在前，合并组根总是库内
     # 条目或新批中输入靠前者；仅冲突键加确定性后缀，库内主键不被重写。
-    stabilize_conflicting_keys(combined, exact_pairs + candidate_pairs)
+    # known=existing 不可省：同键命中的可能是库内"已标记重复的组成员行"
+    # （其键不占任何组的最终键），只有 known 判据能识别"库内同键是另一篇
+    # 文献"并为新条目加后缀，否则 upsert 会按主键覆盖该重复行的内容。
+    stabilize_conflicting_keys(
+        combined, exact_pairs + candidate_pairs, known=existing)
     # 与库重复的判定按合并组根（U1-P4 记录口径）：组根在库内 → 该组的
     # 新文献行均算与库重复（同键重导与异键同 DOI 两类统一覆盖）；组根
     # 是新文件条目 → 组根即该批新组代表进入新增，其余成员计批内移除。
