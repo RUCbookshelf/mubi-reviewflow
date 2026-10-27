@@ -3,7 +3,7 @@
 第 1 层 精确（自动合并仅保留可机器核验的证据，U1-P1/U1-P3，与 Web 导入的
     受保护核验/人工候选哲学对齐）：
     a) 规范化 DOI 非空且相等；或
-    b) zotero_key 相等且 DOI/标题不冲突（双方 DOI 均非空时以 DOI 裁决，
+    b) zotero_key 相等且 DOI/标题不冲突（双方 DOI 均非空时以 DOI 裁决；
        否则要求标题规范化后**完全相等**且首作者兼容，R6-D1——一词之差
        如 women/men、phase2/phase3 不再凭 token_set_ratio>=90 自动合并）。
     键相等但 DOI 不等、标题不完全相等或首作者不兼容 → key_conflict_pairs
@@ -13,6 +13,8 @@
     空白折叠形式）>= 90 且第一作者门（first_author_surname 相似度 >= 80，
     任一侧作者缺失则门控不通过）达标。模糊证据只报告 fuzzy_pairs 候选，
     不再自动合并——由调用方进入人工确认（Web/活体综述候选清单、CLI 打印）。
+    候选边经并查集生成树去重（每连通分量至多 n-1 条边）并有总量上限
+    FUZZY_PAIR_LIMIT，n 条同模板标题不再产生 O(n^2) 条驻留内存的配对。
 传递闭包：A~B、B~C 时 B、C 均指向最终保留的 A（并查集实现，根即保留条目）；
     仅精确层参与并查集。
 
@@ -21,7 +23,8 @@
 中同样是纯函数，行为保持确定、可复现。
 
 复杂度说明：模糊层仍需比较所有可能匹配的候选对，但通过 RapidFuzz 原生批量
-计算和分块控制内存；文献数量不再作为跳过模糊去重的理由。
+计算和分块控制内存；候选配对本身经生成树去重后至多 n-1 条（复审 #4/#10）；
+文献数量不再作为跳过模糊去重的理由。
 """
 
 from __future__ import annotations
@@ -39,6 +42,12 @@ from coscreen.normalize import first_author_surname, normalize_doi
 
 #: 每次交给 RapidFuzz 的标题查询分块行数；分块限制临时矩阵内存，不限制总量。
 FUZZY_CHUNK_SIZE = 64
+
+#: 模糊候选对总量上限（复审 #4/#10：n 条同模板标题曾产生 n(n-1)/2 条
+#: DuplicatePair 全量驻留内存，n=2000 实测 1,999,000 对/386MB，n=10000
+#: 外推约 5 千万对/数 GB 可 OOM）。候选边经并查集生成树去重后至多 n-1 条，
+#: 本上限是对极端输入的最终防线：超出即截断并在报告 note 中显式警告。
+FUZZY_PAIR_LIMIT = 50000
 
 #: DuplicatePair.method 的合法取值
 METHODS = ("exact_doi", "exact_key", "fuzzy", "exact_key_conflict")
@@ -264,6 +273,9 @@ def find_duplicates(
         progress_callback("exact", n, n)
 
     # ---- 第 2 层：模糊扫描（仅存活条目、双方 DOI 均为空；只出候选）----
+    # 候选边经并查集生成树去重（复审 #4/#10）：同一连通分量只保留至多
+    # n-1 条边（每合并两个分量记一条），消费方（候选复核组/标题审阅组）
+    # 只依赖连通性，生成树与完全图等价；内存从 O(n^2) 条配对降为 O(n)。
     note = ""
     survivors = [i for i in range(n) if uf.find(i) == i]
     fuzzy_candidates = [
@@ -274,7 +286,12 @@ def find_duplicates(
     if total_candidates >= 2:
         titles = [_norm_title(articles[i].title) for i in fuzzy_candidates]
         first_authors = [_first_author_token(articles[i].authors) for i in fuzzy_candidates]
+        candidate_uf = _UnionFind(n)  # 候选分组并查集（与精确层 uf 相互独立）
+        truncated = False
+        stop = False
         for start in range(0, total_candidates, FUZZY_CHUNK_SIZE):
+            if stop:
+                break
             end = min(start + FUZZY_CHUNK_SIZE, total_candidates)
             scores = process.cdist(
                 titles[start:end], titles[start:],
@@ -283,6 +300,8 @@ def find_duplicates(
                 workers=-1,
             )
             for local_i, row in enumerate(scores):
+                if stop:
+                    break
                 i_pos = start + local_i
                 i = fuzzy_candidates[i_pos]
                 # cdist zeroes scores below score_cutoff. Only visit title candidates.
@@ -297,10 +316,23 @@ def find_duplicates(
                         continue
                     if fuzz.ratio(first_authors[i_pos], first_authors[j_pos]) < config.FUZZY_AUTHOR_THRESHOLD:
                         continue
-                    # 候选待确认（不 union）：写入 fuzzy_events 供人工清单使用
+                    if candidate_uf.find(i) == candidate_uf.find(j):
+                        continue  # 同组冗余边：连通性已具备，不重复入清单
+                    candidate_uf.union(i, j)
+                    # 候选待确认（不 union 精确层）：写入 fuzzy_events 供人工清单使用
                     fuzzy_events.append((i, j, "fuzzy"))
+                    if len(fuzzy_events) >= FUZZY_PAIR_LIMIT:
+                        truncated = True
+                        stop = True
+                        break
             if progress_callback:
                 progress_callback("fuzzy", end, total_candidates)
+        if truncated:
+            note = (
+                f"模糊候选对数达到 {FUZZY_PAIR_LIMIT} 上限，已截断：仅保留最先"
+                f"确认的 {len(fuzzy_events)} 条候选边，其余相似标题组未全部展开，"
+                "请分批导入或人工核对"
+            )
     elif progress_callback:
         progress_callback("fuzzy", total_candidates, total_candidates)
 
@@ -518,9 +550,9 @@ def stabilize_conflicting_keys(
                 occupied.setdefault(art.zotero_key, root)
 
     # 同步全部配对的键（含 fuzzy/exact_key_conflict 候选对）。改名后自指的
-    # 配对（双方归一到同一键，如同键同 DOI 的自然坍缩）从清单剔除：它们
-    # 不产生标记，留下只会让"精确重复 N"与"重复标记 N"两条口径失真
-    # （复审 #9：自指配对曾使重复标记被静默跳过且无迹可查）。
+    # 配对（双方归一到同一键，如同键同 DOI 的自然坍缩/生成键沿用库内键）
+    # 从清单剔除：它们不产生标记，留下只会让"精确重复 N"与"重复标记 N"
+    # 两条口径失真（复审 #9：自指配对曾使重复标记被静默跳过且无迹可查）。
     refreshed: list[DuplicatePair] = []
     for pair in pairs:
         if 0 <= pair.kept_index < n:

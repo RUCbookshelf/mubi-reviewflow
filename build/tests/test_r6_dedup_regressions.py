@@ -469,6 +469,61 @@ class CliLibraryDedupTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 复审 #4/#10：模糊候选生成树去重 + 总量上限
+# ---------------------------------------------------------------------------
+
+class FuzzyCandidateMemoryTests(unittest.TestCase):
+    def test_two_thousand_similar_titles_produce_spanning_tree_only(self):
+        # 复审 #4 实测：n=2000 同模板标题曾产生 1,999,000 对 / 16.35s /
+        # 386.5MB（tracemalloc 峰值）。生成树去重后至多 n-1 条边。
+        # 时长/内存断言按放宽阈值（泳道指示），防环境抖动误报。
+        arts = [
+            _article(f"K{i}", f"Filler paper number {i} about topic {i}", "Doe, Jane")
+            for i in range(1, 2001)
+        ]
+        tracemalloc.start()
+        started = time.monotonic()
+        kept, report = find_duplicates(arts)
+        duration = time.monotonic() - started
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertEqual(len(kept), 2000)               # 全部保留（只出候选）
+        self.assertEqual(len(report.fuzzy_pairs), 1999)  # 生成树边 = n - 1
+        self.assertTrue(all(p.method == "fuzzy" for p in report.fuzzy_pairs))
+        # 每个非根节点恰出现一次为 dup（--auto-merge-fuzzy 的移除计数口径）
+        dups = [p.dup_key for p in report.fuzzy_pairs]
+        self.assertEqual(len(dups), len(set(dups)))
+        self.assertLess(duration, 30.0)                 # 放宽阈值（原全量 16.35s 起）
+        self.assertLess(peak, 200 * 1024 * 1024)        # 放宽阈值（原 386.5MB）
+
+    def test_fuzzy_pair_limit_truncates_with_explicit_note(self):
+        arts = [
+            _article(f"K{i}", f"Filler paper number {i} about topic {i}", "Doe, Jane")
+            for i in range(1, 9)
+        ]
+        with mock.patch.object(dedup_mod, "FUZZY_PAIR_LIMIT", 3):
+            kept, report = find_duplicates(arts)
+        self.assertEqual(len(report.fuzzy_pairs), 3)    # 截断到上限
+        self.assertEqual(len(kept), 8)
+        self.assertIn("已截断", report.note)
+        self.assertIn("3", report.note)
+
+    def test_connectivity_preserved_for_candidate_grouping(self):
+        # 生成树去重不改变连通性：候选复核组仍把同模板标题聚合为一组。
+        from coscreen.living_review import _candidate_review_groups
+
+        arts = [
+            _article(f"K{i}", f"Filler paper number {i} about topic {i}", "Doe, Jane")
+            for i in range(1, 7)
+        ]
+        _, report = find_duplicates(arts)
+        groups = _candidate_review_groups(
+            report.fuzzy_pairs, arts, {a.zotero_key for a in arts})
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]["members"]), 6)
+
+
+# ---------------------------------------------------------------------------
 # 复审 #5：living_review 口径（duplicates_removed 只按 is_duplicate_of 计）
 # ---------------------------------------------------------------------------
 
