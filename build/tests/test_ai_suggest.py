@@ -16,6 +16,7 @@
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -574,6 +575,49 @@ class AISuggestTests(unittest.TestCase):
         task_dir = app.state.review_workflow.context(self.task, self.users[0]).info.dir
         for hidden in vault.iterdir():
             self.assertFalse(str(hidden).startswith(str(task_dir)))
+
+    def test_trace_export_contains_ai_events_without_key(self):
+        """B8 补测：既有轨迹导出路径必须携带 ai_ 事件（P6/P7 随包审计），载荷含
+        provider/model/prompt_version/字段与状态，且绝无钥匙明文。"""
+        self.enable_task()
+        self.put_personal_key()
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate()):
+            body = self.suggestions().json()
+        sid = body["suggestions"][0]["id"]
+        self.client.post(f"{self.base}/coding/ai-suggestions/{sid}/decision",
+                         json={"status": "edited", "final_value": "RCT（三臂）"},
+                         headers=self.auth(0))
+        r = self.client.post(f"{self.base}/trace/exports", json={"preset": "complete"},
+                             headers=self.auth(0))
+        self.assertEqual(r.status_code, 200, r.text)
+        events: list[dict] = []
+        with zipfile.ZipFile(io.BytesIO(r.content)) as archive:
+            members = [n for n in archive.namelist()
+                       if n == "events.jsonl" or re.match(r"events-part-\d+\.jsonl", n)]
+            self.assertTrue(members, "导出包必须包含 events.jsonl（或分卷）")
+            for name in members:
+                for line in archive.read(name).decode("utf-8").splitlines():
+                    if line.strip():
+                        events.append(json.loads(line))
+        by_action = {e.get("action"): e for e in events}
+        self.assertIn("ai_suggestion_generated", by_action)
+        self.assertIn("ai_suggestion_decided", by_action)
+        generated = by_action["ai_suggestion_generated"]
+        self.assertEqual(generated.get("stage"), "coding")
+        after_gen = generated.get("after") or {}
+        self.assertEqual(after_gen.get("provider"), "openai")
+        self.assertEqual(after_gen.get("model"), "gpt-test")
+        self.assertEqual(after_gen.get("prompt_version"), ai_suggest_api.PROMPT_VERSION)
+        self.assertEqual(after_gen.get("count"), 1)
+        self.assertEqual(after_gen.get("fields"), [{"field_id": "study_design", "value": "随机对照试验"}])
+        decided = by_action["ai_suggestion_decided"]
+        self.assertEqual(decided.get("stage"), "coding")
+        self.assertEqual((decided.get("after") or {}).get("status"), "edited")
+        self.assertEqual((decided.get("after") or {}).get("final_value"), "RCT（三臂）")
+        # 钥匙明文红线：任何事件载荷（含 before/after）都不得携带。
+        blob = json.dumps(events, ensure_ascii=False)
+        self.assertNotIn(FAKE_KEY, blob)
+        self.assertNotIn(".ai_keys", blob)
 
 
 if __name__ == "__main__":
