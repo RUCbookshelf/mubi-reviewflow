@@ -319,10 +319,10 @@ class RisTerminatorGrammarTests(unittest.TestCase):
         self.assertEqual(rows, [("Alpha",)])
 
     def test_mid_record_missing_er_warns_chimera(self):
-        # 中部缺 ER：rispy 不丢弃记录（返回数与 ER 数一致）而是生成嵌合记录
-        # （Beta 吸收 Gamma：作者污染、Gamma 标题静默消失）。按 r6 方向
-        # （只对「rispy 实际丢弃记录」的场景抛错），此形态不整文件拒绝，
-        # 改为可定位的 stderr 告警（R3：能警告不改变行为）
+        # 中部缺 ER（复审 B3 落地后转正）：rispy 原会把 Beta+Gamma 合并为
+        # 嵌合记录（作者污染、Gamma 标题静默消失）——现 _split_chimera_records
+        # 在嵌合点补全合成 ER：Beta 按截至字段导入、Gamma 独立导入，两条
+        # 都不丢；文件级告警回流 raw['_parse_warnings']（Web/API 可见）。
         body = (
             "TY  - JOUR\nTI  - Alpha\nAU  - Alice\nDO  - 10.1/alpha\nER  -\n"
             "TY  - JOUR\nTI  - Beta\nAU  - Bob\nDO  - 10.1/beta\n"
@@ -332,9 +332,14 @@ class RisTerminatorGrammarTests(unittest.TestCase):
             err = StringIO()
             with redirect_stderr(err):
                 articles = parse_ris(_write(tmp, "mid.ris", body))
-        self.assertEqual([a.title for a in articles], ["Alpha", "Beta"])
-        self.assertIn("嵌合", err.getvalue())
+        self.assertEqual([a.title for a in articles], ["Alpha", "Beta", "Gamma"])
+        self.assertEqual([a.doi for a in articles],
+                         ["10.1/alpha", "10.1/beta", "10.1/gamma"])  # 无字段污染
+        self.assertIn("拆分", err.getvalue())
         self.assertIn("第 6 行", err.getvalue())
+        # 文件级告警回流每条记录（B3：API/Web 路径可见）
+        for article in articles:
+            self.assertTrue(any("拆分" in w for w in article.raw.get("_parse_warnings", [])))
 
     def test_er_positive_continuation_not_rejected(self):
         # 复审 #12 原样回放：合法续行 'ER-positive ...' 曾被计为 ER 整文件误拒
@@ -513,6 +518,77 @@ class EncodingConfidenceTests(unittest.TestCase):
         self.assertEqual(article.title, "含抯黮等生僻字的正常UTF-8标题")
         self.assertNotIn("_parse_warnings", article.raw)
 
+    def test_gbk_traditional_chinese_file_not_rejected(self):
+        # 复审 B4 原样回放（R2 误拒）：GBK 编码繁体中文 RIS 曾因 mojibake 标记
+        # 误判整文件 ParseError（常用繁体 160 字采样 40 字命中标记集）。
+        body = "TY  - JOUR\nTI  - 臨床試驗的系統性回顧與薈萃分析\nAU  - 王大明\nER  - \n"
+        with tempfile.TemporaryDirectory() as tmp:
+            err = StringIO()
+            with redirect_stderr(err):
+                article = parse_ris(_write(tmp, "trad.ris", body.encode("gbk")))[0]
+        self.assertEqual(article.title, "臨床試驗的系統性回顧與薈萃分析")
+        self.assertEqual(article.authors, "王大明")
+
+    def test_gbk_traditional_csv_not_rejected(self):
+        # 同上（CSV 路）：「針灸傾斜角度對溫針療效之影響」曾整文件拒绝
+        data = "Title,Creator\r\n針灸傾斜角度對溫針療效之影響,Chen\r\n".encode("gbk")
+        with tempfile.TemporaryDirectory() as tmp:
+            with redirect_stderr(StringIO()):
+                article = parse_csv(_write(tmp, "trad.csv", data))[0]
+        self.assertEqual(article.title, "針灸傾斜角度對溫針療效之影響")
+
+    def test_cp1252_consecutive_accents_not_decoded_as_gbk(self):
+        # 复审 B5 原样回放：'Größe der Stichprobe' 的 ö+ß（相邻高位字母对）
+        # 曾被 GBK 静默解成 'Gr鲞e der Stichprobe'（标题/content_hash 双污染）。
+        data = b"Title,Creator,DOI\r\nGr\xf6\xdfe der Stichprobe,Smith J,10.1/g\r\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            with redirect_stderr(StringIO()):
+                article = parse_csv(_write(tmp, "grosse.csv", data))[0]
+        self.assertEqual(article.title, "Größe der Stichprobe")
+        warnings = " ".join(article.raw.get("_parse_warnings", []))
+        self.assertIn("CP1252", warnings)
+
+    def test_gbk_rare_char_not_misjudged_cp1252(self):
+        # 复审 B6 原样回放：合法 GBK 含生僻字「狝」（AA41）曾被单个标记
+        # 否决 GBK、按 cp1252 静默解成 'ªA'。
+        data = "Title,Creator\r\nA long ASCII title with rare char 狝 inside it,Smith\r\n".encode("gbk")
+        with tempfile.TemporaryDirectory() as tmp:
+            with redirect_stderr(StringIO()):
+                article = parse_csv(_write(tmp, "rare.csv", data))[0]
+        self.assertEqual(article.title, "A long ASCII title with rare char 狝 inside it")
+
+    def test_corrupted_gbk_rejected_loudly(self):
+        # 复审 B10（低危侧收口）：含非法字节（0xFF）的损坏 GBK 文件不得带
+        # 替换字符静默导入——响亮拒绝（2.1.3 基线行为）。
+        good = "Title,Creator\r\n" + "".join(f"中医临床对照试验第{i}行,Wang\r\n" for i in range(50))
+        raw = good.encode("gbk")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ParseError) as ctx:
+                parse_csv(_write(tmp, "bad.csv", raw[:60] + b"\xff" + raw[61:]))
+        self.assertIn("另存为 UTF-8", str(ctx.exception))
+
+    def test_utf16le_file_decoded_not_misled_downstream(self):
+        # 复审 B9 原样回放：UTF-16LE CSV 曾被当作单字节文本「成功」解码
+        # （NUL 算 ASCII），把编码错误误报成缺列/无记录——现按 UTF-16 解码。
+        data = "Title,Creator\r\nTrial of drug X,Smith\r\n".encode("utf-16-le")
+        with tempfile.TemporaryDirectory() as tmp:
+            article = parse_csv(_write(tmp, "u16.csv", data))[0]
+        self.assertEqual(article.title, "Trial of drug X")
+        self.assertIn("UTF-16", " ".join(article.raw.get("_parse_warnings", [])))
+
+    def test_trailing_record_missing_er_warning_flows_into_raw(self):
+        # 复审 B3：末条缺 ER 的丢弃告警回流 raw['_parse_warnings']（此前只
+        # print(stderr)，Web/API 路径用户只看到「少一条」）。
+        body = (
+            "TY  - JOUR\nTI  - Alpha\nAU  - Alice\nER  -\n"
+            "TY  - JOUR\nTI  - Truncated\nAU  - Bob\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with redirect_stderr(StringIO()):
+                articles = parse_ris(_write(tmp, "tail.ris", body))
+        self.assertEqual([a.title for a in articles], ["Alpha"])
+        self.assertTrue(any("缺少结束标签 ER" in w for w in articles[0].raw.get("_parse_warnings", [])))
+
 
 class SourceKeyDemotionTests(unittest.TestCase):
     """U2-P2/R6-P3：非法键与同文件键冲突降级为派生键，直调 upsert 不再覆盖。"""
@@ -537,6 +613,60 @@ class SourceKeyDemotionTests(unittest.TestCase):
         )
         self.assertIn("不是全局稳定标识", " ".join(articles[0].raw.get("_parse_warnings", [])))
         self.assertIn("Box 3", err.getvalue())
+
+    def test_csv_id_column_free_text_demoted_like_ris(self):
+        # 复审（口径分叉收口）：同一自由文本键 'Box 3' 在 RIS 的 AN 列被降级
+        # 告警，CSV 的 ID 列曾绕过全部降级门静默用作字面键（直调 upsert 即
+        # 静默覆盖）——现 ID/AN/Accession_Number 列过同一三道闸。
+        import coscreen.db as db_mod
+
+        data = ("Title,Creator,ID\r\n"
+                "Women Study,Womon Wendy,Box 3\r\n"
+                "Men Study,Mandel Mark,Box 3\r\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            err = StringIO()
+            with redirect_stderr(err):
+                articles = parse_csv(_write(tmp, "idcol.csv", data))
+        keys = [a.zotero_key for a in articles]
+        self.assertNotEqual(keys[0], keys[1])
+        self.assertTrue(all(k.startswith("auto-") for k in keys), keys)
+        self.assertIn("不是全局稳定标识",
+                      " ".join(articles[0].raw.get("_parse_warnings", [])))
+        # 直调 upsert（公开 API）不再静默覆盖
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "t.db")
+            db_mod.init_db(db_path)
+            db_mod.upsert_articles(db_path, articles, [])
+            self.assertEqual(len(db_mod.list_articles(db_path, include_duplicates=True)), 2)
+
+    def test_csv_sequence_number_id_column_demoted(self):
+        # 复审：逐行序号 1/2（无 Key 列的 CSV ID 列）曾静默用作主键
+        data = ("Title,Creator,ID\r\n"
+                "First Study,Alice,1\r\n"
+                "Second Study,Bob,2\r\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            with redirect_stderr(StringIO()):
+                articles = parse_csv(_write(tmp, "seq.csv", data))
+        self.assertTrue(all(a.zotero_key.startswith("auto-") for a in articles), articles)
+
+    def test_same_key_same_title_different_author_demoted(self):
+        # 复审 B1/B7：同键同题（content_hash 相同）但作者不同（Smith John vs
+        # Jane）曾不触发降级、CLI 全链路静默丢 John 行——现解析层按
+        # (哈希,姓,名,年份) 身份降级第二条，去重层另报候选。
+        body = (
+            "TY  - JOUR\nTI  - Same Topic\nAU  - Smith, John\nPY  - 2020\nAN  - SMITH2020\nER  -\n"
+            "TY  - JOUR\nTI  - Same Topic\nAU  - Smith, Jane\nPY  - 2020\nAN  - SMITH2020\nER  -\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            err = StringIO()
+            with redirect_stderr(err):
+                articles = parse_ris(_write(tmp, "smith.ris", body))
+        keys = [a.zotero_key for a in articles]
+        self.assertNotEqual(keys[0], keys[1])
+        self.assertEqual(articles[1].raw.get("_demoted_source_key"), "SMITH2020")
+        self.assertIn("作者/年份不同",
+                      " ".join(articles[1].raw.get("_parse_warnings", [])))
+
 
     def test_same_an_direct_upsert_keeps_two_rows(self):
         # "直调 upsert 也需消歧"：不经 find_duplicates/stabilize，两行都落库

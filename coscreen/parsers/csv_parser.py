@@ -68,24 +68,32 @@ _SOURCE_KEY_COLUMN_NAMES = frozenset({"key", "id", "an", "accession_number"})
 # ---------------------------------------------------------------------------
 
 # utf-8 失败后的回退候选，按序尝试；命中即回退并把告警附到解析结果
+# （含替换字符的损坏候选一律不采纳——见 decode_bytes_with_confidence）
 _ENCODING_FALLBACKS: tuple[str, ...] = ("gbk", "cp1252")
-# 候选解码（errors="replace"）后的替换字符率上限：超过即视为该候选不可信
-_MAX_REPLACEMENT_RATE = 0.001
 # cp1252 候选的非 ASCII 占比上限：西文 ANSI 文本以 ASCII 为主体，而真实
 # GBK 中文按 cp1252 解码会得到大比例 Latin 扩展字符——此时两个候选都
 # 不可信，宁可不回退（抛可操作的 ParseError），不可选错边静默乱码。
 _MAX_CP1252_NON_ASCII_RATE = 0.2
 
 
-def _gbk_mojibake_markers() -> frozenset[str]:
+def _gbk_mojibake_markers() -> tuple[frozenset[str], frozenset[str]]:
     """计算「cp1252/西文 ANSI 字节被 GBK 误解码」的典型乱码字符集（一次性）。
 
     GBK 引导字节（0x80-0xFF，覆盖 cp1252 的弯引号 0x92、重音字母 0xFC 等）
     与常见 ASCII 跟随字节组成的双字节序列若解出单个 CJK 汉字，该汉字即
-    mojibake 标记：0x92+'s' -> '抯'、0xFC+'l' -> '黮'。GB2312 常用汉字的
-    两个字节均 >= 0xA1，正常中文文本几乎不会命中这些字符。
+    mojibake 标记：0x92+'s' -> '抯'、0xFC+'l' -> '黮'。
+
+    集成轮复审修正（R2/R3）：标记分两档——
+    - common：引导字节在 cp1252 西文文献高频区（弯引号/重音字母等），
+      单个命中即有较强「源是 cp1252」证据；
+    - rare：引导字节 0xAA/0xBA（cp1252 的 ª/º，西文文献几乎不用）恰是
+      GBK 扩展区（繁体/罕用字）常用引导，此类标记单独出现不否决 GBK
+      （复审实测：GBK 生僻字「狝」= AA41 曾被整文件误判 cp1252 乱码）。
+    且标记**只用于双候选择优**：cp1252 候选自身不可信（非 ASCII 超 20%）
+    时绝不因标记否决唯一可行的 GBK（复审实测：GBK 繁体中文医学文献
+      160 字采样 40 字命中标记，曾整文件 ParseError 误拒）。
     """
-    markers: set[str] = set()
+    common, rare = set(), set()
     followers = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '\"(),.;:!?"
     for lead in range(0x80, 0x100):
         for follower in followers:
@@ -94,47 +102,132 @@ def _gbk_mojibake_markers() -> frozenset[str]:
             except UnicodeDecodeError:
                 continue
             if len(decoded) == 1 and "\u3400" <= decoded <= "\u9fff":
-                markers.add(decoded)
-    return frozenset(markers)
+                (rare if lead in (0xAA, 0xBA) else common).add(decoded)
+    return frozenset(common), frozenset(rare)
 
 
-_GBK_MOJIBAKE_MARKERS = _gbk_mojibake_markers()
+_GBK_MOJIBAKE_MARKERS, _GBK_MOJIBAKE_RARE_LEAD_MARKERS = _gbk_mojibake_markers()
+
+# cp1252 的「字母」字节区（重音字母等，排除乘除号 0xD7/0xF7）：全部高位字节
+# 都在此区且两两相邻成对时，GBK 把字母对误解为单个汉字（Größe 的 0xF6 0xDF
+# -> '鲞'），此时应优先 cp1252（复审实测）。
+_CP1252_LETTER_BYTES = frozenset(
+    b for b in range(0xC0, 0x100) if b not in (0xD7, 0xF7)
+)
+
+
+def _is_cjk_char(ch: str) -> bool:
+    return "\u3000" <= ch <= "\u9fff" or "\uff00" <= ch <= "\uffef"
 
 
 def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[str]]:
-    """按 UTF-8(含 BOM) → GBK/cp1252（置信度门限）解码，返回 (文本, 告警列表)。
+    """按 UTF-8(含 BOM) → UTF-16 特征 → GBK/cp1252（双候选置信择优）解码。
 
-    回退仅在候选可安全判定时发生：解码替换字符率 < 0.1%，且结果不含典型
-    GBK mojibake 字符（cp1252 候选另要求文本以 ASCII 为主体）。命中则返回
-    文本与一条编码告警（调用方负责附到解析结果与 stderr）；两个候选都不
-    可接受时抛 ParseError 列出已尝试的编码——宁可显式失败，不可静默乱码。
+    判据（集成轮复审修正，R2「宁可少校验不可误拒」/R3「能警告不改变行为」）：
+
+    - UTF-8 严格解码优先（正文含任意 CJK 字符的合法 UTF-8 不经回退链）；
+    - UTF-16 特征（BOM 或 NUL 字节密集）优先按 UTF-16 解码，失败则响亮
+      报错并给转存指引（复审实测：UTF-16LE 曾被 cp1252「成功」解成 NUL
+      文本，把编码错误误报成缺列）；
+    - 候选解码**不允许出现替换字符**：含 U+FFFD 的候选一律不采纳（复审
+      实测：损坏 GBK 曾带着乱码行静默导入；2.1.3 基线为响亮拒绝）；
+    - GBK 与 cp1252 双候选均可行时择优：cp1252 自身要求非 ASCII ≤ 20%；
+      GBK 的 mojibake 标记只在此刻用于择优——common 档标记单个命中或
+      占 CJK 主体时改选 cp1252（附「疑似乱码」告警），cp1252 不可行时
+      绝不因标记否决 GBK；全部高位字节均为 cp1252 字母区且两两成对、
+      CJK 稀疏时优先 cp1252（Größe 形态）；
+    - 无候选可行时抛 ParseError 列出已尝试编码——宁可显式失败，不可静默乱码。
     """
     try:
-        return data.decode("utf-8-sig"), []
+        text = data.decode("utf-8-sig")
+        if "\x00" not in text:
+            return text, []
+        # UTF-8「成功」但含 NUL：UTF-16LE 的纯 ASCII 文本每个字节恰好都是
+        # 合法 UTF-8——不得把 NUL 文本当 UTF-8 放行（复审实测：下游把编码
+        # 错误误报成缺列/无记录），落 UTF-16 特征分支判定。
     except UnicodeDecodeError:
         pass
+    # UTF-16 特征：BOM 或 NUL 密集（纯文本正常内容不含 NUL）
+    null_ratio = data.count(0) / len(data) if data else 0.0
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff") or null_ratio > 0.05:
+        for encoding in ("utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                text = data.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            # 结构合法性：解码结果不得再含 NUL，且以可打印文本为主体
+            # （防止把「含零星 NUL 的损坏 UTF-8」误解成 UTF-16 乱文）
+            printable = sum(
+                1 for ch in text if ch.isprintable() or ch in "\t\r\n")
+            if "\x00" not in text and printable / max(1, len(text)) > 0.95:
+                return text, [
+                    f"{filename} 为 UTF-16 编码，已按 {encoding.upper()} 解码；"
+                    "建议重新另存为 UTF-8 后导入以获得最佳兼容性"
+                ]
+        raise ParseError(
+            f"{filename} 检测到 UTF-16 特征（字节序标记或大量 NUL 字节）但无法"
+            "按 UTF-16 解码；请将其重新另存为 UTF-8 后再导入。"
+        )
+    candidates: dict[str, str] = {}
     for encoding in _ENCODING_FALLBACKS:
         try:
-            text = data.decode(encoding, errors="replace")
-        except (UnicodeDecodeError, LookupError):
-            continue
-        replacement_rate = text.count("\ufffd") / len(text) if text else 0.0
-        if replacement_rate >= _MAX_REPLACEMENT_RATE:
-            continue
-        if any(ch in _GBK_MOJIBAKE_MARKERS for ch in text):
-            continue
-        if encoding == "cp1252":
-            non_ascii = sum(1 for ch in text if ord(ch) > 0x7F)
-            if text and non_ascii / len(text) > _MAX_CP1252_NON_ASCII_RATE:
-                continue
-        return text, [
-            f"{filename} 非 UTF-8 编码，已按 {encoding.upper()} 解码；"
-            "若标题/作者出现异常字符，请将文件重新另存为 UTF-8 后导入"
-        ]
-    raise ParseError(
-        f"无法安全判定 {filename} 的文本编码（已尝试 UTF-8 与 "
-        "GBK/cp1252 候选：解码失败或疑似乱码）；请将其重新另存为 UTF-8 后再导入。"
+            candidates[encoding] = data.decode(encoding)  # 严格解码
+        except UnicodeDecodeError:
+            replaced = data.decode(encoding, errors="replace")
+            if "\ufffd" in replaced:
+                continue  # 损坏候选不采纳（响亮失败优于静默乱码导入）
+            candidates[encoding] = replaced
+
+    def _stats(encoding: str) -> tuple[int, int, int, float]:
+        text = candidates[encoding]
+        cjk = sum(1 for ch in text if _is_cjk_char(ch))
+        common = sum(1 for ch in text if ch in _GBK_MOJIBAKE_MARKERS)
+        non_ascii = sum(1 for ch in text if ord(ch) > 0x7F)
+        return cjk, common, non_ascii, (non_ascii / len(text) if text else 0.0)
+
+    gbk_ok, cp1252_ok = "gbk" in candidates, "cp1252" in candidates
+    cp1252_viable = False
+    if cp1252_ok:
+        _, _, _, non_ascii_rate = _stats("cp1252")
+        cp1252_viable = non_ascii_rate <= _MAX_CP1252_NON_ASCII_RATE
+    if gbk_ok and cp1252_viable:
+        text_gbk = candidates["gbk"]
+        cjk, common_markers, _, _ = _stats("gbk")
+        # 形态一：cp1252 字母对被 GBK 吞成单个汉字（Größe：0xF6 0xDF -> 鲞）
+        highs = [b for b in data if b >= 0x80]
+        paired_letters = bool(highs) and all(b in _CP1252_LETTER_BYTES for b in highs) and all(
+            (i + 1 < len(data) and data[i + 1] >= 0x80) or (i > 0 and data[i - 1] >= 0x80)
+            for i, b in enumerate(data) if b >= 0x80
+        )
+        sparse_cjk = cjk / max(1, len(text_gbk)) <= 0.05
+        if common_markers and (
+            common_markers == 1 or common_markers * 2 > cjk
+        ):
+            # 形态二：cp1252 弯引号/重音字母 + ASCII 被 GBK 误解（'…抯…'）
+            return candidates["cp1252"], [
+                f"{filename} 非 UTF-8 编码：检测到疑似 GBK 乱码标记，已按 CP1252 "
+                "解码；若标题/作者应为中文，请将文件重新另存为 UTF-8 后导入"
+            ]
+        if paired_letters and sparse_cjk:
+            return candidates["cp1252"], [
+                f"{filename} 非 UTF-8 编码，已按 CP1252 解码（高位字节为西文重音"
+                "字母对）；若标题/作者应为中文，请将文件重新另存为 UTF-8 后导入"
+            ]
+    chosen = next(
+        (enc for enc in ("gbk", "cp1252") if enc in candidates and
+         (enc != "cp1252" or cp1252_viable)),
+        None,
     )
+    if chosen is None:
+        raise ParseError(
+            f"无法安全判定 {filename} 的文本编码（已尝试 UTF-8/UTF-16 与 "
+            "GBK/cp1252 候选：解码失败、含损坏字节或非 ASCII 占比异常）；"
+            "请将其重新另存为 UTF-8 后再导入。"
+        )
+    return candidates[chosen], [
+        f"{filename} 非 UTF-8 编码，已按 {chosen.upper()} 解码；"
+        "若标题/作者出现异常字符，请将文件重新另存为 UTF-8 后导入"
+    ]
 
 
 # ---------------------------------------------------------------------------

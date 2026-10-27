@@ -107,8 +107,8 @@ def _in_flight_title(lines: list[str], start_index: int) -> str:
     return ""
 
 
-def _warn_dropped_records(text: str, filename: str) -> None:
-    """按 rispy 状态机找出将被静默丢弃的在途记录，逐条打显式可操作告警。
+def file_level_warnings(text: str, filename: str) -> list[str]:
+    """按 rispy 状态机找出截断/嵌合记录，返回文件级告警并打到 stderr。
 
     rispy 的实际行为：以 "TY" 开头的行开启记录；记录仅在文法合法的
     "ER  - " 行结算；生成器耗尽时在途记录被静默丢弃。r2 评审 R3 裁定
@@ -116,16 +116,16 @@ def _warn_dropped_records(text: str, filename: str) -> None:
     记录序号、起始行号、标题与修复指引），不再抛 ParseError 把前面
     已完整的记录一并丢弃（此前实测 CLI rc=2、0 行入库）。
 
-    在途记录中再次出现文法合法 TY 行时 rispy 会吞并后续记录生成嵌合
-    记录（rispy 不丢弃记录，返回数与 ER 数一致）——同样只告警不拒绝。
-    除此之外不附加任何校验：纯文本幻影记录（如 ER 后以 "TY" 开头的
-    注释行）rispy 本就丢弃，不视为数据丢失。
+    集成轮复审（B3）：告警除 stderr 外**作为返回值回流**——调用方把它
+    附到每条记录的 raw["_parse_warnings"]，Web/API 路径不再只看到
+    「少一条」；在途记录中的嵌合 TY 由 _split_chimera_records 预先
+    拆分（两条各自导入，不再生成字段互相污染的嵌合记录）。
     """
+    warnings: list[str] = []
     lines = text.split("\n")
     in_record = False
     open_line = 0
     ty_count = 0
-    chimera_warned = False
     for lineno, line in enumerate(lines, start=1):
         if not in_record:
             if line.startswith("TY") and _ris_tag(line) == "TY":
@@ -136,23 +136,47 @@ def _warn_dropped_records(text: str, filename: str) -> None:
             tag = _ris_tag(line)
             if tag == "ER":
                 in_record = False
-            elif tag == "TY" and not chimera_warned:
-                chimera_warned = True
-                print(
-                    f"警告：{filename} 第 {lineno} 行出现新的 TY 标签，但第 {open_line} 行"
-                    "起的记录尚未以 \"ER  -\" 结束；rispy 会把两条记录合并为一条嵌合记录"
-                    "（后续记录的标题会被静默吞并），请检查导出文件的完整性。",
-                    file=sys.stderr,
+            elif tag == "TY":
+                warnings.append(
+                    f"{filename} 第 {lineno} 行出现新的 TY 标签，但第 {open_line} 行"
+                    "起的记录尚未以 \"ER  -\" 结束；已在该处补全 ER 把两条记录拆分"
+                    "导入（否则 rispy 会把它们合并为一条字段互相污染的嵌合记录）。"
                 )
     if in_record:
         title = _in_flight_title(lines, open_line - 1)
         title_hint = f"（标题：{title}）" if title else ""
-        print(
-            f"警告：{filename} 第 {ty_count} 条记录{title_hint}（自第 {open_line} 行起）"
+        warnings.append(
+            f"{filename} 第 {ty_count} 条记录{title_hint}（自第 {open_line} 行起）"
             "缺少结束标签 ER（正确写法为两个空格: \"ER  -\"），该条记录未被导入；"
-            "前面已完整的记录照常入库。导出文件可能被截断，请补全 ER 后单独重导该条。",
-            file=sys.stderr,
+            "前面已完整的记录照常入库。导出文件可能被截断，请补全 ER 后单独重导该条。"
         )
+    for warning in warnings:
+        print(f"警告：{warning}", file=sys.stderr)
+    return warnings
+
+
+def _split_chimera_records(text: str) -> str:
+    """在「在途记录中的文法合法 TY 行」前补全合成 ER 终止行（复审 B3）。
+
+    rispy 对未结算记录中的新 TY 会吞并后续记录生成嵌合记录（前条的
+    作者/DOI 被后条标题污染）。此处按同一状态机扫描，在嵌合点插入
+    "ER  -"：前条按「截至此处已完整的字段」正常导入，后条独立解析——
+    不丢任何一条（R3），只附文件级告警说明拆分。其余行为不变：纯文本
+    幻影记录（ER 后以 "TY" 开头的注释行）rispy 本就丢弃，不插入。
+    """
+    out: list[str] = []
+    in_record = False
+    for line in text.split("\n"):
+        tag = _ris_tag(line)
+        if in_record and tag == "TY":
+            out.append("ER  -")
+            in_record = False
+        if not in_record and line.startswith("TY") and tag == "TY":
+            in_record = True
+        elif in_record and tag == "ER":
+            in_record = False
+        out.append(line)
+    return "\n".join(out)
 
 
 def _read_text(path: Path) -> tuple[str, list[str]]:
@@ -205,7 +229,9 @@ def parse_ris(path: str | Path) -> list[Article]:
         for warning in encoding_warnings:
             print(f"警告：{warning}", file=sys.stderr)
     text = _normalize_er_terminators(text)
-    _warn_dropped_records(text, p.name)
+    file_warnings = file_level_warnings(text, p.name)
+    # 嵌合拆分在告警计算之后（告警行号对应原始文本）
+    text = _split_chimera_records(text)
     # 2.1.3 出货形态（r2 评审 R1）：_fallback_id 用整文件摘要，保持逐字一致
     source_digest = hashlib.sha256(p.read_bytes()).hexdigest()
     try:
@@ -244,7 +270,12 @@ def parse_ris(path: str | Path) -> list[Article]:
 
         # raw 剔除 "_" 前缀键（R6-P2 防御对称；rispy 正常不产生此类键名）
         raw = {k: v for k, v in record.items() if not str(k).startswith("_")}
+        # 文件级告警（截断/嵌合拆分）随每条记录回流 raw（复审 B3：Web/API
+        # 路径不再只看到「少一条」），去重保持首次出现顺序
         record_warnings: list[str] = list(encoding_warnings)
+        for warning in file_warnings:
+            if warning not in record_warnings:
+                record_warnings.append(warning)
 
         # 来源键降级（U2-P2/R6-P3）：AN 在 Zotero 导出里是 archiveLocation
         # 自由文本（可重复、可含 "/" 或超长），ID 是 Zotero 导入时忽略的标签。

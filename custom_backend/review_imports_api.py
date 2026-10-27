@@ -94,6 +94,16 @@ class ImportRuntime:
                                'digest': hashlib.sha256(path.read_bytes()).hexdigest()})
                 self.progress(job_id, task_id, user['user_id'], 'parse', min(9, 2 + 7 * (i + 1) // len(files)))
             result = await asyncio.to_thread(self.process, task_id, user, parsed, batch, job_id, screener)
+            # 复审 B3：文件级解析告警（截断/嵌合拆分/编码回退）随 API 响应
+            # 返回，Web 端不再只看到「少一条」；逐条去重保持出现顺序。
+            parse_warnings: list[str] = []
+            for entry in parsed:
+                for article in entry['articles']:
+                    for warning in (article.raw.get('_parse_warnings') or []):
+                        if warning not in parse_warnings:
+                            parse_warnings.append(warning)
+            if parse_warnings:
+                result['parse_warnings'] = parse_warnings
             self.progress(job_id, task_id, user['user_id'], 'complete', 100, staged=result['staged'], batch_id=result['batch_id'])
             return result
         except Exception as exc:
