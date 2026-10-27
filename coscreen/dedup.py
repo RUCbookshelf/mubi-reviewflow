@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import unicodedata
 
 from rapidfuzz import fuzz, process
@@ -302,6 +302,21 @@ def find_duplicates(
 # 键消歧（U1-P3/U1-P6）：复用后端 _stabilize_generated_import_keys 的思路
 # ---------------------------------------------------------------------------
 
+def merged_group_roots(count: int, pairs: Sequence[DuplicatePair]) -> list[int]:
+    """返回 0..count-1 每个下标所在精确合并组的根下标（根=组内最小下标）。
+
+    仅 method 为 exact_doi/exact_key 的事件参与组重建（fuzzy 与
+    exact_key_conflict 是候选，不是合并证据）；下标越界或未提供（-1）
+    的配对忽略。供调用方按"组根"做记录级统计（U1-P4 的 total-unique
+    口径在 living_review 等按行消费场景的落地）。
+    """
+    uf = _UnionFind(count)
+    for pair in pairs:
+        if pair.method in ("exact_doi", "exact_key") and 0 <= pair.kept_index < count and 0 <= pair.dup_index < count:
+            uf.union(pair.kept_index, pair.dup_index)
+    return [uf.find(i) for i in range(count)]
+
+
 def _conflict_suffix_key(key: str, art: Article, occupied: set[str]) -> str:
     """为冲突键生成确定性后缀键：键 + "-" + sha256(键|稳定内容标识)[:12]。
 
@@ -374,12 +389,17 @@ def stabilize_conflicting_keys(
         target = final_key[root]
         if art.zotero_key == target:
             continue
+        # 以下两种情况必须改名，否则 upsert 主键会覆盖别的行：
+        # 1) 本条目的字面键被批内其他合并组占用为最终键；
+        # 2) 本条目的字面键在库内（known）对应的是"另一篇文献"（DOI/标题
+        #    冲突）。库内同键若与本条目是同一文献（_key_merge_confirmed
+        #    为真），则保留成员原键：upsert 走既有行的更新路径，重复关系
+        #    由 is_duplicate_of 标记表达，组代表的键不抢占成员键。
         owner = occupied.get(art.zotero_key)
+        db_art = known_by_key.get(art.zotero_key)
         occupied_elsewhere = (
             (owner is not None and owner != root)
-            # 本条目的字面键是库内既有键、而本组已被消歧：跟随本组最终键，
-            # 否则 upsert 主键会覆盖库内该键的行（跨批次冲突场景）。
-            or (art.zotero_key in known_by_key)
+            or (db_art is not None and not _key_merge_confirmed(db_art, art))
         )
         if occupied_elsewhere:
             renames.append((art.zotero_key, target))

@@ -189,8 +189,13 @@ def cmd_import(args: argparse.Namespace) -> int:
         known=known,
     )
     mark_pairs = report.exact_pairs
+    screening_count = report.unique
     if args.auto_merge_fuzzy:
         mark_pairs = report.exact_pairs + report.fuzzy_pairs
+        # opt-in 自动合并口径：进入筛选数按合并后保留数打印——模糊候选
+        # 每个不同的 dup_key 记一条被移除（与 DB 可筛选行数一致）。
+        fuzzy_removed = len({p.dup_key for p in report.fuzzy_pairs})
+        screening_count = max(0, report.unique - fuzzy_removed)
     summary = db_mod.upsert_articles(args.db, articles, mark_pairs)
     if args.screener:
         db_mod.set_meta(args.db, "screener", args.screener)
@@ -201,7 +206,7 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     print(
         f"导入 {report.total} 条 | 精确重复 {report.n_duplicates()} | "
-        f"进入筛选 {report.unique} 条"
+        f"进入筛选 {screening_count} 条"
     )
     if report.fuzzy_pairs:
         if args.auto_merge_fuzzy:

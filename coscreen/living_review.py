@@ -36,7 +36,12 @@ from typing import Any, Mapping, Sequence
 
 from coscreen import db as db_mod
 from coscreen.al.ranker import ActiveLearningRanker
-from coscreen.dedup import DuplicatePair, find_duplicates, stabilize_conflicting_keys
+from coscreen.dedup import (
+    DuplicatePair,
+    find_duplicates,
+    merged_group_roots,
+    stabilize_conflicting_keys,
+)
 from coscreen.models import Article
 from coscreen.parsers import parse_file
 from coscreen.review_analysis import save_effect, save_study, synthesize
@@ -446,26 +451,32 @@ def process_incremental_articles(
     # 键消歧（U1-P3/U1-P6）：combined 中 existing 在前，合并组根总是库内
     # 条目或新批中输入靠前者；仅冲突键加确定性后缀，库内主键不被重写。
     stabilize_conflicting_keys(combined, exact_pairs + candidate_pairs)
-    # 消歧后库内键集不变（existing 从未被改名），直接复用 existing_keys。
-    # 与库重复（两类，均不算新增，只按精确合并证据判定）：
-    #   a) 同键重导——zotero_key 已在库内（exact 事件产生 kept==dup 的
-    #      自指配对，dup_key 在 existing_keys 中，靠键判定而不是靠配对）；
-    #   b) 异键同 DOI——配对的保留条目在库内、重复条目来自新文件。
-    # 批内重复（配对双方都来自新文件）与库无关，单独计。
-    dup_against_db: set[str] = {
-        a.zotero_key for a in incoming if a.zotero_key in existing_keys
-    }
-    batch_dup_keys: set[str] = set()
-    for p in exact_pairs:
-        if p.dup_key in existing_keys or p.dup_key in dup_against_db:
-            continue  # a) 已按键计入
-        if p.kept_key in existing_keys:
-            dup_against_db.add(p.dup_key)  # b)
+    # 与库重复的判定按合并组根（U1-P4 记录口径）：组根在库内 → 该组的
+    # 新文献行均算与库重复（同键重导与异键同 DOI 两类统一覆盖）；组根
+    # 是新文件条目 → 组根即该批新组代表进入新增，其余成员计批内移除。
+    # 同键同 DOI 的两条只移除 1 条并保留 1 个代表，与
+    # DedupReport.n_duplicates() 的 total-unique 口径一致。
+    roots = merged_group_roots(len(combined), exact_pairs)
+    dup_against_db: set[str] = set()
+    against_db_rows = 0
+    batch_removed = 0
+    kept_new: list[Article] = []
+    for idx, art in enumerate(incoming, start=len(existing)):
+        root = roots[idx]
+        if root < len(existing):
+            dup_against_db.add(art.zotero_key)
+            against_db_rows += 1
+        elif root == idx:
+            if art.zotero_key in existing_keys:
+                # 无合并证据但键与库内同键（生成键重导等）：沿用按键判定
+                # 的旧保护，不算新增；行由 upsert 更新既有键。
+                dup_against_db.add(art.zotero_key)
+                against_db_rows += 1
+            else:
+                kept_new.append(art)
         else:
-            batch_dup_keys.add(p.dup_key)  # 批内
-    dup_keys = dup_against_db | batch_dup_keys
-    kept_new = [a for a in incoming if a.zotero_key not in dup_keys]
-    duplicates_removed = len(incoming) - len(kept_new)
+            batch_removed += 1  # 批内重复成员（组根代表保留）
+    duplicates_removed = against_db_rows + batch_removed
     duplicates_against_db = len(dup_against_db)
 
     # 模糊/键冲突候选 → title_duplicate_reviews 候选清单（人工确认）

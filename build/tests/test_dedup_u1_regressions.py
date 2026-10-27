@@ -376,6 +376,23 @@ class ExactKeyConflictTests(unittest.TestCase):
         self.assertEqual(renames[0][0], "WM1")
         self.assertTrue(incoming[0].zotero_key.startswith("WM1-"))
 
+    def test_stabilize_keeps_compatible_known_member_key(self):
+        # 评审反馈（R2）：库内 K2 与导入 K2 是同一文献（DOI 相等），导入
+        # 批内 K1+K2 同 DOI 合并——组成员不得被改名为组代表键（否则代表
+        # 行被成员内容覆盖、重复关系丢失）。兼容的库内同键成员保留原键，
+        # 由 upsert 更新既有行并打 is_duplicate_of 标记。
+        db_art = _article("K2", "Title B", "Doe, Jane", "10.9/same")
+        arts = [
+            _article("K1", "Title A", "Smith, Ann", "10.9/same"),
+            _article("K2", "Title B refined", "Doe, Jane", "10.9/same"),
+        ]
+        _, report = find_duplicates(arts)
+        renames = stabilize_conflicting_keys(arts, report.exact_pairs, known=[db_art])
+        self.assertEqual(renames, [])
+        self.assertEqual([a.zotero_key for a in arts], ["K1", "K2"])
+        self.assertEqual((report.exact_pairs[0].kept_key, report.exact_pairs[0].dup_key),
+                         ("K1", "K2"))
+
 
 # ---------------------------------------------------------------------------
 # U1-P4 / U1-P12：重复计数口径
@@ -572,10 +589,45 @@ class CliImportSemanticsTests(unittest.TestCase):
             proc = _run_cli(["import", "--file", str(ris), "--db", db, "--auto-merge-fuzzy"])
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("已自动合并", proc.stdout)
+            # 评审反馈（R5/FB5）：进入筛选数必须按合并后保留数打印，
+            # 与 DB 可筛选行数一致（此前打印 unique=2 而 DB 只剩 1 条可筛）。
+            self.assertIn("进入筛选 1 条", proc.stdout)
             with closing(sqlite3.connect(db)) as conn:
                 dup_of = dict(conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
+                screenable = conn.execute(
+                    "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NULL"
+                ).fetchone()[0]
             self.assertEqual(dup_of, {"WM1": None, "WM2": "WM1"})
+            self.assertEqual(screenable, 1)
+
+    def test_reimport_same_doi_group_keeps_titles_and_marks(self):
+        # 评审反馈（R2/FB1）：库内已有 K2('Title B')，再导 K1('Title A',
+        # 同 DOI)+K2('Title B refined', 同 DOI) → K1 保留 Title A、K2 更新
+        # 为 refined 并标记 is_duplicate_of=K1；不得出现 K2->K1 改键。
+        with tempfile.TemporaryDirectory(prefix="rf_u1cli5_") as tmp:
+            seed = Path(tmp) / "seed.ris"
+            batch = Path(tmp) / "batch.ris"
+            db = str(Path(tmp) / "x.db")
+            _write_ris(seed, [{"au": "Doe, Jane", "ti": "Title B", "do": "10.9/same", "id": "K2"}])
+            _write_ris(batch, [
+                {"au": "Smith, Ann", "ti": "Title A", "do": "10.9/same", "id": "K1"},
+                {"au": "Doe, Jane", "ti": "Title B refined", "do": "10.9/same", "id": "K2"},
+            ])
+            self.assertEqual(_run_cli(["import", "--file", str(seed), "--db", db]).returncode, 0)
+            proc = _run_cli(["import", "--file", str(batch), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("键消歧", proc.stdout)
+            self.assertIn("重复标记 1 条", proc.stdout)
+            self.assertIn("进入筛选 1 条", proc.stdout)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = dict(conn.execute(
+                    "SELECT zotero_key, title FROM articles").fetchall())
+                dup_of = dict(conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles").fetchall())
+            self.assertEqual(rows["K1"], "Title A")            # 代表行未被覆盖
+            self.assertEqual(rows["K2"], "Title B refined")    # 重导更新
+            self.assertEqual(dup_of, {"K1": None, "K2": "K1"})
 
     def test_same_id_different_articles_both_survive(self):
         # 首审实测：两条 ID - 1 不同文献曾静默覆盖只剩一条。
@@ -624,6 +676,32 @@ class CliImportSemanticsTests(unittest.TestCase):
 
 
 class LivingReviewCandidateTests(unittest.TestCase):
+    def test_batch_same_key_same_doi_counts_one_record(self):
+        # 评审反馈（R2/FB3·U1-P4）：库内无该文献时，批内两条同键同 DOI
+        # 曾计 duplicates_removed=2、new_articles=[]（DB 实际只新增 1 行、
+        # DedupReport.n_duplicates()=1）。按合并组根口径：移除 1 条、
+        # 保留 1 个代表进入新增。
+        with tempfile.TemporaryDirectory(prefix="rf_u1lr2_") as tmp:
+            db = str(Path(tmp) / "lr.db")
+            db_mod.init_db(db)
+            incoming = [
+                _article("K1", "Title A", "Smith, John", "10.9/same"),
+                _article("K1", "Title A", "Smith, John", "10.9/SAME "),
+            ]
+            # 同一输入的 DedupReport 口径基准
+            _, report = find_duplicates(list(incoming))
+            self.assertEqual(report.n_duplicates(), 1)
+
+            result = process_incremental_articles(
+                db, incoming, "A vs B", "mortality", "12 months", "RR")
+            self.assertEqual(result.duplicates_removed, 1)
+            self.assertEqual([a["zotero_key"] for a in result.new_articles], ["K1"])
+            self.assertIn("新增文献：1 篇（去重移除 1 篇）", result.change_report)
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, is_duplicate_of FROM articles").fetchall()
+            self.assertEqual(rows, [("K1", None)])
+
     def test_fuzzy_goes_to_candidate_list_exact_still_merges(self):
         with tempfile.TemporaryDirectory(prefix="rf_u1lr_") as tmp:
             db = str(Path(tmp) / "lr.db")
