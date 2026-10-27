@@ -732,9 +732,10 @@ class CliImportSemanticsTests(unittest.TestCase):
 class LivingReviewCandidateTests(unittest.TestCase):
     def test_batch_same_key_same_doi_counts_one_record(self):
         # 评审反馈（R2/FB3·U1-P4）：库内无该文献时，批内两条同键同 DOI
-        # 曾计 duplicates_removed=2、new_articles=[]（DB 实际只新增 1 行、
-        # DedupReport.n_duplicates()=1）。按合并组根口径：移除 1 条、
-        # 保留 1 个代表进入新增。
+        # 曾计 duplicates_removed=2、new_articles=[]（DB 实际只新增 1 行）。
+        # r6（复审 #5）口径：duplicates_removed 只按 is_duplicate_of 标记计
+        # ——同键自然坍缩为 1 行、无标记（DB 与 prisma_task_metrics 均按
+        # is_duplicate_of 计 0），故 duplicates_removed=0、new=K1 一条。
         with tempfile.TemporaryDirectory(prefix="rf_u1lr2_") as tmp:
             db = str(Path(tmp) / "lr.db")
             db_mod.init_db(db)
@@ -742,15 +743,15 @@ class LivingReviewCandidateTests(unittest.TestCase):
                 _article("K1", "Title A", "Smith, John", "10.9/same"),
                 _article("K1", "Title A", "Smith, John", "10.9/SAME "),
             ]
-            # 同一输入的 DedupReport 口径基准
+            # 同一输入的 DedupReport 口径基准（记录口径仍是 total-unique=1）
             _, report = find_duplicates(list(incoming))
             self.assertEqual(report.n_duplicates(), 1)
 
             result = process_incremental_articles(
                 db, incoming, "A vs B", "mortality", "12 months", "RR")
-            self.assertEqual(result.duplicates_removed, 1)
+            self.assertEqual(result.duplicates_removed, 0)  # 无 is_duplicate_of 标记
             self.assertEqual([a["zotero_key"] for a in result.new_articles], ["K1"])
-            self.assertIn("新增文献：1 篇（去重移除 1 篇）", result.change_report)
+            self.assertIn("新增文献：1 篇（去重移除 0 篇）", result.change_report)
             with closing(sqlite3.connect(db)) as conn:
                 rows = conn.execute(
                     "SELECT zotero_key, is_duplicate_of FROM articles").fetchall()

@@ -446,6 +446,9 @@ def process_incremental_articles(
     规范化 DOI 相等与"键相等且 DOI/标题不冲突"；标题相似的模糊配对与键
     冲突不自动标记重复，而是进 title_duplicate_reviews 候选清单待人工确认，
     冲突键经 stabilize_conflicting_keys 消歧后各自入库（库内主键不重写）。
+    ``duplicates_removed`` 只按本批实际写入的 is_duplicate_of 标记计数
+    （复审 #5：待审候选归 ``pending_candidates``，与 prisma_task_metrics
+    的 is_duplicate_of 口径统一；同键自然坍缩不产生标记故不计入）。
     """
     db_path = existing_db_path
 
@@ -473,30 +476,28 @@ def process_incremental_articles(
     # 与库重复的判定按合并组根（U1-P4 记录口径）：组根在库内 → 该组的
     # 新文献行均算与库重复（同键重导与异键同 DOI 两类统一覆盖）；组根
     # 是新文件条目 → 组根即该批新组代表进入新增，其余成员计批内移除。
-    # 同键同 DOI 的两条只移除 1 条并保留 1 个代表，与
-    # DedupReport.n_duplicates() 的 total-unique 口径一致。
+    # 重复计数只按 **is_duplicate_of 标记**（复审 #5，r6 口径统一）：
+    # - 同键自然坍缩的行（重导同键同 DOI）不产生标记，不计入——与
+    #   prisma_task_metrics 按 is_duplicate_of 根链统计的口径一致；
+    # - 待人工确认的模糊/键冲突候选不打标记，归 pending_candidates 字段，
+    #   不再被计入"已移除"。
     roots = merged_group_roots(len(combined), exact_pairs)
-    dup_against_db: set[str] = set()
-    against_db_rows = 0
-    batch_removed = 0
+    incoming_keys = {a.zotero_key for a in incoming}
+    marked_pairs = [
+        p for p in exact_pairs
+        if p.dup_key != p.kept_key and p.dup_key in incoming_keys
+    ]
+    duplicates_removed = len({p.dup_key for p in marked_pairs})
+    duplicates_against_db = len({
+        p.dup_key for p in marked_pairs if p.kept_key in existing_keys
+    })
     kept_new: list[Article] = []
     for idx, art in enumerate(incoming, start=len(existing)):
         root = roots[idx]
-        if root < len(existing):
-            dup_against_db.add(art.zotero_key)
-            against_db_rows += 1
-        elif root == idx:
-            if art.zotero_key in existing_keys:
-                # 无合并证据但键与库内同键（生成键重导等）：沿用按键判定
-                # 的旧保护，不算新增；行由 upsert 更新既有键。
-                dup_against_db.add(art.zotero_key)
-                against_db_rows += 1
-            else:
-                kept_new.append(art)
-        else:
-            batch_removed += 1  # 批内重复成员（组根代表保留）
-    duplicates_removed = against_db_rows + batch_removed
-    duplicates_against_db = len(dup_against_db)
+        if root == idx and art.zotero_key not in existing_keys:
+            # 组根本批且键不在库内：本批新增（生成键内容匹配沿用库内键的
+            # 行走更新路径，不算新增——重导幂等）。
+            kept_new.append(art)
 
     # 模糊/键冲突候选 → title_duplicate_reviews 候选清单（人工确认）
     review_groups = _candidate_review_groups(
