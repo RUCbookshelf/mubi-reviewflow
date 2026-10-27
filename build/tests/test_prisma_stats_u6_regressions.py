@@ -260,5 +260,63 @@ class ResolvedDomainTests(unittest.TestCase):
         self.assertEqual(flow.warnings, ())
 
 
+# ---------------------------------------------------------------------------
+# R6-F9（r6 评审反馈 2 修正）：screened 口径与任务页 /prisma-metrics 的对齐边界
+# ---------------------------------------------------------------------------
+
+class ScreenedCaliberAlignmentTests(unittest.TestCase):
+    """reviewer 口径对齐钉住；team 口径未对齐（如实限定）。
+
+    - reviewer 模式：任务页 records_screened = len(db_keys & set(first))，
+      first 为决策表内记录（只含已保存的实际决策）——与本模块「至少一名
+      筛选员有实际决策」同口径，本类钉住；
+    - team 模式未对齐：custom_backend/prisma_task_metrics.py 的 outcomes
+      只返回 agreed/adjudicated（已决）记录，pending/部分已筛行不计入，
+      比本模块口径更严；对齐需修改该文件（不在本泳道允许改动清单），
+      Task 端到端未运行——边界声明见 coscreen/stats/prisma.py 模块 docstring。
+    """
+
+    def test_screened_matches_saved_decision_union(self):
+        # 两名筛选员的决策表（任务页 first 的数据形状：键 -> 已保存决策）；
+        # 导出 CSV 额外含一条双方都未筛的空行 k9（不在任何决策表内）。
+        df_a = _decisions_df([("k1", "include"), ("k2", "exclude"), ("k9", "")])
+        df_b = _decisions_df([("k1", "include"), ("k3", "include"), ("k9", "")])
+        merged = merge_decisions(df_a, df_b)
+        flow = prisma_from_merge(merged)
+        saved_decision_keys = {"k1", "k2", "k3"}  # 两名筛选员决策表的键并集
+        self.assertEqual(flow.screened, len(saved_decision_keys))
+        self.assertEqual(
+            merged.loc[merged["zotero_key"] == "k9", "status"].iloc[0], "unscreened"
+        )
+
+
+# ---------------------------------------------------------------------------
+# r6 评审反馈 4：PrismaFlow.warnings 的呈现边界（JSON-only）
+# ---------------------------------------------------------------------------
+
+class WarningSurfaceBoundaryTests(unittest.TestCase):
+    def test_reconciliation_warnings_are_json_only(self):
+        # 勾稽提示仅随 to_dict（CLI stats.json / Python 调用方）导出；
+        # prisma_dot 的 DOT 图不呈现警示行（保持标准流程图形状），
+        # CLI stdout 亦不打印（coscreen/cli.py 不在本泳道允许改动清单）。
+        class _Report:
+            total = 10
+            unique = 8
+
+            def n_duplicates(self) -> int:
+                return self.total - self.unique
+
+        merged = merge_decisions(
+            _decisions_df([(f"k{i}", "include") for i in range(5)]),
+            _decisions_df([(f"k{i}", "include") for i in range(5)]),
+        )
+        flow = prisma_from_merge(merged, report=_Report())
+        self.assertTrue(flow.warnings)
+        self.assertTrue(flow.to_dict()["warnings"])
+        dot = prisma_dot(flow)
+        self.assertNotIn("筛选尚未完成", dot)
+        self.assertNotIn("≠ screened", dot)
+
+
 if __name__ == "__main__":
     unittest.main()

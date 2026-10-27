@@ -7,8 +7,7 @@ prisma_dot 输出带中文标签的 DOT 字符串，可直接用于 st.graphviz_
 计数口径（U6-P3/P7 修复）：
 - screened 只计「至少一名筛选员给出实际决策（非空串）」的记录：双方决策
   均为空的行（merge_decisions 现输出 status="unscreened"）与多人路径
-  n_screened=0 的 incomplete 行不计入，PRISMA 分母不再虚高，并与任务页
-  /prisma-metrics（只计决策表内记录）口径一致（R6-F9）；
+  n_screened=0 的 incomplete 行不计入，PRISMA 分母不再虚高；
 - included/excluded 未给 resolved 时仅统计双方一致的实际决策
   （include/exclude）；一致 maybe 等其他决策属未决，与 conflict/单边行
   一样只体现在 screened − included − excluded 的「未决」差值中
@@ -16,6 +15,22 @@ prisma_dot 输出带中文标签的 DOT 字符串，可直接用于 st.graphviz_
 - resolved / prisma_two_stage 的复筛决策只统计落在分母键域内的仲裁键：
   键域外（幽灵/未筛）键与重复键被忽略并记入 PrismaFlow.warnings
   （U6-P11/R6-F5），保证 included + excluded <= screened 恒成立。
+
+与任务页 /prisma-metrics 的口径边界（R6-F9，r6 评审反馈 2 修正）：
+- reviewer 模式与 CLI/手动 merge 一致——records_screened = len(db_keys &
+  set(first))，first 为决策表内记录（只含已保存的实际决策），与本模块
+  「至少一名筛选员有实际决策」同口径（见 test_prisma_stats_u6_regressions
+  的 ScreenedCaliberAlignmentTests）；
+- team 模式**未对齐**：custom_backend/prisma_task_metrics.py 的 outcomes
+  在 team 模式只返回 agreed/adjudicated（已决）记录，pending/部分已筛
+  行不计入 records_screened——比本模块口径更严。对齐需修改该文件，
+  其不在本泳道允许改动清单（custom_backend/prisma_task_metrics.py），
+  Task 端到端亦未运行；如需统一以最严（已决）口径或放宽 team 口径，
+  须由后续轮次在产品侧裁决。
+
+PrismaFlow.warnings 的呈现边界（r6 评审反馈 4）：勾稽提示仅随 to_dict
+（CLI stats.json 与 Python 调用方）导出；prisma_dot 输出的 DOT 图与 CLI
+stdout **不呈现**这些提示（保持标准流程图形状，非标准警示行不入图）。
 """
 
 from __future__ import annotations
