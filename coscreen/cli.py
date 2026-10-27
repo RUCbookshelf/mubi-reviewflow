@@ -29,7 +29,11 @@ from coscreen import config
 from coscreen import db as db_mod
 from coscreen.al.simulation import replay, simulate_random_baseline
 from coscreen.al.stop import current_streak, suggest_stop
-from coscreen.dedup import find_duplicates, stabilize_conflicting_keys
+from coscreen.dedup import (
+    find_duplicates,
+    merged_group_roots,
+    stabilize_conflicting_keys,
+)
 from coscreen.export import export_decisions, import_decisions_csv, load_decisions_csv
 from coscreen.fulltext import list_stage2_decisions
 from coscreen.parsers import ParseError, parse_file
@@ -168,6 +172,12 @@ def cmd_import(args: argparse.Namespace) -> int:
     模糊证据（仅标题相似）与键冲突不自动合并（U1-P1/U1-P3）：默认打印为
     待确认候选；``--auto-merge-fuzzy`` 恢复旧版静默合并行为。自动合并仅
     保留"规范化 DOI 相等"与"键相等且 DOI/标题不冲突"两类可核验证据。
+
+    库内既有条目参与去重（复审 #3）：DOI/键匹配在 ``known + 本批`` 的合并
+    视图上运行（与 living_review 同一口径）——跨批次同 DOI/同键的条目打
+    is_duplicate_of 标记走更新，不再无标记重复插入；既有库主键永不重写
+    （R1）。模糊候选只在本批内扫描与展示（评审 R1 返修·FB4）；沿用库内
+    键/同键更新的行不计入"进入筛选"（FB6）。
     """
     try:
         articles = parse_file(args.file)
@@ -186,26 +196,64 @@ def cmd_import(args: argparse.Namespace) -> int:
         )
 
     # 全部条目入库：重复条目按 duplicate_pairs 标记 is_duplicate_of（SPEC §5），
-    # 进度统计（get_progress）只计非重复条目，故此处仅取去重报告。
-    _, report = find_duplicates(articles)
+    # 进度统计（get_progress）只计非重复条目。
     db_mod.init_db(args.db)
-    # 键消歧（U1-P3/U1-P6）：键相同但未合并的条目加确定性 sha256 后缀，
-    # 防止主键 upsert 覆盖丢条目；与库内同键条目兼容（DOI 相等或标题相似
-    # 达标）时保留原键走更新路径，既有库主键不被重写。
     known = db_mod.list_articles(args.db, include_duplicates=True)
+    existing_keys = {a.zotero_key for a in known}
+    combined = known + articles
+    offset = len(known)
+    # DOI/键匹配覆盖 known+本批（复审 #3：跨批次重复打标记不重复插入）；
+    # 模糊层只扫本批（评审 R1 返修·FB4：库内既有相似标题对不属于本批
+    # 候选，且避免每次导入对整个库重复 O(n^2) 扫描与重复打印）。
+    _, report = find_duplicates(combined, include_fuzzy=False)
+    _, batch_report = find_duplicates(articles)
+    for pair in batch_report.fuzzy_pairs:  # 批内索引平移到合并视图，供键刷新
+        pair.kept_index += offset
+        pair.dup_index += offset
+    report.fuzzy_pairs = batch_report.fuzzy_pairs
+    report.note = batch_report.note
+    # 键消歧（U1-P3/U1-P6/R6-D2；评审 R1 返修·FB1/FB3）：键相同但未合并
+    # 的条目加确定性 sha256 后缀；与库内同键条目兼容（同一文献）时保留原
+    # 键走更新路径，无来源 Key 的生成键按 _fallback_id → content_hash →
+    # （标题+姓氏+年份）分层匹配沿用库内键——既有库主键不被重写，重导
+    # 同一文件零新增行（R1）。
+    stabilize_warnings: list[str] = []
     renames = stabilize_conflicting_keys(
-        articles,
+        combined,
         report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs,
-        known=known,
+        known=known, warnings=stabilize_warnings,
     )
+    # 合并组根需按含自指事件的精确组重建（同键自然坍缩/沿用库内键的组
+    # 依赖这些事件成组，过滤会导致 new/screenable 双计）——先建组、后过滤。
+    roots = merged_group_roots(len(combined), report.exact_pairs)
+    # 自指配对（改名后双方归一到同一键，如同键自然坍缩、生成键沿用库内键）
+    # 不构成候选也不产生标记：在调用方对 report 列表赋值处真正剔除
+    # （评审 R1 返修·FB7：仅改 stabilize 收到的临时拼接列表无效）。
+    report.exact_pairs = [p for p in report.exact_pairs if p.kept_key != p.dup_key]
+    report.fuzzy_pairs = [p for p in report.fuzzy_pairs if p.kept_key != p.dup_key]
+    report.key_conflict_pairs = [
+        p for p in report.key_conflict_pairs if p.kept_key != p.dup_key
+    ]
+    # 本批进入筛选的行数（记录口径）：合并组根在本批且键不在库内（新增行）；
+    # 组根在库内＝与库重复（打标记），组根本批但键已存在＝沿用库内键/同键
+    # 更新（走 UPDATE，行已在库内可筛）——两者都不计入本批新筛选数
+    # （评审 R1 返修·FB6："精确重复 0 | 进入筛选 2"与"新增 0、更新 2"失真）。
+    screenable = sum(
+        1 for pos in range(offset, len(combined))
+        if roots[pos] == pos and combined[pos].zotero_key not in existing_keys
+    )
+    incoming_keys = {a.zotero_key for a in articles}
     mark_pairs = report.exact_pairs
-    screening_count = report.unique
+    screening_count = screenable
     if args.auto_merge_fuzzy:
         mark_pairs = report.exact_pairs + report.fuzzy_pairs
         # opt-in 自动合并口径：进入筛选数按合并后保留数打印——模糊候选
-        # 每个不同的 dup_key 记一条被移除（与 DB 可筛选行数一致）。
-        fuzzy_removed = len({p.dup_key for p in report.fuzzy_pairs})
-        screening_count = max(0, report.unique - fuzzy_removed)
+        # 每个不同的本批 dup_key 记一条被移除（与 DB 可筛选行数一致）。
+        fuzzy_removed = len({
+            p.dup_key for p in report.fuzzy_pairs
+            if p.dup_key != p.kept_key and p.dup_key in incoming_keys
+        })
+        screening_count = max(0, screenable - fuzzy_removed)
     summary = db_mod.upsert_articles(args.db, articles, mark_pairs)
     if args.screener:
         db_mod.set_meta(args.db, "screener", args.screener)
@@ -214,22 +262,37 @@ def cmd_import(args: argparse.Namespace) -> int:
     db_mod.set_meta(args.db, "source_file", str(Path(args.file)))
     db_mod.set_meta(args.db, "imported_at", datetime.now().isoformat(timespec="seconds"))
 
+    # 候选展示/计数只保留含本批 key 的配对（评审 R1 返修·FB4：库内既有
+    # 配对不属于本批，导入无关文件不得重复打印既有候选）。
+    fuzzy_pairs = [
+        p for p in report.fuzzy_pairs
+        if p.kept_key in incoming_keys or p.dup_key in incoming_keys
+    ]
+    conflict_pairs = [
+        p for p in report.key_conflict_pairs
+        if p.kept_key in incoming_keys or p.dup_key in incoming_keys
+    ]
+
     print(
-        f"导入 {report.total} 条 | 精确重复 {report.n_duplicates()} | "
+        f"导入 {len(articles)} 条 | 精确重复 {len(articles) - screenable} | "
         f"进入筛选 {screening_count} 条"
     )
-    if report.fuzzy_pairs:
+    if fuzzy_pairs:
         if args.auto_merge_fuzzy:
-            print(f"模糊重复 {len(report.fuzzy_pairs)} 条（--auto-merge-fuzzy：已自动合并）")
+            print(f"模糊重复 {len(fuzzy_pairs)} 条（--auto-merge-fuzzy：已自动合并）")
         else:
             print(
-                f"模糊候选 {len(report.fuzzy_pairs)} 条（标题相似，待人工确认，未自动合并；"
+                f"模糊候选 {len(fuzzy_pairs)} 条（标题相似，待人工确认，未自动合并；"
                 "两条均进入筛选，请人工核对；如需旧版静默合并可加 --auto-merge-fuzzy）"
             )
-            for pair in report.fuzzy_pairs[:20]:
+            for pair in fuzzy_pairs[:20]:
                 print(f"  - 候选 {pair.dup_key} ≈ 保留 {pair.kept_key}")
-            if len(report.fuzzy_pairs) > 20:
-                print(f"  … 共 {len(report.fuzzy_pairs)} 条")
+            if len(fuzzy_pairs) > 20:
+                print(f"  … 共 {len(fuzzy_pairs)} 条")
+    if report.note:
+        print(f"警告：{report.note}", file=sys.stderr)
+    for message in stabilize_warnings:
+        print(f"警告：{message}", file=sys.stderr)
     if renames:
         print(
             f"键消歧 {len(renames)} 处（来源键与库内既有条目或批内其他条目相同，"
@@ -239,10 +302,10 @@ def cmd_import(args: argparse.Namespace) -> int:
             print(f"  - {old} -> {new}")
         if len(renames) > 20:
             print(f"  … 共 {len(renames)} 处")
-    if report.key_conflict_pairs:
+    if conflict_pairs:
         print(
-            f"键冲突候选 {len(report.key_conflict_pairs)} 条（来源键相同但 DOI/标题冲突，"
-            "未自动合并，两条均进入筛选，请人工核对）"
+            f"键冲突候选 {len(conflict_pairs)} 条（来源键相同但 DOI 不等、标题不完全"
+            "相等或首作者不兼容，未自动合并，两条均进入筛选，请人工核对）"
         )
     print(
         f"数据库 {args.db} 写入完成：新增 {summary.n_new} 条，"

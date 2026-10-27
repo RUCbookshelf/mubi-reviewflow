@@ -228,6 +228,7 @@ def _build_change_report(
     conclusion_changed: bool,
     n_new_effects: int,
     pending_candidates: int = 0,
+    stabilize_warnings: Sequence[str] = (),
 ) -> str:
     lines = [
         f"活体综述增量更新报告（{when}）",
@@ -242,6 +243,10 @@ def _build_change_report(
             f"- 待确认候选：{pending_candidates} 组（标题相似或键冲突，未自动合并，"
             "已进入导入审阅候选清单）"
         )
+    for message in stabilize_warnings:
+        # 键消歧层的显式警告（评审 R1 返修·FB2/FB5：元数据补全/多条记录
+        # 匹配同一库内行的后写覆盖前写）——R3：警告不改变行为。
+        lines.append(f"- ⚠ {message}")
     if al_available:
         head = "、".join(f"{key}（{score:.2f}）" for key, score in al_prioritized[:5])
         lines.append(f"- AL 热启动排序（{al_note}）：新增文献优先队列前 {min(5, len(al_prioritized))} 项：{head or '（无新增文献）'}")
@@ -446,6 +451,9 @@ def process_incremental_articles(
     规范化 DOI 相等与"键相等且 DOI/标题不冲突"；标题相似的模糊配对与键
     冲突不自动标记重复，而是进 title_duplicate_reviews 候选清单待人工确认，
     冲突键经 stabilize_conflicting_keys 消歧后各自入库（库内主键不重写）。
+    ``duplicates_removed`` 只按本批实际写入的 is_duplicate_of 标记计数
+    （复审 #5：待审候选归 ``pending_candidates``，与 prisma_task_metrics
+    的 is_duplicate_of 口径统一；同键自然坍缩不产生标记故不计入）。
     """
     db_path = existing_db_path
 
@@ -461,42 +469,55 @@ def process_incremental_articles(
 
     combined = existing + incoming
     _, report = find_duplicates(combined)
-    exact_pairs = report.exact_pairs
-    candidate_pairs = report.fuzzy_pairs + report.key_conflict_pairs
-    # 键消歧（U1-P3/U1-P6）：combined 中 existing 在前，合并组根总是库内
-    # 条目或新批中输入靠前者；仅冲突键加确定性后缀，库内主键不被重写。
-    # known=existing 不可省：同键命中的可能是库内"已标记重复的组成员行"
-    # （其键不占任何组的最终键），只有 known 判据能识别"库内同键是另一篇
-    # 文献"并为新条目加后缀，否则 upsert 会按主键覆盖该重复行的内容。
+    # 键消歧（U1-P3/U1-P6；评审 R1 返修·FB1/FB3/FB7）：combined 中 existing
+    # 在前，合并组根总是库内条目或新批中输入靠前者；仅冲突键加确定性后缀，
+    # 库内主键不被重写；生成键按 _fallback_id → content_hash →（标题+姓氏+
+    # 年份）分层匹配沿用库内键（跨公式版本身份连续）。known=existing 不可
+    # 省：同键命中的可能是库内"已标记重复的组成员行"（其键不占任何组的
+    # 最终键），只有 known 判据能识别"库内同键是另一篇文献"并为新条目加
+    # 后缀，否则 upsert 会按主键覆盖该重复行的内容。
+    stabilize_warnings: list[str] = []
     stabilize_conflicting_keys(
-        combined, exact_pairs + candidate_pairs, known=existing)
+        combined,
+        report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs,
+        known=existing, warnings=stabilize_warnings,
+    )
+    exact_pairs = report.exact_pairs
     # 与库重复的判定按合并组根（U1-P4 记录口径）：组根在库内 → 该组的
     # 新文献行均算与库重复（同键重导与异键同 DOI 两类统一覆盖）；组根
     # 是新文件条目 → 组根即该批新组代表进入新增，其余成员计批内移除。
-    # 同键同 DOI 的两条只移除 1 条并保留 1 个代表，与
-    # DedupReport.n_duplicates() 的 total-unique 口径一致。
+    # 重复计数只按 **is_duplicate_of 标记**（复审 #5，r6 口径统一）：
+    # - 同键自然坍缩的行（重导同键同 DOI）不产生标记，不计入——与
+    #   prisma_task_metrics 按 is_duplicate_of 根链统计的口径一致；
+    # - 待人工确认的模糊/键冲突候选不打标记，归 pending_candidates 字段，
+    #   不再被计入"已移除"。
     roots = merged_group_roots(len(combined), exact_pairs)
-    dup_against_db: set[str] = set()
-    against_db_rows = 0
-    batch_removed = 0
+    # 自指配对（改名后双方归一到同一键）在调用方对 report 列表赋值处真正
+    # 剔除（评审 R1 返修·FB7：只改 stabilize 收到的临时拼接列表无效）。
+    # roots 已在过滤前按完整精确组建好，new/removed 计数不受影响。
+    report.exact_pairs = [p for p in report.exact_pairs if p.kept_key != p.dup_key]
+    report.fuzzy_pairs = [p for p in report.fuzzy_pairs if p.kept_key != p.dup_key]
+    report.key_conflict_pairs = [
+        p for p in report.key_conflict_pairs if p.kept_key != p.dup_key
+    ]
+    exact_pairs = report.exact_pairs
+    candidate_pairs = report.fuzzy_pairs + report.key_conflict_pairs
+    incoming_keys = {a.zotero_key for a in incoming}
+    marked_pairs = [
+        p for p in exact_pairs
+        if p.dup_key != p.kept_key and p.dup_key in incoming_keys
+    ]
+    duplicates_removed = len({p.dup_key for p in marked_pairs})
+    duplicates_against_db = len({
+        p.dup_key for p in marked_pairs if p.kept_key in existing_keys
+    })
     kept_new: list[Article] = []
     for idx, art in enumerate(incoming, start=len(existing)):
         root = roots[idx]
-        if root < len(existing):
-            dup_against_db.add(art.zotero_key)
-            against_db_rows += 1
-        elif root == idx:
-            if art.zotero_key in existing_keys:
-                # 无合并证据但键与库内同键（生成键重导等）：沿用按键判定
-                # 的旧保护，不算新增；行由 upsert 更新既有键。
-                dup_against_db.add(art.zotero_key)
-                against_db_rows += 1
-            else:
-                kept_new.append(art)
-        else:
-            batch_removed += 1  # 批内重复成员（组根代表保留）
-    duplicates_removed = against_db_rows + batch_removed
-    duplicates_against_db = len(dup_against_db)
+        if root == idx and art.zotero_key not in existing_keys:
+            # 组根本批且键不在库内：本批新增（生成键内容匹配沿用库内键的
+            # 行走更新路径，不算新增——重导幂等）。
+            kept_new.append(art)
 
     # 模糊/键冲突候选 → title_duplicate_reviews 候选清单（人工确认）
     review_groups = _candidate_review_groups(
@@ -571,6 +592,7 @@ def process_incremental_articles(
         al_prioritized=al_prioritized, meta_before=meta_before, meta_after=meta_after,
         conclusion_changed=conclusion_changed, n_new_effects=len(prepared_effects),
         pending_candidates=pending_candidates,
+        stabilize_warnings=stabilize_warnings,
     )
 
     def _article_dict(art: Article) -> dict:
