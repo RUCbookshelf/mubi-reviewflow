@@ -105,7 +105,7 @@ def has_research(task_dir: Path, conn: sqlite3.Connection) -> bool:
                 ('decision_created','decision_changed','decision_imported','decision_undone',
                  'coding_value_created','coding_value_changed','coding_value_cleared','coding_values_undone',
                  'coding_note_created','coding_note_changed','coding_note_cleared','coding_note_image_added',
-                 'coding_note_image_removed') LIMIT 1''').fetchone():
+                 'coding_note_image_removed','coding_evidence_undone') LIMIT 1''').fetchone():
                 conn.execute('UPDATE workflow_import_state SET researched=1 WHERE singleton=1')
                 return True
     return False
