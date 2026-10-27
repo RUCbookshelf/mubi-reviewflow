@@ -270,6 +270,24 @@ async def _upload_rejected_handler(request: Request, exc: UploadRejected) -> JSO
     return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
 
 
+@app.exception_handler(collaboration_mod.OwnerUnavailableError)
+async def _collaboration_owner_unavailable_handler(
+    request: Request, exc: collaboration_mod.OwnerUnavailableError
+) -> JSONResponse:
+    """属主解析异常（锁超时/读失败/库损坏）-> 503 重试语义（U4-P1）。
+
+    不得折叠成“无 owner=legacy”：server 模式下 legacy 会走 409 迁移口径，
+    desktop 模式下 legacy 保持可管理（fail-open）；解析失败必须显式重试。
+    """
+    logger.warning("Collaboration owner unavailable on %s %s: %s",
+                   request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "任务属主状态暂时无法确认（协作库锁定或读取失败），请稍后重试。"},
+        headers={"Retry-After": "5"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # 鉴权依赖与请求模型
 # ---------------------------------------------------------------------------
@@ -311,7 +329,17 @@ def require_user(
     task_id = request.path_params.get("task_id")
     if task_id:
         info = _task_or_404(task_id)
-        if not _task_visible_to(info, user):
+        try:
+            visible = _task_visible_to(info, user)
+        except collaboration_mod.OwnerUnavailableError:
+            raise  # 全局处理器映射 503 重试语义（U4-P1）
+        if not visible:
+            # 统一 legacy 口径（U4-P1/P6）：server 模式下无属主记录的任务不再
+            # 误报“不是参与者”（403），而是与列表隐藏、协作管理一致地 409
+            # 提示属主迁移；desktop 模式下 legacy 任务可见，不会进入此分支。
+            if _server_mode() and collaboration_mod.get_owner(
+                    _collaboration_store(info), task_id=info.task_id) is None:
+                raise _legacy_owner_migration_error()
             raise HTTPException(403, "当前账号不是该任务的参与者。")
     return user
 
@@ -867,6 +895,18 @@ def _dim_error(exc: ValueError) -> HTTPException:
     return _bad(str(exc), 404 if "不存在" in str(exc) else 400)
 
 
+def _legacy_owner_migration_error() -> HTTPException:
+    """server 模式下 legacy（无属主记录）任务的统一 409 口径（U4-P1/P6）。
+
+    与列表隐藏、协作管理、仲裁端点一致：提示走属主迁移流程，而非放行或
+    误报“不是参与者”。
+    """
+    return HTTPException(409, {"error_code": "collaboration_owner_unset",
+                                "message_key": "coding.collaboration_owner_unset", "params": {},
+                                "details": "Legacy task needs explicit owner migration",
+                                "message": "Legacy task needs explicit owner migration"})
+
+
 def _task_or_404(task_id: str) -> tasks_mod.TaskInfo:
     """按 id 取任务；id 形状或目录逃逸校验失败一律 404（不泄露文件系统信息）。"""
     if not _TASK_ID_RE.match(task_id or "") or Path(task_id).name != task_id:
@@ -1046,7 +1086,17 @@ def login(body: CredentialsIn, request: Request) -> dict:
     user = auth.authenticate(body.username, body.password)
     if user is None:
         raise _bad("用户名或密码错误。", 401)
-    return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
+    # U4-P2：历史上已注册、但用户名与任务目录保留库名（collaboration.db）
+    # 相撞的账号：不阻断登录、不破坏数据，在响应中给出改名指引。
+    warnings = []
+    if auth.reserved_screener_collision(user["username"]):
+        warnings.append(
+            "您的用户名与任务协作数据库保留文件名（collaboration.db）冲突，"
+            "团队协作功能不可用；请改用其他用户名注册新账号使用协作功能，"
+            "本账号的历史数据保持不变。"
+        )
+    return {"token": auth.create_access_token(user["id"], user["username"]),
+            "user": user, "warnings": warnings}
 
 
 @app.get("/api/auth/me")
@@ -1101,8 +1151,16 @@ def list_all_tasks(
 ) -> dict:
     infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
     # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
-    # 尚无属主记录（显式迁移路径未定），保持历史可见性。
-    visible = [i for i in infos if _task_visible_to(i, user)]
+    # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
+    # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
+    # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
+    visible = []
+    for info in infos:
+        try:
+            if _task_visible_to(info, user):
+                visible.append(info)
+        except collaboration_mod.OwnerUnavailableError:
+            continue
     return {"tasks": [_task_payload(i) for i in visible]}
 
 
@@ -1129,21 +1187,31 @@ def _collaboration_store(info: tasks_mod.TaskInfo) -> Path:
 
 
 def _collaboration_owner_store(task_id: str, user: dict) -> Path:
+    # U4-P4：协作管理（邀请/授权/撤销/列表）整体仅服务器模式开放——门禁
+    # 收口在本助手内，覆盖按用户名与按 user_id 的全部入口。
+    if not _server_mode():
+        raise HTTPException(404, "团队协作仅在服务器模式下开放。")
     info = _task_or_404(task_id)
     path = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    try:
+        owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
     if owner is None:
-        raise HTTPException(409, {"error_code": "collaboration_owner_unset",
-                                  "message_key": "coding.collaboration_owner_unset", "params": {},
-                                  "details": "Legacy task needs explicit owner migration",
-                                  "message": "Legacy task needs explicit owner migration"})
+        raise _legacy_owner_migration_error()
     if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can manage collaborators.")
     return path
 
 
 def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
-    """任务对当前用户是否可见：属主/协作者可见，legacy 无属主任务保持可见。"""
+    """任务对当前用户是否可见：属主/协作者可见，legacy 无属主任务保持可见。
+
+    desktop 模式下 legacy 任务维持历史可见性（单机安装的向后兼容，有意
+    保留并在 task_collaboration 模块披露）；server 模式下不可见。
+    属主解析失败（OwnerUnavailableError）向上抛出：单任务请求映射 503
+    重试语义，任务列表由调用方按不可见降级。
+    """
     try:
         path = _collaboration_store(info)
     except HTTPException:
@@ -1159,12 +1227,22 @@ def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
 def _require_task_owner(task_id: str, user: dict) -> tasks_mod.TaskInfo:
     """任务改名/描述/归档/删除的属主闸门。
 
-    已登记属主的任务仅属主可改（非属主 403）；legacy 任务尚无属主记录
-    （创建于协作库机制之前、迁移路径未定），保持既有可管理性。
+    已登记属主的任务仅属主可改（非属主 403）。legacy 任务（创建于协作库
+    机制之前、迁移路径未定）按模式区分（U4-P6）：server 模式 fail-closed
+    ——与列表隐藏、协作管理 409 同口径，提示走属主迁移流程；desktop 模式
+    维持既有可管理性（单机向后兼容，见 task_collaboration 模块披露）。
+    属主解析失败（OwnerUnavailableError）映射 503，不折叠成 legacy。
     """
     info = _task_or_404(task_id)
-    owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
-    if owner is not None and owner["owner_user_id"] != user["user_id"]:
+    try:
+        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
+    if owner is None:
+        if _server_mode():
+            raise _legacy_owner_migration_error()
+        return info
+    if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can modify or delete this task.")
     return info
 

@@ -21,6 +21,7 @@ from pathlib import Path
 import bcrypt
 import jwt
 from coscreen.security import sanitize_component
+from coscreen.task_collaboration import DB_FILENAME as _COLLABORATION_DB_FILENAME
 
 __all__ = [
     "AuthError",
@@ -30,6 +31,7 @@ __all__ = [
     "decode_access_token",
     "get_user",
     "get_user_by_id",
+    "reserved_screener_collision",
     "verify_password",
 ]
 
@@ -101,6 +103,20 @@ def verify_password(password: str, password_hash: str) -> bool:
 # 用户 CRUD
 # ---------------------------------------------------------------------------
 
+#: 任务目录内保留的筛选员库文件名（大小写不敏感比对，Windows 文件系统
+#: 不区分大小写）。用户名 slug 化后与之相撞的账号，其个人库会覆盖任务
+#: 协作权限库 collaboration.db，注册时直接拒绝（U4-P2）。
+_RESERVED_SCREENER_DB_NAMES = frozenset({_COLLABORATION_DB_FILENAME.casefold()})
+
+
+def reserved_screener_collision(username: str) -> bool:
+    """用户名 slug 化后是否与任务目录保留库名（collaboration.db）冲突。"""
+    from coscreen import tasks as _tasks
+
+    slug = _tasks.slugify_screener(username or "")
+    return f"{slug}.db".casefold() in _RESERVED_SCREENER_DB_NAMES
+
+
 def validate_username(username: str) -> str:
     clean = (username or "").strip()
     if not _USERNAME_RE.match(clean):
@@ -119,6 +135,10 @@ def validate_password(password: str) -> str:
 def create_user(username: str, password: str) -> dict:
     """注册新用户；重名抛 AuthError。返回 ``{id, username}``。"""
     clean = validate_username(username)
+    if reserved_screener_collision(clean):
+        # U4-P2：slug 撞上任务目录保留文件名 collaboration.db 的用户名
+        # 会把个人筛选库写进任务协作权限库，注册即拒绝。
+        raise AuthError("该用户名与任务协作数据库保留文件名冲突，请换一个用户名。")
     validate_password(password)
     password_hash = hash_password(password)
     with closing(_connect()) as conn, conn:

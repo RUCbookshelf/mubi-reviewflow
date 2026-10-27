@@ -1,0 +1,371 @@
+"""2.1.4 协作权限加固回归（U4-P1..P8，对应 core_audit_findings 单元 4）。
+
+- U4-P1/P6：server 模式 legacy（无属主记录）任务的管理操作 409 fail-closed
+  （提示属主迁移）；desktop 模式维持历史可管理性；属主解析异常 -> 503。
+- U4-P2：注册拒绝与 collaboration.db 保留名冲突的用户名；存量冲突账号
+  登录返回改名指引（不阻断、不破坏数据）。
+- U4-P3：成员私有 coding scheme 编辑不再 bump owner 全局版本、不广播，
+  全员后续写不 409；owner 级方案编辑仍推进版本。
+- U4-P4：协作 roles 的 GET/POST/DELETE 在 desktop 模式与 invite 同样 404。
+- U4-P5：consensus/freeze 写前在同一把任务锁内复查授权，撤销后写入被拒。
+- U4-P7：list_participant_ids 异常按“无参与者”降级（notify 不再 500）。
+- U4-P8：current_owner_db 传入 task_id 做绑定校验；get_owner 缺 task_id
+  时 fail-closed 返回 None。
+"""
+import os
+import sys
+import json
+import shutil
+import sqlite3
+import tempfile
+import unittest
+import uuid
+from contextlib import closing, contextmanager
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+fixture = tempfile.TemporaryDirectory(prefix="rf_collab_hardening_")
+os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+os.environ["REVIEWFLOW_MODE"] = "server"
+from fastapi.testclient import TestClient
+
+from custom_backend import auth as auth_mod
+from custom_backend import security as backend_security
+from custom_backend.main import app, DATA_DIR
+from coscreen import coding as coding_mod
+from coscreen import coding_consensus, coding_evidence, db as db_mod
+from coscreen import task_collaboration, tasks as tasks_mod
+from coscreen.models import Article
+
+
+class CollaborationHardeningTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        # 不走 HTTP /api/auth/register：全套 pytest 里 TestClient 的 client.host
+        # 固定，多模块注册共享同一限流桶会撞 429；直接建用户并签发令牌。
+        cls.users = []
+        for i in range(3):
+            user = auth_mod.create_user(f"collab{i}@example.test", "Collab-Test-2026")
+            cls.users.append({"user_id": user["id"], "username": user["username"],
+                              "token": auth_mod.create_access_token(user["id"], user["username"])})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        fixture.cleanup()
+
+    def auth(self, i=0):
+        return {"Authorization": "Bearer " + self.users[i]["token"]}
+
+    def setUp(self):
+        self.task = self.client.post(
+            "/api/tasks", json={"name": self._testMethodName}, headers=self.auth()).json()["task_id"]
+        self.info = tasks_mod.find_task(self.task, DATA_DIR)
+        self.store = task_collaboration.shared_store_path(self.info.dir)
+        self.owner_id = self.users[0]["user_id"]
+
+    @contextmanager
+    def _mode(self, value):
+        old = os.environ.get("REVIEWFLOW_MODE")
+        os.environ["REVIEWFLOW_MODE"] = value
+        try:
+            yield
+        finally:
+            if old is None:
+                os.environ.pop("REVIEWFLOW_MODE", None)
+            else:
+                os.environ["REVIEWFLOW_MODE"] = old
+
+    @contextmanager
+    def _limiter_budget(self):
+        """借用限流桶做端点级断言，用后恢复，不占全套 pytest 的共享额度。"""
+        events = backend_security.login_limiter._events
+        saved = dict(events)
+        events.clear()
+        try:
+            yield
+        finally:
+            events.clear()
+            events.update(saved)
+
+    def _legacy_task(self) -> str:
+        """创建后移除协作库，模拟创建于协作机制之前的 legacy 任务。"""
+        task = self.client.post(
+            "/api/tasks", json={"name": "legacy-" + uuid.uuid4().hex[:6]},
+            headers=self.auth()).json()["task_id"]
+        info = tasks_mod.find_task(task, DATA_DIR)
+        task_collaboration.shared_store_path(info.dir).unlink()
+        return task
+
+    def _task_ids(self, actor=0):
+        return [t["task_id"] for t in
+                self.client.get("/api/tasks", headers=self.auth(actor)).json()["tasks"]]
+
+    # ------------------------------------------------------------------
+    # U4-P1 / U4-P6：legacy fail-open -> server 模式 409 fail-closed
+    # ------------------------------------------------------------------
+
+    def test_u4p1_p6_server_legacy_management_fail_closed_409(self):
+        task = self._legacy_task()
+        for actor in (0, 2):  # 原属主与陌生账号同口径：409 + 属主迁移提示
+            for method, path, kwargs in (
+                ("put", f"/api/tasks/{task}", {"json": {"name": "hijack"}}),
+                ("delete", f"/api/tasks/{task}", {}),
+            ):
+                r = getattr(self.client, method)(path, headers=self.auth(actor), **kwargs)
+                self.assertEqual(r.status_code, 409, (method, actor, r.text))
+                self.assertEqual(r.json()["detail"]["error_code"], "collaboration_owner_unset")
+        # 协作管理同样 409（原属主），列表保持隐藏（server）
+        r = self.client.get(f"/api/tasks/{task}/collaboration/roles", headers=self.auth())
+        self.assertEqual(r.status_code, 409)
+        self.assertNotIn(task, self._task_ids(2))
+
+    def test_u4p1_desktop_legacy_stays_manageable_and_visible(self):
+        task = self._legacy_task()
+        with self._mode("desktop"):
+            r = self.client.put(f"/api/tasks/{task}", json={"name": "renamed-ok"},
+                                headers=self.auth())
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertIn(task, self._task_ids())
+
+    def test_u4p1_owner_resolution_failure_maps_to_503(self):
+        # 损坏协作库 -> sqlite3.DatabaseError -> OwnerUnavailableError -> 503
+        self.store.write_bytes(b"this is not a sqlite database at all")
+        with self.assertRaises(task_collaboration.OwnerUnavailableError):
+            task_collaboration.get_owner(self.store, task_id=self.task)
+        r = self.client.put(f"/api/tasks/{self.task}", json={"name": "x"}, headers=self.auth())
+        self.assertEqual(r.status_code, 503, r.text)
+        r = self.client.get(f"/api/tasks/{self.task}/team-progress", headers=self.auth())
+        self.assertEqual(r.status_code, 503, r.text)
+        # 任务列表不因单个任务的解析失败而 5xx：该任务本轮按不可见降级
+        r = self.client.get("/api/tasks", headers=self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(self.task, self._task_ids())
+
+    def test_u4p1_unbound_store_is_legacy_not_owner(self):
+        # 目录整拷成新 task_id：绑定不匹配 -> legacy（None），不得解析出属主
+        copied = self.info.dir.parent / (self.task + "-copy")
+        shutil.copytree(self.info.dir, copied)
+        self.assertIsNone(task_collaboration.get_owner(
+            task_collaboration.shared_store_path(copied), task_id=copied.name))
+        # 陌生人对副本目录内的库不可获得任何授权（fail-closed）
+        self.assertFalse(task_collaboration.authorize_action(
+            task_collaboration.shared_store_path(copied), 999999,
+            "consensus:write", task_id=copied.name))
+        shutil.rmtree(copied, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    # U4-P2：保留名碰撞
+    # ------------------------------------------------------------------
+
+    def test_u4p2_register_rejects_reserved_screener_collision(self):
+        self.assertTrue(auth_mod.reserved_screener_collision("collaboration"))
+        self.assertTrue(auth_mod.reserved_screener_collision("COLLABORATION"))
+        self.assertFalse(auth_mod.reserved_screener_collision("bob"))
+        for name in ("collaboration", "COLLABORATION"):
+            with self.assertRaises(auth_mod.AuthError):
+                auth_mod.create_user(name, "Whatever-Pass-2026")
+        with self._limiter_budget():
+            r = self.client.post("/api/auth/register",
+                                 json={"username": "collaboration", "password": "Whatever-Pass-2026"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("冲突", r.json()["detail"])
+
+    def test_u4p2_existing_colliding_account_login_gets_guidance(self):
+        # 存量账号：直接落库（历史数据不重写、不删除）
+        with closing(sqlite3.connect(str(auth_mod._users_db()))) as conn, conn:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)",
+                ("collaboration", auth_mod.hash_password("Legacy-Pass-2026"), "2026-01-01T00:00:00"))
+        with self._limiter_budget():
+            r = self.client.post("/api/auth/login",
+                                 json={"username": "collaboration", "password": "Legacy-Pass-2026"})
+            self.assertEqual(r.status_code, 200, r.text)
+            warnings = r.json()["warnings"]
+            self.assertTrue(warnings and "collaboration.db" in warnings[0])
+            # 正常账号登录：无告警
+            r = self.client.post("/api/auth/login",
+                                 json={"username": self.users[0]["username"], "password": "Collab-Test-2026"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["warnings"], [])
+
+    # ------------------------------------------------------------------
+    # U4-P3：成员私有方案不污染 owner 版本
+    # ------------------------------------------------------------------
+
+    def test_u4p3_member_scheme_edit_never_bumps_owner_version(self):
+        r = self.client.post(f"/api/tasks/{self.task}/collaboration/invite",
+                             json={"username": self.users[1]["username"], "role": "coder"},
+                             headers=self.auth())
+        self.assertEqual(r.status_code, 201, r.text)
+        settings = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
+                                   headers=self.auth()).json()
+        version = settings["version"]
+        # 成员编辑自己的私有 coding scheme
+        r = self.client.post(f"/api/tasks/{self.task}/coding/dimensions",
+                             json={"name": "私有备注", "dtype": "text"},
+                             headers=self.auth(1))
+        self.assertEqual(r.status_code, 201, r.text)
+        after = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
+                                headers=self.auth()).json()
+        self.assertEqual(after["version"], version, "成员私有方案不得推进 owner 全局版本")
+        # 全员（含 owner）持旧版本的写不再 409
+        r = self.client.put(f"/api/tasks/{self.task}/workflow-settings",
+                            json={"expected_version": version, "stages": settings["stages"],
+                                  "evidence_required_field_ids": settings["evidence_required_field_ids"]},
+                            headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        # owner 级方案编辑仍推进版本（成员需重映射）
+        r = self.client.post(f"/api/tasks/{self.task}/coding/dimensions",
+                             json={"name": "任务级维度", "dtype": "choice", "options": ["A", "B"]},
+                             headers=self.auth())
+        self.assertEqual(r.status_code, 201, r.text)
+        final = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
+                                headers=self.auth()).json()
+        self.assertEqual(final["version"], version + 2)  # settings 保存 +1，owner 方案 +1
+
+    # ------------------------------------------------------------------
+    # U4-P4：desktop 模式协作授权口
+    # ------------------------------------------------------------------
+
+    def test_u4p4_roles_endpoints_gated_to_server_mode(self):
+        member_id = self.users[1]["user_id"]
+        with self._mode("desktop"):
+            checks = [
+                self.client.get(f"/api/tasks/{self.task}/collaboration/roles", headers=self.auth()),
+                self.client.post(f"/api/tasks/{self.task}/collaboration/roles",
+                                 json={"user_id": member_id, "role": "coder"}, headers=self.auth()),
+                self.client.delete(f"/api/tasks/{self.task}/collaboration/roles/{member_id}/coder",
+                                   headers=self.auth()),
+                self.client.post(f"/api/tasks/{self.task}/collaboration/invite",
+                                 json={"username": self.users[1]["username"], "role": "coder"},
+                                 headers=self.auth()),
+            ]
+            for r in checks:
+                self.assertEqual(r.status_code, 404, (r.request.url, r.text))
+        # server 模式恢复可用
+        r = self.client.get(f"/api/tasks/{self.task}/collaboration/roles", headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+
+    # ------------------------------------------------------------------
+    # U4-P5：consensus/freeze 撤销竞态
+    # ------------------------------------------------------------------
+
+    def _seed_consensus_fixture(self):
+        ctx = app.state.review_workflow.context(self.task, self.users[0])
+        db_mod.upsert_articles(ctx.owner_db, [Article(
+            zotero_key="R1", title="Race Probe", doi="10.test/race",
+            raw={"source_file": "01-Wiley.ris"})], [])
+        coding_mod.add_dimension(ctx.owner_db, "Sex", "choice", ["M", "F"])
+        task_collaboration.grant_role(
+            self.store, actor_user_id=self.owner_id, user_id=self.users[1]["user_id"],
+            role="reconciler", task_id=self.task)
+
+    @contextmanager
+    def _racing_revocation(self, action):
+        """在首次授权读与写前复查之间完成撤销（TOCTOU 前置条件）。
+
+        首次 authorize 调用返回 True（模拟读发生在撤销提交前），并通过产品
+        撤销端点的同款存储路径立即落地撤销；后续调用走真实判定。
+        """
+        real = task_collaboration.authorize_action
+        fired = []
+
+        def racing(store, user_id, act, *, task_id=None):
+            if act == action and user_id == self.users[1]["user_id"] and not fired:
+                fired.append(act)
+                task_collaboration.revoke_role(
+                    store, actor_user_id=self.owner_id, user_id=user_id,
+                    role="reconciler", task_id=task_id)
+                return True
+            return real(store, user_id, act, task_id=task_id)
+
+        task_collaboration.authorize_action = racing
+        try:
+            yield
+        finally:
+            task_collaboration.authorize_action = real
+
+    def test_u4p5_consensus_write_recheck_rejects_revoked_actor(self):
+        self._seed_consensus_fixture()
+        body = {"item_key": "R1", "field_key": "1", "value": "M",
+                "source": {"note": "probe"}, "rationale": "测试仲裁"}
+        with self._racing_revocation("consensus:write"):
+            r = self.client.post(f"/api/tasks/{self.task}/coding/consensus",
+                                 json=body, headers=self.auth(1))
+        self.assertEqual(r.status_code, 403, r.text)
+        self.assertEqual(coding_consensus.list_consensus_records(
+            self.store, item_key="R1", field_key="1"), [])
+
+    def test_u4p5_freeze_recheck_rejects_revoked_actor(self):
+        self._seed_consensus_fixture()
+        with self._racing_revocation("consensus:freeze"):
+            r = self.client.post(f"/api/tasks/{self.task}/coding/freezes",
+                                 json={"name": "v1", "consensus_ids": [999]},
+                                 headers=self.auth(1))
+        self.assertEqual(r.status_code, 403, r.text)
+        self.assertEqual(coding_consensus.list_freezes(self.store), [])
+
+    def test_u4p5_authorized_reconciler_can_still_write(self):
+        self._seed_consensus_fixture()
+        body = {"item_key": "R1", "field_key": "1", "value": "M",
+                "source": {"note": "probe"}, "rationale": "测试仲裁"}
+        r = self.client.post(f"/api/tasks/{self.task}/coding/consensus",
+                             json=body, headers=self.auth(1))
+        self.assertEqual(r.status_code, 201, r.text)
+        record_id = r.json()["id"]
+        r = self.client.post(f"/api/tasks/{self.task}/coding/freezes",
+                             json={"name": "v1", "consensus_ids": [record_id]},
+                             headers=self.auth(1))
+        self.assertEqual(r.status_code, 201, r.text)
+
+    # ------------------------------------------------------------------
+    # U4-P7：list_participant_ids 异常兜底
+    # ------------------------------------------------------------------
+
+    def test_u4p7_list_participant_ids_degrades_instead_of_raising(self):
+        # task_id 不匹配：按无参与者降级（原为 ValueError 穿透 -> 500）
+        self.assertEqual(task_collaboration.list_participant_ids(
+            self.store, actor_user_id=self.owner_id, task_id="task-B"), [])
+        # 非成员：仍抛 PermissionError（403 语义）
+        with self.assertRaises(PermissionError):
+            task_collaboration.list_participant_ids(
+                self.store, actor_user_id=999999, task_id=self.task)
+        # notify 路径：绑定被改写后不再抛异常（内部降级为无参与者）
+        ctx = app.state.review_workflow.context(self.task, self.users[0])
+        with closing(sqlite3.connect(str(self.store))) as conn, conn:
+            conn.execute("UPDATE collaboration_task SET task_id='mismatched-task'")
+        app.state.review_workflow.notify(ctx, "settings")  # 不得抛异常
+        # team-progress 端点：409 迁移口径，而非 500
+        r = self.client.get(f"/api/tasks/{self.task}/team-progress", headers=self.auth())
+        self.assertEqual(r.status_code, 409, r.text)
+
+    # ------------------------------------------------------------------
+    # U4-P8：current_owner_db 传 task_id；get_owner 缺省 fail-closed
+    # ------------------------------------------------------------------
+
+    def test_u4p8_current_owner_db_binding_checked(self):
+        task_collaboration.grant_role(
+            self.store, actor_user_id=self.owner_id, user_id=self.users[1]["user_id"],
+            role="coder", task_id=self.task)
+        ctx_owner = app.state.review_workflow.context(self.task, self.users[0])
+        app.state.review_workflow.context(self.task, self.users[1])  # 建成员库
+        member_db = self.info.dir / f"{tasks_mod.slugify_screener(self.users[1]['username'])}.db"
+        # 原目录：绑定匹配 -> 重定向到 owner 库
+        self.assertEqual(coding_evidence.current_owner_db(member_db).resolve(),
+                         ctx_owner.owner_db.resolve())
+        # 整拷到新任务目录：绑定不匹配 -> 不再重定向（回退原路径）
+        copied = self.info.dir.parent / (self.task + "-copy")
+        shutil.copytree(self.info.dir, copied)
+        member_db_copy = copied / member_db.name
+        self.assertEqual(coding_evidence.current_owner_db(member_db_copy).resolve(),
+                         member_db_copy.resolve())
+        # get_owner 不传 task_id：fail-closed，不再跳过绑定校验
+        self.assertIsNone(task_collaboration.get_owner(self.store))
+        shutil.rmtree(copied, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
