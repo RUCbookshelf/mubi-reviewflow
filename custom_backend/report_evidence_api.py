@@ -632,8 +632,10 @@ def register_report_evidence_routes(app, require_user):
         if not ctx.owner:
             raise HTTPException(409, "Assign a verified task owner before using report relationships.")
         actor = str(user["user_id"])
-        allowed = ctx.can_manage or task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "coding:submit", task_id=task_id)
-        adjudicator = task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=task_id)
+        # R6-C3（复审扫尾）：authorize_action 用规范 task_id——尾点别名路径
+        # 的 can_write 曾与规范 id 路径不一致（别名误 403，UI 能力漂移）。
+        allowed = ctx.can_manage or task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "coding:submit", task_id=ctx.info.task_id)
+        adjudicator = task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=ctx.info.task_id)
         policy = review_workflow.settings(ctx.owner_db)
         independent = ctx.task_kind == "team" and any(policy["stages"][s]["mode"] != "paused" for s in ("screen", "fulltext", "coding"))
         ctx.report_evidence_shared_visible = not independent

@@ -100,7 +100,10 @@ def register_coding_consensus_routes(
         BEGIN IMMEDIATE，外层再持独立写事务会与存储写自锁，故按 rater 记录
         路径的同款进程内任务锁 + 锁内复查实现。
         """
-        with app.state.review_workflow.lock(task_id):
+        with app.state.review_workflow.lock(info.task_id):
+            # R6-C3/#35（复审扫尾）：锁键用规范 task_id——尾点别名路径
+            # （'T.'）曾与规范撤销（锁 'T'）分键不互斥，U4-P5 的角色撤销
+            # TOCTOU 在别名路径重新打开。
             if authorize_task(info, user, action) is not True:
                 raise HTTPException(403, "Task access denied.")
             return write()

@@ -54,6 +54,11 @@ def finish(db: Path) -> None:
 
 
 def marker(db: Path) -> dict | None:
+    # 复审（legacy 500）：legacy/ghost 任务的筛选库尚未创建（context 的
+    # legacy 分支按设计不建库），只读连接打不开文件曾是 500——按"无轮次
+    # 标记"处理，与 settings() 对不存在库的既有口径一致。
+    if not Path(db).is_file():
+        return None
     with closing(store.connect(db, read_only=True)) as conn:
         if not store.has_table(conn,'workflow_screen_rounds'):
             return None

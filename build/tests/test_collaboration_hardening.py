@@ -8,7 +8,9 @@
   全员后续写不 409；owner 级方案编辑仍推进版本。
 - U4-P4：协作 roles 的 GET/POST/DELETE 在 desktop 模式与 invite 同样 404。
 - U4-P5：consensus/freeze 写前在同一把任务锁内复查授权，撤销后写入被拒。
-- U4-P7：list_participant_ids 异常按“无参与者”降级（notify 不再 500）。
+- U4-P7：list_participant_ids 确定性否定返回空表；不确定故障（锁/损坏）
+  抛 OwnerUnavailableError/CollaborationStoreCorruptError（R6-C6：锁窗口
+  伪空表统计清零曾真实发生），notify 记日志跳过。
 - U4-P8：current_owner_db 传入 task_id 做绑定校验；get_owner 缺 task_id
   时 fail-closed 返回 None。
 """
@@ -341,6 +343,101 @@ class CollaborationHardeningTests(unittest.TestCase):
         # team-progress 端点：409 迁移口径，而非 500
         r = self.client.get(f"/api/tasks/{self.task}/team-progress", headers=self.auth())
         self.assertEqual(r.status_code, 409, r.text)
+
+    # ------------------------------------------------------------------
+    # 集成轮复审（协作单元）：锁键规范 / 口径统一 / 保留名 / ghost / 回收
+    # ------------------------------------------------------------------
+
+    def test_alias_read_endpoints_use_canonical_lock_key(self):
+        # 复审 R6-C3 扫尾：GET coding/dimensions 与 coding/scheme 曾按 URL
+        # 原始串分锁——别名读 'T.' 与规范写 'T' 不互斥（读迁移中途状态）。
+        runtime = app.state.review_workflow
+        for endpoint in ("coding/dimensions", "coding/scheme"):
+            with self.subTest(endpoint=endpoint):
+                r = self.client.get(f"/api/tasks/{self.task}./{endpoint}",
+                                    headers=self.auth())
+                self.assertIn(r.status_code, (200, 404), r.text)
+        keys = set(runtime._locks.keys())
+        self.assertIn(self.task, keys)
+        self.assertNotIn(self.task + ".", keys)  # 别名读不得新增分键
+
+    def test_report_evidence_alias_can_write_parity(self):
+        # 复审：authorize_action 曾用 URL 原始 id——别名路径 can_write=False
+        # 误 403（UI 能力漂移）。
+        task_collaboration.grant_role(
+            self.store, actor_user_id=self.owner_id, user_id=self.users[1]["user_id"],
+            role="coder", task_id=self.task)
+        r1 = self.client.get(f"/api/tasks/{self.task}/report-evidence", headers=self.auth(1))
+        r2 = self.client.get(f"/api/tasks/{self.task}./report-evidence", headers=self.auth(1))
+        self.assertEqual(r1.status_code, 200, r1.text)
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r1.json()["can_write"], r2.json()["can_write"])
+        self.assertTrue(r2.json()["can_write"])
+
+    def test_list_participant_ids_corrupt_store_raises_not_empty(self):
+        # 复审 R6-C6（D2 探针原样回放）：损坏库不得折叠成伪空表
+        # （写入垃圾字节＝库文件永久损坏；删表属"未初始化"确定性否定）
+        self.store.write_bytes(b"not a sqlite database at all")
+        with self.assertRaises(task_collaboration.CollaborationStoreCorruptError):
+            task_collaboration.list_participant_ids(
+                self.store, actor_user_id=self.owner_id, task_id=self.task)
+        with self.assertRaises(task_collaboration.CollaborationStoreCorruptError):
+            task_collaboration.is_owner(self.store, self.owner_id, task_id=self.task)
+
+    def test_authorize_and_grant_require_task_id(self):
+        # handoff C5：缺 task_id 不得按"任意属主"放行
+        with self.assertRaises(ValueError):
+            task_collaboration.authorize_action(self.store, self.owner_id, "coding:submit")
+        with self.assertRaises(ValueError):
+            task_collaboration.grant_role(
+                self.store, actor_user_id=self.owner_id,
+                user_id=self.users[1]["user_id"], role="coder")
+
+    def test_create_task_rejects_reserved_screener_name(self):
+        # 复审 R6-C1（create_task 口）：撞 collaboration.db 保留名的账号
+        # 不得成为属主（曾 201 并把整套筛选表灌进协作库）。
+        collab_user = auth_mod.create_user("collab-owner@example.test", "Collab-2026-x")
+        with closing(sqlite3.connect(str(DATA_DIR / "users.db"))) as conn:
+            conn.execute("UPDATE users SET username='collaboration' WHERE id=?",
+                         (collab_user["id"],))
+            conn.commit()
+        token = auth_mod.create_access_token(collab_user["id"], "collaboration")
+        try:
+            r = self.client.post("/api/tasks", json={"name": "collab-owner-task"},
+                                 headers={"Authorization": "Bearer " + token})
+            self.assertEqual(r.status_code, 409, r.text)
+            self.assertEqual(r.json()["detail"]["error_code"], "collaboration_reserved_name")
+        finally:
+            # 清理：不清理会让后续用例（u4p2 直插 'collaboration'）撞 UNIQUE
+            with closing(sqlite3.connect(str(DATA_DIR / "users.db"))) as conn:
+                conn.execute("DELETE FROM users WHERE id=?", (collab_user["id"],))
+                conn.commit()
+
+    def test_legacy_workflow_settings_marker_no_500(self):
+        # 复审：legacy/ghost 任务首次 GET workflow-settings 曾因 screening_
+        # rounds.marker 打不开未建库文件 500——现按无轮次标记处理。
+        self.store.unlink(missing_ok=True)  # 模拟 legacy（无协作库文件）
+        with self._mode("desktop"):  # 复审场景：desktop 模式 legacy 可见可管理
+            r = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
+                                headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_revoke_recycles_screener_registration(self):
+        # 复审 R6-C1 验收 2：撤销后 task.json 的 screeners 登记回收
+        r = self.client.post(f"/api/tasks/{self.task}/collaboration/invite",
+                             json={"username": self.users[1]["username"], "role": "coder"},
+                             headers=self.auth())
+        self.assertEqual(r.status_code, 201, r.text)
+        self.assertIn(self.users[1]["username"],
+                      tasks_mod.find_task(self.task, DATA_DIR).screeners)
+        member_id = str(self.users[1]["user_id"])
+        r = self.client.delete(
+            f"/api/tasks/{self.task}/collaboration/roles/{member_id}/coder",
+            headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["revoked"])
+        self.assertNotIn(self.users[1]["username"],
+                         tasks_mod.find_task(self.task, DATA_DIR).screeners)
 
     # ------------------------------------------------------------------
     # U4-P8：current_owner_db 传 task_id；get_owner 缺省 fail-closed

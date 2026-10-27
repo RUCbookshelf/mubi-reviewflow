@@ -8220,6 +8220,9 @@ $('#authForm').addEventListener('submit', async e => {
     saveToken(d.token);
     await enterApp();
     toast(T('欢迎，{0}', d.user.username), 'inc');
+    /* R6-C1（复审）：消费登录响应 warnings（保留名撞库账号的改名指引）——
+       此前响应里有 warnings 但前端只取 token/username，用户得不到任何提示 */
+    if (Array.isArray(d.warnings)) d.warnings.forEach(w => toast(String(w), 'warn', 9000));
   } catch (ex) {
     err.textContent = ex.message;
   } finally {

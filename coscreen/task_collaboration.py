@@ -251,13 +251,28 @@ def get_owner(
 def is_owner(
     store: str | Path, user_id: int, *, task_id: str | None = None
 ) -> bool:
+    """是否任务属主；异常口径与 get_owner/is_participant 对齐（#36 扫尾）。
+
+    只有"确无属主"（无属主行/绑定不匹配/库未初始化/不存在）返回 False；
+    锁超时/读失败抛 OwnerUnavailableError、库永久损坏抛
+    CollaborationStoreCorruptError——读取失败不得折叠成"不是属主"。
+    """
     user_id = _user_id(user_id)
     try:
         with closing(_connect(Path(store), read_only=True)) as conn:
             row = _owner(conn, task_id)
             return int(row["owner_user_id"]) == user_id
-    except (OSError, sqlite3.Error, ValueError):
-        return False
+    except FileNotFoundError:
+        return False  # 库不存在 = legacy：确无属主
+    except ValueError:
+        return False  # 无属主行 / 绑定不匹配 / 表未初始化：确无属主
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"owner lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"owner lookup failed: {exc}") from exc
 
 
 def is_participant(
@@ -303,10 +318,15 @@ def grant_role(
     role: str,
     task_id: str | None = None,
 ) -> dict[str, object]:
-    """Grant a coder/reconciler role; only the registered owner may grant."""
+    """Grant a coder/reconciler role; only the registered owner may grant.
+
+    handoff C5（复审扫尾）：task_id 必传，理由同 authorize_action。
+    """
     actor_user_id = _user_id(actor_user_id, "actor_user_id")
     user_id = _user_id(user_id)
     role = _role(role)
+    if task_id is None:
+        raise ValueError("task_id is required for grant_role")
     with _write(Path(store)) as conn:
         owner = _owner(conn, task_id)
         if int(owner["owner_user_id"]) != actor_user_id:
@@ -378,9 +398,14 @@ def list_participant_ids(
 ) -> list[int]:
     """Return task member IDs only to a member of a verified task.
 
-    异常契约与同文件其他公开函数对齐：store 未初始化/读失败/task_id 不
-    匹配（OSError/sqlite3.Error/ValueError）按“无参与者”降级处理并记日志
-    （notify/team_progress 不再 500）；非参与者仍抛 PermissionError。
+    异常契约与 get_owner/is_participant 对齐（#36/R6-C6 复审扫尾）：
+    - **确定性否定**（无属主行、task_id 绑定不匹配、库未初始化/不存在）
+      返回空列表——对该 task_id 而言"无参与者"是事实，不是伪空表；
+    - **不确定故障**（锁超时/读失败 → OwnerUnavailableError、库永久损坏
+      → CollaborationStoreCorruptError）必须抛出——修复前 BEGIN EXCLUSIVE
+      锁窗口内曾折叠成 members:[] 使 team_progress 统计清零、notify 静默
+      丢事件（r5 rv5_stats_probe B1 场景）；
+    - 非参与者仍抛 PermissionError。
     """
     actor_user_id = _user_id(actor_user_id, "actor_user_id")
     try:
@@ -394,9 +419,15 @@ def list_participant_ids(
             return sorted(ids)
     except PermissionError:
         raise
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        logger.warning("list_participant_ids degraded to no participants: %s", exc)
-        return []
+    except (FileNotFoundError, ValueError):
+        return []  # 确定性否定：该 task_id 确无参与者
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"participant lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"participant lookup failed: {exc}") from exc
 
 
 def authorize_action(
@@ -406,10 +437,17 @@ def authorize_action(
     *,
     task_id: str | None = None,
 ) -> bool:
-    """Fail closed unless the authenticated user has an explicit required role."""
+    """Fail closed unless the authenticated user has an explicit required role.
+
+    handoff C5（复审扫尾）：task_id 必传——缺省时按"任意属主"判定的旧
+    口径会让拷贝/错放的任务库以任意任务身份通过授权，调用方必须显式给
+    出当前任务 id（全部既有调用点均已传 info.task_id）。
+    """
     user_id = _user_id(user_id)
     if action not in _ACTION_ROLES:
         raise ValueError(f"unknown collaboration action: {action}")
+    if task_id is None:
+        raise ValueError("task_id is required for authorize_action")
     try:
         with closing(_connect(Path(store), read_only=True)) as conn:
             owner = _owner(conn, task_id)

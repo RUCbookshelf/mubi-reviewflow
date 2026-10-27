@@ -445,6 +445,20 @@ def register_screener(
     return _mutate_task(task_id, data_dir, _add)
 
 
+def unregister_screener(
+    task_id: str, name: str, data_dir: str | Path = "data"
+) -> TaskInfo:
+    """移除筛选员登记（R6-C1：撤销角色时回收 task.json 的 screeners 行；
+    幂等——名不在列表时不变）。"""
+    clean = (name or "").strip()
+
+    def _remove(info: TaskInfo) -> None:
+        if clean in info.screeners:
+            info.screeners.remove(clean)
+
+    return _mutate_task(task_id, data_dir, _remove)
+
+
 def touch_task(
     task_id: str,
     data_dir: str | Path = "data",

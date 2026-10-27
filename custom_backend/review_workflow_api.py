@@ -253,6 +253,14 @@ class WorkflowRuntime:
                 actor_user_id=ctx.user["user_id"], task_id=ctx.info.task_id)
         except PermissionError:
             return
+        except (task_collaboration.OwnerUnavailableError,
+                task_collaboration.CollaborationStoreCorruptError) as exc:
+            # R6-C6：读取失败不再折叠成"无参与者"静默丢事件——显式记日志
+            import logging
+            logging.getLogger(__name__).warning(
+                "task %s notify skipped: participant lookup failed: %s",
+                ctx.info.task_id, exc)
+            return
         event = {"type": "task-workflow-changed", "task_id": ctx.info.task_id,
                  "version": store.settings(ctx.owner_db)["version"], "reason": reason}
         for actor in ids:

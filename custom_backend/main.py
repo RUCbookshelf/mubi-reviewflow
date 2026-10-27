@@ -1697,6 +1697,11 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
             store, actor_user_id=user["user_id"], task_id=info.task_id)
     except PermissionError as exc:
         raise HTTPException(403, "当前账号不是该任务的参与者。") from exc
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise  # 全局处理器：desktop 409 修复指引 / server 503 fail-closed
+    except collaboration_mod.OwnerUnavailableError as exc:
+        # R6-C6：读取失败绝不返回伪空表（统计清零）——503 重试语义
+        raise HTTPException(503, "任务参与者状态暂时无法确认，请稍后重试。") from exc
     accounts = [account for uid in ids
                 if (account := auth.get_user_by_id(uid)) is not None]
     user_ids = {account["username"]: account["id"] for account in accounts}
@@ -1743,6 +1748,14 @@ def collaboration_revoke_role(task_id: str, target_user_id: int,
             path, actor_user_id=user["user_id"], user_id=target_user_id,
             role=role, task_id=info.task_id)
     if revoked:
+        # R6-C1（复审）：撤销时回收 task.json 的 screeners 登记——此前撤销
+        # 后登记残留，被撤成员仍出现在筛选员名单。
+        target = auth.get_user_by_id(target_user_id)
+        if target:
+            try:
+                tasks_mod.unregister_screener(info.task_id, target["username"], DATA_DIR)
+            except (ValueError, OSError):
+                pass  # 回收失败不阻断撤销结果（幂等可重试）
         notify_tasks_changed(target_user_id, "revoked", info.display_name)
     return {"revoked": revoked}
 
@@ -2895,7 +2908,9 @@ def coding_dimensions(task_id: str, screener: str | None = None,
                       user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    with app.state.review_workflow.lock(task_id):
+    # R6-C3（复审扫尾）：读锁键一律用规范 task_id（尾点别名与写路径同键
+    # 互斥，别名读不得绕过 schema_guard 写的进程内互斥读到迁移中途状态）。
+    with app.state.review_workflow.lock(info.task_id):
         ctx = app.state.review_workflow.context(task_id, user)
         from coscreen import coding_evidence
         mapped, issues, required = coding_evidence.mapping(db, ctx.owner_db)
@@ -3016,7 +3031,8 @@ def export_scheme_ep(task_id: str, screener: str | None = None,
     db = _screener_db(info, screener or user["username"])
     from coscreen import coding_evidence
     runtime = app.state.review_workflow
-    with runtime.lock(task_id):
+    # R6-C3（复审扫尾）：读锁键一律用规范 task_id（同上）。
+    with runtime.lock(info.task_id):
         ctx = runtime.context(task_id, user)
         mapping, _, _ = coding_evidence.mapping(db, ctx.owner_db)
         dims = coding_evidence.field_rows(db)
@@ -5112,10 +5128,9 @@ def _coding_owner_db(info: tasks_mod.TaskInfo) -> Path | None:
 def _shared_rob_db(info: tasks_mod.TaskInfo) -> Path:
     owner_db = _coding_owner_db(info)
     if owner_db is None:
-        raise HTTPException(409, {"error_code": "collaboration_owner_unset",
-                                  "message_key": "analysis.rob.collaboration_owner_unset", "params": {},
-                                  "details": "Legacy task needs verified owner migration",
-                                  "message": "Legacy task needs verified owner migration"})
+        # 复审（R6-C2 同口径）：与列表/协作/仲裁端点统一 legacy 409 口径
+        # （此前是未注册词条的英文硬编码文案）。
+        raise _legacy_owner_migration_error()
     return owner_db
 
 
