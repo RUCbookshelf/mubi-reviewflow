@@ -13,11 +13,13 @@
 3. 确定性导出：``prisma_form_dot``（官方结构流程图 DOT，中文标签，玉青配色
    与 ``form_to_dict`` / ``form_json``（键名与契约字段一致）。
 
-依据与口径（规则号 = PRISMA_REFERENCE §8 总表）：
+依据与口径（规则号 = PRISMA_REFERENCE §8 总表；带后缀的规则号见下）：
 - R1–R5、R7：[E&E 序列] + [模板结构]（官方明文/官方模板箭头蕴含）；
   R4/R5 对 v2「其他方法」列同样成立（该列亦有寻求获取→未获取→评估链，
   U6-P1/r5#49：单列数字自洽是表单本职，官方模板不受影响）；
-- R6/R9/R12：（推断）或图注明文，按手册标注落地；
+- R6/R9/R12：（推断）或图注明文，按手册标注落地；R12 灰框零值隐藏对
+  db 列与其他方法列同规则执行（notret 为 0 时两列都隐藏该框，缺口由
+  R4B error 暴露而非靠灰框呈现——r6 评审裁决：不补零值灰框）；
 - R10：模板脚注 **（自动化工具拆分）——产品页未提供该拆分输入，按
   r6 复审 R6-F6 方案 B 一律为 warning（可在备注中说明），不阻断；
 - R11：[DTA清单] item 17（"included in meta-analysis, if applicable"）；
@@ -28,6 +30,19 @@
   排除数相等（error，拆分口径自担）。S3 全文理由仍走 R8。
 - R14（U6-P2，推断口径）：末框「纳入研究数 ≤ 纳入报告数」（每个纳入
   研究至少对应一份报告）；研究数为 0 而报告数 >0 仅 warning。
+
+规则号后缀约定（r6 评审反馈 1 的范围裁决）：产品前端 prFriendlyMsg
+（index.html，不在本泳道允许改动段）按规则号 token 用**页面 db 列
+数值**重写文案——其他方法列/提示态的新消息若沿用 R4/R5/R13/R10 token
+会被错误重写（如「应该评估 18 篇，但你填了 18，数量一致」）。故这四类
+新消息改用带后缀 token，前端按原文（中英双语中的中文半句）直显：
+- R4B = R4 的其他方法列变体（sought_other − not_retrieved_other ≠
+  assessed_other）；db 列仍为 R4；
+- R5B = R5 的其他方法列单列余量变体（Σ理由_other > assessed_other）；
+  db 列单列余量仍为 R5（前端 exp<0 分支渲染正确）；
+- R13W = R13 的「仅报单一总数」提示态（warning）；拆分不符 error 仍为
+  R13（前端重写正确）；
+- R10W = R10 的拆分提示态（warning，含「可在备注中说明」）。
 - DTA 模式 = 新综述全部字段 + 可选 meta-analysis 计数（官方无 DTA 专属流程图，
   该计数**不渲染为图框**，仅出现在 JSON 与页面提示中——PRISMA_REFERENCE §6/§9）。
 - 更新综述的末框一致性（studies_included == total_studies 等）为（推断）工程口径：
@@ -551,8 +566,11 @@ def validate(form: PrismaFormData) -> ValidationResult:
     if scope_other and form.reports_assessed_other != (
         form.reports_sought_other - form.reports_not_retrieved_other
     ):
+        # R4B（R4 的其他方法列变体）：token 不用 R4——产品前端 prFriendlyMsg
+        # 按 R4 token 用页面 db 列数值重写文案，会把 other 列错误渲染成
+        # 「应该评估 18 篇，但你填了 18，数量一致」（r6 评审反馈 1）。
         err(
-            "R4",
+            "R4B",
             f"其他方法列：寻求获取的报告({form.reports_sought_other}) − 未获取到的报告({form.reports_not_retrieved_other})"
             f" ≠ 进行资格评估的报告({form.reports_assessed_other})",
             f"other-methods: reports sought({form.reports_sought_other}) −"
@@ -608,8 +626,11 @@ def validate(form: PrismaFormData) -> ValidationResult:
     if scope_other:
         sum_rs_other = sum_reasons(form.exclusion_reasons_other)
         if sum_rs_other > form.reports_assessed_other:
+            # R5B（R5 的其他方法列变体）：token 不用 R5——前端 prFriendlyMsg
+            # 按 R5 token 用 db 列数值重写，会把已对齐的总额 target 改坏
+            # （r6 评审反馈 1 实测：「应该纳入 8 篇，但你填了 3，差 5 篇」）。
             err(
-                "R5",
+                "R5B",
                 f"其他方法列：Σ排除理由({sum_rs_other}) > 进行资格评估的报告({form.reports_assessed_other})"
                 "（单列排除数不能超过该列评估数）",
                 f"other-methods: Σreasons({sum_rs_other}) > assessed({form.reports_assessed_other})"
@@ -710,17 +731,19 @@ def validate(form: PrismaFormData) -> ValidationResult:
     # 产品 PRISMA 页未提供人工/自动化两个输入（r6 复审 R6-F6：前端全目录
     # 0 命中、后端恒收 None），error 分支不可达却要求补填不存在的输入——
     # 按方案 B 一律降级为 warning（可在备注中说明），不再阻断导出。
+    # token 用 R10W（提示态）：前端 prFriendlyMsg 的 R10 分支会把文案重写为
+    # 「脚注拆分不符…」，丢失「可在备注中说明」（r6 评审反馈 1）。
     human, auto = form.human_excluded_n, form.automation_excluded_n
     if (human is None) != (auto is None):
         warnings.append(Issue(
-            "R10",
+            "R10W",
             "脚注**拆分：人工与自动化两个计数需同时填写或同时留空（可在备注中说明）",
             "footnote** split: human and automation counts must be both filled or both empty"
             " (explainable in a note)",
         ))
     elif human is not None and auto is not None and human + auto != form.records_excluded_screening:
         warnings.append(Issue(
-            "R10",
+            "R10W",
             f"脚注**拆分：人工({human}) + 自动化({auto}) ≠ 排除的记录({form.records_excluded_screening})"
             "（可在备注中说明）",
             f"footnote** split: human({human}) + automation({auto}) ≠"
@@ -785,8 +808,11 @@ def validate(form: PrismaFormData) -> ValidationResult:
             actual=sum_scr,
         )
     elif sum_scr == 0 and form.records_excluded_screening > 0:
+        # token 用 R13W（提示态）：前端 prFriendlyMsg 的 R13 分支会把本
+        # warning 重写成「初筛排除理由对不上：…差 30 篇」，把官方模板
+        # 合规的表单渲染成有错（r6 评审反馈 1）。
         warnings.append(Issue(
-            "R13",
+            "R13W",
             f"初筛排除 {form.records_excluded_screening} 条仅报单一总数：官方模板允许不拆分；"
             "如需逐理由拆分请补填（拆分为本项目推断口径，需 Σ = 排除数）",
             f"{form.records_excluded_screening} records excluded at first screening reported as a"

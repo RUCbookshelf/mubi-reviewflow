@@ -86,13 +86,16 @@ class OtherColumnR4Tests(unittest.TestCase):
     def test_v2_other_column_r4_mismatch_is_error(self):
         # 首审 U6-P1 同法：other sought=10/not_retrieved=0/assessed=5/理由=2，
         # 修复前 ok=True、errors=[]，缺口被 R6/R12 掩盖。
+        # token 为 R4B（R4 的其他方法列变体）：前端 prFriendlyMsg 按 R4
+        # token 用页面 db 列数值重写文案会把 other 列错误渲染（r6 评审
+        # 反馈 1），db 列仍为 R4。
         form = _legal_v2_form(
             reports_assessed_other=5,
             reports_of_included_studies=11,  # R5 总额仍对齐：(18-10)+(5-2)=11
         )
         result = validate(form)
         self.assertFalse(result.ok)
-        self.assertEqual([i.rule for i in result.errors], ["R4"])
+        self.assertEqual([i.rule for i in result.errors], ["R4B"])
         self.assertEqual(result.errors[0].field, "reports_assessed_other")
         self.assertEqual(result.errors[0].expected, 10)
         self.assertEqual(result.errors[0].actual, 5)
@@ -110,6 +113,19 @@ class OtherColumnR4Tests(unittest.TestCase):
         self.assertIn("notret_other", dot)
         self.assertIn("未获取到的报告（n = 3）", dot)
 
+    def test_zero_notret_other_box_hidden_per_r12_same_as_db_column(self):
+        # r6 评审反馈 3 裁决：R12 灰框零值隐藏对 db 列与其他方法列同规则
+        # 执行——审计复现表单（notret_other=0）的 DOT 不画零值灰框，缺口
+        # 由 R4B error 暴露，不靠灰框呈现（不补零值框，与 db 列一致）。
+        form = _legal_v2_form(
+            reports_assessed_other=5,
+            reports_of_included_studies=11,
+        )
+        self.assertFalse(validate(form).ok)
+        dot = prisma_form_dot(form)
+        self.assertNotIn("notret_other", dot)
+        self.assertNotIn("未获取到的报告（n = 0）", dot)
+
 
 # ---------------------------------------------------------------------------
 # r5#49：R5 单列余量
@@ -119,6 +135,8 @@ class PerColumnReasonCapTests(unittest.TestCase):
     def test_single_column_negative_margin_not_offset_by_other_column(self):
         # r5 复审 #49 同法：db 18/10 + other 5/10 + reports=3——总额勾稽通过
         # （(18-10)+(5-10)=3），other 列负余量修复前被 db 列抵消。
+        # token 为 R5B（R5 的其他方法列变体，前端按 R5 token 会用 db 值把
+        # 已对齐的总额 target 改坏——r6 评审反馈 1）。
         form = _legal_v2_form(
             exclusion_reasons_other=[ReasonRow("setting", 10)],
             reports_assessed_other=5,
@@ -126,11 +144,12 @@ class PerColumnReasonCapTests(unittest.TestCase):
         )
         result = validate(form)
         self.assertFalse(result.ok)
-        self.assertIn("R5", [i.rule for i in result.errors])
-        r5 = [i for i in result.errors if i.rule == "R5"][0]
-        self.assertEqual(r5.field, "exclusion_reasons_other")
+        self.assertIn("R5B", [i.rule for i in result.errors])
+        r5b = [i for i in result.errors if i.rule == "R5B"][0]
+        self.assertEqual(r5b.field, "exclusion_reasons_other")
 
     def test_db_column_reason_cap(self):
+        # db 列单列余量仍用 R5 token（前端 exp<0 分支渲染正确，无需后缀）。
         form = _legal_v1_form(
             exclusion_reasons_db=[ReasonRow("design", 19)],
             reports_of_included_studies=8,
@@ -228,16 +247,18 @@ class StepFieldCoverageTests(unittest.TestCase):
 
     def test_r10_split_mismatch_is_warning_not_error(self):
         # R6-F6 方案 B：产品页无人工/自动化拆分输入，R10 不再阻断。
+        # token 为 R10W（提示态，含「可在备注中说明」；前端 R10 分支的
+        # 静态重写会丢失该说明——r6 评审反馈 1）。
         form = _legal_v1_form(human_excluded_n=50, automation_excluded_n=5)
         result = validate(form)
         self.assertTrue(result.ok, [i.text for i in result.errors])
-        self.assertIn("R10", [i.rule for i in result.warnings])
+        self.assertEqual([i.rule for i in result.warnings], ["R10W"])
 
     def test_r10_half_filled_is_warning(self):
         form = _legal_v1_form(human_excluded_n=None, automation_excluded_n=5)
         result = validate(form)
         self.assertTrue(result.ok, [i.text for i in result.errors])
-        self.assertIn("R10", [i.rule for i in result.warnings])
+        self.assertIn("R10W", [i.rule for i in result.warnings])
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +290,12 @@ class OfficialTemplateTests(unittest.TestCase):
 
     def test_official_template_total_only_passes(self):
         # 修复前唯一 error 为 R13（Σ理由 0 ≠ 排除 30），ok=False。
+        # token 为 R13W（提示态）：前端 R13 分支会把 warning 重写成
+        # 「初筛排除理由对不上：…差 30 篇」，把合规表单渲染成有错
+        # （r6 评审反馈 1）；拆分不符 error 仍为 R13。
         result = validate(self.official_template_form())
         self.assertTrue(result.ok, [i.text for i in result.errors])
-        self.assertIn("R13", [i.rule for i in result.warnings])
+        self.assertIn("R13W", [i.rule for i in result.warnings])
 
     def test_itemized_mismatch_still_errors(self):
         form = self.official_template_form()
