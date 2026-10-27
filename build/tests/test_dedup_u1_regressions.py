@@ -553,14 +553,66 @@ class UnionFindGuardsTests(unittest.TestCase):
 # CLI 与活体综述对接（真实子进程/真实管线）
 # ---------------------------------------------------------------------------
 
-def _run_cli(args: list[str]) -> subprocess.CompletedProcess:
+def _run_cli_subprocess(args: list[str]) -> subprocess.CompletedProcess:
+    """真实子进程链路：``python -m coscreen``（端到端锚专用，冷启动 ~2s）。"""
     return subprocess.run(
         [sys.executable, "-m", "coscreen", *args],
         capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
     )
 
 
+def _run_cli(args: list[str]) -> subprocess.CompletedProcess:
+    """同进程直调 CLI 主入口（参数解析/stdout/stderr/退出码与子进程一致）。
+
+    性能（集成轮返修）：全套 pytest 曾达 82-84s，超出返修 runner 的墙钟
+    预算（实测在 67.74s/第 163 个测试处被中断，exit=2 Interrupted）；
+    8 次 CLI 测试每次付 ~2s 的 Python+pandas+rispy 子进程冷启动。改为
+    直调后参数解析与输出路径不变；真实子进程链路由
+    test_cli_subprocess_end_to_end_anchor 保留一条端到端锚。
+    """
+    from coscreen import cli as cli_module
+
+    buf_out, buf_err = StringIO(), StringIO()
+    with redirect_stdout(buf_out), redirect_stderr(buf_err):
+        try:
+            code = cli_module.main(list(args))
+        except SystemExit as exc:  # main 约定返回退出码；防御性兼容
+            code = int(exc.code or 0)
+    return subprocess.CompletedProcess(
+        args, int(code), buf_out.getvalue(), buf_err.getvalue()
+    )
+
+
 class CliImportSemanticsTests(unittest.TestCase):
+    def test_cli_subprocess_end_to_end_anchor(self):
+        # 端到端锚：_run_cli 已改为同进程直调（全套时长超出返修 runner 墙钟
+        # 预算），此处保留一条真实 `python -m coscreen` 子进程链路，并断言
+        # 直调与子进程在退出码/关键输出/落库行为上一致。
+        with tempfile.TemporaryDirectory(prefix="rf_u1cli_e2e_") as tmp:
+            rows = [
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in women", "py": "2005", "id": "WM1"},
+                {"au": "Wang, Wei", "ti": "Effects of drug X on mortality in men", "py": "2006", "id": "WM2"},
+            ]
+            ris_sub = Path(tmp) / "wm_sub.ris"
+            ris_dir = Path(tmp) / "wm_dir.ris"
+            db_sub = str(Path(tmp) / "wm_sub.db")
+            db_dir = str(Path(tmp) / "wm_dir.db")
+            _write_ris(ris_sub, rows)
+            _write_ris(ris_dir, rows)
+            proc_sub = _run_cli_subprocess(["import", "--file", str(ris_sub), "--db", db_sub])
+            proc_dir = _run_cli(["import", "--file", str(ris_dir), "--db", db_dir])
+            self.assertEqual(proc_sub.returncode, 0, proc_sub.stderr)
+            self.assertEqual(proc_dir.returncode, 0, proc_dir.stderr)
+            self.assertEqual(proc_sub.returncode, proc_dir.returncode)
+            self.assertIn("模糊候选 1 条", proc_sub.stdout)
+            self.assertIn("模糊候选 1 条", proc_dir.stdout)
+            for db_path in (db_sub, db_dir):
+                with closing(sqlite3.connect(db_path)) as conn:
+                    keys = conn.execute(
+                        "SELECT zotero_key FROM articles ORDER BY import_order"
+                    ).fetchall()
+                self.assertEqual(keys, [("WM1",), ("WM2",)], db_path)
+
     def test_fuzzy_candidates_not_auto_merged_by_default(self):
         # 首审实测：wm.ris 曾输出 men 论文 is_duplicate_of=women 论文。
         with tempfile.TemporaryDirectory(prefix="rf_u1cli_") as tmp:
