@@ -88,6 +88,8 @@
 ['恢复记录','Resume recording','Reprendre l’enregistrement','Возобновить запись','Reanudar registro','記録を再開','Retomar registro','Aufzeichnung fortsetzen',"Настави бележење",'기록 재개'],
 ['停止记录','Recording stopped','Enregistrement arrêté','Запись остановлена','Registro detenido','記録を停止','Registro interrompido','Aufzeichnung beendet',"Бележење је заустављено",'기록 중지'],
 ['变更记录范围','Recording scope changed','Périmètre d’enregistrement modifié','Область записи изменена','Alcance del registro modificado','記録範囲を変更','Escopo de registro alterado','Aufzeichnungsumfang geändert',"Опсег бележења је измењен",'기록 범위 변경'],
+['AI 生成建议','AI suggestion generated','Suggestion d’IA générée','Предложение ИИ сгенерировано','Sugerencia de IA generada','AI提案を生成','Sugestão de IA gerada','KI-Vorschlag erzeugt',"Предлог ИИ је генерисан",'AI 제안 생성됨'],
+['AI 建议决定','AI suggestion decided','Décision sur la suggestion d’IA','Решение по предложению ИИ','Decisión sobre la sugerencia de IA','AI提案の決定','Decisão sobre a sugestão de IA','Entscheidung zum KI-Vorschlag',"Одлука о предлогу ИИ",'AI 제안 결정됨'],
 ['起始状态','Baseline state','État de référence','Исходное состояние','Estado inicial','開始時の状態','Estado inicial','Ausgangszustand',"Почетно стање",'기준 상태'],
 ['其他记录','Other event','Autre événement','Другое событие','Otro evento','その他の記録','Outro evento','Sonstiges Ereignis',"Други догађај",'기타 기록'],
 ['数据保存在本机','Data is stored on this device','Les données sont stockées sur cet appareil','Данные хранятся на этом устройстве','Los datos se guardan en este dispositivo','データはこの端末に保存されます','Os dados ficam neste dispositivo','Daten werden auf diesem Gerät gespeichert','Podaci se čuvaju na ovom uređaju','데이터는 이 기기에 저장됩니다'],

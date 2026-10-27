@@ -4911,6 +4911,12 @@ register_review_import_routes(app, require_user, parse_upload=_parse_upload_to_a
 
 register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
 
+# AI 抽取建议（BYOK，B4 §2–§4）：钥匙只存 {DATA_DIR}/.ai_keys/ 保险柜（custom_backend/ai_keys.py），
+# 出站仅 stdlib urllib；未配置钥匙时全部端点优雅降级（B4 §0 修订 R1，无 Key 零影响）。
+from custom_backend.ai_suggest_api import register_ai_suggest_routes
+
+register_ai_suggest_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR)
+
 from custom_backend.report_evidence_api import register_report_evidence_routes
 register_report_evidence_routes(app, require_user)
 

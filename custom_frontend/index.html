@@ -5226,6 +5226,7 @@ async function apiRequest(path, opts = {}) {
     if (translatedHit) error.rfLocalized = true;
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
       error.code = payload.code; error.workflowSettings = payload.workflow_settings; error.reasons = payload.reasons || [];
+      error.fields = Array.isArray(payload.fields) ? payload.fields : [];  /* B9 F19：ai_field_not_allowed 等字段清单 */
     }
     return error;
   }
@@ -9054,5 +9055,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <link rel="stylesheet" href="import_review_refined.css?v=2.1.3">
 <script src="./report_evidence_locale.js?v=2.1.4-r3"></script>
 <script src="./report_evidence.js?v=2.1.4-r5"></script>
+<!-- AI 抽取建议（BYOK）：建议卡+逐条确认流+设置页（任务 B7；追加式接入，自带十语言词条，独立容错） -->
+<script src="./ai_suggest.js?v=2.1.4-ai1"></script>
 </body>
 </html>

@@ -25,6 +25,7 @@
 | 文献筛选 | 标题/摘要初筛、PDF 全文复筛、常用与自定义排除理由 |
 | 机器学习排序 | 辅助安排阅读顺序；纳入、需复核和排除由用户决定 |
 | 数据提取与编码 | 提取研究信息、记录编码内容与全文依据 |
+| AI 抽取建议（BYOK） | 可选的编码辅助，默认关闭：成员自带钥匙或任务共享钥匙双模式（兼容 OpenAI 协议端点，支持本地 Ollama 零出网）；建议附原文引文与页码可溯源，采纳逐条人工确认；决策可导出审计 CSV 并生成 Methods 报告段落 |
 | 数据分析 | 效应量计算、固定与随机效应合并、异质性、亚组、Meta 回归、敏感性与小研究效应分析 |
 | 扩展分析 | 诊断准确性、网络 Meta 分析、剂量反应、IPD、贝叶斯与多层模型等模块；使用前请确认各模块的输入与适用条件 |
 | 偏倚风险 | 记录 RoB 2、ROBINS-I、QUADAS-2 等工具的人工判断 |
@@ -96,7 +97,7 @@ python build/launcher.py
 
 上传的 PDF 位于数据目录中的 `tasks/<任务标识>/pdfs`，占用磁盘空间。安装版可在「首页 & 设置 → 外观与存储 → 数据存放位置」迁移到其他目录，**重启应用后生效**。迁移完成前保留原数据；确认新目录正常后再使用清理功能。卸载保留个人研究数据。请另行备份重要材料。
 
-本机使用的数据保存在本机。启用在线 AI/API 时，相应请求会发往配置的服务。服务器模式将任务数据持久保存到服务器；同一服务器的任务成员能查看彼此进度，但不能修改他人的个人筛选决定。
+本机使用的数据保存在本机。AI 抽取建议为可选功能且默认关闭：启用后可使用自带钥匙（BYOK）或任务负责人配置的共享钥匙，请求仅发往用户自行配置的服务端点（填本地模型地址即可零出网）；钥匙以明文 JSON 保存在数据目录 `.ai_keys/`（一期不加密；文件权限尽力而为，Windows 下不保证系统级隔离。真正的防线是：界面永不回显明文、无读取他人钥匙的功能、钥匙不进任何导出包）。服务器模式下 AI 请求由服务器发出，成员配置的端点可访问服务器所在内网，详见《AI 抽取建议说明与治理边界》（docs/AI_SUGGESTIONS.zh-CN.md）；每条建议均附原文引文，逐条人工确认后仅填入表单，全程留痕并可通过轨迹与审计导出复查。服务器模式将任务数据持久保存到服务器；同一服务器的任务成员能查看彼此进度，但不能修改他人的个人筛选决定。
 
 团队服务器请按[Ubuntu 服务器部署指南](docs/deployment/UBUNTU_SERVER.md#zh-cn)配置。团队协作必须设置 `REVIEWFLOW_MODE=server`；不要用桌面启动器启动团队服务。账户、任务、导入原件、PDF 和决定保存在服务器数据目录，请备份整个目录。协作与离线合并说明见应用左下角「帮助」及[协作指南](docs/handoff/2026-09-30-cloud-collaboration.md#zh-cn)。
 
@@ -156,6 +157,7 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Screening:** title/abstract and PDF full-text screening, with standard or custom exclusion reasons.
 - **Machine Learning:** assistance with reading order; inclusion, uncertainty and exclusion remain user decisions.
 - **Data extraction & coding:** study information extraction and supporting full-text evidence.
+- **AI extraction suggestions (BYOK):** optional coding assistance, off by default; bring your own key or use a task-shared key (OpenAI-compatible endpoints, local Ollama supported for zero outbound traffic); every suggestion carries a source quote and page numbers for tracing, adoption is confirmed item by item, and decisions support audit CSV export and Methods report generation.
 - **Analysis:** effect sizes, fixed and random effects, heterogeneity, subgroups, meta-regression, sensitivity and small-study effects.
 - **Extended methods:** diagnostic accuracy, network meta-analysis, dose–response, IPD, Bayesian and multilevel modules, each with its own input requirements.
 - **Risk of bias:** manual assessments using tools such as RoB 2, ROBINS-I and QUADAS-2.
@@ -219,7 +221,7 @@ Source runs use the repository's `data/` folder. Installed applications default 
 
 Uploaded PDFs are stored under `tasks/<task-id>/pdfs` inside the data folder. In installed applications, use **Home & Settings → Appearance & storage → Data location** to migrate data. **Restart the application to apply the change.** The original data is retained until you confirm the new location and use the cleanup option. Uninstalling retains personal research data; keep separate backups.
 
-Local mode stores research data locally. Online AI/API features send relevant requests to the configured service. Server mode persists task data on the server. Task members can see each other's progress without changing another reviewer's personal decisions.
+Local mode stores research data locally. AI extraction suggestions are optional and off by default: once enabled they run on your own key (BYOK) or a task-shared key configured by the task owner, and requests go only to the endpoint you configure (point it at a local model such as Ollama for zero outbound traffic). Keys are stored as plaintext JSON in the data directory under `.ai_keys/` (not encrypted in phase 1; file permissions are best effort and system-level isolation is not guaranteed on Windows — the real safeguards are: the UI never echoes key plaintext, no feature can read another user's key, and keys never enter any export package). In server mode AI requests are sent by the server, and a member-configured endpoint can reach the server's internal network — see docs/AI_SUGGESTIONS.zh-CN.md (Chinese) for the full disclosure. Every suggestion carries a verbatim source quote, requires per-item human confirmation before filling the form, and is fully traceable with auditable exports. Server mode persists task data on the server. Task members can see each other's progress without changing another reviewer's personal decisions.
 
 For team deployment, follow the [Ubuntu server deployment guide](docs/deployment/UBUNTU_SERVER.md#en). Team collaboration requires `REVIEWFLOW_MODE=server`; do not use the desktop launcher for the team service. Accounts, tasks, imported originals, PDFs, and decisions are stored in the server data directory, which should be backed up in full. See **Help** in the sidebar and the [collaboration guide](docs/handoff/2026-09-30-cloud-collaboration.md#en) for collaboration and offline merging.
 
