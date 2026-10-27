@@ -7,7 +7,7 @@
 - 写法：``custom_backend/auth.py`` 的 0600 + 独占/临时文件 + ``os.replace``
   原子写（Windows 下 0600 语义弱化为尽力而为，README 隐私说明如实披露）；
 - 红线：钥匙明文只在本模块与出站客户端内部存在，绝不经日志、返回值、
-  轨迹载荷或异常文本外泄；对外只回掩码（``sk-***abc`` 式，仅尾 3-4 位）；
+  轨迹载荷或异常文本外泄；对外只回掩码（``***abcd`` 式，仅尾 4 位）；
 - 环境变量覆盖：``REVIEWFLOW_AI_KEY``（服务器管理员模式，B4 §2）。
 """
 from __future__ import annotations
@@ -50,6 +50,10 @@ ENV_KEY = "REVIEWFLOW_AI_KEY"
 ENV_PROVIDER = "REVIEWFLOW_AI_PROVIDER"
 ENV_BASE_URL = "REVIEWFLOW_AI_BASE_URL"
 ENV_MODEL = "REVIEWFLOW_AI_MODEL"
+
+
+class KeyDeletionError(RuntimeError):
+    """钥匙文件删除失败（文件被占用/权限拒绝等）——绝不向用户假报成功（B9 F2）。"""
 
 
 class KeyShapeError(ValueError):
@@ -114,6 +118,12 @@ def _clean_base_url(base_url: str | None) -> str:
     parts = urlsplit(text)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise KeyShapeError("base_url 必须是 http(s) URL（本地 Ollama 可填 http://127.0.0.1:11434/v1）。")
+    # B9 F12 缓解：默认阻断链路本地与云元数据地址（loopback 保留——本地模型是一期卖点）。
+    host = (parts.hostname or "").strip().strip("[]").lower()
+    if (host.startswith("169.254.") or host.startswith("fe80:") or host.startswith("fd00:")
+            or host in ("metadata.google.internal", "metadata.goog",
+                        "100.100.100.100", "100.100.100.200")):
+        raise KeyShapeError("base_url 不允许指向链路本地/云元数据地址。")
     if len(text) > 500:
         raise KeyShapeError("base_url 过长（上限 500 字符）。")
     return text.rstrip("/")
@@ -132,12 +142,11 @@ def base_url_of(record: dict | None) -> str:
 
 
 def mask_key(key: str) -> str:
-    """掩码：仅尾 3-4 位可见（``sk-***abc`` 式）；短钥匙整体打码。"""
+    """掩码：仅尾 4 位可见（``***abcd`` 式，不暴露前缀）；短钥匙整体打码（B9 F22）。"""
     text = str(key or "").strip()
     if len(text) < 9:
         return "***"
-    tail = text[-4:] if len(text) > 16 else text[-3:]
-    return f"{text[:3]}***{tail}"
+    return f"***{text[-4:]}"
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +198,15 @@ def _save(path: Path, *, provider: str, key: str, base_url: str | None, model: s
 
 
 def _delete(path: Path) -> bool:
+    """删除钥匙文件：不存在=幂等成功（False）；删除失败抛 KeyDeletionError（B9 F2）。"""
     try:
         path.unlink()
-        return True
     except FileNotFoundError:
         return False
-    except OSError:
-        return False
+    except OSError as exc:
+        raise KeyDeletionError(
+            f"钥匙文件删除失败（{type(exc).__name__}）：文件可能被占用，请关闭占用程序后重试。") from exc
+    return True
 
 
 # ---------------------------------------------------------------------------

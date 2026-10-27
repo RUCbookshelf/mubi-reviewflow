@@ -95,7 +95,7 @@
       ["当前：{0} · 来源：{1}", "Current: {0} · source: {1}", "Actuelle : {0} · source : {1}", "Текущий: {0} · источник: {1}", "Actual: {0} · origen: {1}", "現在：{0} ・ 取得元：{1}", "Atual: {0} · origem: {1}", "Aktuell: {0} · Quelle: {1}", "Тренутни: {0} · извор: {1}", "현재: {0} · 출처: {1}"],
       ["由管理员通过环境变量配置，仅可在服务器端更换或移除。", "Configured by the administrator via an environment variable; it can only be changed or removed on the server.", "Configurée par l’administrateur via une variable d’environnement ; elle ne peut être modifiée ou supprimée que sur le serveur.", "Настроен администратором через переменную окружения; изменить или удалить его можно только на сервере.", "Configurada por el administrador mediante una variable de entorno; solo puede cambiarse o eliminarse en el servidor.", "管理者が環境変数で設定しています。変更・削除はサーバー側でのみ可能です。", "Configurada pelo administrador via variável de ambiente; só pode ser alterada ou removida no servidor.", "Vom Administrator über eine Umgebungsvariable konfiguriert; Ändern oder Entfernen ist nur auf dem Server möglich.", "Подешен од администратора преко променљиве окружења; може се променити или уклонити само на серверу.", "관리자가 환경 변수로 구성했습니다. 서버에서만 변경하거나 제거할 수 있습니다."],
       ["服务商", "Provider", "Fournisseur", "Провайдер", "Proveedor", "プロバイダー", "Provedor", "Anbieter", "Провајдер", "공급자"],
-      ["API Key（仅保存在本机数据目录）", "API key (stored only in this device’s data directory)", "Clé API (stockée uniquement dans le répertoire de données de cet appareil)", "API-ключ (хранится только в каталоге данных этого устройства)", "Clave API (guardada solo en el directorio de datos de este equipo)", "APIキー（この端末のデータディレクトリにのみ保存）", "Chave de API (armazenada apenas no diretório de dados deste dispositivo)", "API-Schlüssel (nur im Datenverzeichnis dieses Geräts gespeichert)", "API кључ (чува се само у директоријуму података овог уређаја)", "API 키(이 기기의 데이터 디렉터리에만 저장)"],
+      ["API Key（仅保存在数据目录）", "API key (stored only in the data directory: your device on desktop, the server in server mode)", "Clé API (stockée uniquement dans le répertoire de données : appareil en version bureautique, serveur en mode serveur)", "API-ключ (хранится только в каталоге данных: устройство в настольной версии, сервер в серверном режиме)", "Clave API (guardada solo en el directorio de datos: su equipo en la versión de escritorio, el servidor en modo servidor)", "APIキー（データディレクトリにのみ保存：デスクトップ版=端末、サーバー版=サーバー）", "Chave de API (armazenada apenas no diretório de dados: dispositivo no modo desktop, servidor no modo servidor)", "API-Schlüssel (nur im Datenverzeichnis gespeichert: Gerät im Desktopmodus, Server im Servermodus)", "API кључ (чува се само у директоријуму података: уређај у радној верзији, сервер у серверском режиму)", "API 키(데이터 디렉터리에만 저장: 데스크톱=기기, 서버 모드=서버)"],
       ["接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）", "Base URL (OpenAI-compatible; can point to a local service)", "URL de base (compatible OpenAI ; peut pointer vers un service local)", "Базовый URL (совместим с OpenAI; может указывать на локальный сервис)", "URL base (compatible con OpenAI; puede apuntar a un servicio local)", "ベースURL（OpenAI互換・ローカルサービスも可）", "URL base (compatível com OpenAI; pode apontar para um serviço local)", "Basis-URL (OpenAI-kompatibel; kann auf einen lokalen Dienst zeigen)", "Базни URL (компатибилан са OpenAI; може показивати на локални сервис)", "기본 URL(OpenAI 호환, 로컬 서비스 지정 가능)"],
       ["模型名（如 gpt-4o-mini）", "Model name (e.g. gpt-4o-mini)", "Nom du modèle (p. ex. gpt-4o-mini)", "Название модели (напр. gpt-4o-mini)", "Nombre del modelo (p. ej. gpt-4o-mini)", "モデル名（例：gpt-4o-mini）", "Nome do modelo (ex.: gpt-4o-mini)", "Modellname (z. B. gpt-4o-mini)", "Назив модела (нпр. gpt-4o-mini)", "모델 이름(예: gpt-4o-mini)"],
       ["保存前验证连通性", "Verify connectivity before saving", "Vérifier la connectivité avant d’enregistrer", "Проверить соединение перед сохранением", "Verificar la conectividad antes de guardar", "保存前に接続を検証", "Verificar a conectividade antes de salvar", "Verbindung vor dem Speichern prüfen", "Провери повезаност пре чувања", "저장 전 연결 확인"],
@@ -103,7 +103,7 @@
       ["测试连接", "Test connection", "Tester la connexion", "Проверить соединение", "Probar conexión", "接続テスト", "Testar conexão", "Verbindung testen", "Тестирај везу", "연결 테스트"],
       ["删除钥匙", "Delete key", "Supprimer la clé", "Удалить ключ", "Eliminar clave", "キーを削除", "Excluir chave", "Schlüssel löschen", "Обриши кључ", "키 삭제"],
       ["连接正常 · 延迟 {0} ms", "Connection OK · latency {0} ms", "Connexion réussie · latence {0} ms", "Соединение в порядке · задержка {0} мс", "Conexión correcta · latencia {0} ms", "接続正常・レイテンシ {0} ms", "Conexão OK · latência {0} ms", "Verbindung OK · Latenz {0} ms", "Веза је у реду · кашњење {0} ms", "연결 정상 · 지연 {0}ms"],
-      ["钥匙仅存放在本机数据目录（权限 0600，尽力而为），不会进入浏览器、任务目录或导出包。", "The key is stored only in this device’s data directory (0600 permissions, best effort); it never enters the browser, the task folder or export packages.", "La clé est stockée uniquement dans le répertoire de données de l’appareil (permissions 0600, au mieux possible) ; elle n’entre jamais dans le navigateur, le dossier de tâche ni les exports.", "Ключ хранится только в каталоге данных устройства (права 0600, насколько возможно); он не попадает в браузер, папку задачи или экспортные пакеты.", "La clave se guarda solo en el directorio de datos del equipo (permisos 0600, con carácter tentativo); nunca entra en el navegador, la carpeta de la tarea ni los paquetes exportados.", "キーはこの端末のデータディレクトリにのみ保存されます（権限0600、ベストエフォート）。ブラウザー、タスクフォルダー、書き出しパッケージには入りません。", "A chave é armazenada apenas no diretório de dados do dispositivo (permissões 0600, best effort); nunca entra no navegador, na pasta da tarefa ou em pacotes de exportação.", "Der Schlüssel liegt nur im Datenverzeichnis des Geräts (Rechte 0600, nach Möglichkeit); er gelangt nie in den Browser, den Aufgabenordner oder Exportpakete.", "Кључ се чува само у директоријуму података уређаја (дозволе 0600, најбоље могуће); никад не улази у прегледач, фасциклу задатка или извозне пакете.", "키는 이 기기의 데이터 디렉터리에만 저장됩니다(권한 0600, 최대한 보장). 브라우저, 작업 폴더, 내보내기 패키지에는 절대 들어가지 않습니다."],
+      ["钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。", "The key is stored only in this device’s data directory (0600 permissions, best effort); it never enters the browser, the task folder or export packages.", "La clé est stockée uniquement dans le répertoire de données de l’appareil (permissions 0600, au mieux possible) ; elle n’entre jamais dans le navigateur, le dossier de tâche ni les exports.", "Ключ хранится только в каталоге данных устройства (права 0600, насколько возможно); он не попадает в браузер, папку задачи или экспортные пакеты.", "La clave se guarda solo en el directorio de datos del equipo (permisos 0600, con carácter tentativo); nunca entra en el navegador, la carpeta de la tarea ni los paquetes exportados.", "キーはこの端末のデータディレクトリにのみ保存されます（権限0600、ベストエフォート）。ブラウザー、タスクフォルダー、書き出しパッケージには入りません。", "A chave é armazenada apenas no diretório de dados do dispositivo (permissões 0600, best effort); nunca entra no navegador, na pasta da tarefa ou em pacotes de exportação.", "Der Schlüssel liegt nur im Datenverzeichnis des Geräts (Rechte 0600, nach Möglichkeit); er gelangt nie in den Browser, den Aufgabenordner oder Exportpakete.", "Кључ се чува само у директоријуму података уређаја (дозволе 0600, најбоље могуће); никад не улази у прегледач, фасциклу задатка или извозне пакете.", "키는 이 기기의 데이터 디렉터리에만 저장됩니다(권한 0600, 최대한 보장). 브라우저, 작업 폴더, 내보내기 패키지에는 절대 들어가지 않습니다."],
       ["任务 AI 设置（负责人）", "Task AI settings (owner)", "Paramètres IA de la tâche (responsable)", "Настройки ИИ задачи (владелец)", "Ajustes de IA de la tarea (responsable)", "タスクAI設定（所有者）", "Configurações de IA da tarefa (responsável)", "Aufgaben-KI-Einstellungen (Verantwortlicher)", "Подешавања АИ за задатак (власник)", "작업 AI 설정(소유자)"],
       ["启用 AI 抽取建议（默认关闭）", "Enable AI extraction suggestions (off by default)", "Activer les suggestions d’extraction IA (désactivé par défaut)", "Включить ИИ-подсказки для извлечения (по умолчанию выключено)", "Activar sugerencias de extracción de IA (desactivado por defecto)", "AI抽出提案を有効化（既定は無効）", "Ativar sugestões de extração por IA (desativado por padrão)", "KI-Extraktionsvorschläge aktivieren (standardmäßig aus)", "Укључи АИ предлоге за извлачење (подразумевано искључено)", "AI 추출 제안 활성화(기본 꺼짐)"],
       ["钥匙模式", "Key mode", "Mode de clé", "Режим ключа", "Modo de clave", "キーモード", "Modo de chave", "Schlüsselmodus", "Режим кључа", "키 모드"],
@@ -144,6 +144,15 @@
       ["服务商与 API Key 不能为空。", "Provider and API key are required.", "Le fournisseur et la clé API sont obligatoires.", "Укажите провайдера и API-ключ.", "El proveedor y la clave API son obligatorios.", "プロバイダーとAPIキーは必須です。", "O provedor e a chave de API são obrigatórios.", "Anbieter und API-Schlüssel sind erforderlich.", "Провајдер и АПИ кључ су обавезни.", "공급자와 API 키는 필수입니다."],
       ["确认删除个人 AI 钥匙？", "Delete your personal AI key?", "Supprimer votre clé IA personnelle ?", "Удалить ваш личный ИИ-ключ?", "¿Eliminar su clave de IA personal?", "個人のAIキーを削除しますか？", "Excluir sua chave de IA pessoal?", "Ihren persönlichen KI-Schlüssel löschen?", "Обрисати ваш лични АИ кључ?", "개인 AI 키를 삭제할까요?"],
       ["确认删除任务共享钥匙？", "Delete the task shared key?", "Supprimer la clé partagée de la tâche ?", "Удалить общий ключ задачи?", "¿Eliminar la clave compartida de la tarea?", "タスク共有キーを削除しますか？", "Excluir a chave compartilhada da tarefa?", "Den gemeinsamen Aufgabenschlüssel löschen?", "Обрисати заједнички кључ задатка?", "작업 공유 키를 삭제할까요?"]
+      ["有建议因引文未能在原文中定位被丢弃。", "Some suggestions were discarded because their quotes could not be located in the source text.", "Des suggestions ont été écartées car leurs citations sont introuvables dans le texte source.", "Часть предложений отброшена: цитаты не найдены в исходном тексте.", "Se descartaron sugerencias porque sus citas no se localizaron en el texto original.", "原文内に引用が見つからなかったため、破棄された提案があります。", "Algumas sugestões foram descartadas porque suas citações não foram localizadas no texto original.", "Einige Vorschläge wurden verworfen, da ihre Zitate im Originaltext nicht gefunden wurden.", "Неки предлози су одбачени јер њихови цитати нису пронађени у изворном тексту.", "원문에서 인용을 찾을 수 없어 버려진 제안이 있습니다."],
+      ["已复制并采纳", "Copied & adopted", "Copié et adopté", "Скопировано и принято", "Copiado y adoptado", "コピーして採用", "Copiado e adotado", "Kopiert & übernommen", "Копирано и прихваћено", "복사하고 채택"],
+      ["请按 Ctrl+C 复制选中内容后再采纳。", "Press Ctrl+C to copy the selected text, then adopt.", "Appuyez sur Ctrl+C pour copier le texte sélectionné, puis adoptez.", "Нажмите Ctrl+C, чтобы скопировать выделенное, затем примите.", "Pulse Ctrl+C para copiar el texto seleccionado y luego adopte.", "Ctrl+C で選択内容をコピーしてから採用してください。", "Pressione Ctrl+C para copiar o texto selecionado e depois adote.", "Kopieren Sie mit Strg+C den markierten Text und übernehmen Sie dann.", "Притисните Ctrl+C да копирате означени текст, па прихватите.", "Ctrl+C로 선택한 내용을 복사한 뒤 채택하세요."],
+      ["自动复制失败：已选中建议值，请按 Ctrl+C，再点击“已复制并采纳”。", "Auto-copy failed: the suggested value is selected — press Ctrl+C, then click \"Copied & adopted\".", "Copie automatique échouée : la valeur suggérée est sélectionnée — appuyez sur Ctrl+C, puis cliquez sur « Copié et adopté ».", "Автокопирование не удалось: предложенное значение выделено — нажмите Ctrl+C, затем нажмите «Скопировано и принято».", "La copia automática falló: el valor sugerido está seleccionado; pulse Ctrl+C y luego “Copiado y adoptado”.", "自動コピーに失敗しました。提案値を選択済みです。Ctrl+C を押してから「コピーして採用」をクリックしてください。", "A cópia automática falhou: o valor sugerido está selecionado — pressione Ctrl+C e clique em “Copiado e adotado”.", "Automatisches Kopieren fehlgeschlagen: der vorgeschlagene Wert ist markiert — Strg+C drücken, dann „Kopiert & übernommen“ klicken.", "Аутоматско копирање није успело: предложена вредност је изабрана — притисните Ctrl+C, па кликните „Копирано и прихваћено“.", "자동 복사 실패: 제안 값이 선택되었습니다. Ctrl+C를 누른 뒤 '복사하고 채택'을 클릭하세요."],
+      ["此任务为升级前创建（无负责人），请先在协作设置中认领负责人后再启用 AI。", "This task predates team features (no owner). Claim ownership in collaboration settings before enabling AI.", "Cette tâche est antérieure aux fonctions d’équipe (aucun responsable). Réclamez la propriété dans les réglages de collaboration avant d’activer l’IA.", "Эта задача создана до появления командных функций (без владельца). Сначала заявите права владельца в настройках совместной работы, затем включайте ИИ.", "Esta tarea es anterior a las funciones de equipo (sin responsable). Reclame la propiedad en la configuración de colaboración antes de activar la IA.", "このタスクはチーム機能より前の作成で（責任者なし）。AI を有効化する前に共同設定で責任者を設定してください。", "Esta tarefa é anterior aos recursos de equipe (sem responsável). Assuma a propriedade nas configurações de colaboração antes de ativar a IA.", "Diese Aufgabe stammt aus der Zeit vor den Teamfunktionen (kein Eigentümer). Übernehmen Sie zuerst das Eigentum in den Kollaborationseinstellungen, bevor Sie KI aktivieren.", "Овај задатак је настао пре тимских функција (без власника). Пре укључивања АИ преузмите власништво у подешавањима сарадње.", "이 작업은 팀 기능 이전에 생성되어(소유자 없음) AI를 켜기 전에 협업 설정에서 소유자를 지정해야 합니다."],
+      ["任务已启用 AI，你尚未配置可用钥匙（个人或共享）。", "AI is enabled for this task, but you have no usable key yet (personal or shared).", "L’IA est activée pour cette tâche, mais vous n’avez pas encore de clé utilisable (personnelle ou partagée).", "ИИ включён для этой задачи, но у вас пока нет доступного ключа (личного или общего).", "La IA está activada para esta tarea, pero aún no tiene una clave utilizable (personal o compartida).", "このタスクでは AI が有効ですが、利用可能なキー（個人または共有）がまだありません。", "A IA está ativada para esta tarefa, mas você ainda não tem uma chave utilizável (pessoal ou compartilhada).", "KI ist für diese Aufgabe aktiviert, aber Sie haben noch keinen nutzbaren Schlüssel (persönlich oder geteilt).", "АИ је укључен за овај задатак, али још немате употребљив кључ (лични или дељени).", "이 작업에 AI가 활성화되어 있지만 아직 사용 가능한 키(개인 또는 공유)가 없습니다."],
+      ["统计载入中…", "Loading statistics…", "Chargement des statistiques…", "Загрузка статистики…", "Cargando estadísticas…", "統計を読み込み中…", "Carregando estatísticas…", "Statistiken werden geladen…", "Учитавање статистике…", "통계를 불러오는 중…"],
+      ["本人已生成 {0} 条 · 采纳 {1} · 编辑后采纳 {2} · 忽略 {3}", "Your record: {0} generated · {1} adopted · {2} adopted after editing · {3} dismissed", "Votre relevé : {0} générées · {1} adoptées · {2} adoptées après modification · {3} ignorées", "Ваша статистика: сгенерировано {0} · принято {1} · принято с правкой {2} · отклонено {3}", "Su registro: {0} generadas · {1} adoptadas · {2} adoptadas tras editar · {3} descartadas", "本人の記録：生成 {0} · 採用 {1} · 編集後採用 {2} · 無視 {3}", "Seu registro: {0} geradas · {1} adotadas · {2} adotadas após edição · {3} descartadas", "Ihre Auswertung: {0} erzeugt · {1} übernommen · {2} nach Bearbeitung übernommen · {3} verworfen", "Ваш запис: {0} генерисано · {1} прихваћено · {2} прихваћено након измене · {3} одбачено", "본인 기록: 생성 {0} · 채택 {1} · 편집 후 채택 {2} · 무시 {3}"],
+      ["建议先在 20–50 篇人工编码样本上核对建议质量，再放开批量使用（先验证后放量）。", "Validate suggestion quality on 20–50 manually coded records before scaling up (verify first, then expand).", "Validez la qualité des suggestions sur 20–50 références codées manuellement avant de généraliser (valider d’abord, étendre ensuite).", "Проверьте качество предложений на 20–50 вручную закодированных записях, прежде чем расширять использование (сначала проверка, потом масштаб).", "Valide la calidad de las sugerencias en 20–50 registros codificados manualmente antes de ampliar su uso (verificar primero, ampliar después).", "まず 20～50 件の手動コーディング資料で提案の品質を確認してから、本格利用に拡張してください（先に検証、後に拡大）。", "Valide a qualidade das sugestões em 20–50 registros codificados manualmente antes de ampliar o uso (verificar primeiro, expandir depois).", "Prüfen Sie die Qualität der Vorschläge zuerst an 20–50 manuell kodierten Einträgen, bevor Sie den Einsatz ausweiten (erst verifizieren, dann ausbauen).", "Проверите квалитет предлога на 20–50 ручно кодираних записа пре ширења употребе (прво провера, па ширење).", "확대 적용 전에 20–50건의 수동 코딩 레코드로 제안 품질을 먼저 검증하세요(선검증 후 확대)."],
     ]);
 
     /* =====================================================================
@@ -296,6 +305,7 @@
           sharedAvailable: !!sharedAvailable,
           sharedProviderName: isOwner ? (taskSettings.shared_provider_name || null)
                                        : (sharedMeta ? sharedMeta.shared_provider_name : null),
+          owner_unset: !isOwner && !!(sharedMeta && sharedMeta.owner_unset),   /* B9 F13 */
           personal, prefs,
           keyAvailable: personalConfigured || !!sharedAvailable,
           sharedEffective: enabled && !personalEffective && !!sharedAvailable
@@ -398,6 +408,8 @@
     function warningText(warning) {
       const m = /^dropped_no_quote:(\d+)$/.exec(String(warning || ''));
       if (m) return T('{0} 条建议因缺少原文引文被丢弃。', m[1]);
+      if (/^unverified_quote:/.test(String(warning || '')))
+        return T('有建议因引文未能在原文中定位被丢弃。');   /* B9 F1：服务端引文核验 */
       const t = /^context_truncated:(\d+)$/.exec(String(warning || ''));
       if (t) return T('原文过长，已截断 {0} 字。', t[1]);
       if (warning === 'ai_key_missing') return T('未配置可用的 AI 钥匙，请先在设置页配置。');
@@ -557,8 +569,26 @@
     }
     async function copyItem(item) {
       const ok = await copyText(item.value);
-      toast(ok ? T('已复制，请粘贴到对应的编码字段。') : T('复制失败，请手动选择建议值。'), ok ? 'inc' : 'warn');
-      await decideItem(item, 'adopted', null);
+      if (ok) {
+        toast(T('已复制，请粘贴到对应的编码字段。'), 'inc');
+        await decideItem(item, 'adopted', null);
+        return;
+      }
+      /* B9 F7：自动复制失败绝不记 adopted——给手动复制框，用户确认后才落决定。 */
+      const card = document.querySelector('.rf-ai-item[data-sid="' + String(item.id ?? '') + '"]');
+      const actions = card ? card.querySelector('.rf-ai-actions') : null;
+      if (!actions) { toast(T('复制失败，请手动选择建议值。'), 'warn'); return; }
+      actions.replaceChildren();
+      const input = el('input', { class: 'input', value: String(item.value == null ? '' : item.value), translate: 'no', readonly: 'readonly', style: 'max-width:60%' });
+      actions.append(input,
+        btn('已复制并采纳', async () => {
+          const copied = await copyText(input.value);
+          if (!copied) { input.select(); toast(T('请按 Ctrl+C 复制选中内容后再采纳。'), 'warn'); return; }
+          await decideItem(item, 'adopted', null);
+        }, 'btn b-inc sm'),
+        btn('取消', () => renderSuggestions(), 'btn sm'));
+      input.focus(); input.select();
+      toast(T('自动复制失败：已选中建议值，请按 Ctrl+C，再点击“已复制并采纳”。'), 'warn');
     }
     function editItem(item, card, actions, mapped) {
       actions.replaceChildren();
@@ -730,11 +760,11 @@
       }
       if (meta && meta.source === 'env') {
         keyCard.append(node('p', '由管理员通过环境变量配置，仅可在服务器端更换或移除。', { class: 'rf-ai-hint' }));
-        keyCard.append(node('p', '钥匙仅存放在本机数据目录（权限 0600，尽力而为），不会进入浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
+        keyCard.append(node('p', '钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
         return;
       }
       const provider = el('input', { class: 'input', value: (meta && meta.provider) || '', translate: 'no', maxlength: '50', 'data-rf-name': 'provider', 'aria-label': T('服务商') });
-      const secret = el('input', { class: 'input', type: 'password', autocomplete: 'off', translate: 'no', maxlength: '4096', 'data-rf-name': 'key', 'aria-label': T('API Key（仅保存在本机数据目录）') });
+      const secret = el('input', { class: 'input', type: 'password', autocomplete: 'off', translate: 'no', maxlength: '4096', 'data-rf-name': 'key', 'aria-label': T('API Key（仅保存在数据目录）') });
       const baseUrl = el('input', { class: 'input', value: (meta && meta.base_url) || '', translate: 'no', maxlength: '500', 'data-rf-name': 'base_url', 'aria-label': T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') });
       const model = el('input', { class: 'input', value: (meta && meta.model) || '', translate: 'no', maxlength: '100', 'data-rf-name': 'model', 'aria-label': T('模型名（如 gpt-4o-mini）') });
       const verify = el('input', { type: 'checkbox', 'data-rf-name': 'verify' });
@@ -742,7 +772,7 @@
       const grid = el('div', { class: 'rf-ai-grid' });
       grid.append(
         el('div', {}, el('label', { class: 'lbl', text: T('服务商') }), provider),
-        el('div', {}, el('label', { class: 'lbl', text: T('API Key（仅保存在本机数据目录）') }), secret),
+        el('div', {}, el('label', { class: 'lbl', text: T('API Key（仅保存在数据目录）') }), secret),
         el('div', {}, el('label', { class: 'lbl', text: T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') }), baseUrl),
         el('div', {}, el('label', { class: 'lbl', text: T('模型名（如 gpt-4o-mini）') }), model));
       const save = btn('保存钥匙', async () => {
@@ -785,7 +815,7 @@
       keyCard.append(grid,
         el('label', { class: 'rf-ai-checks' }, verify, el('span', { text: T('保存前验证连通性'), style: 'font-size:.8rem' })),
         el('div', { class: 'rf-ai-actions' }, save, test, meta && meta.configured ? del : null, status),
-        node('p', '钥匙仅存放在本机数据目录（权限 0600，尽力而为），不会进入浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
+        node('p', '钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
       restoreInputs(keyCard, snap);
     }
 
@@ -796,12 +826,19 @@
       taskCard.replaceChildren(node('h3', 'AI 抽取建议', { style: 'margin:0 0 6px' }));
       if (!S.task) { taskCard.append(node('p', '请先选择任务。', { class: 'hint' })); return; }
       if (!detection) return;                       // 判定进行中/失败：安静（R1 精神）
-      if (detection.isOwner && detection.settings) renderOwnerBlock();
-      else renderMemberBlock();
-      if (detection.active) {
-        renderPrefsBlock();
-        renderAuditBlock();
-      }
+      const renderOwnerAndDims = () => {
+        if (!(detection.isOwner && detection.settings)) return;
+        renderOwnerBlock();
+        /* B9 F17：编码维度未加载过时拉取一次并重绘映射下拉（仅在本次真正取到时重绘，防循环）。 */
+        const hadDims = !!dimsCache;
+        ensureDims().then(safe(() => {
+          if (!hadDims && Array.isArray(dimsCache) && dimsCache.length) renderTaskCard(true);
+        }));
+      };
+      renderOwnerAndDims();
+      if (!detection.isOwner) renderMemberBlock();
+      if (detection.active) renderPrefsBlock();
+      renderAuditBlock();   /* B9 F4：审计与报告不依赖任务开关——有记录即可导出（P8） */
       restoreInputs(taskCard, snap);
     }
 
@@ -823,7 +860,7 @@
         : node('p', '未配置共享钥匙。', { class: 'hint' });
       sharedBox.append(sharedStatus);
       const provider = el('input', { class: 'input', translate: 'no', maxlength: '50', 'data-rf-name': 'shared_provider', 'aria-label': T('服务商') });
-      const secret = el('input', { class: 'input', type: 'password', autocomplete: 'off', translate: 'no', maxlength: '4096', 'data-rf-name': 'shared_key', 'aria-label': T('API Key（仅保存在本机数据目录）') });
+      const secret = el('input', { class: 'input', type: 'password', autocomplete: 'off', translate: 'no', maxlength: '4096', 'data-rf-name': 'shared_key', 'aria-label': T('API Key（仅保存在数据目录）') });
       const baseUrl = el('input', { class: 'input', translate: 'no', maxlength: '500', 'data-rf-name': 'shared_base_url', 'aria-label': T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') });
       const model = el('input', { class: 'input', translate: 'no', maxlength: '100', 'data-rf-name': 'shared_model', 'aria-label': T('模型名（如 gpt-4o-mini）') });
       const verify = el('input', { type: 'checkbox', 'data-rf-name': 'shared_verify' });
@@ -831,7 +868,7 @@
       const grid = el('div', { class: 'rf-ai-grid' });
       grid.append(
         el('div', {}, el('label', { class: 'lbl', text: T('服务商') }), provider),
-        el('div', {}, el('label', { class: 'lbl', text: T('API Key（仅保存在本机数据目录）') }), secret),
+        el('div', {}, el('label', { class: 'lbl', text: T('API Key（仅保存在数据目录）') }), secret),
         el('div', {}, el('label', { class: 'lbl', text: T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') }), baseUrl),
         el('div', {}, el('label', { class: 'lbl', text: T('模型名（如 gpt-4o-mini）') }), model));
       const saveShared = btn('保存共享钥匙', async () => {
@@ -950,9 +987,16 @@
     }
 
     function renderMemberBlock() {
+      /* B9 F13：升级前创建的无负责人任务给出迁移提示，而非笼统的"未启用"。 */
+      if (detection.owner_unset) {
+        taskCard.append(node('p', '此任务为升级前创建（无负责人），请先在协作设置中认领负责人后再启用 AI。', { class: 'hint' }));
+        return;
+      }
       if (detection.sharedAvailable) {
         taskCard.append(literal('p', T('共享钥匙已启用：{0}', detection.sharedProviderName || '—'), { class: 'hint' }));
         taskCard.append(el('span', { class: 'rf-ai-disclosure', text: T('本任务由负责人启用了 AI（{0}），请求以任务名义发出。', detection.sharedProviderName || '—'), style: 'display:block;font-size:.75rem;color:var(--muted);margin:4px 0' }));
+      } else if (detection.active) {
+        taskCard.append(node('p', '任务已启用 AI，你尚未配置可用钥匙（个人或共享）。', { class: 'hint' }));  /* B9 F20 */
       } else {
         taskCard.append(node('p', '任务未启用 AI 建议。', { class: 'hint' }));
       }
@@ -1007,6 +1051,15 @@
 
     function renderAuditBlock() {
       taskCard.append(node('h4', '审计与报告'));
+      /* B9 F6：P10 先验证后放量——展示本人使用计数与小样评估引导（不依赖任务开关，F4）。 */
+      const countsLine = el('p', { class: 'rf-ai-hint', role: 'status', text: T('统计载入中…') });
+      api(taskApi() + '/ai-suggestions/methods-report').then(safe(result => {
+        const c = (result && result.counts) || null;
+        countsLine.textContent = c
+          ? T('本人已生成 {0} 条 · 采纳 {1} · 编辑后采纳 {2} · 忽略 {3}',
+              String(c.total ?? 0), String(c.adopted ?? 0), String(c.edited ?? 0), String(c.ignored ?? 0))
+          : T('尚无建议记录。');
+      })).catch(safe(() => { countsLine.textContent = ''; }));
       const box = el('div', { class: 'rf-ai-methods', hidden: '' });
       const csv = btn('导出决策记录（CSV）', () => exportDecisions('csv'));
       const json = btn('导出决策记录（JSON）', () => exportDecisions('json'));
@@ -1026,7 +1079,9 @@
       });
       const copyZh = btn('复制中文', async () => { if (await copyText((methodsPreview && methodsPreview.report_zh) || '')) toast(T('已复制。'), 'inc'); });
       const copyEn = btn('复制英文', async () => { if (await copyText((methodsPreview && methodsPreview.report_en) || '')) toast(T('已复制。'), 'inc'); });
-      taskCard.append(el('div', { class: 'rf-ai-actions' }, csv, json, methods, copyZh, copyEn), box);
+      taskCard.append(el('div', { class: 'rf-ai-actions' }, csv, json, methods, copyZh, copyEn), box,
+        countsLine,
+        node('p', '建议先在 20–50 篇人工编码样本上核对建议质量，再放开批量使用（先验证后放量）。', { class: 'rf-ai-hint' }));
     }
 
     async function exportDecisions(format) {

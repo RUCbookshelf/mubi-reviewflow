@@ -5226,6 +5226,7 @@ async function apiRequest(path, opts = {}) {
     if (translatedHit) error.rfLocalized = true;
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
       error.code = payload.code; error.workflowSettings = payload.workflow_settings; error.reasons = payload.reasons || [];
+      error.fields = Array.isArray(payload.fields) ? payload.fields : [];  /* B9 F19：ai_field_not_allowed 等字段清单 */
     }
     return error;
   }

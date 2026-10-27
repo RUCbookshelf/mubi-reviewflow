@@ -136,7 +136,7 @@ class AISuggestTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertTrue(body["configured"])
-        self.assertEqual(body["masked"], "sk-***3456")
+        self.assertEqual(body["masked"], "***3456")
         self.assertNotIn(FAKE_KEY, r.text)  # 永不回显明文
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertNotIn(FAKE_KEY, r.text)
@@ -162,8 +162,8 @@ class AISuggestTests(unittest.TestCase):
     def test_short_key_masked_fully(self):
         self.assertEqual(ai_keys.mask_key("short"), "***")           # 短钥匙整体打码
         self.assertEqual(ai_keys.mask_key("12345678"), "***")
-        self.assertEqual(ai_keys.mask_key("sk-medium-key1"), "sk-***ey1")  # 9~16 位只露尾 3
-        self.assertEqual(ai_keys.mask_key("sk-test-abcdef123456"), "sk-***3456")  # 长钥匙露尾 4
+        self.assertEqual(ai_keys.mask_key("sk-medium-key1"), "***key1")  # B9 F22：不露前缀，仅尾 4 位
+        self.assertEqual(ai_keys.mask_key("sk-test-abcdef123456"), "***3456")  # 仅尾 4 位
 
     def test_shared_key_owner_only_and_metadata_only(self):
         self.invite_member()
@@ -326,7 +326,7 @@ class AISuggestTests(unittest.TestCase):
         suggestion = body["suggestions"][0]
         self.assertEqual(suggestion["value"], "随机对照试验")
         self.assertEqual(suggestion["quote"], "A randomised controlled trial was conducted.")
-        self.assertEqual(suggestion["pages"], [1])  # quote 定位到摘要（无页码文本时为空，这里模型给了 [1]）
+        self.assertEqual(suggestion["pages"], [])  # B9 F1：页码以服务端定位为准——命中摘要无页可跳，模型自报 [1] 不采信
         self.assertEqual(suggestion["provider"], "openai")
         self.assertEqual(suggestion["model"], "gpt-test")
         self.assertEqual(suggestion["prompt_version"], ai_suggest_api.PROMPT_VERSION)
@@ -618,6 +618,156 @@ class AISuggestTests(unittest.TestCase):
         blob = json.dumps(events, ensure_ascii=False)
         self.assertNotIn(FAKE_KEY, blob)
         self.assertNotIn(".ai_keys", blob)
+
+
+    # ---- B9 must-fix 修复回归 -------------------------------------------------
+
+    def test_b9_f1_fake_quote_dropped_and_server_locates_pages(self):
+        """B9 F1：引文核验——不在原文的建议丢弃；命中摘要保留且不标页码；模型 pages 不采信。"""
+        self.enable_task(key_mode="personal")
+        self.put_personal_key()
+        real_quote = "a randomised controlled trial was conducted in 6 centres"
+        fake_quote = "THIS SENTENCE NEVER APPEARED IN THE ARTICLE"
+        content = json.dumps({
+            "study_design": {"value": "随机对照试验", "quote": real_quote, "pages": [9]},
+            "funding_source": {"value": "NIH", "quote": fake_quote, "pages": [1]},
+        }, ensure_ascii=False)
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate(content)):
+            r = self.suggestions()
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual([x["field_id"] for x in body["suggestions"]], ["study_design"])
+        self.assertEqual(body["suggestions"][0]["pages"], [])  # 命中摘要：无页可跳；模型自报 [9] 不采信
+        self.assertIn("unverified_quote:funding_source", body["warnings"])
+
+    def test_b9_f1_page_location_with_fulltext_pages(self):
+        """B9 F1：有全文时服务端把引文定位到真实页号。"""
+        self.enable_task(key_mode="personal")
+        self.put_personal_key()
+        from coscreen import fulltext as fulltext_mod
+        pdf = Path(__file__).resolve().parents[2] / "build" / "tests" / "data"
+        pdf.mkdir(parents=True, exist_ok=True)
+        # 构造两页文本的假 PDF 太重——直接单测 _parse_provider_content 的定位逻辑。
+        pages = ["Page one talks about funding from the NIH institute only.",
+                 "Page two is about something entirely different here."]
+        content = json.dumps({
+            "funding_source": {"value": "NIH", "quote": "funding from the NIH institute", "pages": [7]},
+        }, ensure_ascii=False)
+        kept, warnings, dropped = ai_suggest_api._parse_provider_content(content, ["funding_source"], pages, "")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["pages"], [1])   # 服务端定位=第 1 页；模型自报 [7] 被忽略
+        self.assertEqual(dropped, 0)
+
+    def test_b9_f9_malformed_provider_payload_never_500(self):
+        """B9 F9：provider 载荷形状非法（pages 非数组/值非标量）按无效丢弃，不冒泡 500。"""
+        self.enable_task(key_mode="personal")
+        self.put_personal_key()
+        content = json.dumps({
+            "study_design": {"value": "RCT", "quote": "a randomised controlled trial", "pages": 5},
+            "sample_size": {"value": ["not", "scalar"], "quote": "in 6 centres", "pages": [1]},
+        }, ensure_ascii=False)
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate(content)):
+            r = self.suggestions()
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_b9_f2_delete_failure_maps_503_and_key_remains(self):
+        """B9 F2：删除失败绝不假报成功——503 + 钥匙仍在 + GET 仍 configured。"""
+        self.put_personal_key()
+        path = DATA_ROOT / ".ai_keys" / f"personal_{self.users[0]['user_id']}.json"
+        self.assertTrue(path.is_file())
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            r = self.client.delete("/api/ai/key", headers=self.auth(0))
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "ai_key_delete_failed")
+        self.assertTrue(path.is_file())
+        self.assertTrue(self.client.get("/api/ai/key", headers=self.auth(0)).json()["configured"])
+
+    def test_b9_f8_prefs_field_subset_enforced_server_side(self):
+        """B9 F8：三级白名单服务端强制——偏好子集外的字段 403。"""
+        self.invite_member()
+        prefs = self.client.put(f"{self.base}/ai-suggest/preferences", json={
+            "use_personal_key": True, "trigger": "manual",
+            "field_ids": ["study_design"], "presentation": "card"}, headers=self.auth(1))
+        self.assertEqual(prefs.status_code, 200, prefs.text)
+        self.put_personal_key(user_index=1)
+        self.enable_task(key_mode="personal")
+        r = self.suggestions(field_ids=["sample_size"], user_index=1)
+        self.assertEqual(r.status_code, 403, r.text)
+        self.assertIn("ai_field_not_allowed", r.text)
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate()):
+            r2 = self.suggestions(field_ids=["study_design"], user_index=1)
+        self.assertEqual(r2.status_code, 200, r2.text)
+
+    def test_b9_f10_redirect_refused_key_not_forwarded(self):
+        """B9 F10：3xx 重定向被拒绝，Authorization 钥匙绝不转发到重定向目标。"""
+        import http.server
+        import threading
+        seen_headers = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen_headers.append(dict(self.headers))
+                if self.path.endswith("/chat/completions"):
+                    self.send_response(302)
+                    self.send_header("Location",
+                                     f"http://127.0.0.1:{self.server.server_address[1]}/v1/target")
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"choices":[{"message":{"content":"{}"}}],"usage":{}}')
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        self.guard.stop()          # 本用例直连真实 _provider_generate（默认守卫会拦）
+        try:
+            port = srv.server_address[1]
+            with self.assertRaises(ai_suggest_api.ProviderError) as ctx:
+                ai_suggest_api._provider_generate(
+                    "s", "u", api_key="sk-redirect-secret-123456",
+                    base_url=f"http://127.0.0.1:{port}/v1", model="m", timeout=5)
+            self.assertIn("重定向", str(ctx.exception))
+            # 只收到最初的 /chat/completions 一次请求——目标路径从未被打到
+            self.assertEqual(len(seen_headers), 1)
+        finally:
+            self.guard.start()
+            srv.shutdown()
+            srv.server_close()
+
+    def test_b9_f12_metadata_base_url_blocked(self):
+        """B9 F12 缓解：云元数据/链路本地 base_url 在校验层被拒。"""
+        for bad in ("http://169.254.169.254/v1", "http://metadata.google.internal/v1",
+                    "http://100.100.100.200/v1", "http://[fe80::1]/v1"):
+            with self.assertRaises(ai_keys.KeyShapeError, msg=bad):
+                ai_keys.base_url_of({"base_url": bad})
+        # loopback 保留（本地模型卖点）
+        self.assertEqual(ai_keys.base_url_of({"base_url": "http://127.0.0.1:11434/v1"}),
+                         "http://127.0.0.1:11434/v1")
+
+    def test_b9_f15_policy_version_conflict(self):
+        """B9 F15：expected_policy_version 与设置版本不符 -> 409。"""
+        self.put_personal_key()
+        self.enable_task(key_mode="personal")
+        r = self.client.post(f"{self.base}/coding/ai-suggestions", json={
+            "zotero_key": "A1", "field_ids": ["study_design"],
+            "expected_policy_version": 999}, headers=self.auth(0))
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("ai_policy_version_conflict", r.text)
+
+    def test_b9_f16_truncation_keeps_citation_and_abstract(self):
+        """B9 F16：超预算截断先裁全文页，题录与摘要永不丢。"""
+        pages = ["p" * 30000, "q" * 30000]
+        prefix = "文献题录：{'title': 'Trial'}\n\n摘要：a randomised controlled trial"
+        message, overflow = ai_suggest_api._truncate_user_message(prefix, pages)
+        self.assertIn("文献题录", message)
+        self.assertIn("摘要", message)
+        self.assertGreater(overflow, 0)
+        self.assertLessEqual(len(message), ai_suggest_api.MAX_CONTEXT_CHARS + len(prefix))
 
 
 class FrontendStaticGuardTests(unittest.TestCase):

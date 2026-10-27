@@ -66,6 +66,7 @@ PROVIDER_RETRIES = 2                    # 初次 + 重试 1 次
 MAX_CONTEXT_CHARS = 60_000              # 发给 provider 的文本载荷截断预算
 MAX_VALUE_CHARS = 4_000
 MAX_QUOTE_CHARS = 2_000
+MAX_PROVIDER_BYTES = 2 * 1024 * 1024      # B9 F11：provider 响应读取上限（2 MiB）
 MAX_CONTEXT_PROMPT_CHARS = 2_000        # R3：综述背景语境上限
 USER_AGENT = "ReviewFlow-AI-Suggest/2.1.4"
 _FALLBACK_MODEL = "gpt-4o-mini"         # 用户未填模型名时的兜底（仅 OpenAI 兼容协议缺省）
@@ -217,12 +218,23 @@ def _utc_now_iso() -> str:
 # Provider 客户端（OpenAI 兼容，stdlib urllib；测试注入 fake 替换 _provider_generate）
 # ---------------------------------------------------------------------------
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """拒绝跟随 3xx 重定向（B9 F10）：防止 Authorization 钥匙被转发到未配置的主机。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
                        model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
     """最小 completion 调用；返回 ``{"content": str, "usage": dict, "model": str}``。
 
     日志红线（B4 §4）：本函数抛出的任何错误消息都不得包含 api_key 或请求载荷；
-    只落 provider、状态码、耗时语义。
+    只落 provider、状态码、耗时语义。安全红线（B9 F10/F11）：不跟随重定向
+    （30x 视为错误）；响应体读取上限 2 MiB（无上限读取可被用于内存 DoS）。
     """
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = json.dumps({
@@ -240,9 +252,16 @@ def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
             "User-Agent": USER_AGENT,
         })
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            body = json.loads(response.read().decode("utf-8", "replace"))
+        with _OPENER.open(request, timeout=timeout) as response:  # noqa: S310
+            raw = response.read(MAX_PROVIDER_BYTES + 1)
+            if len(raw) > MAX_PROVIDER_BYTES:
+                raise ProviderError(
+                    f"provider 响应超过 {MAX_PROVIDER_BYTES // 1024} KiB 读取上限。")
+            body = json.loads(raw.decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise ProviderError(
+                f"provider HTTP {exc.code}: 重定向被拒绝（为保护 API 钥匙不外发，请直接配置最终端点）。") from None
         detail = ""
         try:
             raw = exc.read(2048).decode("utf-8", "replace")
@@ -305,14 +324,16 @@ def _normalize_text(text: str) -> str:
 
 
 def _build_messages(field_ids: list[str], article: dict, page_texts: list[str],
-                    abstract: str, context_prompt: str) -> tuple[str, str]:
+                    abstract: str, context_prompt: str) -> tuple[str, str, str]:
+    """返回 ``(system, prefix, user)``；prefix=题录+摘要（截断时永不裁掉，B9 F16）。"""
     definitions = {fid: {"label": FIELD_WHITELIST[fid]["label"], "type": "text"} for fid in field_ids}
     system_parts = [
         "你是一名系统综述的研究助理，从单篇研究文献的原文中提取研究特征字段。",
         "规则：",
         "1. 只依据用户消息提供的原文内容作答；原文中没有充分依据时该字段必须返回 null。",
         "2. 每个非 null 字段必须给出 quote（原文逐字引文，不超过 300 字符）与 pages"
-        "（引文所在 PDF 页码的整数数组，从 1 起；无页码信息时给 []）。",
+        "（引文所在 PDF 页码的整数数组，从 1 起；无页码信息时给 []）。"
+        "quote 必须逐字复制自原文——服务端会核验，核验不过的建议将被丢弃。",
         "3. 不得编造、不得外推、不得使用原文之外的知识；不确定就返回 null。",
         '4. 只输出一个 JSON 对象，不要任何解释文本或代码块：'
         '{"<field_id>": {"value": <字符串或 null>, "quote": <字符串或 null>, "pages": [<整数>, ...]}}。',
@@ -331,19 +352,28 @@ def _build_messages(field_ids: list[str], article: dict, page_texts: list[str],
     user_parts = [f"文献题录：{json.dumps(citation, ensure_ascii=False)}"]
     if abstract.strip():
         user_parts.append(f"摘要：{abstract.strip()}")
+    prefix = "\n\n".join(user_parts)
     if page_texts:
         user_parts.append("全文（按页给出）：")
         for index, text in enumerate(page_texts, start=1):
             user_parts.append(f"[第 {index} 页]\n{text}")
-    return system, "\n\n".join(user_parts)
+    return system, prefix, "\n\n".join(user_parts)
 
 
 def _parse_provider_content(content: str, field_ids: list[str],
-                            page_texts: list[str]) -> tuple[list[dict], list[str], int]:
-    """解析模型 JSON；无 quote 的建议直接丢弃（P4）。
+                            page_texts: list[str],
+                            abstract: str = "") -> tuple[list[dict], list[str], int]:
+    """解析模型 JSON 并做引文核验（P4；B9 F1/F9）。
 
-    返回 ``(保留建议, warnings, 无引文被丢弃条数)``；模型主动返回 null（原文无依据）
-    的字段不计数为丢弃——那是"无建议"，不是"被丢弃的建议"。
+    - 无 quote 的建议直接丢弃（P4）；
+    - **quote 不在原文（全文任一页或摘要）中出现的建议同样丢弃**（服务端归一化
+      包含校验；先试全文引文、再试前 80 字符）；
+    - pages 一律以服务端定位结果为准（模型给的 pages 仅作参考不再采信）：
+      命中 PDF 页返回页号列表；仅命中摘要返回 ``[]``（无页可跳）；
+    - provider 载荷是不可信输入：形状非法（pages 非数组/非整数值等）按无效处理，
+      绝不让 TypeError 冒泡成 500。
+
+    返回 ``(保留建议, warnings, 被丢弃条数)``；模型明示 null（原文无依据）不计丢弃。
     """
     warnings: list[str] = []
     text = (content or "").strip()
@@ -361,23 +391,31 @@ def _parse_provider_content(content: str, field_ids: list[str],
         return [], ["provider_response_not_json"], 0
 
     normalized_pages = [_normalize_text(p) for p in page_texts]
+    normalized_abstract = _normalize_text(abstract)
 
-    def locate_pages(quote: str, model_pages: list) -> list[int]:
-        pages = []
-        for item in model_pages:
-            if isinstance(item, bool) or not isinstance(item, int):
+    def locate_quote(quote: str) -> list[int] | None:
+        """核验引文来源：返回页号列表（摘要命中=[]），原文中不存在返回 None（伪造）。
+
+        宽容度：先试全文匹配，再试前 80 字符，再试去掉结尾标点的两个变体
+        （真实引文常以句号结尾而原文后续还有字——尾标点不匹配不应误杀）。
+        """
+        needle = _normalize_text(quote)
+        variants = []
+        for base in (needle, needle[:80]):
+            variants.append(base)
+            stripped = base.rstrip(".,;:!?'\u201d\u2019。，；：！？\u201d\u3002\u201d\u2019")
+            if stripped != base:
+                variants.append(stripped)
+        for candidate in variants:
+            if len(candidate) < 8:
                 continue
-            if 0 < item <= 100000 and item not in pages:
-                pages.append(item)
-        if pages or not normalized_pages:
-            return sorted(pages)
-        needle = _normalize_text(quote)[:80]
-        if len(needle) < 12:
-            return sorted(pages)
-        for index, page in enumerate(normalized_pages, start=1):
-            if needle in page:
-                pages.append(index)
-        return sorted(pages)
+            hits = sorted({i for i, page in enumerate(normalized_pages, start=1)
+                           if candidate in page})
+            if hits:
+                return hits
+            if candidate in normalized_abstract:
+                return []
+        return None
 
     kept: list[dict] = []
     dropped = 0
@@ -395,31 +433,37 @@ def _parse_provider_content(content: str, field_ids: list[str],
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             dropped += 1
             continue
+        located = locate_quote(quote)
+        if located is None:
+            dropped += 1  # B9 F1：引文核验不过（不在任何一页也不在摘要）-> 丢弃
+            warnings.append(f"unverified_quote:{fid}")
+            continue
         kept.append({
             "field_id": fid,
             "value": str(value).strip()[:MAX_VALUE_CHARS],
             "quote": quote[:MAX_QUOTE_CHARS],
-            "pages": locate_pages(quote, entry.get("pages") or []),
+            "pages": located,
         })
     return kept, warnings, dropped
 
 
-def _truncate_user_message(user: str, page_texts: list[str]) -> tuple[str, int]:
-    """超预算时按页边界截断并记录截断字符数（B4 §3）。"""
-    if len(user) <= MAX_CONTEXT_CHARS or not page_texts:
-        overflow = max(0, len(user) - MAX_CONTEXT_CHARS)
-        return (user[:MAX_CONTEXT_CHARS] if overflow else user), overflow
+def _truncate_user_message(prefix: str, page_texts: list[str]) -> tuple[str, int]:
+    """组装并按预算截断（B9 F16）：题录+摘要（prefix）永不裁掉，先裁全文页。"""
+    if not page_texts:
+        return prefix, 0
+    blocks = [f"[第 {i + 1} 页]\n{p}" for i, p in enumerate(page_texts)]
+    total_len = len(prefix) + sum(len(b) + 2 for b in blocks)
+    if total_len <= MAX_CONTEXT_CHARS:
+        return prefix + "\n\n" + "\n\n".join(blocks), 0
     kept: list[str] = []
-    total = 0
-    for page in page_texts:
-        block = f"\n\n[第 {len(kept) + 1} 页]\n{page}"
-        if total + len(block) > MAX_CONTEXT_CHARS:
+    used = len(prefix)
+    for block in blocks:
+        if used + len(block) + 2 > MAX_CONTEXT_CHARS:
             break
-        kept.append(page)
-        total += len(block)
-    truncated = "\n\n".join(f"[第 {i + 1} 页]\n{p}" for i, p in enumerate(kept))
-    overflow = len(user) - len(truncated)
-    return truncated, max(0, overflow)
+        kept.append(block)
+        used += len(block) + 2
+    message = "\n\n".join([prefix, *kept]) if kept else prefix
+    return message, max(0, total_len - len(message))
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +615,10 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
 
     @app.delete("/api/ai/key")
     def delete_personal_key(user: dict = Depends(require_user)) -> dict:
-        ai_keys.delete_personal_key(user["user_id"], data_root)
+        try:
+            ai_keys.delete_personal_key(user["user_id"], data_root)
+        except ai_keys.KeyDeletionError as exc:  # B9 F2：删除失败绝不假报成功
+            raise HTTPException(503, {"code": "ai_key_delete_failed", "detail": str(exc)}) from None
         return _masked_metadata(None, None)
 
     @app.post("/api/ai/key/test")
@@ -622,7 +669,10 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
     def delete_shared_key(task_id: str, user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
         _owner_context(task_id, user)
-        ai_keys.delete_shared_key(info.task_id, data_root)
+        try:
+            ai_keys.delete_shared_key(info.task_id, data_root)
+        except ai_keys.KeyDeletionError as exc:  # B9 F2
+            raise HTTPException(503, {"code": "ai_key_delete_failed", "detail": str(exc)}) from None
         return {"enabled": False, "provider_name": None}
 
     @app.get("/api/tasks/{task_id}/ai-suggest/status")
@@ -633,16 +683,19 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         存在性与 provider 名、字段标签表；任何钥匙元数据/明文一概不出。
         """
         info = task_lookup(task_id)
-        _context(task_id, user)
+        ctx = _context(task_id, user)
         settings = _load_settings(info)
         shared = ai_keys.load_shared_key(info.task_id, data_root)
+        shared_mode = (settings.get("key_mode") or "personal") == "shared"
         return {
             "enabled": bool(settings.get("enabled")),
             "key_mode": settings.get("key_mode") or "personal",
             "allowed_field_ids": sorted(settings.get("allowed_field_ids") or []),
             "field_labels": {fid: FIELD_WHITELIST[fid]["label"] for fid in FIELD_WHITELIST},
-            "shared_available": shared is not None,
-            "shared_provider_name": shared.get("provider") if shared else None,
+            # B9 F23：仅 shared 模式下暴露共享钥匙元数据；F13：legacy 无 owner 任务明示迁移提示。
+            "shared_available": shared is not None and shared_mode,
+            "shared_provider_name": (shared.get("provider") if shared else None) if shared_mode else None,
+            "owner_unset": ctx.owner is None,
         }
 
     # -- 任务 AI 设置（owner；expected_version 乐观锁，B4 §2） ----------------
@@ -741,12 +794,19 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         requested = sorted({f for f in body.field_ids if f.strip()})
         if not requested:
             raise HTTPException(422, "field_ids 不能为空。")
+        if body.expected_policy_version is not None and body.expected_policy_version != settings["version"]:
+            raise HTTPException(409, {"code": "ai_policy_version_conflict",   # B9 F15
+                                      "detail": "任务 AI 设置已变更，请刷新后重试。",
+                                      "version": settings["version"]})
         not_in_whitelist = [f for f in requested if f not in FIELD_WHITELIST]
         allowed_by_task = set(settings.get("allowed_field_ids") or [])
         not_allowed = [f for f in requested if f in FIELD_WHITELIST and f not in allowed_by_task]
-        if not_in_whitelist or not_allowed:
+        # B9 F8：三级白名单在服务端强制——个人偏好勾选了字段子集时，请求必须落在子集内。
+        pref_fields = set(prefs.get("field_ids") or [])
+        not_in_prefs = [f for f in requested if pref_fields and f not in pref_fields]
+        if not_in_whitelist or not_allowed or not_in_prefs:
             raise HTTPException(403, {"code": "ai_field_not_allowed",
-                                      "fields": not_in_whitelist + not_allowed})
+                                      "fields": not_in_whitelist + not_allowed + not_in_prefs})
 
         article = _workflow().article_row(ctx.owner_db, body.zotero_key)
         if article is None or article.get("is_duplicate_of") is not None:
@@ -765,9 +825,9 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             raise HTTPException(409, {"code": "ai_no_source_text",
                                       "detail": "该文献既无全文 PDF 也无摘要可用。"})
 
-        system, user_message = _build_messages(requested, article, page_texts, abstract,
-                                               str(settings.get("context_prompt") or ""))
-        user_message, truncated_chars = _truncate_user_message(user_message, page_texts)
+        system, prefix, _user_full = _build_messages(requested, article, page_texts, abstract,
+                                                     str(settings.get("context_prompt") or ""))
+        user_message, truncated_chars = _truncate_user_message(prefix, page_texts)
         base_url = ai_keys.base_url_of(credentials)
         model = (credentials.get("model") or "").strip() or _FALLBACK_MODEL
         try:
@@ -780,7 +840,8 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                                 if key_source == "personal"
                                 else ai_keys.shared_path(info.task_id, data_root))
 
-        kept, warnings, dropped = _parse_provider_content(result["content"], requested, page_texts)
+        kept, warnings, dropped = _parse_provider_content(result["content"], requested,
+                                                          page_texts, abstract)
         if dropped:
             warnings.append(f"dropped_no_quote:{dropped}")
         if truncated_chars:
@@ -927,6 +988,7 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         shared_note = ("任务共享钥匙（由任务负责人配置，以任务名义经服务器发出）"
                        if settings.get("key_mode") == "shared" else "成员各自携带钥匙（BYOK）")
         report_zh = (
+            f"本段统计为当前登录成员本人的 AI 建议使用记录（按成员分别统计；团队汇总请各成员各自导出）。"
             f"本综述在编码阶段使用了木笔 ReviewFlow（v{app_version}）的 AI 抽取建议功能。"
             f"建议由大语言模型生成（提示词版本 {PROMPT_VERSION}），仅覆盖研究特征类字段：{fields}。"
             f"使用期间：{span}；共生成 {total} 条建议，其中 {adopted} 条被直接采纳、"
@@ -935,6 +997,8 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             "采纳由人工逐条确认，最终编码值均由研究者经既有保存链路写入并计入研究轨迹。"
             "模型输出未经独立验证，仅作辅助参考（验证方式：__________）。")
         report_en = (
+            f"The counts below reflect the AI-suggestion usage of the currently signed-in member only "
+            f"(statistics are per member; for a team summary, each member exports their own record). "
             f"During the coding stage of this review, the AI-assisted extraction feature of "
             f"ReviewFlow (v{app_version}) was used. Suggestions were generated by a large language "
             f"model (prompt version {PROMPT_VERSION}) and restricted to study-characteristic "
