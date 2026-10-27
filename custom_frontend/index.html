@@ -7434,7 +7434,9 @@ $('#prGenerate').addEventListener('click', async () => {
   if (window.PrismaTaskUI && !PrismaTaskUI.completeForm(form)) return;
   try {
     const d = await api('/api/prisma/generate', { method: 'POST', body: { form } });
-    d.json = JSON.stringify({...JSON.parse(d.json), _provenance:{generated_at:new Date().toISOString(),...(window.PrismaTaskUI?.provenance || {metric_mode:'manual'}),manual_overrides:[...PR_AUTO.manual]}},null,2);
+    /* 后端按 validate 契约在 ok=False 时不产出导出物（dot/json 为 null），
+       只有拿到合法导出物时才注入溯源元数据。 */
+    if (d.json) d.json = JSON.stringify({...JSON.parse(d.json), _provenance:{generated_at:new Date().toISOString(),...(window.PrismaTaskUI?.provenance || {metric_mode:'manual'}),manual_overrides:[...PR_AUTO.manual]}},null,2);
     S.prLast = d;
     prRenderResult();
     toast(d.ok ? T('流程图已生成（勾稽一致）') : T('校验未通过：存在 {0} 处勾稽错误', (d.errors || []).length), d.ok ? 'inc' : 'warn');

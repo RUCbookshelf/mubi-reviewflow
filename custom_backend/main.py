@@ -2597,8 +2597,11 @@ def prisma_generate(body: PrismaGenerateIn, user: dict = Depends(require_user)) 
         "errors": [i.text for i in result.errors],
         "warnings": [i.text for i in result.warnings],
         "hints": [i.text for i in result.hints],
-        "dot": prisma_form_dot(form),
-        "json": form_json(form),
+        # validate 契约（prisma_form.validate docstring）：error 阻止导出与
+        # 流程图渲染。ok=False 时不产出 dot/json，直连 API 的客户端无法对
+        # 非法表单拿到导出物；前端 prRenderResult 仅在 d.ok 时渲染与下载。
+        "dot": prisma_form_dot(form) if result.ok else None,
+        "json": form_json(form) if result.ok else None,
         "form": form_to_dict(form),
     }
 

@@ -886,8 +886,15 @@ _GREY_LINE = "#85909D"
 
 
 def _esc(text: str) -> str:
-    """DOT 标签转义：反斜杠与双引号（换行由调用方以 \\l 追加）。"""
-    return (text or "").replace("\\", "\\\\").replace('"', '\\"')
+    """DOT 标签转义：反斜杠、双引号与 CR/LF（U6-P8）。
+
+    调用方按行拆分后经 ``\\l`` 追加换行；但 merge_note / removed_other_note
+    等自由文本入口未拆行，数据内裸 CR/LF 会在双引号串里直接断行生成非法
+    DOT。这里把 CR 归一为 LF 后统一转义为 graphviz 的 ``\\n``（居中换行），
+    保证引号串内不出现裸换行。
+    """
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return cleaned.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _lines_label(lines: list[str]) -> str:
