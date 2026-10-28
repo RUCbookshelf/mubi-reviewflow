@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from collections.abc import Callable, Sequence
 import unicodedata
@@ -413,7 +414,9 @@ def _stable_content_id(art: Article) -> str:
 # csv_parser.is_legal_source_key 的 300 上限三处同口径。超过该长度的键
 # SQLite 可入库、文章列表可见，但决策/全文/编码端点全部 422/400 拒绝，
 # 文献成为不可推进的死锁行——新生成的消歧键必须自我约束在该上限内。
-_DISAMBIG_KEY_MAX_LEN = 300
+# 公开别名供 db.py 的存量超长键迁移（MM6-03）共用同一常量，口径不分叉。
+KEY_MAX_LEN = 300
+_DISAMBIG_KEY_MAX_LEN = KEY_MAX_LEN
 
 
 def _suffixed_disambig_key(base: str, suffix: str, serial: int | None = None) -> str:
@@ -429,6 +432,37 @@ def _suffixed_disambig_key(base: str, suffix: str, serial: int | None = None) ->
     return f"{base[: _DISAMBIG_KEY_MAX_LEN - len(tail)]}{tail}"
 
 
+# 历史消歧形态识别（MM6-03 存量迁移用）：<base> + "-" + 12hex 后缀，
+# 可选再缀 "-<serial>"（serial ≥2 的重试形态，历史总长可达 ~316）。
+_LEGACY_DISAMBIG_TAIL_RE = re.compile(
+    r"^(?P<base>.+)-(?P<suffix>[0-9a-f]{12})(?:-(?P<serial>[1-9]\d*))?$"
+)
+
+
+def compliant_key_for_overlong(key: str, serial: int | None = None) -> str:
+    """把超长键（>KEY_MAX_LEN）改写为现行公式的合规键（≤300，MM6-03）。
+
+    - 键尾可解析为历史消歧后缀形态（``base-<12hex>[-serial]``）时：按
+      **现行公式**重算——base 前缀截断、尾后缀原样保留（``_suffixed_
+      disambig_key`` 形态）。迁移目标因此与重导管线的截断候选键一致，
+      迁移后的行重导继续走更新路径（与 MM6-04 的沿用链衔接）。
+    - 其余超长键（非消歧形态的历史来源键）：整体作 base、键全文的
+      sha256 前 12 位作后缀（确定性、可重算），截断拼接。
+    - serial 供迁移的目标键碰撞重试（与导入侧 serial 重试同形态）。
+
+    len(key) ≤ KEY_MAX_LEN 时原样返回（幂等守卫，调用方不应依赖）。
+    """
+    if len(key) <= _DISAMBIG_KEY_MAX_LEN:
+        return key
+    match = _LEGACY_DISAMBIG_TAIL_RE.match(key)
+    if match is not None:
+        retry = int(match.group("serial")) if serial is None and match.group("serial") else serial
+        return _suffixed_disambig_key(
+            match.group("base"), match.group("suffix"), retry)
+    fresh = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    return _suffixed_disambig_key(key, fresh, serial)
+
+
 def _disambiguation_key(
     key: str, art: Article, occupied: set[str],
     known_by_key: dict[str, Article],
@@ -438,7 +472,13 @@ def _disambiguation_key(
     总长受 _DISAMBIG_KEY_MAX_LEN（300）约束：base 超 287 时拼接前截断
     （G-02 死锁修复；≤287 的键生成结果与历史公式逐字节一致）。
 
-    后缀若命中**库内同一文献的既往消歧行**（_key_merge_confirmed 成立）则
+    候选键探测按**历史公式优先**（MM6-04）：base 超 287 时先用完整 base
+    按修复前公式 ``base + "-" + suffix``（不截断，可达 301-313 字符）探测
+    ``known_by_key``——库内持修复前 313 消歧键的同一文献重导时命中并沿用
+    （走 upsert 更新而非再插新行），修复前「截断候选 ≠ 库内旧键 → 重导
+    新增一行」的断链不再发生；未命中才用截断键。serial 重试形态同法。
+
+    后缀命中**库内同一文献的既往消歧行**（_key_merge_confirmed 成立）则
     直接沿用——重导同一文件时后缀与首导一致，走 upsert 更新而非再插新行
     （重导幂等；复审 #2/#9 场景的跨批次稳定性）。仍冲突时按 serial 递增。
     """
@@ -446,14 +486,36 @@ def _disambiguation_key(
         f"{key}|{_stable_content_id(art)}".encode("utf-8")
     ).hexdigest()[:12]
     candidate = _suffixed_disambig_key(key, suffix)
+    # MM6-04：历史公式（完整 base 拼接、不截断）候选先行探测。base ≤287
+    # 时历史公式与现行公式逐字节一致（legacy == candidate），探测自然
+    # 跳过——短键管线形态不变（R2）。
+    legacy = _legacy_disambig_candidate(key, suffix)
+    if legacy != candidate:
+        db_art = known_by_key.get(legacy)
+        if db_art is not None and _key_merge_confirmed(db_art, art):
+            return legacy  # 库内持修复前超长消歧键的同一文献：沿用走更新路径
     db_art = known_by_key.get(candidate)
     if db_art is not None and _key_merge_confirmed(db_art, art):
         return candidate  # 同一文献首导时的消歧键：沿用走更新路径
     serial = 2
     while candidate in occupied:
         candidate = _suffixed_disambig_key(key, suffix, serial)
+        legacy = _legacy_disambig_candidate(key, suffix, serial)
+        if legacy != candidate:
+            db_art = known_by_key.get(legacy)
+            if db_art is not None and _key_merge_confirmed(db_art, art):
+                return legacy  # serial 形态的历史键同理沿用
         serial += 1
     return candidate
+
+
+def _legacy_disambig_candidate(key: str, suffix: str, serial: int | None = None) -> str:
+    """修复前（G-02 之前）的消歧键公式：完整 base 拼接、不截断。
+
+    base ≤287 时与 :func:`_suffixed_disambig_key` 逐字节一致；base ≥288
+    时得到 301+ 字符的历史形态（MM6-04 探测/迁移的兼容口径）。
+    """
+    return f"{key}-{suffix}" if serial is None else f"{key}-{suffix}-{serial}"
 
 
 def _is_generated_key_article(art: Article) -> bool:

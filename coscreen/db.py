@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from coscreen import config
 from coscreen.al.ranker import RankingResult
-from coscreen.dedup import DuplicatePair
+from coscreen.dedup import KEY_MAX_LEN, DuplicatePair, compliant_key_for_overlong
 from coscreen.measure_registry import MEASURE_CODES
 from coscreen.models import Article
 
@@ -636,6 +636,107 @@ def init_db(db_path: StrPath) -> None:
     """建库建表（幂等，可重复调用）。"""
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA)
+    # MM6-03：存量超长键的幂等迁移。CLI import（cli.cmd_import）与 Web
+    # 筛选员库访问（custom_backend._screener_db）都以本函数为入口，接在
+    # 此处即覆盖两条产品路径；无超长键的正常库只做一次 SELECT、零写入。
+    migrate_overlong_keys(db_path)
+
+
+# ---------------------------------------------------------------------------
+# 存量超长键迁移（MM6-03）
+# ---------------------------------------------------------------------------
+
+def _article_key_reference_columns(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """发现库内所有语义上引用 ``articles.zotero_key`` 的 (表, 列)。
+
+    数据驱动（以实际库内表结构为准，不维护易漂移的静态清单）：任意表中
+    名为 zotero_key / source_key / keeper_key 的列都是文献键引用（本仓
+    全部表满足该约定，含 analysis_storage / rob_storage / binary_arm_data
+    / network_study_data 等模块的自建表）；articles 自身的主键列除外
+    （重命名单独处理），其 is_duplicate_of 指向保留条目键，同样要同步。
+    """
+    columns: list[tuple[str, str]] = []
+    tables = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()]
+    for table in tables:
+        names = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        if table == "articles":
+            if "is_duplicate_of" in names:
+                columns.append(("articles", "is_duplicate_of"))
+            continue
+        for column in ("zotero_key", "source_key", "keeper_key"):
+            if column in names:
+                columns.append((table, column))
+    return sorted(set(columns))
+
+
+def migrate_overlong_keys(db_path: StrPath) -> int:
+    """一次性幂等迁移（MM6-03）：把库内超长（>KEY_MAX_LEN）来源键重命名
+    为现行公式的合规键，并在同一事务内同步全部引用列。
+
+    - 背景：G-02 截断之前生成的消歧键可达 301-313（serial 形态更长）
+      字符，SQLite 照常入库、文章列表可见，但 Web 决策/全文/编码端点的
+      ``DecisionIn``/``_KEY_RE`` 契约（≤300）对其 422/400——文献成为
+      不可推进的死锁行。按复审建议的「重命名不丢数据」修法落地。
+    - 目标键 = :func:`coscreen.dedup.compliant_key_for_overlong`（截断+
+      哈希后缀形态）：与重导管线的截断候选键一致，迁移后的行重导继续走
+      更新路径（与 MM6-04 的沿用链衔接）；目标键被既有行占用时按 serial
+      确定性重试，绝不覆盖既有行。
+    - 同步范围数据驱动发现（zotero_key/source_key/keeper_key 列 +
+      articles.is_duplicate_of），单事务原子提交；主键更新期间
+      ``PRAGMA foreign_keys=OFF``（各引用无 ON UPDATE CASCADE），提交前
+      ``PRAGMA foreign_key_check`` 强制自检，违例即回滚报错（库保持原状）。
+    - 幂等/零损：仅键长 >KEY_MAX_LEN 的行被重命名；行数与决策/高亮/编码
+      等附属数据全部原样保留，只替换键值；无超长键的库**只读不写**
+      （先 SELECT、命中为空即返回，主库文件逐字节零变化）。
+    :return: 本次重命名的键数（0 = 无需迁移）。
+    """
+    with closing(_connect(db_path)) as conn:
+        overlong = [row[0] for row in conn.execute(
+            "SELECT zotero_key FROM articles "
+            "WHERE length(zotero_key) > ? ORDER BY zotero_key", (KEY_MAX_LEN,)
+        ).fetchall()]
+        if not overlong:
+            return 0  # 正常库：零写入（主库文件逐字节不变）
+        references = _article_key_reference_columns(conn)
+        occupied = {row[0] for row in conn.execute(
+            "SELECT zotero_key FROM articles").fetchall()}
+        renames: list[tuple[str, str]] = []
+        for old in overlong:
+            target = compliant_key_for_overlong(old)
+            serial = 2
+            while target in occupied:  # 目标键已被既有行占用：确定性 serial 重试
+                target = compliant_key_for_overlong(old, serial)
+                serial += 1
+            occupied.discard(old)
+            occupied.add(target)
+            renames.append((old, target))
+        conn.execute("PRAGMA foreign_keys=OFF")  # 键重命名无 ON UPDATE CASCADE
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for old, new in renames:
+                conn.execute(
+                    "UPDATE articles SET zotero_key=? WHERE zotero_key=?",
+                    (new, old))
+            for table, column in references:
+                for old, new in renames:
+                    conn.execute(
+                        f'UPDATE "{table}" SET "{column}"=? WHERE "{column}"=?',
+                        (new, old))
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise ValueError(
+                    "超长键迁移外键自检失败（已回滚，库未被修改）："
+                    f"{violations[:3]!r} —— 请检查引用表中的悬挂键数据后重试。"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+        return len(renames)
 
 
 # ---------------------------------------------------------------------------

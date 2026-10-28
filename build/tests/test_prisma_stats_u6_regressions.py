@@ -59,9 +59,9 @@ class BlankDecisionTests(unittest.TestCase):
         merged = merge_decisions(df_a, df_b)
         flow = prisma_from_merge(merged)
         # R6-F2 验收：screened=1（仅 k2），included=1。report=None 的兜底
-        # 口径（复审勾稽修正后）：identified = 决策表行数（检索识别数——
-        # 含未筛行，与 merged_detail.csv 行数一致；曾用 screened 兜底致
-        # 决策表含未筛记录时 identified 静默少计）；unscreened=1 可勾稽。
+        # 口径（MM6-02 键级修订后）：identified = 决策表唯一键数（检索识别
+        # 数——含未筛键；曾按行数兜底，与 multi 路径口径分叉）；unscreened=1
+        # 可勾稽。
         self.assertEqual(
             (flow.identified, flow.duplicates_removed, flow.screened, flow.excluded, flow.included),
             (2, 0, 1, 0, 1),
@@ -394,10 +394,11 @@ class ScreenedCaliberAlignmentTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class WarningSurfaceBoundaryTests(unittest.TestCase):
-    def test_reconciliation_warnings_are_json_only(self):
-        # 勾稽提示仅随 to_dict（CLI stats.json / Python 调用方）导出；
-        # prisma_dot 的 DOT 图不呈现警示行（保持标准流程图形状），
-        # CLI stdout 亦不打印（coscreen/cli.py 不在本泳道允许改动清单）。
+    def test_reconciliation_warnings_in_json_and_dot(self):
+        # 勾稽提示随 to_dict（CLI stats.json / Python 调用方）导出；
+        # prisma_dot 自 MM6-02 起渲染「勾稽告警」note 节点（修复前该类
+        # 断言 DOT 不含告警——MM6-02 复审裁定图上的自相矛盾数字必须在
+        # 图内有解释，原 JSON-only 边界作废）；CLI stdout 仍不打印。
         class _Report:
             total = 10
             unique = 8
@@ -413,8 +414,8 @@ class WarningSurfaceBoundaryTests(unittest.TestCase):
         self.assertTrue(flow.warnings)
         self.assertTrue(flow.to_dict()["warnings"])
         dot = prisma_dot(flow)
-        self.assertNotIn("筛选尚未完成", dot)
-        self.assertNotIn("≠ screened", dot)
+        self.assertIn("勾稽告警", dot)
+        self.assertIn("≠ screened", dot)
 
 
 # ---------------------------------------------------------------------------
@@ -425,8 +426,9 @@ class WarningSurfaceBoundaryTests(unittest.TestCase):
 class ReportlessReconciliationAndUnscreenedCaliberTests(unittest.TestCase):
     """MM-08：identified − duplicates_removed ≠ screened 的勾稽检查不得被
     「report is not None」门控——report=None 时 identified 恰恰走决策表
-    行数兜底（含未筛行/重复键行），是最可能对不上的一支；修复前该支静默
+    兜底（含未筛行/重复键行），是最可能对不上的一支；修复前该支静默
     无告警，DOT 图画出「识别 3 → 去重 0 → 筛选 1」的不自洽数字。
+    （MM6-02 修订：兜底口径从行数改为唯一键数，与 multi 路径统一。）
 
     MM-10：unscreened 与 screened 同按唯一键计（修复前按行数计），勾稽
     不变式「决策表唯一键数 = screened + unscreened」在重复键行输入下
@@ -447,9 +449,11 @@ class ReportlessReconciliationAndUnscreenedCaliberTests(unittest.TestCase):
 
     def test_mm08_reportless_reconciliation_mismatch_warned(self):
         # 修复前（门控倒置）：report=None → warnings == ()，
-        # identified(3) − duplicates_removed(0) ≠ screened(1) 无任何提示。
+        # identified(行数3) − duplicates_removed(0) ≠ screened(1) 无任何提示。
+        # MM6-02 修订：identified 兜底口径统一为键级（唯一键数=2，与 multi
+        # 路径/unscreened 对齐），行数与键数的差（重复键折叠行）由本告警解释。
         flow = prisma_from_merge(self._dup_key_merged())
-        self.assertEqual((flow.identified, flow.duplicates_removed, flow.screened), (3, 0, 1))
+        self.assertEqual((flow.identified, flow.duplicates_removed, flow.screened), (2, 0, 1))
         self.assertTrue(
             any("identified" in w and "≠ screened" in w for w in flow.warnings),
             f"expected reconciliation warning, got {flow.warnings!r}",
