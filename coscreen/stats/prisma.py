@@ -19,7 +19,15 @@ prisma_dot 输出带中文标签的 DOT 字符串，可直接用于 st.graphviz_
   （MM-08，修复前被 report is not None 门控倒置）；unscreened 按键级
   口径计（唯一键集合 − screened 键集合：同一键既有已筛行又有未筛行时
   按已筛计，不双计），勾稽不变式为「决策表唯一键数 =
-  screened + unscreened」（MM-10，修复前 unscreened 按行数计）。
+  screened + unscreened」（MM-10，修复前 unscreened 按行数计）；
+- identified 在 report=None 的兜底口径下同样按**唯一键数**计
+  （MM6-02，修复前 agree 路径按决策表行数、multi 路径恒 =screened 且
+  从不设置 unscreened——同一份数据两条 CLI 路径得出不同 PRISMA 数字）。
+  行数与唯一键数的取舍：行数（重复键折叠行的物理行数）不再单独导出——
+  该差值已由 MM-08 勾稽告警文案解释，且 agree/multi/two_stage 的
+  report=None 分支上「identified = screened + unscreened = 唯一键数」
+  恒成立（two_stage 经 stage1 透传；report 非 None 时 identified 取去重
+  报告口径，不适用该恒等式，MM-08 告警负责勾稽）。
 
 与任务页 /prisma-metrics 的口径边界（R6-F9，r6 评审反馈 2 修正）：
 - reviewer 模式与 CLI/手动 merge 一致——records_screened = len(db_keys &
@@ -33,9 +41,11 @@ prisma_dot 输出带中文标签的 DOT 字符串，可直接用于 st.graphviz_
   Task 端到端亦未运行；如需统一以最严（已决）口径或放宽 team 口径，
   须由后续轮次在产品侧裁决。
 
-PrismaFlow.warnings 的呈现边界（r6 评审反馈 4）：勾稽提示仅随 to_dict
-（CLI stats.json 与 Python 调用方）导出；prisma_dot 输出的 DOT 图与 CLI
-stdout **不呈现**这些提示（保持标准流程图形状，非标准警示行不入图）。
+PrismaFlow.warnings 的呈现边界（r6 评审反馈 4 → MM6-02 修订）：勾稽提示
+随 to_dict（CLI stats.json 与 Python 调用方）导出，**并经 prisma_dot 渲染
+为「勾稽告警」note 节点**（MM6-02：修复前 DOT 只画四核心节点 + 未决，
+「识别 2 → 筛选 1（去除重复 0）」的自相矛盾数字在图上无任何解释）；
+CLI stdout 仍不打印这些提示（保持 stdout 输出契约不变）。
 """
 
 from __future__ import annotations
@@ -106,14 +116,17 @@ def _count_duplicates(report: Any | None) -> int:
 
 
 def _count_identified(
-    report: Any | None, duplicates_removed: int, screened: int, total_rows: int | None = None,
+    report: Any | None, duplicates_removed: int, screened: int, decision_table_total: int | None = None,
 ) -> int:
     """优先取 report.total，其次 unique + 去重数；report=None 时以**决策表
-    行数**兜底（复审勾稽修正：检索识别数=决策表行数——含未筛行；此前用
-    screened 兜底，决策表含未筛记录时 identified 静默少计，与
-    merged_detail.csv 行数矛盾）。total_rows 由调用方传 len(merged)。"""
+    唯一键数**兜底（MM6-02：检索识别数=决策表唯一键数——与 screened/
+    unscreened 的键级口径对齐，「唯一键数 = screened + unscreened =
+    identified」恒成立；此前按决策表**行数**兜底，重复键行输入下与 multi
+    路径（恒 =screened）两条 CLI 路径对同一数据得出不同数字）。
+    decision_table_total 由调用方传唯一键数（无 zotero_key 列的最小表回退
+    行数）。"""
     if report is None:
-        return screened if total_rows is None else int(total_rows)
+        return screened if decision_table_total is None else int(decision_table_total)
     total = getattr(report, "total", None)
     if total is not None:
         return int(total)
@@ -223,6 +236,17 @@ def _resolved_warning(ignored: list[str], source: str) -> str:
     return f"{source} 含 {len(ignored)} 个键域外（幽灵/未筛）键，已忽略不计入: {shown}"
 
 
+def _reconciliation_warning(identified: int, duplicates_removed: int, screened: int) -> str:
+    """MM-08 勾稽告警文案（agree/multi 两路径共用同一措辞，保证同一份
+    数据两条 CLI 路径的 stats.json warnings 完全一致，MM6-02）。"""
+    return (
+        f"identified({identified}) − duplicates_removed({duplicates_removed}) "
+        f"≠ screened({screened})：筛选尚未完成（含未筛行）、决策表存在"
+        "重复键行（按唯一键折叠计），或去重报告与决策表口径不一致"
+        "（U6-P11 勾稽提示）"
+    )
+
+
 def prisma_from_merge(
     merged: pd.DataFrame,
     report: "DedupReport | None" = None,
@@ -240,10 +264,11 @@ def prisma_from_merge(
       - 否则仅统计双方一致的实际决策 include/exclude；一致 maybe 等其他
         决策未决不计入（R6-F7 口径，DOT 以「未决」节点呈现差值）。
     identified − duplicates_removed ≠ screened 时**无条件**记入 warnings
-    （MM-08：report=None 的决策表行数兜底口径同样勾稽；差值可能来自
-    未筛行、重复键行折叠或去重报告口径不一致）；unscreened 按键级口径
-    计（唯一键集合 − screened 键集合，MM-10），「决策表唯一键数 =
-    screened + unscreened」恒成立。
+    （MM-08：report=None 的决策表兜底口径同样勾稽；差值可能来自
+    未筛行、重复键行折叠或去重报告口径不一致）；identified 与 unscreened
+    均按键级口径计（identified=决策表唯一键数、unscreened=唯一键集合 −
+    screened 键集合，MM-10/MM6-02），「决策表唯一键数 =
+    screened + unscreened = identified(report=None)」恒成立。
     """
     if "status" not in merged.columns:
         raise ValueError("prisma_from_merge 需要 merge_decisions 的输出（缺少 status 列）")
@@ -252,9 +277,10 @@ def prisma_from_merge(
     # 一致）——重复 zotero_key 行不放大分母，included+excluded<=screened
     # 的不变量在 agree 路径的任何输入下成立。
     if "zotero_key" in merged.columns:
-        screened = int(merged.loc[mask.fillna(False), "zotero_key"]
-                       .fillna("").astype(str).nunique())
+        all_keys = merged["zotero_key"].fillna("").astype(str)
+        screened = int(all_keys[mask.fillna(False)].nunique())
     else:
+        all_keys = None
         screened = int(mask.sum())
     warns: list[str] = []
 
@@ -271,18 +297,23 @@ def prisma_from_merge(
         included, excluded = _agree_counts_two(merged)
 
     duplicates_removed = _count_duplicates(report)
-    identified = _count_identified(report, duplicates_removed, screened, len(merged))
+    # MM6-02：report=None 的兜底口径统一为**键级**（决策表唯一键数），
+    # 与 multi 路径及 unscreened 的口径对齐——修复前按行数兜底，重复键
+    # 行输入下 identified ≠ 唯一键数，且与 multi 路径（恒 =screened）对
+    # 同一数据得出不同数字。无 zotero_key 列的最小表回退行数（screened
+    # 同为行数口径，行数不变式相应成立）。
+    if all_keys is not None:
+        decision_table_total = int(all_keys.nunique())
+    else:
+        decision_table_total = int(len(merged))
+    identified = _count_identified(
+        report, duplicates_removed, screened, decision_table_total)
     # MM-08（r7-prisma）：勾稽检查无条件执行。修复前被「report is not
-    # None」门控倒置——report=None 时 identified 恰恰走决策表**行数**兜底
+    # None」门控倒置——report=None 时 identified 恰恰走决策表兜底
     # （含未筛行/重复键行），是最可能 ≠ screened 的一支，却被静默跳过，
     # 流程图画出「识别 3 → 去重 0 → 筛选 1」的不自洽数字且无任何提示。
     if identified - duplicates_removed != screened:
-        warns.append(
-            f"identified({identified}) − duplicates_removed({duplicates_removed}) "
-            f"≠ screened({screened})：筛选尚未完成（含未筛行）、决策表存在"
-            "重复键行（按唯一键折叠计），或去重报告与决策表口径不一致"
-            "（U6-P11 勾稽提示）"
-        )
+        warns.append(_reconciliation_warning(identified, duplicates_removed, screened))
     # MM-10（r7-prisma）：unscreened 按「唯一键集合 − screened 键集合」计
     # （键级口径，r7 复审第 1 轮修正：同一键既有已筛行又有未筛行时按已筛
     # 计，不双计——该键所有行均无决策才算未筛），与 screened 的唯一键
@@ -290,8 +321,7 @@ def prisma_from_merge(
     # 成立；行数与唯一键数的差（重复键折叠行/已筛键的未筛行）由上方
     # identified 勾稽告警解释。无 zotero_key 列的最小表回退行数（兼容，
     # screened 同为行数口径，行数不变式相应成立）。
-    if "zotero_key" in merged.columns:
-        all_keys = merged["zotero_key"].fillna("").astype(str)
+    if all_keys is not None:
         unscreened = int(all_keys.nunique() - screened)
     else:
         unscreened = int(len(merged) - mask.sum())
@@ -320,7 +350,9 @@ def prisma_from_merge_multi(
       - 否则仅统计 agree 条目的共同决策：include -> included、exclude ->
         excluded、maybe 及其他不计入；conflict/incomplete 条目未决，不计入。
     identified/duplicates_removed 以 report=None 的兜底口径：去重数 0、
-    identified = screened。
+    identified = 决策表唯一键数（MM6-02：修复前恒 =screened 且从不设置
+    unscreened，与 agree 路径对同一数据得出不同数字）；unscreened =
+    唯一键数 − screened，MM-08 勾稽告警与 agree 路径同一措辞无条件执行。
     """
     if "status" not in merged_multi.columns:
         raise ValueError("prisma_from_merge_multi 需要 merge_decisions_multi 的输出（缺少 status 列）")
@@ -331,6 +363,10 @@ def prisma_from_merge_multi(
     mask = _screened_mask(merged_multi, tuple(f"decision_{name}" for name in names))
     keys = merged_multi["zotero_key"].fillna("").astype(str)
     screened = int(keys[mask].nunique())
+    # MM6-02：identified/unscreened 与 agree 路径同口径（键级），勾稽
+    # 不变式「唯一键数 = screened + unscreened = identified」恒成立。
+    unique_total = int(keys.nunique())
+    unscreened = unique_total - screened
     warns: list[str] = []
 
     if resolved is not None:
@@ -353,13 +389,20 @@ def prisma_from_merge_multi(
         included, _ = _unique_key_count(merged_multi, inc_mask)
         excluded, _ = _unique_key_count(merged_multi, exc_mask)
 
+    # MM-08（MM6-02 补齐 multi 路径）：勾稽检查与 agree 路径同一措辞、
+    # 同样无条件执行——修复前 multi 路径 identified 恒 =screened 倒是恒
+    # 勾稽，但 unscreened 键在 stats.json 里被静默吞成默认 0。
+    identified = unique_total
+    if identified - 0 != screened:
+        warns.append(_reconciliation_warning(identified, 0, screened))
     return PrismaFlow(
-        identified=screened,
+        identified=identified,
         duplicates_removed=0,
         screened=screened,
         excluded=excluded,
         included=included,
         warnings=tuple(warns),
+        unscreened=unscreened,
     )
 
 
@@ -374,11 +417,15 @@ def prisma_two_stage(
     双筛选员 decisions / decisions2 CSV 合并结果）：
 
     - identified / duplicates_removed / screened：沿用初筛合并表口径
-      （无 DedupReport 时 identified = screened、duplicates_removed = 0）；
+      （无 DedupReport 时 identified = 决策表唯一键数、duplicates_removed = 0，
+      MM6-02 键级口径）；
     - excluded：初筛排除数 + 复筛排除数（两个阶段的排除累计）；
     - included：复筛合并表的最终纳入数——默认只计 stage2 中 agree 且共同
       decision == "include" 的条目；给出 resolved2（zotero_key/final_decision
-      仲裁表）时按其统计（口径与 prisma_from_merge 的 resolved 相同）。
+      仲裁表）时按其统计（口径与 prisma_from_merge 的 resolved 相同）；
+      unscreened 自 stage1 透传（r1 评审：identified 沿用 stage1 键级口径
+      而不透传 unscreened 会让「identified = screened + unscreened」在
+      two_stage 上破）。
     - 复筛决策只统计落在初筛纳入键域（stage1 双方一致 include 的键）内的
       条目：键域外与重复键忽略并记入 warnings（R6-F5），保证
       included + excluded <= screened 恒成立（复筛在初筛纳入子集上进行，
@@ -428,6 +475,7 @@ def prisma_two_stage(
         excluded=stage1.excluded + excluded2,
         included=included,
         warnings=tuple(warns),
+        unscreened=stage1.unscreened,
     )
 
 
@@ -437,6 +485,11 @@ def prisma_dot(flow: PrismaFlow) -> str:
     included + excluded < screened 时追加「未决」节点（U6-P5/R6-F7）：
     conflict/单边与一致 maybe 等未决记录不再从图中静默消失，分支之和
     与 screened 保持勾稽。
+
+    warnings 非空时追加「勾稽告警」note 节点（MM6-02）：identified −
+    duplicates_removed ≠ screened 等勾稽提示不再只在 stats.json 里出现——
+    图上的数字（如「识别 2 → 筛选 1、去除重复 0」）自相矛盾时，解释
+    就在图内，不与图分离。无告警的流程保持标准形状（不出现该节点）。
     """
     pending = flow.screened - flow.included - flow.excluded
     node_lines = [
@@ -453,6 +506,16 @@ def prisma_dot(flow: PrismaFlow) -> str:
     if pending > 0:
         node_lines.append(f'    pending [label="未决（分歧/待仲裁）\\n{pending} 篇"];')
         edge_lines.append("    screened -> pending;")
+    if flow.warnings:
+        # 告警正文转义后按行拼进 note 节点标签（琥珀色便签，虚线边框
+        # 区分于流程节点；不连边——告警不是流程的一站）。
+        body = "\\n".join(
+            w.replace("\\", "\\\\").replace('"', '\\"') for w in flow.warnings
+        )
+        node_lines.append(
+            f'    warnings [label="勾稽告警\\n{body}", shape=note, '
+            f'style="rounded,filled", fillcolor="#FFF8E1", color="#B26A00"];'
+        )
     lines = [
         "digraph PRISMA {",
         "    rankdir=TB;",
