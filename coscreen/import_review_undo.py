@@ -74,7 +74,10 @@ def remember(conn, batch: str, actor: str, kind: str, subject: str, before: dict
     after = snapshot(conn, kind, subject)
     if before == after:
         return
-    conn.execute("UPDATE workflow_import_undo SET state='superseded' WHERE state='available'")
+    # MM-04：作废只限同一（批次, 操作人）的旧条目——latest()/available()/restore()
+    # 均按该口径取条目，全局作废会把他人/他批次的撤销能力一并静默终结。
+    conn.execute("UPDATE workflow_import_undo SET state='superseded' "
+                 "WHERE state='available' AND batch_id=? AND actor_id=?", (batch, actor))
     conn.execute('''INSERT INTO workflow_import_undo(batch_id,actor_id,kind,subject_id,before_json,
         after_json,policy_version,created_at) VALUES(?,?,?,?,?,?,?,?)''',
         (batch, actor, kind, subject, imports.dumps(before), imports.dumps(after), version, imports.now()))
@@ -83,6 +86,15 @@ def remember(conn, batch: str, actor: str, kind: str, subject: str, before: dict
 def latest(conn, batch: str, actor: str):
     return conn.execute('''SELECT * FROM workflow_import_undo WHERE batch_id=? AND actor_id=?
         AND state='available' ORDER BY id DESC LIMIT 1''', (batch, actor)).fetchone()
+
+
+def activate(conn, batch: str) -> None:
+    """批次激活：终结该批次全部操作人的撤销条目（批次已激活则不可再撤销）。
+
+    MM-04：只限定本批次——激活 batch-2 不得把他批次的条目一并置 activated
+    （此前的全局 UPDATE 由 review_imports_api 内联，与本模块其余口径分裂）。"""
+    conn.execute("UPDATE workflow_import_undo SET state='activated' "
+                 "WHERE state='available' AND batch_id=?", (batch,))
 
 
 def available(conn, batch: str, actor: str) -> dict:

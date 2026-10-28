@@ -15,8 +15,10 @@ VERSION = 4
 #: v5（文件名溯源重构）版本号；context() 热路径判齐用
 FILENAME_VERSION = 5
 SOURCE_TYPES = {'database', 'register', 'website', 'organisation', 'citation_searching', 'other'}
-ALIASES = {'wos': 'Web of Science', 'web of science': 'Web of Science', 'scopus': 'Scopus',
-           'pubmed': 'PubMed', 'medline': 'MEDLINE', 'eric': 'ERIC', 'proquest': 'ProQuest'}
+# MM3-03：v4 原设想的「属主命名来源别名表」已随其唯一消费分支一并删除——
+# v5 起 detect() 刻意只认上传文件名（见其注释），source_type 恒为 None，
+# 该分支从未生效；如需恢复来源类型识别，须基于 RIS DB/DP 元数据另立设计
+# 并配套迁移，而非沿用这里的文件名口径。
 
 
 def first(raw: dict, *keys: str) -> str:
@@ -128,23 +130,13 @@ def _migrate_v4(db: str | Path) -> None:
                         break
                     key = article[0]
                 recovered.add(sid)
-        # Recognize earlier owner-named sources only when every retained record's
-        # database metadata agrees with that name. Never infer from the label alone.
-        for source in conn.execute('SELECT id,name FROM workflow_sources WHERE id NOT IN (SELECT source_id FROM workflow_source_details)').fetchall():
-            if source['id'] == workflow.UNASSIGNED:
-                continue
-            evidence = []
-            if workflow.has_table(conn,'workflow_source_records'):
-                for row in conn.execute('SELECT original_json,filename,digest FROM workflow_source_records WHERE source_id=?',(source['id'],)):
-                    evidence.append(detect(json.loads(row['original_json']),row['filename'],row['digest']))
-            if not evidence and workflow.has_table(conn,'articles'):
-                for row in conn.execute('SELECT a.raw_json FROM articles a JOIN workflow_article_sources s ON s.zotero_key=a.zotero_key WHERE s.source_id=?',(source['id'],)):
-                    evidence.append(detect({'raw_json':row['raw_json']},'',''))
-            label = ALIASES.get(workflow.normalized(source['name']),source['name'])
-            if evidence and all(e['source_type']=='database' and workflow.normalized(e['name'])==workflow.normalized(label) for e in evidence):
-                detail = evidence[0]
-                conn.execute('INSERT INTO workflow_source_details VALUES(?,?,?,?,?,?,?)',
-                    (source['id'],'metadata','database',detail['provider'],'',json.dumps(detail['evidence'],ensure_ascii=False),detail['identity']))
+        # MM3-03：v4 原设想的「识别属主命名来源（database）」分支已删除。
+        # 判定条件是双重死路：detect() 恒 source_type=None（v5 起来源身份
+        # 刻意只认上传文件名，不读 RIS DB/DP 元数据），且 e['name'] 是文件名
+        # 而比较对象 label 是来源名（'pubmed-export.ris' ≠ 'PubMed'）——
+        # 分支与其别名表从未生效，属主命名来源保持 legacy 呈现。取舍＝删除
+        # 而非实现：实现识别需推翻文件名身份设计并改变迁移产出（违反保守
+        # 铁律 R3「能不改行为就不改」），删除则零行为变化。
         policy = json.loads(conn.execute('SELECT stages_json FROM workflow_state WHERE singleton=1').fetchone()[0])
         placeholder_used = conn.execute('SELECT 1 FROM workflow_article_sources WHERE source_id=? LIMIT 1', (workflow.UNASSIGNED,)).fetchone()
         if workflow.has_table(conn, 'workflow_source_records'):
