@@ -172,7 +172,7 @@
 ['受影响主体','Affected subjects','Sujets concernés','Затронутые субъекты','Sujetos afectados','影響を受けた対象','Sujeitos afetados','Betroffene Subjekte','Погођени субјекти','영향받은 항목'],
 ['已截断主体','Truncated subjects','Sujets tronqués','Усечённые субъекты','Sujetos truncados','省略された対象','Sujeitos truncados','Abgeschnittene Subjekte','Скраћени субјекти','생략된 항목'],
 ['跳过事件','Skipped events','Événements ignorés','Пропущенные события','Eventos omitidos','スキップされた記録','Eventos ignorados','Übersprungene Ereignisse','Прескочени догађаји','건너뛴 기록'],
-['填空','Short text','Texte court','Короткий текст','Texto corto','記入式','Texto curto','Kurztext','Кратки текст','단답형'],
+['短文本','Short text','Texte court','Короткий текст','Texto corto','記入式','Texto curto','Kurztext','Кратки текст','단답형'],
 ['单选','Single choice','Choix unique','Один вариант','Opción única','単一選択','Escolha única','Einfachauswahl','Један избор','단일 선택'],
 ['多选','Multiple choice','Choix multiple','Несколько вариантов','Opción múltiple','複数選択','Escolha múltipla','Mehrfachauswahl','Вишеструки избор','복수 선택'],
 ['选项','Options','Options','Варианты','Opciones','選択肢','Opções','Optionen','Опције','옵션'],

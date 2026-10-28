@@ -2536,7 +2536,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 
 /* =====================================================================
    多语言引擎（登录页 + 应用主界面统一）：
-   - 同一套 9 语言字典（rows + APP_ROWS + PRISMA_ROWS）与同一份状态（localStorage rf_lang）；
+   - 同一套 10 语言字典（zh-CN/en/fr/ru/es/ja/pt/de/sr/ko，第 9 种为塞尔维亚语；rows + APP_ROWS + PRISMA_ROWS）与同一份状态（localStorage rf_lang）；
    - MutationObserver 观察 document.body：静态 HTML 与「整段字典命中」的动态
      文本（含登录页）自动翻译；带数字的合成句由应用脚本经 RFLang.t() 模板翻译；
    - 切换语言 = translateTree(整页) + 回调应用 refreshAllText() 重渲染动态区；
@@ -4084,7 +4084,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["已保存：{0} · seed {1} · 阈值 {2}", "Saved: {0} · seed {1} · threshold {2}", "Enregistré : {0} · graine {1} · seuil {2}", "Сохранено: {0} · seed {1} · порог {2}", "Guardado: {0} · semilla {1} · umbral {2}", "保存済み：{0} · seed {1} · しきい値 {2}", "Salvo: {0} · semente {1} · limiar {2}", "Gespeichert: {0} · Seed {1} · Schwelle {2}", "Сачувано: {0} · seed {1} · праг {2}", "저장됨: {0} · seed {1} · 임계값 {2}"],
   ["机器学习排序设置已保存", "Machine Learning ranking settings saved", "Réglages du classement par apprentissage automatique enregistrés", "Настройки сортировки на основе машинного обучения сохранены", "Ajustes de ordenación por aprendizaje automático guardados", "機械学習順序付け設定を保存しました", "Configurações de ordenação por aprendizado de máquina salvas", "ML-Ranking-Einstellungen gespeichert", "Подешавања рангирања машинским учењем су сачувана", "머신러닝 설정 저장됨"],
   ["加载中…", "Loading…", "Chargement…", "Загрузка…", "Cargando…", "読み込み中…", "Carregando…", "Wird geladen…", "Учитавање…", "불러오는 중…"],
-  ["暂不可用", "Currently unavailable", "Actuellement indisponible", "Временно недоступно", "No disponible temporalmente", "現在利用できません", "Temporariamente indisponível", "Derzeit nicht verfügbar", "Тренутно недоступно", "현재 사용할 수 없음"],
+  ["暂不可用", "Temporarily unavailable", "Temporairement indisponible", "Временно недоступно", "No disponible temporalmente", "一時的に利用できません", "Temporariamente indisponível", "Vorübergehend nicht verfügbar", "Привремено недоступно", "일시적으로 사용할 수 없음"],
   ["收起侧边栏", "Collapse sidebar", "Replier la barre latérale", "Свернуть боковую панель", "Contraer barra lateral", "サイドバーを折りたたむ", "Recolher barra lateral", "Seitenleiste einklappen", "Скупи бочну траку", "사이드바 접기"],
   ["展开侧边栏", "Expand sidebar", "Déplier la barre latérale", "Развернуть боковую панель", "Expandir barra lateral", "サイドバーを展開", "Expandir barra lateral", "Seitenleiste ausklappen", "Прошири бочну траку", "사이드바 펼치기"],
   ["请先选择任务","Pick a task first","Choisissez d'abord une tâche","Сначала выберите задачу","Elija primero una tarea","先にタスクを選択してください","Escolha uma tarefa primeiro","Bitte zuerst eine Aufgabe wählen","Прво изаберите задатак", "작업을 선택하세요"],
@@ -4194,7 +4194,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["新系统综述","New systematic review","Revue systématique nouvelle","Новый систематический обзор","Revisión sistemática nueva","新規システマティックレビュー","Nova revisão sistemática","Neues systematisches Review","Нови систематски преглед", "새 체계적 고찰"],
   ["更新综述","Updated review","Revue mise à jour","Обновлённый обзор","Revisión actualizada","更新レビュー","Revisão atualizada","Aktualisiertes Review","Ажурирани преглед", "갱신 고찰"],
   ["诊断试验准确性（DTA）","Diagnostic test accuracy (DTA)","Précision des tests diagnostiques (DTA)","Точность диагностических тестов (DTA)","Precisión de pruebas diagnósticas (DTA)","診断検査の精度（DTA）","Acurácia de teste diagnóstico (DTA)","Diagnostische Treffsicherheit (DTA)","Дијагностичка тачност (DTA)", "진단검사 정확도 (DTA)"],
-  ["来源范围","Sources scope","Périmètre des sources","Охват источников","Alcance de fuentes","情報源の範囲","Escopo de fontes","Quellen-Umfang","Обухват извора", "출처 범위"],
+  ["来源范围","Source scope","Périmètre des sources","Область источников","Ámbito de fuentes","ソース範囲","Escopo de fontes","Quellenbereich","Опсег извора", "출처 범위"],
   ["数据库/注册库","Databases/registries","Bases de données/registres","Базы данных/регистры","Bases de datos/registros","データベース／研究登録","Bases de dados/registros","Datenbanken/Register","Базе података/регистри", "데이터베이스/레지스트리"],
   ["数据库/注册库 + 其他来源","Databases/registries + other sources","Bases/registres + autres sources","Базы/регистры + другие источники","Bases/registros + otras fuentes","データベース／研究登録＋その他","Bases/registros + outras fontes","Datenbanken/Register + andere Quellen","Базе/регистри + други извори", "데이터베이스/레지스트리 + 기타 출처"],
   ["① 识别与去重（数据库/注册库）","① Identification & deduplication (databases/registries)","① Identification et dédoublonnage (bases/registres)","① Выявление и дедупликация (базы/регистры)","① Identificación y deduplicación (bases/registros)","① 同定と重複除去（データベース／研究登録）","① Identificação e deduplicação (bases/registros)","① Identifikation & Deduplikation (Datenbanken/Register)","① Идентификација и дедупликација (базе/регистри)", "① 문헌 확인 및 중복 제거 (데이터베이스/레지스트리)"],
@@ -4232,7 +4232,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["其他","Other","Autre","Другое","Otro","その他","Outro","Andere","Друго", "기타"],
   ["来源名称，如 WOS","Source name, e.g. WOS","Nom de la source, ex. WOS","Название источника, напр. WOS","Nombre de la fuente, p. ej. WOS","情報源名（例：WOS）","Nome da fonte, ex.: WOS","Quellenname, z. B. WOS","Назив извора, нпр. WOS", "출처 이름(예: WOS)"],
   ["排除理由","Exclusion reason","Motif d'exclusion","Причина исключения","Motivo de exclusión","除外理由","Motivo de exclusão","Ausschlussgrund","Разлог искључења", "제외 사유"],
-  ["自动", "Auto", "Automatique", "Авто", "Automático", "自動", "Automático", "Automatisch", "Ауто", "자동"],
+  ["自动", "Automatic", "Automatique", "Автоматически", "Automático", "自動", "Automático", "Automatisch", "Аутоматски", "자동"],
   ["手动","Manual","Manuel","Вручную","Manual","手動","Manual","Manuell","Ручно", "수동"],
   ["恢复自动","Restore auto","Restaurer l'auto","Вернуть авто","Restaurar auto","自動に戻す","Restaurar auto","Auto wiederherstellen","Врати ауто", "자동 계산 복원"],
   ["手动填写：上游变化时不再自动更新（点「恢复自动」还原）","Manual entry: no longer auto-updates when upstream changes (click “Restore auto” to revert)","Saisie manuelle : ne se met plus à jour automatiquement (cliquez « Restaurer l'auto »)","Ручной ввод: при изменении чисел на предыдущих этапах автоматическое обновление отключено (нажмите «Вернуть авто», чтобы восстановить его)","Entrada manual: ya no se actualiza automáticamente con los cambios aguas arriba (pulse «Restaurar auto»)","手動入力：上流が変わっても自動更新されません（「自動に戻す」で復元）","Entrada manual: não atualiza mais automaticamente (clique em “Restaurar auto”)","Manuelle Eingabe: Wird bei Änderungen der vorgelagerten Zahlen nicht mehr automatisch aktualisiert (über „Auto wiederherstellen“ zurücksetzen)","Ручни унос: поља се више не ажурирају аутоматски када се промене бројеви у претходним фазама (изаберите „Врати ауто“ да бисте обновили аутоматско ажурирање)", "수동: 이전 단계 변경 시 갱신 안 함(자동 계산 복원 가능)"],
@@ -5034,6 +5034,15 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         const [zh, en] = entry;
         const previous = dictionary.get(zh) || dictionary.get(en);
         const row = languages.map((_, index) => entry[index] || previous?.[index] || en);
+        /* MM5-03（r7-frontsec）：同 zh 键已有“不同内容”的行时告警（内容完全一致
+           的重复注册不打扰）。仅 console.warn，不改变覆盖行为（R3）——概念级
+           冲突（两个概念共用一个中文源串）会让败者九种外语全成死代码，胜者由
+           script 加载顺序决定；build/tests/test_r7_frontsec_fixes.py 回放钉子
+           保证概念级冲突为 0。 */
+        const existing = dictionary.get(zh);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(row))
+          console.warn('[RFLang] 词典键冲突：“' + zh + '”已有译文 ' + existing[1] +
+                       '，现被 ' + row[1] + ' 覆盖（后注册者胜）；若为两个概念请改用不同的中文源串');
         for (const value of row) if (value) dictionary.set(value, row);
         dictionary.set(zh, row); dictionary.set(en, row);
         for (const alias of entry.aliases || []) dictionary.set(alias, row);
@@ -5068,9 +5077,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 </script>
 <script src="./analysis_locale.js?v=2.1.4-r4"></script>
 <script src="./interface_locale.js?v=20261027-r6-undo-collab1"></script>
-<script src="./research_trace_locale.js?v=2.1.4-r3"></script>
-<script src="./import_history_locale.js?v=20261002-language-wrap-final1"></script>
-<script src="./title_duplicate_locale.js?v=20261005-title-review1"></script>
+<script src="./research_trace_locale.js?v=20261028-r7-frontsec1"></script>
+<script src="./import_history_locale.js?v=20261028-r7-frontsec1"></script>
+<script src="./title_duplicate_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
@@ -5173,7 +5182,14 @@ async function apiRequest(path, opts = {}) {
        切到登录页后仍可见，9000ms 停留避免被错过。401 统一登出架构保持不变：
        仍是此唯一入口调用 logout() 一次。 */
     toast('登录已过期。当前页面地址已保留，重新登录后将回到此处。', 'warn', 9000);
-    logout('登录已过期，请重新登录。');
+    /* MM5-02（r7-frontsec）：写请求 401 强制登出（force 跳过草稿守卫）。401 分支
+       触发时失败的这次写仍被 api() 计入 apiPendingWrites（finally 尚未执行），
+       guard() 的 pendingWork() 因此恒真——旧行为把写 401 的登出无条件拦死在
+       “等待保存完成”，登录页永不出现，用户只能硬刷新。force 登出不触碰任何草稿
+       状态，未保存内容仍留在既有暂存层（守卫对话框本来的保存/放弃路径不再触达）。
+       GET 401 没有在途写计数，保持原守卫路径（有草稿时仍弹“未保存的改动”
+       对话框，行为不变）。 */
+    logout('登录已过期，请重新登录。', { force: (opts.method || 'GET').toUpperCase() !== 'GET' });
     throw new ApiError(401, '登录已过期');
   }
   if (opts.blob) {
@@ -5248,8 +5264,11 @@ function saveToken(tok) {
   AUTH_TOKEN = tok;
   try { sessionStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* 隐私模式等：仅内存持有 */ }
 }
-async function logout(msg) {
-  if (window.WorkflowControls && !await WorkflowControls.guard()) return;
+async function logout(msg, opts = {}) {
+  /* MM5-02（r7-frontsec）：opts.force=true 跳过草稿守卫强制登出（会话 401 时写
+     请求的守卫恒假，见 apiRequest 401 分支注释）；其余调用（用户主动登出/切任务）
+     仍走守卫，行为不变。 */
+  if (!opts.force && window.WorkflowControls && !await WorkflowControls.guard()) return;
   closeTeamMemberMenus();
   closeEvents();
   AUTH_TOKEN = null;
@@ -9031,7 +9050,7 @@ $('#auTheme').addEventListener('click', () => setTheme(document.documentElement.
 $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.togglePaused(); });
 </script>
 <script src="./import_guide_locale.js?v=20261005-guide4"></script>
-<script src="./title_duplicate_review.js?v=2.1.2.2"></script>
+<script src="./title_duplicate_review.js?v=20261028-r7-frontsec1"></script>
 <script src="./analysis_runner.js?v=20260930-p0p1"></script>
 <script src="./analysis_forest.js?v=20261002-language-wrap-final1"></script>
 <script src="./analysis_dose_nonlinear.js?v=20261002-language-wrap-final1"></script><script src="./analysis_ipd_survival.js?v=20260929-ui3"></script>
@@ -9086,11 +9105,11 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./sidebar_sheet.js?v=20261013-mobile2"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
 <script src="./workflow_locale.js?v=2.1.3"></script>
-<script src="./research_trace.js?v=2.1.4-r3"></script>
-<script src="./import_review_locale.js?v=2.1.4-r4"></script>
-<script src="./import_review_model.js?v=20261012-review1"></script>
+<script src="./research_trace.js?v=20261028-r7-frontsec1"></script>
+<script src="./import_review_locale.js?v=20261028-r7-frontsec1"></script>
+<script src="./import_review_model.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_guide.js?v=2.1.2.2"></script>
-<script src="./import_history.js?v=2.1.2.2"></script>
+<script src="./import_history.js?v=20261028-r7-frontsec1"></script>
 <script src="./local_storage.js?v=20261003-storage3"></script>
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
@@ -9105,17 +9124,17 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
 <script src="./screening_rounds.js?v=20261012-rounds1"></script>
-<script src="./workflow_controls.js?v=2.1.3"></script>
+<script src="./workflow_controls.js?v=20261028-r7-frontsec1"></script>
 <script src="./workflow_evidence.js?v=20261012-evidence-units1"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
-<script src="./import_export_locale.js?v=2.1.4-r4"></script>
-<script src="./import_export_help_locale.js?v=2.1.2.2"></script>
+<script src="./import_export_locale.js?v=20261028-r7-frontsec1"></script>
+<script src="./import_export_help_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_export_workspace.js?v=2.1.3"></script>
 <script src="./import_review_loading.js?v=2.1.4-r4"></script>
-<script src="./import_review_refined_locale.js?v=2.1.3"></script>
+<script src="./import_review_refined_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_review_updates.js?v=2.1.3"></script>
 <script src="./unified_import_workspace.js?v=2.1.4-r4"></script>
-<script src="./team_prisma_locale.js?v=20261012-rounds1-20261012-team-prisma5"></script>
+<script src="./team_prisma_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261013-keyguard1"></script>
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
@@ -9131,9 +9150,9 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./mobile_motion.js?v=2.1.2.2"></script>
 <link rel="stylesheet" href="import_export_workspace.css?v=2.1.2.2">
 <link rel="stylesheet" href="import_review_refined.css?v=2.1.3">
-<script src="./report_evidence_locale.js?v=2.1.4-r3"></script>
+<script src="./report_evidence_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./report_evidence.js?v=2.1.4-r5"></script>
 <!-- AI 抽取建议（BYOK）：建议卡+逐条确认流+设置页（任务 B7；追加式接入，自带十语言词条，独立容错） -->
-<script src="./ai_suggest.js?v=2.1.4-ai1"></script>
+<script src="./ai_suggest.js?v=20261028-r7-frontsec1"></script>
 </body>
 </html>

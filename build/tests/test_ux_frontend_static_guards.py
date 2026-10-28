@@ -122,13 +122,14 @@ class SessionExpiryTests(unittest.TestCase):
         assert cut >= 0, "401 分支未抛出 ApiError"
         branch = snippet[:cut]
         toast_at = branch.find("toast('登录已过期。当前页面地址已保留")
-        logout_at = branch.find("logout('登录已过期，请重新登录。')")
+        # r7-frontsec MM5-02：logout 第二参数 {force:…}（写 401 强制登出），锚点按前缀匹配
+        logout_at = branch.find("logout('登录已过期，请重新登录。'")
         self.assertGreaterEqual(toast_at, 0, "401 分支缺少跳登录前的显式 toast")
         self.assertGreaterEqual(logout_at, 0, "401 分支缺少统一 logout 调用（统一登出架构不变）")
         self.assertLess(toast_at, logout_at, "toast 必须先于 logout 调用（跳登录前可见）")
 
     def test_logout_does_not_clear_url_fragment(self):
-        start = self.html.find("async function logout(msg)")
+        start = self.html.find("async function logout(msg")  # r7-frontsec：签名加 opts（force 登出），按前缀锚定
         assert start >= 0, "logout 函数不存在"
         end = self.html.find("/* ---------- 全局状态", start)
         body = self.html[start:end]

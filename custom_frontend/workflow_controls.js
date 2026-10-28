@@ -258,7 +258,7 @@
       if(settings.can_manage&&!source.reserved) {
         const type=n('select',null,{class:'input','aria-label':T('Source type')});
         type.append(n('option','Needs confirmation',{value:''}));
-        for(const value of ['database','register','website','organisation','citation_searching','other'])type.append(n('option',{database:'Database',register:'Register',website:'Website',organisation:'Organisation',citation_searching:'Citation searching',other:'Other'}[value],{value}));
+        for(const value of ['database','register','website','organisation','citation_searching','other'])type.append(n('option',{database:'Database',register:'Registry',website:'Website',organisation:'Organisation',citation_searching:'Citation searching',other:'Other'}[value],{value}));
         type.value=source.source_type||'';type.addEventListener('change',()=>editLibrary(name));
         trackLibrary(name,()=>JSON.stringify([name.value,type.value]));name.wfControls=[type];
         name.wfSave=async()=>{const sent=name.value,selected=type.value;await api(taskApi()+'/sources/'+encodeURIComponent(source.id),{method:'PUT',body:{name:sent,active:source.active,expected_version:settings.version,...(selected?{source_type:selected}:{})}});if(name.value===sent&&type.value===selected)cleanLibrary(name);await W.refresh('source');return !dirtyFields.has(name);};

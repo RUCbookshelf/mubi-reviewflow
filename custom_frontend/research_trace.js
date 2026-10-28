@@ -133,7 +133,7 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
   if(value==null)return T('无');
   if(typeof value!=='object')return String(value);
   if(Array.isArray(value))return value.map(readableValue).join(' · ');
-  if(Object.hasOwn(value,'field_id')&&Object.hasOwn(value,'name'))return [value.name,value.type?T('类型')+': '+T(({numeric:'数值字段',text:'填空',choice:'单选',multi:'多选'})[value.type]||value.type):null,value.description,value.unit?T('单位')+': '+value.unit:null,Array.isArray(value.options)&&value.options.length?T('选项')+': '+value.options.join(' · '):null].filter(v=>v!=null&&v!=='').join(' · ');
+  if(Object.hasOwn(value,'field_id')&&Object.hasOwn(value,'name'))return [value.name,value.type?T('类型')+': '+T(({numeric:'数值字段',text:'短文本',choice:'单选',multi:'多选'})[value.type]||value.type):null,value.description,value.unit?T('单位')+': '+value.unit:null,Array.isArray(value.options)&&value.options.length?T('选项')+': '+value.options.join(' · '):null].filter(v=>v!=null&&v!=='').join(' · ');
   if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+T('排除理由')+': '+(value.exclusion_reason||value.reason):'');
   if(Object.hasOwn(value,'value'))return reValueText(value,T('无'));
   if(Object.hasOwn(value,'text'))return String(value.text||T('无'));

@@ -19,7 +19,7 @@
 
    for(const batch of result.imports){const section=document.createElement('section');section.className='import-history-batch';const date=new Date(batch.created_at);section.append(text('h4',Number.isNaN(date.getTime())?batch.created_at:date.toLocaleString(RFLang.get())));
     const r=batch.result||{},parsed=r.total_parsed??r.n_parsed,imported=r.batch_id?r.activated_new_total:(r.imported??r.n_imported),duplicates=r.n_duplicates??((r.exact_duplicates||0)+(r.fuzzy_duplicates||0));
-    section.append(text('p',[parsed==null?null:T('解析')+': '+parsed,imported==null?null:T(r.batch_id?'Activated new articles':'导入')+': '+imported,r.batch_id?T('Activated source records')+': '+(r.activated_source_records_total??r.active_records??'—'):T('重复')+': '+duplicates].filter(Boolean).join(' · ')));
+    section.append(text('p',[parsed==null?null:T('解析')+': '+parsed,imported==null?null:T(r.batch_id?'Activated new articles':'已导入')+': '+imported,r.batch_id?T('Activated source records')+': '+(r.activated_source_records_total??r.active_records??'—'):T('重复')+': '+duplicates].filter(Boolean).join(' · ')));
     if(r.batch_id)section.append(el('button',{type:'button',class:'btn b-out sm',text:T('Review / resume'),onclick:()=>window.WorkflowImports?.open(r.batch_id)}));
     if(r.staged)section.append(text('p',T('导入已暂存，等待核验与激活。')+' '+String(r.pending_records??0)));
     const list=document.createElement('ul');for(const file of batch.files||[]){const line=document.createElement('li'),name=text('span',file.name+' · '+new Intl.NumberFormat(RFLang.get(),{maximumFractionDigits:1}).format(file.size/1024)+' KB'),download=el('button',{type:'button',class:'btn b-out',text:T('下载原文件')});download.setAttribute('aria-label',T('下载原文件')+' '+file.name);
