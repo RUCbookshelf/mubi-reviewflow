@@ -138,6 +138,70 @@ class Mm5LibraryCaliberTests(unittest.TestCase):
         result = synthesize(self.db, "CN", "O", "T", "SMD")
         self.assertEqual(result["n_studies"], 2)
 
+    def test_mm5_04_legacy_extraction_pools_with_living_review_rows(self):
+        """评审第 2 轮驳回项：旧 extraction 行 + living_review 行（同样固化
+        unclassified_smd，coscreen/living_review.py:544-547 真实入库路径）在
+        758da65 基线可池（单一 unclassified 签名豁免），读时升级不得新增误拒。"""
+        self._insert_legacy_extraction_row("S07", "K07", "LV")
+        save_effect(self.db, "S08", "LV", "O", "T", "SMD", -0.5, 0.25, "K08",
+                    entry_method="living_review")
+        result = synthesize(self.db, "LV", "O", "T", "SMD")  # r2 代码红：estimator_conflict
+        self.assertEqual(result["n_studies"], 2)
+
+    def test_mm5_04_rejection_reasons_match_baseline(self):
+        """评审第 2 轮驳回项：仍拒绝的组合，reasons 类型集合必须与 758da65
+        基线逐字一致——manual 未知 standardizer + 旧 extraction 行基线只有
+        standardizer_conflict（两者存量元数据同签名），读时升级不得多出
+        estimator_conflict；save_effect 落库的 manual 行（user_reported_se，
+        存量签名即不同）基线本就两个 reasons，必须保持两个。"""
+        self._insert_legacy_extraction_row("S09", "K09", "MR")
+        self._insert_legacy_row("S10", "K10", "MR", "manual")
+        with self.assertRaises(PoolCompatibilityError) as caught:
+            synthesize(self.db, "MR", "O", "T", "SMD")
+        self.assertEqual(sorted({r["type"] for r in caught.exception.reasons}),
+                         ["standardizer_conflict"])
+        save_effect(self.db, "S11", "MB", "O", "T", "SMD", -0.5, 0.25, "K11",
+                    entry_method="manual")
+        self._insert_legacy_extraction_row("S12", "K12", "MB")
+        with self.assertRaises(PoolCompatibilityError) as caught:
+            synthesize(self.db, "MB", "O", "T", "SMD")
+        self.assertEqual(sorted({r["type"] for r in caught.exception.reasons}),
+                         ["estimator_conflict", "standardizer_conflict"])
+
+    def test_mm5_04_unknown_estimator_rows_still_reject_arm_entry(self):
+        """回归守护：臂级 hedges_g + living_review（真未知估计量）在基线即被
+        estimator_conflict 拒绝，读时升级的双口径判定不得把它放开。"""
+        save_arm_effect(self.db, "S07", "AR", "O", "T", "SMD", "K07",
+                        {"n_t": 10, "mean_t": 10.0, "sd_t": 2.0,
+                         "n_c": 10, "mean_c": 11.0, "sd_c": 2.0})
+        save_effect(self.db, "S08", "AR", "O", "T", "SMD", -0.5, 0.25, "K08",
+                    entry_method="living_review")
+        with self.assertRaises(PoolCompatibilityError) as caught:
+            synthesize(self.db, "AR", "O", "T", "SMD")
+        self.assertEqual(sorted({r["type"] for r in caught.exception.reasons}),
+                         ["estimator_conflict"])
+
+    def _legacy_stored_metadata(self) -> dict:
+        """2.1.3 save_effect 旧分类在 input_json 固化的 unclassified_smd 元数据。"""
+        return {"effect_class": "standardized_mean_difference",
+                "estimator": "unclassified_smd", "standardizer": None,
+                "small_sample_correction": None, "variance_method": "legacy_unknown",
+                "calculation_version": "legacy_unclassified_v1"}
+
+    def _insert_legacy_row(self, study: str, key: str, comparison: str, entry_method: str) -> None:
+        input_json = json.dumps({"estimator_metadata": self._legacy_stored_metadata()},
+                                ensure_ascii=False)
+        with closing(db_mod._connect(self.db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO review_effects(study_id,comparison,outcome,timepoint,measure,"
+                "estimate,se,source_key,input_json,entry_method,selected,source_locator) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,1,'')",
+                (study, comparison, "O", "T", "SMD", -0.4348273972933208,
+                 0.2269728707608798, key, input_json, entry_method))
+
+    def _insert_legacy_extraction_row(self, study: str, key: str, comparison: str) -> None:
+        self._insert_legacy_row(study, key, comparison, "extraction:rct_continuous")
+
     def test_mm5_12_extraction_stores_coerced_values_with_raw_backup(self):
         """提取入库 values 必须是计算实际使用的强制转换值，原始提交另存 raw_values。
 
@@ -261,7 +325,10 @@ class Mm5EndpointCaliberTests(unittest.TestCase):
 
     def test_mm5_13_rects_must_have_exactly_four_components(self):
         """rects 每项必须恰 4 个浮点分量，非法长度 400（修前 3/5 元素 200 且
-        读回被静默丢弃；评审第 1 轮明确按 400 验收，schema 级 422 不算过）。"""
+        读回被静默丢弃；评审第 1 轮明确按 400 验收）；400 文案必须按读取端/
+        前端的真实坐标语义 [x0,y0,x1,y1]（两角点，fulltext.py:748、
+        index.html:6732 min/max）表述——评审第 2 轮：写成 (x,y,w,h) 会诱导
+        调用方发送被接受但绘制错误的分量。"""
         url = f"/api/tasks/{self.task}/highlights"
         control = {"zotero_key": "K1", "events": [
             {"kind": "highlight", "page": 1, "text": "ctrl", "rects": [[0.1, 0.2, 0.3, 0.4]]}]}
@@ -274,6 +341,8 @@ class Mm5EndpointCaliberTests(unittest.TestCase):
             response = self.client.post(url, json=body, headers=self.auth_header())
             self.assertEqual(response.status_code, 400,
                              f"rects={bad_rects}: {response.status_code} {response.text}")
+            self.assertEqual(response.json()["detail"],
+                             "每个高亮坐标必须恰有 4 个浮点分量（x0, y0, x1, y1）。")
 
 
 class Mm5ReadmeReferenceTests(unittest.TestCase):

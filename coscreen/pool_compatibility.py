@@ -67,37 +67,49 @@ def require_compatible_effects(rows, expected_measure=None):
         reasons.append({'type':'standardizer_conflict', 'codes':['SMD'],
                         'unknown_studies':unknown,
                         'detail':'Manual SMD standardizer or small-sample correction is unknown. Confirm and save it as Hedges g (pooled SD, corrected) or Glass delta (control SD, uncorrected) before synthesis.'})
-    signatures = {}
+    signature_keys = ('estimator', 'standardizer', 'small_sample_correction', 'variance_method')
+    signatures = {}         # 分类器现值口径（含 MM5-04 存量行读时升级）
+    stored_signatures = {}  # 行内已存元数据原样口径（= 基线 758da65 语义；错误明细按此回报）
     for row in smd_rows:
         data = row.get('input_data') if isinstance(row.get('input_data'), dict) else {}
-        metadata = data.get('estimator_metadata') or row.get('estimator_metadata') or {}
+        stored = data.get('estimator_metadata') or row.get('estimator_metadata') or {}
         entry_method = row.get('entry_method') or 'manual'
-        if not metadata:
-            metadata = legacy_smd_metadata(entry_method, data)
-        elif metadata.get('estimator') == 'unclassified_smd':
+        baseline_metadata = stored if stored else legacy_smd_metadata(entry_method, data)
+        current_metadata = baseline_metadata
+        if stored.get('estimator') == 'unclassified_smd':
             # MM5-04 存量行升级：2.1.3–2.1.4 早期经提取模板入库的 SMD 行，在
             # "extraction:rct_continuous" 进入 _LEGACY_APPROXIMATE_SUMMARY_FORMATS
             # 之前被 save_effect 按旧分类固化为 unclassified_smd（存 input_json）。
             # entry_method 的语义权威是分类器现值——对已能识别的格式在读时升级
-            # 签名，与臂级 hedges_g 行 / 修复后新写入的显式元数据行同池可合成；
-            # 分类器仍判 unclassified 的行（如 manual 未知 standardizer）不受影响，
-            # 不重写任何存量数据。
+            # 签名，使其与臂级 hedges_g 行 / 修复后新写入的显式元数据行同池可合成；
+            # 不重写任何存量数据。分类器仍判 unclassified 的行（如 living_review、
+            # manual 未知 standardizer）不受影响。
             rederived = legacy_smd_metadata(entry_method, data)
             if rederived.get('estimator') != 'unclassified_smd':
-                metadata = rederived
-        keys = ('estimator', 'standardizer', 'small_sample_correction', 'variance_method')
-        signature = tuple(metadata.get(key) for key in keys)
-        signatures.setdefault(signature, []).append(row.get('study_id', 'unknown'))
-    all_unclassified = bool(signatures) and all(
-        signature[0] == 'unclassified_smd' for signature in signatures
-    )
-    if (len(signatures) > 1 or
-            (not all_unclassified and any(None in signature for signature in signatures))):
+                current_metadata = rederived
+        stored_signatures.setdefault(tuple(baseline_metadata.get(key) for key in signature_keys),
+                                     []).append(row.get('study_id', 'unknown'))
+        signatures.setdefault(tuple(current_metadata.get(key) for key in signature_keys),
+                              []).append(row.get('study_id', 'unknown'))
+
+    def _signature_conflict(sigmap: dict) -> bool:
+        all_unclassified = bool(sigmap) and all(
+            signature[0] == 'unclassified_smd' for signature in sigmap)
+        return len(sigmap) > 1 or (
+            not all_unclassified and any(None in signature for signature in sigmap))
+
+    # MM5-04（评审第 2 轮）：读时升级只能让池更兼容（被识别的存量行并入
+    # hedges_g 组），不得让基线可池的组合新增误拒（旧 extraction 行 +
+    # living_review 行在基线同为单一 unclassified 签名、可池），也不得让仍
+    # 拒绝的组合多出 estimator_conflict 明细。因此冲突必须在「存量原样」与
+    # 「分类器现值」两个口径下同时成立才上报；methods 明细按存量原样回报，
+    # 与基线逐字一致。
+    if _signature_conflict(stored_signatures) and _signature_conflict(signatures):
         reasons.append({'type':'estimator_conflict', 'codes':['SMD'],
                         'methods':[{'estimator':signature[0], 'standardizer':signature[1],
                                     'small_sample_correction':signature[2],
                                     'variance_method':signature[3], 'studies':studies}
-                                   for signature, studies in signatures.items()],
+                                   for signature, studies in stored_signatures.items()],
                         'detail':'Selected SMD results use different or undocumented estimators, corrections or variance methods. Choose compatible results or recalculate with a stated method.'})
     if reasons:
         raise PoolCompatibilityError(reasons, expected_measure)
