@@ -79,8 +79,12 @@ def _git(args):
 
 
 def _parse_tokens(html):
-    """index.html 中全部 ./相对路径 ?v= 引用（script src + link href）。"""
-    return re.findall(r'(?:src|href)="\./([^"?]+)\?v=([^"]+)"', html)
+    """index.html 中全部 ?v= 引用（script src + link href）。
+
+    路径可带可不带 ./ 前缀（index.html:9151-9152 的两个 <link href="xxx.css?v=">
+    就不带），统一按 custom_frontend/ 下的相对文件名归一化。
+    """
+    return re.findall(r'(?:src|href)="(?:\./)?([^"?]+)\?v=([^"]+)"', html)
 
 
 class CacheTokenBindingTests(unittest.TestCase):
@@ -94,11 +98,17 @@ class CacheTokenBindingTests(unittest.TestCase):
         html = INDEX.read_text(encoding="utf-8")
         pairs = _parse_tokens(html)
         self.assertTrue(pairs, "index.html 未解析到任何 ?v= 令牌")
-        # 解析完整性：页面里出现的全部 ./xxx?v= 引用都必须被上面正则捕获
-        all_refs = re.findall(r"\./([A-Za-z0-9_./-]+)\?v=", html)
+        # 解析完整性（r1 评审修正）：页面里出现的 *每一个* ?v=（无论 ./ 前缀与否）
+        # 都必须被上面的 src/href 正则捕获，否则该资产的脱钩将无人看守
         self.assertEqual(
-            sorted(all_refs), sorted(a for a, _ in pairs),
-            "令牌解析不完整（存在未被 src/href 捕获的 ./xxx?v= 引用）",
+            len(pairs), html.count("?v="),
+            "令牌解析不完整：页面共有 %d 处 ?v=，src/href 正则只捕获 %d 处"
+            % (html.count("?v="), len(pairs)),
+        )
+        attr_refs = re.findall(r'(?:src|href)="(?:\./)?([A-Za-z0-9_./-]+)\?v=', html)
+        self.assertEqual(
+            sorted(attr_refs), sorted(a for a, _ in pairs),
+            "令牌解析不完整（存在未被 src/href 捕获的 ?v= 引用）",
         )
         per_asset = {}
         for asset, token in pairs:
@@ -332,6 +342,8 @@ EXPECTED_WINNERS = {
 
 # 措辞类冲突白名单：同一概念的不同英文措辞/大小写/单复数（胜者=script 顺序，语义均成立）。
 # 白名单必须与回放结果精确相等：新冲突即红（要求修复或登记），条目失效也红（防白名单腐烂）。
+# 措辞类保留计数登记值（收敛后须同步下调并移除条目）：147 - 11 概念级 = 136
+EXPECTED_WORDING_CONFLICT_COUNT = 136
 WORDING_ALLOWLIST = frozenset((
     "Begg 检验的常规渐近 p 值可能校准不佳。漏斗图不对称或失效安全数不能证明发表偏倚，也不能解释研究缺失原因。",
     "CER 是从输入效应值以外取得的假设；更换 CER 会改变换算后的 NNT。",
@@ -671,8 +683,20 @@ class DictionaryConceptConflictTests(unittest.TestCase):
             stale, [],
             "白名单条目已不再冲突（措辞类已收敛），应从白名单移除（保持计数真实）：%r" % stale,
         )
-        # 措辞类冲突计数入报告：当前保留 N 例（同一概念的不同英文措辞，胜者=注册顺序）
-        self.assertGreaterEqual(len(WORDING_ALLOWLIST), 0)
+        # 措辞类冲突计数入报告（r1 评审修正：原 assertGreaterEqual(x, 0) 恒真）：
+        # 同一概念的不同英文措辞/大小写/单复数，胜者=script 注册顺序，允许保留但
+        # 数量必须与钉子登记值一致——收敛了就要下调登记值并从白名单移除条目。
+        wording_count = len(conflicts & WORDING_ALLOWLIST)
+        report = ("[MM5-03] 词典回放报告：英文互异冲突键 %d = 概念级 %d（必须 0）"
+                  "+ 措辞类 %d（白名单登记 %d 条，逐条仍在冲突）"
+                  % (len(conflicts), len(concept_leak), wording_count, len(WORDING_ALLOWLIST)))
+        print(report)
+        self.assertEqual(
+            wording_count, EXPECTED_WORDING_CONFLICT_COUNT,
+            "措辞类冲突计数 %d 偏离钉子登记值 %d：%s（修复措辞冲突后请同步下调"
+            " EXPECTED_WORDING_CONFLICT_COUNT 并从 WORDING_ALLOWLIST 移除对应条目）"
+            % (wording_count, EXPECTED_WORDING_CONFLICT_COUNT, report),
+        )
 
     def test_named_flagship_keys_render_expected_english(self):
         result = _replay_dictionary()
