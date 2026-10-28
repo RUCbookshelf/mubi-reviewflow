@@ -540,10 +540,29 @@ def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
             )
             conn.execute("DROP TABLE review_effects")
             conn.execute("ALTER TABLE review_effects_new RENAME TO review_effects")
+        # MM3-01：建唯一索引前先按层去重。旧库同层多条 selected=1（含无
+        # selected 列被上方回填为 1 的迁移路径自行制造的违例）会让
+        # CREATE UNIQUE INDEX 永久失败，_connect 从此整库不可用且无产品内
+        # 恢复路径。同层仅保留 result_id 最大的一条 selected=1，其余降为 0
+        # （行本身保留，去重只调整 selected 归属，与 save_effect 的
+        # "后来者成为选中项" 口径一致）。
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_review_effects_selected "
-            "ON review_effects(study_id,comparison,outcome,timepoint) WHERE selected=1"
+            "UPDATE review_effects SET selected=0 WHERE selected=1 AND result_id NOT IN ("
+            "SELECT MAX(result_id) FROM review_effects WHERE selected=1 "
+            "GROUP BY study_id,comparison,outcome,timepoint)"
         )
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_review_effects_selected "
+                "ON review_effects(study_id,comparison,outcome,timepoint) WHERE selected=1"
+            )
+        except sqlite3.IntegrityError as exc:
+            # 防御纵深：去重后该分支对数据不可达；若仍失败（如库外改写触发
+            # 其他约束冲突），给出可排查指引而非裸 IntegrityError 反复砸连接。
+            raise ValueError(
+                "review_effects 迁移失败：同层（study_id/comparison/outcome/timepoint）"
+                "存在多条 selected=1 且无法自动去重，请检查该表数据后重试。"
+            ) from exc
         conn.commit()
     except Exception:
         conn.rollback()

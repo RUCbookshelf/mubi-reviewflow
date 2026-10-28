@@ -488,7 +488,7 @@ def register_review_import_routes(app, require_user, **dependencies):
                     if changed and undo_kind:
                         review_undo.remember(conn,batch_id,str(user['user_id']),undo_kind,subject,snapshot,result['policy_version'])
                     if reason == 'import-activated':
-                        conn.execute("UPDATE workflow_import_undo SET state='activated' WHERE state='available'")
+                        review_undo.activate(conn, batch_id)
                     from custom_backend.import_review_actions import review_updates
                     if undo_kind:
                         actions = json.loads(subject) if undo_kind == 'bulk' else [{'kind': undo_kind, 'id': subject}]
