@@ -417,5 +417,99 @@ class WarningSurfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("≠ screened", dot)
 
 
+# ---------------------------------------------------------------------------
+# MM-08 / MM-10（r7-prisma 泳道）：report=None 兜底口径的勾稽告警与
+# unscreened 桶口径（复现手法照复审探针 mm08_10.py）
+# ---------------------------------------------------------------------------
+
+class ReportlessReconciliationAndUnscreenedCaliberTests(unittest.TestCase):
+    """MM-08：identified − duplicates_removed ≠ screened 的勾稽检查不得被
+    「report is not None」门控——report=None 时 identified 恰恰走决策表
+    行数兜底（含未筛行/重复键行），是最可能对不上的一支；修复前该支静默
+    无告警，DOT 图画出「识别 3 → 去重 0 → 筛选 1」的不自洽数字。
+
+    MM-10：unscreened 与 screened 同按唯一键计（修复前按行数计），勾稽
+    不变式「决策表唯一键数 = screened + unscreened」在重复键行输入下
+    成立；行数与唯一键数的差（重复键折叠行）由 MM-08 告警解释，第五桶
+    不再出现无法对账的差值。
+    """
+
+    @staticmethod
+    def _dup_key_merged() -> pd.DataFrame:
+        # MM-08/MM-10 复审原样输入：K1 两行同键均已筛 include（重复键
+        # 折叠）＋ K2 一行未筛。
+        return pd.DataFrame({
+            "zotero_key": ["K1", "K1", "K2"],
+            "decision_A": ["include", "include", ""],
+            "decision_B": ["include", "include", ""],
+            "status": ["agree", "agree", "unscreened"],
+        })
+
+    def test_mm08_reportless_reconciliation_mismatch_warned(self):
+        # 修复前（门控倒置）：report=None → warnings == ()，
+        # identified(3) − duplicates_removed(0) ≠ screened(1) 无任何提示。
+        flow = prisma_from_merge(self._dup_key_merged())
+        self.assertEqual((flow.identified, flow.duplicates_removed, flow.screened), (3, 0, 1))
+        self.assertTrue(
+            any("identified" in w and "≠ screened" in w for w in flow.warnings),
+            f"expected reconciliation warning, got {flow.warnings!r}",
+        )
+        self.assertTrue(flow.to_dict()["warnings"])
+
+    def test_mm08_no_warning_when_reportless_reconciles(self):
+        # 对照：report=None 但行数恰好勾稽（全筛且无重复键）时不告警——
+        # 无条件勾稽不得对自洽输入制造噪音。
+        merged = pd.DataFrame({
+            "zotero_key": ["K1", "K2"],
+            "decision_A": ["include", "exclude"],
+            "decision_B": ["include", "exclude"],
+            "status": ["agree", "agree"],
+        })
+        flow = prisma_from_merge(merged)
+        self.assertEqual(flow.identified - flow.duplicates_removed, flow.screened)
+        self.assertEqual(flow.warnings, ())
+
+    def test_mm10_unscreened_counts_unique_keys(self):
+        # 修复前：unscreened 按行数计 → 重复未筛键 K2 两行计 2；
+        # screened(唯一键)+unscreened(行数) 与行数/唯一键数两种基数都对不上。
+        merged = pd.DataFrame({
+            "zotero_key": ["K1", "K2", "K2"],
+            "decision_A": ["include", "", ""],
+            "decision_B": ["include", "", ""],
+            "status": ["agree", "unscreened", "unscreened"],
+        })
+        flow = prisma_from_merge(merged)
+        self.assertEqual(flow.unscreened, 1)  # 修复前 = 2（行数口径）
+        self.assertEqual(flow.screened, 1)
+        # MM-10 勾稽不变式：决策表唯一键数 = screened + unscreened
+        self.assertEqual(flow.screened + flow.unscreened, int(merged["zotero_key"].nunique()))
+
+    def test_mm10_mixed_key_not_double_counted(self):
+        # r7 复审第 1 轮探针：同一键 K1 既有已筛行又有未筛行——键级口径
+        # 下该键按「至少一行有决策」计入 screened，不得再重复计入
+        # unscreened。修复前（~mask 行集的唯一键口径）unscreened=2，
+        # screened(1)+unscreened(2)=3 ≠ 唯一键数 2，不变式破。
+        merged = pd.DataFrame({
+            "zotero_key": ["K1", "K1", "K2"],
+            "decision_A": ["include", "", ""],
+            "decision_B": ["include", "", ""],
+            "status": ["agree", "unscreened", "unscreened"],
+        })
+        flow = prisma_from_merge(merged)
+        self.assertEqual(flow.screened, 1)
+        self.assertEqual(flow.unscreened, 1)  # 修复前 = 2（K1 双计）
+        self.assertEqual(flow.screened + flow.unscreened, int(merged["zotero_key"].nunique()))
+
+    def test_mm08_mm10_combined_repro_fifth_bucket_reconciles(self):
+        # 两修合并后的复审原样输入验收：screened+unscreened = 唯一键数 2；
+        # 与行数 3 的差（重复键折叠行 1）必须有告警解释——修复前
+        # warnings 为空、第五桶无法对账。
+        merged = self._dup_key_merged()
+        flow = prisma_from_merge(merged)
+        self.assertEqual((flow.screened, flow.unscreened), (1, 1))
+        self.assertEqual(flow.screened + flow.unscreened, int(merged["zotero_key"].nunique()))
+        self.assertTrue(flow.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()
