@@ -46,7 +46,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 ```
 
@@ -295,7 +295,7 @@ Server mode requires an absolute `COBOOKSHELF_DATA_DIR`. Accounts, task database
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 ```
 
@@ -445,7 +445,7 @@ Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. O
 **Upload and rate-limit notes (reverse-proxy deployments):**
 
 - **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked), unauthenticated multipart requests, and requests with duplicate Content-Type/Content-Length headers are rejected with 411/401/400 before parsing; a multipart request whose boundary is missing or unparseable is likewise rejected with 400 immediately (boundary parsing matches Starlette: the last duplicate parameter wins, quoted values are unquoted). Requests whose file-part count exceeds the endpoint's declared maximum (e.g. 20 for batch import), whose field parts exceed 16, or whose single form field exceeds 1MB are cut off before the excess parts touch the disk or memory (413); an unclassifiable oversized part header is conservatively counted as a file part — malformed requests are rejected rather than under-counted. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
-- **Login/register rate limiting (the app buckets by direct peer IP; behind a proxy the proxy must do the limiting)**: the app rate-limits by *direct peer IP* and **completely ignores `X-Forwarded-For`** (it is client-forgeable and cannot be trusted as a bucketing key). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — throttling must be done at the proxy by real client IP (`$binary_remote_addr`), exactly the `limit_req` blocks in the two example configs above: the `limit_req_zone` declaration in the `http{}` context plus `limit_req zone=rf_auth burst=5 nodelay;` and `limit_req_status 429;` inside `location ^~ /api/auth/` (429 aligns with the app's own semantics; nginx's 429 carries no Retry-After, clients retry at their default interval). Direct deployments (start.sh / the desktop launcher) are unaffected: the launcher passes `proxy_headers=False` explicitly, so uvicorn never rewrites the peer address from a forgeable XFF, and peer-IP bucketing equals real-client-IP bucketing.
+- **Login/register rate limiting (the app buckets by direct peer IP; behind a proxy the proxy must do the limiting)**: the app rate-limits by *direct peer IP* and **completely ignores `X-Forwarded-For`** (it is client-forgeable and cannot be trusted as a bucketing key). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — throttling must be done at the proxy by real client IP (`$binary_remote_addr`), exactly the `limit_req` blocks in the two example configs above: the `limit_req_zone` declaration in the `http{}` context plus `limit_req zone=rf_auth burst=5 nodelay;` and `limit_req_status 429;` inside the exact-match `location = /api/auth/login` / `location = /api/auth/register` blocks (429 aligns with the app's own semantics; nginx's 429 carries no Retry-After, clients retry at their default interval). Direct deployments (start.sh / the desktop launcher) are unaffected: they pass `proxy_headers=False` explicitly, so uvicorn never rewrites the peer address from a forgeable XFF, and peer-IP bucketing equals real-client-IP bucketing.
 - **PDF upload checks are a format gate, not a content-security boundary**: the `%PDF-` header and pypdf parseability checks reject malformed files, but a maliciously crafted PDF could still exploit reader bugs. Keep same-origin playback (the default), `X-Content-Type-Options: nosniff` and CSP (enabled by default); do not mix the playback origin with your main site domain.
 
 ### 6. Enable team collaboration
@@ -493,7 +493,7 @@ N’utilisez pas `build/launcher.py` pour un serveur d’équipe : il force le m
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -536,7 +536,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -579,7 +579,7 @@ No use `build/launcher.py` para el servidor de equipo: fuerza el modo escritorio
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -622,7 +622,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -665,7 +665,7 @@ Não use `build/launcher.py` para o servidor de equipe: ele força o modo deskto
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -708,7 +708,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -751,7 +751,7 @@ Nemojte koristiti `build/launcher.py` za timski server: on forsira desktop reži
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -794,7 +794,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```

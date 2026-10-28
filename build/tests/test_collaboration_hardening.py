@@ -434,6 +434,28 @@ class CollaborationHardeningTests(unittest.TestCase):
                                 headers=self.auth())
         self.assertEqual(r.status_code, 200, r.text)
 
+    def test_screening_rounds_works_for_owner_on_fresh_task(self):
+        """复审（d85841e 回归）：owner 即 actor 时 context() 曾整段跳过
+        screening_rounds.migrate——新任务无 workflow_screen_rounds 表，
+        POST /screening-rounds 的 start/finish 500（复现手法：新建任务＋
+        1 条 maybe 决策→work-queue remaining_uncertain=1→start/finish）。"""
+        from coscreen import db as _db
+        from coscreen.models import Article as _Article
+        _db.upsert_articles(self.info.dir / (self._slug + ".db"),
+                            [_Article(zotero_key="K1", title="T")], [])
+        r = self.client.post(f"/api/tasks/{self.task}/screening/record",
+                             json={"zotero_key": "K1", "decision": "maybe"},
+                             headers=self.auth())
+        self.assertIn(r.status_code, (200, 201, 404), r.text)
+        r = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
+                            headers=self.auth())
+        version = r.json()["version"]
+        r = self.client.post(f"/api/tasks/{self.task}/screening-rounds",
+                             json={"action": "finish",
+                                   "expected_policy_version": version},
+                             headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+
     def test_revoke_recycles_screener_registration(self):
         # 复审 R6-C1 验收 2：撤销后 task.json 的 screeners 登记回收
         r = self.client.post(f"/api/tasks/{self.task}/collaboration/invite",

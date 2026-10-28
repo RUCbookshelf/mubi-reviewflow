@@ -14,7 +14,8 @@
 生产部署：uvicorn 应置于 nginx/Caddy 等 TLS 反向代理之后（HTTPS 终止在代理层），
 例如::
 
-    uvicorn custom_backend.main:app --host 0.0.0.0 --port 8613 --workers 2
+    uvicorn custom_backend.main:app --host 0.0.0.0 --port 8613 --workers 2 --no-proxy-headers
+    # R6-S1：--no-proxy-headers 保证 request.client.host 恒为直连对端（见 custom_backend/start.sh 注释）
 """
 
 from __future__ import annotations
@@ -407,8 +408,6 @@ class TaskLockMiddleware:
                     tasks_mod.release_task_lock(entry[1])
 
 
-app.add_middleware(TaskLockMiddleware)
-
 #: U5-P3：multipart 上传在请求体解析/落盘前的预检（字节数 + 文件 part 数）。
 #: **上限取各端点真实限制 + multipart 开销余量**（boundary/文件名/表单字段），
 #: 只提前拒绝超限流量，不收紧也不放宽端点既有校验：
@@ -475,6 +474,11 @@ app.add_middleware(
 # 任务的**在途写请求**数（DELETE 请求自身占 1，>1 即还有导入/分析等写操作
 # 在跑；GET 轮询不计入，避免误报 409）。
 tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
+
+# 复审（#43 顺序）：TaskLockMiddleware 在 UploadSizeLimitMiddleware **之外**
+# 注册（后 add 者为外层）——删除进行中的任务级 409 语义优先于上传预检的
+# 401/411/413/415（规则端点非 multipart 的 415 不得抢在删除互斥 409 前）。
+app.add_middleware(TaskLockMiddleware)
 
 
 @app.exception_handler(Exception)
@@ -1330,12 +1334,16 @@ def register(body: CredentialsIn, request: Request) -> dict:
     # 429 文案标明计数维度，方便运维定位（反代部署应由反代层 limit_req）。
     # 复审（handoff「只对失败尝试计数」）：peek 先挡已达阈值的对端（防批量
     # 注册耗 CPU），失败才补记、成功即清零——合法用户连续成功不被挤占。
-    key = rate_limit_key(
+    peer_key = rate_limit_key(
         "register",
         request.client.host if request.client else None,
         request.headers.get("x-forwarded-for"),
     )
-    allowed, retry_after = login_limiter.peek(key)
+    # 复审（鉴权重回归收口）：peer 维用 check() 原子占位（防并发放大、
+    # 防批量注册耗 CPU）；成功只退**本次占位**（refund），不再整桶清零
+    # ——「持号者循环 reset」旁路由此闭合；注册成功计入 peer 配额，
+    # 连续注册仍受 5 次/分钟约束。
+    allowed, retry_after = login_limiter.check(peer_key)
     if not allowed:
         raise HTTPException(
             429, "注册尝试过于频繁，请稍后再试（按连接来源 IP 计数）。",
@@ -1343,30 +1351,42 @@ def register(body: CredentialsIn, request: Request) -> dict:
     try:
         user = auth.create_user(body.username, body.password)
     except auth.AuthError as exc:
-        login_limiter.record(key)
+        login_limiter.refund(peer_key)  # 注册失败（重名/校验）退回占位
         raise _bad(str(exc)) from exc
-    login_limiter.reset(key)
+    # 注册**成功计入 peer 配额**（不退款）：注册走 bcrypt，成功量也须有
+    # 上限（复审 #41「连续 6 次成功注册全 200」旁路），5 次/分钟/对端。
     return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
 
 
 @app.post("/api/auth/login")
 def login(body: CredentialsIn, request: Request) -> dict:
-    # 复审（handoff「只对失败尝试计数，成功即清零」）：peek 前置挡掉已达
-    # 阈值的对端（bcrypt 校验前拒绝，防口令猜解耗 CPU），仅认证失败补记、
-    # 成功清零——同一对端 6 次连续正确登录不再在第 6 次被误拒。
-    key = rate_limit_key(
+    # 复审（鉴权重回归收口）：双维限流——
+    # - peer 维（对端 IP）：check() **原子占位**（占位与判定同临界区，防
+    #   并发放大；防 bcrypt 口令猜解耗 CPU），成功仅退回本次占位；
+    # - 账号维（对端+用户名）：只计**失败**；成功即清零该账号的失败桶
+    #   （handoff「只对失败尝试计数，成功即清零」按账号维度成立）——
+    #   他人成功登录不再清空受害者的失败记录，「4 错+1 成功循环」旁路
+    #   由此闭合；同一账号 5 次失败后被锁定（含正确密码 429，防猜解）。
+    peer_key = rate_limit_key(
         "login",
         request.client.host if request.client else None,
         request.headers.get("x-forwarded-for"),
     )
-    allowed, retry_after = login_limiter.peek(key)
+    account_key = f"{peer_key}|acct={str(body.username).strip().lower()}"
+    allowed, retry_after = login_limiter.check(peer_key)
     if not allowed:
         raise HTTPException(
             429, "登录尝试过于频繁，请 1 分钟后再试（按连接来源 IP 计数）。",
             headers={"Retry-After": str(retry_after)})
+    account_allowed, account_retry = login_limiter.peek(account_key)
+    if not account_allowed:
+        login_limiter.refund(peer_key)
+        raise HTTPException(
+            429, "该账号登录失败次数过多，请 1 分钟后再试（按账号计数）。",
+            headers={"Retry-After": str(account_retry)})
     user = auth.authenticate(body.username, body.password)
     if user is None:
-        login_limiter.record(key)
+        login_limiter.record(account_key)
         raise _bad("用户名或密码错误。", 401)
     # U4-P2：历史上已注册、但用户名与任务目录保留库名（collaboration.db）
     # 相撞的账号：不阻断登录、不破坏数据，在响应中给出改名指引。
@@ -1377,7 +1397,8 @@ def login(body: CredentialsIn, request: Request) -> dict:
             "团队协作功能不可用；请改用其他用户名注册新账号使用协作功能，"
             "本账号的历史数据保持不变。"
         )
-    login_limiter.reset(key)
+    login_limiter.refund(peer_key)
+    login_limiter.reset(account_key)
     return {"token": auth.create_access_token(user["id"], user["username"]),
             "user": user, "warnings": warnings}
 

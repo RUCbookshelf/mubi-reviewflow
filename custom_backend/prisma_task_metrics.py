@@ -150,6 +150,8 @@ def register_prisma_task_metrics(app, require_user):
     @app.get('/api/tasks/{task_id}/prisma-metrics/records')
     def metric_records(task_id: str, mode: Literal['reviewer','team']='reviewer', user: dict=Depends(require_user)):
         runtime=app.state.review_workflow
+        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
+        task_id=runtime.task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx=runtime.context(task_id,user)
             first,_=outcomes(ctx,'stage1',mode)
@@ -175,6 +177,8 @@ def register_prisma_task_metrics(app, require_user):
     @app.get('/api/tasks/{task_id}/prisma-metrics')
     def task_metrics(task_id: str, mode: Literal['reviewer','team']='reviewer', user: dict=Depends(require_user)):
         runtime=app.state.review_workflow
+        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
+        task_id=runtime.task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx=runtime.context(task_id,user)
             return summary(ctx,mode)

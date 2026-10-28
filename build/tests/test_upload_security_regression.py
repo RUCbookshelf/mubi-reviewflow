@@ -578,9 +578,11 @@ class UploadSecurityTests(unittest.TestCase):
         self.assertEqual(run(multipart)[0]["status"], 411)
         self.assertEqual(run(multipart + [(b"content-length", b"abc")])[0]["status"], 411)
         self.assertEqual(seen, ["/api/tasks/t1/import"])
-        # 非 multipart / GET：放行（JSON 端点与读操作不受影响）
+        # 复审 #43 转正：规则端点非 multipart（含 JSON/urlencoded）在解析前
+        # 415（曾放行到端点——FastAPI 会先全量解析表单/JSON 再 401/422）；
+        # 非规则路径的 JSON 端点不受影响照常放行。
         self.assertEqual(run([(b"content-type", b"application/json"),
-                              (b"content-length", b"99999")])[0]["status"], 200)
+                              (b"content-length", b"99999")])[0]["status"], 415)
         self.assertEqual(run(multipart + [(b"content-length", b"101")],
                              method="GET")[0]["status"], 200)
         # token_validator 注入后：未认证 multipart 在解析前 401
@@ -1050,8 +1052,10 @@ class UploadSecurityTests(unittest.TestCase):
                 files=[(f"files", (f"{i}.csv", payload, "text/csv"))
                        for i in range(21)],
                 headers=self.auth())
-        self.assertEqual(r.status_code, 400, r.text)
-        self.assertEqual(r.json()["detail"], "There was an error parsing the body")
+        # 复审 #44 转正：MultipartStructureRejected 兼作 HTTPException(413)
+        # 后真实端点按 413 呈现（曾落 FastAPI 400 兜底）；不落盘断言不变。
+        self.assertEqual(r.status_code, 413, r.text)
+        self.assertIn("上限", r.json()["detail"])
         # 落盘的文件 part 数以端点声明上限（20）为界：TestClient 单块投递
         # 时计数器在第 21 个 part 头进入解析器之前即中断（created==0）；
         # 真实 uvicorn 分块传输时前 20 个（合法形状）可完成、第 21 个不建。
@@ -1102,7 +1106,7 @@ class UploadSecurityTests(unittest.TestCase):
             headers=self.auth())
         # 计数器在解析层中断（FastAPI 统一 400 parse error），而不是端点
         # 落盘后的 'Choose between 1 and 20'（那是旧行为的特征文案）
-        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.status_code, 413, r.text)  # 复审 #44：真实端点 413（曾 400 兜底）
         self.assertNotIn("Choose between 1 and 20", r.text)
         # 2 个文件（在 1..20 内）：预检放行、multipart 正常解析，进入端点
         # 导入流程（合法 CSV 导入成功）
@@ -1281,7 +1285,8 @@ class UploadSecurityTests(unittest.TestCase):
             # record() 预置（与登录失败路径同一记账 API），只保留一次真实
             # 登录断言 429——省 5 次 bcrypt 校验（门禁墙钟）
             for _ in range(5):
-                login_limiter.record(rate_limit_key("login", "testclient", None))
+                login_limiter.record(rate_limit_key("login", "testclient", None)
+                                     + "|acct=" + username.strip().lower())
             r = self.client.post(
                 "/api/auth/login",
                 json={"username": username, "password": "Correct-Horse-9"},
@@ -1294,6 +1299,151 @@ class UploadSecurityTests(unittest.TestCase):
                 conn.execute("DELETE FROM users WHERE id=?", (user["id"],))
                 conn.commit()
 
+    def test_r6s1_success_loop_cannot_reset_victim_failures(self):
+        """复审 #41（鉴权重回归）：「4 次受害者错误密码 + 1 次自己账号成功
+        登录」循环曾把 peer 桶整桶清零——12 次猜解 0 次 429。收口后：成功
+        只退本次占位并清**自己账号**的失败桶，受害者的账号失败桶保留，
+        第 12 次失败后的下一次尝试即 429。"""
+        from custom_backend import auth as auth_mod
+        from custom_backend.security import login_limiter
+        victim = auth_mod.create_user("victim-acct", "Victim-Pass-9")
+        attacker = auth_mod.create_user("attacker-acct", "Attacker-Pass-9")
+        headers = {"Content-Type": "application/json"}
+        try:
+            codes = []
+            for _ in range(3):  # 3 轮 [4 错 + 1 成功]（修复前曾 12 连 401）
+                for _ in range(4):
+                    r = self.client.post("/api/auth/login", json={
+                        "username": "victim-acct", "password": "Wrong-Pass-8"},
+                        headers=headers)
+                    codes.append(r.status_code)
+                    if r.status_code == 429:
+                        break  # 已被限流即证明旁路闭合
+                if codes[-1] == 429:
+                    break
+                r = self.client.post("/api/auth/login", json={
+                    "username": "attacker-acct", "password": "Attacker-Pass-9"},
+                    headers=headers)
+                self.assertEqual(r.status_code, 200, r.text)  # 他人成功不清受害者
+            # peer 总配额计全部尝试（成功仅退本次）：受害者第 5 次累计失败即
+            # 429——修复前 reset 整桶清零可无限循环
+            self.assertIn(429, codes, codes)
+            self.assertLessEqual(codes.count(401), 5, codes)
+        finally:
+            login_limiter._events.clear()
+            import sqlite3 as _s
+            conn = _s.connect(str(auth_mod._users_db()))
+            conn.execute("DELETE FROM users WHERE id IN (?,?)",
+                         (victim["id"], attacker["id"]))
+            conn.commit(); conn.close()
+
+    def test_r6s1_success_refunds_own_slot_and_clears_account_bucket(self):
+        """复审 #48（验收断言钉住双维语义）：成功登录——①退回**本次** peer
+        占位（peer 桶回到 4，不整桶清零）；②清零**自己账号**的失败桶。
+        随后第 1 次失败 401（peer 4→5、账号桶从零起计），第 2 次失败因
+        peer 总配额（计全部尝试）到 5 而 429。"""
+        from custom_backend import auth as auth_mod
+        from custom_backend.security import login_limiter
+        user = auth_mod.create_user("reset-probe", "Correct-Horse-9")
+        headers = {"Content-Type": "application/json"}
+        try:
+            for _ in range(4):
+                self.client.post("/api/auth/login", json={
+                    "username": "reset-probe", "password": "Wrong-Pass-8"},
+                    headers=headers)
+            r = self.client.post("/api/auth/login", json={
+                "username": "reset-probe", "password": "Correct-Horse-9"},
+                headers=headers)
+            self.assertEqual(r.status_code, 200, r.text)  # 成功：退本次+清账号桶
+            first = self.client.post("/api/auth/login", json={
+                "username": "reset-probe", "password": "Wrong-Pass-8"},
+                headers=headers).status_code
+            second = self.client.post("/api/auth/login", json={
+                "username": "reset-probe", "password": "Wrong-Pass-8"},
+                headers=headers).status_code
+            self.assertEqual((first, second), (401, 429),
+                             "成功退本次占位→下一失败仍 401；累计第 5 次尝试 429")
+        finally:
+            login_limiter._events.clear()
+            import sqlite3 as _s
+            conn = _s.connect(str(auth_mod._users_db()))
+            conn.execute("DELETE FROM users WHERE id=?", (user["id"],))
+            conn.commit(); conn.close()
+
+    def test_r6s1_concurrent_failures_bounded_atomically(self):
+        """复审 #42（并发回归）：peek/record 分离曾使 20 并发错误全部 401
+        （单窗口放大到 20 次）；check 原子占位后并发下第 6 个起即 429。"""
+        import threading
+        from custom_backend import auth as auth_mod
+        from custom_backend.security import login_limiter
+        user = auth_mod.create_user("concurrent-probe", "Correct-Horse-9")
+        headers = {"Content-Type": "application/json"}
+        results = []
+        def attempt():
+            r = self.client.post("/api/auth/login", json={
+                "username": "concurrent-probe", "password": "Wrong-Pass-8"},
+                headers=headers)
+            results.append(r.status_code)
+        try:
+            threads = [threading.Thread(target=attempt) for _ in range(20)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            blocked = results.count(429)
+            self.assertGreaterEqual(blocked, 15, results)   # 20-5=15 起被拒
+            self.assertLessEqual(results.count(401), 5, results)  # 最多 5 次到达 bcrypt
+        finally:
+            login_limiter._events.clear()
+            import sqlite3 as _s
+            conn = _s.connect(str(auth_mod._users_db()))
+            conn.execute("DELETE FROM users WHERE id=?", (user["id"],))
+            conn.commit(); conn.close()
+
+    def test_r6s1_register_success_counts_toward_peer_quota(self):
+        """复审 #41：注册成功计入 peer 配额——连续 6 次成功注册第 6 次
+        429（曾全 200，bcrypt 注册量无上限）。"""
+        from custom_backend.security import login_limiter
+        headers = {"Content-Type": "application/json"}
+        codes = [self.client.post("/api/auth/register", json={
+            "username": f"quota-probe-{i}@example.test",
+            "password": "Quota-Pass-9"}, headers=headers).status_code
+            for i in range(6)]
+        self.assertEqual(codes[:5], [200] * 5, codes)
+        self.assertEqual(codes[5], 429, codes)
+        login_limiter._events.clear()
+
+    def test_r6s3_urlencoded_form_flood_rejected_before_parse(self):
+        """复审 #43：规则端点对非 multipart（urlencoded）在解析/鉴权前 415
+        ——FastAPI 的 File/Form 端点曾先全量解析 50×~1MiB 字段再 401/422。"""
+        data = "&".join(f"f{i}={'x' * 900000}" for i in range(50))
+        # 未认证：中间件早拒 401（同样在解析之前——表单从未被解析）
+        r = self.client.post(
+            "/api/tasks/probe/import", content=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual(r.status_code, 401, r.text)
+        # 已认证：规则端点非 multipart → 415（解析前拒绝，不再吃进 47MB）
+        r = self.client.post(
+            f"/api/tasks/{self.task}/import", content=data,
+            headers={**self.auth(),
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual(r.status_code, 415, r.text)
+        # 非 multipart 且非规则路径不受影响（放行到后续 401/404）
+        r2 = self.client.post(
+            "/api/auth/login", content="username=a&password=b",
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn(r2.status_code, (401, 422), r2.text)
+
+    def test_r6s3_part_limit_surfaces_as_413_on_real_endpoint(self):
+        """复审 #44：part 超限在真实端点呈现 413（曾落 FastAPI 400 兜底
+        「There was an error parsing the body」）。"""
+        payload = b"x"
+        files = [("files", (f"f{i}.txt", payload, "text/plain")) for i in range(21)]
+        r = self.client.post(f"/api/tasks/{self.task}/import", files=files,
+                             headers=self.auth())
+        self.assertEqual(r.status_code, 413, r.text)
+        self.assertIn("上限", r.text)
+
     def test_r6s1_start_sh_disables_proxy_headers(self):
         """复审（真实 uvicorn 传输层）：uvicorn 默认 proxy_headers=True 会把
         环回对端的 XFF 写进 request.client.host，应用层「按直连对端分桶」
@@ -1305,6 +1455,14 @@ class UploadSecurityTests(unittest.TestCase):
         text = start_sh.read_text(encoding="utf-8")
         self.assertIn("--no-proxy-headers", text)
         self.assertNotIn("--proxy-headers", text.replace("--no-proxy-headers", ""))
+        # 复审 #47：生产文档（六语种同文的启动命令）也必须显式
+        # proxy_headers=False——uvicorn 默认 proxy_headers=True 会改写
+        # request.client.host，使「按直连对端分桶」在文档部署下失真
+        doc = _Path(__file__).resolve().parents[2] / "docs" / "deployment" / "UBUNTU_SERVER.md"
+        doc_text = doc.read_text(encoding="utf-8")
+        bare = "uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')"
+        self.assertNotIn(bare + '"', doc_text)  # 裸命令不得再出现
+        self.assertGreaterEqual(doc_text.count("proxy_headers=False"), 10)
 
     # ------------------------------------------------------------------
     # R6-S5：中间件早拒响应（411/401/413/400/409）必须带安全头，跨域白名单

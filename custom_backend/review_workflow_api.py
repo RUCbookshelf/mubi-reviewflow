@@ -90,7 +90,16 @@ class WorkflowRuntime:
             # 属主同人时 actor 库即 owner 库，直接复用 owner 的版本判定与
             # ensure_fields 结果（省一次 migration_state 连接与两次 resolve）
             if actor_db is owner_db or actor_db.name == owner_db.name:
+                # 复审（HEAD 现态回归）：owner_versions 只判了 {1,4,5,3}——
+                # owner 即 actor 时复用它跳过 screening_rounds.migrate 会让
+                # 新任务缺 workflow_screen_rounds 表，POST screening-rounds
+                # start/finish 500。actor 判齐条件独立按 {1,6} 核对。
                 actor_versions = owner_versions
+                if actor_versions is None or not {
+                        store.SCHEMA_VERSION, screening_rounds.ROUNDS_VERSION,
+                } <= actor_versions:
+                    store.migrate(actor_db)
+                    screening_rounds.migrate(actor_db)
             else:
                 actor_versions = store.migration_state(actor_db)
                 if actor_versions is None or not {
@@ -748,6 +757,8 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
 
     @app.post("/api/tasks/{task_id}/screening-rounds")
     def change_round(task_id: str, body: RoundIn, user: dict = Depends(require_user)) -> dict:
+        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
+        task_id = task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx = runtime.context(task_id, user)
             if ctx.owner is None or ctx.info.degraded:

@@ -27,6 +27,8 @@ import threading
 import time
 from pathlib import Path
 
+from fastapi import HTTPException
+
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "MAX_FIELD_PARTS",
@@ -262,6 +264,22 @@ class RateLimiter:
                 self._events[key] = bucket
                 return False, retry_after
             return True, 0
+
+    def refund(self, key: str, now: float | None = None) -> None:
+        """退还本次已占位的尝试（复审：成功登录/注册只退**自己这一次**
+        占位，不清空对端桶——整桶 reset 会把他人在同一对端上的失败记录
+        一并清零，构成「持号者循环重置限流」的旁路）。无可退时为空操作。"""
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            bucket = self._events.get(key)
+            if bucket:
+                # 移除不早于占位时刻的最近一条（即本次 check 写入的事件）
+                for idx in range(len(bucket) - 1, -1, -1):
+                    if bucket[idx] <= moment:
+                        bucket.pop(idx)
+                        break
+                if not bucket:
+                    self._events.pop(key, None)
 
     def record(self, key: str, now: float | None = None) -> None:
         """补记一次失败尝试（与 peek 配对；成功路径不调用即不计数）。"""
@@ -626,12 +644,19 @@ def _fmt_count(limit: int) -> str:
     return "1" if limit == 1 else f"1–{limit}"
 
 
-class MultipartStructureRejected(UploadRejected):
-    """multipart 结构超限（文件 part 数超端点上限），映射 413。
+class MultipartStructureRejected(UploadRejected, HTTPException):
+    """multipart 结构超限（文件/字段 part 数超端点上限），映射 413。
 
-    在解析器读取多余 part **内容之前**由 receive 层抛出；经 ExceptionMiddleware
-    按既有 ``UploadRejected`` 处理器映射（子类按 MRO 匹配），不会落 500。
+    在解析器读取多余 part **内容之前**由 receive 层抛出。复审：FastAPI 的
+    body 解析兜底（fastapi/routing.py）会把普通异常吞成 400「There was an
+    error parsing the body」——本类**兼作 HTTPException(413)**：路由层对
+    HTTPException 原样重抛，客户端按 413 处理；receive 层的既有
+    assertRaises(MultipartStructureRejected) 测试不受影响（仍为本类实例）。
     """
+
+    def __init__(self, message: str) -> None:
+        UploadRejected.__init__(self, message, 413)
+        HTTPException.__init__(self, status_code=413, detail=message)
 
     def __init__(self, message: str) -> None:
         super().__init__(message, status=413)
@@ -697,6 +722,19 @@ class UploadSizeLimitMiddleware:
         return None
 
     @staticmethod
+    def _is_multipart(scope) -> bool:  # noqa: ANN001
+        """Content-Type 是否为 multipart/form-data（与 Starlette 同源解析）。"""
+        header = b""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"content-type":
+                header = value
+                break
+        if _parse_options_header is not None:
+            ctype, _params = _parse_options_header(header)
+            return ctype == b"multipart/form-data"
+        return header.lower().lstrip().startswith(b"multipart/form-data")  # pragma: no cover
+
+    @staticmethod
     def _origin_of(scope) -> str | None:  # noqa: ANN001
         for key, value in scope.get("headers") or []:
             if key.lower() == b"origin":
@@ -757,10 +795,29 @@ class UploadSizeLimitMiddleware:
         # parse_options_header：值 strip/小写化、重复参数取最后一个、引号
         # 去引号）——此前用原值 startswith 判定，前导空白的 Content-Type
         # 在 ASGI 直调层可绕过预检（r6 复审 #43）。
+        path = scope.get("path", "")
+        rule = next(((pattern, limit, max_files) for pattern, limit, max_files in self.rules
+                     if pattern.match(path)), None)
         if _parse_options_header is not None:
             ctype, params = _parse_options_header(content_type_header)
             if ctype != b"multipart/form-data":
-                await self.app(scope, receive, send)
+                if rule is None:
+                    await self.app(scope, receive, send)
+                    return
+                # 复审（urlencoded 表单洪水）：规则端点只接受 multipart——
+                # FastAPI 的 File/Form 端点会接受 application/x-www-form-
+                # urlencoded 并在端点校验之前**全量解析**表单（实测 50×
+                # ~1MiB 字段 47.7MB 被吃进后 422）。先过鉴权（401 语义与
+                # 其他早拒一致），已认证则在解析前按 415 拒绝。
+                if self.token_validator is not None:
+                    token = self._bearer_token(scope)
+                    if token is None or not self.token_validator(token):
+                        await self._reject(
+                            scope, send, 401, "未登录或缺少访问令牌。",
+                            extra_headers=[(b"www-authenticate", b"Bearer")])
+                        return
+                await self._reject(
+                    scope, send, 415, "该端点仅接受 multipart/form-data 上传。")
                 return
             boundary = params.get(b"boundary") or None
         else:  # pragma: no cover - python-multipart 缺失时的降级路径
@@ -784,9 +841,6 @@ class UploadSizeLimitMiddleware:
                     scope, send, 401, "未登录或缺少访问令牌。",
                     extra_headers=[(b"www-authenticate", b"Bearer")])
                 return
-        path = scope.get("path", "")
-        rule = next(((pattern, limit, max_files) for pattern, limit, max_files in self.rules
-                     if pattern.match(path)), None)
         if rule is not None:
             _, limit, max_files = rule
             if boundary is None:

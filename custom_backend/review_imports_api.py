@@ -393,7 +393,7 @@ def register_review_import_routes(app, require_user, **dependencies):
         ctx = runtime.workflow.context(task_id, user)
         if ctx.owner is None:
             raise HTTPException(403, 'Import provenance requires verified task ownership.')
-        with runtime.workflow.lock(task_id):
+        with runtime.workflow.lock(ctx.info.task_id):
             store.migrate(ctx.owner_db)
             review_undo.migrate(ctx.owner_db)
         return ctx
