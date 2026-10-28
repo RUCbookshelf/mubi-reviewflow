@@ -14,7 +14,12 @@ prisma_dot 输出带中文标签的 DOT 字符串，可直接用于 st.graphviz_
   （prisma_dot 渲染为未决节点，U6-P5/R6-F7）；
 - resolved / prisma_two_stage 的复筛决策只统计落在分母键域内的仲裁键：
   键域外（幽灵/未筛）键与重复键被忽略并记入 PrismaFlow.warnings
-  （U6-P11/R6-F5），保证 included + excluded <= screened 恒成立。
+  （U6-P11/R6-F5），保证 included + excluded <= screened 恒成立；
+- identified − duplicates_removed ≠ screened 的勾稽告警无条件执行
+  （MM-08，修复前被 report is not None 门控倒置）；unscreened 按键级
+  口径计（唯一键集合 − screened 键集合：同一键既有已筛行又有未筛行时
+  按已筛计，不双计），勾稽不变式为「决策表唯一键数 =
+  screened + unscreened」（MM-10，修复前 unscreened 按行数计）。
 
 与任务页 /prisma-metrics 的口径边界（R6-F9，r6 评审反馈 2 修正）：
 - reviewer 模式与 CLI/手动 merge 一致——records_screened = len(db_keys &
@@ -67,8 +72,11 @@ class PrismaFlow:
     excluded: int
     included: int
     warnings: tuple[str, ...] = field(default=())
-    #: 双方均无决策（unscreened）的行数——复审勾稽桶：决策表行数 =
-    #: screened + unscreened（+ 多人 incomplete 等形态），导出供对账
+    #: 无任何已筛行的唯一键数（键级口径＝唯一键集合 − screened 键集合，
+    #: MM-10：同一键既有已筛行又有未筛行时按已筛计，不双计）——复审勾稽
+    #: 桶，与 screened 同按唯一键计：决策表唯一键数 = screened +
+    #: unscreened 恒成立；行数口径在重复键行下更大，差值由 identified
+    #: 勾稽告警解释，导出供对账
     unscreened: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -231,8 +239,11 @@ def prisma_from_merge(
         U6-P11/R6-F5）；
       - 否则仅统计双方一致的实际决策 include/exclude；一致 maybe 等其他
         决策未决不计入（R6-F7 口径，DOT 以「未决」节点呈现差值）。
-    给出去重报告且 identified − duplicates_removed ≠ screened 时记入
-    warnings（筛选未完成或口径不一致，U6-P11 report 侧勾稽提示）。
+    identified − duplicates_removed ≠ screened 时**无条件**记入 warnings
+    （MM-08：report=None 的决策表行数兜底口径同样勾稽；差值可能来自
+    未筛行、重复键行折叠或去重报告口径不一致）；unscreened 按键级口径
+    计（唯一键集合 − screened 键集合，MM-10），「决策表唯一键数 =
+    screened + unscreened」恒成立。
     """
     if "status" not in merged.columns:
         raise ValueError("prisma_from_merge 需要 merge_decisions 的输出（缺少 status 列）")
@@ -261,12 +272,29 @@ def prisma_from_merge(
 
     duplicates_removed = _count_duplicates(report)
     identified = _count_identified(report, duplicates_removed, screened, len(merged))
-    if report is not None and identified - duplicates_removed != screened:
+    # MM-08（r7-prisma）：勾稽检查无条件执行。修复前被「report is not
+    # None」门控倒置——report=None 时 identified 恰恰走决策表**行数**兜底
+    # （含未筛行/重复键行），是最可能 ≠ screened 的一支，却被静默跳过，
+    # 流程图画出「识别 3 → 去重 0 → 筛选 1」的不自洽数字且无任何提示。
+    if identified - duplicates_removed != screened:
         warns.append(
             f"identified({identified}) − duplicates_removed({duplicates_removed}) "
-            f"≠ screened({screened})：筛选尚未完成，或去重报告与决策表口径不一致"
+            f"≠ screened({screened})：筛选尚未完成（含未筛行）、决策表存在"
+            "重复键行（按唯一键折叠计），或去重报告与决策表口径不一致"
             "（U6-P11 勾稽提示）"
         )
+    # MM-10（r7-prisma）：unscreened 按「唯一键集合 − screened 键集合」计
+    # （键级口径，r7 复审第 1 轮修正：同一键既有已筛行又有未筛行时按已筛
+    # 计，不双计——该键所有行均无决策才算未筛），与 screened 的唯一键
+    # 口径互补，勾稽不变式「决策表唯一键数 = screened + unscreened」恒
+    # 成立；行数与唯一键数的差（重复键折叠行/已筛键的未筛行）由上方
+    # identified 勾稽告警解释。无 zotero_key 列的最小表回退行数（兼容，
+    # screened 同为行数口径，行数不变式相应成立）。
+    if "zotero_key" in merged.columns:
+        all_keys = merged["zotero_key"].fillna("").astype(str)
+        unscreened = int(all_keys.nunique() - screened)
+    else:
+        unscreened = int(len(merged) - mask.sum())
     return PrismaFlow(
         identified=identified,
         duplicates_removed=duplicates_removed,
@@ -274,7 +302,7 @@ def prisma_from_merge(
         excluded=excluded,
         included=included,
         warnings=tuple(warns),
-        unscreened=int(len(merged) - mask.sum()),
+        unscreened=unscreened,
     )
 
 
