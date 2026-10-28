@@ -8,7 +8,13 @@ from contextlib import closing
 from pathlib import Path
 
 from coscreen.db import _connect
-from coscreen.review_analysis import RATIOS, SINGLE_GROUP, _synthesize_rows, selected_effects
+from coscreen.review_analysis import (
+    RATIOS,
+    SINGLE_GROUP,
+    _synthesize_rows,
+    effect_scale_label,
+    selected_effects,
+)
 
 DbPath = str | Path
 
@@ -89,8 +95,8 @@ def meta_regression(db: DbPath, comparison: str, outcome: str, timepoint: str,
             "slope_se": float(fit.bse[1]), "slope_ci": [float(v) for v in fit.conf_int()[1]],
             "p": float(fit.pvalues[1]), "intercept": float(fit.params[0]),
             "tau2_from_intercept_only_model": tau2,
-            "effect_scale": "logit" if measure == "LOGIT_PROP" else
-                            "log" if measure in RATIOS | {"LOG_RATE", "LOG_ROM", "PAIRED_OR"} else "natural",
+            # MM5-08：尺度标签复用合成口径（FISHER_Z 曾被这里的旧三元链标成 "natural"）
+            "effect_scale": effect_scale_label(measure),
             "method": "exploratory inverse-variance WLS with fixed intercept-only Paule-Mandel tau2",
             "warning": "Study-level association is not a participant-level interaction or causal effect."}
 
@@ -109,7 +115,8 @@ def small_study_effects(db: DbPath, comparison: str, outcome: str, timepoint: st
         raise ValueError("Egger test needs variation in study precision")
     y = np.asarray([math.log(r["estimate"]) if measure in RATIOS else r["estimate"] for r in rows])
     fit = OLS(y/se, np.column_stack((np.ones(len(se)), 1/se))).fit()
-    return {"n_studies": len(rows), "points": [{"study_id": r["study_id"],
+    return {"n_studies": len(rows), "effect_scale": effect_scale_label(measure),
+            "points": [{"study_id": r["study_id"],
             "result_id": r["result_id"], "source_key": r["source_key"],
             "source_locator": r["source_locator"],
             "effect": float(effect), "se": float(error)} for r, effect, error in zip(rows, y, se)],

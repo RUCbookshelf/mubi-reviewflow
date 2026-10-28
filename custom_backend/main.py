@@ -1093,6 +1093,10 @@ class HighlightEventIn(BaseModel):
     text: str = Field(default="", max_length=8000)
     color: str = Field(default="jade", pattern="^(jade|amber|terra)$")
     note: str = Field(default="", max_length=4000)
+    # MM5-13：每个 rect 恰 4 个浮点分量，语义同读取端/前端：[x0, y0, x1, y1]
+    # 两角点（fulltext.get_highlights_with_rects 存取、index.html 以 min/max
+    # 归一），不是 (x, y, w, h)。长度约束在写路由显式 400（评审按 400 验收）；
+    # 空 rects（不附坐标的高亮）仍允许，前端正常路径恒发 4 元素。
     rects: list[list[float]] = Field(default_factory=list, max_length=200)
 
 
@@ -4035,6 +4039,11 @@ def analysis_advanced(task_id: str, method: str, comparison: str, outcome: str,
         if method == "cumulative":
             if model is None:
                 raise ValueError("choose a cumulative synthesis model explicitly")
+            # MM5-06：model 白名单与 review_analysis.synthesize 同口径。修前未校验，
+            # 未知值（如 "bogus"/"fixed "）在 cumulative 内部 KeyError 被全局兜底
+            # 统一成 500；非法值必须走 ValueError -> 400。
+            if model not in {"fixed", "random", "random_pm", "random_reml"}:
+                raise ValueError("unsupported cumulative synthesis model")
             args += (model,)
         return methods[method](*args)
     except ValueError as exc:
@@ -5072,6 +5081,14 @@ def highlights_for(task_id: str, zotero_key: str, screener: str | None = None,
 @app.post("/api/tasks/{task_id}/highlights")
 def add_highlights(task_id: str, body: HighlightsIn, screener: str | None = None,
                    user: dict = Depends(require_user)) -> dict:
+    # MM5-13：读取端（fulltext.get_highlights_with_rects）只保留 len==4 的 rect
+    # （[x0,y0,x1,y1] 两角点），写入端必须在请求层显式 400 拒绝其它长度——修前
+    # 3/5 分量 200 入库、读回 rects=[]，坐标被静默丢弃。文案按读取端真实语义
+    # 表述，不得写成 (x, y, w, h)（评审第 2 轮：会诱导发送被接受但绘制错误的分量）。
+    for event in body.events:
+        for rect in event.rects:
+            if len(rect) != 4:
+                raise _bad("每个高亮坐标必须恰有 4 个浮点分量（x0, y0, x1, y1）。")
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     events = [ev.model_dump() for ev in body.events]

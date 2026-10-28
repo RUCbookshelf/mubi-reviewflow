@@ -84,7 +84,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-启动器同时提供页面与 API，并打开浏览器。默认本机端口为 `8613`；端口被占用时尝试其他空闲端口，以实际打开的地址为准。`run_pathB.bat` 是 Windows 上通过 WSL 启动源码的开发入口，安装版不需要它。
+启动器同时提供页面与 API，并打开浏览器。默认本机端口为 `8613`；端口被占用时尝试其他空闲端口，以实际打开的地址为准。
 
 ### 数据存储与协作
 
@@ -122,8 +122,9 @@ macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚�
 ### 开发与贡献
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
 | 目录 | 用途 |
@@ -209,7 +210,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-The launcher serves the UI and API together and opens a browser. The default local port is `8613`; another available port is used if needed. Use the address opened by the launcher. `run_pathB.bat` is a Windows/WSL development entry, not an installed application requirement.
+The launcher serves the UI and API together and opens a browser. The default local port is `8613`; another available port is used if needed. Use the address opened by the launcher.
 
 ### Storage and collaboration
 
@@ -244,8 +245,9 @@ Build Intel and Apple Silicon macOS packages separately on the corresponding arc
 Report reproducible problems through [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues), including your OS, version and sanitized logs. Pull requests are welcome. Statistical changes should include method sources, assumptions and reproducible reference results. Do not commit credentials, research databases or unauthorized full texts.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
 Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscreen/` (research logic), `build/` (launchers and packaging), `tests/` and `docs/`.
@@ -537,7 +539,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-Запускатель обслуживает интерфейс и API и открывает браузер. Порт по умолчанию — `8613`; если он занят, выбирается другой свободный порт. Используйте открытый программой адрес. `run_pathB.bat` предназначен для разработки в Windows через WSL и не нужен установленному приложению.
+Запускатель обслуживает интерфейс и API и открывает браузер. Порт по умолчанию — `8613`; если он занят, выбирается другой свободный порт. Используйте открытый программой адрес.
 
 ### Хранение данных и совместная работа
 
@@ -572,8 +574,9 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 Сообщайте о проблемах в [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues): ОС, версия, шаги воспроизведения и журнал без личных данных. Приветствуются Pull Request. Для изменений статистических методов приложите источники, условия применения и воспроизводимые эталонные результаты. Не публикуйте пароли, базы исследований или полные тексты без разрешения.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
 Основные каталоги: `custom_frontend/` — интерфейс, `custom_backend/` — API, `coscreen/` — исследовательская логика, `build/` — запуск и сборка, `tests/` — тесты, `docs/` — документация.
@@ -636,7 +639,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-Le lanceur sert l'interface et l'API et ouvre le navigateur. Le port local par défaut est `8613` ; un autre port libre est choisi si nécessaire. Utilisez l'adresse ouverte par le lanceur. `run_pathB.bat` est une entrée de développement Windows via WSL, inutile pour l'application installée.
+Le lanceur sert l'interface et l'API et ouvre le navigateur. Le port local par défaut est `8613` ; un autre port libre est choisi si nécessaire. Utilisez l'adresse ouverte par le lanceur.
 
 ### Stockage et collaboration
 
@@ -671,8 +674,9 @@ Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur 
 Signalez les problèmes dans [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues), avec le système, la version, les étapes de reproduction et des journaux sans données personnelles. Les Pull Request sont bienvenues. Toute modification statistique doit préciser les sources, les conditions d'application et des résultats de référence reproductibles. N'ajoutez pas d'identifiants, de bases de recherche ou de textes intégraux non autorisés.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
 Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API, `coscreen/` pour les traitements scientifiques, `build/` pour le lancement et les paquets, `tests/` et `docs/`.
