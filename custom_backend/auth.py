@@ -4,7 +4,8 @@
 - JWT：HS256 + 24h 过期，载荷含 sub(user_id) / username / iat / exp / jti；
 - 签名密钥：优先环境变量 ``COBOOKSHELF_JWT_SECRET``，否则持久化到
   ``{data_dir}/.jwt_secret``（0600 权限创建），重启后令牌不失效；
-- 密码策略：8~128 字节；用户名：3~64 字符，白名单字符（字母数字 . _ - @ 与 CJK）。
+- 密码策略：8~128 个字符，且 UTF-8 编码后 ≤72 字节（bcrypt 底层上限，
+  一个汉字占 3 字节）；用户名：3~64 字符，白名单字符（字母数字 . _ - @ 与 CJK）。
 """
 
 from __future__ import annotations
@@ -47,6 +48,14 @@ JWT_ISSUER = "cobookshelf"
 _USERNAME_RE = re.compile(r"^[0-9A-Za-z._@\-\u4e00-\u9fff]{3,64}$")
 _MIN_PASSWORD_LEN = 8
 _MAX_PASSWORD_LEN = 128
+#: G-01：bcrypt 底层只接受 ≤72 字节的口令，超限 ``hashpw``/``checkpw`` 直接
+#: 抛 ``ValueError``。字节数按 UTF-8 编码计（一个汉字占 3 字节），据此在
+#: ``validate_password`` 显式设限，避免裸 ``ValueError`` 穿透注册端点的
+#: ``except AuthError``（曾 → 500 且限流占位不退）。
+_MAX_PASSWORD_BYTES = 72
+_PASSWORD_TOO_LONG_MSG = (
+    "密码过长：UTF-8 编码后不得超过 72 字节（一个汉字占 3 字节），请缩短密码。"
+)
 _BCRYPT_ROUNDS = 12
 
 _USERS_SCHEMA = """
@@ -90,8 +99,15 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 def hash_password(password: str) -> str:
-    """bcrypt 哈希（rounds=12）；返回 ASCII 可存储的哈希串。"""
-    digest = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS))
+    """bcrypt 哈希（rounds=12）；返回 ASCII 可存储的哈希串。
+
+    G-01 兜底：>72 字节的口令 ``bcrypt.hashpw`` 抛 ``ValueError``——收敛为
+    ``AuthError``，保证任何调用路径都走统一的 400+限流退款语义而非裸 500。
+    """
+    try:
+        digest = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS))
+    except ValueError as exc:
+        raise AuthError(_PASSWORD_TOO_LONG_MSG) from exc
     return digest.decode("ascii")
 
 
@@ -133,6 +149,10 @@ def validate_username(username: str) -> str:
 def validate_password(password: str) -> str:
     if not isinstance(password, str) or not (_MIN_PASSWORD_LEN <= len(password) <= _MAX_PASSWORD_LEN):
         raise AuthError(f"密码长度须为 {_MIN_PASSWORD_LEN}~{_MAX_PASSWORD_LEN} 个字符。")
+    if len(password.encode("utf-8")) > _MAX_PASSWORD_BYTES:
+        # G-01：25 个汉字（75 字节）这类「字符数合法、字节数超限」的口令曾
+        # 在 hash_password 抛裸 ValueError → 注册 500 且限流占位不退。
+        raise AuthError(_PASSWORD_TOO_LONG_MSG)
     return password
 
 
