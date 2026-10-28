@@ -102,11 +102,12 @@ def _compare_mapping(source_root, payload_root, source_rel, payload_name, payloa
         if not walk_root.is_dir():
             problems.append(f'payload tree is missing {payload_name}/{payload_prefix}/')
             continue
+        # Keys are relative to walk_root, which already corresponds to source_dir,
+        # so payload keys line up with source keys without any further prefixing.
         for rel, digest in collect_tree(walk_root).items():
-            scoped = f'{payload_prefix}/{rel}' if payload_prefix else rel
-            if scoped in payload_files and payload_files[scoped] != digest:
-                problems.append(f'payload has conflicting copies of {source_rel}/{scoped}')
-            payload_files[scoped] = digest
+            if rel in payload_files and payload_files[rel] != digest:
+                problems.append(f'payload has conflicting copies of {source_rel}/{rel}')
+            payload_files[rel] = digest
     for rel in sorted(set(source_files) - set(payload_files)):
         problems.append(f'payload is missing file: {source_rel}/{rel}')
     for rel in sorted(set(payload_files) - set(source_files)):

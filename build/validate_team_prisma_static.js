@@ -1,8 +1,16 @@
 /* Parse the changed JavaScript and inline scripts without running the app. */
 const fs=require('fs'),path=require('path'),vm=require('vm'),cp=require('child_process');
 const root=path.resolve(__dirname,'..');
-const changed=cp.execFileSync('git',['diff','--name-only'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/);
-const extra=cp.execFileSync('git',['ls-files','--others','--exclude-standard'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/);
+let changed=[],extra=[];
+try{
+  changed=cp.execFileSync('git',['diff','--name-only'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/);
+  extra=cp.execFileSync('git',['ls-files','--others','--exclude-standard'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/);
+}catch(_){
+  /* Not a git checkout (e.g. a relocated or extracted Windows build tree, MM7-02 R1):
+     fall back to every frontend script so the gate still runs outside git.
+     CI and developer checkouts keep the git-diff augmentation unchanged. */
+  changed=fs.readdirSync(path.join(root,'custom_frontend')).filter(p=>p.endsWith('.js')).map(p=>'custom_frontend/'+p);
+}
 const required=['custom_frontend/help_locale.js','custom_frontend/workflow_controls.js',
   'custom_frontend/workflow_imports.js','custom_frontend/prisma_task_ui.js',
   'custom_frontend/team_roles.js','custom_frontend/team_prisma_locale.js','build/validate_team_prisma_static.js'];

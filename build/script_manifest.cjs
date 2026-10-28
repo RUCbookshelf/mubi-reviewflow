@@ -44,4 +44,28 @@ function manifestFiles(manifest,names){
   });
 }
 
-module.exports={loadScriptManifest,findWorkspaceModule,manifestFiles};
+/* The unique online module that defines the given global (window.X=, the UMD
+   root.X= form, or a top-level declaration). null when no module - or more
+   than one - defines it, so callers never inject an ambiguous module. */
+function manifestModuleDefining(root,manifest,globalName){
+  const assignment=new RegExp('(?:window|root|globalThis)\\s*\\.\\s*'+globalName+'\\s*=');
+  const declaration=new RegExp('(?:const|let|var|function)\\s+'+globalName+'\\b');
+  const definers=manifest.filter(file=>{
+    const source=fs.readFileSync(path.join(root,'custom_frontend',file),'utf8');
+    return assignment.test(source)||declaration.test(source);
+  });
+  return definers.length===1?definers[0]:null;
+}
+
+/* Online modules whose source matches EVERY given RegExp. This is how harnesses
+   discover subjects by content (e.g. the onboarding guide owns #rfImportGuide
+   and reads window.WorkflowImports) instead of by hardcoded filename. */
+function manifestModulesMatching(root,manifest,patterns){
+  return manifest.filter(file=>{
+    const source=fs.readFileSync(path.join(root,'custom_frontend',file),'utf8');
+    return patterns.every(pattern=>pattern.test(source));
+  });
+}
+
+module.exports={loadScriptManifest,findWorkspaceModule,manifestFiles,
+  manifestModuleDefining,manifestModulesMatching};

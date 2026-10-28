@@ -234,21 +234,16 @@ set "REVIEWFLOW_VALIDATION_DEPENDENCIES=%SRCDIR%\validator_deps"
 if errorlevel 1 goto :fail_validators
 "%STAGING%\runtime\python.exe" "%SRCDIR%\validate_screening_rounds.py" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
+rem MM7-02 (R1): the same four validators CI runs are a hard requirement of a
+rem local build too - node.exe must be present. validate_team_prisma_static.js
+rem degrades its git-diff augmentation by itself when the build tree is not a
+rem git checkout, so it runs unconditionally here.
 where node.exe >nul 2>nul
-if errorlevel 1 goto :validators_node_skip
+if errorlevel 1 goto :fail_no_node
 node "%SRCDIR%\validate_import_review_static.cjs" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
-git rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 goto :validators_git_skip
 node "%SRCDIR%\validate_team_prisma_static.js" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
-goto :validators_done
-:validators_node_skip
-call :log "note: node.exe not found - skipping the two JavaScript validators (CI runs them)"
-goto :validators_done
-:validators_git_skip
-call :log "note: not a git checkout - skipping validate_team_prisma_static.js (it shells out to git)"
-:validators_done
 set "REVIEWFLOW_VALIDATION_DEPENDENCIES="
 if exist "%SRCDIR%\validator_deps" rmdir /s /q "%SRCDIR%\validator_deps" >nul 2>nul
 
@@ -346,6 +341,9 @@ call :err "the bundled runtime cannot import the required packages"
 goto :end_fail
 :fail_validators
 call :err "static validators failed - see the validator output in the log"
+goto :end_fail
+:fail_no_node
+call :err "node.exe not found - required to run the JavaScript static validators (install Node.js or add it to PATH)"
 goto :end_fail
 :fail_smoke
 call :err "smoke test failed - see %SRCDIR%\build_windows_smoke.log"

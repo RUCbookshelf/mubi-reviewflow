@@ -169,6 +169,82 @@ def test_mm7_01_cli_end_to_end_on_fake_tree(tmp_path):
     assert "coscreen/x.py" in broken.stderr
 
 
+def _frozen_source_tree(tmp_path: Path) -> Path:
+    """Source tree shaped like the frozen builds: only coscreen/assets ships as data."""
+    source = tmp_path / "repo"
+    _write_tree(source, SOURCE_FILES)
+    return source
+
+
+def _macos_payload(tmp_path: Path) -> tuple[Path, Path]:
+    """macOS layout: --add-data destinations under ReviewFlow.app/Contents/Frameworks."""
+    source = _frozen_source_tree(tmp_path)
+    payload = source / "build" / "dist" / "ReviewFlow.app" / "Contents" / "Frameworks"
+    loose = {k: v for k, v in SOURCE_FILES.items() if not k.startswith("coscreen/")}
+    loose["coscreen/assets/logo.txt"] = SOURCE_FILES["coscreen/assets/logo.txt"]
+    _write_tree(payload, loose)
+    return source, payload
+
+
+def _linux_payload(tmp_path: Path) -> tuple[Path, Path]:
+    """Linux layout: PyInstaller onedir data under AppDir/usr/bin/_internal."""
+    source = _frozen_source_tree(tmp_path)
+    payload = source / "build" / "work-linux" / "AppDir" / "usr" / "bin" / "_internal"
+    loose = {k: v for k, v in SOURCE_FILES.items() if not k.startswith("coscreen/")}
+    loose["coscreen/assets/logo.txt"] = SOURCE_FILES["coscreen/assets/logo.txt"]
+    _write_tree(payload, loose)
+    return source, payload
+
+
+def test_mm7_01_macos_clean_payload_passes(tmp_path):
+    """Reviewer probe regression: the loose coscreen/assets subtree must line up with
+    the source keys (a prefixing bug previously made every macos/linux build fail)."""
+    verifier = _load_verifier()
+    source, payload = _macos_payload(tmp_path)
+    result = verifier.verify_payload(source, payload, "macos")
+    assert result["ok"] is True, result["problems"]
+    assert result["mode"] == "payload-compare"
+    # coscreen/*.py is frozen into the PyInstaller archive on macos/linux, so the
+    # comparable manifest covers everything except the frozen python files.
+    assert set(result["files"]) == set(SOURCE_FILES) - {"coscreen/x.py"}
+
+
+def test_mm7_01_macos_tampered_asset_must_fail(tmp_path):
+    verifier = _load_verifier()
+    source, payload = _macos_payload(tmp_path)
+    (payload / "coscreen" / "assets" / "logo.txt").write_text("evil\n", encoding="utf-8")
+    result = verifier.verify_payload(source, payload, "macos")
+    assert result["ok"] is False
+    assert any("coscreen/assets/logo.txt" in p for p in result["problems"])
+
+
+def test_mm7_01_linux_missing_asset_must_fail(tmp_path):
+    verifier = _load_verifier()
+    source, payload = _linux_payload(tmp_path)
+    (payload / "coscreen" / "assets" / "logo.txt").unlink()
+    result = verifier.verify_payload(source, payload, "linux")
+    assert result["ok"] is False
+    assert any("coscreen/assets/logo.txt" in p for p in result["problems"])
+
+
+def test_mm7_01_macos_cli_end_to_end_on_fake_tree(tmp_path):
+    source, payload = _macos_payload(tmp_path)
+    script = source / "build" / "verify_release_payload.py"
+    shutil.copyfile(REPO / "build" / "verify_release_payload.py", script)
+    clean = subprocess.run(
+        [sys.executable, str(script), "macos"],
+        cwd=source, capture_output=True, text=True, timeout=120,
+    )
+    assert clean.returncode == 0, clean.stderr
+    (payload / "coscreen" / "assets" / "logo.txt").write_text("evil\n", encoding="utf-8")
+    broken = subprocess.run(
+        [sys.executable, str(script), "macos"],
+        cwd=source, capture_output=True, text=True, timeout=120,
+    )
+    assert broken.returncode != 0
+    assert "coscreen/assets/logo.txt" in broken.stderr
+
+
 # --------------------------------------------------------------------------- MM7-02
 
 def test_mm7_02_release_yml_runs_all_four_validators_after_payload_verify():
@@ -187,6 +263,41 @@ def test_mm7_02_build_windows_bat_runs_all_four_validators_after_step_4():
         name = rel.split("/")[-1]  # the bat invokes them as %SRCDIR%\<name>
         pos = text.find(name)
         assert step4 < pos < step5, f"{rel} must run between [4/6] and [5/6] in build_windows.bat"
+    # R1 review: the JavaScript validators must be a hard requirement, not a skip.
+    assert ":fail_no_node" in text, "missing node.exe must fail the build, not skip validators"
+    assert "validators_node_skip" not in text and "validators_git_skip" not in text, (
+        "the bat must run the same four validators CI runs - no silent degradation"
+    )
+
+
+@pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+def test_mm7_02_team_prisma_static_runs_outside_a_git_checkout(tmp_path):
+    """R1 review: a local Windows build tree (relocated / extracted, no .git) must
+    still run validate_team_prisma_static.js - the validator degrades its git-diff
+    augmentation, it must not crash - and it must still bite on a broken locale."""
+    tree = tmp_path / "tree"
+    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+    (tree / "build").mkdir()
+    shutil.copyfile(
+        REPO / "build" / "validate_team_prisma_static.js",
+        tree / "build" / "validate_team_prisma_static.js",
+    )
+    clean = subprocess.run(
+        [NODE, str(tree / "build" / "validate_team_prisma_static.js")],
+        cwd=tree, capture_output=True, text=True, timeout=120,
+    )
+    assert clean.returncode == 0, clean.stderr
+    with (tree / "custom_frontend" / "team_prisma_locale.js").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n/*r1 nail*/RFLang.register([['n','Nail {0}','Nail {1}',"
+            "'Nail','Nail','Nail','Nail','Nail','Nail','Nail']]);\n"
+        )
+    broken = subprocess.run(
+        [NODE, str(tree / "build" / "validate_team_prisma_static.js")],
+        cwd=tree, capture_output=True, text=True, timeout=120,
+    )
+    assert broken.returncode != 0
+    assert "Mismatched placeholders" in broken.stderr
 
 
 @pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
@@ -265,11 +376,19 @@ def test_mm7_03_static_gate_sources_strings_from_parsed_manifest():
 def test_mm7_03_browser_test_injections_come_from_parsed_manifest():
     text = (REPO / "build" / "tests" / "import_review_browser.cjs").read_text(encoding="utf-8")
     assert "loadScriptManifest" in text, "browser test must derive modules from the manifest"
+    assert "findWorkspaceModule" in text, "browser test must discover the live panel module"
     assert "['import_review_model.js','workflow_imports.js','import_guide.js']" not in text, (
         "browser test must not hardcode the dead module in its injection list"
     )
     assert "unified_import_workspace.js" in text, (
         "browser test must trip-wire on the live workspace module being loaded"
+    )
+    # R1 review: the harness must not inject or exercise the unloaded dead panel at all.
+    # The filename may only appear inside manifest tripwire assertions.
+    dead_lines = [line for line in text.splitlines() if "workflow_imports.js" in line]
+    assert dead_lines, "the dead-module tripwire assertion must stay in the harness"
+    assert all("manifest.includes" in line for line in dead_lines), (
+        "workflow_imports.js may only appear in manifest tripwires, never as an injected source"
     )
 
 
