@@ -24,8 +24,10 @@ prisma_dot 输出带中文标签的 DOT 字符串，可直接用于 st.graphviz_
   （MM6-02，修复前 agree 路径按决策表行数、multi 路径恒 =screened 且
   从不设置 unscreened——同一份数据两条 CLI 路径得出不同 PRISMA 数字）。
   行数与唯一键数的取舍：行数（重复键折叠行的物理行数）不再单独导出——
-  该差值已由 MM-08 勾稽告警文案解释，且 screened/unscreened 全链键级
-  口径下「identified = screened + unscreened = 唯一键数」恒成立。
+  该差值已由 MM-08 勾稽告警文案解释，且 agree/multi/two_stage 的
+  report=None 分支上「identified = screened + unscreened = 唯一键数」
+  恒成立（two_stage 经 stage1 透传；report 非 None 时 identified 取去重
+  报告口径，不适用该恒等式，MM-08 告警负责勾稽）。
 
 与任务页 /prisma-metrics 的口径边界（R6-F9，r6 评审反馈 2 修正）：
 - reviewer 模式与 CLI/手动 merge 一致——records_screened = len(db_keys &
@@ -420,7 +422,10 @@ def prisma_two_stage(
     - excluded：初筛排除数 + 复筛排除数（两个阶段的排除累计）；
     - included：复筛合并表的最终纳入数——默认只计 stage2 中 agree 且共同
       decision == "include" 的条目；给出 resolved2（zotero_key/final_decision
-      仲裁表）时按其统计（口径与 prisma_from_merge 的 resolved 相同）。
+      仲裁表）时按其统计（口径与 prisma_from_merge 的 resolved 相同）；
+      unscreened 自 stage1 透传（r1 评审：identified 沿用 stage1 键级口径
+      而不透传 unscreened 会让「identified = screened + unscreened」在
+      two_stage 上破）。
     - 复筛决策只统计落在初筛纳入键域（stage1 双方一致 include 的键）内的
       条目：键域外与重复键忽略并记入 warnings（R6-F5），保证
       included + excluded <= screened 恒成立（复筛在初筛纳入子集上进行，
@@ -470,6 +475,7 @@ def prisma_two_stage(
         excluded=stage1.excluded + excluded2,
         included=included,
         warnings=tuple(warns),
+        unscreened=stage1.unscreened,
     )
 
 

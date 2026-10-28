@@ -19,8 +19,24 @@ G-02 截断只约束**新生成**键，库内既有的 301~313 字符旧消歧�
 - 逐字节守护（恒绿）：无超长键的正常库经迁移后主库文件 sha256 与全表
   逻辑 dump 逐字节一致——迁移对正常库零写入；
 - 端到端：预置 313 旧键的真实任务库，Web 决策端点对**迁移后合规键**
-  POST 200（修前键不存在 → 400 红）；对照：旧 313 键本身仍被 Pydantic
-  契约拒绝（422，两态恒然——死锁形态演示）。
+  POST 200（修前键不在库、write_guard 先判 article_not_eligible → 404/409
+  非 200，红）；对照：旧 313 键本身仍被 Pydantic 契约拒绝（422，两态恒然
+  ——死锁形态演示）。
+
+r1 评审返修补充钉（评审探针 probe_fatal/probe_migration 复现的迁移缺口）：
+- members_json 同步（阻断项）：预置 313 键 + pending 标题候选组
+  （title_duplicate_reviews.members_json 与 title_duplicate_members 均含
+  旧键）→ 迁移后 members_json 键值同步，组仍可经真实 decide 端点决策
+  200（修前 _title_review_snapshot 对旧键 fetchone=None → list(None)
+  TypeError → 500，整组永久不可决策，红）；
+- 既存悬挂外键容忍（中低项）：313 键 + 与重命名无关的悬挂 decisions 行
+  → 迁移照常完成（修前全库 foreign_key_check 一票否决 → init_db 每请求
+  500 / CLI import 抛异常，红）；悬挂行原样保留（不修不删）；
+- 非外键键引用同步（低项）：workflow_source_records/workflow_import_
+  metadata 的 canonical_key、workflow_import_candidate_members 的
+  ref_id（仅 ref_type='active' 行是文章键，'record' 行不得误改）、
+  迁移前已写入的 title_duplicate_undo 快照（before/after_json）；
+- two_stage 的 unscreened 透传钉在 test_r7_mm6_prisma_caliber.py。
 """
 
 from __future__ import annotations
@@ -308,7 +324,8 @@ class WebDecisionAfterMigrationTests(unittest.TestCase):
             headers=self.auth())
         self.assertEqual(r_old.status_code, 422,
                          "超长键本身仍应被契约层拒绝（两态恒然，死锁形态演示）")
-        # 迁移后的合规键可决策：修前库内无此键 → 400（红）；
+        # 迁移后的合规键可决策：修前库内无此键，write_guard 先于 DB 层判
+        # article_not_eligible → 409（评审 r1 实测口径；红）；
         # 修后 _screener_db 的 init_db 触发幂等迁移 → 键在场 → 200
         compliant = base[:KEY_MAX - 13] + "-" + suffix
         r_new = self.client.post(
@@ -320,6 +337,242 @@ class WebDecisionAfterMigrationTests(unittest.TestCase):
         arts = db_mod.list_articles(self.db, include_duplicates=True)
         self.assertEqual([a.zotero_key for a in arts], [compliant])
         self.assertLessEqual(len(compliant), KEY_MAX)
+
+    def test_title_duplicate_group_decidable_after_migration(self):
+        # 评审 r1 探针 probe_fatal 场景端到端回放：预置 313 键 + pending
+        # 标题候选组（members_json 与成员表均含旧键）→ 迁移后
+        # GET 候选组列表 200；POST not_duplicate 与 duplicate（keeper=新键）
+        # 均 200（修前 _title_review_snapshot 对 members_json 滞留旧键
+        # fetchone=None → list(None) TypeError → 500，整组永久不可决策，红）。
+        import json as _json
+
+        base = "D" * 300
+        suffix = hashlib.sha256(b"mm6-r1-web").hexdigest()[:12]
+        legacy = f"{base}-{suffix}"
+        compliant = base[:KEY_MAX - 13] + "-" + suffix
+        key_a = "DA" * 150  # 300 字符对照成员键
+        db_mod.init_db(self.db)
+        db_mod.upsert_articles(self.db, [
+            Article(zotero_key=key_a, title="R1 Shared Title", doi="10.1/a"),
+            Article(zotero_key=legacy, title="R1 Shared Title", doi="10.1/b"),
+        ], [])
+        members = [{"zotero_key": key_a, "imported_in_batch": 1},
+                   {"zotero_key": legacy, "imported_in_batch": 1}]
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            for review_id in ("rr1", "rr2"):
+                conn.execute(
+                    "INSERT INTO title_duplicate_reviews(review_id,normalized_title,"
+                    "status,members_json,keeper_key,decision_by,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (review_id, f"r1-{review_id}", "pending",
+                     _json.dumps(members, ensure_ascii=False), "", "", "t", "t"))
+                conn.executemany(
+                    "INSERT INTO title_duplicate_members(review_id,zotero_key,"
+                    "imported_in_batch) VALUES(?,?,1)",
+                    [(review_id, key_a), (review_id, legacy)])
+        r_list = self.client.get(
+            f"/api/tasks/{self.task}/title-duplicate-reviews?view=all",
+            headers=self.auth())
+        self.assertEqual(r_list.status_code, 200, r_list.text)
+        r_not_dup = self.client.post(
+            f"/api/tasks/{self.task}/title-duplicate-reviews/rr1",
+            json={"decision": "not_duplicate"}, headers=self.auth())
+        self.assertEqual(r_not_dup.status_code, 200, r_not_dup.text)
+        r_dup = self.client.post(
+            f"/api/tasks/{self.task}/title-duplicate-reviews/rr2",
+            json={"decision": "duplicate", "keeper_key": compliant},
+            headers=self.auth())
+        self.assertEqual(r_dup.status_code, 200, r_dup.text)
+        # 决策后文献解除 article_not_eligible 卡死（阻断项后果链闭环）：
+        # B（新键）在 not_duplicate 组里不构成排除；对 compliant 键的
+        # 筛选决策可写入。
+        r_decide = self.client.post(
+            f"/api/tasks/{self.task}/decisions",
+            json={"zotero_key": compliant, "decision": "include"},
+            headers=self.auth())
+        self.assertEqual(r_decide.status_code, 200, r_decide.text)
+
+
+# ---------------------------------------------------------------------------
+# r1 评审返修：members_json 同步（阻断项）——标题候选组迁移后必须仍可决策
+# ---------------------------------------------------------------------------
+class MembersJsonSyncTests(unittest.TestCase):
+    def _seed_group_db(self, db: str) -> tuple[str, str, str]:
+        """评审 probe_fatal 夹具：313 键 + pending 标题候选组。
+
+        members_json（JSON 列，与 title_duplicate_members 冗余存键）与
+        成员表均含旧键——迁移若只同步列名白名单，members_json 滞留旧键。
+        """
+        import json as _json
+
+        key_a = "A" * 300
+        legacy_b = _legacy_key("B" * 300, "mm6-r1-b")
+        db_mod.init_db(db)
+        db_mod.upsert_articles(db, [
+            Article(zotero_key=key_a, title="Shared Title", doi="10.1/a"),
+            Article(zotero_key=legacy_b, title="Shared Title", doi="10.1/b"),
+        ], [])
+        members = [
+            {"zotero_key": key_a, "imported_in_batch": 1},
+            {"zotero_key": legacy_b, "imported_in_batch": 1},
+        ]
+        with closing(sqlite3.connect(db)) as conn, conn:
+            for review_id in ("r1", "r2"):
+                conn.execute(
+                    "INSERT INTO title_duplicate_reviews(review_id,normalized_title,"
+                    "status,members_json,keeper_key,decision_by,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (review_id, f"title-{review_id}", "pending",
+                     _json.dumps(members, ensure_ascii=False), "", "", "t", "t"))
+                conn.executemany(
+                    "INSERT INTO title_duplicate_members(review_id,zotero_key,"
+                    "imported_in_batch) VALUES(?,?,1)",
+                    [(review_id, key_a), (review_id, legacy_b)])
+        return key_a, legacy_b, "B" * (KEY_MAX - 13) + "-" + legacy_b[-12:]
+
+    def test_migration_syncs_members_json_and_group_stays_decidable(self):
+        import json as _json
+
+        with tempfile.TemporaryDirectory(prefix="rf_mm6_r1a_") as tmp:
+            db = str(Path(tmp) / "legacy.db")
+            key_a, legacy_b, new_b = self._seed_group_db(db)
+            self.assertEqual(db_mod.migrate_overlong_keys(db), 1)
+            # members_json 键值同步（修前滞留 313 旧键 → 红）
+            with closing(sqlite3.connect(db)) as conn:
+                for review_id in ("r1", "r2"):
+                    raw = conn.execute(
+                        "SELECT members_json FROM title_duplicate_reviews "
+                        "WHERE review_id=?", (review_id,)).fetchone()[0]
+                    keys = {m["zotero_key"] for m in _json.loads(raw)}
+                    self.assertEqual(keys, {key_a, new_b},
+                                     f"{review_id} members_json 未同步: {keys}")
+            # 组仍可决策（修前 _title_review_snapshot 对旧键 fetchone=None
+            # → list(None) TypeError，decide 抛异常 → 红）
+            self.assertTrue(db_mod.decide_title_duplicate_review(
+                db, "r1", "not_duplicate", decided_by="u"))
+            self.assertTrue(db_mod.decide_title_duplicate_review(
+                db, "r2", "duplicate", keeper_key=new_b, decided_by="u"))
+            # 决策写入的撤销快照可安全回放（键域一致，无「已有后续变更」）
+            self.assertTrue(db_mod.undo_title_duplicate_review(db, "u"))
+
+    def test_preexisting_undo_snapshot_restorable_after_migration(self):
+        # 迁移前已写入的撤销快照（before/after_json 含旧键）经迁移同步后
+        # 仍可撤销：修前快照滞留旧键 vs 库内新键 → snapshot != after →
+        # 「相关记录已有后续变更」ValueError → 红。
+        with tempfile.TemporaryDirectory(prefix="rf_mm6_r1b_") as tmp:
+            db = str(Path(tmp) / "undo.db")
+            key_a, legacy_b, _new_b = self._seed_group_db(db)
+            # 迁移前先做一次决策（写入含 313 旧键的撤销快照）
+            self.assertTrue(db_mod.decide_title_duplicate_review(
+                db, "r1", "duplicate", keeper_key=key_a, decided_by="u"))
+            self.assertEqual(db_mod.migrate_overlong_keys(db), 1)
+            self.assertTrue(db_mod.undo_title_duplicate_review(db, "u"))
+            with closing(sqlite3.connect(db)) as conn:
+                status = conn.execute(
+                    "SELECT status FROM title_duplicate_reviews "
+                    "WHERE review_id='r1'").fetchone()[0]
+                self.assertEqual(status, "pending", "撤销未恢复到决策前状态")
+                dup = conn.execute(
+                    "SELECT is_duplicate_of FROM articles WHERE zotero_key=?",
+                    ("B" * (KEY_MAX - 13) + "-" + legacy_b[-12:],)).fetchone()[0]
+                self.assertIsNone(dup, "撤销未清除 is_duplicate_of 标记")
+
+
+# ---------------------------------------------------------------------------
+# r1 评审返修：既存悬挂外键不得阻断迁移（中低项）
+# ---------------------------------------------------------------------------
+class PreexistingDanglingFkToleranceTests(unittest.TestCase):
+    def test_unrelated_dangling_fk_does_not_block_migration(self):
+        # 评审 probe_fatal 场景 1：313 键 + 一条悬挂 decisions 行 'GHOST'
+        # （引用不存在的文章键，与本次重命名无关的既存脏数据）→
+        # 迁移照常完成（修前全库 foreign_key_check 一票否决 raise →
+        # init_db 尾部每请求重跑 → Web 全接口 500 / CLI import 抛异常，红）。
+        with tempfile.TemporaryDirectory(prefix="rf_mm6_r1c_") as tmp:
+            db = str(Path(tmp) / "dangling.db")
+            legacy = _legacy_key("B" * 300, "mm6-r1-ghost")
+            db_mod.init_db(db)
+            db_mod.upsert_articles(db, [
+                Article(zotero_key=legacy, title="Legacy Article", doi="10.1/b")], [])
+            with closing(sqlite3.connect(db)) as conn, conn:
+                conn.execute(  # 悬挂行：raw sqlite3 默认 FK off 可写入
+                    "INSERT INTO decisions(zotero_key,decision,exclusion_reason,"
+                    "notes,tags,screened_at,updated_at) "
+                    "VALUES('GHOST','include','','','','t','t')")
+            self.assertEqual(db_mod.migrate_overlong_keys(db), 1)  # 修前抛 ValueError
+            with closing(sqlite3.connect(db)) as conn:
+                keys = [r[0] for r in conn.execute("SELECT zotero_key FROM articles")]
+                self.assertTrue(all(len(k) <= KEY_MAX for k in keys), keys)
+                # 悬挂行原样保留（既存脏数据不修不删，与 758da65 行为一致）
+                ghost = conn.execute(
+                    "SELECT zotero_key,decision FROM decisions "
+                    "WHERE zotero_key='GHOST'").fetchone()
+                self.assertEqual(ghost, ("GHOST", "include"))
+            # init_db（Web 每请求入口）在该库上不再抛
+            db_mod.init_db(db)
+            # 幂等
+            self.assertEqual(db_mod.migrate_overlong_keys(db), 0)
+
+
+# ---------------------------------------------------------------------------
+# r1 评审返修：非外键键引用同步（低项）——canonical_key / ref_id(active) /
+# keeper_key（既有白名单）全覆盖，'record' ref_id 不得误改
+# ---------------------------------------------------------------------------
+class NonForeignKeyReferenceSyncTests(unittest.TestCase):
+    def test_canonical_key_and_active_ref_id_synced(self):
+        from coscreen import review_imports as _rim
+        from coscreen.review_imports import canonical as _canonical
+
+        with tempfile.TemporaryDirectory(prefix="rf_mm6_r1d_") as tmp:
+            db = str(Path(tmp) / "workflow.db")
+            db_mod.init_db(db)
+            _rim.migrate(db)
+            legacy = _legacy_key("B" * 300, "mm6-r1-wf")
+            new_key = "B" * (KEY_MAX - 13) + "-" + legacy[-12:]
+            db_mod.upsert_articles(db, [
+                Article(zotero_key=legacy, title="Workflow Article", doi="10.1/b")], [])
+            with closing(sqlite3.connect(db)) as conn, conn:
+                # workflow_source_records / workflow_import_metadata 的
+                # canonical_key（非外键、语义为文章键）
+                conn.execute(
+                    "INSERT INTO workflow_source_records(id,source_id,digest,row_index,"
+                    "filename,original_json,article_json,incoming_key,staged_key,"
+                    "canonical_key,outcome,state,created_at) "
+                    "VALUES('rec1','s1','d1',0,'f.csv','{}','{}',?,?,?,'accepted',"
+                    "'active','t')", (legacy, legacy, legacy))
+                conn.execute(
+                    "INSERT INTO workflow_import_metadata(record_id,canonical_key,"
+                    "before_json,incoming_json) VALUES('rec1',?,'{}','{}')", (legacy,))
+                # 候选组成员：ref_type='active' 的 ref_id 是文章键；
+                # 'record' 的 ref_id 是 record id，绝不能被迁移误改
+                conn.execute(
+                    "INSERT INTO workflow_import_candidates(id,signature,kind,status,"
+                    "keeper_key,decided_by,created_at,updated_at) "
+                    "VALUES('c1','sig1','exact_key','pending',?,'','t','t')", (legacy,))
+                conn.executemany(
+                    "INSERT INTO workflow_import_candidate_members(candidate_id,"
+                    "ref_type,ref_id) VALUES('c1',?,?)",
+                    [("active", legacy), ("record", "rec1")])
+            self.assertEqual(db_mod.migrate_overlong_keys(db), 1)
+            with closing(sqlite3.connect(db)) as conn:
+                rec = conn.execute(
+                    "SELECT canonical_key FROM workflow_source_records "
+                    "WHERE id='rec1'").fetchone()[0]
+                meta = conn.execute(
+                    "SELECT canonical_key FROM workflow_import_metadata "
+                    "WHERE record_id='rec1'").fetchone()[0]
+                keeper = conn.execute(
+                    "SELECT keeper_key FROM workflow_import_candidates "
+                    "WHERE id='c1'").fetchone()[0]
+                refs = dict(conn.execute(
+                    "SELECT ref_type,ref_id FROM workflow_import_candidate_members "
+                    "WHERE candidate_id='c1'").fetchall())
+                self.assertEqual(rec, new_key, "workflow_source_records.canonical_key 未同步")
+                self.assertEqual(meta, new_key, "workflow_import_metadata.canonical_key 未同步")
+                self.assertEqual(keeper, new_key, "workflow_import_candidates.keeper_key 未同步")
+                self.assertEqual(refs, {"active": new_key, "record": "rec1"},
+                                 f"ref_id 同步越界或缺失: {refs}")
+                # 引用链闭合：canonical() 不再抛 'no longer exists'
+                self.assertEqual(_canonical(conn, new_key), new_key)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import pandas as pd
 
 from coscreen.stats.merge import merge_decisions, merge_decisions_multi
-from coscreen.stats.prisma import prisma_dot, prisma_from_merge, prisma_from_merge_multi
+from coscreen.stats.prisma import (
+    prisma_dot,
+    prisma_from_merge,
+    prisma_from_merge_multi,
+    prisma_two_stage,
+)
 
 
 def _decisions_df(pairs: list[tuple[str, str]]) -> pd.DataFrame:
@@ -113,6 +118,19 @@ class TwoPathCaliberConsistencyTests(unittest.TestCase):
             self.assertEqual(flow.warnings, ())
             self.assertEqual(flow.unscreened, 0)
             self.assertNotIn("warnings", prisma_dot(flow))
+
+
+    def test_two_stage_passes_through_unscreened(self):
+        # r1 评审（低项·文档/API 一致性）：two_stage 沿用 stage1 的
+        # identified（键级）却不透传 unscreened（PrismaFlow 默认 0）——
+        # 恒等式「identified = screened + unscreened」在 two_stage 上破。
+        df_a, df_b = _probe_dfs()
+        stage1 = merge_decisions(df_a, df_b)
+        stage2 = merge_decisions(
+            _decisions_df([("K1", "include")]), _decisions_df([("K1", "include")]))
+        flow = prisma_two_stage(stage1, stage2)
+        self.assertEqual(flow.unscreened, 1)  # 修前默认 0 → 红
+        self.assertEqual(flow.identified, flow.screened + flow.unscreened)
 
 
 # ---------------------------------------------------------------------------
