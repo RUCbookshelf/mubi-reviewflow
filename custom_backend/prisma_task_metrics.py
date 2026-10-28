@@ -123,12 +123,15 @@ def summary(ctx, mode: str) -> dict:
     fields = {'identified_rows_db': db_rows, 'identified_rows_other': other_rows,
               'sources_scope': 'db_reg_other' if other_rows else 'db_reg',
               'duplicates_removed': duplicate_count,
-              # R6-F9（复审 v2 口径）：records_screened 按**全部有决策的
-              # 活动键**计——与 CLI prisma_from_merge 的 screened（所有决策
-              # 行）相等（同库验收）。db_reg 单源场景 other_keys 为空，
-              # len(first) 与 len(db_keys & first) 恒等，v1 口径不变。
-              'records_screened': len(first),
-              'records_excluded_screening': sum(v['decision']=='exclude' for v in first.values()),
+              # R6-F9（r8 复审回退 db-only）：records_screened/初筛排除按
+              # **数据库/注册库列键域**（db_keys）计——该字段的第二消费方
+              # 「任务指标导入表单」把这两个数填进 PRISMA 数据库列字段，
+              # R2/R3 按数据库列勾稽；并入 other-only 键曾使导入表单直接
+              # R2/R3 error（导出被阻断，实测 records_screened=2 vs
+              # identified_rows_db=1）。任务页与 CLI 的跨口径对齐（CLI 计
+              # 全部决策行）属产品仲裁项，见 r7 指示文档 F9 条目。
+              'records_screened': len(db_keys & set(first)),
+              'records_excluded_screening': sum(v['decision']=='exclude' for k,v in first.items() if k in db_keys),
               'reports_sought_db': len(sought & db_keys), 'reports_sought_other': len(sought & other_keys),
               'reports_assessed_db': len(set(second) & db_keys), 'reports_assessed_other': len(set(second) & other_keys),
               'reports_of_included_studies': len(included) if ready else None,

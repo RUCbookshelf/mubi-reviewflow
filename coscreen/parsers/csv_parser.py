@@ -116,6 +116,16 @@ _CP1252_LETTER_BYTES = frozenset(
 )
 
 
+def _is_gb2312_level1(ch: str) -> bool:
+    """是否 GB2312 一级常用汉字（0xB0A1–0xD7F9 区）——中文姓名/常用词的
+    编码区（复审实测 30 个常见中文名全部落在该区）。"""
+    try:
+        raw = ch.encode("gbk")
+    except UnicodeEncodeError:
+        return False
+    return len(raw) == 2 and 0xB0 <= raw[0] <= 0xD7 and 0xA1 <= raw[1] <= 0xF9
+
+
 def _is_cjk_char(ch: str) -> bool:
     return "\u3000" <= ch <= "\u9fff" or "\uff00" <= ch <= "\uffef"
 
@@ -209,10 +219,22 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
                 "解码；若标题/作者应为中文，请将文件重新另存为 UTF-8 后导入"
             ]
         if paired_letters and sparse_cjk:
-            return candidates["cp1252"], [
-                f"{filename} 非 UTF-8 编码，已按 CP1252 解码（高位字节为西文重音"
-                "字母对）；若标题/作者应为中文，请将文件重新另存为 UTF-8 后导入"
-            ]
+            # 复审（r8 回归收口）：GBK 候选解出 GB2312 一级常用汉字（中文
+            # 姓名/常用词编码区——刘洋/李娜等 30 常见名曾 15 个被误判 cp1252
+            # 且覆盖旧库内容）时**保持 GBK**；cp1252 侧的「重音字母对」形态
+            # 仅当高位字节簇嵌在拉丁词内部（如 Größe 的 öß）才可信——独立
+            # 成词的 CJK 簇（姓名/词整簇）不构成 cp1252 证据。
+            embedded_in_latin = bool(highs) and all(
+                (i > 0 and data[i - 1:i] .isalpha() and data[i - 1] < 0x80)
+                or (i + 1 < len(data) and data[i + 1] < 0x80
+                    and chr(data[i + 1]).isalpha())
+                for i, b in enumerate(data) if b >= 0x80)
+            if not any(_is_gb2312_level1(ch) for ch in text_gbk if _is_cjk_char(ch))                     and embedded_in_latin:
+                return candidates["cp1252"], [
+                    f"{filename} 非 UTF-8 编码，已按 CP1252 解码（高位字节为西文"
+                    "重音字母对且嵌于拉丁词内）；若标题/作者应为中文，请将文件"
+                    "重新另存为 UTF-8 后导入"
+                ]
     chosen = next(
         (enc for enc in ("gbk", "cp1252") if enc in candidates and
          (enc != "cp1252" or cp1252_viable)),

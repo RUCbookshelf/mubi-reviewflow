@@ -548,6 +548,28 @@ class EncodingConfidenceTests(unittest.TestCase):
         warnings = " ".join(article.raw.get("_parse_warnings", []))
         self.assertIn("CP1252", warnings)
 
+    def test_gbk_common_chinese_names_not_misjudged_cp1252(self):
+        # r8 复审原样回放：r7 的「cp1252 相邻字母对」判据曾把英文为主、
+        # 中文稀疏的合法 GBK 误判 cp1252——30 个常见中文名 15 个触发
+        # （刘洋→'ÁõÑó'、李娜→'ÀîÄÈ'、赵磊→'ÕÔÀÚ'、孙丽→'ËïÀö'），
+        # 且旧库行内容被重导覆盖损坏。现 GB2312 一级字保持 GBK。
+        NL = chr(13) + chr(10)  # CRLF
+
+        for name in ("刘洋", "李娜", "赵磊", "孙丽"):
+            with self.subTest(name=name):
+                data = (f"Title,Creator{NL}Study of {name},{name}{NL}").encode("gbk")
+                with tempfile.TemporaryDirectory() as tmp:
+                    with redirect_stderr(StringIO()):
+                        article = parse_csv(_write(tmp, "name.csv", data))[0]
+                self.assertIn(name, article.authors)
+                self.assertIn(name, article.title)
+        # 对照：拉丁词内嵌的重音字母对（Größe 形态）仍按 cp1252
+        data = ("Title,Creator" + NL + "Größe der Stichprobe,Smith J" + NL).encode("latin-1")
+        with tempfile.TemporaryDirectory() as tmp:
+            with redirect_stderr(StringIO()):
+                article = parse_csv(_write(tmp, "grosse2.csv", data))[0]
+        self.assertEqual(article.title, "Größe der Stichprobe")
+
     def test_gbk_rare_char_not_misjudged_cp1252(self):
         # 复审 B6 原样回放：合法 GBK 含生僻字「狝」（AA41）曾被单个标记
         # 否决 GBK、按 cp1252 静默解成 'ªA'。

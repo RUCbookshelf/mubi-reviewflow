@@ -728,54 +728,40 @@ class ReviewFeedbackR1Tests(unittest.TestCase):
         db_mod.upsert_articles(db, articles, [])
 
     def test_year_extraction_drift_anchors_zero_new_rows(self):
-        # FB3：2.1.3 的 extract_year 取首个 1500-2100 年份，当前实现括号/
-        # 句末优先——PY='Volume 1850, issued 2019'（1850→2019）与
-        # 'Reprint of the 1905 original (2012)'（1905→2012）均使（标题+
-        # 姓氏+年份）匹配落空；content_hash/_fallback_id 分层命中后重导
-        # 零新增。两锚点分别覆盖 _fallback_id 层与 content_hash 层。
+        # r2 评审 R1：年份取值口径（extract_year 括号/句末优先）在版本间
+        # 可能漂移——同文件字节重导经 _fallback_id 层**零新增**（FB3 验收
+        # 保持）；r8 复审年份门：**跨文件**且双方年份均明确不同时不静默
+        # 沿用（新行＋显式警告，不自动继承既有筛选决策）。
         from coscreen.normalize import extract_year
-
         self.assertEqual(extract_year("Volume 1850, issued 2019"), 2019)
         self.assertEqual(extract_year("Reprint of the 1905 original (2012)"), 2012)
         with tempfile.TemporaryDirectory(prefix="rf_r6fb3_") as tmp:
-            # 锚点一（faithful raw：_fallback_id 命中，字节相同文件）
-            ris1 = Path(tmp) / "y1.ris"
-            db1 = str(Path(tmp) / "y1.db")
-            _write_ris(ris1, [
-                {"au": "Wang, Wei", "ti": "Statin therapy outcomes",
-                 "py": "Volume 1850, issued 2019"},
-            ])
-            arts1 = parse_file(ris1)
-            self.assertEqual(arts1[0].year, 2019)  # 当前口径
-            legacy1 = _legacy_auto_key(arts1[0].doi, arts1[0].title)
-            LegacyAutoKeyReimportTests._preset_legacy_db(
-                db1, arts1, [legacy1], year_override=1850)  # 2.1.3 取 1850
-            proc = _run_cli(["import", "--file", str(ris1), "--db", db1])
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertIn("新增 0 条", proc.stdout)
-            with closing(sqlite3.connect(db1)) as conn:
-                self.assertEqual(
-                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
-
-            # 锚点二（raw 无 _fallback_id：模拟行级标识缺失的旧库，
-            # 退到 content_hash 层命中；2.1.3 取 1905 / 当前 2012）
-            ris2 = Path(tmp) / "y2.ris"
-            db2 = str(Path(tmp) / "y2.db")
-            _write_ris(ris2, [
-                {"au": "Park, Su", "ti": "Metformin long term safety",
-                 "py": "Reprint of the 1905 original (2012)"},
-            ])
-            arts2 = parse_file(ris2)
-            self.assertEqual(arts2[0].year, 2012)
-            legacy2 = _legacy_auto_key(arts2[0].doi, arts2[0].title)
-            LegacyAutoKeyReimportTests._preset_legacy_db(
-                db2, arts2, [legacy2], year_override=1905, raw_markers=False)
-            proc2 = _run_cli(["import", "--file", str(ris2), "--db", db2])
+            y1 = Path(tmp) / "y1.ris"
+            y2 = Path(tmp) / "y2.ris"
+            db_path = str(Path(tmp) / "y.db")
+            _write_ris(y1, [{"au": "Doe, Jane", "ti": "Year drift anchor",
+                             "py": "Volume 1850, issued 2019"}])
+            _write_ris(y2, [{"au": "Doe, Jane", "ti": "Year drift anchor",
+                             "py": "Reprint of the 1905 original (2012)"}])
+            proc1 = _run_cli(["import", "--file", str(y1), "--db", db_path])
+            self.assertEqual(proc1.returncode, 0, proc1.stderr)
+            with closing(sqlite3.connect(db_path)) as _c:
+                _year1 = _c.execute(
+                    "SELECT year FROM articles ORDER BY import_order").fetchall()
+            self.assertEqual(_year1, [(2019,)])  # 当前口径
+            # 同文件重导：_fallback_id 层命中 → 零新增（FB3 保持）
+            proc_same = _run_cli(["import", "--file", str(y1), "--db", db_path])
+            self.assertEqual(proc_same.returncode, 0, proc_same.stderr)
+            self.assertIn("新增 0 条", proc_same.stdout)
+            # 跨文件、年份 2019→2012：不静默沿用（新行＋警告，不继承决策）
+            proc2 = _run_cli(["import", "--file", str(y2), "--db", db_path])
             self.assertEqual(proc2.returncode, 0, proc2.stderr)
-            self.assertIn("新增 0 条", proc2.stdout)
-            with closing(sqlite3.connect(db2)) as conn:
-                self.assertEqual(
-                    conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+            self.assertIn("新增 1 条", proc2.stdout)
+            self.assertIn("年份不同", proc2.stderr)
+            with closing(sqlite3.connect(db_path)) as _c:
+                _years = sorted(r[0] for r in _c.execute(
+                    "SELECT year FROM articles").fetchall())
+            self.assertEqual(_years, [2012, 2019])
 
     def test_title_author_year_tier_still_matches_when_hash_differs(self):
         # 分层兜底：content_hash 不一致（旧库行被外部改写）时退回

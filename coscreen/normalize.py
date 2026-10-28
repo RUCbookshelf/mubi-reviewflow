@@ -226,6 +226,24 @@ def _is_name_initial(word: str) -> bool:
     return core.isupper() and core == word.strip(".")
 
 
+def _is_trailing_name_token(word: str) -> bool:
+    """姓名串**末位** token 是否为缩写（R6-D3 收口）：
+
+    - 单字母（可带点）恒为缩写；两字母全大写（PubMed "JA"）为缩写；
+    - 两字母**全小写或带点的混合形态**（"Smith ja"/"Smith J.P." 的
+      "ja"/"J.P."）在末位按缩写——修复前被当姓氏（'Smith ja' 曾得
+      姓 'ja'，同名同题重导因作者门被拆两行，破坏 R1 幂等）；
+    - 两字母**混合大小写且无点**（Wu/Li/Xu/He 等中国姓氏）是真实姓氏，
+      不按缩写（R6-D3 目标 'John Wu'→wu 保持）。
+    """
+    core = word.strip(".,")
+    if not core or not core.isalpha() or len(core) > 2:
+        return False
+    if len(core) == 1:
+        return True
+    return core.isupper() or core.islower() or "." in word
+
+
 def _looks_institutional(words: list[str]) -> bool:
     """无逗号作者串是否更像机构作者（U1-P2）。
 
@@ -277,8 +295,15 @@ def first_author_surname(authors: str | list | None) -> str:
         # 名在前（"John Smith"/"Maria de la Cruz"）。若结尾是缩写
         # （"Smith J" PubMed 风格、"van Dijk A"），则前面整段是姓氏；
         # 否则末词是姓氏。
+        # 尾位扫描：末 token 用尾位豁免规则（两字母全小写/带点也按缩写），
+        # 其后逐个回退只认严格缩写（"Smith J. A." 的中间缩写）
         end = len(words)
-        while end > 1 and _is_name_initial(words[end - 1]):
+        while end > 1:
+            token = words[end - 1]
+            is_initial = (_is_trailing_name_token(token)
+                          if end == len(words) else _is_name_initial(token))
+            if not is_initial:
+                break
             end -= 1
         if end == len(words):
             surname_words = [words[-1]]
@@ -320,7 +345,12 @@ def first_author_given_names(authors: str | list | None) -> str:
         if len(words) < 2:
             return ""  # 单词串无从分名姓
         end = len(words)
-        while end > 1 and _is_name_initial(words[end - 1]):
+        while end > 1:
+            token = words[end - 1]
+            is_initial = (_is_trailing_name_token(token)
+                          if end == len(words) else _is_name_initial(token))
+            if not is_initial:
+                break
             end -= 1
         if end == len(words):
             given_text = " ".join(words[:-1])   # 末词是姓

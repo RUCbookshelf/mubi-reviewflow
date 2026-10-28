@@ -557,15 +557,35 @@ def stabilize_conflicting_keys(
         if art.content_hash and art.content_hash in hash_index:
             key_text = hash_index[art.content_hash]
             db_art = known_by_key.get(key_text)
-            if db_art is None or _first_authors_compatible(art, db_art):
+            if db_art is not None and not _first_authors_compatible(art, db_art):
+                _warn(
+                    f"记录与库内行 {key_text} 的内容哈希相同（标题一致），但首作者"
+                    "不兼容，未沿用库内键（视为不同文献，各自成行）"
+                )
+            elif db_art is not None and not years_compatible(art.year, db_art.year):
+                # r8 复审：双方年份均明确且不同 → 不静默沿用（沿用会使新记录
+                # 继承旧记录挂同一键上的筛选决策，实测 2021 记录静默继承 2020
+                # 的 include）。_fallback_id/_record_id 层不设此门（FB3 年份
+                # 抽取口径漂移验收依赖同文件行沿用）。
+                _warn(
+                    f"记录与库内行 {key_text} 的内容哈希相同（标题一致），但年份"
+                    f"不同（{db_art.year} ≠ {art.year}），未沿用库内键——请人工"
+                    "核对是否同一文献（不自动继承既有筛选决策）"
+                )
+            else:
                 return key_text
-            _warn(
-                f"记录与库内行 {key_text} 的内容哈希相同（标题一致），但首作者"
-                "不兼容，未沿用库内键（视为不同文献，各自成行）"
-            )
         match_key = _content_match_key(art)
         if match_key[0] and match_key in content_index:
-            return content_index[match_key]
+            key_text = content_index[match_key]
+            db_art = known_by_key.get(key_text)
+            if db_art is None or (
+                    _first_authors_compatible(art, db_art)
+                    and years_compatible(art.year, db_art.year)):
+                return key_text
+            _warn(
+                f"记录与库内行 {key_text} 的标题/作者/年份匹配层命中但身份不"
+                "兼容，未沿用库内键（视为不同文献，各自成行）"
+            )
         return None
 
     adopted_targets: dict[str, list[int]] = {}  # 库内键 -> 命中的本批下标
@@ -602,7 +622,25 @@ def stabilize_conflicting_keys(
             # 库内行同在本列表（combined 调用形态）：并组，走更新路径
             uf.union(j, i)
         elif j is None:
-            # 分离传参形态（known 不在 articles 内）：直接沿用库内键
+            # 分离传参形态（known 不在 articles 内）：直接沿用库内键。
+            # r8 复审（#1）：沿用后交 upsert 全行覆盖曾把库内**非空** DOI/
+            # 作者/年份/期刊清成空值（重导缺 DOI 的同题同作者记录 → 库内
+            # DOI 变 ''，零警告）。沿用的语义是「同一文献的元数据更新」：
+            # 本批为空的字段保留库内非空值并显式警告，交人工复核。
+            db_art = known_by_key.get(target)
+            if db_art is not None:
+                preserved = []
+                for field in ("doi", "authors", "year", "journal", "url", "abstract"):
+                    db_value = getattr(db_art, field, None)
+                    if db_value and not getattr(art, field, None):
+                        setattr(art, field, db_value)
+                        preserved.append(field)
+                if preserved:
+                    _warn(
+                        f"沿用库内键 {target} 时，本批缺失的字段"
+                        f"（{', '.join(preserved)}）保留了库内既有值——"
+                        "请人工复核元数据是否需要更新"
+                    )
             art.zotero_key = target
     for target, hits in adopted_targets.items():
         if len(hits) > 1:

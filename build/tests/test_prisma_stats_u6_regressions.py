@@ -359,11 +359,21 @@ class ScreenedCaliberAlignmentTests(unittest.TestCase):
             ctx = SimpleNamespace(owner_db=Path(task_db), actor_db=Path(task_db),
                                    task_kind="personal", can_manage=True)
             fields = _summary(ctx, "reviewer")["fields"]
-            # CLI 同组决策：merge_decisions（双人一致 include）→ screened
-            df = _decisions_df([("k1", "include"), ("k2", "include")])
-            cli_screened = prisma_from_merge(merge_decisions(df, df)).screened
-            self.assertEqual(cli_screened, 2)
-            self.assertEqual(fields["records_screened"], cli_screened)  # 修复前 1
+            # r8 复审回退 db-only：任务页 records_screened 按数据库/注册库
+            # 列键域计（k2 为 website/其他来源，不计入数据库列）——该值的
+            # 第二消费方是导入表单的数据库列字段（R2/R3 勾稽）。与 CLI
+            # （计全部决策行=2）的跨口径对齐属产品仲裁项（r7 指示 F9）。
+            self.assertEqual(fields["records_screened"], 1)
+            # 导入表单（数据库列口径）不再触发 R2/R3 error：
+            # Σidentified_rows_db(1) − duplicates_removed(0) ==
+            # records_screened(1)；reports_sought_db(1) ==
+            # records_screened(1) − records_excluded_screening(0)
+            self.assertEqual(sum(r['n'] for r in fields['identified_rows_db'])
+                             - (fields['duplicates_removed'] or 0),
+                             fields['records_screened'])
+            self.assertEqual(fields['reports_sought_db'],
+                             fields['records_screened']
+                             - fields['records_excluded_screening'])
 
     def test_screened_matches_saved_decision_union(self):
         # 两名筛选员的决策表（任务页 first 的数据形状：键 -> 已保存决策）；
