@@ -391,15 +391,17 @@ def map_to_effect(template: ExtractionTemplate, values: dict[str, Any],
     if calculator_entry_method:
         input_data["calculator_entry_method"] = calculator_entry_method
     if result.get("measure") == "SMD" and func is calculate_continuous_effect:
-        # MM5-04：rct_continuous 模板的 SMD 与臂级入口（entry_method="continuous
-        # arms"）调用的是同一个 continuous_effect（pooled SD + 近似 J 校正）。
-        # 在已知计算器身份处显式写入与臂级入口一致的 estimator_metadata，
-        # 而不是留给 save_effect 按 entry_method 前缀猜测——否则两条在线入口的
-        # 同数值 SMD 元数据互斥（hedges_g vs unclassified_smd），混池合成会被
-        # pool_compatibility 以 estimator_conflict 拒绝。
-        # 取舍：相比在 smd_contract 白名单里放行 "extraction:*" 前缀（会对未来
-        # 任何产出 SMD 的模板一概冒认 hedges_g），仅在计算器确为两臂连续计算器
-        # 时声明元数据更稳（复审 verif5_groupA MM5-04 亦推荐此修法）。
+        # MM5-04（两层，评审第 1 轮后补全）：
+        # 1) 新行：在已知计算器身份处（func is calculate_continuous_effect，与
+        #    臂级 entry_method="continuous arms" 调用同一个 continuous_effect，
+        #    pooled SD + 近似 J 校正）显式写入一致 estimator_metadata——修复后
+        #    新写入的行不依赖任何按 entry_method 的猜测；
+        # 2) 存量行：2.1.3 已入库行在 save_effect 中固化 unclassified_smd，
+        #    由 smd_contract._LEGACY_APPROXIMATE_SUMMARY_FORMATS 纳入
+        #    "extraction:rct_continuous"（按完整字面量，非 "extraction:*" 前缀
+        #    ——前缀会让未来任何产出 SMD 的模板被冒认 hedges_g）＋
+        #    pool_compatibility 对存量 unclassified 行按分类器现值读时升级，
+        #    旧行/新行/臂级行三者同池可合成，不重写存量数据。
         # 动态导入：smd_contract 顶层依赖 scipy，本模块保持导入零副作用。
         from coscreen.smd_contract import legacy_smd_metadata
 

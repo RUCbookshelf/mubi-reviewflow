@@ -2,17 +2,20 @@
 
 每条用例对应一个已确认缺陷的修复；把对应修复回退，该用例必须变红：
 - MM5-04：提取模板入口与臂级入口的同数值 SMD 必须携带一致 estimator
-  元数据并可混池合成（修前混池抛 PoolCompatibilityError）。
+  元数据并可混池合成（修前混池抛 PoolCompatibilityError）；2.1.3 已入库、
+  存量 input_json 固化 unclassified_smd 的同类行也必须与新行/臂级行同池。
 - MM5-06：/analysis/advanced/cumulative 的 model 参数白名单
   {fixed,random,random_pm,random_reml}（修前非法值 KeyError→500）。
 - MM5-08/09：meta_regression / small_study_effects 的 effect_scale 复用
   review_analysis 合成口径（修前 FISHER_Z 标 natural、漏斗点无尺度字段）。
 - MM5-12：提取落库 values 用强制转换后的计算输入，原始提交另存 raw_values
   （修前落库原始串 "3e1"，与计算用 30 不一致）。
-- MM5-13：highlights rects 每项恰 4 个浮点分量（修前 3/5 元素 200 静默丢弃）。
+- MM5-13：highlights rects 每项恰 4 个浮点分量，非法长度 400 拒绝
+  （修前 3/5 元素 200 静默丢弃）。
 - MM5-15/16：README 四语种不得引用仓库不存在的 requirements-dev.txt /
   run_pathB.bat，开发安装命令必须指向真实文件（修前各 4 处引用不存在文件）。
 """
+import json
 import os
 import re
 import sys
@@ -79,13 +82,60 @@ class Mm5LibraryCaliberTests(unittest.TestCase):
         self.assertAlmostEqual(effect["se"], expected["se"])
         save_effect(self.db, "S02", "C", "O", "T", "SMD", effect["estimate"], effect["se"],
                     "K02", effect["input_data"], effect["entry_method"])
-        rows = [r for r in list_effects(self.db) if r["measure"] == "SMD"]
+        rows = [r for r in list_effects(self.db)
+                if r["measure"] == "SMD" and r["comparison"] == "C"]
         self.assertEqual(len(rows), 2)
         for row in rows:  # 两条入口的估计量签名必须一致（修前模板行是 unclassified_smd）
             metadata = row["input_data"]["estimator_metadata"]
             self.assertEqual(metadata["estimator"], "hedges_g")
             self.assertEqual(metadata["variance_method"], "LS2_formula_with_approximate_J")
         result = synthesize(self.db, "C", "O", "T", "SMD")  # 修前：PoolCompatibilityError
+        self.assertEqual(result["n_studies"], 2)
+
+    def test_mm5_04_legacy_extraction_rows_mix_with_new_entries(self):
+        """2.1.3 存量行：input_json 固化 unclassified_smd 的 extraction:
+        rct_continuous SMD 行（save_effect 旧分类落库形态），必须与臂级
+        hedges_g 行 / 修复后新行同池合成；纯存量行之间也必须继续可池。
+
+        r1 修复只声明新行元数据，旧行+新行仍 estimator_conflict（评审第 1 轮
+        实测驳回项）；本钉子对 r1 代码必须红。"""
+        # 2.1.3 save_effect 旧分类在 input_json 固化的元数据形态
+        # （smd_contract.legacy_smd_metadata 当时的 fall-through 分支）。
+        legacy_metadata = {"effect_class": "standardized_mean_difference",
+                           "estimator": "unclassified_smd", "standardizer": None,
+                           "small_sample_correction": None,
+                           "variance_method": "legacy_unknown",
+                           "calculation_version": "legacy_unclassified_v1"}
+        computed = continuous_effect(10, 10.0, 2.0, 10, 11.0, 2.0, "SMD")
+        input_json = json.dumps({"template_id": "rct_continuous",
+                                 "values": {"mean_t": 10.0, "sd_t": 2.0, "n_t": 10,
+                                            "mean_c": 11.0, "sd_c": 2.0, "n_c": 10,
+                                            "unit": "mmHg"},
+                                 "estimator_metadata": legacy_metadata}, ensure_ascii=False)
+        with closing(db_mod._connect(self.db)) as conn, conn:
+            for study, key in (("S04", "K04"), ("S05", "K05"), ("S06", "K06")):
+                conn.execute(
+                    "INSERT INTO review_effects(study_id,comparison,outcome,timepoint,measure,"
+                    "estimate,se,source_key,input_json,entry_method,selected,source_locator) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,1,'')",
+                    (study, "CL", "O", "T", "SMD", computed["estimate"], computed["se"],
+                     key, input_json, "extraction:rct_continuous"))
+        # 存量 extraction 行 + 臂级 hedges_g 行：必须可混池（r1 代码红）
+        save_arm_effect(self.db, "S07", "CL", "O", "T", "SMD", "K07",
+                        {"n_t": 10, "mean_t": 10.0, "sd_t": 2.0,
+                         "n_c": 10, "mean_c": 11.0, "sd_c": 2.0})
+        result = synthesize(self.db, "CL", "O", "T", "SMD")
+        self.assertEqual(result["n_studies"], 4)
+        # 纯存量行之间：修复前即可池（all-unclassified 豁免），不得回归
+        with closing(db_mod._connect(self.db)) as conn, conn:
+            for study, key in (("S08", "K08"), ("S09", "K09")):
+                conn.execute(
+                    "INSERT INTO review_effects(study_id,comparison,outcome,timepoint,measure,"
+                    "estimate,se,source_key,input_json,entry_method,selected,source_locator) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,1,'')",
+                    (study, "CN", "O", "T", "SMD", computed["estimate"], computed["se"],
+                     key, input_json, "extraction:rct_continuous"))
+        result = synthesize(self.db, "CN", "O", "T", "SMD")
         self.assertEqual(result["n_studies"], 2)
 
     def test_mm5_12_extraction_stores_coerced_values_with_raw_backup(self):
@@ -210,7 +260,8 @@ class Mm5EndpointCaliberTests(unittest.TestCase):
             self.assertTrue(response.json()["steps"])
 
     def test_mm5_13_rects_must_have_exactly_four_components(self):
-        """rects 每项必须恰 4 个浮点分量（修前 3/5 元素 200 且读回被静默丢弃）。"""
+        """rects 每项必须恰 4 个浮点分量，非法长度 400（修前 3/5 元素 200 且
+        读回被静默丢弃；评审第 1 轮明确按 400 验收，schema 级 422 不算过）。"""
         url = f"/api/tasks/{self.task}/highlights"
         control = {"zotero_key": "K1", "events": [
             {"kind": "highlight", "page": 1, "text": "ctrl", "rects": [[0.1, 0.2, 0.3, 0.4]]}]}
@@ -221,7 +272,7 @@ class Mm5EndpointCaliberTests(unittest.TestCase):
             body = {"zotero_key": "K1", "events": [
                 {"kind": "highlight", "page": 2, "text": "bad", "rects": bad_rects}]}
             response = self.client.post(url, json=body, headers=self.auth_header())
-            self.assertEqual(response.status_code, 422,
+            self.assertEqual(response.status_code, 400,
                              f"rects={bad_rects}: {response.status_code} {response.text}")
 
 

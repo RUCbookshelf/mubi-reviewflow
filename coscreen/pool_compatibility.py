@@ -71,8 +71,20 @@ def require_compatible_effects(rows, expected_measure=None):
     for row in smd_rows:
         data = row.get('input_data') if isinstance(row.get('input_data'), dict) else {}
         metadata = data.get('estimator_metadata') or row.get('estimator_metadata') or {}
+        entry_method = row.get('entry_method') or 'manual'
         if not metadata:
-            metadata = legacy_smd_metadata(row.get('entry_method') or 'manual', data)
+            metadata = legacy_smd_metadata(entry_method, data)
+        elif metadata.get('estimator') == 'unclassified_smd':
+            # MM5-04 存量行升级：2.1.3–2.1.4 早期经提取模板入库的 SMD 行，在
+            # "extraction:rct_continuous" 进入 _LEGACY_APPROXIMATE_SUMMARY_FORMATS
+            # 之前被 save_effect 按旧分类固化为 unclassified_smd（存 input_json）。
+            # entry_method 的语义权威是分类器现值——对已能识别的格式在读时升级
+            # 签名，与臂级 hedges_g 行 / 修复后新写入的显式元数据行同池可合成；
+            # 分类器仍判 unclassified 的行（如 manual 未知 standardizer）不受影响，
+            # 不重写任何存量数据。
+            rederived = legacy_smd_metadata(entry_method, data)
+            if rederived.get('estimator') != 'unclassified_smd':
+                metadata = rederived
         keys = ('estimator', 'standardizer', 'small_sample_correction', 'variance_method')
         signature = tuple(metadata.get(key) for key in keys)
         signatures.setdefault(signature, []).append(row.get('study_id', 'unknown'))
