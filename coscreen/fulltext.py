@@ -1,6 +1,8 @@
 """复筛（全文阶段）与 PDF 阅读标记 —— PDF 管理 / 高亮 / 复筛决策（SPEC §14）。
 
-- PDF 二进制存 ``data/pdfs/{key}.pdf``，``fulltexts`` 表只存元数据（路径/哈希/页数）；
+- PDF 二进制存 ``data/pdfs/{单射化的 key}.pdf``（MM-07：截断清洗主干 +
+  sha256(key) 短后缀，不同键不互相覆盖），``fulltexts`` 表只存元数据
+  （路径/哈希/页数；filename 列存展示名）；
 - ``save_pdf`` 校验 %PDF- 文件头，页数用 pypdf 统计（解析失败按 0 处理）；
 - ``match_pdfs`` 按确定性链路匹配：文件名（去扩展名）== zotero_key →
   DOI（规范化后相等）→ 标题 rapidfuzz token_set_ratio >= 90（取最高分，
@@ -167,6 +169,32 @@ def _safe_pdf_stem(key: str) -> str:
     return cleaned or "pdf"
 
 
+#: 落盘主干的截断上限（防超长键撑爆文件系统名长限制；Windows 单名 255）
+_PDF_DISK_STEM_MAX = 96
+
+#: 落盘名区分段的十六进制位数（48 bit；配合 save_pdf 事务内的占用守卫，
+#: 截段碰撞也能被检出而非静默覆盖）
+_PDF_DISK_DIGEST_CHARS = 12
+
+
+def _pdf_disk_filename(key: str) -> str:
+    """PDF **落盘**文件名（单射，MM-07）。
+
+    ``_safe_pdf_stem`` 是删除式清洗，天然非单射：'AB:123' / 'AB123' /
+    'AB 123' 都成 'AB123'，'$$$' 与 'pdf' 都成 'pdf'——不同文献键的 PDF
+    会落同名文件互相覆盖（Windows 大小写不敏感再放大一层）。这里对
+    **原始键**取 sha256 短前缀拼在截断主干之后：同键幂等（重复保存仍覆盖
+    同一文件）、异键互异（单射）；截断只作用于主干，不影响单射性。
+    展示名（fulltexts.filename 列 / 下载 Content-Disposition）仍用
+    ``_safe_pdf_stem``，外部契约不变。
+    """
+    stem = _safe_pdf_stem(key)[:_PDF_DISK_STEM_MAX]
+    digest = hashlib.sha256((key or "").encode("utf-8")).hexdigest()[
+        :_PDF_DISK_DIGEST_CHARS
+    ]
+    return f"{stem}_{digest}.pdf"
+
+
 def _norm_text(text: str) -> str:
     """标题/文件名比较形式：小写 + 连续空白折叠（与去重比较口径一致）。"""
     return " ".join(text.lower().split())
@@ -221,9 +249,13 @@ def save_pdf(
     - **U5-P9**：pypdf 解析不出任何页面（0 页）同样 ValueError 拒绝——
       ``%PDF-`` 前 5 字节的 magic 校验只是形状检查、不是内容安全边界
       （polyglot 可伪造文件头），真正打开过一遍的解析结果是最低门槛；
-    - 字节写入 ``{pdfs_dir}/{安全化的 key}.pdf``（目录不存在自动创建），
-      同一 key 重复保存为覆盖（幂等更新）；key 先经白名单清洗、再过
-      safe_path 越界校验（安全加固 §4：书目数据攻击者可控，双层防线）；
+    - 字节写入 ``{pdfs_dir}/{单射化的安全 key}.pdf``（目录不存在自动创建，
+      MM-07：截断清洗主干 + sha256(key) 短后缀——不同键不互相覆盖；超长键
+      截断后仍可保存），同一 key 重复保存为覆盖（幂等更新）；key 先过
+      safe_path 越界校验（安全加固 §4：书目数据攻击者可控），目标路径已被
+      **其他键**登记时 ValueError 拒绝而非静默覆盖；
+    - 文件替换发生在 SQLite 事务提交**之前**（轨迹/非轨迹两条分支同口径，
+      MM3-02）：替换失败 → 事务回滚，元数据与磁盘文件保持一致；
     - ``n_pages`` 用 pypdf 统计；
     - zotero_key 不在 articles 表时因外键约束抛 sqlite3.IntegrityError。
     """
@@ -239,10 +271,14 @@ def save_pdf(
 
     directory = Path(pdfs_dir)
     directory.mkdir(parents=True, exist_ok=True)
+    # MM-07：filename 是**展示名**（fulltexts.filename 列 / 下载头），保持
+    # 清洗主干不变；落盘路径用单射名（截断主干 + sha256(key) 短后缀），
+    # 不同键的 PDF 不再互相覆盖。
     filename = f"{_safe_pdf_stem(key)}.pdf"
-    path = safe_path(directory, filename)
-    # Same-directory staging keeps replacement atomic. Traced saves replace the
-    # file before SQLite commit and restore the previous file if commit/capture fails.
+    path = safe_path(directory, _pdf_disk_filename(key))
+    # Same-directory staging keeps replacement atomic. Both traced and
+    # untraced saves replace the file before SQLite commit (MM3-02) and
+    # restore the previous file if commit/capture fails.
     staging = None
     now = _now()
     meta = FulltextMeta(
@@ -275,6 +311,18 @@ def save_pdf(
                 if replay:
                     staging.unlink(missing_ok=True)
                     return FulltextMeta(**prior_result)
+            # MM-07 第二道防线：目标路径已被**其他键**登记时拒绝，绝不静默
+            # 覆盖（等价态：哈希截段碰撞、历史脏行/手工改库；单射命名下正常
+            # 流程不会触发，同键幂等更新不受影响）。
+            occupant = conn.execute(
+                "SELECT zotero_key FROM fulltexts WHERE path=? AND zotero_key<>?",
+                (meta.path, meta.zotero_key),
+            ).fetchone()
+            if occupant is not None:
+                raise ValueError(
+                    f"目标文件 {Path(meta.path).name} 已被文献 "
+                    f"{occupant[0]!r} 的全文占用，已拒绝覆盖；请核对文献键后重试。"
+                )
             old = conn.execute(
                 "SELECT sha256,n_pages FROM fulltexts WHERE zotero_key=?", (meta.zotero_key,),
             ).fetchone()
@@ -302,17 +350,20 @@ def save_pdf(
                 from coscreen.research_trace import finish_write_request
 
                 finish_write_request(conn, trace_context, meta.__dict__)
-                if path.exists():
-                    fd, backup_name = tempfile.mkstemp(
-                        prefix=path.name + ".", suffix=".backup", dir=directory,
-                    )
-                    os.close(fd)
-                    backup = Path(backup_name)
-                    shutil.copy2(path, backup)
-                os.replace(staging, path)
-                replaced = True
-        if trace_context is None:
+            # MM3-02：文件备份与替换统一在事务**提交前**完成——原非轨迹分支的
+            # os.replace 位于提交之后，替换失败（Windows 目标文件被占用等）时
+            # 元数据已记新 sha256/页数而磁盘仍旧文件，永久不一致。两条分支同
+            # 口径：任一步失败 → 事务回滚（DB 与磁盘一致）；替换成功而提交
+            # 失败时按 backup/首存语义恢复原文件。
+            if path.exists():
+                fd, backup_name = tempfile.mkstemp(
+                    prefix=path.name + ".", suffix=".backup", dir=directory,
+                )
+                os.close(fd)
+                backup = Path(backup_name)
+                shutil.copy2(path, backup)
             os.replace(staging, path)
+            replaced = True
         if backup is not None:
             backup.unlink(missing_ok=True)
     except BaseException:
