@@ -18,17 +18,24 @@ class _Input(BaseModel):
 
 
 #: 编码共识端点的请求体大小上限（2MB；字段本身有 max_length，此处挡无界
-#: value/source/ID 列表的整包放大）。分块传输无 Content-Length 时不设卡。
+#: value/source/ID 列表的整包放大）。
 MAX_CONSENSUS_BODY_BYTES = 2 * 1024 * 1024
 
 
 async def _body_within_limit(request: Request) -> None:
-    raw = request.headers.get("content-length")
-    try:
-        length = int(raw) if raw is not None else None
-    except ValueError:
-        length = None
-    if length is not None and length > MAX_CONSENSUS_BODY_BYTES:
+    # 先按 Content-Length 提前拒绝超限请求；头部缺失/非法（chunked 传输）
+    # 时回退到读取实体后的精确校验（MM2-03/MM4-04：缺头曾完全不设卡——
+    # 同一 3MB 体，带 Content-Length 时 413、chunked 时放行）。口径与
+    # report_evidence_api.size_guard 一致。
+    header = request.headers.get("content-length")
+    if header:
+        try:
+            length = int(header)
+        except ValueError:
+            length = None
+        if length is not None and length > MAX_CONSENSUS_BODY_BYTES:
+            raise HTTPException(413, "Request body exceeds the coding consensus limit (2 MB).")
+    if len(await request.body()) > MAX_CONSENSUS_BODY_BYTES:
         raise HTTPException(413, "Request body exceeds the coding consensus limit (2 MB).")
 
 

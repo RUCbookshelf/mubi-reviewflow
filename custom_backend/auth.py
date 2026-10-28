@@ -9,10 +9,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import secrets
 import sqlite3
+import threading
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -22,6 +24,8 @@ import bcrypt
 import jwt
 from coscreen.security import sanitize_component
 from coscreen.task_collaboration import DB_FILENAME as _COLLABORATION_DB_FILENAME
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AuthError",
@@ -204,30 +208,116 @@ def authenticate(username: str, password: str) -> dict | None:
 # JWT
 # ---------------------------------------------------------------------------
 
+#: MM-03/r7 复审：.jwt_secret 写回失败（只读介质/权限）时的进程内应急密钥。
+#: ``_secret()`` 无进程缓存、每次读盘——若无此应急值，写失败会退化为
+#: 「每次调用重生成内存钥」：create_access_token 成功而 decode_access_token
+#: 恒 None（同一进程内静默 401 自锁）。应急钥使进程内签发/校验自洽；数据
+#: 目录恢复可写后，下一次调用即写回自愈（届时换钥，已发令牌需重新登录）。
+_EMERGENCY_SECRET: str | None = None
+_EMERGENCY_WRITE_LOGGED = False
+_secret_lock = threading.Lock()
+
+
+def _atomic_write_secret(path: Path, secret: str) -> bool:
+    """同目录临时文件 + os.replace 原子写回密钥（写后 fsync，0600）。
+
+    覆盖目标已存在（含空文件）的场景；掉电/崩溃不会留下半截或空密钥文件。
+    返回是否写回成功——失败由调用方走进程内应急口径并负责诊断日志。
+    """
+    tmp = path.with_name(f".jwt_secret.{os.getpid()}.tmp")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(secret)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(str(tmp), str(path))
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _emit_secret_via_emergency(secret: str) -> str:
+    """写回失败时的进程内应急口径：稳定同钥 ＋ 一次性 ERROR 诊断日志。"""
+    global _EMERGENCY_SECRET, _EMERGENCY_WRITE_LOGGED
+    if not _EMERGENCY_WRITE_LOGGED:
+        logger.error(
+            "auth: failed to persist .jwt_secret (read-only data dir or "
+            "permission error); using an in-process secret — login/auth keeps "
+            "working inside this process, but tokens will not survive a "
+            "restart until the data dir becomes writable")
+        _EMERGENCY_WRITE_LOGGED = True
+    if _EMERGENCY_SECRET is None:
+        _EMERGENCY_SECRET = secret
+    return _EMERGENCY_SECRET
+
+
 def _secret() -> str:
-    """签名密钥：环境变量优先，否则 ``{data_dir}/.jwt_secret``（0600 新建）。"""
+    """签名密钥：环境变量优先，否则 ``{data_dir}/.jwt_secret``（0600 新建）。
+
+    MM-03：空密钥文件（O_EXCL 创建与首写之间崩溃/掉电、备份截断）曾原样
+    返回 ``""``——PyJWT 对空 HMAC 钥抛 ``InvalidKeyError``（**非**
+    ``InvalidTokenError`` 子类），登录与全部鉴权请求永久 500 且不自愈。
+    现空/空白文件一律视为未初始化：重新生成并原子写回（可自愈），并留
+    warning 日志便于运维定位此前的空文件事件。写回失败（只读/权限）时退
+    回**进程内稳定**的应急密钥（见 ``_EMERGENCY_SECRET``）并留 ERROR
+    日志——绝不退回空串或每次换钥。
+    """
     env = os.environ.get("COBOOKSHELF_JWT_SECRET", "").strip()
     if env:
         return env
     path = data_dir() / ".jwt_secret"
     try:
-        return path.read_text(encoding="utf-8").strip()
+        existing = path.read_text(encoding="utf-8").strip()
     except OSError:
-        pass
-    secret = secrets.token_hex(32)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        # 并发首登录竞态：另一请求已生成密钥——优先读它，保证全体请求签发/校验同钥
+        existing = ""
+    if existing:
+        return existing
+    global _EMERGENCY_SECRET
+    with _secret_lock:
+        # 双检：锁内可能已有并发线程写回成功（跨进程竞态仍由 O_EXCL 兜底）
         try:
-            existing = path.read_text(encoding="utf-8").strip()
+            winner = path.read_text(encoding="utf-8").strip()
         except OSError:
-            return secret
-        return existing or secret
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(secret)
-    return secret
+            winner = ""
+        if winner:
+            return winner
+        secret = secrets.token_hex(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and not _EMERGENCY_WRITE_LOGGED:
+            # MM-03 主路径：文件存在但为空（首写前崩溃/掉电、备份截断）。
+            logger.warning(
+                "auth: empty .jwt_secret detected; regenerating and rewriting "
+                "atomically (previously this broke login/auth with 500s)")
+        try:
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # 并发首登录竞态（跨进程）或既有空文件：优先读已存在内容，保证
+            # 全体请求签发/校验同钥；仍为空则原子重写，失败走应急口径。
+            try:
+                winner = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return _emit_secret_via_emergency(secret)
+            if winner:
+                return winner
+            if _atomic_write_secret(path, secret):
+                _EMERGENCY_SECRET = None
+                return secret
+            return _emit_secret_via_emergency(secret)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(secret)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            # 首建后写失败（极可能留下空文件，下次调用走原子重写自愈）
+            return _emit_secret_via_emergency(secret)
+        _EMERGENCY_SECRET = None
+        return secret
 
 
 def create_access_token(user_id: int, username: str) -> str:
@@ -245,7 +335,12 @@ def create_access_token(user_id: int, username: str) -> str:
 
 
 def decode_access_token(token: str) -> dict | None:
-    """校验并解码 JWT；任何失败（过期/签名/格式）返回 None，绝不抛异常。"""
+    """校验并解码 JWT；任何失败（过期/签名/格式）返回 None，绝不抛异常。
+
+    MM-03：空 HMAC 钥触发 PyJWT ``InvalidKeyError``——它**不是**
+    ``InvalidTokenError`` 子类（MRO 为 InvalidKeyError→PyJWTError→Exception），
+    曾未被兜住而冒泡 500。纳入 except 后降级 None（→401）。
+    """
     try:
         payload = jwt.decode(
             token,
@@ -254,7 +349,7 @@ def decode_access_token(token: str) -> dict | None:
             issuer=JWT_ISSUER,
             options={"require": ["exp", "iat", "sub"]},
         )
-    except (jwt.InvalidTokenError, KeyError):
+    except (jwt.InvalidTokenError, jwt.InvalidKeyError, KeyError):
         return None
     if not isinstance(payload.get("sub"), str) or not payload.get("username"):
         return None

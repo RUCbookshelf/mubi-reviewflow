@@ -30,9 +30,11 @@ from pathlib import Path
 from fastapi import HTTPException
 
 __all__ = [
+    "AUTH_JSON_BODY_LIMIT_BYTES",
     "MAX_UPLOAD_BYTES",
     "MAX_FIELD_PARTS",
     "MAX_FIELD_PART_BYTES",
+    "AuthBodyLimitMiddleware",
     "EventTicketStore",
     "MultipartStructureRejected",
     "RateLimiter",
@@ -428,7 +430,12 @@ class UploadRejected(Exception):
     """上传校验失败（status 供 HTTP 映射：413 超限 / 415 类型不符）。"""
 
     def __init__(self, message: str, status: int = 415) -> None:
-        super().__init__(message)
+        # MM-01/r6 #44：显式锚定 Exception（不经 super 协作）。UploadRejected
+        # 被混入 MultipartStructureRejected(UploadRejected, HTTPException) 的
+        # 多继承 MRO 时，super() 会解析到 HTTPException 并把 message 当
+        # status_code 传入——starlette 对非整数 status_code 抛 ValueError，
+        # 防线类直接不可实例化（曾致 multipart 结构超限 400/500 而非 413）。
+        Exception.__init__(self, message)
         self.status = status
 
 
@@ -655,11 +662,14 @@ class MultipartStructureRejected(UploadRejected, HTTPException):
     """
 
     def __init__(self, message: str) -> None:
+        # 双基类显式初始化（MM-01：类体内曾残留第二个同名 __init__ 覆盖本
+        # 定义——super 协作版经 UploadRejected 的 MRO 把 message 传给
+        # HTTPException 的 status_code，实例化即 ValueError/状态污染，413
+        # 契约失效）。UploadRejected.__init__ 已显式锚定 Exception，故两次
+        # 显式初始化互不串扰：status=413（app 级 handler）＋
+        # status_code/detail=413/message（路由层 HTTPException 通道）。
         UploadRejected.__init__(self, message, 413)
         HTTPException.__init__(self, status_code=413, detail=message)
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, status=413)
 
 
 class UploadSizeLimitMiddleware:
@@ -866,6 +876,116 @@ class UploadSizeLimitMiddleware:
                 await self.app(scope, receive_wrapper, send)
                 return
         await self.app(scope, receive, send)
+
+
+#: 未认证 JSON 写端点（/api/auth/*）的请求体上限（MM2-02）。CredentialsIn
+#: 字段级 max_length（用户名 ≤64、口令 ≤128 字符）加 JSON 封装远小于 4KB；
+#: 此前 20MB 畸形体被整包读入、422 把超大 ``input`` 原样回显（放大反射），
+#: 且 handler 内的登录限流对校验失败请求不可达。
+AUTH_JSON_BODY_LIMIT_BYTES = 4 * 1024
+
+_AUTH_BODY_LIMIT_MESSAGE = "登录/注册请求体超过大小上限（4 KB）。"
+
+
+class AuthBodyLimitMiddleware:
+    """auth 端点（无鉴权 JSON 面）的 ASGI 级请求体上限（MM2-02）。
+
+    - **Content-Length 预检**：超限直接 413，不读请求体（与
+      :class:`UploadSizeLimitMiddleware` 的 413 预检同一层）；
+    - **缺头/非法头（chunked）**：有界读取（上限 +1 字节封顶，不做无界
+      读入）后精确判定，超限同样 413——与 report_evidence ``size_guard``
+      的「读后精确校验」同口径，杜绝缺头 fail-open；
+    - 非 auth 路径与非 POST 请求原样放行，不影响其他端点；超限小体请求
+      （如 r6s3 的 21 字节表单探针）不受影响，仍走原有 401/422 路径。
+
+    早拒响应统一带安全响应头（本中间件位于 SecurityHeaders 之外），
+    Origin 命中 ``cors_origins`` 白名单时补 CORS 简单响应头（同 R6-S5）。
+    """
+
+    def __init__(self, app, paths, limit: int = AUTH_JSON_BODY_LIMIT_BYTES,
+                 cors_origins=None):  # noqa: ANN001
+        self.app = app
+        self.paths = [re.compile(p) for p in paths]
+        self.limit = limit
+        self.cors_origins = list(cors_origins) if cors_origins else []
+
+    async def _reject(self, scope, send) -> None:  # noqa: ANN001
+        body = json.dumps({"detail": _AUTH_BODY_LIMIT_MESSAGE},
+                          ensure_ascii=False).encode("utf-8")
+        headers = [(b"content-type", b"application/json"),
+                   (b"content-length", str(len(body)).encode("ascii")),
+                   (b"connection", b"close")]
+        headers = apply_security_headers(headers)
+        headers.extend(cors_response_headers(
+            self._origin_of(scope), self.cors_origins))
+        # 未（完整）读请求体即应答：要求关闭连接，避免服务端继续吸收数据。
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    @staticmethod
+    def _origin_of(scope):  # noqa: ANN001
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"origin":
+                try:
+                    return value.decode("ascii")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+        return None
+
+    async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("method", "") != "POST" or not any(
+                pattern.match(scope.get("path", "")) for pattern in self.paths):
+            await self.app(scope, receive, send)
+            return
+        lengths = [value for key, value in scope.get("headers") or []
+                   if key.lower() == b"content-length"]
+        content_length = None
+        if len(lengths) == 1:  # 重复头交给内层 UploadSizeLimitMiddleware 400
+            try:
+                content_length = int(lengths[0])
+            except ValueError:
+                content_length = None
+        if content_length is not None:
+            if content_length > self.limit:
+                await self._reject(scope, send)
+                return
+            await self.app(scope, receive, send)
+            return
+        # 缺头/非法头（chunked）：有界读取后精确判定（读取量以 limit+1 封顶）
+        buffered = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            buffered.extend(message.get("body", b""))
+            if len(buffered) > self.limit:
+                await self._reject(scope, send)
+                return
+            if not message.get("more_body", False):
+                break
+        body = bytes(buffered)
+
+        # ASGI receive 契约是「返回 awaitable 的可调用对象」：``await receive()``
+        # 必须得到一条消息。r7 复审：这里曾误用 async 生成器（yield 使 replay
+        # 变成 async_generator 对象，不可调用），下游 await receive() 抛
+        # TypeError → FastAPI 兜成 400 parse error，≤上限的合法 chunked
+        # 登录被拒（拒绝了基线可用的输入，R2）。普通 async 函数返回消息即可；
+        # 耗尽后按服务端惯例持续返回空终止消息。
+        replay_messages = [{"type": "http.request", "body": body,
+                            "more_body": False}]
+
+        async def replay() -> dict:  # noqa: ANN202
+            if replay_messages:
+                return replay_messages.pop(0)
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self.app(scope, replay, send)
 
 
 # ---------------------------------------------------------------------------

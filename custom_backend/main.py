@@ -124,8 +124,10 @@ from custom_backend.events import BUS, notify_tasks_changed
 from custom_backend.update_check import check_latest_release, current_version
 from custom_backend.source_provenance import source_articles
 from custom_backend.security import (
+    AUTH_JSON_BODY_LIMIT_BYTES,  # noqa: F401  上限常量随模块口径导出
     MAX_UPLOAD_BYTES,  # noqa: F401  上限常量随模块口径导出
     TEXT_EXTENSIONS,
+    AuthBodyLimitMiddleware,
     EventTicketStore,
     UploadRejected,
     UploadSizeLimitMiddleware,
@@ -475,6 +477,19 @@ app.add_middleware(
 # 在跑；GET 轮询不计入，避免误报 409）。
 tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
 
+# MM2-02：/api/auth/login|register 是全站仅有的两个未认证写端点，此前对
+# 请求体完全没有上限——20MB 畸形体被整包读入、422 原样回显（放大反射），
+# 且 handler 内的登录限流对校验失败请求不可达。4KB 上限在 ASGI 层预检
+# （Content-Length 超限不读体直接 413；chunked 有界读取后精确判定）。
+# 注册在 UploadSizeLimitMiddleware 之后（外一层）：重复 Content-Length
+# 等头结构异常仍由内层上传中间件按 400 口径拒绝，两者职责不重叠。
+app.add_middleware(
+    AuthBodyLimitMiddleware,
+    paths=[r"^/api/auth/login$", r"^/api/auth/register$"],
+    limit=AUTH_JSON_BODY_LIMIT_BYTES,
+    cors_origins=_cors_origins(),
+)
+
 # 复审（#43 顺序）：TaskLockMiddleware 在 UploadSizeLimitMiddleware **之外**
 # 注册（后 add 者为外层）——删除进行中的任务级 409 语义优先于上传预检的
 # 401/411/413/415（规则端点非 multipart 的 415 不得抢在删除互斥 409 前）。
@@ -491,13 +506,43 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     return JSONResponse(status_code=500, content={"detail": "服务暂时无法完成请求，请稍后重试。"})
 
 
+#: 422 校验错误回显的体积上限（MM2-02）：FastAPI 默认把 pydantic 错误里的
+#: ``input`` 原样回显——20MB 畸形字段曾得到约 20MB 的 422 响应（放大反射）。
+#: 超过该 repr 长度的 ``input``/``ctx`` 值替换为占位符；正常小输入的回显
+#: 保持不变（校验 UX 不受影响）。
+_MAX_VALIDATION_ECHO_CHARS = 1024
+
+
+def _clip_validation_echo(value):  # noqa: ANN001
+    """超大校验回显值替换为占位符（正常小值原样返回）。"""
+    try:
+        size = len(repr(value))
+    except Exception:  # pragma: no cover - repr 失败的极端对象
+        return "<omitted>"
+    if size > _MAX_VALIDATION_ECHO_CHARS:
+        return f"<{size} chars omitted>"
+    return value
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
     if '/analysis/ipd/' in request.url.path:
         return JSONResponse(status_code=422, content={'detail': [
             {key: error[key] for key in ('loc', 'msg', 'type')} for error in exc.errors()
         ]})
-    return await request_validation_exception_handler(request, exc)
+    # MM2-02：超大 input/ctx 不回显（曾 20MB 畸形字段 → 20MB 422 响应）。
+    clipped = []
+    for error in exc.errors():
+        item = {key: (_clip_validation_echo(value) if key == "input" else value)
+                for key, value in error.items()}
+        # ctx 里也可能嵌套携带原值（如 string_too_long 的 ctx）
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {key: _clip_validation_echo(value)
+                           for key, value in ctx.items()}
+        clipped.append(item)
+    return await request_validation_exception_handler(
+        request, RequestValidationError(clipped))
 
 
 @app.exception_handler(UploadRejected)
@@ -2221,7 +2266,11 @@ def export_title_duplicate_reviews(
     ])
     for group in groups:
         for member in group["members"]:
-            writer.writerow([
+            # MM-05：公式注入防护（同仓其余 5 处 CSV 导出同款）——以 =/+/-/@/
+            # Tab/CR 开头的字符串单元格补 ' 前缀；csv 引号转义不阻止 Excel
+            # 解引号后按公式求值，跨用户场景（成员导入落属主库、属主导出）
+            # 曾可注入。原始字节仍完整保留在 original_record_json 列。
+            row = [
                 group["review_id"], group["status"], group["decision_by"],
                 group["updated_at"], group["normalized_title"],
                 group["keeper_key"], member["zotero_key"],
@@ -2229,6 +2278,12 @@ def export_title_duplicate_reviews(
                 member["authors"], member["year"], member["journal"],
                 member["volume"], member["issue"], member["pages"], member["doi"],
                 json.dumps(member["raw"], ensure_ascii=False),
+            ]
+            writer.writerow([
+                ("'" + value if isinstance(value, str)
+                 and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r"))
+                 else value)
+                for value in row
             ])
     data = ("\ufeff" + output.getvalue()).encode("utf-8")
     return _file_response(data, "text/csv; charset=utf-8", "title-duplicate-review.csv")

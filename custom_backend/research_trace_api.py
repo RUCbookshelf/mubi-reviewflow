@@ -87,13 +87,24 @@ TraceExportIn.model_rebuild()
 
 
 async def _body_within_limit(request: Request) -> None:
-    raw = request.headers.get("content-length")
-    try:
-        length = int(raw) if raw is not None else None
-    except ValueError:
-        length = None
-    if length is not None and length > MAX_TRACE_BODY_BYTES:
-        raise HTTPException(413, "Request body exceeds the research trace limit.")
+    # 先按 Content-Length 提前拒绝超限请求；头部缺失/非法（chunked 传输）
+    # 时回退到读取实体后的精确校验（MM2-03/MM4-04：缺头曾完全不设卡）。
+    # 口径与 report_evidence_api.size_guard 一致，但 multipart 上传例外——
+    # imports/preview|commit 是 File 端点，整包读入会破坏流式 spool（129MB
+    # 包曾免落盘进内存）；multipart 的体积预检由 UploadSizeLimitMiddleware
+    # 负责（规则端点缺 Content-Length 一律 411、超限 413）。
+    header = request.headers.get("content-length")
+    if header:
+        try:
+            length = int(header)
+        except ValueError:
+            length = None
+        if length is not None and length > MAX_TRACE_BODY_BYTES:
+            raise HTTPException(413, "Request body exceeds the research trace limit.")
+    content_type = (request.headers.get("content-type") or "").lower()
+    if not content_type.startswith("multipart/"):
+        if len(await request.body()) > MAX_TRACE_BODY_BYTES:
+            raise HTTPException(413, "Request body exceeds the research trace limit.")
 
 
 def _bounded_upload(data: bytes) -> bytes:
