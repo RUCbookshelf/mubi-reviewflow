@@ -77,6 +77,14 @@ class G01RegisterEndpointTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # 进程级 login_limiter 的「借用-恢复」（同仓惯例
+        # test_collaboration_hardening._limiter_budget）：本类成功注册按设计
+        # 计入配额**不退款**（main.py 注册端点），残留的 register:testclient
+        # 事件会挤占同进程后续套件——曾实测 test_report_evidence（再注册 3 个，
+        # 桶=5）之后 test_trace_migration_shapes 的第 6 次注册被 429，其
+        # setUpClass 取 r['user'] 抛 KeyError。类级快照，tearDownClass 原样归还。
+        cls._limiter_saved = dict(login_limiter._events)
+        login_limiter._events.clear()
         # raise_server_exceptions=False：baseline 的裸 ValueError 由全局
         # 500 处理器接住呈 500；修复后 AuthError 在端点内被捕获，不到 500。
         cls.client = TestClient(app, raise_server_exceptions=False)
@@ -85,6 +93,8 @@ class G01RegisterEndpointTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
+        login_limiter._events.clear()
+        login_limiter._events.update(cls._limiter_saved)
 
     def setUp(self):
         login_limiter.reset(_REGISTER_PEER_KEY)  # 隔离同对端先前的注册占位
