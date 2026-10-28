@@ -49,7 +49,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conlist
 
 from coscreen import coding as coding_mod
 from coscreen import task_collaboration as collaboration_mod
@@ -1093,7 +1093,12 @@ class HighlightEventIn(BaseModel):
     text: str = Field(default="", max_length=8000)
     color: str = Field(default="jade", pattern="^(jade|amber|terra)$")
     note: str = Field(default="", max_length=4000)
-    rects: list[list[float]] = Field(default_factory=list, max_length=200)
+    # MM5-13：每个 rect 恰 4 个浮点分量（x,y,w,h）。修前内层 list[float] 无长度
+    # 约束，3/5 元素被 200 接受、读取端（fulltext.get_highlights_with_rects）只保留
+    # len==4，坐标被静默丢弃。收紧为 schema 级拒绝（pydantic 校验失败 -> 422）；
+    # 前端正常路径恒发 4 元素，空 rects（不附坐标的高亮）仍允许。
+    rects: list[conlist(float, min_length=4, max_length=4)] = Field(
+        default_factory=list, max_length=200)
 
 
 class HighlightsIn(BaseModel):
@@ -4035,6 +4040,11 @@ def analysis_advanced(task_id: str, method: str, comparison: str, outcome: str,
         if method == "cumulative":
             if model is None:
                 raise ValueError("choose a cumulative synthesis model explicitly")
+            # MM5-06：model 白名单与 review_analysis.synthesize 同口径。修前未校验，
+            # 未知值（如 "bogus"/"fixed "）在 cumulative 内部 KeyError 被全局兜底
+            # 统一成 500；非法值必须走 ValueError -> 400。
+            if model not in {"fixed", "random", "random_pm", "random_reml"}:
+                raise ValueError("unsupported cumulative synthesis model")
             args += (model,)
         return methods[method](*args)
     except ValueError as exc:

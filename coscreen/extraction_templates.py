@@ -384,8 +384,25 @@ def map_to_effect(template: ExtractionTemplate, values: dict[str, Any],
     result["source_key"] = source_key
     calculator_entry_method = result.get("entry_method")  # 计算器自报的格式名（如 hazard_ratio_ci）
     result["entry_method"] = "extraction:" + template.template_id
-    input_data = {"template_id": template.template_id, "values": dict(values)}
+    # MM5-12：落库 values 必须与计算实际使用的输入一致（checked 已做数值强制转换，
+    # 如 "3e1" -> 30）；原始提交另存 raw_values 供审计溯源，不再冒充计算输入。
+    input_data = {"template_id": template.template_id, "values": dict(checked),
+                  "raw_values": dict(values)}
     if calculator_entry_method:
         input_data["calculator_entry_method"] = calculator_entry_method
+    if result.get("measure") == "SMD" and func is calculate_continuous_effect:
+        # MM5-04：rct_continuous 模板的 SMD 与臂级入口（entry_method="continuous
+        # arms"）调用的是同一个 continuous_effect（pooled SD + 近似 J 校正）。
+        # 在已知计算器身份处显式写入与臂级入口一致的 estimator_metadata，
+        # 而不是留给 save_effect 按 entry_method 前缀猜测——否则两条在线入口的
+        # 同数值 SMD 元数据互斥（hedges_g vs unclassified_smd），混池合成会被
+        # pool_compatibility 以 estimator_conflict 拒绝。
+        # 取舍：相比在 smd_contract 白名单里放行 "extraction:*" 前缀（会对未来
+        # 任何产出 SMD 的模板一概冒认 hedges_g），仅在计算器确为两臂连续计算器
+        # 时声明元数据更稳（复审 verif5_groupA MM5-04 亦推荐此修法）。
+        # 动态导入：smd_contract 顶层依赖 scipy，本模块保持导入零副作用。
+        from coscreen.smd_contract import legacy_smd_metadata
+
+        input_data["estimator_metadata"] = legacy_smd_metadata("continuous arms")
     result["input_data"] = input_data
     return result

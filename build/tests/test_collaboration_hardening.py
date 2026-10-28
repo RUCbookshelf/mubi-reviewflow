@@ -438,15 +438,21 @@ class CollaborationHardeningTests(unittest.TestCase):
         """复审（d85841e 回归）：owner 即 actor 时 context() 曾整段跳过
         screening_rounds.migrate——新任务无 workflow_screen_rounds 表，
         POST /screening-rounds 的 start/finish 500（复现手法：新建任务＋
-        1 条 maybe 决策→work-queue remaining_uncertain=1→start/finish）。"""
+        1 条 maybe 决策→work-queue remaining_uncertain=1→start/finish）。
+        G2-01：曾用不存在的 /screening/record 端点＋宽断言 (200,201,404)，
+        请求恒 404、maybe 分支从未执行；改走真实 /decisions 并收紧断言。"""
         from coscreen import db as _db
         from coscreen.models import Article as _Article
         _db.upsert_articles(self.info.dir / (self._slug + ".db"),
                             [_Article(zotero_key="K1", title="T")], [])
-        r = self.client.post(f"/api/tasks/{self.task}/screening/record",
+        r = self.client.post(f"/api/tasks/{self.task}/decisions",
                              json={"zotero_key": "K1", "decision": "maybe"},
                              headers=self.auth())
-        self.assertIn(r.status_code, (200, 201, 404), r.text)
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.get(f"/api/tasks/{self.task}/work-queue/screen",
+                            headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["remaining_uncertain"], 1, r.text)
         r = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
                             headers=self.auth())
         version = r.json()["version"]

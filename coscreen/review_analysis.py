@@ -484,6 +484,21 @@ def synthesize(db: DbPath, comparison: str, outcome: str, timepoint: str, measur
     return _synthesize_rows(rows, measure, model, ci_method)
 
 
+def effect_scale_label(measure: str) -> str:
+    """效应量的分析尺度标签（MM5-08/09 公共口径）。
+
+    合成（``_synthesize_rows``）、meta 回归与漏斗不对称检验共用这一映射，
+    避免 ``advanced_analysis`` 再写一套三元链与合成路径漂移（曾把 FISHER_Z
+    标成 ``"natural"``、漏斗点值不带任何尺度声明）。
+    """
+    return ("log" if measure in RATIOS else
+            "Fisher z; results shown as r" if measure == "FISHER_Z" else
+            "logit; results shown as proportion" if measure == "LOGIT_PROP" else
+            "log; results shown as rate" if measure == "LOG_RATE" else
+            "log; results shown as ratio of means" if measure == "LOG_ROM" else
+            "log; results shown as matched-pair odds ratio" if measure == "PAIRED_OR" else "natural")
+
+
 def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str) -> dict:
     require_compatible_effects(rows, measure)
     from scipy.stats import chi2, norm, t  # statistical dependency, installed with statsmodels
@@ -556,12 +571,7 @@ def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str)
                        "random_pm":"Paule-Mandel inverse variance",
                        "random_reml":"restricted maximum likelihood inverse variance"}[model],
             "ci_method": "modified HKSJ 95%" if ci_method == "hksj" else "normal 95%",
-            "effect_scale": "log" if measure in RATIOS else
-                "Fisher z; results shown as r" if measure == "FISHER_Z" else
-                "logit; results shown as proportion" if measure == "LOGIT_PROP" else
-                "log; results shown as rate" if measure == "LOG_RATE" else
-                "log; results shown as ratio of means" if measure == "LOG_ROM" else
-                "log; results shown as matched-pair odds ratio" if measure == "PAIRED_OR" else "natural",
+            "effect_scale": effect_scale_label(measure),
             "pooled_analysis": pooled,
             "ci_analysis_low": ci_low_analysis,
             "ci_analysis_high": ci_high_analysis,
