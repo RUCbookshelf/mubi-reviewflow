@@ -152,7 +152,9 @@
       ["任务已启用 AI 建议（使用你的个人钥匙）。", "AI suggestions are enabled for this task (using your personal key).", "Les suggestions IA sont activées pour cette tâche (avec votre clé personnelle).", "ИИ-подсказки включены для этой задачи (используется ваш личный ключ).", "Las sugerencias de IA están activadas para esta tarea (con su clave personal).", "このタスクでは AI 提案が有効です（あなたの個人キーを使用）。", "As sugestões de IA estão ativadas para esta tarefa (usando sua chave pessoal).", "KI-Vorschläge sind für diese Aufgabe aktiviert (mit Ihrem persönlichen Schlüssel).", "АИ предлози су укључени за овај задатак (користи ваш лични кључ).", "이 작업에 AI 제안이 활성화되어 있습니다(개인 키 사용)."],
       ["我已手动复制，采纳", "I copied it manually, adopt", "J’ai copié manuellement, adopter", "Я скопировал вручную — принять", "Lo copié manualmente, adoptar", "手動コピーしたので採用", "Copiei manualmente, adotar", "Habe manuell kopiert, übernehmen", "Ручно сам копирао, прихвати", "수동으로 복사했으니 채택"],
       ["部分核验", "Partially verified", "Vérification partielle", "Частичная проверка", "Verificación parcial", "部分検証", "Verificação parcial", "Teilweise verifiziert", "Делимично проверено", "부분 검증"],
-      ["有建议按可核验前缀放行（部分核验）。", "Some suggestions were accepted on a verifiable prefix (partially verified).", "Des suggestions ont été acceptées sur un préfixe vérifiable (vérification partielle).", "Часть предложений принята по проверяемому префиксу (частичная проверка).", "Algunas sugerencias se aceptaron por un prefijo verificable (verificación parcial).", "検証可能な前置きに基づき受理された提案があります（部分検証）。", "Algumas sugestões foram aceitas com base em um prefixo verificável (verificação parcial).", "Einige Vorschläge wurden anhand eines verifizierbaren Präfixes akzeptiert (teilweise verifiziert).", "Неки предлози су прихваћени по проверивом префиксу (делимично проверено).", "검증 가능한 접두사 기준으로 허용된 제안이 있습니다(부분 검증)."],
+      ["引文核验", "Quote verified", "Citation vérifiée", "Цитата проверена", "Cita verificada", "引用検証済み", "Citação verificada", "Zitat verifiziert", "Цитат проверен", "인용 검증됨"],
+      ["来源：摘要（无页码）", "Source: abstract (no page numbers)", "Source : résumé (pas de numéros de page)", "Источник: аннотация (без номеров страниц)", "Fuente: resumen (sin números de página)", "出典：抄録（ページ番号なし）", "Fonte: resumo (sem números de página)", "Quelle: Abstract (ohne Seitenzahlen)", "Извор: сажетак (без бројева страна)", "출처: 초록(쪽수 없음)"],
+      ["有建议因引文过短或按可核验前缀放行（部分核验）。", "Some suggestions were accepted with a quote that was too short or on a verifiable prefix (partially verified).", "Des suggestions ont été acceptées avec une citation trop courte ou sur un préfixe vérifiable (vérification partielle).", "Часть предложений принята со слишком короткой цитатой или по проверяемому префиксу (частичная проверка).", "Algunas sugerencias se aceptaron con una cita demasiado corta o por un prefijo verificable (verificación parcial).", "引用が短すぎる、または検証可能な前置きに基づき受理された提案があります（部分検証）。", "Algumas sugestões foram aceitas com uma citação curta demais ou com base em um prefixo verificável (verificação parcial).", "Einige Vorschläge wurden mit einem zu kurzen Zitat oder anhand eines verifizierbaren Präfixes akzeptiert (teilweise verifiziert).", "Неки предлози су прихваћени са прекратким цитатом или по проверивом префиксу (делимично проверено).", "인용이 너무 짧거나 검증 가능한 접두사 기준으로 허용된 제안이 있습니다(부분 검증)."],
       ["任务已启用 AI，你尚未配置可用钥匙（个人或共享）。", "AI is enabled for this task, but you have no usable key yet (personal or shared).", "L’IA est activée pour cette tâche, mais vous n’avez pas encore de clé utilisable (personnelle ou partagée).", "ИИ включён для этой задачи, но у вас пока нет доступного ключа (личного или общего).", "La IA está activada para esta tarea, pero aún no tiene una clave utilizable (personal o compartida).", "このタスクでは AI が有効ですが、利用可能なキー（個人または共有）がまだありません。", "A IA está ativada para esta tarefa, mas você ainda não tem uma chave utilizável (pessoal ou compartilhada).", "KI ist für diese Aufgabe aktiviert, aber Sie haben noch keinen nutzbaren Schlüssel (persönlich oder geteilt).", "АИ је укључен за овај задатак, али још немате употребљив кључ (лични или дељени).", "이 작업에 AI가 활성화되어 있지만 아직 사용 가능한 키(개인 또는 공유)가 없습니다."],
       ["统计载入中…", "Loading statistics…", "Chargement des statistiques…", "Загрузка статистики…", "Cargando estadísticas…", "統計を読み込み中…", "Carregando estatísticas…", "Statistiken werden geladen…", "Учитавање статистике…", "통계를 불러오는 중…"],
       ["本人已生成 {0} 条 · 采纳 {1} · 编辑后采纳 {2} · 忽略 {3}", "Your record: {0} generated · {1} adopted · {2} adopted after editing · {3} dismissed", "Votre relevé : {0} générées · {1} adoptées · {2} adoptées après modification · {3} ignorées", "Ваша статистика: сгенерировано {0} · принято {1} · принято с правкой {2} · отклонено {3}", "Su registro: {0} generadas · {1} adoptadas · {2} adoptadas tras editar · {3} descartadas", "本人の記録：生成 {0} · 採用 {1} · 編集後採用 {2} · 無視 {3}", "Seu registro: {0} geradas · {1} adotadas · {2} adotadas após edição · {3} descartadas", "Ihre Auswertung: {0} erzeugt · {1} übernommen · {2} nach Bearbeitung übernommen · {3} verworfen", "Ваш запис: {0} генерисано · {1} прихваћено · {2} прихваћено након измене · {3} одбачено", "본인 기록: 생성 {0} · 채택 {1} · 편집 후 채택 {2} · 무시 {3}"],
@@ -415,7 +417,7 @@
       if (/^unverified_quote:/.test(String(warning || '')))
         return T('有建议因引文未能在原文中定位被丢弃。');   /* B9 F1：服务端引文核验 */
       if (/^partial_quote:/.test(String(warning || '')))
-        return T('有建议按可核验前缀放行（部分核验）。');   /* B9 R-1 */
+        return T('有建议因引文过短或按可核验前缀放行（部分核验）。');   /* B9 R-1 / MM2-01 */
       const t = /^context_truncated:(\d+)$/.exec(String(warning || ''));
       if (t) return T('原文过长，已截断 {0} 字。', t[1]);
       if (warning === 'ai_key_missing') return T('未配置可用的 AI 钥匙，请先在设置页配置。');
@@ -432,7 +434,7 @@
         const shown = quote.length > 300 ? quote.slice(0, 300) + '…' : quote;
         card.append(el('p', { class: 'rf-ai-quote' }, el('span', { text: T('原文引文') + '：' }), literal('span', shown)));
       }
-      /* P4：页码定位（CbPdf 跳页） */
+      /* P4：页码定位（CbPdf 跳页）；MM2-04：仅摘要来源（无页码）显式标注 */
       const pages = Array.isArray(item.pages) ? item.pages.filter(p => Number.isFinite(p)) : [];
       if (pages.length) {
         const row = el('div', { class: 'rf-ai-pages' }, el('span', { text: T('页码') + '：' }));
@@ -440,10 +442,16 @@
           row.append(el('button', { type: 'button', class: 'btn b-out sm', text: T('第 {0} 页', String(page)) , onclick: safe(() => jumpPage(page)) }));
         }
         card.append(row);
+      } else if (quote) {
+        /* 服务端定位命中摘要时 pages 为空（无页可跳）——不静默，标注摘要来源 */
+        card.append(el('div', { class: 'rf-ai-pages', text: T('来源：摘要（无页码）') }));
       }
-      /* P1：AI 身份留痕角标；B9 R-1：部分核验（仅前缀可核验）显式标注 */
+      /* P1：AI 身份留痕角标；B9 R-1：部分核验显式标注；MM2-01：full 也明示角标
+         （'引文核验'——明示核验的是引文存在于原文，而非值本身被核验） */
+      const verifiedNote = item.verified === 'partial' ? T('部分核验')
+        : item.verified === 'full' ? T('引文核验') : null;
       card.append(literal('div', [item.provider, item.model, item.prompt_version,
-        item.verified === 'partial' ? T('部分核验') : null].filter(Boolean).join(' · '), { class: 'rf-ai-meta' }));
+        verifiedNote].filter(Boolean).join(' · '), { class: 'rf-ai-meta' }));
       const actions = el('div', { class: 'rf-ai-actions' });
       if (!pending) {
         const badgeText = item.status === 'adopted' ? '已采纳' : item.status === 'edited' ? '已编辑' : item.status === 'ignored' ? '已忽略' : '未处理';

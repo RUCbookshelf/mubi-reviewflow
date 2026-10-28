@@ -885,6 +885,326 @@ class AISuggestTests(unittest.TestCase):
         self.assertNotIn(".ai_keys", tasks_src)
         self.assertIn("def _backup_zip(files", tasks_src)   # 显式清单打包
 
+    # ---- r7 MM2-01/MM2-04/MM-06/MM-09 修复回归（破坏即红钉子） ------------------
+
+    def test_mm2_01_short_quote_below_threshold_never_full(self):
+        """MM2-01/MM4-03 下界钉子：短于 MIN_FULL_QUOTE_CHARS 的引文即使逐字命中原文
+        也不得判 verified='full'（原漏洞：3 字符常用词给捏造值发 full）；
+        恰达门槛的引文仍 full（上界不收紧过头，B9 R-1 的 9 字符裁决不受影响）。
+        门槛常量进测试：删除/调低门槛（回 3）或删长度判断，本用例必须变红。"""
+        threshold = ai_suggest_api.MIN_FULL_QUOTE_CHARS
+        self.assertGreaterEqual(threshold, 8, "full 核验门槛不得低于 8 字符")
+        self.assertLessEqual(threshold, 12, "full 核验门槛不得高于 12 字符")
+        source_token = "abcdefghijkl"                      # 12 字符，均在原文中
+        pages = [f"context words {source_token} tail here"]
+        below = source_token[:threshold - 1]               # 恰低于门槛（≥7 字符）
+        at = source_token[:threshold]                      # 恰达门槛
+        content = json.dumps({"sample_size": {
+            "value": "9999999", "quote": below, "pages": [9]}}, ensure_ascii=False)
+        kept, warnings, _dropped = ai_suggest_api._parse_provider_content(
+            content, ["sample_size"], pages, "")
+        self.assertEqual(len(kept), 1, "短引文命中仍保留（不新增丢弃面）")
+        self.assertNotEqual(kept[0]["verified"], "full",
+                            f"{threshold - 1} 字符引文不得判 full")
+        self.assertEqual(kept[0]["verified"], "partial")
+        self.assertIn("partial_quote:sample_size", warnings)
+        content2 = json.dumps({"sample_size": {
+            "value": "X", "quote": at, "pages": []}}, ensure_ascii=False)
+        kept2, _w, _d = ai_suggest_api._parse_provider_content(content2, ["sample_size"], pages, "")
+        self.assertEqual(kept2[0]["verified"], "full", "恰达门槛的完整命中仍应 full")
+
+    def test_mm2_01_fabricated_value_short_quote_persists_partial(self):
+        """MM2-01 端到端（原复现路径）：真实存在的 3 字符引文（'tri' 是 'trial' 的
+        子串）不再能把捏造值标 verified='full' 入库——降为 partial，历史回读一致。"""
+        self.enable_task()
+        self.put_personal_key()
+        content = json.dumps({"sample_size": {
+            "value": "9999999", "quote": "tri", "pages": [2]}}, ensure_ascii=False)
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate(content)):
+            body = self.suggestions(field_ids=["sample_size"]).json()
+        self.assertEqual(body["suggestions"][0]["verified"], "partial")
+        self.assertEqual(body["suggestions"][0]["pages"], [])   # 命中摘要：无页可跳
+        self.assertIn("partial_quote:sample_size", body["warnings"])
+        listed = self.client.get(
+            f"{self.base}/coding/ai-suggestions/A1", headers=self.auth(0)).json()["suggestions"]
+        self.assertEqual([x["verified"] for x in listed], ["partial"])
+
+    def test_mm2_01_verified_column_never_defaults_full(self):
+        """MM2-01 入库缺省钉子：verified 列 DEFAULT 不得为 'full'（新表与旧库补列
+        两条路径都查）——缺省 full 会让任何漏给 verified 的写入自动获得最强标记。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = Path(tmp) / "fresh.db"
+            with closing(ai_suggest_api._connect(fresh)) as conn:
+                cols = conn.execute("PRAGMA table_info(ai_suggestions)").fetchall()
+            dflt = [c[4] for c in cols if c[1] == "verified"]
+            self.assertEqual(len(dflt), 1)
+            self.assertNotEqual((dflt[0] or "").strip("'"), "full",
+                                "新建表 verified DEFAULT 不得为 full")
+            legacy = Path(tmp) / "legacy.db"
+            with closing(sqlite3.connect(str(legacy))) as conn:
+                # 旧库形状：除 verified 外的完整列（建表 SQL 的索引需要这些列）。
+                conn.execute(
+                    "CREATE TABLE ai_suggestions ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, "
+                    "actor_id TEXT NOT NULL, zotero_key TEXT NOT NULL, field_id TEXT NOT NULL, "
+                    "value TEXT NOT NULL, quote TEXT NOT NULL, pages_json TEXT NOT NULL, "
+                    "provider TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, "
+                    "final_value TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, "
+                    "decided_at TEXT)")
+            with closing(ai_suggest_api._connect(legacy)) as conn:
+                cols = conn.execute("PRAGMA table_info(ai_suggestions)").fetchall()
+            dflt = [c[4] for c in cols if c[1] == "verified"]
+            self.assertEqual(len(dflt), 1)
+            self.assertNotEqual((dflt[0] or "").strip("'"), "full",
+                                "旧库补列 verified DEFAULT 不得为 full")
+
+    def test_mm2_01_04_methods_report_quote_semantics(self):
+        """MM2-01/MM2-04 Methods 文案钉子：不再声称"每条建议均附页码"（摘要命中
+        pages=[]）；改为 正文来源附页码、摘要来源标注摘要；并明示核验只证明引文
+        存在于原文、不代表核验了建议值。"""
+        self.enable_task()
+        self.put_personal_key()
+        with mock.patch.object(ai_suggest_api, "_provider_generate", fake_generate()):
+            self.suggestions()
+        body = self.client.get(f"{self.base}/ai-suggestions/methods-report",
+                               headers=self.auth(0)).json()
+        zh, en = body["report_zh"], body["report_en"]
+        self.assertNotIn("每条建议均附原文引文与页码", zh)
+        self.assertNotIn("Every suggestion carried a source quote and page numbers", en)
+        self.assertIn("仅取自摘要的建议标注为摘要来源", zh)
+        self.assertIn("引文取自全文正文的建议附服务端定位的页码", zh)
+        self.assertIn("不代表核验了建议值本身", zh)
+        self.assertIn("labelled as abstract-sourced", en)
+        self.assertIn("did not validate the suggested value itself", en)
+
+    def test_mm_06_provider_http_error_body_never_echoed(self):
+        """MM-06 钉子：provider 非 2xx 只回状态码＋固定文案——响应体内容（原先
+        回显前 200 字节）不得出现在任何错误消息里（verify=true/生成/测试连接共用
+        该出口；回显构成内网 SSRF 读预言机）。"""
+        import http.server
+        import threading
+
+        secret = "INTERNAL-SECRET-CONTENT-xyz789"
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                payload = json.dumps({"error": {"message": secret}}).encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.guard.stop()      # 本用例直连真实 _provider_generate（仅 127.0.0.1）
+        try:
+            # 单元层：ProviderError 消息含状态码、绝不含响应体内容。
+            with self.assertRaises(ai_suggest_api.ProviderError) as ctx:
+                ai_suggest_api._provider_generate(
+                    "s", "u", api_key="sk-echo-test-123456",
+                    base_url=f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                    model="m", timeout=5)
+            self.assertEqual(ctx.exception.status, 500)
+            self.assertIn("500", str(ctx.exception))
+            self.assertNotIn(secret, str(ctx.exception))
+            # API 层（MM-06 原复现路径）：verify=true 出站失败 -> 502 只回状态码。
+            r = self.client.put("/api/ai/key", json={
+                "provider": "openai", "key": FAKE_KEY,
+                "base_url": f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                "verify": True}, headers=self.auth(0))
+            self.assertEqual(r.status_code, 502, r.text)
+            self.assertIn("500", r.text)
+            self.assertNotIn(secret, r.text)
+        finally:
+            self.guard.start()
+            srv.shutdown()
+            srv.server_close()
+
+    def test_mm_09_base_url_control_characters_rejected(self):
+        """MM-09 钉子：base_url 含 C0/C1 控制字符（含 \\r\\n 头注入尝试）在入库前
+        被拒（422）——不再放行到出站才抛 http.client.InvalidURL 冒泡 500。"""
+        for bad in ("https://evil.example/v1\r\nX-Injected: 1",
+                    "https://evil.example/v1\x00x",
+                    "https://evil.example/v1\x7f",
+                    "https://evil.example/v\x85i"):
+            # 注：\x85 放中间——收尾的 Unicode 空白（含 NEL）会被 .strip() 清洗掉，
+            # 中间残留的控制字符才是必须显式拒绝的路径。
+            with self.assertRaises(ai_keys.KeyShapeError, msg=repr(bad)):
+                ai_keys.base_url_of({"base_url": bad})
+        # API 层：verify=true + 控制字符 base_url -> 422（校验层拦截，无出站）。
+        r = self.client.put("/api/ai/key", json={
+            "provider": "openai", "key": FAKE_KEY,
+            "base_url": "https://evil.example/v1\r\nX-Injected: 1", "verify": True},
+            headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+        # 入库前拒绝（verify=false 的保存路径同样 422，文件绝不落盘）。
+        r = self.client.put("/api/ai/key", json={
+            "provider": "openai", "key": FAKE_KEY,
+            "base_url": "https://evil.example/v1\r\nX-Injected: 1"},
+            headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+        self.assertFalse(
+            (DATA_ROOT / ".ai_keys" / f"personal_{self.users[0]['user_id']}.json").exists())
+
+    def test_mm_09_invalid_url_maps_to_provider_error_not_500(self):
+        """MM-09 纵深钉子：即使控制字符 URL 漏过校验层（如历史存量记录），
+        http.client.InvalidURL 也必须映射为 ProviderError（502）而非冒泡 500。
+        用回环地址保证零真实出网（InvalidURL 在连接建立前抛出）。"""
+        self.guard.stop()
+        try:
+            with self.assertRaises(ai_suggest_api.ProviderError):
+                ai_suggest_api._provider_generate(
+                    "s", "u", api_key="sk-url-test-123456",
+                    base_url="http://127.0.0.1:1/v1\r\nX-Injected: 1",
+                    model="m", timeout=5)
+        finally:
+            self.guard.start()
+
+    # ---- r7 复审第 1 轮补钉（存量读取路径 / README / 前端文案 / 存量库缺省） ----
+
+    def test_r7_review_get_key_never_500_on_legacy_invalid_base_url(self):
+        """复审#1：存量个人钥匙记录（base_url 含 \\r\\n，83ae738 接受保存）在
+        GET /api/ai/key 不得从 200 变 500——元数据读取绝不抛 KeyShapeError；
+        出站类调用（key/test）映射 422。"""
+        vault = DATA_ROOT / ".ai_keys" / f"personal_{self.users[0]['user_id']}.json"
+        vault.parent.mkdir(parents=True, exist_ok=True)
+        vault.write_text(json.dumps({
+            "provider": "openai", "key": FAKE_KEY,
+            "base_url": "https://legacy.example/v1\r\nX-Injected: 1",
+            "model": "gpt-test", "added_at": "2026-01-01T00:00:00",
+            "last_used_at": None}, ensure_ascii=False), encoding="utf-8")
+        r = self.client.get("/api/ai/key", headers=self.auth(0))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["configured"])
+        # 回传原始串（本人的配置）便于排查重存，而非 500/静默丢配置。
+        self.assertEqual(body["base_url"], "https://legacy.example/v1\r\nX-Injected: 1")
+        self.assertNotIn(FAKE_KEY, r.text)
+        # 出站类端点对同一存量记录映射 422（重存可修），而非 500。
+        r = self.client.post("/api/ai/key/test", headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+
+    def test_r7_review_env_base_url_invalid_metadata_ok_and_calls_mapped_422(self):
+        """复审#1：REVIEWFLOW_AI_BASE_URL 含控制字符时，env_key() 不得在 GET/生成
+        等读取路径抛 KeyShapeError（500）；非法值由出站前的 base_url_of 校验并
+        映射 422。"""
+        os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
+        os.environ["REVIEWFLOW_AI_BASE_URL"] = "https://env.example/v1\r\nX-Injected: 1"
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_KEY", None)
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_BASE_URL", None)
+        r = self.client.get("/api/ai/key", headers=self.auth(0))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["configured"])
+        self.assertEqual(body["source"], "env")
+        self.assertNotIn(FAKE_KEY, r.text)
+        r = self.client.post("/api/ai/key/test", headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+
+    def test_r7_review_legacy_default_full_db_migrated_on_connect(self):
+        """复审#4：已含 verified 列且 DEFAULT 'full' 的存量 2.1.4 库，经 _connect
+        定向迁移为非 full 缺省；既有行数据（id 与 verified 取值）逐字保留；
+        迁移幂等（二次打开不再重建）。"""
+        legacy_schema = (
+            "CREATE TABLE ai_suggestions("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, "
+            "actor_id TEXT NOT NULL, zotero_key TEXT NOT NULL, field_id TEXT NOT NULL, "
+            "value TEXT NOT NULL, quote TEXT NOT NULL, pages_json TEXT NOT NULL, "
+            "provider TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, "
+            "verified TEXT NOT NULL DEFAULT 'full' CHECK(verified IN ('full','partial')), "
+            "final_value TEXT, status TEXT NOT NULL "
+            "CHECK(status IN ('pending','adopted','ignored','edited')), "
+            "created_at TEXT NOT NULL, decided_at TEXT)")
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "legacy214.db"
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                conn.executescript(legacy_schema + ";"
+                                   "INSERT INTO ai_suggestions(task_id,actor_id,zotero_key,"
+                                   "field_id,value,quote,pages_json,provider,model,"
+                                   "prompt_version,verified,status,created_at) VALUES("
+                                   "'t','a','K','sample_size','120','in 6 centres','[2]',"
+                                   "'openai','gpt','v1','full','pending','2026-01-01');")
+            with closing(ai_suggest_api._connect(db_path)) as conn:
+                dflt = conn.execute("SELECT dflt_value FROM pragma_table_info('ai_suggestions') "
+                                    "WHERE name='verified'").fetchone()[0]
+                self.assertNotEqual((dflt or "").strip("'"), "full",
+                                    "存量 DEFAULT 'full' 库必须被迁移为非 full 缺省")
+                rows = conn.execute("SELECT id,task_id,field_id,value,verified,status "
+                                    "FROM ai_suggestions").fetchall()
+            self.assertEqual([tuple(r) for r in rows],
+                             [(1, "t", "sample_size", "120", "full", "pending")],
+                             "迁移只改缺省，不改写存量行（含 verified 取值）")
+            with closing(ai_suggest_api._connect(db_path)) as conn:  # 幂等
+                count = conn.execute("SELECT COUNT(*) FROM ai_suggestions").fetchone()[0]
+                self.assertEqual(count, 1)
+
+    # ---- r7 复审第 2 轮补钉（urlsplit 裸 ValueError / env model 清洗） ----------
+
+    def test_r2_review_malformed_ipv6_base_url_mapped_422(self):
+        """复审#1：畸形 URL（'http://[::1'，urlsplit 抛裸 ValueError 而非
+        KeyShapeError）在 PUT /api/ai/key（verify=false/true）必须 422 而非 500。"""
+        with self.assertRaises(ai_keys.KeyShapeError):
+            ai_keys.base_url_of({"base_url": "http://[::1"})
+        for verify in (False, True):
+            r = self.client.put("/api/ai/key", json={
+                "provider": "openai", "key": FAKE_KEY,
+                "base_url": "http://[::1", "verify": verify}, headers=self.auth(0))
+            self.assertEqual(r.status_code, 422, r.text)
+        # 共享钥匙路径同一校验函数（owner 写）
+        r = self.client.put(f"{self.base}/ai-suggest/shared-key", json={
+            "provider": "openai", "key": FAKE_KEY, "base_url": "http://[::1"},
+            headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+
+    def test_r2_review_malformed_base_url_metadata_never_500(self):
+        """复审#1：存量记录与环境变量的 base_url 为畸形 URL（裸 ValueError）时，
+        GET /api/ai/key 元数据读取仍 200（回传原始串），key/test 映射 422。"""
+        vault = DATA_ROOT / ".ai_keys" / f"personal_{self.users[0]['user_id']}.json"
+        vault.parent.mkdir(parents=True, exist_ok=True)
+        vault.write_text(json.dumps({
+            "provider": "openai", "key": FAKE_KEY, "base_url": "http://[::1",
+            "model": "gpt-test", "added_at": "2026-01-01T00:00:00",
+            "last_used_at": None}, ensure_ascii=False), encoding="utf-8")
+        r = self.client.get("/api/ai/key", headers=self.auth(0))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["configured"])
+        self.assertEqual(r.json()["base_url"], "http://[::1")
+        r = self.client.post("/api/ai/key/test", headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+        # env 变体：读取 200；出站类调用 422。
+        os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
+        os.environ["REVIEWFLOW_AI_BASE_URL"] = "http://[::1"
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_KEY", None)
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_BASE_URL", None)
+        r = self.client.get("/api/ai/key", headers=self.auth(0))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["configured"])
+        self.assertEqual(r.json()["source"], "env")
+        r = self.client.post("/api/ai/key/test", headers=self.auth(0))
+        self.assertEqual(r.status_code, 422, r.text)
+
+    def test_r2_review_env_model_overlong_metadata_ok(self):
+        """复审#2：REVIEWFLOW_AI_MODEL 超 100 字符时 env_key() 不得抛
+        KeyShapeError——GET /api/ai/key 仍 200（透传原始值，出站由 provider 拒）。"""
+        os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
+        os.environ["REVIEWFLOW_AI_MODEL"] = "m" * 150
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_KEY", None)
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_MODEL", None)
+        r = self.client.get("/api/ai/key", headers=self.auth(0))
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["configured"])
+        self.assertEqual(body["source"], "env")
+        self.assertEqual(body["model"], "m" * 150)
+        self.assertNotIn(FAKE_KEY, r.text)
+
 
 class FrontendStaticGuardTests(unittest.TestCase):
     """B8 浏览器回归发现的成员生成缺陷的源码钉子（不启动浏览器）。"""
@@ -923,6 +1243,38 @@ class FrontendStaticGuardTests(unittest.TestCase):
         duplicates = {key for key in zh_keys if zh_keys.count(key) > 1}
         self.assertEqual(len(zh_keys), len(set(zh_keys)),
                          f"中文源串重复（后注册覆盖先注册）：{sorted(duplicates)}")
+
+    def test_mm2_01_frontend_full_badge_and_abstract_source_label(self):
+        """MM2-01/MM2-04 前端钉子：verified='full' 也必须有显式角标（'引文核验'——
+        明示核验的是引文存在而非值本身），不能像修复前那样对 full 静默不标；
+        pages 为空（摘要来源）的建议卡显式标注摘要来源，不再什么都不显示。"""
+        source = (Path(__file__).resolve().parents[2] / "custom_frontend" / "ai_suggest.js").read_text(
+            encoding="utf-8")
+        self.assertIn("item.verified === 'full' ? T('引文核验')", source,
+                      "full 必须映射显式角标文案（引文核验），不得对 full 静默")
+        self.assertIn("item.verified === 'partial' ? T('部分核验')", source,
+                      "partial 角标（B9 R-1）必须保留")
+        self.assertIn("T('来源：摘要（无页码）')", source,
+                      "pages 为空的建议必须标注摘要来源（MM2-04）")
+
+    def test_r7_review_partial_quote_warning_covers_short_quotes(self):
+        """复审#3：partial_quote 警告文案必须覆盖 MM2-01 新门槛——<8 字符的逐字
+        命中同样发 partial_quote，只写『按可核验前缀放行』会与实际不符。"""
+        source = (Path(__file__).resolve().parents[2] / "custom_frontend" / "ai_suggest.js").read_text(
+            encoding="utf-8")
+        self.assertIn("有建议因引文过短或按可核验前缀放行（部分核验）", source,
+                      "警告文案必须同时覆盖短引文与前缀两条 partial 路径")
+        self.assertNotIn("有建议按可核验前缀放行（部分核验）", source,
+                         "旧文案未覆盖短引文路径，不得残留")
+
+    def test_r7_review_readme_quote_page_claims_aligned(self):
+        """复审#2：README 中英特性表不得再宣称『每条建议附页码』——摘要来源
+        pages=[]，须与 MM2-04 后的 Methods/docs 口径一致。"""
+        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("建议附原文引文与页码可溯源", readme)
+        self.assertNotIn("every suggestion carries a source quote and page numbers", readme)
+        self.assertIn("正文来源附页码", readme)
+        self.assertIn("abstract-sourced quotes are labelled as such", readme)
 
 
 if __name__ == "__main__":

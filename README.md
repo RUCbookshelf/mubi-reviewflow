@@ -25,7 +25,7 @@
 | 文献筛选 | 标题/摘要初筛、PDF 全文复筛、常用与自定义排除理由 |
 | 机器学习排序 | 辅助安排阅读顺序；纳入、需复核和排除由用户决定 |
 | 数据提取与编码 | 提取研究信息、记录编码内容与全文依据 |
-| AI 抽取建议（BYOK） | 可选的编码辅助，默认关闭：成员自带钥匙或任务共享钥匙双模式（兼容 OpenAI 协议端点，支持本地 Ollama 零出网）；建议附原文引文与页码可溯源，采纳逐条人工确认；决策可导出审计 CSV 并生成 Methods 报告段落 |
+| AI 抽取建议（BYOK） | 可选的编码辅助，默认关闭：成员自带钥匙或任务共享钥匙双模式（兼容 OpenAI 协议端点，支持本地 Ollama 零出网）；建议附服务端核验的原文引文可溯源（正文来源附页码、摘要来源标注摘要），采纳逐条人工确认；决策可导出审计 CSV 并生成 Methods 报告段落 |
 | 数据分析 | 效应量计算、固定与随机效应合并、异质性、亚组、Meta 回归、敏感性与小研究效应分析 |
 | 扩展分析 | 诊断准确性、网络 Meta 分析、剂量反应、IPD、贝叶斯与多层模型等模块；使用前请确认各模块的输入与适用条件 |
 | 偏倚风险 | 记录 RoB 2、ROBINS-I、QUADAS-2 等工具的人工判断 |
@@ -157,7 +157,7 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Screening:** title/abstract and PDF full-text screening, with standard or custom exclusion reasons.
 - **Machine Learning:** assistance with reading order; inclusion, uncertainty and exclusion remain user decisions.
 - **Data extraction & coding:** study information extraction and supporting full-text evidence.
-- **AI extraction suggestions (BYOK):** optional coding assistance, off by default; bring your own key or use a task-shared key (OpenAI-compatible endpoints, local Ollama supported for zero outbound traffic); every suggestion carries a source quote and page numbers for tracing, adoption is confirmed item by item, and decisions support audit CSV export and Methods report generation.
+- **AI extraction suggestions (BYOK):** optional coding assistance, off by default; bring your own key or use a task-shared key (OpenAI-compatible endpoints, local Ollama supported for zero outbound traffic); every suggestion carries a server-verified source quote for tracing (full-text quotes carry page numbers; abstract-sourced quotes are labelled as such), adoption is confirmed item by item, and decisions support audit CSV export and Methods report generation.
 - **Analysis:** effect sizes, fixed and random effects, heterogeneity, subgroups, meta-regression, sensitivity and small-study effects.
 - **Extended methods:** diagnostic accuracy, network meta-analysis, dose–response, IPD, Bayesian and multilevel modules, each with its own input requirements.
 - **Risk of bias:** manual assessments using tools such as RoB 2, ROBINS-I and QUADAS-2.
