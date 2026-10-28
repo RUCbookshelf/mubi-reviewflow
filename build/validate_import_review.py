@@ -6,6 +6,10 @@ client,call,base,data=scope['client'],scope['call'],scope['base'],scope['DATA']
 client.headers['Authorization']='Bearer '+scope['owner']['token']
 # Warm existing read-context migrations before checking read-only behavior.
 call('GET',base+'/workflow-settings')
+# import-review-summary lazily applies the one-time import-undo v3 migration
+# (CREATE TABLE IF NOT EXISTS workflow_import_undo, coscreen/import_review_undo.py)
+# on first read; warm it too so the snapshot below sees steady state.
+call('GET',base+'/import-review-summary')
 def snapshot():
     result={}
     for path in data.rglob('*.db'):

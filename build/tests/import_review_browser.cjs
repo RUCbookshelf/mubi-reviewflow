@@ -1,14 +1,25 @@
 'use strict';
 const assert=require('node:assert/strict'),path=require('node:path');
 const {chromium}=require(process.env.REVIEWFLOW_PLAYWRIGHT||'playwright');
+const {loadScriptManifest,manifestFiles}=require('../script_manifest.cjs');
 const root=path.resolve(__dirname,'../..');
+/* MM7-03: the modules injected below are resolved from the online load list parsed
+   out of custom_frontend/index.html, so this harness can never again treat an
+   unloaded file as production code. The one deliberate exception is the legacy
+   import-review panel (workflow_imports.js): this fixture still exercises that
+   legacy panel UI and goes away with it in the MM7-04 cleanup round; the live
+   panel (unified_import_workspace.js) is exercised by import_review_refined_browser.cjs. */
+const manifest=loadScriptManifest(root);
+assert.ok(manifest.includes('unified_import_workspace.js'),'online manifest must load unified_import_workspace.js');
+assert.ok(!manifest.includes('workflow_imports.js'),'dead module workflow_imports.js must not be loaded online');
 (async()=>{
  const browser=await chromium.launch({headless:true});
  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
  page.on('pageerror',e=>errors.push(e.message));
  await page.goto('file:///'+path.join(__dirname,'import_review_fixture.html').replaceAll('\\','/'));
  for(const file of ['import_guide.css','import_review.css'])await page.addStyleTag({path:path.join(root,'custom_frontend',file)});
- for(const file of ['import_review_model.js','workflow_imports.js','import_guide.js'])await page.addScriptTag({path:path.join(root,'custom_frontend',file)});
+ for(const file of manifestFiles(manifest,['import_review_model.js','import_guide.js']))await page.addScriptTag({path:path.join(root,'custom_frontend',file)});
+ await page.addScriptTag({path:path.join(root,'custom_frontend','workflow_imports.js')}); // legacy panel harness; removed with the MM7-04 cleanup
  await page.evaluate(()=>WorkflowImports.open(bid));
  assert.equal(await page.locator('#wf-import-review h3').textContent(),'1 imported record needs your review');
  assert.equal(await page.locator('.wf-import-completed').getAttribute('open'),null);
@@ -67,7 +78,7 @@ const root=path.resolve(__dirname,'../..');
  assert.equal(await page.locator('.wf-import-activate').count(),0);
  assert.equal(await page.getByRole('button',{name:'Keep existing metadata',exact:true}).count(),0);
  await page.evaluate(()=>{api=window.originalApi;window.localeRows=[];window.RFLang={register:rows=>window.localeRows.push(...rows)};});
- for(const file of ['interface_locale.js','workflow_locale.js','import_guide_locale.js','import_review_locale.js'])await page.addScriptTag({path:path.join(root,'custom_frontend',file)});
+ for(const file of manifestFiles(manifest,['interface_locale.js','workflow_locale.js','import_guide_locale.js','import_review_locale.js']))await page.addScriptTag({path:path.join(root,'custom_frontend',file)});
  for(let language=0;language<10;language++){
   await page.evaluate(index=>{window.fixtureTranslate=key=>{const row=window.localeRows.findLast(row=>row[0]===key||row[1]===key);return row?.[index];};reset();return WorkflowImports.open(bid);},language);
   const expected=await page.evaluate(index=>window.localeRows.findLast(row=>row[1]==='1 imported record needs your review')[index],language);

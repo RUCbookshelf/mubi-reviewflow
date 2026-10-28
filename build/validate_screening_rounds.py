@@ -5,6 +5,7 @@ import sys
 import tempfile
 import json
 import asyncio
+import time
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -60,6 +61,11 @@ for number in (2,3,4,5):
     assert not call('GET',base+'/work-queue/fulltext')['queue']
     refused=client.post(base+'/stage2/decisions',json={'zotero_key':'one','decision':'include'})
     assert refused.status_code==409,refused.text
+    # Round progress is a fingerprint diff and updated_at has second granularity
+    # (coscreen/screening_rounds.py:28): an identical re-decision in the same
+    # wall-clock second as the round-start snapshot does not count as progress.
+    # Space the re-decision like a real screener would.
+    time.sleep(1.1)
     for key in ('one','two'):call('POST',base+'/decisions',json={'zotero_key':key,'decision':'maybe'})
     queue=call('GET',base+'/work-queue/screen?order=random')
     assert queue['screening_round']['pending_keys']==[],queue
@@ -121,4 +127,4 @@ print('Undo and migration preservation/idempotence/source pause: passed')
 print('Filename recognition/reimport; rounds 2–5; hold/release; backend bypass rejection; policy conflict: passed')
 print('PREVIEW_DATA='+str(DATA))
 print('PREVIEW_TASK='+tid)
-Path(os.environ['TEMP']).joinpath('reviewflow-rounds-preview.json').write_text(json.dumps({'data':str(DATA),'task':tid,'root':str(ROOT)}),encoding='utf-8')
+Path(os.environ.get('TEMP') or tempfile.gettempdir()).joinpath('reviewflow-rounds-preview.json').write_text(json.dumps({'data':str(DATA),'task':tid,'root':str(ROOT)}),encoding='utf-8')

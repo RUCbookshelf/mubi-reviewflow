@@ -70,6 +70,17 @@ jobs:
           fi
       - name: Verify versioned application payload
         run: python build/verify_release_payload.py ${{ matrix.command }}
+      - name: Run static validators
+        shell: bash
+        run: |
+          # MM7-02: the four static validators run in CI after the payload check;
+          # any non-zero exit fails the job. httpx is used by the two Python
+          # validators and is not part of the runtime requirements file.
+          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx
+          python build/validate_import_review.py
+          python build/validate_screening_rounds.py
+          node build/validate_import_review_static.cjs
+          node build/validate_team_prisma_static.js
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}

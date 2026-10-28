@@ -5,6 +5,7 @@ import sys
 import tempfile
 import json
 import asyncio
+import sqlite3
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -128,9 +129,15 @@ with review_workflow.connect(legacy) as conn:
     before={t:[tuple(r) for r in conn.execute('SELECT * FROM '+t)] for t in ['articles','decisions','coding_values','coding_notes','coding_note_images']}
     policy=review_workflow.defaults();policy['screen'].update(mode='selected',source_ids=[review_workflow.UNASSIGNED])
     conn.execute('UPDATE workflow_state SET stages_json=? WHERE singleton=1',(json.dumps(policy),))
+# 0a83446 起，本进程新建的库在首建链中会跳过升级前备份（is_fresh_database）。
+# 用 sqlite backup API 把填好的库复制成「上一进程遗留」的外部库（不在新建登记表内），
+# 以继续覆盖既有库升级前生成 .bak 备份的路径（该提交自己用子进程建库验证过）；
+# backup API 会连同已提交未 checkpoint 的 WAL 一起带过去，文件复制做不到。
+legacy_in_process=legacy;legacy=DATA/'legacy-external.db'
+with sqlite3.connect(legacy_in_process) as source,sqlite3.connect(legacy) as target:source.backup(target)
 import_sources.migrate(legacy);version=review_workflow.settings(legacy)['version'];import_sources.migrate(legacy)
 assert review_workflow.settings(legacy)['version']==version
-assert legacy.with_name('legacy.db.pre-source-v4.bak').is_file()
+assert legacy.with_name(legacy.name+'.pre-source-v4.bak').is_file()
 assert {s['name'] for s in review_workflow.sources(legacy)}=={'old.ris'}
 assert review_workflow.UNASSIGNED not in review_workflow.settings(legacy)['stages']['screen']['source_ids']
 with review_workflow.connect(legacy) as conn:

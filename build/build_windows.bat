@@ -218,6 +218,40 @@ if errorlevel 1 goto :fail_pip
 "%STAGING%\runtime\python.exe" "%STAGING%\windows_start.py" --check >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_depcheck
 
+rem ============================================================
+rem  MM7-02: run the four static validators against the sources.
+rem  httpx (used by the two Python validators) is installed into a
+rem  throwaway --target dir so the shipped runtime lock stays clean;
+rem  the embedded runtime ignores PYTHONPATH, hence the env var that
+rem  the validators append to sys.path themselves.
+rem ============================================================
+call :log "running static validators"
+echo Running static validators ...
+"%STAGING%\runtime\python.exe" -m pip install --no-build-isolation --prefer-binary --no-warn-script-location --disable-pip-version-check --target "%SRCDIR%\validator_deps" httpx >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+set "REVIEWFLOW_VALIDATION_DEPENDENCIES=%SRCDIR%\validator_deps"
+"%STAGING%\runtime\python.exe" "%SRCDIR%\validate_import_review.py" >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+"%STAGING%\runtime\python.exe" "%SRCDIR%\validate_screening_rounds.py" >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+where node.exe >nul 2>nul
+if errorlevel 1 goto :validators_node_skip
+node "%SRCDIR%\validate_import_review_static.cjs" >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+git rev-parse --is-inside-work-tree >nul 2>nul
+if errorlevel 1 goto :validators_git_skip
+node "%SRCDIR%\validate_team_prisma_static.js" >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+goto :validators_done
+:validators_node_skip
+call :log "note: node.exe not found - skipping the two JavaScript validators (CI runs them)"
+goto :validators_done
+:validators_git_skip
+call :log "note: not a git checkout - skipping validate_team_prisma_static.js (it shells out to git)"
+:validators_done
+set "REVIEWFLOW_VALIDATION_DEPENDENCIES="
+if exist "%SRCDIR%\validator_deps" rmdir /s /q "%SRCDIR%\validator_deps" >nul 2>nul
+
 call :log "[5/6] smoke test"
 echo [5/6] smoke test ...
 pushd "%STAGING%"
@@ -309,6 +343,9 @@ call :err "dependency installation or download failed - see the detailed output 
 goto :end_fail
 :fail_depcheck
 call :err "the bundled runtime cannot import the required packages"
+goto :end_fail
+:fail_validators
+call :err "static validators failed - see the validator output in the log"
 goto :end_fail
 :fail_smoke
 call :err "smoke test failed - see %SRCDIR%\build_windows_smoke.log"

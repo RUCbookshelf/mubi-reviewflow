@@ -11,5 +11,5 @@ if [ ! -x .venv/bin/python ]; then
   echo "[cobookshelf] 缺少 .venv，请先创建 Python 3.12 虚拟环境" >&2
   exit 1
 fi
-.venv/bin/pip install -q -r requirements.txt
+.venv/bin/pip install -q -r build/requirements-app.txt  # MM7-05: no requirements.txt exists at the repo root
 exec .venv/bin/uvicorn custom_backend.main:app --host 0.0.0.0 --port 8613 --no-proxy-headers "$@"
