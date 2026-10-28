@@ -51,10 +51,19 @@ class WorkflowRuntime:
         # get_owner 判成 legacy（owner paused 守卫被绕过）、锁分键（写互斥失效）。
         # 对外路径不再以原始字符串作为权限/锁键；find_task 本身保留别名解析。
         task_id = info.task_id
-        if not self.visible(info, user):
-            raise HTTPException(403, "Task access denied.")
         collab = task_collaboration.shared_store_path(info.dir)
         owner = task_collaboration.get_owner(collab, task_id=task_id)
+        # 门禁墙钟（可见性合并）：属主/协作者判定直接复用已取的 owner——
+        # 原先注入的 visible() 会再开 2 个协作库连接重复 get_owner+
+        # is_participant（每请求 4 连接 → 2）。owner 为 None 的 legacy 分支
+        # 仍交回注入判定（保留 server/desktop 口径与路径检查）。
+        if owner is not None:
+            if not (owner["owner_user_id"] == user["user_id"]
+                    or task_collaboration.is_participant(
+                        collab, user["user_id"], task_id=task_id)):
+                raise HTTPException(403, "Task access denied.")
+        elif not self.visible(info, user):
+            raise HTTPException(403, "Task access denied.")
         # Legacy reads must not initialize databases or create backup files.
         actor_db = info.dir / (tasks.slugify_screener(user["username"]) + ".db")
         if owner is None:

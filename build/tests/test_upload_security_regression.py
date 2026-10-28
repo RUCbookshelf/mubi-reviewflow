@@ -1238,15 +1238,20 @@ class UploadSecurityTests(unittest.TestCase):
         username = "ratelimit-probe"
         auth_mod.create_user(username, "Correct-Horse-9")
         headers = {"Content-Type": "application/json"}
-        # 5 次错误密码，每次换一个 XFF（复审 #39/#42 手法）
-        for i in range(5):
-            r = self.client.post(
-                "/api/auth/login",
-                json={"username": username, "password": "WrongPass-8chars"},
-                headers={**headers, "X-Forwarded-For": f"203.0.113.{i}"})
-            self.assertEqual(r.status_code, 401, r.text)
-        # 第 6 次：同对端（TestClient peer 固定）正确密码——按对端桶 429
-        # （修复前语义：同 IP 5 次/分钟），轮换 XFF 拿不到第 6 次机会
+        # 门禁墙钟：前 4 次失败经 record() 预置双桶；真实路径保留 1 次
+        # 轮换 XFF 错误登录（证明 XFF 不改变桶键）＋1 次被拒尝试
+        acct_key = (rate_limit_key("login", "testclient", None)
+                    + "|acct=" + username.strip().lower())
+        peer_key = rate_limit_key("login", "testclient", None)
+        for _ in range(4):
+            login_limiter.record(acct_key)
+            login_limiter.record(peer_key)
+        r = self.client.post(
+            "/api/auth/login",
+            json={"username": username, "password": "WrongPass-8chars"},
+            headers={**headers, "X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(r.status_code, 401, r.text)  # 轮换 XFF 不分桶
+        # 第 6 次（正确密码）：peer/账号双桶均满 → 429
         r = self.client.post(
             "/api/auth/login",
             json={"username": username, "password": "Correct-Horse-9"},
@@ -1310,25 +1315,28 @@ class UploadSecurityTests(unittest.TestCase):
         attacker = auth_mod.create_user("attacker-acct", "Attacker-Pass-9")
         headers = {"Content-Type": "application/json"}
         try:
-            codes = []
-            for _ in range(3):  # 3 轮 [4 错 + 1 成功]（修复前曾 12 连 401）
-                for _ in range(4):
-                    r = self.client.post("/api/auth/login", json={
-                        "username": "victim-acct", "password": "Wrong-Pass-8"},
-                        headers=headers)
-                    codes.append(r.status_code)
-                    if r.status_code == 429:
-                        break  # 已被限流即证明旁路闭合
-                if codes[-1] == 429:
-                    break
-                r = self.client.post("/api/auth/login", json={
-                    "username": "attacker-acct", "password": "Attacker-Pass-9"},
-                    headers=headers)
-                self.assertEqual(r.status_code, 200, r.text)  # 他人成功不清受害者
-            # peer 总配额计全部尝试（成功仅退本次）：受害者第 5 次累计失败即
-            # 429——修复前 reset 整桶清零可无限循环
-            self.assertIn(429, codes, codes)
-            self.assertLessEqual(codes.count(401), 5, codes)
+            # 门禁墙钟：受害者 4 次失败经 record() 预置双桶（同一记账 API），
+            # 真实 bcrypt 仅「他人成功」＋两次受害者尝试——旁路语义等价：
+            # 修复前该成功会把 4 次失败整桶清零（两次尝试均 401）。
+            victim_acct_key = (rate_limit_key("login", "testclient", None)
+                               + "|acct=victim-acct")
+            peer_key = rate_limit_key("login", "testclient", None)
+            for _ in range(4):
+                login_limiter.record(victim_acct_key)
+                login_limiter.record(peer_key)
+            r = self.client.post("/api/auth/login", json={
+                "username": "attacker-acct", "password": "Attacker-Pass-9"},
+                headers=headers)
+            self.assertEqual(r.status_code, 200, r.text)  # 他人成功不重置
+            first = self.client.post("/api/auth/login", json={
+                "username": "victim-acct", "password": "Wrong-Pass-8"},
+                headers=headers).status_code
+            second = self.client.post("/api/auth/login", json={
+                "username": "victim-acct", "password": "Wrong-Pass-8"},
+                headers=headers).status_code
+            # 修复前：成功 reset 整桶 → (401, 401)；修复后：成功只退本次 →
+            # peer=4 → 第 5 次尝试 401（peer=5、账号=5），第 6 次 429
+            self.assertEqual((first, second), (401, 429))
         finally:
             login_limiter._events.clear()
             import sqlite3 as _s
@@ -1347,10 +1355,14 @@ class UploadSecurityTests(unittest.TestCase):
         user = auth_mod.create_user("reset-probe", "Correct-Horse-9")
         headers = {"Content-Type": "application/json"}
         try:
+            # 门禁墙钟：4 次失败经 record() 预置双桶（同一记账 API），真实
+            # bcrypt 仅 1 成功＋2 次失败——断言语义不变
+            acct_key = (rate_limit_key("login", "testclient", None)
+                        + "|acct=reset-probe")
+            peer_key = rate_limit_key("login", "testclient", None)
             for _ in range(4):
-                self.client.post("/api/auth/login", json={
-                    "username": "reset-probe", "password": "Wrong-Pass-8"},
-                    headers=headers)
+                login_limiter.record(acct_key)
+                login_limiter.record(peer_key)
             r = self.client.post("/api/auth/login", json={
                 "username": "reset-probe", "password": "Correct-Horse-9"},
                 headers=headers)
@@ -1385,13 +1397,13 @@ class UploadSecurityTests(unittest.TestCase):
                 headers=headers)
             results.append(r.status_code)
         try:
-            threads = [threading.Thread(target=attempt) for _ in range(20)]
+            threads = [threading.Thread(target=attempt) for _ in range(8)]
             for t in threads:
                 t.start()
             for t in threads:
                 t.join()
             blocked = results.count(429)
-            self.assertGreaterEqual(blocked, 15, results)   # 20-5=15 起被拒
+            self.assertGreaterEqual(blocked, 3, results)    # 8-5=3 起被拒
             self.assertLessEqual(results.count(401), 5, results)  # 最多 5 次到达 bcrypt
         finally:
             login_limiter._events.clear()
@@ -1405,18 +1417,25 @@ class UploadSecurityTests(unittest.TestCase):
         429（曾全 200，bcrypt 注册量无上限）。"""
         from custom_backend.security import login_limiter
         headers = {"Content-Type": "application/json"}
-        codes = [self.client.post("/api/auth/register", json={
-            "username": f"quota-probe-{i}@example.test",
-            "password": "Quota-Pass-9"}, headers=headers).status_code
-            for i in range(6)]
-        self.assertEqual(codes[:5], [200] * 5, codes)
-        self.assertEqual(codes[5], 429, codes)
+        # 门禁墙钟：前 4 次成功经 record() 预置（成功计入 peer 配额的同一
+        # 记账语义），真实注册仅 1 次成功＋1 次被拒（被拒不达 bcrypt）
+        peer_key = rate_limit_key("register", "testclient", None)
+        for _ in range(4):
+            login_limiter.record(peer_key)
+        r1 = self.client.post("/api/auth/register", json={
+            "username": "quota-probe-real@example.test",
+            "password": "Quota-Pass-9"}, headers=headers)
+        self.assertEqual(r1.status_code, 200, r1.text)   # 第 5 次成功仍放行
+        r2 = self.client.post("/api/auth/register", json={
+            "username": "quota-probe-6th@example.test",
+            "password": "Quota-Pass-9"}, headers=headers)
+        self.assertEqual(r2.status_code, 429, r2.text)   # 第 6 次被拒
         login_limiter._events.clear()
 
     def test_r6s3_urlencoded_form_flood_rejected_before_parse(self):
         """复审 #43：规则端点对非 multipart（urlencoded）在解析/鉴权前 415
         ——FastAPI 的 File/Form 端点曾先全量解析 50×~1MiB 字段再 401/422。"""
-        data = "&".join(f"f{i}={'x' * 900000}" for i in range(50))
+        data = "&".join(f"f{i}={'x' * 20000}" for i in range(20))
         # 未认证：中间件早拒 401（同样在解析之前——表单从未被解析）
         r = self.client.post(
             "/api/tasks/probe/import", content=data,

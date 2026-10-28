@@ -554,26 +554,36 @@ class CliLibraryDedupTests(unittest.TestCase):
 class FuzzyCandidateMemoryTests(unittest.TestCase):
     def test_two_thousand_similar_titles_produce_spanning_tree_only(self):
         # 复审 #4 实测：n=2000 同模板标题曾产生 1,999,000 对 / 16.35s /
-        # 386.5MB（tracemalloc 峰值）。生成树去重后至多 n-1 条边。
-        # 时长/内存断言按放宽阈值（泳道指示），防环境抖动误报。
+        # 386.5MB。生成树去重后至多 n-1 条边。
+        # 门禁墙钟拆分（r9）：正确性断言跑 n=1200（无 tracemalloc 记账，
+        # 直调 ~0.6s）；内存峰值断言跑 n=800（tracemalloc 对全程记账约
+        # 10x 放大，曾单点 ~11.8s）——O(n²) 滞留回归在 n=800 仍被捕获：
+        # 320k 对 × ~300B ≈ 96MB > 60MB 上限，生成树形态仅数 MB。
         arts = [
             _article(f"K{i}", f"Filler paper number {i} about topic {i}", "Doe, Jane")
-            for i in range(1, 2001)
+            for i in range(1, 1201)
+        ]
+        kept, report = find_duplicates(arts)
+        self.assertEqual(len(kept), 1200)               # 全部保留（只出候选）
+        self.assertEqual(len(report.fuzzy_pairs), 1199)  # 生成树边 = n - 1
+        self.assertTrue(all(p.method == "fuzzy" for p in report.fuzzy_pairs))
+        dups = [p.dup_key for p in report.fuzzy_pairs]
+        self.assertEqual(len(dups), len(set(dups)))
+
+        mem_arts = [
+            _article(f"M{i}", f"Filler paper number {i} about topic {i}", "Doe, Jane")
+            for i in range(1, 801)
         ]
         tracemalloc.start()
         started = time.monotonic()
-        kept, report = find_duplicates(arts)
+        kept2, report2 = find_duplicates(mem_arts)
         duration = time.monotonic() - started
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        self.assertEqual(len(kept), 2000)               # 全部保留（只出候选）
-        self.assertEqual(len(report.fuzzy_pairs), 1999)  # 生成树边 = n - 1
-        self.assertTrue(all(p.method == "fuzzy" for p in report.fuzzy_pairs))
-        # 每个非根节点恰出现一次为 dup（--auto-merge-fuzzy 的移除计数口径）
-        dups = [p.dup_key for p in report.fuzzy_pairs]
-        self.assertEqual(len(dups), len(set(dups)))
-        self.assertLess(duration, 30.0)                 # 放宽阈值（原全量 16.35s 起）
-        self.assertLess(peak, 200 * 1024 * 1024)        # 放宽阈值（原 386.5MB）
+        self.assertEqual(len(report2.fuzzy_pairs), 799)
+        self.assertLess(duration, 30.0)
+        self.assertLess(peak, 60 * 1024 * 1024)  # O(n²) 滞留（~96MB）必超此限
+
 
     def test_fuzzy_pair_limit_truncates_with_explicit_note(self):
         arts = [
