@@ -408,11 +408,35 @@ def _stable_content_id(art: Article) -> str:
     return base_id
 
 
+# 消歧键总长上限（G-02）：与 custom_backend/main.py 的 _KEY_RE
+# （^[^/\\\x00]{1,300}$）、DecisionIn.zotero_key（max_length=300）及
+# csv_parser.is_legal_source_key 的 300 上限三处同口径。超过该长度的键
+# SQLite 可入库、文章列表可见，但决策/全文/编码端点全部 422/400 拒绝，
+# 文献成为不可推进的死锁行——新生成的消歧键必须自我约束在该上限内。
+_DISAMBIG_KEY_MAX_LEN = 300
+
+
+def _suffixed_disambig_key(base: str, suffix: str, serial: int | None = None) -> str:
+    """base + "-" + suffix（serial 重试再追加 "-" + serial），总长 ≤300。
+
+    G-02：base_key 长 288-300（合法来源键）时直接拼接得到 301-313 字符，
+    serial 重试更长。拼接前按尾长截断 base 前缀；后缀哈希覆盖**完整**
+    base 与内容标识（见 _disambiguation_key），截断不损失唯一性。serial
+    重试形态按其自身尾长重算截断，含 serial 的最长形态同样 ≤300。
+    只约束新生成键的长度，不触碰库内既有（含历史超长）键（R1）。
+    """
+    tail = f"-{suffix}" if serial is None else f"-{suffix}-{serial}"
+    return f"{base[: _DISAMBIG_KEY_MAX_LEN - len(tail)]}{tail}"
+
+
 def _disambiguation_key(
     key: str, art: Article, occupied: set[str],
     known_by_key: dict[str, Article],
 ) -> str:
     """为冲突键生成确定性消歧键：键 + "-" + sha256(键|稳定内容标识)[:12]。
+
+    总长受 _DISAMBIG_KEY_MAX_LEN（300）约束：base 超 287 时拼接前截断
+    （G-02 死锁修复；≤287 的键生成结果与历史公式逐字节一致）。
 
     后缀若命中**库内同一文献的既往消歧行**（_key_merge_confirmed 成立）则
     直接沿用——重导同一文件时后缀与首导一致，走 upsert 更新而非再插新行
@@ -421,13 +445,13 @@ def _disambiguation_key(
     suffix = hashlib.sha256(
         f"{key}|{_stable_content_id(art)}".encode("utf-8")
     ).hexdigest()[:12]
-    candidate = f"{key}-{suffix}"
+    candidate = _suffixed_disambig_key(key, suffix)
     db_art = known_by_key.get(candidate)
     if db_art is not None and _key_merge_confirmed(db_art, art):
         return candidate  # 同一文献首导时的消歧键：沿用走更新路径
     serial = 2
     while candidate in occupied:
-        candidate = f"{key}-{suffix}-{serial}"
+        candidate = _suffixed_disambig_key(key, suffix, serial)
         serial += 1
     return candidate
 
