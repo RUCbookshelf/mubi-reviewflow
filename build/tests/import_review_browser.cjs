@@ -98,9 +98,16 @@ const locales=manifestFiles(manifest,['interface_locale.js','workflow_locale.js'
  await page.waitForFunction(()=>calls.filter(x=>x.method==='POST').length===1);
  await page.waitForFunction(()=>document.querySelector('.status-message')?.textContent==='Saved');
  assert.equal(await page.evaluate(()=>{const row=[...document.querySelectorAll('.wf-metadata-table tbody tr')].find(r=>r.querySelector('th').textContent==='Year');return row&&row.querySelectorAll('td')[0].textContent;}),'2023');
- // Accept incoming metadata: the incoming year takes over the record.
+ // The live panel renders both action buttons only while the proposal is
+ // pending (pending = action == null, unified_import_workspace.js recordReader),
+ // and the Keep click above just decided this record. Reset the fixture data
+ // and reopen the batch so Accept runs against a fresh pending proposal.
+ await page.evaluate(()=>{recordData=freshRecords();return WorkflowImports.open('fixture-batch');});
+ // Accept incoming metadata: the incoming year takes over the record. The api
+ // stub delays POST effects by 40ms after recording the call, so wait for the
+ // record effect itself - never for the call count.
  await page.getByRole('button',{name:'Accept incoming metadata',exact:true}).click();
- await page.waitForFunction(()=>calls.filter(x=>x.method==='POST').length===2);
+ await page.waitForFunction(()=>{const record=recordData.find(r=>r.record_id==='meta');return record&&record.metadata.action==='accept_incoming'&&record.article.year===2024;});
  await page.waitForFunction(()=>{const row=[...document.querySelectorAll('.wf-metadata-table tbody tr')].find(r=>r.querySelector('th').textContent==='Year');return row&&row.querySelectorAll('td')[1].textContent==='2024';});
  assert.equal(await page.evaluate(()=>recordData.find(r=>r.record_id==='meta').article.year),2024);
  // The live onboarding guide (also resolved from the online manifest) tracks progress.

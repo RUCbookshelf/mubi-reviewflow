@@ -392,6 +392,22 @@ def test_mm7_03_browser_test_injections_come_from_parsed_manifest():
     )
 
 
+@pytest.mark.skipif(
+    not (os.environ.get("REVIEWFLOW_PLAYWRIGHT") and os.environ.get("PLAYWRIGHT_BROWSERS_PATH")),
+    reason="playwright runtime not configured (set REVIEWFLOW_PLAYWRIGHT and PLAYWRIGHT_BROWSERS_PATH)",
+)
+@pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+def test_mm7_03_browser_harness_executes_green():
+    """R2 review guard: the live-panel harness must actually run green wherever a
+    playwright runtime is configured (its Accept step was broken in R2 review)."""
+    proc = subprocess.run(
+        [NODE, str(REPO / "build" / "tests" / "import_review_browser.cjs")],
+        cwd=REPO, capture_output=True, text=True, timeout=600,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "PASS live import-review panel" in proc.stdout
+
+
 # --------------------------------------------------------------------------- MM7-05
 
 PIP_STUB = """#!/bin/sh
