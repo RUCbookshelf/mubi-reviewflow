@@ -120,7 +120,15 @@ def _clean_base_url(base_url: str | None) -> str:
     from urllib.parse import urlsplit
 
     text = str(base_url or "").strip() or DEFAULT_BASE_URL
-    parts = urlsplit(text)
+    # MM-09：C0/C1 控制字符（含 \r\n 头注入尝试）在入库前拒绝——否则会一路放到
+    # 出站时才被 http.client 以 InvalidURL 拒绝并冒泡成用户可达 500。
+    # （strip() 只去首尾空白，中间的控制字符必须显式检查。）
+    if re.search(r"[\x00-\x1f\x7f-\x9f]", text):
+        raise KeyShapeError("base_url 不得包含控制字符。")
+    try:
+        parts = urlsplit(text)
+    except ValueError as exc:  # r7 复审（第2轮）：'http://[::1' 等畸形 URL 抛裸 ValueError
+        raise KeyShapeError("base_url 不是合法 URL。") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise KeyShapeError("base_url 必须是 http(s) URL（本地 Ollama 可填 http://127.0.0.1:11434/v1）。")
     # B9 F12/R-6 缓解：默认阻断链路本地与云元数据地址（含 IPv6 映射/十进制 IPv4/
@@ -291,11 +299,17 @@ def env_key() -> dict | None:
     key = os.environ.get(ENV_KEY, "").strip()
     if not key:
         return None
+    # r7 复审#1：环境 base_url 不在此清洗——env_key() 被 GET /api/ai/key 等读取
+    # 路径调用，控制字符等非法值若在此抛 KeyShapeError 会让读取端点 500；
+    # 合法性改由出站前的 base_url_of 校验（各出站点均已映射 422）。
+    # r7 复审（第2轮）：model 同理透传——超长等非法值出站时由 provider 拒绝
+    # （ProviderError/502），读取路径绝不因环境配置抛错。
+    # 缺省语义与 _clean_base_url 一致：空值回落官方端点。
     return {
         "provider": os.environ.get(ENV_PROVIDER, "").strip() or "managed",
         "key": key,
-        "base_url": _clean_base_url(os.environ.get(ENV_BASE_URL, "").strip()),
-        "model": _clean_model(os.environ.get(ENV_MODEL, "").strip()),
+        "base_url": (os.environ.get(ENV_BASE_URL, "").strip() or DEFAULT_BASE_URL),
+        "model": os.environ.get(ENV_MODEL, "").strip(),
         "added_at": None,
         "last_used_at": None,
     }

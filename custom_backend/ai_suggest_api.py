@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -67,6 +68,11 @@ MAX_CONTEXT_CHARS = 60_000              # 发给 provider 的文本载荷截断�
 MAX_VALUE_CHARS = 4_000
 MAX_QUOTE_CHARS = 2_000
 MAX_PROVIDER_BYTES = 2 * 1024 * 1024      # B9 F11：provider 响应读取上限（2 MiB）
+#: full 核验的引文最小长度（MM2-01/MM4-03）：短于该长度的引文即使逐字命中原文
+#: 也只标 ``partial``——核验本就只证明"引文存在"，3~7 字符的常用短词（如 "the"）
+#: 连这一点证据强度都不足以支撑对外标"完全核验"（value 从不参与核验，短引文
+#: 极易成为给捏造值发 full 的通道）。恰达 8 字符与前缀路径的既有门槛一致。
+MIN_FULL_QUOTE_CHARS = 8
 MAX_CONTEXT_PROMPT_CHARS = 2_000        # R3：综述背景语境上限
 USER_AGENT = "ReviewFlow-AI-Suggest/2.1.4"
 _FALLBACK_MODEL = "gpt-4o-mini"         # 用户未填模型名时的兜底（仅 OpenAI 兼容协议缺省）
@@ -104,7 +110,7 @@ CREATE TABLE IF NOT EXISTS ai_suggestions(
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
-  verified TEXT NOT NULL DEFAULT 'full' CHECK(verified IN ('full','partial')),
+  verified TEXT NOT NULL DEFAULT 'partial' CHECK(verified IN ('full','partial')),
   final_value TEXT,
   status TEXT NOT NULL CHECK(status IN ('pending','adopted','ignored','edited')),
   created_at TEXT NOT NULL,
@@ -200,11 +206,79 @@ def _connect(db: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=15000")
     conn.executescript(_SUGGESTIONS_SCHEMA)
     try:  # 旧库补列（一期均为临时库，防御性兼容；列已存在则忽略）
+        # MM2-01：缺省不得为 'full'——缺省 full 会让漏给 verified 的写入自动获得最强标记。
         conn.execute("ALTER TABLE ai_suggestions "
-                     "ADD COLUMN verified TEXT NOT NULL DEFAULT 'full'")
+                     "ADD COLUMN verified TEXT NOT NULL DEFAULT 'partial'")
     except sqlite3.OperationalError:
         pass
+    _retire_legacy_verified_full_default(conn)
     return conn
+
+
+def _verified_column_default(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute("SELECT dflt_value FROM pragma_table_info('ai_suggestions') "
+                       "WHERE name='verified'").fetchone()
+    return (row[0] or "").strip("'") if row is not None else None
+
+
+#: r7 复审#4：存量 2.1.4 库（verified 列已存在且 DEFAULT 'full'）的同构重建迁移。
+#: 逐语句执行（不用 executescript——它会先隐式 COMMIT，破坏原子性）；列清单
+#: 与 _SUGGESTIONS_SCHEMA 完全一致，仅缺省为 'partial'；存量行按列名逐字复制
+#: （verified 的既有取值不改写——变的是缺省，不是数据）。旧索引随 RENAME 跟随
+#: 旧表、随 DROP 一并消失，最后按原名重建在新表上。
+_LEGACY_VERIFIED_FULL_REBUILD = (
+    """CREATE TABLE ai_suggestions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  zotero_key TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  value TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  pages_json TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  verified TEXT NOT NULL DEFAULT 'partial' CHECK(verified IN ('full','partial')),
+  final_value TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending','adopted','ignored','edited')),
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+)""",
+    """INSERT INTO ai_suggestions(
+  id, task_id, actor_id, zotero_key, field_id, value, quote, pages_json,
+  provider, model, prompt_version, verified, final_value, status, created_at, decided_at)
+SELECT id, task_id, actor_id, zotero_key, field_id, value, quote, pages_json,
+  provider, model, prompt_version, verified, final_value, status, created_at, decided_at
+FROM ai_suggestions_legacy_vfull""",
+    "DROP TABLE ai_suggestions_legacy_vfull",
+    "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_subject "
+    "ON ai_suggestions(task_id,actor_id,zotero_key,field_id,id)",
+)
+
+
+def _retire_legacy_verified_full_default(conn: sqlite3.Connection) -> None:
+    """MM2-01（r7 复审#4）：把存量库 verified 列的 DEFAULT 'full' 迁移为 'partial'。
+
+    只在检测到该缺省时执行一次（迁移后幂等）；失败（他连接并发先迁/临时锁等
+    OperationalError）回滚且不阻断连接——该缺省当前仅是潜伏面（唯一 INSERT
+    显式传值），读取/写入永远优先。"""
+    try:
+        if _verified_column_default(conn) != "full":
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        if _verified_column_default(conn) != "full":  # 双检：他连接可能已迁移
+            conn.execute("COMMIT")
+            return
+        conn.execute("ALTER TABLE ai_suggestions RENAME TO ai_suggestions_legacy_vfull")
+        for statement in _LEGACY_VERIFIED_FULL_REBUILD:
+            conn.execute(statement)
+        conn.execute("COMMIT")
+    except sqlite3.OperationalError:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -268,18 +342,16 @@ def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
         if 300 <= exc.code < 400:
             raise ProviderError(
                 f"provider HTTP {exc.code}: 重定向被拒绝（为保护 API 钥匙不外发，请直接配置最终端点）。") from None
-        detail = ""
-        try:
-            raw = exc.read(2048).decode("utf-8", "replace")
-            parsed = json.loads(raw)
-            detail = str(parsed.get("error", {}).get("message") or raw)
-        except (OSError, ValueError, AttributeError):
-            detail = ""
-        raise ProviderError(f"provider HTTP {exc.code}: {detail[:200]}", status=exc.code) from None
+        # MM-06：非 2xx 只回状态码＋固定文案，provider 响应体绝不回显——本出口被
+        # verify=true / 生成 / 测试连接共用，回显（原先前 200 字符）构成内网 SSRF
+        # 读预言机（docs §4 披露口径：仅"据响应差异探测"，不含响应体内容）。
+        raise ProviderError(f"provider HTTP {exc.code}（详情不回显）", status=exc.code) from None
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", None)
         text = f"provider 连接失败: {reason}" if reason else "provider 连接失败"
         raise ProviderError(text) from None
+    except http.client.HTTPException as exc:  # MM-09：InvalidURL 等 URL 级错误绝不冒泡 500
+        raise ProviderError(f"provider URL 非法: {type(exc).__name__}") from None
     except (TimeoutError, OSError) as exc:
         raise ProviderError(f"provider 超时（{int(timeout)}s）: {type(exc).__name__}") from None
     except ValueError as exc:
@@ -369,13 +441,16 @@ def _build_messages(field_ids: list[str], article: dict, page_texts: list[str],
 def _parse_provider_content(content: str, field_ids: list[str],
                             page_texts: list[str],
                             abstract: str = "") -> tuple[list[dict], list[str], int]:
-    """解析模型 JSON 并做引文核验（P4；B9 F1/F9）。
+    """解析模型 JSON 并做引文核验（P4；B9 F1/F9；MM2-01 门槛分级）。
 
     - 无 quote 的建议直接丢弃（P4）；
     - **quote 不在原文（全文任一页或摘要）中出现的建议同样丢弃**（服务端归一化
       包含校验；先试全文引文、再试前 80 字符）；
+    - 核验只证明引文存在于原文，**value 从不参与核验**：短于
+      ``MIN_FULL_QUOTE_CHARS`` 的命中引文降级 ``partial``（MM2-01）；
     - pages 一律以服务端定位结果为准（模型给的 pages 仅作参考不再采信）：
-      命中 PDF 页返回页号列表；仅命中摘要返回 ``[]``（无页可跳）；
+      命中 PDF 页返回页号列表；仅命中摘要返回 ``[]``（无页可跳，前端标注
+      摘要来源——MM2-04）；
     - provider 载荷是不可信输入：形状非法（pages 非数组/非整数值等）按无效处理，
       绝不让 TypeError 冒泡成 500。
 
@@ -400,15 +475,18 @@ def _parse_provider_content(content: str, field_ids: list[str],
     normalized_abstract = _normalize_text(abstract)
 
     def locate_quote(quote: str) -> tuple[list[int], str] | None:
-        """核验引文来源（B9 R-1 收紧）。
+        """核验引文来源（B9 R-1 收紧；MM2-01 门槛分级）。
 
         返回 ``(pages, verified)``：pages 为页号列表（摘要命中=[]）；
         verified ∈ {"full","partial"}。原文中完全找不到返回 None（伪造）。
 
-        - full：完整归一化引文（允许去尾标点变体）逐字命中；≥3 字符的短引文
-          只走完整匹配（精确放行，不被 8 字门槛误杀）；
-        - partial：仅当引文超过 80 字符时，允许前 80 字符前缀命中——此时建议
-          保留但标注"部分核验"（真前缀+编造尾段无法冒充 full）。
+        - full：完整归一化引文（允许去尾标点变体）逐字命中，且引文长度达到
+          ``MIN_FULL_QUOTE_CHARS``（8 字符）——短引文证据强度不足以支撑
+          "完全核验"的对外语义（MM2-01：3 字符常用词曾可给捏造值发 full）；
+        - partial：≥3 字符但短于 ``MIN_FULL_QUOTE_CHARS`` 的完整命中；或引文
+          超过 80 字符时前 80 字符前缀命中（真前缀+编造尾段无法冒充 full）；
+          建议保留但标注"部分核验"。
+        - <3 字符：不参与定位（按伪造丢弃）。
         """
         needle = _normalize_text(quote)
         strip_punct = lambda s: s.rstrip(".,;:!?'\u201d\u2019。，；：！？\u3002")  # noqa: E731
@@ -426,7 +504,8 @@ def _parse_provider_content(content: str, field_ids: list[str],
             if len(exact) >= 3:
                 found = find(exact)
                 if found is not None:
-                    return found, "full"
+                    # MM2-01：full 需达到最小引文长度；短引文命中降级 partial。
+                    return found, "full" if len(exact) >= MIN_FULL_QUOTE_CHARS else "partial"
         if len(needle) > 80:
             for prefix in (needle[:80], strip_punct(needle[:80])):
                 if len(prefix) >= 8:
@@ -590,6 +669,21 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             raise HTTPException(403, "Only the task owner can manage AI suggestion settings.")
         return ctx
 
+    def _base_url_meta(record: dict | None) -> str | None:
+        """元数据读取路径的 base_url（r7 复审#1：绝不 500）。
+
+        存量钥匙记录可能带着历史版本接受的非法 base_url（如控制字符）——此时
+        回传原始串（本人的配置，便于排查重存）；非法值只在出站前校验并映射 422。
+        捕 ValueError 而非仅 KeyShapeError：urlsplit 对 'http://[::1' 等畸形 URL
+        抛裸 ValueError（复审第 2 轮），KeyShapeError 亦是其子类，一并兜住。"""
+        if record is None:
+            return None
+        try:
+            return ai_keys.base_url_of(record)
+        except ValueError:
+            raw = record.get("base_url")
+            return raw if isinstance(raw, str) and raw else None
+
     def _masked_metadata(record: dict | None, source: str | None) -> dict:
         if record is None:
             return {"configured": False, "provider": None, "masked": None,
@@ -597,7 +691,7 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                     "added_at": None, "last_used_at": None}
         return {"configured": True, "provider": record.get("provider"),
                 "masked": ai_keys.mask_key(record.get("key", "")),
-                "base_url": ai_keys.base_url_of(record),
+                "base_url": _base_url_meta(record),
                 "model": record.get("model") or "", "source": source,
                 "added_at": record.get("added_at"), "last_used_at": record.get("last_used_at")}
 
@@ -651,11 +745,15 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         if record is None:
             raise HTTPException(409, {"code": "ai_key_missing",
                                       "detail": "尚未配置个人 AI 钥匙。"})
+        try:  # MM-09：历史存量记录若含非法 base_url，映射 422 而非未捕获 500。
+            base_url = ai_keys.base_url_of(record)
+        except ai_keys.KeyShapeError as exc:
+            raise HTTPException(422, str(exc)) from None
         started = time.monotonic()
         try:
             result = _call_provider(
                 "You are a connectivity check. Reply with a JSON object.",
-                '{"ping": true}', api_key=record["key"], base_url=ai_keys.base_url_of(record),
+                '{"ping": true}', api_key=record["key"], base_url=base_url,
                 model=(record.get("model") or _FALLBACK_MODEL), timeout=15.0)
         except ProviderError as exc:
             raise _provider_http_error(exc, record["key"]) from None
@@ -852,7 +950,10 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         system, prefix, _user_full = _build_messages(requested, article, page_texts, abstract,
                                                      str(settings.get("context_prompt") or ""))
         user_message, truncated_chars = _truncate_user_message(prefix, page_texts)
-        base_url = ai_keys.base_url_of(credentials)
+        try:  # MM-09：历史存量记录若含非法 base_url，映射 422 而非未捕获 500。
+            base_url = ai_keys.base_url_of(credentials)
+        except ai_keys.KeyShapeError as exc:
+            raise HTTPException(422, str(exc)) from None
         model = (credentials.get("model") or "").strip() or _FALLBACK_MODEL
         try:
             result = _call_provider(system, user_message, api_key=credentials["key"],
@@ -886,7 +987,7 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                     (info.task_id, str(user["user_id"]), body.zotero_key, suggestion["field_id"],
                      suggestion["value"], suggestion["quote"],
                      json.dumps(suggestion["pages"]), provider, model_used,
-                     PROMPT_VERSION, suggestion.get("verified", "full"), generated_at))
+                     PROMPT_VERSION, suggestion.get("verified") or "partial", generated_at))
                 stored.append({**suggestion, "id": int(cursor.lastrowid),
                                "status": "pending", "generated_at": generated_at})
             _trace_generated(conn, info.task_id, user, body.zotero_key, kept,
@@ -1021,8 +1122,10 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             f"建议由大语言模型生成（提示词版本 {PROMPT_VERSION}），仅覆盖研究特征类字段：{fields}。"
             f"使用期间：{span}；共生成 {total} 条建议，其中 {adopted} 条被直接采纳、"
             f'{int(row["edited"] or 0)} 条经人工编辑后采纳、{int(row["ignored"] or 0)} 条被忽略。'
-            f"密钥模式：{shared_note}{models_note}。每条建议均附原文引文与页码，"
-            "无引文或引文未能在原文中核验的建议在服务端被丢弃（超长引文按可核验前缀放行并标注部分核验）；"
+            f"密钥模式：{shared_note}{models_note}。每条建议均附原文引文：引文取自全文正文的建议附服务端定位的页码，"
+            "仅取自摘要的建议标注为摘要来源（无页码）。服务端核验仅确认引文逐字存在于原文，"
+            "不代表核验了建议值本身；无引文或引文未能在原文中核验的建议在服务端被丢弃，"
+            "引文过短或超长（按可核验前缀放行）的建议标注为部分核验；"
             "采纳由人工逐条确认，最终编码值均由研究者经既有保存链路写入并计入研究轨迹。"
             "模型输出未经独立验证，仅作辅助参考（验证方式：__________）。")
         report_en = (
@@ -1036,10 +1139,14 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             f'editing, and {int(row["ignored"] or 0)} dismissed. Key mode: '
             f"{'a task-shared key configured by the task owner' if settings.get('key_mode') == 'shared' else 'bring-your-own-key (BYOK)'}"
             f"{' (models: ' + ', '.join(m for m in models if m) + ')' if models else ''}. "
-            "Every suggestion carried a source quote and page numbers; suggestions without a "
-            "quote, or whose quote could not be verified against the source text, were discarded "
-            "server-side (overlong quotes are accepted on a verifiable prefix and flagged as "
-            "partially verified). Adoption required per-item human confirmation, and "
+            "Every suggestion carried a source quote: suggestions quoting the full text carried "
+            "server-located page numbers, while quotes located only in the abstract were "
+            "labelled as abstract-sourced (no page numbers). Server-side verification only "
+            "confirmed that the quote appeared verbatim in the source text and did not validate "
+            "the suggested value itself; suggestions without a quote, or whose quote could not "
+            "be verified against the source text, were discarded server-side, and overly short "
+            "or overlong quotes (accepted on a verifiable prefix) were flagged as partially "
+            "verified. Adoption required per-item human confirmation, and "
             "final coding values were saved by researchers through the regular audit-trailed "
             "workflow. Model outputs were not independently validated and served as assistance "
             "only (validation: __________).")
