@@ -88,12 +88,18 @@ def _prepare_rows(
 
     The design vector x is ``[treatment, scaled covariates...]``. Rows are used
     in memory only and are never retained by or returned from the fit result.
+
+    A row must carry the core fields plus every named covariate; any further
+    columns are ignored (MM11-03: the same IPD batch may hold covariate columns
+    that only the multi-adjusted model consumes, so the two-stage unadjusted
+    fit must not reject rows for carrying them -- the same rows the
+    multi-adjusted entry point accepts).
     """
     fields = {"study_id", "duration", "event", "treatment", *covariate_names}
     rows_by_study: dict[str, list[tuple[float, int, np.ndarray]]] = {}
     event_counts = [0, 0]
     for row in participants:
-        if not isinstance(row, Mapping) or set(row) != fields:
+        if not isinstance(row, Mapping) or not fields <= set(row):
             raise ValueError(
                 "each row needs study_id, duration, event, treatment, and the named covariates "
                 + ", ".join(covariate_names)

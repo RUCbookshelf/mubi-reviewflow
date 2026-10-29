@@ -361,28 +361,98 @@ class CollaborationHardeningTests(unittest.TestCase):
     def test_alias_read_endpoints_use_canonical_lock_key(self):
         # 复审 R6-C3 扫尾：GET coding/dimensions 与 coding/scheme 曾按 URL
         # 原始串分锁——别名读 'T.' 与规范写 'T' 不互斥（读迁移中途状态）。
+        # MM11-02（复审更正）：尾点别名解析是 Windows 路径语义；POSIX 上
+        # find_task('T.') 为 None，别名读 404 于取锁之前——旧断言在 POSIX
+        # 上 :371 恒红、:372 恒真（并非"永远绿"）。按实测解析语义分支：
+        # 别名可解析（Windows）读必须 200 且只落规范键；不可解析（POSIX）
+        # 读必须 404 且不得取任何锁。规范读先落规范键，assertNotIn 不再
+        # 是无前提的恒真。
         runtime = app.state.review_workflow
+        alias = self.task + "."
+        alias_resolves = tasks_mod.find_task(alias, DATA_DIR) is not None
         for endpoint in ("coding/dimensions", "coding/scheme"):
-            with self.subTest(endpoint=endpoint):
-                r = self.client.get(f"/api/tasks/{self.task}./{endpoint}",
+            with self.subTest(endpoint=endpoint, alias_resolves=alias_resolves):
+                r = self.client.get(f"/api/tasks/{alias}/{endpoint}",
                                     headers=self.auth())
-                self.assertIn(r.status_code, (200, 404), r.text)
+                if alias_resolves:
+                    self.assertEqual(r.status_code, 200, r.text)
+                else:
+                    self.assertEqual(r.status_code, 404, r.text)
+                    self.assertNotIn(alias, runtime._locks)  # 404 于取锁之前
+        canonical = self.client.get(f"/api/tasks/{self.task}/coding/dimensions",
+                                    headers=self.auth())
+        self.assertEqual(canonical.status_code, 200, canonical.text)
         keys = set(runtime._locks.keys())
         self.assertIn(self.task, keys)
-        self.assertNotIn(self.task + ".", keys)  # 别名读不得新增分键
+        self.assertNotIn(alias, keys)  # 别名读不得新增分键
+
+    def test_alias_read_lock_key_guard_runs_on_posix_via_windows_equivalent_lookup(self):
+        # MM11-02：POSIX 上端点级别名读恒 404，"别名读不分键"守护在真实
+        # POSIX 路径上结构性不可达。构造 Windows 语义的等价场景：临时让
+        # find_task 把本任务的尾点别名解析回同一物理任务（Windows 行为），
+        # 两种平台都能真实执行"别名读 → 锁键必须是规范 id"的守护；
+        # R6-C3 回归（锁键退回 URL 原始串）时本用例必红。
+        runtime = app.state.review_workflow
+        alias = self.task + "."
+        original = tasks_mod.find_task
+
+        def windows_alias_semantics(task_id, *args, **kwargs):
+            return original(self.task if task_id == alias else task_id,
+                            *args, **kwargs)
+
+        tasks_mod.find_task = windows_alias_semantics
+        try:
+            for endpoint in ("coding/dimensions", "coding/scheme"):
+                r = self.client.get(f"/api/tasks/{alias}/{endpoint}",
+                                    headers=self.auth())
+                self.assertEqual(r.status_code, 200, r.text)
+        finally:
+            tasks_mod.find_task = original
+        keys = set(runtime._locks.keys())
+        self.assertIn(self.task, keys)
+        self.assertNotIn(alias, keys)  # URL 原始串不得成为分键
 
     def test_report_evidence_alias_can_write_parity(self):
         # 复审：authorize_action 曾用 URL 原始 id——别名路径 can_write=False
         # 误 403（UI 能力漂移）。
+        # MM11-02 同根因收口（第 2 轮评审）：尾点别名解析是 Windows 路径
+        # 语义；POSIX 上 find_task('T.') 为 None、别名读 404——旧断言
+        # r2==200 在真实 POSIX（WSL 实测 404 != 200）必红。按实测语义
+        # 分支：可解析（Windows）断言 200 且 can_write 与规范读对齐；
+        # 不可解析（POSIX）断言 404 fail-closed。再以 Windows 等价
+        # lookup 构造别名解析，两种平台都真实执行 can_write 守护。
         task_collaboration.grant_role(
             self.store, actor_user_id=self.owner_id, user_id=self.users[1]["user_id"],
             role="coder", task_id=self.task)
         r1 = self.client.get(f"/api/tasks/{self.task}/report-evidence", headers=self.auth(1))
-        r2 = self.client.get(f"/api/tasks/{self.task}./report-evidence", headers=self.auth(1))
         self.assertEqual(r1.status_code, 200, r1.text)
-        self.assertEqual(r2.status_code, 200, r2.text)
-        self.assertEqual(r1.json()["can_write"], r2.json()["can_write"])
-        self.assertTrue(r2.json()["can_write"])
+        self.assertTrue(r1.json()["can_write"], r1.text)
+        alias = self.task + "."
+        alias_resolves = tasks_mod.find_task(alias, DATA_DIR) is not None
+        r2 = self.client.get(f"/api/tasks/{alias}/report-evidence", headers=self.auth(1))
+        if alias_resolves:
+            self.assertEqual(r2.status_code, 200, r2.text)
+            self.assertEqual(r1.json()["can_write"], r2.json()["can_write"])
+            self.assertTrue(r2.json()["can_write"])
+        else:
+            self.assertEqual(r2.status_code, 404, r2.text)
+        # Windows 等价 lookup 阶段：别名解析指回同一物理任务——POSIX 上
+        # 也能真实执行"别名读 can_write 不漂移"守护（authorize_action
+        # 回归用 URL 原始 id 时，此阶段必红）。
+        original = tasks_mod.find_task
+
+        def windows_alias_semantics(task_id, *args, **kwargs):
+            return original(self.task if task_id == alias else task_id,
+                            *args, **kwargs)
+
+        tasks_mod.find_task = windows_alias_semantics
+        try:
+            r4 = self.client.get(f"/api/tasks/{alias}/report-evidence", headers=self.auth(1))
+        finally:
+            tasks_mod.find_task = original
+        self.assertEqual(r4.status_code, 200, r4.text)
+        self.assertEqual(r1.json()["can_write"], r4.json()["can_write"])
+        self.assertTrue(r4.json()["can_write"])
 
     def test_list_participant_ids_corrupt_store_raises_not_empty(self):
         # 复审 R6-C6（D2 探针原样回放）：损坏库不得折叠成伪空表

@@ -160,8 +160,26 @@ class ActiveLearningRanker:
         ----
         RankingResult | None
             ``order`` 恰为候选键（未筛 + maybe）在导入顺序基准上的一个排列；
-            候选为空时 ``order == []``、``scores == {}``（全筛完的合法终态）。
-            未知 ``strategy`` 经 :func:`query_order` 抛 ``ValueError``。
+            候选为空时 ``order == []``、``scores == {}``（全筛完的合法终态）：
+            NB 载体（tuned/legacy）与 ``profile=None`` 沿用原有代码路径
+            （§10 不变量 1——空候选下本就返回空序，``model_meta`` 与旧版
+            逐位一致）；svm 载体（svm/cjk）把空终态**先于训练**短路——
+            ``model_meta`` 如实记 ``n_features=0`` 与 ``trained=False``
+            （未训练，非无特征），因此训练标签退化（全 include/全 exclude
+            单类）也不会把合法终态变成错误。未知 ``strategy`` 经
+            :func:`query_order` 抛 ``ValueError``（空候选同样校验）。
+
+        异常
+        ----
+        ValueError
+            svm/cjk 预设下训练标签只有一类（全 include 或全 exclude）且
+            **确有待排候选**（训练必须发生）时，由
+            :class:`~coscreen.al.svm.SVMClassifier` 的单类守卫抛出可读
+            ``ValueError``（LinearSVC 无法在单类上训练；NB 预设不抛——
+            其缺失类先验取 ``-inf``、单类降级为常数分，见
+            :mod:`coscreen.al.nb`；svm 载体候选为空的终态不训练，故不
+            触发本异常）。HTTP 调用方应将其转换为 4xx（如 400）而非
+            500：这是用户补齐标签即可恢复的状态，不是服务端故障。
         """
         by_key: dict[str, Article] = {a.zotero_key: a for a in articles}
 
@@ -179,6 +197,29 @@ class ActiveLearningRanker:
             a.zotero_key for a in articles
             if decisions.get(a.zotero_key) not in _TRAIN_LABELS
         ]
+
+        # 空候选 + svm 载体（svm/cjk）：终态先于训练（F-04-02 残留修正）——
+        # svm 的两类并存要求不得把合法终态变成错误（终态下训练标签完全
+        # 可能是单类，如 5 条全 include 后筛完）。**只对 svm 载体短路**：
+        # NB 载体（tuned/legacy）与 profile=None 不受影响，沿用原有代码
+        # 路径（§10 不变量 1，含空候选下的 model_meta 与旧版逐位一致）。
+        # strategy 仍经 query_order 校验（空列表不豁免）。
+        if not cand_keys and self._classifier_kind == "svm":
+            n_include = sum(
+                1 for k in train_keys if decisions[k] == "include"
+            )
+            meta = self._model_meta(0, n_include, len(train_keys) - n_include)
+            # 审计语义（model_meta 会被 db.record_ranking 原样持久化）：
+            # n_features=0 是「未训练」而非「无特征」，显式标记。
+            meta["trained"] = False
+            return RankingResult(
+                order=query_order([], {}, self.strategy, self.seed),
+                scores={},
+                strategy=self.strategy,
+                seed=self.seed,
+                n_labeled=len(train_keys),
+                model_meta=meta,
+            )
 
         train_texts = [self._text(by_key[k]) for k in train_keys]
         cand_texts = [self._text(by_key[k]) for k in cand_keys]
@@ -211,27 +252,7 @@ class ActiveLearningRanker:
 
         n_include = sum(1 for label in y if label == 1)
         n_exclude = len(y) - n_include
-        if self._profile_conf is None:
-            model_meta = {
-                "n_features": len(vec.vocab),
-                "n_include": n_include,
-                "n_exclude": n_exclude,
-                "alpha": 1.0,
-            }
-        else:
-            p = self._profile_conf
-            model_meta = {
-                "n_features": len(vec.vocab),
-                "n_include": n_include,
-                "n_exclude": n_exclude,
-                "profile": p.name,
-                "classifier": p.classifier,
-                **p.classifier_params,
-                "balancer": p.balancer,
-                "balance_ratio": (
-                    p.balancer_params.get("ratio") if p.balancer else None
-                ),
-            }
+        model_meta = self._model_meta(len(vec.vocab), n_include, n_exclude)
 
         order = query_order(cand_keys, scores, self.strategy, self.seed)
         return RankingResult(
@@ -242,3 +263,33 @@ class ActiveLearningRanker:
             n_labeled=len(train_keys),
             model_meta=model_meta,
         )
+
+    def _model_meta(self, n_features: int, n_include: int,
+                    n_exclude: int) -> dict:
+        """``RankingResult.model_meta``（svm 空候选短路只增 ``trained`` 键）。
+
+        正常训练路径 ``n_features=len(vec.vocab)``、无 ``trained`` 键
+        （与升级前逐位一致）；svm 载体空候选短路传 ``n_features=0``，
+        调用方再补 ``trained=False``（未训练≠无特征，审计字段会被
+        ``db.record_ranking`` 原样持久化）。
+        """
+        if self._profile_conf is None:
+            return {
+                "n_features": n_features,
+                "n_include": n_include,
+                "n_exclude": n_exclude,
+                "alpha": 1.0,
+            }
+        p = self._profile_conf
+        return {
+            "n_features": n_features,
+            "n_include": n_include,
+            "n_exclude": n_exclude,
+            "profile": p.name,
+            "classifier": p.classifier,
+            **p.classifier_params,
+            "balancer": p.balancer,
+            "balance_ratio": (
+                p.balancer_params.get("ratio") if p.balancer else None
+            ),
+        }

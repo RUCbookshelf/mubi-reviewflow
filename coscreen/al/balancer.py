@@ -31,12 +31,17 @@ __all__ = ["BalancedWeights"]
 class BalancedWeights:
     """ASReview Balanced 策略：给少数类（相关）更高权重。
 
-    ratio = N_irrelevant_weight / N_relevant_weight
-    ratio=9.8 意味着排除类样本的权重约为纳入类的 1/9.8。
+    ratio = N_relevant_weight / N_irrelevant_weight
+    （纳入类 : 排除类的**总**权重之比，与模块 docstring/实现一致；
+    F-04-04 修正：此前公式方向写反。）
+    ratio=9.8 意味着排除类**总**权重约为纳入类的 1/9.8；逐样本的
+    排除/纳入权重比则为 n_relevant/(ratio × n_irrelevant)，随两类样本量
+    变化，仅两类等量时才是 1/9.8（MM11-05 修正：50/4950 时为 1/970.2；
+    纳入/排除方向是其倒数 ratio × n_irrelevant / n_relevant，见模块说明）。
     """
 
     def __init__(self, ratio: float = 9.8) -> None:
-        """``ratio`` 为排除类与纳入类的总权重之比（须为正）。
+        """``ratio`` 为纳入类与排除类的总权重之比（须为正）。
 
         ASReview ELAS u4 在 SYNERGY 全集 Optuna 调优得 9.8；
         ``ratio=1.0`` 表示两类等总权重（标签均衡时等价于无平衡）。
