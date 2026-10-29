@@ -403,7 +403,9 @@ def pool_likelihood_ratios(tables, *, correction="none", random_effects: bool = 
 
     per_study, plus_pairs, minus_pairs = [], [], []
     for row in kept:
-        ratios = _study_log_ratios(row, corrected=correction_value is not None)
+        has_zero_cell = 0 in (row["tp"], row["fp"], row["fn"], row["tn"])
+        ratios = _study_log_ratios(
+            row, corrected=correction_value is not None and has_zero_cell)
         per_study.append({"study_id": row["study_id"], **ratios})
         plus_pairs.append((ratios["ln_lr_positive"], ratios["var_ln_lr_positive"]))
         minus_pairs.append((ratios["ln_lr_negative"], ratios["var_ln_lr_negative"]))
