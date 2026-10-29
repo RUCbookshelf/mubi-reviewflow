@@ -252,13 +252,14 @@ class TaskLockMiddleware:
     # /api/tasks/{id}/** 的中间件路径正则，但 list_tasks 会打开**所有**
     # 任务的 task.json——必须让 DELETE 的排空同样等它。
     _list_readers: int = 0
-    # 取锁前可见性预检（L-01）的在途读数：键为 **URL** task_id（在
-    # find_task 之前登记，覆盖 task.json 读＋协作库读＋锁文件创建的整个
-    # 预检段；不可见请求保持计数贯穿下游 require_user 的重读）。别名
-    # URL 与规范 id 不同键，delete_task 的读排空按本任务别名族归一等空
-    # （precheck_readers_for；POSIX 字面匹配）。预检打开任务目录内的
-    # collaboration.db——该句柄未释放时 shutil.move 同样半删（R6-S2 的
-    # Windows WinError 32 路径）。
+    # 取锁前可见性预检（L-01）的在途读数：键为 **URL** task_id 经
+    # ``_url_task_key`` 规范后的键（Windows：长目录名——8.3 短名/大小写/
+    # 尾点别名与规范 id 同键，r10；POSIX：原样 URL）。在 find_task 之前
+    # 登记，覆盖 task.json 读＋协作库读＋锁文件创建的整个预检段；不可见
+    # 请求保持计数贯穿下游 require_user 的重读。delete_task 的读排空按
+    # 本任务别名族归一等空（precheck_readers_for；POSIX 字面匹配）。预检
+    # 打开任务目录内的 collaboration.db——该句柄未释放时 shutil.move
+    # 同样半删（R6-S2 的 Windows WinError 32 路径）。
     _precheck_readers: dict[str, int] = {}
     _guard = threading.Lock()
 
@@ -335,11 +336,12 @@ class TaskLockMiddleware:
     def precheck_readers_for(cls, task_id: str) -> int:
         """该任务（含其 URL 别名族键）的在途预检读数——DELETE 排空按任务等空。
 
-        预检按 URL task_id 计数；Windows 上 ``task.``/``task..``/``TASK``
-        等别名与规范 id 解析到同一任务目录（U5-P1），按尾点/空格＋大小写
-        归一后的 needle 匹配同一任务的全部别名键；POSIX 文件系统大小写
-        敏感且尾点/空格是不同文件，find_task 只按字面命中——精确匹配即可
-        （避免把仅大小写不同的**另一任务**误等进排空）。
+        预检按 ``_url_task_key`` 规范后的 URL 键计数——Windows 上 8.3 短名
+        （``AVERYL~1``）、``task.``/``task..``/``TASK`` 等别名与规范 id 解析
+        到同一任务目录（U5-P1/r10），登记时已折叠为长目录名，尾点/空格＋
+        大小写归一的 needle 兜底匹配同一任务的残留别名键；POSIX 文件系统
+        大小写敏感且尾点/空格是不同文件，find_task 只按字面命中——精确
+        匹配即可（避免把仅大小写不同的**另一任务**误等进排空）。
         """
         with cls._guard:
             if os.name != "nt":
@@ -433,6 +435,40 @@ class TaskLockMiddleware:
         except collaboration_mod.OwnerUnavailableError:
             return False
 
+    @staticmethod
+    def _url_task_key(task_id: str) -> str:
+        """URL task_id 的预检计数/删除匹配键：Windows 先规范为长目录名。
+
+        r10 复审（阻断）：Win32 卷启用 8.3 短名时（C: 系统卷默认启用）API
+        真实接受 ``AVERYL~1`` 这类短名 URL——``tasks_root/{短名}`` 经 Win32
+        路径解析命中同一长名任务目录（find_task 因此拿到同一任务的规范
+        task.json）。若登记/匹配只做尾点/空格＋大小写归一，短名键与 DELETE
+        排空用的规范长名互不可见：不可见请求的下游重读（require_user 重开
+        task.json/collaboration.db）持句柄贯穿 ``shutil.move`` → WinError 32
+        半删/500（复审探针每任务 12 并发非参与者短名 GET：10/10 DELETE
+        500，基线 5cb6314 为 0/10）。
+
+        实现：``Path(tasks_root/{task_id}).resolve().name`` 实测把已存在
+        目录的真实短名还原为长名（``AVERYL~1`` → ``averylongtaskname-…``），
+        同时顺带折叠大小写/尾点别名到在磁盘上的真实名字；目录不存在（幽灵
+        任务）或解析异常时**原样返回**——幽灵请求保持基线放行语义（find_task
+        未命中即注销放行）。解析结果必须仍落在 tasks_root 内（``..``、
+        ``a\\..`` 等字面上跳被父目录校验拒绝，回退原样），避免把任务根
+        之外的目录名登记进任务计数表。POSIX 无 8.3 别名且 resolve 会改写
+        symlink 目标名——原样返回，行为不变。
+        """
+        if os.name != "nt":
+            return task_id
+        root = tasks_mod.tasks_root(DATA_DIR)
+        try:
+            resolved = (root / task_id).resolve()
+            if (resolved.parent == root.resolve()
+                    and resolved.name not in {"", ".", ".."}):
+                return resolved.name
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return task_id
+
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
             await self.app(scope, receive, send)
@@ -462,9 +498,10 @@ class TaskLockMiddleware:
         # 照旧取锁，锁语义不变。预检会读任务目录内的 task.json 与
         # collaboration.db，因此：
         # - 计数在 find_task **之前**、与「删除中」判定同一临界区登记
-        #   （_precheck_readers，URL 键；删除中——按平台别名族归一匹配，
-        #   Windows 尾点/空格/大小写、POSIX 字面——不登记也不读任何任务
-        #   文件，直接 409）；
+        #   （_precheck_readers，URL 键——Windows 先经 _url_task_key 规范为
+        #   长目录名（r10：8.3 短名别名与规范 id 同键，尾点/空格/大小写
+        #   顺带折叠）；删除中——按平台别名族归一匹配，Windows 尾点/空格/
+        #   大小写、POSIX 字面——不登记也不读任何任务文件，直接 409）；
         # - 整个登记段包在 try/finally 里（r9 复审：find_task/线程池预检
         #   抛异常或协程取消时计数不得残留——残留会让该进程后续所有
         #   DELETE 永久等满 5s 回 409）；
@@ -478,20 +515,24 @@ class TaskLockMiddleware:
         #   与基线一致不计数；
         # - 协作库读放线程池（busy_timeout 的同步 SQLite 读不占事件循环）。
         precheck_key = None
+        # r10：URL task_id → 登记/匹配键（Windows 规范为长目录名——短名
+        # 别名与 DELETE 排空的规范键同族；resolve 是纯路径解析，句柄即时
+        # 开关、不计入读排空也不在 _guard 内做）。POSIX 原样。
+        task_key = self._url_task_key(task_id)
         try:
             with self._guard:
                 if self._deleting:
                     if os.name == "nt":
-                        needle = task_id.rstrip(". ").lower()
+                        needle = task_key.rstrip(". ").lower()
                         deleting_hit = any(
                             d.rstrip(". ").lower() == needle
                             for d in self._deleting)
                     else:  # POSIX：大小写敏感、尾点/空格是不同文件——字面匹配
-                        deleting_hit = task_id in self._deleting
+                        deleting_hit = task_key in self._deleting
                 else:
                     deleting_hit = False
                 if not deleting_hit:
-                    precheck_key = task_id
+                    precheck_key = task_key
                     self._precheck_readers[precheck_key] = (
                         self._precheck_readers.get(precheck_key, 0) + 1)
             if not deleting_hit:
