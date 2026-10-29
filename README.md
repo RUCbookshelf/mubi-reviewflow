@@ -107,7 +107,7 @@ python build/launcher.py
 
 | 平台 | 操作 | 输出 |
 | --- | --- | --- |
-| Windows 10/11 x64 | 安装 Inno Setup 6/7 或 NSIS 3，运行 `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| Windows 10/11 x64 | 安装 Inno Setup 6/7 或 NSIS 3 与 Node.js（运行 JavaScript 静态校验器所需），运行 `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
@@ -133,7 +133,7 @@ python -m pytest build/tests -q
 | `custom_backend/` | API、认证、任务与文件处理 |
 | `coscreen/` | 文献处理、统计计算与导出 |
 | `build/` | 启动器与各平台构建脚本 |
-| `tests/` | 自动化测试 |
+| `build/tests/` | 自动化测试 |
 | `docs/` | 方法、设计与部署说明 |
 
 欢迎通过 Issue 或 Pull Request 提交问题与改进。统计方法变更请附方法来源、适用条件及可复现的参考结果。请勿提交账号、密钥、研究数据库或未获授权的全文文件。
@@ -232,7 +232,7 @@ Build on the target operating system with an internet connection.
 
 | Platform | Command / preparation | Output |
 | --- | --- | --- |
-| Windows 10/11 x64 | Install Inno Setup 6/7 or NSIS 3; run `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| Windows 10/11 x64 | Install Inno Setup 6/7 or NSIS 3 plus Node.js (required to run the JavaScript static validators); run `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
@@ -250,7 +250,7 @@ python -m pip install pytest httpx
 python -m pytest build/tests -q
 ```
 
-Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscreen/` (research logic), `build/` (launchers and packaging), `tests/` and `docs/`.
+Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscreen/` (research logic), `build/` (launchers and packaging), `build/tests/` and `docs/`.
 
 ### License and contact
 
@@ -561,7 +561,7 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 
 | Платформа | Действие | Результат |
 | --- | --- | --- |
-| Windows 10/11 x64 | Установить Inno Setup 6/7 или NSIS 3; запустить `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| Windows 10/11 x64 | Установить Inno Setup 6/7 или NSIS 3 и Node.js (нужен для запуска JavaScript-статических валидаторов); запустить `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
@@ -579,7 +579,7 @@ python -m pip install pytest httpx
 python -m pytest build/tests -q
 ```
 
-Основные каталоги: `custom_frontend/` — интерфейс, `custom_backend/` — API, `coscreen/` — исследовательская логика, `build/` — запуск и сборка, `tests/` — тесты, `docs/` — документация.
+Основные каталоги: `custom_frontend/` — интерфейс, `custom_backend/` — API, `coscreen/` — исследовательская логика, `build/` — запуск и сборка, `build/tests/` — тесты, `docs/` — документация.
 
 ### Лицензия и контакты
 
@@ -661,7 +661,7 @@ Compilez sur le système cible avec une connexion Internet.
 
 | Plateforme | Commande / préparation | Résultat |
 | --- | --- | --- |
-| Windows 10/11 x64 | Installer Inno Setup 6/7 ou NSIS 3 ; lancer `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| Windows 10/11 x64 | Installer Inno Setup 6/7 ou NSIS 3 et Node.js (requis pour les validateurs statiques JavaScript) ; lancer `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
 | macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
@@ -679,7 +679,7 @@ python -m pip install pytest httpx
 python -m pytest build/tests -q
 ```
 
-Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API, `coscreen/` pour les traitements scientifiques, `build/` pour le lancement et les paquets, `tests/` et `docs/`.
+Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API, `coscreen/` pour les traitements scientifiques, `build/` pour le lancement et les paquets, `build/tests/` et `docs/`.
 
 ### Licence et contact
 

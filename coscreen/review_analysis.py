@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from coscreen.db import _add_column_if_missing, _connect
+from coscreen.measure_registry import MEASURE_REGISTRY
 from coscreen.pool_compatibility import NON_DIRECTIONAL_MEASURES, require_compatible_effects
 
 DbPath = str | Path
@@ -485,18 +486,39 @@ def synthesize(db: DbPath, comparison: str, outcome: str, timepoint: str, measur
 
 
 def effect_scale_label(measure: str) -> str:
-    """效应量的分析尺度标签（MM5-08/09 公共口径）。
+    """效应量的纯分析尺度标签（MM5-08/09 公共口径；MM9-14 收敛词表）。
 
-    合成（``_synthesize_rows``）、meta 回归与漏斗不对称检验共用这一映射，
-    避免 ``advanced_analysis`` 再写一套三元链与合成路径漂移（曾把 FISHER_Z
-    标成 ``"natural"``、漏斗点值不带任何尺度声明）。
+    词表对照 ``measure_registry`` 的 ``scale`` 字段（'log' | 'natural' |
+    'fisher_z' | 'logit'）：只描述数值所在的**分析尺度**，不携带任何展示
+    变换声明。``"; results shown as X"`` 后缀描述的是合成路径独有的显示
+    变换（FISHER_Z→tanh、LOG_*→exp、LOGIT_PROP→expit，见
+    ``_synthesize_rows``），由 :func:`_synthesis_effect_scale_label` 仅在
+    合成结果里拼接；meta 回归与漏斗路径（``advanced_analysis``）从不套用
+    该变换，直接用本函数，不得再出现该后缀（MM9-14：曾把合成后缀原样接
+    到这两条路径，导出 JSON 声称 z/log 数值「shown as r / ratio of means」）。
     """
-    return ("log" if measure in RATIOS else
-            "Fisher z; results shown as r" if measure == "FISHER_Z" else
-            "logit; results shown as proportion" if measure == "LOGIT_PROP" else
-            "log; results shown as rate" if measure == "LOG_RATE" else
-            "log; results shown as ratio of means" if measure == "LOG_ROM" else
-            "log; results shown as matched-pair odds ratio" if measure == "PAIRED_OR" else "natural")
+    return MEASURE_REGISTRY.get(measure, {}).get("scale", "natural")
+
+
+# 合成路径（_synthesize_rows）的展示口径（MM5-08 历史字面；MM9-14 起后缀
+# 只在此拼接）：后缀声明的显示变换只作用于合成结果的 pooled/ci/prediction
+# 展示值。分析尺度词沿用历史展示字面（"Fisher z" 带空格），保证合成 JSON
+# 的 effect_scale 字面不因 MM9-14 收敛词表而变动（防回归钉子锁死旧字面）。
+_SYNTHESIS_SHOWN_AS_SUFFIX = {
+    "FISHER_Z": "; results shown as r",
+    "LOGIT_PROP": "; results shown as proportion",
+    "LOG_RATE": "; results shown as rate",
+    "LOG_ROM": "; results shown as ratio of means",
+    "PAIRED_OR": "; results shown as matched-pair odds ratio",
+}
+_SYNTHESIS_SCALE_DISPLAY = {"fisher_z": "Fisher z"}
+
+
+def _synthesis_effect_scale_label(measure: str) -> str:
+    """合成结果的 effect_scale：纯分析尺度 + 展示变换声明（仅此路径）。"""
+    scale = effect_scale_label(measure)
+    return (_SYNTHESIS_SCALE_DISPLAY.get(scale, scale)
+            + _SYNTHESIS_SHOWN_AS_SUFFIX.get(measure, ""))
 
 
 def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str) -> dict:
@@ -571,7 +593,7 @@ def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str)
                        "random_pm":"Paule-Mandel inverse variance",
                        "random_reml":"restricted maximum likelihood inverse variance"}[model],
             "ci_method": "modified HKSJ 95%" if ci_method == "hksj" else "normal 95%",
-            "effect_scale": effect_scale_label(measure),
+            "effect_scale": _synthesis_effect_scale_label(measure),
             "pooled_analysis": pooled,
             "ci_analysis_low": ci_low_analysis,
             "ci_analysis_high": ci_high_analysis,

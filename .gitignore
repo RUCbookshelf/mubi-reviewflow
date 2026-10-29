@@ -33,3 +33,10 @@ build/runtime/
 build/wheelhouse/
 build/*.exe
 build/*.msi
+
+# MM9-12: release-payload verifier output (build-manifest-*.json lands in the
+# repo root on every local run) and the Windows validators' transient httpx
+# dependency cache (MM9-08: build_windows.bat leaves build/validator_deps/
+# behind when it fails between install and cleanup)
+release-assets/
+build/validator_deps/

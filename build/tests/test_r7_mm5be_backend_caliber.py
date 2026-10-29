@@ -251,7 +251,9 @@ class Mm5AdvancedScaleLabelTests(unittest.TestCase):
         regression = meta_regression(self.db, "CF", "OF", "TF", "FISHER_Z", self.dimension_id)
         synthesis = synthesize(self.db, "CF", "OF", "TF", "FISHER_Z")
         self.assertEqual(synthesis["effect_scale"], "Fisher z; results shown as r")
-        self.assertEqual(regression["effect_scale"], synthesis["effect_scale"])
+        # MM9-14：meta 回归不套用合成显示变换，标签收敛为注册表纯尺度、
+        # 不再带 "; results shown as X" 后缀（钉子随行为同批更新，两侧分别钉）。
+        self.assertEqual(regression["effect_scale"], "fisher_z")
 
     def test_mm5_09_small_study_effects_declares_effect_scale(self):
         """small_study_effects 必须声明 points[].effect 的分析尺度。
