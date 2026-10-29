@@ -1,16 +1,22 @@
 /* r7-lunafix L-02 钉子：启用（activate）失败不得使导入批次后台分页停滞。
  *
  * 复刻 deepseek 复审的 node 探针（out/external_reviews/
- * gpt_luna_findings_verification.md L-02 节）：
+ * gpt_luna_findings_verification.md L-02 节）＋ r8 复审阻断项（激活期间
+ * 的 I.open 不得被全局激活暂停压住）：
  * - custom_frontend/import_review_loading.js 与 import_review_updates.js
  *   **原文件逐字**在 vm 中运行；
- * - unified_import_workspace.js 的 I.open（:61-74）与 activate（:110）从源文
- *   本按锚点切出后逐字运行（ticket/valid 闭包、++ticket、finally 均为真实
- *   代码）；api/DOM/render 等为受控桩；
- * - 场景 A：后台分页进行中调用 activate() 且 POST /activate 失败 ——
- *   修前：++ticket 使 valid 闭包永久失效 → 分页停在 40/100、600ms 无新请求
- *   （本测试红）；修后：加载器继续拉页直到 complete 100/100（绿）。
- * - 场景 B（对照组）：同环境不触发激活 → 跑到 complete（任何实现下都必须绿）。
+ * - unified_import_workspace.js 的 I.open 与 activate 从源文本按锚点切出后
+ *   逐字运行（ticket/valid 闭包、激活代次、finally 均为真实代码）；
+ *   api/DOM/render 等为受控桩；
+ * - 场景 A：后台分页进行中 activate() 且 POST /activate 失败——修前
+ *   （++ticket）：分页停在部分进度、无新请求（红）；
+ * - 场景 B（对照）：不触发激活 → 跑到 complete（任何实现下都必须绿）；
+ * - 场景 C（r8 复审 H，r7 全局激活暂停版为红）：激活失败进行中（120ms
+ *   桩内第 50ms）执行 I.open(active,true)（Refresh 路径）——激活失败后
+ *   必须跑到**真实** complete 100/100，不得停在缓存假完成 40/40；
+ * - 场景 D（r8 复审 G，r7 全局激活暂停版为红）：同窗口执行全新
+ *   I.open(active)（重开/切批次路径）——必须跑到 complete 100/100，
+ *   不得停在 initial 0。
  */
 'use strict';
 const fs = require('node:fs');
@@ -107,7 +113,7 @@ let active=null,batch=null,records=[],groups=[],legacy=[],legacyUndo=false,
     assigning=false,dirty=false,lastView=null,errorMessage='';
 let loader=null,loadState=null,overlays=ImportReviewUpdates.create(),
     savedBatch=null,savedLegacyUndo=null,reviewVersion=0,refreshing=false;
-let activationInFlight=false;
+let activationEpoch=0,activationInFlight=false;
 const reports=new Map();
 const I={};
 I.remember=report=>{if(report?.batch_id)reports.set(report.batch_id,report);};
@@ -159,7 +165,7 @@ globalThis.__probe={
 `;
 }
 
-async function runScenario(failActivation) {
+async function runScenario(failActivation, intervene) {
   const sandbox = { setTimeout, clearTimeout };
   vm.createContext(sandbox);
   vm.runInContext(sceneScript(), sandbox, { filename: 'l02-scene.js' });
@@ -179,12 +185,25 @@ async function runScenario(failActivation) {
          { state: probe.state(), calls: probe.recordsCalls() });
   const before = probe.recordsCalls();
   let activationError = null;
+  let intervened = null;
   if (failActivation) {
+    // 激活失败 120ms 桩内第 50ms 插入一次 I.open（Refresh/重开路径）
+    let openTimer = null;
+    if (intervene) {
+      openTimer = setTimeout(() => {
+        intervened = true;
+        // 覆盖 r8 复现：activate 进行中（未 await 完成）时的 I.open
+        Promise.resolve(probe.I.open('B1', intervene === 'preserve')).catch(() => {});
+      }, 50);
+    }
     try { await probe.activate(); } catch (e) { activationError = e.message; }
+    if (openTimer) clearTimeout(openTimer);
   }
-  await sleep(800); // 复审同款：给后台加载器足够的续拉时间
+  await sleep(900); // 给（含插入 open 的）后台加载器足够续拉时间
   return {
     failActivation,
+    intervene: intervene || null,
+    intervened,
     activationError,
     recordsCallsBeforeActivation: before,
     recordsCallsAfterSettle: probe.recordsCalls(),
@@ -193,22 +212,29 @@ async function runScenario(failActivation) {
 }
 
 (async () => {
-  const failing = await runScenario(true);
-  const control = await runScenario(false);
+  const failing = await runScenario(true, null);
+  const control = await runScenario(false, null);
+  const refreshDuring = await runScenario(true, 'preserve');
+  const reopenDuring = await runScenario(true, 'fresh');
 
-  if (failing.activationError !== 'simulated 503 from POST /activate')
-    fail('场景 A：activate() 未按桩预期失败', failing);
-  // 核心钉子：启用失败后加载器必须继续拉页直到 complete（修前停在 background）
-  if (failing.stateAfter.phase !== 'complete')
-    fail('场景 A：启用失败后后台分页停滞（loadState.phase!=="complete"）', failing);
-  if (failing.stateAfter.loaded !== 100 || failing.stateAfter.total !== 100)
-    fail('场景 A：启用失败后未加载完全部记录', failing);
-  if (failing.recordsCallsAfterSettle <= failing.recordsCallsBeforeActivation)
-    fail('场景 A：启用失败后没有新的分页请求（加载器未恢复）', failing);
+  for (const scenario of [failing, refreshDuring, reopenDuring]) {
+    if (scenario.activationError !== 'simulated 503 from POST /activate')
+      fail('场景 ' + scenario.intervene + '：activate() 未按桩预期失败', scenario);
+    // 核心钉子：启用失败后加载器（含激活期间新开的）必须继续到真实 complete
+    if (scenario.stateAfter.phase !== 'complete')
+      fail('场景 ' + scenario.intervene + '：启用失败后后台分页停滞（phase!=="complete"）', scenario);
+    if (scenario.stateAfter.loaded !== 100 || scenario.stateAfter.total !== 100)
+      fail('场景 ' + scenario.intervene + '：启用失败后未加载完全部记录（假完成/静默少数据）', scenario);
+    if (scenario.recordsCallsAfterSettle <= scenario.recordsCallsBeforeActivation)
+      fail('场景 ' + scenario.intervene + '：启用失败后没有新的分页请求（加载器未恢复）', scenario);
+  }
+  if (refreshDuring.intervened !== true || reopenDuring.intervened !== true)
+    fail('激活期间的 I.open 未按计划执行（插桩失效）',
+         { refreshDuring, reopenDuring });
   // 对照组：不激活必须照常 complete
   if (control.stateAfter.phase !== 'complete' || control.stateAfter.loaded !== 100)
     fail('场景 B（对照）：无激活的后台加载未到 complete', control);
 
-  console.log(JSON.stringify({ fail: failing, control,
+  console.log(JSON.stringify({ fail: failing, refreshDuring, reopenDuring, control,
     assert: 'activation failure no longer stalls background paging' }, null, 2));
 })().catch((e) => fail('harness 异常：' + (e && e.stack || e)));

@@ -50,6 +50,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from coscreen import coding as coding_mod
 from coscreen import task_collaboration as collaboration_mod
@@ -208,7 +209,12 @@ class TaskLockMiddleware:
       属主经另一进程得 409）。现取锁前先跑与 require_user **同一套**
       ``_task_visible_to`` 判定：检查不过（非参与者/不可见/legacy 口径/
       属主暂不可解析）一律不取锁、放行给下游 401/403/404/409/503 路径；
-      合法参与者的取锁与 409 语义逐字不变。
+      合法参与者的取锁与 409 语义逐字不变。预检本身要读任务目录内的
+      task.json 与 collaboration.db——计数在 ``find_task`` **之前**、与
+      「删除中」判定**同临界区**按 URL task_id 登记 ``_precheck_readers``
+      （DELETE 的读排空按整表等空：预检的文件句柄同样会让 Windows 上
+      shutil.move 半删，R6-S2 三轮口径），读放线程池执行（同步 SQLite 的
+      busy_timeout 不占事件循环）。
     - **U5-P2/R6-S2 在途计数（写口径）**：``inflight()`` 只统计**写方法**
       （POST/PUT/PATCH/DELETE）——此前把 GET 也计入，前端后台轮询进行中
       会让 DELETE 误报 409「任务有操作进行中」；DELETE 端点据此对同进程
@@ -245,6 +251,13 @@ class TaskLockMiddleware:
     # /api/tasks/{id}/** 的中间件路径正则，但 list_tasks 会打开**所有**
     # 任务的 task.json——必须让 DELETE 的排空同样等它。
     _list_readers: int = 0
+    # 取锁前可见性预检（L-01）的在途读数：键为 **URL** task_id（在
+    # find_task 之前登记，覆盖 task.json 读＋协作库读＋锁文件创建的整个
+    # 预检段；别名 URL 与规范 id 不同键，delete_task 的读排空按整表等空，
+    # 见 any_precheck_readers）。预检打开任务目录内的 collaboration.db
+    # ——该句柄未释放时 shutil.move 同样半删（R6-S2 的 Windows WinError 32
+    # 路径）。
+    _precheck_readers: dict[str, int] = {}
     _guard = threading.Lock()
 
     def __init__(self, app):  # noqa: ANN001  ASGI 约定
@@ -302,6 +315,29 @@ class TaskLockMiddleware:
     def list_readers(cls) -> int:
         with cls._guard:
             return cls._list_readers
+
+    @classmethod
+    def precheck_readers(cls, task_id: str) -> int:
+        """该任务当前在本进程内**取锁前可见性预检**的在途读数（URL 键）。
+
+        L-01 预检读 collaboration.db（同步 SQLite，句柄随读打开/关闭）；
+        delete_task 的读排空必须把它与本进程在途读一并等空（R6-S2：读
+        句柄未排空就在 Windows 上 move → copytree+rmtree 半删）。计数在
+        ``find_task`` **之前**按 URL task_id 登记——任务目录内的一切预检
+        文件读（task.json/collaboration.db/锁文件创建）都落在计数窗口内。
+        """
+        with cls._guard:
+            return cls._precheck_readers.get(task_id, 0)
+
+    @classmethod
+    def any_precheck_readers(cls) -> int:
+        """全部在途预检读总数（不限任务键）。
+
+        delete_task 的读排空等空**整表**：预检按 URL task_id 计数，别名
+        URL（Windows 尾点/大小写族）与规范 id 不同键，按单键等会漏等。
+        """
+        with cls._guard:
+            return sum(cls._precheck_readers.values())
 
     @classmethod
     def _begin_delete(cls, task_id: str) -> None:
@@ -394,42 +430,98 @@ class TaskLockMiddleware:
         entry = None
         early_response = None
         is_write = scope.get("method", "") in self._WRITE_METHODS
-        info = tasks_mod.find_task(task_id, DATA_DIR)
-        # L-01：取锁前先过与 require_user 同一套可见性/参与者判定——
-        # 非参与者（含 sub 形状非法、属主暂不可解析）不取锁，直接走下游
-        # 401/403/404/409/503 路径；合法参与者照旧取锁，锁语义不变。
-        if info is not None and not self._visible_to_payload(info, payload):
-            await self.app(scope, receive, send)
-            return
-        if info is not None:
-            # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在规范
-            # 任务目录（tasks_root/{info.task_id}），URL 尾点等别名不再派生
-            # 出 `{task_id}..lock` 之类的第二把锁。
-            canonical = info.task_id
-            with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
-                if canonical in self._deleting:
-                    # R6-S2：删除进行中——一切请求（含 GET）直接 409，
-                    # 不再进入端点读到「半消失」的任务目录。
+        # L-01（r7-lunafix）＋R6-S2 复审：取锁前先过与 require_user 同一套
+        # 「任务可见性/参与者」判定——非参与者（含 sub 形状非法、属主暂不
+        # 可解析）不取锁，直接走下游 401/403/404/409/503 路径；合法参与者
+        # 照旧取锁，锁语义不变。预检会读任务目录内的 task.json 与
+        # collaboration.db，因此：
+        # - 计数在 find_task **之前**、与「删除中」判定同一临界区登记
+        #   （_precheck_readers，URL 键；删除中——含 Windows 尾点/大小写
+        #   别名族——不登记也不读任何任务文件，直接 409）；
+        # - 计数保持到 _held 在途计数建立**之后**才注销——预检段的一切
+        #   任务目录文件操作（task.json 读、协作库读、锁文件创建）都落在
+        #   计数窗口内，delete_task 的读排空（等空整表）不会跨句柄 move；
+        # - 协作库读放线程池（busy_timeout 的同步 SQLite 读不占事件循环）。
+        with self._guard:
+            if self._deleting:
+                needle = task_id.rstrip(". ").lower()
+                deleting_hit = any(
+                    d.rstrip(". ").lower() == needle for d in self._deleting)
+            else:
+                deleting_hit = False
+            precheck_key = None
+            if not deleting_hit:
+                precheck_key = task_id
+                self._precheck_readers[precheck_key] = (
+                    self._precheck_readers.get(precheck_key, 0) + 1)
+        if deleting_hit:
+            early_response = "任务正在被删除，请稍后重试。"
+        else:
+            info = tasks_mod.find_task(task_id, DATA_DIR)
+            forward_unchecked = False
+            if info is None:
+                forward_unchecked = True  # 幽灵任务：下游 404，不触任务文件
+            else:
+                # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在
+                # 规范任务目录（tasks_root/{info.task_id}），URL 尾点等别名
+                # 不再派生出 `{task_id}..lock` 之类的第二把锁。
+                canonical = info.task_id
+                visible = await run_in_threadpool(
+                    self._visible_to_payload, info, payload)
+                if not visible:
+                    forward_unchecked = True
+            if forward_unchecked:
+                # 不取锁放行下游（401/403/404/409/503）。放行前注销预检计数
+                # ——不可见请求的下游（403/503 路径）可能慢（如慢速请求体），
+                # 不得让 DELETE 的读排空被非参与者拖延；删除已开始的复检
+                # 保持「删除中一律 409」的既有口径（原实现 deleting 检查先
+                # 于 require_user，本分支与其一致）。
+                with self._guard:
+                    left = self._precheck_readers.get(precheck_key, 1) - 1
+                    if left > 0:
+                        self._precheck_readers[precheck_key] = left
+                    else:
+                        self._precheck_readers.pop(precheck_key, None)
+                    recheck_deleting = (canonical is not None
+                                        and canonical in self._deleting)
+                if recheck_deleting:
                     early_response = "任务正在被删除，请稍后重试。"
                 else:
-                    entry = self._held.get(canonical)
-                    if entry is None:
-                        # 锁文件获取放到 _guard 外做会引入竞态；acquire 内部
-                        # 对同进程同锁幂等（_HELD_LOCKS），不会自锁。
-                        lock_path = tasks_mod.acquire_task_lock(
-                            canonical, DATA_DIR,
-                            task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
-                        )
-                        if lock_path is None:
-                            early_response = (
-                                "任务正被其他窗口（另一个后端进程）使用，请稍后重试。")
-                        else:
-                            entry = [0, lock_path, 0]
-                            self._held[canonical] = entry
-                    if entry is not None:
-                        entry[0] += 1
-                        if is_write:
-                            entry[2] += 1
+                    await self.app(scope, receive, send)
+                    return
+            else:
+                with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
+                    if canonical in self._deleting:
+                        # R6-S2：删除进行中——一切请求（含 GET）直接 409，
+                        # 不再进入端点读到「半消失」的任务目录。
+                        early_response = "任务正在被删除，请稍后重试。"
+                    else:
+                        entry = self._held.get(canonical)
+                        if entry is None:
+                            # 锁文件获取放到 _guard 外做会引入竞态；acquire 内部
+                            # 对同进程同锁幂等（_HELD_LOCKS），不会自锁。
+                            lock_path = tasks_mod.acquire_task_lock(
+                                canonical, DATA_DIR,
+                                task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
+                            )
+                            if lock_path is None:
+                                early_response = (
+                                    "任务正被其他窗口（另一个后端进程）使用，请稍后重试。")
+                            else:
+                                entry = [0, lock_path, 0]
+                                self._held[canonical] = entry
+                        if entry is not None:
+                            entry[0] += 1
+                            if is_write:
+                                entry[2] += 1
+                # _held 在途计数已建立（或已定 409 早拒）——注销预检计数，
+                # 后续由 _held/finally 接管排空语义。
+                with self._guard:
+                    left = self._precheck_readers.get(precheck_key, 1) - 1
+                    if left > 0:
+                        self._precheck_readers[precheck_key] = left
+                    else:
+                        self._precheck_readers.pop(precheck_key, None)
         if early_response is not None:
             await self._busy_response(scope, early_response)(scope, receive, send)
             return
@@ -1921,7 +2013,12 @@ def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
             raise _bad(f"任务有操作进行中（{inflight - 1} 个写请求未完成），请等待后再删除。", 409)
         deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT
         while (TaskLockMiddleware.read_inflight(info.task_id) > 0
-               or TaskLockMiddleware.list_readers() > 0):
+               or TaskLockMiddleware.list_readers() > 0
+               # L-01：取锁前可见性预检（URL 键计数，含别名）在途时不得
+               # move——预检段的 task.json/collaboration.db 句柄未释放即
+               # move 会重现 R6-S2 的 Windows 半删路径；按整表等空（别名
+               # URL 与规范 id 不同键）。
+               or TaskLockMiddleware.any_precheck_readers() > 0):
             # 排空对象含全局任务列表读（R6-S2 三轮：列表持 task.json 时
             # move 同样半删）；排不空 → 受控 409，任务原样保留。
             if time.monotonic() >= deadline:
