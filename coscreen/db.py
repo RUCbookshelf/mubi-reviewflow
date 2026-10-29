@@ -680,19 +680,107 @@ def _article_key_reference_columns(conn: sqlite3.Connection) -> list[tuple[str, 
 
 # JSON 文本列内的键引用（r1 评审·阻断项）：title_duplicate_reviews.
 # members_json 冗余存成员键（与 title_duplicate_members 平行），撤销快照
-# before/after_json 由 _title_review_snapshot 生成、内含成员键——迁移若只
+# before/after_json 由 _title_review_snapshot 生成、内嵌成员键——迁移若只
 # 改列名白名单，这些 JSON 滞留旧键：decide 对旧键查 articles 得 None →
 # _title_review_snapshot 的 list(None) TypeError（整组 500 不可决策），
 # undo 快照比较被判「已有后续变更」。
+#
+# MM9-21：workflow_screen_rounds.snapshot_json 是 {文章键: 指纹}——文章键
+# 位于 JSON **对象键名**（带引号精确 token 可命中，指纹值不含键）。滞留
+# 旧键时轮次 keys/pending_keys 全是库内已不存在的旧键：completed 永不
+# 收敛、初筛队列被 round_keys 过滤为空、开启新轮次被 409 阻断。
+#
+# MM9-20：workflow_import_undo.before/after_json 是 import-review 的撤销
+# 快照，滞留旧键时 available() 的「现算快照 == 库存 after_json」全等比较
+# 永久失配（升级前最后一条撤销条目报废、POST /undo 409），restore() 还
+# 会把 before_json 里的旧 canonical_key 回写。该两列走**结构感知**同步
+# （见 _IMPORT_UNDO_SNAPSHOT_COLUMNS），不能用上面的盲替换：快照内嵌
+# 真实表整行，库内未迁移的 staged_key/incoming_key/article_json 等位置
+# 必须与库内逐字节一致，否则全等比较同样失配。
 _JSON_KEY_REFERENCE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("title_duplicate_reviews", "members_json"),
     ("title_duplicate_undo", "before_json"),
     ("title_duplicate_undo", "after_json"),
+    ("workflow_import_undo", "before_json"),
+    ("workflow_import_undo", "after_json"),
+    ("workflow_screen_rounds", "snapshot_json"),
 )
+
+#: MM9-20：workflow_import_undo 快照列集合——按本次迁移对真实表实际改写
+#: 的键列集（migrate_overlong_keys 的 references）做结构感知同步，而非全
+#: 文 token 盲替换（理由见 _JSON_KEY_REFERENCE_COLUMNS 注释）。
+_IMPORT_UNDO_SNAPSHOT_COLUMNS: frozenset[tuple[str, str]] = frozenset({
+    ("workflow_import_undo", "before_json"),
+    ("workflow_import_undo", "after_json"),
+})
+
+
+def _sync_import_undo_snapshot_text(
+    text: str,
+    renames: list[tuple[str, str]],
+    references: list[tuple[str, str, str]],
+) -> str:
+    """MM9-20：按库内列同步的键位改写 workflow_import_undo 快照文本。
+
+    快照（coscreen.import_review_undo.snapshot）内嵌 workflow_import_
+    candidates / workflow_source_records / workflow_import_metadata /
+    workflow_metadata_acceptances 的整行字典，以及 ``{zotero_key,
+    **metadata}`` 的文章投影。available() 以「现算快照 == 库存 after_json」
+    **全等**判定可撤销性，因此快照文本必须与库内迁移逐位一致：本次迁移
+    对真实表改写了哪些键列（references，列名白名单将来扩展会自动跟进），
+    快照就只改哪些键位；库内未触及的位置（staged_key/incoming_key、
+    article_json/original_json 等内嵌 JSON 串）原样保留。restore() 依据
+    改写后的 before_json 回写，落库的同样是迁移后新键。重排使用与写入侧
+    （coscreen.review_imports.dumps）完全相同的序列化参数；解析失败的
+    历史脏载荷原样返回——迁移不得因此失败。
+    """
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(payload, dict):
+        return text
+    mapping = dict(renames)
+    renamed: dict[str, set[str]] = {}
+    for table, column, _condition in references:
+        renamed.setdefault(table, set()).add(column)
+    changed = False
+    sections = (
+        ("candidates", "workflow_import_candidates"),
+        ("records", "workflow_source_records"),
+        ("proposals", "workflow_import_metadata"),
+        ("acceptances", "workflow_metadata_acceptances"),
+    )
+    for section, table in sections:
+        items = payload.get(section)
+        if not isinstance(items, list):
+            continue
+        columns = renamed.get(table, ())
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for column in sorted(columns):
+                value = item.get(column)
+                if isinstance(value, str) and value in mapping:
+                    item[column] = mapping[value]
+                    changed = True
+    items = payload.get("articles")
+    if isinstance(items, list):
+        # 文章投影的键列即被重命名的 articles 主键本身（不在 references
+        # 内——references 只列外键/引用列），单独按映射处理。
+        for item in items:
+            if (isinstance(item, dict) and isinstance(item.get("zotero_key"), str)
+                    and item["zotero_key"] in mapping):
+                item["zotero_key"] = mapping[item["zotero_key"]]
+                changed = True
+    if not changed:
+        return text
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
 def _sync_json_key_references(
     conn: sqlite3.Connection, renames: list[tuple[str, str]],
+    references: list[tuple[str, str, str]] | None = None,
 ) -> int:
     """把 JSON 文本列中的键字面量同步为迁移后新键，返回更新的行数。
 
@@ -703,6 +791,10 @@ def _sync_json_key_references(
     匹配不会误伤子串。撤销快照把 members_json 整段**再编码一层**（JSON
     字符串内的 JSON，键周围的引号被转义成 \\"），故对每个 token 同时
     生成转义形态变体（json.dumps(token)[1:-1]）一并替换。
+    例外：_IMPORT_UNDO_SNAPSHOT_COLUMNS 中的 workflow_import_undo 快照
+    列改走结构感知路径（_sync_import_undo_snapshot_text）——该快照内嵌
+    真实表整行，盲替换会改写库内并未迁移的键位，破坏 available() 的
+    全等比较（MM9-20）。
     """
     updated = 0
     existing = {row[0] for row in conn.execute(
@@ -710,23 +802,28 @@ def _sync_json_key_references(
     for table, column in _JSON_KEY_REFERENCE_COLUMNS:
         if table not in existing:
             continue
+        structured = (table, column) in _IMPORT_UNDO_SNAPSHOT_COLUMNS
         rows = conn.execute(f'SELECT rowid, "{column}" FROM "{table}"').fetchall()
         for rowid, text in rows:
             if not isinstance(text, str):
                 continue
-            new_text = text
-            for old, new in renames:
-                for ensure_ascii in (True, False):
-                    token_old = json.dumps(old, ensure_ascii=ensure_ascii)
-                    token_new = json.dumps(new, ensure_ascii=ensure_ascii)
-                    if token_old == token_new:
-                        continue
-                    variants = [(token_old, token_new)]
-                    # 嵌套编码层（快照内的 members_json 段）：引号被转义
-                    variants.append((json.dumps(token_old)[1:-1],
-                                     json.dumps(token_new)[1:-1]))
-                    for v_old, v_new in variants:
-                        new_text = new_text.replace(v_old, v_new)
+            if structured:
+                new_text = _sync_import_undo_snapshot_text(
+                    text, renames, references or [])
+            else:
+                new_text = text
+                for old, new in renames:
+                    for ensure_ascii in (True, False):
+                        token_old = json.dumps(old, ensure_ascii=ensure_ascii)
+                        token_new = json.dumps(new, ensure_ascii=ensure_ascii)
+                        if token_old == token_new:
+                            continue
+                        variants = [(token_old, token_new)]
+                        # 嵌套编码层（快照内的 members_json 段）：引号被转义
+                        variants.append((json.dumps(token_old)[1:-1],
+                                         json.dumps(token_new)[1:-1]))
+                        for v_old, v_new in variants:
+                            new_text = new_text.replace(v_old, v_new)
             if new_text != text:
                 conn.execute(
                     f'UPDATE "{table}" SET "{column}"=? WHERE rowid=?',
@@ -757,8 +854,15 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
           record id，绝不能误改；
       (c) JSON 文本列：title_duplicate_reviews.members_json 与
           title_duplicate_undo 的 before/after_json 快照（带引号精确
-          token 替换，不解析不重排）——漏掉 (c) 会让标题候选组
-          decide/undo 对滞留旧键查无行而 500（r1 评审阻断项）。
+          token 替换，不解析不重排）；workflow_screen_rounds.snapshot_json
+          （{文章键: 指纹}，键在对象键名位——MM9-21，滞留旧键则轮次
+          keys/pending_keys 全为库内不存在的旧键，completed 永不收敛且
+          阻塞新轮次）；workflow_import_undo 的 before/after_json
+          （MM9-20，结构感知：快照内嵌真实表整行，仅改与库内列同步的
+          键位，保证 available() 的全等比较通过、restore() 回写落在
+          迁移后新键上）——漏掉 (c) 会让标题候选组 decide/undo 对滞留
+          旧键查无行而 500（r1 评审阻断项）、升级前最后一条 import-review
+          撤销条目永久失效（POST /undo 409）、复筛轮次永不收敛。
     - 外键自检按**差量**判定（r1 评审中低项）：迁移前先快照全库
       ``PRAGMA foreign_key_check`` 结果，迁移后仅**新增**违例才回滚报错；
       与本次重命名无关的既存悬挂外键保持原样（不修不删不阻断）——
@@ -805,7 +909,7 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
                         f'UPDATE "{table}" SET "{column}"=? '
                         f'WHERE "{column}"=?' + (f" AND {condition}" if condition else ""),
                         (new, old))
-            _sync_json_key_references(conn, renames)
+            _sync_json_key_references(conn, renames, references)
             new_violations = {tuple(row) for row in conn.execute(
                 "PRAGMA foreign_key_check").fetchall()} - pre_violations
             if new_violations:

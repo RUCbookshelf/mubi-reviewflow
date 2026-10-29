@@ -68,6 +68,28 @@ jobs:
           else
             cp build/dist/${{ matrix.artifact }} release-assets/
           fi
+      - name: Provision playwright for the browser regression
+        shell: bash
+        run: |
+          # MM9-01: the only browser regression in the release gate
+          # (build/tests/import_review_browser.cjs, spawned by
+          # test_r7_mm7_relchain.py) is skipif-gated on BOTH
+          # REVIEWFLOW_PLAYWRIGHT (a require() path to the playwright module,
+          # the convention every build/tests/*.cjs harness uses) and
+          # PLAYWRIGHT_BROWSERS_PATH (the browser cache). Without this step
+          # the gate ships zero browser coverage while looking green.
+          pw_root="$RUNNER_TEMP/reviewflow-playwright"
+          npm install --prefix "$pw_root" "playwright@>=1.55.0 <2"
+          pw_cli="$pw_root/node_modules/playwright/cli.js"
+          if [ "${{ matrix.command }}" = "linux" ]; then
+            PLAYWRIGHT_BROWSERS_PATH="$pw_root/browsers" node "$pw_cli" install --with-deps chromium
+          else
+            PLAYWRIGHT_BROWSERS_PATH="$pw_root/browsers" node "$pw_cli" install chromium
+          fi
+          {
+            echo "REVIEWFLOW_PLAYWRIGHT=$pw_root/node_modules/playwright"
+            echo "PLAYWRIGHT_BROWSERS_PATH=$pw_root/browsers"
+          } >> "$GITHUB_ENV"
       - name: Verify versioned application payload
         run: python build/verify_release_payload.py ${{ matrix.command }}
       - name: Run static validators

@@ -512,9 +512,46 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 #: 保持不变（校验 UX 不受影响）。
 _MAX_VALIDATION_ECHO_CHARS = 1024
 
+#: 回显值递归清洗（list/dict/tuple 容器）的深度上限：请求体 JSON 正常嵌套
+#: 极浅。**超限的容器子树必须整体替换为占位字符串，绝不能原样放行**——
+#: 复审 R2 实测：深度放行时 9 层列表 [[…[NaN]…]] 的 repr 仅 21 字符，
+#: 长度裁剪不设防，嵌套的非有限浮点逃逸 → JSONResponse(allow_nan=False)
+#: 序列化崩溃 → 500。
+_ECHO_SANITIZE_MAX_DEPTH = 8
+_DEEP_ECHO_PLACEHOLDER = "<deep nesting omitted>"
+
+
+def _sanitize_nonfinite_echo(value, _depth: int = 0):  # noqa: ANN001
+    """把回显值里的非有限浮点（含容器内嵌套）替换为占位字符串。
+
+    只影响 422 回显的呈现，不改变任何校验判定（MM9-04）：
+    - ``nan``/``inf``/``-inf`` -> ``"<non-finite nan>"`` 等字符串（任意
+      可达深度；非有限浮点检查在最前，标量不受深度上限影响）；
+    - 其余标量原样返回；容器递归清洗（错误 ``input`` 可能是整个畸形体）；
+    - 深度超限的容器子树整体替换为 ``<deep nesting omitted>``（展示层
+      占位；该形状在本产品的合法请求体中不存在，见上）。
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"<non-finite {value!r}>"
+    if isinstance(value, (dict, list, tuple)):
+        if _depth >= _ECHO_SANITIZE_MAX_DEPTH:
+            return _DEEP_ECHO_PLACEHOLDER
+        if isinstance(value, dict):
+            return {key: _sanitize_nonfinite_echo(item, _depth + 1)
+                    for key, item in value.items()}
+        cleaned = [_sanitize_nonfinite_echo(item, _depth + 1) for item in value]
+        return tuple(cleaned) if isinstance(value, tuple) else cleaned
+    return value
+
 
 def _clip_validation_echo(value):  # noqa: ANN001
-    """超大校验回显值替换为占位符（正常小值原样返回）。"""
+    """超大校验回显值替换为占位符（正常小值原样返回）。
+
+    MM9-04：非有限浮点先替换为安全占位字符串再做长度裁剪——
+    ``repr(nan)`` 仅 3 字符，长度裁剪必然放行原值，随后
+    ``JSONResponse(allow_nan=False)`` 序列化崩溃把 422 变成 500。
+    """
+    value = _sanitize_nonfinite_echo(value)
     try:
         size = len(repr(value))
     except Exception:  # pragma: no cover - repr 失败的极端对象

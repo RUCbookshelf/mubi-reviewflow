@@ -4,20 +4,36 @@
    resolve the modules they check/inject through this helper instead of
    hand-written lists, so a module that index.html never loads can no longer be
    mistaken for production code (the dead duplicate panel that motivated this
-   was deleted outright in MM7-04). */
+   was deleted outright in MM7-04).
+   MM9-03: <script src> parsing alone was blind to the three PDF.js modules the
+   page loads at runtime - two through `await import('./pdfjs/*.mjs')` and one
+   through `GlobalWorkerOptions.workerSrc='./pdfjs/pdf.worker.min.mjs'`. Deleting
+   any of them left the gate green while the native PDF viewer silently fell
+   back to the built-in iframe viewer (loadPdfLibs catches the import failure;
+   the import path itself is not interrupted). The parser now also reads those
+   two dynamic-load forms, accepts .mjs specifiers, and asserts every manifest
+   entry exists on disk, so a deleted pdfjs module fails the gate loudly. */
 const fs=require('fs'),path=require('path');
 
 function loadScriptManifest(root){
   const html=fs.readFileSync(path.join(root,'custom_frontend','index.html'),'utf8');
   const files=[];
-  for(const match of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)){
-    const src=match[1];
-    if(!/\.js(?:\?|$)/.test(src))continue;      /* JSON/data targets are not modules */
-    if(/^([a-z]+:)?\/\//i.test(src))continue;   /* remote scripts are not repo modules */
-    const file=path.posix.basename(src.split('?')[0]);
+  const push=(spec)=>{
+    if(!/\.m?js(?:\?|$)/.test(spec))return;      /* JSON/data targets are not modules */
+    if(/^([a-z]+:)?\/\//i.test(spec))return;     /* remote modules are not repo modules */
+    let rel=spec.split('?')[0].split('#')[0];
+    if(rel.startsWith('./'))rel=rel.slice(2);
+    if(!rel||rel.startsWith('/')||rel.startsWith('../'))return; /* outside custom_frontend/ */
+    const file=path.posix.normalize(rel);       /* keep subdirs: pdfjs/pdf.min.mjs */
     if(!files.includes(file))files.push(file);
-  }
-  if(!files.length)throw Error('no <script src> modules parsed from custom_frontend/index.html');
+  };
+  for(const match of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi))push(match[1]);
+  for(const match of html.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g))push(match[1]);
+  for(const match of html.matchAll(/\bworkerSrc\s*=\s*["']([^"']+)["']/g))push(match[1]);
+  if(!files.length)throw Error('no modules parsed from custom_frontend/index.html');
+  for(const file of files)
+    if(!fs.existsSync(path.join(root,'custom_frontend',file)))
+      throw Error('manifest module is missing on disk: '+file);
   return files;
 }
 

@@ -1,4 +1,4 @@
-"""R7 release-chain nails (MM7-01/02/03/05) - each test turns red if its fix is reverted.
+"""R7 release-chain nails (MM7-01/02/03/05, MM9-01/02/03/12) - each test turns red if its fix is reverted.
 
 MM7-01: the release-payload verifier must compare the WHOLE payload tree against the
         source tree, not an 11-file whitelist. The fake payload below tampers with a
@@ -13,9 +13,26 @@ MM7-03: the string source of validate_import_review_static.cjs and the injection
 MM7-05: both start.sh must install -r build/requirements-app.txt; custom_frontend/start.sh
         must additionally fail fast (set -e + uvicorn existence check) instead of printing
         success URLs when pip or uvicorn is unusable. Probed with a fake tree and stubs.
+MM9-01: release.yml must provision a playwright runtime (REVIEWFLOW_PLAYWRIGHT module
+        path + PLAYWRIGHT_BROWSERS_PATH browser cache, the env pair the browser
+        harnesses require) before the pytest/validator step - otherwise the only browser
+        regression in the release gate is skipif-skipped and the gate looks green with
+        zero browser coverage.
+MM9-02: the payload verifier must also compare the Windows staging-root shipping entries
+        (launcher.py & co) and, on the frozen platforms, reject/tamper-check loose
+        coscreen files beyond the assets subtree instead of ignoring everything but the
+        4 asset files.
+MM9-03: the script-manifest parser must see the PDF.js modules index.html loads through
+        await import('...')/workerSrc (not just <script src>), accept .mjs, and fail
+        when a manifest entry is missing on disk - deleting pdf.min.mjs previously left
+        every gate green while the PDF viewer silently fell back to the iframe.
+MM9-12: verifier digests are CRLF→LF-normalized for text files (cross-platform
+        comparable manifests) and the verifier's outputs (release-assets/) plus the
+        Windows validator cache (build/validator_deps/) are git-ignored.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -33,6 +50,7 @@ NODE = (
     or r"C:\Users\16073\AppData\Local\hermes\node\node.exe"
 )
 BASH = shutil.which("bash")
+GIT = shutil.which("git")
 
 FOUR_VALIDATORS = (
     "build/validate_import_review.py",
@@ -52,6 +70,24 @@ SOURCE_FILES = {
     "coscreen/x.py": "x = 1\n",
     "coscreen/assets/logo.txt": "logo\n",
 }
+# MM9-02: the shipping entries build_windows.bat copies verbatim from build/
+# (and THIRD_PARTY_NOTICES.md from the repo root) to the Windows staging root
+# (launcher.py & co). The icons carry NUL bytes so the fixture also exercises
+# the raw-binary digest path of MM9-12.
+WINDOWS_SHIPPING_FILES = {
+    "build/launcher.py": 'print("launcher")\n',
+    "build/windows_start.py": 'print("start")\n',
+    "build/requirements-app.txt": "fastapi>=0.110\n",
+    "build/repair_reviewflow.bat": "@echo off\n",
+    "build/windows_smoke.py": 'print("smoke")\n',
+    "build/icon.ico": "\x00\x00\x01\x00fake-icon-entry",
+    "build/icon_256.png": "\x89PNG-fake-icon\x00",
+    "THIRD_PARTY_NOTICES.md": "# notices\n",
+}
+# Fake frozen PyInstaller entry point (macos/linux payload) - a binary blob.
+FROZEN_EXECUTABLE = "\x00\x7fELF-fake-frozen-reviewflow-binary\x00"
+# The complete comparable set on the windows platform.
+FULL_WINDOWS_TREE = {**SOURCE_FILES, **WINDOWS_SHIPPING_FILES}
 
 
 def _write_tree(base: Path, files: dict[str, str]) -> None:
@@ -70,11 +106,19 @@ def _load_verifier():
 
 
 def _fake_release_tree(tmp_path: Path) -> tuple[Path, Path]:
-    """Fake source tree + windows-style staging payload mirroring every source file."""
+    """Fake source tree + windows-style staging payload mirroring every source file.
+
+    The MM9-02 shipping entries live under build/ in the source tree but are
+    copied to the staging ROOT by build_windows.bat, so the payload mirrors
+    them one level up."""
     source = tmp_path / "repo"
-    _write_tree(source, SOURCE_FILES)
+    _write_tree(source, FULL_WINDOWS_TREE)
     payload = source / "build" / "staging" / "ReviewFlow"
-    _write_tree(payload, SOURCE_FILES)
+    payload_files = {
+        (rel[len("build/"):] if rel.startswith("build/") else rel): text
+        for rel, text in FULL_WINDOWS_TREE.items()
+    }
+    _write_tree(payload, payload_files)
     return source, payload
 
 
@@ -115,17 +159,18 @@ def test_mm7_01_clean_payload_passes_with_complete_manifest(tmp_path):
     result = verifier.verify_payload(source, payload, "windows")
     assert result["ok"] is True, result["problems"]
     assert result["mode"] == "payload-compare"
-    assert set(result["files"]) == set(SOURCE_FILES)
+    # MM9-02: the staging-root shipping entries are part of the comparable set.
+    assert set(result["files"]) == set(FULL_WINDOWS_TREE)
 
 
 def test_mm7_01_degrade_mode_emits_full_source_manifest(tmp_path):
     verifier = _load_verifier()
     source = tmp_path / "repo"
-    _write_tree(source, SOURCE_FILES)
+    _write_tree(source, FULL_WINDOWS_TREE)
     result = verifier.verify_payload(source, None, "windows")
     assert result["ok"] is True, result["problems"]
     assert result["mode"] == "source-manifest"
-    assert set(result["files"]) == set(SOURCE_FILES)
+    assert set(result["files"]) == set(FULL_WINDOWS_TREE)
 
 
 def test_mm7_01_ci_must_not_silently_degrade_without_payload(tmp_path):
@@ -154,7 +199,7 @@ def test_mm7_01_cli_end_to_end_on_fake_tree(tmp_path):
     manifest = json.loads(
         (source / "release-assets" / "build-manifest-windows.json").read_text("utf-8")
     )
-    assert set(manifest["files"]) == set(SOURCE_FILES)
+    assert set(manifest["files"]) == set(FULL_WINDOWS_TREE)
 
     (payload / "custom_backend" / "hidden.py").write_text(
         'print("TAMPERED")\n', encoding="utf-8"
@@ -182,6 +227,7 @@ def _macos_payload(tmp_path: Path) -> tuple[Path, Path]:
     payload = source / "build" / "dist" / "ReviewFlow.app" / "Contents" / "Frameworks"
     loose = {k: v for k, v in SOURCE_FILES.items() if not k.startswith("coscreen/")}
     loose["coscreen/assets/logo.txt"] = SOURCE_FILES["coscreen/assets/logo.txt"]
+    loose["ReviewFlow"] = FROZEN_EXECUTABLE  # frozen PyInstaller entry point
     _write_tree(payload, loose)
     return source, payload
 
@@ -192,6 +238,7 @@ def _linux_payload(tmp_path: Path) -> tuple[Path, Path]:
     payload = source / "build" / "work-linux" / "AppDir" / "usr" / "bin" / "_internal"
     loose = {k: v for k, v in SOURCE_FILES.items() if not k.startswith("coscreen/")}
     loose["coscreen/assets/logo.txt"] = SOURCE_FILES["coscreen/assets/logo.txt"]
+    loose["ReviewFlow"] = FROZEN_EXECUTABLE  # frozen PyInstaller entry point
     _write_tree(payload, loose)
     return source, payload
 
@@ -538,3 +585,221 @@ def test_mm7_05_frontend_healthy_tree_prints_success_urls(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "Backend: http://localhost:8613/api" in proc.stdout
     assert "Frontend: http://localhost:8614" in proc.stdout
+
+
+# --------------------------------------------------------------------------- MM9-01
+
+def test_mm9_01_release_yml_provisions_the_playwright_browser_runtime():
+    """MM9-01 nail: without the provisioning step the only browser regression in
+    the release gate (test_mm7_03_browser_harness_executes_green) is skipif-
+    skipped on the missing REVIEWFLOW_PLAYWRIGHT/PLAYWRIGHT_BROWSERS_PATH pair -
+    remove the step and this wiring assertion turns red."""
+    text = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    provision = text.index("Provision playwright")
+    validators = text.index("Run static validators")
+    assert provision < validators, (
+        "playwright must be provisioned before the pytest/validator step runs"
+    )
+    for token in (
+        "playwright@>=1.55.0 <2",        # the module install itself
+        "install --with-deps chromium",  # the browser binary (linux branch)
+        "REVIEWFLOW_PLAYWRIGHT=",        # skipif-required module path env
+        "PLAYWRIGHT_BROWSERS_PATH=",     # skipif-required browser cache env
+    ):
+        assert token in text, f"release.yml must keep the playwright provisioning: {token}"
+    # The env pair must be exported to the job environment (not merely set on
+    # the install command line) for the later pytest step to see it.
+    assert "GITHUB_ENV" in text[provision:validators]
+
+
+# --------------------------------------------------------------------------- MM9-02
+
+def test_mm9_02_tampered_launcher_entry_point_must_fail(tmp_path):
+    """MM9-02 nail: the Windows staging-root shipping entries are compared;
+    pre-fix a tampered launcher.py left the payload gate green (exit 0)."""
+    verifier = _load_verifier()
+    source, payload = _fake_release_tree(tmp_path)
+    (payload / "launcher.py").write_text(
+        'print("EVIL LAUNCHER")\n', encoding="utf-8"
+    )
+    result = verifier.verify_payload(source, payload, "windows")
+    assert result["ok"] is False
+    assert any("launcher.py" in problem for problem in result["problems"])
+
+
+def test_mm9_02_missing_windows_start_entry_point_must_fail(tmp_path):
+    verifier = _load_verifier()
+    source, payload = _fake_release_tree(tmp_path)
+    (payload / "windows_start.py").unlink()
+    result = verifier.verify_payload(source, payload, "windows")
+    assert result["ok"] is False
+    assert any("windows_start.py" in problem for problem in result["problems"])
+
+
+def test_mm9_02_clean_payload_manifest_covers_shipping_entries(tmp_path):
+    verifier = _load_verifier()
+    source, payload = _fake_release_tree(tmp_path)
+    result = verifier.verify_payload(source, payload, "windows")
+    assert result["ok"] is True, result["problems"]
+    for rel in WINDOWS_SHIPPING_FILES:
+        assert rel in result["files"], f"{rel} must be in the comparable manifest"
+
+
+def test_mm9_02_macos_stray_loose_coscreen_module_must_fail(tmp_path):
+    """MM9-02: on the frozen platforms any loose payload file under coscreen/
+    that is absent from the source tree fails - pre-fix nothing outside
+    coscreen/assets was even looked at."""
+    verifier = _load_verifier()
+    source, payload = _macos_payload(tmp_path)
+    (payload / "coscreen" / "evil.py").write_text("evil = 1\n", encoding="utf-8")
+    result = verifier.verify_payload(source, payload, "macos")
+    assert result["ok"] is False
+    assert any("coscreen/evil.py" in problem for problem in result["problems"])
+
+
+def test_mm9_02_linux_tampered_loose_coscreen_source_must_fail(tmp_path):
+    """MM9-02: a loose coscreen source file that does ship in the payload is
+    compared against the source tree when present (compare-if-present)."""
+    verifier = _load_verifier()
+    source, payload = _linux_payload(tmp_path)
+    (payload / "coscreen" / "x.py").write_text("x = 'EVIL'\n", encoding="utf-8")
+    result = verifier.verify_payload(source, payload, "linux")
+    assert result["ok"] is False
+    assert any("coscreen/x.py" in problem for problem in result["problems"])
+
+
+def test_mm9_02_frozen_sources_are_recorded_not_ignored(tmp_path):
+    """MM9-02 (macos/linux, honest downgrade): the 149 coscreen/*.py frozen into
+    the PyInstaller archive legitimately have no loose copy, so a per-file
+    comparison is impossible - R2 forbids failing the clean frozen layout. The
+    gate must not silently forget them either: the frozen entry point's whole
+    sha256 and the frozen sources' digests go into the manifest 'frozen'
+    section, while 'files' stays exactly what was compared."""
+    verifier = _load_verifier()
+    source, payload = _macos_payload(tmp_path)
+    result = verifier.verify_payload(source, payload, "macos")
+    assert result["ok"] is True, result["problems"]
+    assert "coscreen/x.py" not in result["files"], "frozen sources are not file-compared"
+    assert result["frozen"]["coscreen/x.py"], "frozen source digest must be recorded"
+    executable_keys = [k for k in result["frozen"] if k.endswith("ReviewFlow")]
+    assert len(executable_keys) == 1, result["frozen"]
+    assert result["frozen"][executable_keys[0]] == hashlib.sha256(
+        FROZEN_EXECUTABLE.encode("utf-8")
+    ).hexdigest(), "the frozen entry point is pinned by its whole sha256"
+
+
+def test_mm9_02_frozen_entry_point_missing_must_fail(tmp_path):
+    """MM9-02: a macos/linux payload without the frozen PyInstaller entry point
+    previously passed every check (only directory trees were walked)."""
+    verifier = _load_verifier()
+    source, payload = _macos_payload(tmp_path)
+    (payload / "ReviewFlow").unlink()
+    result = verifier.verify_payload(source, payload, "macos")
+    assert result["ok"] is False
+    assert any("frozen entry point" in problem for problem in result["problems"])
+
+
+def test_mm9_02_macos_asset_tamper_reported_exactly_once(tmp_path):
+    """Round-2 review fix: the assets mapping and the whole-coscreen mapping
+    both walked coscreen/assets, so one tampered asset produced two identical
+    problems. The whole-coscreen mapping must skip the owned subtree."""
+    verifier = _load_verifier()
+    source, payload = _macos_payload(tmp_path)
+    (payload / "coscreen" / "assets" / "logo.txt").write_text("evil\n", encoding="utf-8")
+    result = verifier.verify_payload(source, payload, "macos")
+    assert result["ok"] is False
+    reports = [p for p in result["problems"] if "coscreen/assets/logo.txt" in p]
+    assert len(reports) == 1, f"asset tamper must be reported exactly once, got: {reports}"
+
+
+def test_mm9_02_tampered_repair_bat_and_notices_must_fail(tmp_path):
+    """MM9-02 round 2: the remaining staging-root shipping entries
+    (repair_reviewflow.bat, windows_smoke.py, THIRD_PARTY_NOTICES.md) are part
+    of the comparison set too."""
+    verifier = _load_verifier()
+    source, payload = _fake_release_tree(tmp_path)
+    (payload / "repair_reviewflow.bat").write_text("@echo EVIL\n", encoding="utf-8")
+    (payload / "THIRD_PARTY_NOTICES.md").unlink()
+    result = verifier.verify_payload(source, payload, "windows")
+    assert result["ok"] is False
+    assert any("repair_reviewflow.bat" in problem for problem in result["problems"])
+    assert any("THIRD_PARTY_NOTICES.md" in problem for problem in result["problems"])
+
+
+# --------------------------------------------------------------------------- MM9-03
+
+@pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+def test_mm9_03_manifest_sees_the_pdfjs_dynamic_modules():
+    """MM9-03: the three PDF.js modules index.html loads through
+    await import('...')/workerSrc must appear in the parsed manifest - the
+    pre-fix parser only read <script src> and excluded .mjs."""
+    code = (
+        f"const m=require({json.dumps(str(REPO / 'build' / 'script_manifest.cjs'))});"
+        f"const root={json.dumps(str(REPO))};"
+        "const list=m.loadScriptManifest(root);"
+        "for(const f of ['pdfjs/pdf.min.mjs','pdfjs/pdf_viewer.mjs',"
+        "'pdfjs/pdf.worker.min.mjs'])"
+        "  if(!list.includes(f)){console.error('manifest missing: '+f);process.exit(1);}"
+    )
+    proc = subprocess.run(
+        [NODE, "-e", code], cwd=REPO, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+def test_mm9_03_gate_turns_red_when_a_pdfjs_module_is_deleted():
+    """MM9-03 nail: deleting a PDF.js module the page dynamically imports must
+    fail the wired gate. Pre-fix the manifest never saw it: the gate exited 0
+    with syntax_files unchanged while the native PDF viewer silently degraded
+    to the iframe fallback (loadPdfLibs catches the failed import)."""
+    target = REPO / "custom_frontend" / "pdfjs" / "pdf.min.mjs"
+    parked = target.parent / (target.name + ".mm9-nail-parked")
+    assert target.is_file(), "the pdfjs vendored module must exist to run this nail"
+    target.rename(parked)
+    try:
+        proc = subprocess.run(
+            [NODE, str(REPO / "build" / "validate_import_review_static.cjs")],
+            cwd=REPO, capture_output=True, text=True, timeout=180,
+        )
+        assert proc.returncode != 0, "the gate must go red on a deleted pdfjs module"
+        assert "pdf.min.mjs" in proc.stderr
+    finally:
+        parked.rename(target)
+
+
+# --------------------------------------------------------------------------- MM9-12
+
+def test_mm9_12_manifest_digests_ignore_line_endings_for_text(tmp_path):
+    """MM9-12: the same text under a CRLF checkout and an LF checkout must hash
+    identically (cross-platform comparable manifests), real content differences
+    must still differ, and binaries hash raw bytes."""
+    verifier = _load_verifier()
+    crlf = tmp_path / "crlf.py"
+    crlf.write_bytes(b"line1\r\nline2\r\n")
+    lf = tmp_path / "lf.py"
+    lf.write_bytes(b"line1\nline2\n")
+    other = tmp_path / "other.py"
+    other.write_bytes(b"line1\nlineX\n")
+    binary = tmp_path / "icon.ico"
+    binary.write_bytes(b"\x00a\r\nb")
+    assert verifier.sha256_file(crlf) == verifier.sha256_file(lf)
+    assert verifier.sha256_file(lf) != verifier.sha256_file(other)
+    # NUL byte -> binary -> raw digest where \r\n is content, not a line ending.
+    assert verifier.sha256_file(binary) == hashlib.sha256(b"\x00a\r\nb").hexdigest()
+
+
+@pytest.mark.skipif(GIT is None, reason="git not found")
+def test_mm9_12_verifier_outputs_are_git_ignored():
+    """MM9-12: a local verifier run writes release-assets/ into the repo root
+    and build_windows.bat can leave build/validator_deps/ behind (MM9-08) -
+    both must be ignored so local gate runs stop polluting the worktree."""
+    for path in (
+        "release-assets/build-manifest-windows.json",
+        "build/validator_deps/httpx/__init__.py",
+    ):
+        proc = subprocess.run(
+            [GIT, "-C", str(REPO), "check-ignore", "-q", path],
+            capture_output=True,
+        )
+        assert proc.returncode == 0, f"{path} must be git-ignored (exit {proc.returncode})"
