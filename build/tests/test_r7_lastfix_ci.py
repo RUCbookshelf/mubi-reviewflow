@@ -14,6 +14,7 @@ MM11-02: test_collaboration_hardening 的别名读守护旧形态在 POSIX 上�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -74,8 +75,14 @@ def test_mm11_01_node_test_suites_green_under_the_ci_command():
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-3000:]
-    assert "# fail 0" in out, out[-3000:]
-    assert "# pass 17" in out, "17 个用例的计数不得缩水（复审口径 7+5+5）"
+    # TAP 汇总行的键名随 Node 大版本漂移（22: "# pass 17"；25: "tests 17"）。
+    # 终扫 FS-02：只钉「全过 + 用例数不缩水」，不绑具体键名。
+    fail_m = re.search(r"#\s*fail\s+(\d+)", out)
+    assert fail_m is None or int(fail_m.group(1)) == 0, out[-3000:]
+    counts = [int(m) for m in re.findall(r"#\s*(?:pass|tests)\s+(\d+)", out)]
+    assert counts and max(counts) >= 17, (
+        f"17 个用例的计数不得缩水（复审口径 7+5+5），实际汇总：{counts}"
+    )
 
 
 # --------------------------------------------------------------------------- MM11-02
