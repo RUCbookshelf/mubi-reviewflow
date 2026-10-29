@@ -6,7 +6,12 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-from coscreen.review_analysis import RATIOS, list_effects, selected_effects
+from coscreen.review_analysis import (
+    RATIOS,
+    _screened_inverse_variance_weights,
+    list_effects,
+    selected_effects,
+)
 
 
 def synthesize(db: str | Path, outcome: str, timepoint: str, measure: str,
@@ -51,7 +56,12 @@ def synthesize(db: str | Path, outcome: str, timepoint: str, measure: str,
                          for a, b, _ in contrasts], dtype=float)
     values = np.asarray([math.log(row["estimate"]) if measure in RATIOS else row["estimate"]
                          for _, _, row in contrasts])
-    weights = np.asarray([1/row["se"]**2 for _, _, row in contrasts])
+    # MM10-01: 1/se² on degenerate SEs raises OverflowError (se ≳ 1.34e154) or
+    # ZeroDivisionError (se² underflows to 0), which are not ValueError and used
+    # to escape the endpoint's 4xx contract as 500s. The shared screen converts
+    # them to the library's normal ValueError rejection pattern; the subnormal
+    # band (se=1e-160 → inf weight → NaN → null) keeps its known MM5-05 behavior.
+    weights = np.asarray(_screened_inverse_variance_weights([row for _, _, row in contrasts]))
     information = design.T @ (weights[:, None] * design)
     covariance = np.linalg.inv(information)
     effects = covariance @ design.T @ (weights * values)

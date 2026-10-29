@@ -120,6 +120,14 @@ def diagnose_publication_bias(
     result = _base_result(method, measure, n)
 
     if method == "rank_correlation":
+        # MM10-02: kendalltau's asymptotic variance divides by (size - 2); with
+        # n=2 scipy raises ZeroDivisionError (not ValueError), which escaped the
+        # endpoint's 4xx contract as a 500. Two studies are a common input, so
+        # reject them explicitly per the library's small-sample precedent
+        # (e.g. "nonlinear dose-response synthesis requires at least three
+        # studies"). n>=3 and the rosenthal path are untouched.
+        if n < 3:
+            raise ValueError("rank correlation needs at least three studies for the asymptotic variance")
         variances = [se * se for se in ses]
         if len(set(variances)) < 2:
             raise ValueError("rank correlation needs variation in sampling variances")

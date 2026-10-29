@@ -499,12 +499,42 @@ def effect_scale_label(measure: str) -> str:
             "log; results shown as matched-pair odds ratio" if measure == "PAIRED_OR" else "natural")
 
 
+def _screened_inverse_variance_weights(rows: list[dict]) -> list[float]:
+    """Inverse-variance weights ``1/se²`` with degenerate-SE screening (MM10-01).
+
+    Two degenerate bands escape the ValueError→4xx API contract as raw 500s:
+    ``se ** 2`` raises OverflowError for se ≳ 1.34e154, and underflows to an
+    exact 0.0 for se ≲ 2.2e-162 making ``1/se**2`` a ZeroDivisionError. Neither
+    is a ValueError, so the read endpoints' ``except ValueError`` never fires.
+    Screen them here — the same "supported numeric range" rejection
+    publication_bias already applies to its precisions — and also reject
+    non-finite/non-positive SEs (the write side, save_effect, already refuses
+    those; this is the read-side backstop of the same contract, not new
+    strictness against legal inputs). The subnormal band in between
+    (e.g. se=1e-160 → 1/se² = inf → downstream NaN → null) is deliberately
+    passed through: that is the known MM5-05 200+null behavior. The weight
+    expression stays literally ``1/se**2`` so legal inputs keep bit-identical
+    results.
+    """
+    weights = []
+    for row in rows:
+        se = row["se"]
+        if not math.isfinite(se) or se <= 0:
+            raise ValueError("every study SE must be finite and positive for inverse-variance weighting")
+        try:
+            weights.append(1 / se**2)
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError("study standard errors are outside the supported numeric range "
+                             "for inverse-variance weighting") from exc
+    return weights
+
+
 def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str) -> dict:
     require_compatible_effects(rows, measure)
     from scipy.stats import chi2, norm, t  # statistical dependency, installed with statsmodels
 
     y = [math.log(r["estimate"]) if measure in RATIOS else r["estimate"] for r in rows]
-    w = [1 / r["se"]**2 for r in rows]
+    w = _screened_inverse_variance_weights(rows)
     fixed = sum(a*b for a, b in zip(w, y)) / sum(w)
     q = sum(a*(b-fixed)**2 for a, b in zip(w, y))
     df = len(rows) - 1
