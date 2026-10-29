@@ -8,8 +8,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+# L-03（r7-lunafix）最小权限：workflow 级只读——build/publish 原先各自
+# 继承 contents: write，构建/测试步骤（pip 安装、pytest、校验器）因此持有
+# 写令牌（供应链爆炸半径）。写权限只下沉到真正打标签/建发行版的 publish
+# 作业；build 的 checkout 不把凭据持久化进本地 git 配置。
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -37,6 +41,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # L-03：构建/测试作业不需要凭据——不把令牌留进本地 git 配置
+          #（后续 pip 安装/pytest/校验器执行的代码一律拿不到写凭据）。
+          persist-credentials: false
       - name: Read application version
         shell: bash
         run: echo "APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
@@ -75,8 +83,9 @@ jobs:
         run: |
           # MM7-02: the four static validators run in CI after the payload check;
           # any non-zero exit fails the job. httpx is used by the two Python
-          # validators and is not part of the runtime requirements file.
-          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest
+          # validators and is not part of the runtime requirements file;
+          # pyyaml is used by build/tests/test_r7_luna_release_static.py (L-03).
+          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest pyyaml
           # MM8-02: the test suite (1,222+ assertions) runs in CI before the
           # validators; any failure fails the job.
           python -m pytest build/tests -q
@@ -95,6 +104,10 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-22.04
+    # L-03：写权限只在 publish 显式授予（打标签/推标签/建发行版）；
+    # checkout 保持默认持久化凭据——git push 标签依赖它。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Read application version

@@ -1,4 +1,35 @@
-# Mubi·ReviewFlow 2.1.3
+# Mubi·ReviewFlow 2.1.4
+
+## 2.1.4 变更摘要
+
+本版为安全加固与多轮评审修复版本（要点归纳自 2.1.3 以来的修复提交）：
+
+- 上传与路径安全：任务锁规范化（URL 别名不再派生第二把锁）、上传体积与文件部件数预检、限流按直连来源防伪造、上传端点鉴权前置；SSE 进度流改用短期票据，长期令牌不再出现在 URL／反代日志／浏览器历史中。
+- 认证与账户安全：注册／登录请求体上限与 422 回显收敛、bcrypt 口令长度上限显式校验、登录限流只计失败尝试；CSV 导出补公式注入防护。
+- 协作权限与受保护撤销：属主解析失败的重试语义、legacy 任务统一口径、保留名／幽灵任务收口；撤销守卫幂等化并核验证据文件存在性。
+- 去重引擎保守化：自动合并仅保留可核验证据，模糊／键冲突改入人工候选；CJK 尾标点不再破坏 DOI 相等；消歧键拼接前安全截断，杜绝死锁文献。
+- 文献解析器：RIS 标签映射与键消歧补齐、编码双候选择优与 GBK 回退、缺 ER 不再整文件拒绝。
+- PRISMA 表单与流程图：数字勾稽补全（other 列、理由余量、研究≤报告）、DOT 标签转义、空决策不计入分母。
+- AI 抽取建议（自带钥匙，BYOK）：个人／任务钥匙保险柜、逐条确认留痕、引文核验门槛分级。
+- 轨迹导出与迁移：origin 结构化脱敏、events 分卷与存量迁移增量修复。
+- 前端：导入复核页签／按钮／实际可启用三口径计数一致；401 强制登出与缓存令牌-内容绑定；后台分页在启用失败后不再停滞；加载动画、轮询与十语言词条多项修复。
+- 发布链：release workflow 最小权限（构建作业只读且不持久化凭据）、appimagetool 固定版本与 sha256 校验、CI 内先跑测试套件再跑静态校验器。
+
+### English summary
+
+- Security-hardening release: upload and path safety (canonical task locks, size and part-count prechecks, direct-peer rate limiting, auth before locks), short-lived SSE tickets replacing long-lived tokens in URLs.
+- Account security: register/login body limits, bcrypt length validation, failure-only login throttling, CSV formula-injection protection.
+- Collaboration and protected undo: owner-resolution retry semantics, unified legacy-task handling, idempotent undo guards with evidence-file checks.
+- Deduplication made conservative: auto-merge only with verifiable evidence; ambiguous cases become manual candidates; DOI equality no longer broken by CJK punctuation.
+- RIS parser: tag mapping, key disambiguation, dual-candidate encoding selection with GBK fallback.
+- PRISMA forms and diagrams: numeric cross-checks, DOT label escaping, empty decisions excluded from denominators.
+- Optional AI extraction suggestions (bring-your-own key) with a key vault and per-item confirmation trails.
+- Import review: counts consistent across tabs, buttons and activation; background paging survives activation failures.
+- Release chain least privilege: read-only build jobs without persisted credentials, pinned appimagetool with sha256, tests and static validators in CI.
+
+## 2.1.3
+
+（以下为 2.1.3 原文正文，未改写。）
 
 ## Added
 

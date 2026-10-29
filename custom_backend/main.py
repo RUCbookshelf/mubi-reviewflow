@@ -202,6 +202,13 @@ class TaskLockMiddleware:
     - **U5-P4 鉴权前置**：无有效 Bearer 凭据的请求**不取锁**直接放行给
       端点（由 require_user 统一回 401），消除未认证的 409 占用状态预言机
       与未认证锁文件操作；
+    - **L-01 参与者前置（r7-lunafix）**：U5-P4 只挡了「未认证」——持**有效**
+      JWT 的非参与者仍能在 require_user 发 403 之前按 URL task_id 取锁
+      （请求体读取早于依赖鉴权，慢速小体即可长时间占锁，多进程部署下合法
+      属主经另一进程得 409）。现取锁前先跑与 require_user **同一套**
+      ``_task_visible_to`` 判定：检查不过（非参与者/不可见/legacy 口径/
+      属主暂不可解析）一律不取锁、放行给下游 401/403/404/409/503 路径；
+      合法参与者的取锁与 409 语义逐字不变。
     - **U5-P2/R6-S2 在途计数（写口径）**：``inflight()`` 只统计**写方法**
       （POST/PUT/PATCH/DELETE）——此前把 GET 也计入，前端后台轮询进行中
       会让 DELETE 误报 409「任务有操作进行中」；DELETE 端点据此对同进程
@@ -340,6 +347,30 @@ class TaskLockMiddleware:
         response.raw_headers = headers
         return response
 
+    @staticmethod
+    def _visible_to_payload(info, payload) -> bool:  # noqa: ANN001
+        """L-01：取锁前的参与者/可见性预检（与 require_user 同一套判定）。
+
+        判定不过时中间件**不取锁**、直接放行下游（401/403/404/409/503 由
+        require_user / 路由按既有口径发出）：
+
+        - ``sub`` 形状非法 → False（下游统一 401）；
+        - 属主/参与者不可见 → False（下游 403；server 模式 legacy 任务由
+          require_user 按统一口径回 409 迁移指引——中间件不复制该状态分支，
+          只保证「检查不过不取锁」）；
+        - 属主解析异常（``OwnerUnavailableError``，含库损坏子类）→ False：
+          该请求在下游必然以 503/409 终止、不会触达业务写入，不取锁即放行
+          （fail-open 到「无锁」，端点侧授权门仍然完整）。
+        """
+        try:
+            user_id = int(payload["sub"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        try:
+            return _task_visible_to(info, {"user_id": user_id})
+        except collaboration_mod.OwnerUnavailableError:
+            return False
+
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
             await self.app(scope, receive, send)
@@ -354,7 +385,8 @@ class TaskLockMiddleware:
             return
         # U5-P4：先做凭据存在性+有效性检查，未认证请求不触碰任务锁。
         token = self._bearer_token(scope)
-        if token is None or auth.decode_access_token(token) is None:
+        payload = None if token is None else auth.decode_access_token(token)
+        if payload is None:
             await self.app(scope, receive, send)  # 端点 require_user 统一回 401
             return
         task_id = match.group(1)
@@ -363,6 +395,12 @@ class TaskLockMiddleware:
         early_response = None
         is_write = scope.get("method", "") in self._WRITE_METHODS
         info = tasks_mod.find_task(task_id, DATA_DIR)
+        # L-01：取锁前先过与 require_user 同一套可见性/参与者判定——
+        # 非参与者（含 sub 形状非法、属主暂不可解析）不取锁，直接走下游
+        # 401/403/404/409/503 路径；合法参与者照旧取锁，锁语义不变。
+        if info is not None and not self._visible_to_payload(info, payload):
+            await self.app(scope, receive, send)
+            return
         if info is not None:
             # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在规范
             # 任务目录（tasks_root/{info.task_id}），URL 尾点等别名不再派生
