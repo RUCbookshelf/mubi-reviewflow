@@ -1,15 +1,15 @@
 'use strict';
-/* MM7-03: every module this gate checks is resolved from the online load list
-   parsed out of custom_frontend/index.html (<script src>), never from a
-   hand-written list. The previous version sourced its "unregistered display
-   strings" check from workflow_imports.js, which index.html never loads; the
-   live producer of window.WorkflowImports is unified_import_workspace.js. */
+/* MM7-03/MM7-04: every module this gate checks is resolved from the online load
+   list parsed out of custom_frontend/index.html (<script src>), never from a
+   hand-written list. The live producer of window.WorkflowImports is
+   unified_import_workspace.js; the dead duplicate panel that used to shadow it
+   has been deleted outright, and findWorkspaceModule below fails loudly if a
+   second producer ever reappears in the load list. */
 const fs=require('fs'),path=require('path'),os=require('os'),cp=require('child_process'),vm=require('vm'),assert=require('assert/strict');
 const {loadScriptManifest,findWorkspaceModule}=require('./script_manifest.cjs');
 const root=path.resolve(__dirname,'..'),frontend=path.join(root,'custom_frontend');
 const manifest=loadScriptManifest(root);
 assert.ok(manifest.includes('unified_import_workspace.js'),'online load list must include unified_import_workspace.js');
-assert.ok(!manifest.includes('workflow_imports.js'),'workflow_imports.js is not loaded online - the gate must not bless it');
 // Syntax-check every module the browser actually loads, not a sample.
 for(const file of manifest)cp.execFileSync(process.execPath,['--check',path.join(frontend,file)],{stdio:'pipe'});
 const html=fs.readFileSync(path.join(frontend,'index.html'),'utf8'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'reviewflow-inline-'));let inline=0;
@@ -24,4 +24,4 @@ const missing=[...new Set([...source.matchAll(/'([^'\n]{8,})'/g)].map(x=>x[1]))]
 assert.deepEqual(missing,[],'Unregistered display strings in '+workspace);
 for(const field of require('../custom_frontend/import_review_model.js').comparison({})){if(!['DOI','URL'].includes(field.label))assert.ok(english.has(field.label),'Unregistered metadata field: '+field.label);}
 assert.ok(html.indexOf('import_review_model.js')<html.indexOf('import_guide.js'));
-console.log(JSON.stringify({syntax_files:manifest.length,inline_scripts:inline,workspace_module:workspace,manifest_excludes_dead_module:true,new_panel_translation_coverage:'complete'}));
+console.log(JSON.stringify({syntax_files:manifest.length,inline_scripts:inline,workspace_module:workspace,new_panel_translation_coverage:'complete'}));

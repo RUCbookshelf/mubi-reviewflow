@@ -2,8 +2,9 @@
 /* MM7-03: the online module load list, parsed from custom_frontend/index.html.
    build/validate_import_review_static.cjs and build/tests/import_review_browser.cjs
    resolve the modules they check/inject through this helper instead of
-   hand-written lists, so a module that index.html never loads (the dead
-   workflow_imports.js) can no longer be mistaken for production code. */
+   hand-written lists, so a module that index.html never loads can no longer be
+   mistaken for production code (the dead duplicate panel that motivated this
+   was deleted outright in MM7-04). */
 const fs=require('fs'),path=require('path');
 
 function loadScriptManifest(root){

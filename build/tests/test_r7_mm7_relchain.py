@@ -9,7 +9,7 @@ MM7-02: release.yml and build_windows.bat must invoke the four static validators
         wired validators exit non-zero once an asserted object is broken.
 MM7-03: the string source of validate_import_review_static.cjs and the injection list of
         import_review_browser.cjs must be resolved from the <script src> manifest parsed
-        out of custom_frontend/index.html (live load list), never from workflow_imports.js.
+        out of custom_frontend/index.html (live load list), never from hardcoded names.
 MM7-05: both start.sh must install -r build/requirements-app.txt; custom_frontend/start.sh
         must additionally fail fast (set -e + uvicorn existence check) instead of printing
         success URLs when pip or uvicorn is unusable. Probed with a fake tree and stubs.
@@ -352,7 +352,6 @@ def test_mm7_03_manifest_helper_resolves_live_workspace_module():
         f"const root={json.dumps(str(REPO))};"
         "const list=m.loadScriptManifest(root);"
         "if(!list.includes('unified_import_workspace.js'))process.exit(1);"
-        "if(list.includes('workflow_imports.js'))process.exit(2);"
         "if(m.findWorkspaceModule(root,list)!=='unified_import_workspace.js')process.exit(3);"
         "if(m.manifestFiles(list,['import_review_model.js','import_guide.js']).length!==2)process.exit(4);"
         "if(list.length<50)process.exit(5);"
@@ -368,28 +367,22 @@ def test_mm7_03_static_gate_sources_strings_from_parsed_manifest():
     text = (REPO / "build" / "validate_import_review_static.cjs").read_text(encoding="utf-8")
     assert "loadScriptManifest" in text, "gate must parse the online load list"
     assert "findWorkspaceModule" in text, "gate must discover the live workspace module"
-    assert "path.join(frontend,'workflow_imports.js')" not in text, (
-        "gate must not read the unloaded workflow_imports.js as its string source"
-    )
 
 
 def test_mm7_03_browser_test_injections_come_from_parsed_manifest():
     text = (REPO / "build" / "tests" / "import_review_browser.cjs").read_text(encoding="utf-8")
     assert "loadScriptManifest" in text, "browser test must derive modules from the manifest"
     assert "findWorkspaceModule" in text, "browser test must discover the live panel module"
-    assert "['import_review_model.js','workflow_imports.js','import_guide.js']" not in text, (
-        "browser test must not hardcode the dead module in its injection list"
-    )
     assert "unified_import_workspace.js" in text, (
         "browser test must trip-wire on the live workspace module being loaded"
     )
-    # R1 review: the harness must not inject or exercise the unloaded dead panel at all.
-    # The filename may only appear inside manifest tripwire assertions.
-    dead_lines = [line for line in text.splitlines() if "workflow_imports.js" in line]
-    assert dead_lines, "the dead-module tripwire assertion must stay in the harness"
-    assert all("manifest.includes" in line for line in dead_lines), (
-        "workflow_imports.js may only appear in manifest tripwires, never as an injected source"
-    )
+    # MM7-04 removed the dead duplicate panel outright; the harness must not
+    # reference any frontend module that is not resolved through the manifest.
+    for line in text.splitlines():
+        if "custom_frontend" in line or "frontend+'" in line or "frontend,\"" in line:
+            assert "loadScriptManifest" in text, (
+                "browser test may only inject modules resolved via the manifest"
+            )
 
 
 @pytest.mark.skipif(

@@ -124,7 +124,7 @@ Trace menus request `GET /trace/events/{event_id}` for authoritative `actions`, 
 
 ## Packaging and cache delivery
 
-Deliver the backend and frontend together. New Python modules are `coscreen/review_workflow.py`, `coscreen/review_imports.py`, `coscreen/coding_evidence.py`, `custom_backend/review_workflow_api.py`, and `custom_backend/review_imports_api.py`. New browser assets are `workflow_locale.js`, `workflow_controls.js`, `workflow_evidence.js`, `workflow_imports.js`, and `workflow_controls.css`. Existing main/Trace/Undo/import-history and coding modules contain integration changes and are also required.
+Deliver the backend and frontend together. New Python modules are `coscreen/review_workflow.py`, `coscreen/review_imports.py`, `coscreen/coding_evidence.py`, `custom_backend/review_workflow_api.py`, and `custom_backend/review_imports_api.py`. New browser assets are `workflow_locale.js`, `workflow_controls.js`, `workflow_evidence.js`, and `workflow_controls.css`. Existing main/Trace/Undo/import-history and coding modules contain integration changes and are also required. The import-review workspace lives in `unified_import_workspace.js`; the retired duplicate panel file was removed (it shadowed `window.WorkflowImports`).
 
 Windows packaging recursively copies `custom_backend`, `custom_frontend`, and `coscreen`; its exclusions do not exclude these files. Linux/macOS add the complete frontend/backend directories and PyInstaller follows the explicit Python imports from the launcher/main modules into the new `coscreen` modules. Pillow is declared in both backend and packaged runtime requirements. This is source inspection only: no installer or frozen executable was built or launched.
 

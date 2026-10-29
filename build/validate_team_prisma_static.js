@@ -12,7 +12,7 @@ try{
   changed=fs.readdirSync(path.join(root,'custom_frontend')).filter(p=>p.endsWith('.js')).map(p=>'custom_frontend/'+p);
 }
 const required=['custom_frontend/help_locale.js','custom_frontend/workflow_controls.js',
-  'custom_frontend/workflow_imports.js','custom_frontend/prisma_task_ui.js',
+  'custom_frontend/prisma_task_ui.js',
   'custom_frontend/team_roles.js','custom_frontend/team_prisma_locale.js','build/validate_team_prisma_static.js'];
 const files=[...new Set([...required,...changed,...extra])].filter(p=>p.endsWith('.js'));
 for(const file of files)new vm.Script(fs.readFileSync(path.join(root,file),'utf8'),{filename:file});

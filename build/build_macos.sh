@@ -21,8 +21,12 @@ mkdir -p "$BUILD/work-macos" "$DIST"
 
 python3 -m venv "$BUILD/work-macos/venv"
 PY="$BUILD/work-macos/venv/bin/python"
-"$PY" -m pip install --upgrade pip wheel
-"$PY" -m pip install -r "$BUILD/requirements-app.txt" pyinstaller
+# F1-2: bound every tool this script installs directly so the same VERSION tag
+# keeps resolving inside a known range (pyinstaller 6.x line, current 6.22).
+# Trade-off: requirements-app.txt is NOT hash-locked here - the bounds only pin
+# the packages the packaging scripts themselves install.
+"$PY" -m pip install --upgrade "pip>=25,<27" "wheel>=0.45,<1"
+"$PY" -m pip install -r "$BUILD/requirements-app.txt" "pyinstaller>=6.10,<7"
 
 ICONSET="$BUILD/work-macos/ReviewFlow.iconset"
 mkdir -p "$ICONSET"

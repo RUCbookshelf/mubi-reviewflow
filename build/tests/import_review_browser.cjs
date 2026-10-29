@@ -1,20 +1,19 @@
 'use strict';
-/* MM7-03 (R1 rework): this harness drives the LIVE import-review panel.
+/* MM7-03 (R1 rework) + MM7-04: this harness drives the LIVE import-review panel.
    Every injected module is resolved from the online load list parsed out of
    custom_frontend/index.html: the panel under test is the manifest's unique
    window.WorkflowImports producer, its dependency modules are discovered from
    the global identifiers that module actually references, and the onboarding
    guide is discovered as the manifest module that both reads the panel global
-   and creates #rfImportGuide. No unloaded module is injected (MM7-04 removes
-   the dead one). DOM/stub mechanics follow import_review_refined_browser.cjs,
-   the proven harness for this panel. */
+   and creates #rfImportGuide. The dead duplicate panel was deleted (MM7-04), so
+   only online modules exist to inject. DOM/stub mechanics follow
+   import_review_refined_browser.cjs, the proven harness for this panel. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require(process.env.REVIEWFLOW_PLAYWRIGHT||'playwright');
 const {loadScriptManifest,findWorkspaceModule,manifestFiles,manifestModuleDefining,manifestModulesMatching}=require('../script_manifest.cjs');
 const root=path.resolve(__dirname,'../..'),frontend=path.join(root,'custom_frontend');
 const manifest=loadScriptManifest(root);
 assert.ok(manifest.includes('unified_import_workspace.js'),'online manifest must load unified_import_workspace.js');
-assert.ok(!manifest.includes('workflow_imports.js'),'dead module workflow_imports.js must not be loaded online');
 const workspace=findWorkspaceModule(root,manifest);
 const workspaceSource=fs.readFileSync(path.join(frontend,workspace),'utf8');
 // Globals this harness stubs itself (see page.evaluate below); their defining
