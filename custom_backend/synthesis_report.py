@@ -20,14 +20,28 @@ def _analysis_estimate(effect: dict) -> float:
     return math.log(estimate) if effect["measure"] in _LOG_SCALE_MEASURES else estimate
 
 
-def _display_value(value: float, measure: str) -> float:
-    if measure in _LOG_SCALE_MEASURES or measure in {"LOG_RATE", "LOG_ROM", "PAIRED_OR"}:
-        return math.exp(value)
-    if measure == "FISHER_Z":
-        return math.tanh(value)
-    if measure == "LOGIT_PROP":
-        return 1 / (1 + math.exp(-value)) if value >= 0 else math.exp(value) / (1 + math.exp(value))
-    return value
+def _display_value(value: float, measure: str) -> float | None:
+    """Analysis scale → display scale; overflow/non-finite degrades to None ("—").
+
+    Same degradation contract as ``coscreen/review_analysis.py`` display(): with a
+    very large SE the log-scale confidence limit can exceed the representable
+    exp() range (>709.78); the presentation layer degrades it instead of letting
+    the export endpoints raise OverflowError 500. ``_number(None)`` renders the
+    established "—" placeholder, matching how the pooled row already displays a
+    null display value.
+    """
+    try:
+        if measure in _LOG_SCALE_MEASURES or measure in {"LOG_RATE", "LOG_ROM", "PAIRED_OR"}:
+            out = math.exp(value)
+        elif measure == "FISHER_Z":
+            out = math.tanh(value)
+        elif measure == "LOGIT_PROP":
+            out = 1 / (1 + math.exp(-value)) if value >= 0 else math.exp(value) / (1 + math.exp(value))
+        else:
+            out = value
+    except OverflowError:
+        return None
+    return out if math.isfinite(out) else None
 
 
 def _bounds(report: dict) -> tuple[float, float]:

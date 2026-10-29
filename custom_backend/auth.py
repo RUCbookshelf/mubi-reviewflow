@@ -286,6 +286,11 @@ def _secret() -> str:
     warning 日志便于运维定位此前的空文件事件。写回失败（只读/权限）时退
     回**进程内稳定**的应急密钥（见 ``_EMERGENCY_SECRET``）并留 ERROR
     日志——绝不退回空串或每次换钥。
+    R3-03：应急口径同样覆盖**首次建库**失败——父目录不可创建（被普通
+    文件占位/无权限）与首开 ``O_EXCL`` 抛非 ``FileExistsError`` 的存储
+    ``OSError``（密钥路径被目录占用、只读数据目录）此前直接冒泡，login/
+    create_access_token 全线 500，与本 docstring 承诺的「只读/权限 → 应
+    急密钥」相反。非 ``OSError`` 的编程错误不在此被掩盖。
     """
     env = os.environ.get("COBOOKSHELF_JWT_SECRET", "").strip()
     if env:
@@ -307,7 +312,13 @@ def _secret() -> str:
         if winner:
             return winner
         secret = secrets.token_hex(32)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # R3-03：父目录不可创建（被普通文件占位 → FileExistsError、无
+            # 权限 → PermissionError）——存储层失败，与空密钥写回失败同一
+            # 层的有界应急回退，不冒泡 500。
+            return _emit_secret_via_emergency(secret)
         if path.exists() and not _EMERGENCY_WRITE_LOGGED:
             # MM-03 主路径：文件存在但为空（首写前崩溃/掉电、备份截断）。
             logger.warning(
@@ -327,6 +338,10 @@ def _secret() -> str:
             if _atomic_write_secret(path, secret):
                 _EMERGENCY_SECRET = None
                 return secret
+            return _emit_secret_via_emergency(secret)
+        except OSError:
+            # R3-03：首开失败但非「已存在」（密钥路径被目录占用、只读数据
+            # 目录等）——同为存储层失败，走应急口径；编程错误仍照常冒泡。
             return _emit_secret_via_emergency(secret)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
