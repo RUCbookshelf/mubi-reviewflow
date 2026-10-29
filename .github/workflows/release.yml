@@ -115,6 +115,15 @@ jobs:
           python build/validate_screening_rounds.py
           node build/validate_import_review_static.cjs
           node build/validate_team_prisma_static.js
+          # MM11-01: the three node --test unit suites (17 cases) were
+          # documentation-only - no automation ever ran them. They ride the
+          # same node-on-PATH precondition as the two node validators above
+          # (every matrix runner image ships node) and run from the checkout
+          # root: ml_batch.test.cjs reads custom_frontend/index.html relative
+          # to the working directory.
+          node --test build/tests/import_review_model.test.cjs \
+                      build/tests/import_review_updates.test.cjs \
+                      build/tests/ml_batch.test.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}

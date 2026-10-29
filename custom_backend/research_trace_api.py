@@ -1310,6 +1310,12 @@ def register_research_trace_routes(
             parsed = validate_import_package(raw)
         except TracePackageError as exc:
             raise HTTPException(400, {"error_code": "invalid_trace_package", "message": str(exc)}) from exc
+        # N-01(b10)：Form 的 64 位长度约束按字符计数，64 个非 ASCII 字符可
+        # 穿透到 hmac.compare_digest（仅支持 ASCII str），TypeError 曾冒泡成
+        # 500。先做类型/ASCII 域检查收敛为 400；正确 64 位 hex 的对照行为
+        # 不变（匹配则放行，不匹配仍按下方 409 口径）。
+        if not isinstance(preview_sha256, str) or not preview_sha256.isascii():
+            raise HTTPException(400, "preview_sha256 must be a 64-character ASCII digest.")
         if not hmac.compare_digest(parsed["package_sha256"], preview_sha256.lower()):
             raise HTTPException(409, "Uploaded package differs from the reviewed preview.")
         personal_path = paths.get("personal")

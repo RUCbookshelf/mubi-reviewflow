@@ -67,6 +67,13 @@ from coscreen import qualitative_analysis as qual_mod
 from coscreen import tasks as tasks_mod
 from coscreen.pool_compatibility import NON_DIRECTIONAL_MEASURES
 from coscreen.al.ranker import ActiveLearningRanker
+# 仅类型导入：coscreen.al.svm 模块级零 sklearn 加载（延迟导入不变量）。
+# ImportError 兜底：svm.py 被回退（无该符号）时 app 必须仍可导入——
+# 撤修复红证要以干净的 failed/200 形态复现，而非 ImportError 收集错误。
+try:
+    from coscreen.al.svm import SingleClassTrainingError
+except ImportError:  # pragma: no cover - 仅撤修复时可达
+    SingleClassTrainingError = None
 from coscreen.al.stop import current_streak as al_current_streak
 from coscreen.al.stop import suggest_stop as al_suggest_stop
 from coscreen.dedup import (
@@ -2851,7 +2858,16 @@ def al_rank(task_id: str, screener: str | None = None,
         min_labeled=settings["min_labeled"],
         profile=profile,
     )
-    result = ranker.rank(articles, decisions)
+    try:
+        result = ranker.rank(articles, decisions)
+    except ValueError as exc:
+        # svm/cjk 预设 + 单类训练标签：用户补齐标签即可恢复 → 400。
+        # isinstance 精确匹配（不吞 rank 路径其他 ValueError）；符号缺失
+        # （svm.py 回退）时原样放行，红证以 500 形态干净复现。
+        if SingleClassTrainingError is not None and isinstance(
+                exc, SingleClassTrainingError):
+            raise _bad(str(exc)) from exc
+        raise
     if result is None:
         return {
             "available": False,
@@ -6252,8 +6268,10 @@ def check_stop_certificate(
     elif at_look:
         message = (
             f"已到达检查点（{look_fraction:.0%}）：从未筛池 {pool_size} 条中随机抽取 "
-            f"{required} 条人工判读；抽验量足且未发现新的相关文献时，以 ≥95% 置信度"
-            f"保证总召回 ≥95%（容许剩余相关 ≤ {k_t} 条）。"
+            f"{required} 条人工判读；抽验量足且未发现新的相关文献时可停筛，"
+            f"总召回 ≥{int(certificate.recall_target*100)}%（容许剩余相关 ≤ {k_t} 条）。"
+            f"该声明的置信度按超几何上界随已发现相关数与实际抽验量变化"
+            f"（k_t={k_t} 偏小时可能远低于 95%），并非固定 95%。"
         )
     else:
         message = (f"未到达检查点（当前已筛 {fraction:.1%}，下一检查点 "
@@ -6358,7 +6376,15 @@ def get_shared_ranking(
         min_labeled=settings["min_labeled"],
         profile=profile,
     )
-    result = ranker.rank(articles, merged)
+    try:
+        result = ranker.rank(articles, merged)
+    except ValueError as exc:
+        # 与 /al/rank 同口径：svm/cjk 单类训练标签 → 400 非 500；
+        # isinstance 精确匹配，符号缺失（svm.py 回退）时原样放行。
+        if SingleClassTrainingError is not None and isinstance(
+                exc, SingleClassTrainingError):
+            raise _bad(str(exc)) from exc
+        raise
     meta = {
         "min_labeled": int(settings["min_labeled"]),
         "strategy": settings["strategy"],

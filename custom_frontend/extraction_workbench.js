@@ -155,7 +155,7 @@
         const d = await api(taskApi() + '/extraction/templates');
         if (ticket !== version) return;
         templates = (d && Array.isArray(d.templates)) ? d.templates : [];
-      } catch (e) { templates = []; /* 拉取失败：占位提示，不影响编码页 */ }
+      } catch (e) { templates = null; /* 拉取失败：保留未加载态（LUNA4-01），再次进入编码页时重拉，不固化为空数组 */ }
       renderTemplateOptions();
     }
     function renderTemplateOptions() {

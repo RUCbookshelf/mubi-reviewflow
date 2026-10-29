@@ -237,9 +237,13 @@ def _is_trailing_name_token(word: str) -> bool:
       不按缩写（R6-D3 目标 'John Wu'→wu 保持）。
     """
     core = word.strip(".,")
-    if not core or not core.isalpha() or len(core) > 2:
+    # GLM07-01：内部带点的缩写（"J.P." 剥两端后为 "J.P"）不得因非纯字母
+    # 被当姓氏——去点后按字母域判定，使其落到下方带点分支；除内部带点的
+    # 1-2 字母缩写形态外，其余输入的返回值与修复前逐位一致。
+    letters = core.replace(".", "")
+    if not letters or not letters.isalpha() or len(letters) > 2:
         return False
-    if len(core) == 1:
+    if len(letters) == 1:
         return True
     return core.isupper() or core.islower() or "." in word
 
