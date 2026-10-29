@@ -76,7 +76,10 @@ jobs:
           # MM7-02: the four static validators run in CI after the payload check;
           # any non-zero exit fails the job. httpx is used by the two Python
           # validators and is not part of the runtime requirements file.
-          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx
+          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest
+          # MM8-02: the test suite (1,222+ assertions) runs in CI before the
+          # validators; any failure fails the job.
+          python -m pytest build/tests -q
           python build/validate_import_review.py
           python build/validate_screening_rounds.py
           node build/validate_import_review_static.cjs
