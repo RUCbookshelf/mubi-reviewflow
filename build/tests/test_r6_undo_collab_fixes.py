@@ -313,8 +313,8 @@ class StaticGuardTests(unittest.TestCase):
         （令牌, 词典内容 sha256）钉成一对：任一侧单独变更即红，迫使后续
         任何词典改动同步上调令牌并更新本处 PINNED。"""
         import hashlib
-        pinned_token = '20261027-r6-undo-collab1'
-        pinned_sha256 = 'b7db672d1fb77624df8bea833658ac5315afb0e71a788ca675e2862b0efbc069'
+        pinned_token = '20261030-r8fl4'
+        pinned_sha256 = 'ba7dccf98504c7b63880194f92013a8d12e4cbade400eac9e9b38d4e46a6c334'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')

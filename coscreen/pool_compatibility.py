@@ -70,6 +70,11 @@ def require_compatible_effects(rows, expected_measure=None):
     signature_keys = ('estimator', 'standardizer', 'small_sample_correction', 'variance_method')
     signatures = {}         # 分类器现值口径（含 MM5-04 存量行读时升级）
     stored_signatures = {}  # 行内已存元数据原样口径（= 基线 758da65 语义；错误明细按此回报）
+    # MM9-05：存量口径 → 现值口径的升级注记（仅记录两口径不同的行）：
+    # 拒绝明细按存量原样回报时，真实冲突（现值口径下 approx-J vs exact-gamma
+    # 等）不可见——用本表在 methods 条目上补挂当前分类器视图，不改变 methods
+    # 既有键与 detail 文案。
+    upgrades = {}  # stored 签名元组 -> {current 签名元组: [study_id, ...]}
     for row in smd_rows:
         data = row.get('input_data') if isinstance(row.get('input_data'), dict) else {}
         stored = data.get('estimator_metadata') or row.get('estimator_metadata') or {}
@@ -87,10 +92,13 @@ def require_compatible_effects(rows, expected_measure=None):
             rederived = legacy_smd_metadata(entry_method, data)
             if rederived.get('estimator') != 'unclassified_smd':
                 current_metadata = rederived
-        stored_signatures.setdefault(tuple(baseline_metadata.get(key) for key in signature_keys),
-                                     []).append(row.get('study_id', 'unknown'))
-        signatures.setdefault(tuple(current_metadata.get(key) for key in signature_keys),
-                              []).append(row.get('study_id', 'unknown'))
+        stored_tuple = tuple(baseline_metadata.get(key) for key in signature_keys)
+        current_tuple = tuple(current_metadata.get(key) for key in signature_keys)
+        stored_signatures.setdefault(stored_tuple, []).append(row.get('study_id', 'unknown'))
+        signatures.setdefault(current_tuple, []).append(row.get('study_id', 'unknown'))
+        if current_tuple != stored_tuple:
+            upgrades.setdefault(stored_tuple, {}).setdefault(
+                current_tuple, []).append(row.get('study_id', 'unknown'))
 
     def _signature_conflict(sigmap: dict) -> bool:
         all_unclassified = bool(sigmap) and all(
@@ -103,13 +111,25 @@ def require_compatible_effects(rows, expected_measure=None):
     # living_review 行在基线同为单一 unclassified 签名、可池），也不得让仍
     # 拒绝的组合多出 estimator_conflict 明细。因此冲突必须在「存量原样」与
     # 「分类器现值」两个口径下同时成立才上报；methods 明细按存量原样回报，
-    # 与基线逐字一致。
+    # 与基线逐字一致。MM9-05：对两口径不一致的存量组**加注**当前分类器视图
+    # （additive 键），使真实冲突可见——判定门控与 reason 集合不变。
     if _signature_conflict(stored_signatures) and _signature_conflict(signatures):
+        methods = []
+        for signature, studies in stored_signatures.items():
+            method = {'estimator':signature[0], 'standardizer':signature[1],
+                      'small_sample_correction':signature[2],
+                      'variance_method':signature[3], 'studies':studies}
+            if signature in upgrades:
+                method['legacy_upgrade_note'] = ('stored metadata kept verbatim; the current '
+                                                 'classifier reads the marked studies as follows')
+                method['current_classifier_views'] = [
+                    {'estimator':current[0], 'standardizer':current[1],
+                     'small_sample_correction':current[2], 'variance_method':current[3],
+                     'studies':upgraded_studies}
+                    for current, upgraded_studies in sorted(upgrades[signature].items())]
+            methods.append(method)
         reasons.append({'type':'estimator_conflict', 'codes':['SMD'],
-                        'methods':[{'estimator':signature[0], 'standardizer':signature[1],
-                                    'small_sample_correction':signature[2],
-                                    'variance_method':signature[3], 'studies':studies}
-                                   for signature, studies in stored_signatures.items()],
+                        'methods':methods,
                         'detail':'Selected SMD results use different or undocumented estimators, corrections or variance methods. Choose compatible results or recalculate with a stated method.'})
     if reasons:
         raise PoolCompatibilityError(reasons, expected_measure)

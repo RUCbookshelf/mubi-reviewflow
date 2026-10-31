@@ -162,7 +162,7 @@
     "Non renseigné",
     "Не указано",
     "No proporcionado",
-    "未提供",
+    "提供されていません",
     "Não informado",
     "Nicht angegeben",
     "Није наведено",

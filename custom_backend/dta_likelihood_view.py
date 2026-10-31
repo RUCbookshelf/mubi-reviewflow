@@ -21,5 +21,7 @@ def likelihood_ratio_view(fit):
                                           if result['mean_covariance'] is None else 'Approximate 95% delta-method intervals.'),
                 'method_sources': ['Cochrane DTA Handbook, version 1.0 (2010), ch. 10, §10.5.2 p. 23 (summary-point ratios) and §10.4.2 pp. 19–20 (separate-pooling caveat).',
                                    'Zwinderman & Bossuyt (2008), We should not pool diagnostic likelihood ratios in systematic reviews. Statistics in Medicine 27:687–697.']}
-    except (ImportError, ValueError, ArithmeticError, KeyError) as exc:
+    # MM9-16：fit 是外部传入的合成结果字典，补 TypeError/AttributeError 覆盖
+    # 非 dict / 字段型别不符的边界输入，降级为 available=False 而非 5xx。
+    except (ImportError, ValueError, ArithmeticError, KeyError, TypeError, AttributeError) as exc:
         return {'available': False, 'reason': f'Likelihood-ratio presentation unavailable: {exc}'}

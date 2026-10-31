@@ -355,10 +355,16 @@ def revoke_role(
     role: str,
     task_id: str | None = None,
 ) -> bool:
-    """Remove a role grant; only the registered owner may revoke."""
+    """Remove a role grant; only the registered owner may revoke.
+
+    L-09-01（复审扫尾）：task_id 必传，理由同 authorize_action——缺省时
+    _owner 的属主-任务绑定校验被跳过，属主判定退化为「该库登记的任意任务」。
+    """
     actor_user_id = _user_id(actor_user_id, "actor_user_id")
     user_id = _user_id(user_id)
     role = _role(role)
+    if task_id is None:
+        raise ValueError("task_id is required for revoke_role")
     with _write(Path(store)) as conn:
         owner = _owner(conn, task_id)
         if int(owner["owner_user_id"]) != actor_user_id:
@@ -373,8 +379,14 @@ def revoke_role(
 def list_role_grants(
     store: str | Path, *, actor_user_id: int, task_id: str | None = None
 ) -> list[dict[str, object]]:
-    """List grants for the owner; members cannot enumerate task collaborators."""
+    """List grants for the owner; members cannot enumerate task collaborators.
+
+    L-09-01（复审扫尾）：task_id 必传，理由同 authorize_action——缺省时
+    _owner 的属主-任务绑定校验被跳过，属主判定退化为「该库登记的任意任务」。
+    """
     actor_user_id = _user_id(actor_user_id, "actor_user_id")
+    if task_id is None:
+        raise ValueError("task_id is required for list_role_grants")
     with closing(_connect(Path(store), read_only=True)) as conn:
         owner = _owner(conn, task_id)
         if int(owner["owner_user_id"]) != actor_user_id:

@@ -108,7 +108,8 @@
     }
 
     /* ---- 状态 ---- */
-    let version = 0;                 // 异步票据
+    let version = 0;                 // 异步票据：任务切换纪元（跨任务作废所有在途响应）
+    let sofTicket = 0;               // SoF 导出票据（面板级动作，仅相互抑制）
     let restoredTask = null;
     let assessmentReadReady = false;
     let assessmentReadError = '';
@@ -127,6 +128,7 @@
           suggested: null, signals: {}, synthesis: null,
           overridden: {},   // factor -> {auto, user}
           note: '',
+          autoTicket: 0, saveTicket: 0,   // R3-04：行 × 动作票据（跨行动作互不失效；同行同动作后发抑制先发）
         };
         rowState.set(key, st);
       }
@@ -331,6 +333,7 @@
     async function runAutoSuggest(st, rowEl, ui) {
       st.dirty = true;
       let ticket;
+      let epoch = version;   // 任务切换纪元：函数作用域，catch 分支同样可见
       try {
         if (typeof api !== 'function' || typeof taskApi !== 'function') return;
         const combo = st.combo;
@@ -347,13 +350,13 @@
           const model = anValue('anModel');
           if (['fixed', 'random', 'random_pm', 'random_reml'].includes(model)) q += '&model=' + encodeURIComponent(model);
         }
-        ticket = ++version;
+        ticket = ++st.autoTicket;
         ui.autoBtn.disabled = true;
         ui.autoBtn.dataset.requestTicket = String(ticket);
         ui.statusLine.textContent = T('正在推导自动建议…');
         try {
           const d = await api(taskApi() + '/analysis/grade/auto-suggest' + q);
-          if (ticket !== version) return;
+          if (epoch !== version || ticket !== st.autoTicket) return;
           const downgrades = (d && d.downgrades) || {};
           st.suggested = {};
           for (const f of DOWNGRADE_FACTORS) {
@@ -393,7 +396,7 @@
           if (ui.autoBtn.dataset.requestTicket === String(ticket)) ui.autoBtn.disabled = false;
         }
       } catch (e) {
-        if (ticket !== undefined && ticket !== version) return;
+        if (ticket !== undefined && (epoch !== version || ticket !== st.autoTicket)) return;
         ui.statusLine.textContent = T('自动建议失败：') + ((e && e.message) || '');
       }
     }
@@ -411,6 +414,7 @@
     async function runSave(st, rowEl, ui) {
       st.dirty = true;
       let ticket;
+      let epoch = version;   // 任务切换纪元：函数作用域，catch 分支同样可见
       try {
         if (typeof api !== 'function' || typeof taskApi !== 'function') return;
         const combo = st.combo;
@@ -432,13 +436,13 @@
           signal_sources: st.signals && Object.keys(st.signals).length ? st.signals : { initial_design: st.initial_design },
           override_notes: overrideNotesText(st),
         };
-        ticket = ++version;
+        ticket = ++st.saveTicket;
         ui.saveBtn.disabled = true;
         ui.saveBtn.dataset.requestTicket = String(ticket);
         ui.statusLine.textContent = T('正在保存 GRADE 评估…');
         try {
           const d = await api(taskApi() + '/analysis/grade/save', { method: 'POST', body: body });
-          if (ticket !== version) return;
+          if (epoch !== version || ticket !== st.saveTicket) return;
           ui.statusLine.textContent = T('✓ 已保存（最终质量已重新计算：{0}）。', T(LEVEL_LABEL[(d && d.final_quality) || 'high']));
           ui.refreshBadge();
           if (typeof toast === 'function') toast(T('✓ 已保存「{0}」的 GRADE 评估', combo.outcome), 'inc');
@@ -446,7 +450,7 @@
           if (ui.saveBtn.dataset.requestTicket === String(ticket)) ui.saveBtn.disabled = false;
         }
       } catch (e) {
-        if (ticket !== undefined && ticket !== version) return;
+        if (ticket !== undefined && (epoch !== version || ticket !== st.saveTicket)) return;
         ui.statusLine.textContent = T('保存失败：') + ((e && e.message) || '');
         if (typeof toast === 'function') toast(T('保存失败：') + ((e && e.message) || ''), 'warn');
       }
@@ -456,17 +460,18 @@
     sofBtn.addEventListener('click', safe(sofExport));
     async function sofExport() {
       let ticket;
+      let epoch = version;   // 任务切换纪元：函数作用域，catch 分支同样可见
       try {
         if (typeof api !== 'function' || typeof taskApi !== 'function') return;
-        ticket = ++version;
+        ticket = ++sofTicket;
         sofBtn.disabled = true;
         sofBtn.dataset.requestTicket = String(ticket);
         const d = await api(taskApi() + '/analysis/grade/export?format=sof_table');
-        if (ticket !== version) return;
+        if (epoch !== version || ticket !== sofTicket) return;
         renderSof(d);
         if (typeof toast === 'function') toast(T('✓ 已生成 SoF 表（{0} 行）', String((d && d.rows || []).length)), 'inc');
       } catch (e) {
-        if (ticket !== undefined && ticket !== version) return;
+        if (ticket !== undefined && (epoch !== version || ticket !== sofTicket)) return;
         sofBox.hidden = true;
         if (typeof toast === 'function') toast(T('导出失败：') + ((e && e.message) || ''), 'warn');
       } finally {

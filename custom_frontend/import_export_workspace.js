@@ -1,5 +1,8 @@
 /* Approved import/export layouts reuse the existing controls and request hooks. */
 (function(){'use strict';
+ // MM11-11：本模块的猴补丁依赖 index.html 内联脚本先定义 renderImportReport（内联块在外链之前）。
+ // 守卫置于模块入口（先于任何 DOM 访问），加载顺序若被重排则给出可定位报错而非裸 ReferenceError。
+ if(typeof renderImportReport!=='function')throw new Error('import_export_workspace.js requires renderImportReport from the index.html inline script: keep the inline script before this file.');
  const UI=window.ImportExportWorkspace={},q=s=>document.querySelector(s);
  const n=(tag,key,attrs={})=>{const node=el(tag,{...attrs,...(key==null?{}:{text:T(key),'data-io-text':key})});for(const name of ['hidden','disabled','checked'])if(name in attrs)node[name]=!!attrs[name];return node;};
  const literal=(tag,value,attrs={})=>el(tag,{...attrs,text:String(value??''),translate:'no'});
@@ -45,6 +48,7 @@
  UI.showImport=key=>importTabs.select(key);UI.reviewHost=reviewPanel;const reviewTab=importTabs.nav.querySelector('[data-io-tab=review]');reviewTab.removeAttribute('data-io-text');reviewTab.replaceChildren(n('span','Import review'));const reviewCount=literal('span','0',{class:'count',hidden:true});reviewTab.append(reviewCount);UI.reviewCount=count=>{reviewCount.textContent=String(count);reviewCount.hidden=!count;};
  let queued=[];UI.queue=incoming=>{const existing=new Set(queued.map(f=>JSON.stringify([f.name,f.size,f.lastModified])));for(const f of incoming){const key=JSON.stringify([f.name,f.size,f.lastModified]);if(!existing.has(key)){queued.push(f);existing.add(key);}}renderQueue();};UI.clearQueue=()=>{queued=[];renderQueue();};
  function renderQueue(){files.replaceChildren();files.style.display=queued.length?'':'none';for(const file of queued){const row=n('div',null,{class:'selected-file'}),remove=UI.button('Remove',()=>{queued=queued.filter(f=>f!==file);renderQueue();});remove.setAttribute('aria-label',T('Remove')+' '+file.name);row.append(UI.icon('file'),literal('span',file.name,{class:'name'}),literal('small',fmtSize(file.size)),remove);files.append(row);}start.disabled=!queued.length||WorkflowControls.settings()?.can_manage===false;}
+ // MM11-11：下方猴补丁依赖模块入口处的 renderImportReport 守卫（见文件首行区）。
  const oldReport=renderImportReport;renderImportReport=function(data){oldReport(data);UI.report=data;UI.importPolicy(data);const reportHeading=report.querySelector('.section-heading');reportHeading.replaceChildren(n('span','导入报告'));if(data.created_at){const date=new Date(data.created_at);if(!Number.isNaN(date.getTime()))reportHeading.append(literal('small',date.toLocaleString(RFLang.get(),{dateStyle:'medium',timeStyle:'short'})));}const values=[data.input_rows??data.total_parsed??data.n_parsed,data.existing_source_links??data.existing??data.n_existing,data.activated_new_total??data.activated_new??data.new??data.n_new];metrics.querySelectorAll('b').forEach((b,i)=>b.textContent=values[i]??'—');attention.hidden=!(data.pending_records||data.metadata_review_count||data.pending_candidate_groups||data.title_review_pending);};
  // Approved export cards retain all seven existing export controls.
  const entries=[

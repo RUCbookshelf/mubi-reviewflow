@@ -6,9 +6,12 @@
    has been deleted outright, and findWorkspaceModule below fails loudly if a
    second producer ever reappears in the load list. */
 const fs=require('fs'),path=require('path'),os=require('os'),cp=require('child_process'),vm=require('vm'),assert=require('assert/strict');
-const {loadScriptManifest,findWorkspaceModule}=require('./script_manifest.cjs');
+const {loadScriptManifest,findWorkspaceModule,assertNoUnloadedFrontendFiles}=require('./script_manifest.cjs');
 const root=path.resolve(__dirname,'..'),frontend=path.join(root,'custom_frontend');
 const manifest=loadScriptManifest(root);
+// MM9-09: reverse rule - a frontend file index.html never loads must fail the
+// gate instead of silently shipping inside every package (mobile_workspace.*).
+assertNoUnloadedFrontendFiles(root,manifest);
 assert.ok(manifest.includes('unified_import_workspace.js'),'online load list must include unified_import_workspace.js');
 // Syntax-check every module the browser actually loads, not a sample.
 for(const file of manifest)cp.execFileSync(process.execPath,['--check',path.join(frontend,file)],{stdio:'pipe'});

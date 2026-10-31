@@ -32,6 +32,14 @@ from coscreen.bayesian_normal_meta import RATIOS, _number, _parse_study_rows
 
 MU_FAMILIES = {"normal", "student_t"}
 TAU_FAMILIES = {"half_normal", "half_student_t"}
+# MM11-07: the cap stays at the historical 1e12 -- lowering it would reject
+# legal inputs that the baseline integrates fine (a t prior with df=1e9 is a
+# normal limit to <1e-9, and those fits succeed). The defect was never the
+# cap itself but the unhelpful diagnostic: df near the cap can exhaust grid
+# refinement, and the failure said only "grid refinement did not converge".
+# The raise site now names the prior parameter and the available levers, and
+# makes no causal claim (see the comment there), so no previously accepted
+# input changes verdict.
 _MAX_PRIOR_DF = 1e12
 _LOG_2PI = math.log(2.0 * math.pi)
 _BULK_NODES = 48
@@ -424,6 +432,22 @@ def fit_bayesian_robust_meta(
         # at the next level is treated as non-convergence.
         final = tensor_pass(4 * _BULK_NODES, 4 * _TAIL_NODES)
         if not agrees(refined, final):
+            # MM11-07: the old message ("grid refinement did not converge")
+            # suggested numerical instability without saying what the user can
+            # do. Name the failing prior parameter and the two levers instead.
+            # Deliberately no causal attribution: on the reviewed
+            # counterexample (k=2, y=[-0.57,-0.54], se=[0.24,0.14]) df=1e8
+            # settles while df=1e6/1e7/1e9/1e12 do not, and the normal family
+            # fails on the same rows too -- so the failure is a joint property
+            # of this prior/data pair, not of "the t prior being a normal".
+            if student_mu:
+                raise ValueError(
+                    "grid refinement did not converge with mu prior df="
+                    f"{df_mu:g}: the adaptive quadrature did not settle for this "
+                    "prior and data combination. Try a smaller df, or the normal "
+                    "family if a diffuse t prior was only a formality; this is not "
+                    "by itself evidence of separated or weakly identified data"
+                )
             raise ValueError("grid refinement did not converge")
         base, refined = refined, final
         nodes = (4 * _BULK_NODES, 4 * _TAIL_NODES)

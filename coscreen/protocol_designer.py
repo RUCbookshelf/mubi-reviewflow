@@ -16,6 +16,7 @@ ch.4（Searching for and selecting studies）, Section 4.4：
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 
@@ -198,15 +199,34 @@ def generate_generic_query(pico: list[PICOElement]) -> str:
     return "\nAND\n".join(lines)
 
 
+# MM11-06：显式 ASCII 数字类 + 全串匹配（\d 会匹配 Unicode 数字如 ٢٠٢٠，
+# $ 允许尾随换行；两者都会让非 ISO 输入走「原样」分支）。合法输入集合不变。
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _safe_date(value: str) -> str:
+    """MM11-06：日期窗字段的防注入处理。
+
+    合法 ``YYYY-MM-DD``（ASCII 数字）原样返回（该格式经 quote 亦不变，历史
+    URL 逐字节保持）；其余输入整体 percent-encode（``&``/``#`` 不再注入额外
+    查询参数或截断 URL，``]``/``)`` 也不再破坏导出 Markdown 的链接闭合，换行
+    与 Unicode 数字不再冒充合法日期）。本模块被 API 层直接调用且该路径无 400
+    翻译，故不抛异常、不拒绝请求（R2）。
+    """
+    value = str(value or "")
+    return value if _DATE_RE.fullmatch(value) else urllib.parse.quote(value, safe="")
+
+
 def generate_pubmed_url(query: str, date_from: str = "", date_to: str = "") -> str:
     """生成可点击的 PubMed URL（不需要 API，只是拼 URL）。
 
     ``date_from``/``date_to`` 为 YYYY-MM-DD；只给 ``date_from`` 时
     ``date_to`` 以空串拼入（PubMed 将其解释为开放式日期过滤）。
+    日期字段先经 ``_safe_date`` 校验/转义（MM11-06）。
     """
     base = PUBMED_URL_PREFIX + urllib.parse.quote(query)
     if date_from:
-        base += f"&filter=dates.{date_from}-{date_to}"
+        base += f"&filter=dates.{_safe_date(date_from)}-{_safe_date(date_to)}"
     return base
 
 
@@ -344,6 +364,10 @@ def protocol_to_markdown(protocol: ProtocolDocument | dict) -> str:
             lines += [f"### {name}", "", "```text", strategy.query_string, "```", ""]
             if strategy.url:
                 lines += [f"[在 {name} 中打开]({strategy.url})", ""]
+        # B08-N5：日期窗只拼进 PubMed 链接（Embase 为导航链接、Cochrane 无日期参数），
+        # 检测到日期过滤时在导出文档中同样明示，与前端 renderStrategies 的提示一致。
+        if any(s.database == "pubmed" and "filter=dates." in s.url for s in doc.search_strategies):
+            lines += ["注：日期窗仅适用于 PubMed 检索式；Embase 与 Cochrane 链接不含日期过滤。", ""]
     if doc.inclusion_criteria:
         lines += ["## 纳入标准", ""] + [f"- {c}" for c in doc.inclusion_criteria] + [""]
     if doc.exclusion_criteria:

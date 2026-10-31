@@ -108,10 +108,12 @@ python build/launcher.py
 | 平台 | 操作 | 输出 |
 | --- | --- | --- |
 | Windows 10/11 x64 | 安装 Inno Setup 6/7 或 NSIS 3 与 Node.js（运行 JavaScript 静态校验器所需），运行 `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| macOS | 安装 Node.js（三平台本地构建都会运行与 CI 相同的静态校验器与产物核对），`bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | 安装 Node.js（同上），`bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。
+
+本地构建与 CI 一致：四个静态校验器与发布产物核对（`build/verify_release_payload.py`）都会运行；构建期下载的引导文件（嵌入式 Python、get-pip、appimagetool）逐一做 sha256 校验后才使用，下载缓存也会在每次构建时重新校验（get-pip 为滚动文件，上游更新后请核实新哈希并同步更新脚本内的固定值）。同一检出目录同时只允许一个打包构建（锁目录 `build/.build-dist.lock` / `build/.build-windows.lock`，异常退出的陈锁会被自动回收）。根目录的 `SHA256SUMS.initial-release-snapshot.json` 是首次公开发布时的源码哈希存档（此后不再更新，发布包校验以 Release 附带的 `SHA256SUMS.txt` 为准）。
 
 ### 常见问题
 
@@ -233,10 +235,12 @@ Build on the target operating system with an internet connection.
 | Platform | Command / preparation | Output |
 | --- | --- | --- |
 | Windows 10/11 x64 | Install Inno Setup 6/7 or NSIS 3 plus Node.js (required to run the JavaScript static validators); run `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| macOS | Install Node.js, then `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | Install Node.js, then `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Build Intel and Apple Silicon macOS packages separately on the corresponding architecture. Check release dates and versions: a build script does not imply that an up-to-date binary is published. See the [Windows build guide](build/WINDOWS_TRANSFER.md#en).
+
+A local build matches CI: the four static validators and the release-payload comparison (`build/verify_release_payload.py`) always run. Bootstrap downloads (embedded Python, get-pip, appimagetool) are sha256-verified before use, and the download cache is re-verified on every run (get-pip is a rolling file: after an upstream rotation, verify the new digest and update the pinned value in the script). Only one packaging build may run per checkout at a time (lock folders `build/.build-dist.lock` / `build/.build-windows.lock`; a stale lock from a crashed build is reclaimed automatically). The root `SHA256SUMS.initial-release-snapshot.json` is the source-digest archive of the initial public release - it is not updated afterwards; verify release packages against the `SHA256SUMS.txt` published with each Release.
 
 ### Troubleshooting and contributing
 
@@ -562,8 +566,8 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 | Платформа | Действие | Результат |
 | --- | --- | --- |
 | Windows 10/11 x64 | Установить Inno Setup 6/7 или NSIS 3 и Node.js (нужен для запуска JavaScript-статических валидаторов); запустить `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| macOS | Установить Node.js, затем `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | Установить Node.js, затем `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Пакеты macOS для Intel и Apple Silicon собираются отдельно на соответствующей архитектуре. Проверяйте дату и версию выпуска: наличие скрипта сборки не означает наличие актуального опубликованного пакета. Подробнее: [сборка для Windows](build/WINDOWS_TRANSFER.md#ru).
 
@@ -662,8 +666,8 @@ Compilez sur le système cible avec une connexion Internet.
 | Plateforme | Commande / préparation | Résultat |
 | --- | --- | --- |
 | Windows 10/11 x64 | Installer Inno Setup 6/7 ou NSIS 3 et Node.js (requis pour les validateurs statiques JavaScript) ; lancer `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| macOS | Installer Node.js, puis `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | Installer Node.js, puis `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur l'architecture correspondante. Vérifiez la date et la version : un script de compilation ne garantit pas l'existence d'un paquet publié à jour. Voir le [guide Windows](build/WINDOWS_TRANSFER.md#fr).
 

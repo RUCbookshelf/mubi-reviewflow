@@ -30,6 +30,27 @@ def _integer(value: object, name: str, minimum: int) -> int:
     return value
 
 
+def _reciprocal_gap(events: int, participants: int) -> float:
+    """``1/events - 1/participants`` with the F-04 cancellation guard.
+
+    The float difference of reciprocals cancels catastrophically once the
+    counts reach ~2**53: at ``participants = 2**63-1, events = 2**63-2`` it
+    evaluates to 0.0 (exact value 1.1754943508222875e-38, so a positive
+    variance is falsely rejected) and at 2**53 it doubles the true gap,
+    silently inflating the SE by ~41%. The exact integer form
+    ``(participants - events) / (events * participants)`` replaces it
+    whenever the two disagree by more than 1e-6 relative — i.e. only in the
+    cancellation regime (physically plausible trial sizes are orders of
+    magnitude below it); regular trials keep the historical float path
+    bit-for-bit. ``int / int`` is correctly rounded even for bignums.
+    """
+    naive = 1 / events - 1 / participants
+    exact = (participants - events) / (events * participants)
+    if naive > 0 and abs(naive - exact) <= 1e-6 * exact:
+        return naive
+    return exact
+
+
 def _arm(values: object, outcome_type: str, name: str) -> dict:
     if not isinstance(values, dict):
         raise ValueError(f"{name} arm must be an object")
@@ -176,9 +197,9 @@ def calculate_cluster_trial_effect(values: dict) -> dict:
             estimate = _exp(analysis_estimate, "RR estimate")
             variance = math.fsum((
                 adjustment_arms["treatment"]["design_effect"]
-                * (1 / treatment["events"] - 1 / treatment["participants"]),
+                * _reciprocal_gap(treatment["events"], treatment["participants"]),
                 adjustment_arms["control"]["design_effect"]
-                * (1 / control["events"] - 1 / control["participants"]),
+                * _reciprocal_gap(control["events"], control["participants"]),
             ))
             se_scale = "log"
         else:

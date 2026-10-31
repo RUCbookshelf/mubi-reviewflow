@@ -84,8 +84,11 @@ class MultinomialNB:
                 raise ValueError(
                     f"sample_weight 与 y 长度不一致：{len(weights)} != {len(y)}"
                 )
-            if any(w < 0.0 for w in weights):
-                raise ValueError("sample_weight 必须非负")
+            # MM10-10: NaN compares False against < 0.0 and slipped through,
+            # turning every class prior (then every posterior score) into NaN;
+            # inf only failed later with a misleading "math domain error".
+            if any(not math.isfinite(w) or w < 0.0 for w in weights):
+                raise ValueError("sample_weight 必须为有限非负数")
         class_count: dict[int, float] = {0: 0.0, 1: 0.0}
         feat_sum: dict[int, dict[str, float]] = {0: {}, 1: {}}
         terms: set[str] = set()

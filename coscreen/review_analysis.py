@@ -38,7 +38,9 @@ def binary_effect(events_t: int, total_t: int, events_c: int, total_c: int, meas
     """Two independent arms; zero event cells require an explicit external decision."""
     if measure not in {"RR", "OR", "RD"}:
         raise ValueError("binary measure must be RR, OR or RD")
-    if any(not isinstance(x, int) for x in (events_t, total_t, events_c, total_c)) or \
+    # B08-N4: bool is an int subclass; True passed the isinstance check and was
+    # pooled as 1 event. Counts must be genuine ints.
+    if any(isinstance(x, bool) or not isinstance(x, int) for x in (events_t, total_t, events_c, total_c)) or \
        not (0 <= events_t <= total_t and 0 <= events_c <= total_c and total_t > 0 and total_c > 0):
         raise ValueError("events must be integers between zero and group total")
     a, b, c, d = events_t, total_t-events_t, events_c, total_c-events_c
@@ -64,7 +66,8 @@ def continuous_effect(n_t: int, mean_t: float, sd_t: float,
                       n_c: int, mean_c: float, sd_c: float, measure: str) -> dict:
     if measure not in {"MD", "SMD"}:
         raise ValueError("continuous measure must be MD or SMD")
-    if any(not isinstance(n, int) or n < 2 for n in (n_t, n_c)) or \
+    # B08-N4: same bool-as-count guard for the continuous arm sizes.
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 2 for n in (n_t, n_c)) or \
        any(not math.isfinite(x) for x in (mean_t, sd_t, mean_c, sd_c)) or min(sd_t, sd_c) < 0:
         raise ValueError("each arm needs n >= 2, finite mean and nonnegative SD")
     diff = mean_t-mean_c

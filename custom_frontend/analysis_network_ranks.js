@@ -56,7 +56,7 @@
           return `${study}: ${article?.title || source}${article?.doi ? ` (DOI ${article.doi})` : ''}`;
         }).join('; ')));
       record = result; output.disabled = false; reports.forEach(button => button.disabled = false);
-    } catch (error) { if (ticket === generation) host.replaceChildren(el('span',{lang:'en',text:error.message})); }
+    } catch (error) { if (ticket === generation) { /* 批13-2b：同 pscores——自抛 T() 校验串时不标 lang:'en' */ const known = ['请选择上方的随机效应 REML 网络模型。','请选择有利方向。','模拟次数须为 2–100000 的整数，随机种子须为 0–4,294,967,295 的整数。'].some(key=>T(key)===error.message); host.replaceChildren(el('span',{text:error.message,...(known?{}:{lang:'en'})})); } }
     finally { if (ticket === generation) { clearInterval(timer); run.disabled = false; } }
   });
   output.addEventListener('click', () => {

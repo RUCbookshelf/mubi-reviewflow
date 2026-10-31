@@ -16,6 +16,12 @@ from coscreen.review_analysis import _linked
 
 DbPath = str | Path
 
+# F-06: SQLite INTEGER is a signed 64-bit column; a count above 2**63-1
+# passes the "nonnegative int" contract but the INSERT raises
+# OverflowError ("Python int too large to convert to SQLite INTEGER"),
+# which is not a ValueError and escaped the endpoints' except as a 500.
+_SQLITE_INTEGER_MAX = 2**63 - 1
+
 
 def _ensure_locator(conn) -> None:
     _add_column_if_missing(conn, "review_dta_results", "source_locator",
@@ -30,6 +36,11 @@ def save_result(db: DbPath, study_id: str, index_test: str, target_condition: st
         raise ValueError("study, test, condition, threshold, reference and source report are required")
     if any(type(v) is not int or v < 0 for v in (tp, fp, fn, tn)):
         raise ValueError("TP/FP/FN/TN must be nonnegative integers")
+    if any(v > _SQLITE_INTEGER_MAX for v in (tp, fp, fn, tn)):
+        raise ValueError(
+            "TP/FP/FN/TN exceed the storable integer range of 2**63 - 1 "
+            "(the SQLite INTEGER bound)"
+        )
     if tp + fn == 0 or tn + fp == 0:
         raise ValueError("both diseased and non-diseased groups must contain participants")
     with closing(_connect(db)) as conn, conn:

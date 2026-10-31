@@ -1,8 +1,13 @@
 """PubMed 自动监控可选插件（衍生产品规格 §5.3）——全仓唯一允许联网的模块。
 
-- **默认关闭**：本模块不加入 custom_backend.main 的默认导入；只有用户显式开启
-  「自动监控」并手动点击「立即检查」时，check-now 端点才延迟导入并调用它
-  （产品哲学 §0.1：网络功能仅作为可选插件，默认关闭，显式开启）。
+- **当前未接线（MM10-14 契约订正）**：本模块不加入 custom_backend.main 的
+  默认导入，check-now 端点目前**不调用**本模块——它只做鉴权，随后固定返回
+  409 ``protected_import_required``，引导用户把导出的检索结果文件走受保护的
+  导入复核流程（r7-dayfix 的既定收紧方向，docs/WORKFLOW_CONTROLS.md 亦明确
+  “no PubMed fetch is performed”）。模块按产品计划 W3 保留（将复活为自动
+  监控第三层可选插件），勿删。
+- **复活后的预期契约**：由 check-now 端点延迟导入并调用（产品哲学 §0.1：
+  网络功能仅作为可选插件，默认关闭，显式开启后才联网）。
 - **可捕获失败**：任何网络/解析故障统一抛 :class:`PubMedPluginError`，调用方
   捕获后降级到手动模式（「网络不可达，请手动导出文件后导入」），功能不中断。
 - 使用 PubMed E-utilities 免费 API（无 key 可用）：esearch 取 PMID 列表，

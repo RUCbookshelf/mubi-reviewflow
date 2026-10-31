@@ -117,6 +117,17 @@ def synthesize_network(studies: list[dict], measure: str, reference: str) -> dic
     study_ids = [item[0] for item in parsed]
     if len(study_ids) != len(set(study_ids)):
         raise ValueError("study_id values must be unique")
+    # MM10-12: unordered treatment pairs seen in both orientations across
+    # studies (within one study the linear-independence rank check already
+    # rejects them); collected for the effect-direction warning below.
+    pair_orientations: dict[frozenset, tuple[str, str]] = {}
+    reversed_pairs: dict[frozenset, tuple[str, str]] = {}
+    for _, contrasts, _ in parsed:
+        for a, b, _ in contrasts:
+            pair = frozenset((a, b))
+            if pair in pair_orientations and pair_orientations[pair] != (a, b):
+                reversed_pairs.setdefault(pair, (a, b))
+            pair_orientations.setdefault(pair, (a, b))
     nodes = sorted({node for _, contrasts, _ in parsed
                     for a, b, _ in contrasts for node in (a, b)})
     if len(nodes) < 3 or reference not in nodes:
@@ -238,6 +249,23 @@ def synthesize_network(studies: list[dict], measure: str, reference: str) -> dic
     residual_p = float(chi2.sf(residual_q, residual_df)) if residual_df > 0 else None
     if residual_p is not None:
         _require_finite(residual_p, "residual p-value")
+    warnings = [
+        "Requires transitivity and comparable effect modifiers; this model does not assess either assumption.",
+        "Residual Q is total fixed-effect lack of fit, combining within-design heterogeneity and possible inconsistency; it is not a formal inconsistency test.",
+        "Study blocks are assumed independent, and each supplied covariance matrix is used on its declared analysis scale.",
+    ]
+    # MM10-12: same reversed-orientation flag as coscreen.network_analysis. A
+    # reversed contrast with a negated estimate is the same contrast (legal
+    # input, pooled correctly); same-signed estimates from both orientations
+    # average toward a meaningless midpoint, so the pair is named here instead
+    # of being rejected.
+    for pair, orientation in reversed_pairs.items():
+        a, b = orientation
+        warnings.append(
+            f"Effect direction check needed: the unordered treatment pair "
+            f"'{a} vs {b}' appears with both orientations; same-signed estimates from "
+            "the two rows are averaged as opposite design rows, which is only "
+            "meaningful if the reversed entry carries the negated estimate.")
     return {
         "method": "fixed-effect contrast-based network generalized least squares",
         "measure": measure,
@@ -249,9 +277,5 @@ def synthesize_network(studies: list[dict], measure: str, reference: str) -> dic
         "residual_q": residual_q,
         "residual_df": residual_df,
         "residual_p": residual_p,
-        "warnings": [
-            "Requires transitivity and comparable effect modifiers; this model does not assess either assumption.",
-            "Residual Q is total fixed-effect lack of fit, combining within-design heterogeneity and possible inconsistency; it is not a formal inconsistency test.",
-            "Study blocks are assumed independent, and each supplied covariance matrix is used on its declared analysis scale.",
-        ],
+        "warnings": warnings,
     }

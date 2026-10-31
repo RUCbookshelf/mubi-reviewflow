@@ -1266,10 +1266,12 @@ class DtaResultIn(BaseModel):
     target_condition: str = Field(min_length=1, max_length=300)
     threshold: str = Field(min_length=1, max_length=100)
     reference_standard: str = Field(min_length=1, max_length=300)
-    tp: int = Field(ge=0)
-    fp: int = Field(ge=0)
-    fn: int = Field(ge=0)
-    tn: int = Field(ge=0)
+    # F-06: 计数上限对齐 SQLite INTEGER（2**63-1）；越界此前穿过校验后在
+    # INSERT 处 OverflowError → 500，现在请求层即 422（域层 save_result 同口径）。
+    tp: int = Field(ge=0, le=2**63 - 1)
+    fp: int = Field(ge=0, le=2**63 - 1)
+    fn: int = Field(ge=0, le=2**63 - 1)
+    tn: int = Field(ge=0, le=2**63 - 1)
     source_key: str = Field(min_length=1, max_length=300)
     source_locator: str = Field(default="", max_length=500)
 
@@ -6046,12 +6048,25 @@ class ExtractionApplyIn(BaseModel):
 
 
 def _dta_count(values: dict, key: str) -> int:
-    """提取值 -> 非负整数（DOR 信息性展示与 DTA 计数入库共用同一口径）。"""
+    """提取值 -> 非负整数（DOR 信息性展示与 DTA 计数入库共用同一口径）。
+
+    F-06：上限对齐 SQLite INTEGER（2**63-1）。整数判定只对 float 施加
+    ``float(raw) != int(raw)`` —— 原实现对 int 也做该校验，2**63-1 被
+    ``float(2**63-1) == 2**63`` 的舍入误判为"非整数"，与本端点主路径
+    （DtaResultIn 直接入库 200）口径相反；而 2**63 恰为 float 可精确表示，
+    反而穿过校验在 INSERT 处 OverflowError 500。
+    """
     raw = values.get(key)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or \
-            float(raw) != int(raw) or int(raw) < 0:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise ValueError(f"{key.upper()} 必须是非负整数")
-    return int(raw)
+    if isinstance(raw, float) and raw != int(raw):
+        raise ValueError(f"{key.upper()} 必须是非负整数")
+    count = int(raw)
+    if count < 0:
+        raise ValueError(f"{key.upper()} 必须是非负整数")
+    if count > 2**63 - 1:
+        raise ValueError(f"{key.upper()} 超出可存储的整数上限（2^63-1）")
+    return count
 
 
 @app.get("/api/tasks/{task_id}/extraction/templates")
@@ -6418,9 +6433,11 @@ def get_shared_ranking(
 #   coscreen/living_review.py（纯计算模块）；
 # - 第二层：save-search 生成 PubMed 可点击 URL（仅拼字符串，点击后的检索由
 #   用户浏览器完成，后端不联网）；
-# - 第三层（可选插件，默认关闭）：check-now 延迟导入
-#   custom_backend/living_review_plugin.py 调 PubMed E-utilities，失败返回降级
-#   提示（不 500、不中断离线功能）；enable-auto 只把开关写入 task.json 的
+# - 第三层（可选插件，默认关闭，MM10-14 契约订正）：check-now 目前**不**联网
+#   ——只鉴权后固定 409 protected_import_required，引导用户走受保护的导入复核
+#   （docs/WORKFLOW_CONTROLS.md:155 “no PubMed fetch is performed”）。
+#   custom_backend/living_review_plugin.py（调 PubMed E-utilities，失败返回降级
+#   提示）按产品计划 W3 保留待复活；enable-auto 只把开关写入 task.json 的
 #   "living_review_auto" 字段，绝不启动后台线程。
 # 检索式与更新历史存 {task_dir}/living_review.json（读-改-写 + 原子写，与
 # task.json 同一把路径级互斥锁）。本段为纯追加，不修改上方任何既有行。

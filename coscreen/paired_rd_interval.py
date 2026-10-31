@@ -152,13 +152,31 @@ def _clamp(name: str, value: float, warnings: list[str]) -> float:
     return value
 
 
+def _rd_variance_term(a: int, b: int, c: int, d: int, n: int) -> float:
+    """Paired RD Wald variance term with the F-03 cancellation guard.
+
+    Same helper as ``coscreen.paired_binary_effect._rd_variance_term``
+    (kept local so this module stays import-free of it and the two paths
+    stay bitwise identical): the float expression cancels catastrophically
+    once discordant counts reach ~2**53, so the exact integer identity
+    ``n*(b + c) - (b - c)^2 == (a + d)*(b + c) + 4*b*c`` replaces it
+    whenever the two disagree by more than 1e-6 relative. Regular tables
+    keep the historical float path bit-for-bit.
+    """
+    naive = math.fsum((float(b + c), -((b - c) ** 2) / n))
+    exact = ((a + d) * (b + c) + 4 * b * c) / n
+    if naive > 0 and abs(naive - exact) <= 1e-6 * exact:
+        return naive
+    return exact
+
+
 def _wald_limits(a: int, b: int, c: int, d: int, n: int, rd: float, z: float,
                  warnings: list[str]) -> list[float]:
     # Verified form of the paired Wald SE, bitwise identical to
     # coscreen.paired_binary_effect: sqrt((b + c - (b - c)^2/n) / n^2)
     # with the same fsum term order, so the contrast path cross-audits
     # exactly (that variance form was Monte Carlo-checked in B3-3).
-    var_term = math.fsum((float(b + c), -((b - c) ** 2) / n))
+    var_term = _rd_variance_term(a, b, c, d, n)
     if not math.isfinite(var_term) or var_term <= 0:
         # Happens when a = d = 0 and one discordant count is zero: the paired
         # Wald variance is exactly zero and the interval would degenerate to a

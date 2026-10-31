@@ -16,6 +16,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -237,12 +238,37 @@ _EMERGENCY_SECRET: str | None = None
 _EMERGENCY_WRITE_LOGGED = False
 _secret_lock = threading.Lock()
 
+#: R3-02：并发首初始化的收敛等待窗口。只在**确证存在竞争者**时进入（见
+#: ``_atomic_write_secret`` 的 reason 口径）。窗口取 120ms：真实创建者的
+#: 首写 + fsync + replace 实测上限约 16ms（本机 20 次采样），留约 7 倍余量。
+_SECRET_CONVERGE_TIMEOUT_SECONDS = 0.12
+_SECRET_CONVERGE_STEP_SECONDS = 0.02
+#: ``_REPLACE_BLOCKED`` 的进程内负缓存：同一路径在窗口内等不到收敛，说明
+#: 「替换被永久挡住」（Windows 上被杀软/索引/备份以 share-deny-delete 打开
+#: 是常态），此时本进程在冷却期内**不再等待**（读取照旧、每次仍重试写与
+#: 收敛判定），避免每个鉴权请求反复付窗口代价。
+_SECRET_BLOCKED_COOLDOWN_SECONDS = 30.0
+#: 持久密钥的可采用形态：64 位十六进制（``token_hex(32)`` 的产物）。大小写
+#: 均接受——产品写入恒为小写，但校验只用于排除「对方尚未写完的截断钥」，
+#: 不应因大小写差异把合法的完整密钥判为半截。重读值须匹配才采用。
+_SECRET_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
-def _atomic_write_secret(path: Path, secret: str) -> bool:
+#: ``_atomic_write_secret`` 的失败归因（写入 reason 列表首项）。
+_REPLACE_BLOCKED = "replace_blocked"  # 临时文件已写好，仅替换被并发持有者挡住
+_UNWRITABLE = "unwritable"            # 目录/文件不可写（只读介质、权限、占位）
+
+#: 路径 -> 冷却截止的 monotonic 时刻（_REPLACE_BLOCKED 负缓存）。
+_replace_blocked_until: dict[str, float] = {}
+
+
+def _atomic_write_secret(path: Path, secret: str, *, reason: list | None = None) -> bool:
     """同目录临时文件 + os.replace 原子写回密钥（写后 fsync，0600）。
 
     覆盖目标已存在（含空文件）的场景；掉电/崩溃不会留下半截或空密钥文件。
     返回是否写回成功——失败由调用方走进程内应急口径并负责诊断日志。
+    ``reason``（可选，调用方传入的列表）收到失败归因：``_UNWRITABLE`` 表示
+    存储层不可写；``_REPLACE_BLOCKED`` 表示临时文件已成功落盘、只有最终替换
+    被挡住（典型为另一进程仍持有首建文件句柄）——后者才值得短暂等待收敛。
     """
     tmp = path.with_name(f".jwt_secret.{os.getpid()}.tmp")
     try:
@@ -251,14 +277,54 @@ def _atomic_write_secret(path: Path, secret: str) -> bool:
             fh.write(secret)
             fh.flush()
             os.fsync(fh.fileno())
+    except OSError:
+        if reason is not None:
+            reason.append(_UNWRITABLE)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    try:
         os.replace(str(tmp), str(path))
     except OSError:
+        if reason is not None:
+            reason.append(_REPLACE_BLOCKED)
         try:
             tmp.unlink()
         except OSError:
             pass
         return False
     return True
+
+
+def _secret_shape_ok(value: str) -> bool:
+    """持久密钥形态校验：64 位十六进制（大小写均接受）。
+
+    用于排除「并发创建者尚未写完的截断钥」（空串/半截同样不匹配）；产品
+    写入恒为小写 ``token_hex(32)``。只施加于并发窗口内读到的值，早退路径
+    不施加该限制（见 ``_secret`` docstring 的边界说明）。
+    """
+    return bool(_SECRET_HEX_RE.match(value or ""))
+
+
+def _await_concurrent_creator(path: Path) -> str | None:
+    """有界重读：并发创建者原子写入后采用其持久钥；否则 None。
+
+    只在调用方**确证**替换被并发持有者挡住（``_REPLACE_BLOCKED``）时调用，
+    因此这里的等待是「一次首初始化的竞态窗口」而非每个请求的固定开销。
+    读到的值须通过 :func:`_secret_shape_ok`，否则继续等/放弃（不采用半截钥）。
+    """
+    deadline = time.monotonic() + _SECRET_CONVERGE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(_SECRET_CONVERGE_STEP_SECONDS)
+        try:
+            winner = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            winner = ""
+        if _secret_shape_ok(winner):
+            return winner
+    return None
 
 
 def _emit_secret_via_emergency(secret: str) -> str:
@@ -291,6 +357,22 @@ def _secret() -> str:
     ``OSError``（密钥路径被目录占用、只读数据目录）此前直接冒泡，login/
     create_access_token 全线 500，与本 docstring 承诺的「只读/权限 → 应
     急密钥」相反。非 ``OSError`` 的编程错误不在此被掩盖。
+    R3-02：并发首初始化收敛——O_EXCL 只保证唯一创建者，不保证各进程返回
+    同一密钥（创建者在首写前被并发原子替换时，其 fd 写入落在已脱离目录
+    的旧 inode 上）。首建者写后重读持久值、替换被并发持有者挡住的一方有界
+    等待重读，任一路径都以磁盘持久钥为返回基准，消除「一个 worker 的钥 ≠
+    持久钥」。
+    收敛等待的边界（有意为之，勿当成缺陷）：
+    - 等待窗口 120ms（真实创建者首写+fsync+replace 实测上限约 16ms）；
+    - 不可写介质（只读/权限/路径被占位）零等待直接降级；
+    - ``os.replace`` 被**永久**挡住时（Windows 上杀软/索引/备份以
+      share-deny-delete 打开 ``.jwt_secret`` 是常态），首个请求付一次窗口
+      代价后做 30s 进程内负缓存：期间不再等待，读取与写重试照旧，数据目录
+      恢复可写后下一次调用即自愈。即该场景是「一次 120ms + 稳态零额外开销」，
+      不是每请求付费。
+    - 形态校验（64 位 hex）只施加于**并发窗口内读到的值**（排除对方尚未
+      写完的截断钥）；早退路径直接采用文件/环境变量里已有的密钥，不施加
+      该限制，以免拒绝运维手工放置的非 token_hex 形态密钥。
     """
     env = os.environ.get("COBOOKSHELF_JWT_SECRET", "").strip()
     if env:
@@ -335,9 +417,30 @@ def _secret() -> str:
                 return _emit_secret_via_emergency(secret)
             if winner:
                 return winner
-            if _atomic_write_secret(path, secret):
+            reason: list[str] = []
+            if _atomic_write_secret(path, secret, reason=reason):
                 _EMERGENCY_SECRET = None
                 return secret
+            # R3-02（Windows 镜像）：原子替换失败常因另一进程正持有首建 fd、
+            # 其首写尚未落盘——此刻并非「只读介质」。**只有**确证「临时文件
+            # 已落盘、仅替换被并发持有者挡住」才做有界等待重读（对方完成后
+            # 采用其持久钥）；不可写介质一律零等待直接落应急口径，不给每个
+            # 鉴权请求叠加阻塞。
+            if _REPLACE_BLOCKED in reason:
+                key = str(path)
+                now = time.monotonic()
+                if _replace_blocked_until.get(key, 0.0) > now:
+                    # 冷却期内：此前已等过一个完整窗口仍未收敛，判定为「替换
+                    # 被永久挡住」（Windows share-deny-delete 常态）。读照旧、
+                    # 写照旧，只是不再为它反复付窗口代价。
+                    pass
+                else:
+                    converged = _await_concurrent_creator(path)
+                    if converged:
+                        _replace_blocked_until.pop(key, None)
+                        _EMERGENCY_SECRET = None
+                        return converged
+                    _replace_blocked_until[key] = now + _SECRET_BLOCKED_COOLDOWN_SECONDS
             return _emit_secret_via_emergency(secret)
         except OSError:
             # R3-03：首开失败但非「已存在」（密钥路径被目录占用、只读数据
@@ -352,7 +455,16 @@ def _secret() -> str:
             # 首建后写失败（极可能留下空文件，下次调用走原子重写自愈）
             return _emit_secret_via_emergency(secret)
         _EMERGENCY_SECRET = None
-        return secret
+        # R3-02：并发首初始化收敛——O_EXCL 创建与首写之间，另一进程可能已把
+        # 空文件原子替换为新钥（POSIX 下本 fd 指向已被替换的旧 inode，写入
+        # 落在已解除链接的副本上；Windows 下对方替换失败、走应急口径）。写后
+        # 重读持久值并以其为准，保证本进程返回的密钥与磁盘持久钥一致；只采用
+        # 形态合法的值（对方可能尚未写完），否则以本进程已落盘的 secret 为准。
+        try:
+            persisted = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            persisted = ""
+        return persisted if _secret_shape_ok(persisted) else secret
 
 
 def create_access_token(user_id: int, username: str) -> str:

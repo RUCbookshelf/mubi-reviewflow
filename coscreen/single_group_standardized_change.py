@@ -124,7 +124,19 @@ def calculate_single_group_standardized_change(values: dict, *, standardizer: st
             sd_change = _number(data["sd_change"], "sd_change")
             if sd_change < 0:
                 raise ValueError("sd_change must be non-negative")
-            variance = sd_change**2 / (sd_pre**2 * df) + estimate**2 / (2 * df)
+            # MM10-13: sd_pre**2 underflows to an exact 0.0 for sd_pre below
+            # ~1.5e-162; the division then raised a bare ZeroDivisionError
+            # (the surrounding except only catches OverflowError) and escaped
+            # the endpoint's ValueError contract as a 500. Screen the
+            # denominator up front; representable inputs keep the identical
+            # expression below.
+            variance_denominator = sd_pre**2 * df
+            if not variance_denominator > 0:
+                raise ValueError(
+                    "sd_pre is too small to form a stable variance: sd_pre^2 "
+                    "underflowed to zero"
+                )
+            variance = sd_change**2 / variance_denominator + estimate**2 / (2 * df)
             variance_method = "SMCRH_LS_Bonett_2008"
     except OverflowError as exc:
         raise ValueError("the variance calculation must be finite") from exc

@@ -31,6 +31,15 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 BASH = shutil.which("bash")
+# Same node discovery chain as test_r7_mm7_relchain.py: build_linux.sh runs
+# the JavaScript validators through `node` (MM9-07), so the behaviour nails
+# must be able to put a real node on the stubbed PATH even when the invoking
+# shell does not export one.
+NODE = (
+    os.environ.get("RF_NODE")
+    or shutil.which("node")
+    or r"C:\Users\16073\AppData\Local\hermes\node\node.exe"
+)
 
 PINNED_URL_RE = re.compile(
     r'APPIMAGETOOL_URL="https://github\.com/AppImage/appimagetool/releases/download/'
@@ -108,6 +117,10 @@ def _fake_tree(tmp_path: Path, *, digest_override: str | None = None) -> tuple[P
 
     The build script itself is the REAL repo copy (optionally with its pinned
     digest constant rewritten, to prove the pass path of the same gate).
+    MM9-07 wired the static validators into the script, so the fake tree also
+    carries the real custom_frontend/ tree and the two JavaScript validators
+    (+ their script_manifest.cjs helper): the node gates run for real inside
+    the behaviour nails, exactly like a local build would.
     """
     tree = tmp_path / "tree"
     (tree / "build").mkdir(parents=True)
@@ -121,6 +134,10 @@ def _fake_tree(tmp_path: Path, *, digest_override: str | None = None) -> tuple[P
     (tree / "build" / "icon_256.png").write_bytes(b"\x89PNG stub icon\n")
     (tree / "LICENSE").write_text("license\n", encoding="utf-8")
     (tree / "THIRD_PARTY_NOTICES.md").write_text("notices\n", encoding="utf-8")
+    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+    for validator in ("script_manifest.cjs", "validate_import_review_static.cjs",
+                      "validate_team_prisma_static.js", "verify_release_payload.py"):
+        shutil.copy2(REPO / "build" / validator, tree / "build" / validator)
 
     stubs = tmp_path / "pathstubs"
     payload = tmp_path / "fake-appimagetool"
@@ -139,6 +156,11 @@ def _run_build(tree: Path, stubs: Path, tmp_path: Path, python_stub: Path) -> tu
     tool_log = tmp_path / "tool.log"
     env = dict(os.environ)
     env["PATH"] = str(stubs) + os.pathsep + env["PATH"]
+    # MM9-07: build_linux.sh now runs the JavaScript validators via `node`;
+    # make the discovered node visible on the stubbed PATH (no-op when node
+    # already is on PATH, e.g. on CI runners).
+    if NODE and os.path.exists(NODE):
+        env["PATH"] = str(Path(NODE).parent) + os.pathsep + env["PATH"]
     env["RF_PYTHON_STUB"] = _p(python_stub)
     env["RF_FAKE_PAYLOAD"] = _p(tmp_path / "fake-appimagetool")
     env["RF_CURL_LOG"] = _p(curl_log)
@@ -146,7 +168,7 @@ def _run_build(tree: Path, stubs: Path, tmp_path: Path, python_stub: Path) -> tu
     assert BASH, "bash is required for the F1-1 behaviour nails"
     proc = subprocess.run(
         [BASH, str(tree / "build" / "build_linux.sh")],
-        cwd=tree, env=env, capture_output=True, text=True, timeout=60,
+        cwd=tree, env=env, capture_output=True, text=True, timeout=120,
     )
     return proc, curl_log, tool_log
 

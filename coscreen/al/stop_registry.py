@@ -26,5 +26,5 @@ __all__ = ["STOP_RULES"]
 STOP_RULES = {
     "manual": {"label": "手动停止", "description": "用户自行判断何时停止"},
     "streak": {"label": "连续排除提示", "description": "连续排除 N 条后提醒(仅进度提示,非安全保证)", "deprecated": True},
-    "certificate": {"label": "召回证书(推荐)", "description": "以 ≥95% 置信度保证总召回 ≥95%", "recommended": True},
+    "certificate": {"label": "召回证书(推荐)", "description": "抽验未见新相关时检验总召回 ≥95%；置信度按超几何随已发现相关数与抽验量变化，并非固定 95%", "recommended": True},
 }

@@ -10,9 +10,12 @@
 ## 构建条件
 
 - Windows 10/11，64 位。
-- 可访问网络：脚本会下载 Python 3.12 嵌入式运行时、`get-pip.py`，并从 `build/requirements-app.txt` 安装运行依赖。
+- 可访问网络：脚本会下载 Python 3.12 嵌入式运行时、`get-pip.py`，并从 `build/requirements-app.txt` 安装运行依赖。两个引导下载均按脚本内固定的 sha256 用 `certutil` 校验后才执行；下载缓存（`build/downloads/`）每次构建都会重新校验，失配即重新下载。`get-pip.py` 是滚动文件：上游更新导致失配时，请核实新文件的哈希并同步更新脚本中的固定值，不要删除校验。
 - Inno Setup 6/7 或 NSIS 3；脚本会检测可用的安装器编译器。若两者都未安装，构建会失败并提示安装编译器。
+- Node.js：与 CI 一致，本地构建也会运行四个静态校验器与发布产物核对（`verify_release_payload.py`），其中两个 JavaScript 校验器需要 `node.exe`。
 - 足够空间用于运行时、依赖 wheel、构建暂存目录和安装包。不要把 `.venv` 或其他平台的 Python 环境复制进安装包。
+- 同一检出目录同时只允许一个打包构建（锁目录 `build\.build-windows.lock`；构建崩溃留下的陈锁会在下次构建时按持有进程 PID 自动回收）。
+- 若把 Windows 检出以 zip/共享目录方式带到 macOS/Linux 继续构建：仓库 `.gitattributes` 已把 `*.sh` 固定为 LF，新检出可直接运行；旧的工作区副本请先 `git checkout -- build/*.sh` 或执行 `dos2unix build/*.sh`，否则 shebang 行尾会报 `bad interpreter`。
 
 ## 构建步骤
 
@@ -55,9 +58,12 @@
 This guide is for maintainers building or checking the Windows installer from source. Most users should download a published version from [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases); they do not need Python, WSL, or build tools.
 
 ### Requirements
-- 64-bit Windows 10/11 and network access. The script downloads the Python 3.12 embeddable runtime and `get-pip.py`, then installs dependencies from `build/requirements-app.txt`.
+- 64-bit Windows 10/11 and network access. The script downloads the Python 3.12 embeddable runtime and `get-pip.py`, then installs dependencies from `build/requirements-app.txt`. Both bootstrap downloads are verified with `certutil` against sha256 digests pinned in the script before anything runs them, and the download cache (`build/downloads/`) is re-verified on every run - a mismatch triggers one re-download. `get-pip.py` is a rolling file: if an upstream rotation breaks the pin, verify the new digest and update the pinned value instead of removing the check.
 - Inno Setup 6/7 or NSIS 3. The script detects an installer compiler and fails with guidance if neither is available.
+- Node.js: like CI, a local build runs the four static validators and the release-payload comparison (`verify_release_payload.py`); the two JavaScript validators need `node.exe`.
 - Enough disk space for the runtime, wheels, staging files, and installer. Do not copy `.venv` or another platform's Python environment into the package.
+- Only one packaging build may run per checkout at a time (lock folder `build\.build-windows.lock`; a stale lock left by a crashed build is reclaimed automatically via the recorded owner PID).
+- Moving a Windows checkout to macOS/Linux through a non-git channel (zip, shared folder): the repository `.gitattributes` pins `*.sh` to LF, so fresh checkouts work as-is; for an old working copy run `git checkout -- build/*.sh` or `dos2unix build/*.sh` first, otherwise the shebang line ending produces `bad interpreter`.
 
 ### Build
 1. Use a clean checkout and confirm the root `VERSION` is the intended release version.
