@@ -1,0 +1,29 @@
+{
+  "strategy": "mixed",
+  "seed": 42,
+  "n_records": 205,
+  "n_relevant": 12,
+  "n_to_95": 160,
+  "wss95": 0.16951219512195118,
+  "r95": 1.0,
+  "ttd_mean": 53.333333333333336,
+  "n_trained_steps": 155,
+  "elapsed_s": 0.10568878300546203,
+  "config": {
+    "warmup": 5,
+    "alpha": 1.0,
+    "learn": true,
+    "priors": [
+      0,
+      0
+    ],
+    "balance": false,
+    "feature_refit": "product",
+    "recall_target": 0.95,
+    "balance_params": null,
+    "preset": "product",
+    "strategy": "mixed",
+    "seed": 42
+  },
+  "n_trajectory_rows": 160
+}

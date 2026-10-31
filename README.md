@@ -24,6 +24,7 @@
 | 文献导入 | RIS 导入、重复记录处理、导入历史与原始数据追溯 |
 | 文献筛选 | 标题/摘要初筛、PDF 全文复筛、常用与自定义排除理由 |
 | 机器学习排序 | 辅助安排阅读顺序；纳入、需复核和排除由用户决定 |
+| 停止规则与召回证书 | 检查点随机抽验＋超几何上界，给出可核查的停止建议；界面明示置信度并非固定 95% |
 | 数据提取与编码 | 提取研究信息、记录编码内容与全文依据 |
 | AI 抽取建议（BYOK） | 可选的编码辅助，默认关闭：成员自带钥匙或任务共享钥匙双模式（兼容 OpenAI 协议端点，支持本地 Ollama 零出网）；建议附服务端核验的原文引文可溯源（正文来源附页码、摘要来源标注摘要），采纳逐条人工确认；决策可导出审计 CSV 并生成 Methods 报告段落 |
 | 数据分析 | 效应量计算、固定与随机效应合并、异质性、亚组、Meta 回归、敏感性与小研究效应分析 |
@@ -62,6 +63,10 @@
 - **撤销与轨迹回溯：** 初筛、全文筛选、编码支持受保护的撤销。可从轨迹打开文献修改当前结果；只有满足条件的最近保存可直接撤销，不能任意恢复旧快照。
 - **团队管理：** 在同一区域管理成员与进度、阶段来源权限、筛选选项及导入来源。任务负责人、筛选与编码员、裁决员有角色标识与成员操作菜单；负责人可为各阶段设置全部来源、指定来源或暂停，成员列表及任务变更自动刷新。
 - **PRISMA：** 保留独立手动填数与选择性导入任务指标，支持更新综述和其他来源分支及指标依据 CSV。未知数值需要确认；研究数与报告数独立，“每份报告对应一项研究”须主动选择。
+
+### 召回证书与停止规则
+
+筛选何时可以安全停止？木笔 ReviewFlow 用显式统计证书回答：到达检查点（已筛 50%/70%/85%/95%）时，从未筛池随机抽取 30%（面板可一键随机置顶待判读）并由人工判读；抽验量足且未发现新的相关文献时，声明“总召回 ≥95%（容许剩余相关不超过 k 条）”。该声明的置信度在数学上按**超几何上界**随已发现相关数与抽验量逐次计算（筛选早期可能远低于 95%，绝不虚标）；界面明示“并非固定 95%”，当前暂不显示具体数值（精确数值表见方法学报告）；“连续排除 N 条”类规则经仿真证明不能承载安全职责，已降级为默认关闭的进度提示。停止始终是研究者的决定，证书只是可核查的建议。方法学推导、90 场验证批原始数据与边界披露（序贯 α 校正目前仅在理论层，产品判定为单次抽样的零相关检查）见[召回证书方法学报告](docs/methodology/recall_certificate.md)。
 
 **升级：** 从 [最新 Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) 获取安装包，升级前备份整个数据目录。2.0.5 客户端可能不自动提示 2.0.5.1，请直接下载该维护版本；新版本支持四段版本比较。
 
@@ -111,7 +116,7 @@ python build/launcher.py
 | macOS | 安装 Node.js（三平台本地构建都会运行与 CI 相同的静态校验器与产物核对），`bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
 | Linux x86_64 | 安装 Node.js（同上），`bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
-macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。
+macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。机器可读 API 契约 `docs/openapi.json` 由离线脚本生成：`python build/scripts/export_openapi.py`（运行时仍不暴露 `/openapi.json`）；稳定核心子集的手写[接口参考](docs/API_REFERENCE.md)随源码维护。
 
 本地构建与 CI 一致：四个静态校验器与发布产物核对（`build/verify_release_payload.py`）都会运行；构建期下载的引导文件（嵌入式 Python、get-pip、appimagetool）逐一做 sha256 校验后才使用，下载缓存也会在每次构建时重新校验（get-pip 为滚动文件，上游更新后请核实新哈希并同步更新脚本内的固定值）。同一检出目录同时只允许一个打包构建（锁目录 `build/.build-dist.lock` / `build/.build-windows.lock`，异常退出的陈锁会被自动回收）。根目录的 `SHA256SUMS.initial-release-snapshot.json` 是首次公开发布时的源码哈希存档（此后不再更新，发布包校验以 Release 附带的 `SHA256SUMS.txt` 为准）。
 
@@ -159,6 +164,7 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Reference import:** RIS files, duplicate handling, import history and original import data.
 - **Screening:** title/abstract and PDF full-text screening, with standard or custom exclusion reasons.
 - **Machine Learning:** assistance with reading order; inclusion, uncertainty and exclusion remain user decisions.
+- **Stopping rules and recall certificate:** checkpoint random sampling with a hypergeometric upper bound gives an auditable stop suggestion; the interface states the confidence is not a fixed 95%. Methodology and raw data: [recall certificate report](docs/methodology/recall_certificate.md).
 - **Data extraction & coding:** study information extraction and supporting full-text evidence.
 - **AI extraction suggestions (BYOK):** optional coding assistance, off by default; bring your own key or use a task-shared key (OpenAI-compatible endpoints, local Ollama supported for zero outbound traffic); every suggestion carries a server-verified source quote for tracing (full-text quotes carry page numbers; abstract-sourced quotes are labelled as such), adoption is confirmed item by item, and decisions support audit CSV export and Methods report generation.
 - **Analysis:** effect sizes, fixed and random effects, heterogeneity, subgroups, meta-regression, sensitivity and small-study effects.
@@ -194,6 +200,10 @@ Implementation does not establish validation for every study design. Consult the
 - **Undo and Trace:** guarded Undo is available in initial screening, full-text screening and coding. Open linked articles from Trace to correct current results; only an eligible latest save can be undone directly, rather than restoring arbitrary historical snapshots.
 - **Team management:** one panel contains members/progress, stage source permissions, screening options and imported sources. Task owner / Coder / Adjudicator badges and member action menus identify responsibilities. Owners choose All / Selected / Paused per stage; membership and task lists refresh automatically.
 - **PRISMA:** preserve standalone manual entry and selective task-metric import, with updated-review and other-source branches and metric-provenance CSV. Unknown values need confirmation. Study and report counts are independent; one report per study is an explicit shortcut.
+
+### Recall certificate and stopping rules
+
+When is it safe to stop screening? ReviewFlow answers with an explicit statistical certificate: at check points (50%/70%/85%/95% screened), draw a random 30% sample from the unscreened pool (the panel can move a random sample to the top of the queue) for manual judgement; with a sufficient sample and zero newly found relevant articles, the tool reports "total recall ≥ 95% (at most k relevant records remaining)". The confidence of that claim follows the **hypergeometric upper bound** and changes with the number of relevant articles already found and with the sample size (early in screening it may be far below 95% — never a fixed value); the interface states it is "not a fixed 95%" and does not yet show the numeric value (the exact table is in the methodology report). Simulations showed that "N consecutive exclusions" rules cannot carry safety responsibility, so they are demoted to a progress hint, off by default. Stopping remains the researcher's decision; the certificate is an auditable suggestion. The methodology, the raw data of the 90-run verification batch and the boundary disclosures (sequential α correction exists at theory level only; the product decision is a single-sample zero-findings test) are in the [recall certificate report](docs/methodology/recall_certificate.md).
 
 **Upgrading:** download from the [latest Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) and back up the complete data directory first. Existing 2.0.5 clients may not automatically prompt for 2.0.5.1; download this hotfix directly. The corrected checker supports four-part versions.
 
@@ -290,6 +300,7 @@ La disponibilidad de un método no significa que esté validado para todos los d
 - **Deshacer y trazabilidad:** deshacer protegido en las tres etapas; abrir un artículo vinculado desde el registro para corregir sus valores actuales. Solo se deshace directamente el último guardado admisible, no cualquier instantánea histórica.
 - **Equipo:** un panel integra miembros/progreso, fuentes permitidas por etapa, opciones de cribado y fuentes importadas. Insignias Responsable de la tarea / Revisor y codificador / Adjudicador y menús de miembros indican responsabilidades. El propietario elige Todas / Seleccionadas / En pausa; miembros y tareas se actualizan automáticamente.
 - **PRISMA:** entrada manual independiente o importación selectiva de métricas, revisiones actualizadas/otras fuentes y CSV de procedencia. Los valores desconocidos necesitan confirmación; estudios e informes son independientes, con un atajo explícito de un informe por estudio.
+- **Certificado de recall y reglas de detención:** en los puntos de control (50/70/85/95 %), una muestra aleatoria del material sin cribar, evaluada manualmente sin nuevos hallazgos, permite declarar un recall total ≥ 95 % según el límite superior hipergeométrico; la interfaz indica que la confianza no es un 95 % fijo (tabla exacta en el informe) y las rachas de exclusiones son solo un aviso de progreso, sin garantía de seguridad. Metodología y datos: [certificado de recall](docs/methodology/recall_certificate.md).
 
 **Actualización:** descargue la [última versión](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) y respalde toda la carpeta de datos. El cliente 2.0.5 puede no avisar de 2.0.5.1; descargue el parche directamente. El comprobador corregido admite versiones de cuatro componentes.
 
@@ -328,6 +339,7 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 - **取り消しと履歴：** 3段階で保護付き取り消しを利用できます。履歴から文献を開いて現在値を修正できますが、直接取り消せるのは条件を満たす直近の保存のみです。
 - **チーム：** メンバーと進捗、段階別ソース、判断設定、取り込み済みソースを一つのパネルにまとめます。タスク所有者／スクリーニング・コーディング担当／判定担当者のバッジと操作メニューを表示し、所有者は全ソース／選択／一時停止を設定します。メンバーとタスク一覧は自動更新します。
 - **PRISMA：** 独立した手入力と選択的なタスク指標取り込みを維持し、更新レビュー・その他ソースと指標の由来CSVに対応します。不明値は確認が必要です。研究数と報告数は独立し、1報告＝1研究は明示的に選択します。
+- **リコール証明と停止ルール：** チェックポイント（50/70/85/95%）到達時に未スクリーニングのプールから無作為抽出して手動判定し、新規関連文献が0件なら、超幾何上界に基づく「総合リコール≥95%」の停止提案を出します。界面は信頼度が固定95%ではないことを明示し（正確な数値表はレポート参照）、連続除外は進捗のヒントのみで安全保証はありません。方法論とデータ：[リコール証明書](docs/methodology/recall_certificate.md)。
 
 **更新：** データフォルダー全体をバックアップしてから[最新版](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest)を取得してください。2.0.5は2.0.5.1を自動通知しない場合があるため、直接ダウンロードしてください。修正版は4要素のバージョンに対応します。
 
@@ -366,6 +378,7 @@ A implementação de um método não comprova sua validação para todos os deli
 - **Desfazer e histórico:** desfazer protegido nas três etapas; abrir artigos vinculados ao histórico para corrigir valores atuais. Apenas o último salvamento elegível pode ser desfeito diretamente, sem restaurar instantâneos históricos arbitrários.
 - **Equipe:** um painel reúne membros/progresso, fontes por etapa, opções de triagem e fontes importadas. Insígnias Responsável pela tarefa / Revisor e codificador / Adjudicador e menus de membros indicam responsabilidades. O proprietário escolhe Todas / Selecionadas / Pausada; membros e tarefas atualizam automaticamente.
 - **PRISMA:** entrada manual independente ou importação seletiva de métricas, revisões atualizadas/outras fontes e CSV de procedência. Valores desconhecidos exigem confirmação; estudos e relatórios são independentes, com atalho explícito de um relatório por estudo.
+- **Certificado de recall e regras de parada:** nos pontos de verificação (50/70/85/95%), uma amostra aleatória do acervo não triado, julgada manualmente sem novos achados, sustenta a declaração de recall total ≥ 95% com base no limite hipergeométrico; a interface indica que a confiança não é um 95% fixo (tabela exata no relatório) e sequências de exclusões são apenas aviso de progresso, sem garantia de segurança. Metodologia e dados: [certificado de recall](docs/methodology/recall_certificate.md).
 
 **Atualização:** baixe a [versão mais recente](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) e faça backup de toda a pasta de dados. O cliente 2.0.5 pode não avisar sobre 2.0.5.1; baixe o corretivo diretamente. A verificação corrigida aceita versões com quatro componentes.
 
@@ -404,6 +417,7 @@ Eine implementierte Methode ist nicht automatisch für jedes Studiendesign valid
 - **Rückgängig und Protokoll:** geschütztes Rückgängigmachen in allen drei Phasen; verknüpfte Artikel aus dem Protokoll zur Korrektur aktueller Werte öffnen. Nur die letzte zulässige Speicherung lässt sich direkt rückgängig machen, kein beliebiger historischer Stand.
 - **Team:** ein Bereich enthält Mitglieder/Fortschritt, Quellen je Phase, Screening-Optionen und importierte Quellen. Aufgabeninhaber / Screening- und Kodierperson / Entscheidungsperson werden durch Symbole und Mitgliedermenüs gekennzeichnet. Der Eigentümer wählt Alle / Ausgewählte / Pausiert; Mitglieder- und Aufgabenlisten aktualisieren sich automatisch.
 - **PRISMA:** unabhängige manuelle Eingabe oder selektiver Kennzahlenimport, aktualisierte Reviews/andere Quellen und Herkunfts-CSV. Unbekannte Werte müssen bestätigt werden; Studien und Berichte werden getrennt gezählt, ein Bericht pro Studie ist eine ausdrückliche Auswahl.
+- **Recall-Zertifikat und Stoppregeln:** an Prüfpunkten (50/70/85/95 %) stützt eine zufällige, manuell bewertete Stichprobe aus dem ungescreenten Pool ohne neue relevante Funde die Angabe „Gesamt-Recall ≥ 95 %“ nach der hypergeometrischen Schranke; die Oberfläche weist darauf hin, dass die Konfidenz kein fester 95-%-Wert ist (genaue Tabelle im Bericht), und Ausschlussserien sind nur ein Fortschrittshinweis ohne Sicherheitsgarantie. Methodik und Daten: [Recall-Zertifikat](docs/methodology/recall_certificate.md).
 
 **Aktualisierung:** laden Sie die [neueste Version](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) und sichern Sie vorher den gesamten Datenordner. Version 2.0.5 meldet 2.0.5.1 möglicherweise nicht automatisch; laden Sie den Hotfix direkt. Die korrigierte Prüfung unterstützt vierteilige Versionen.
 
@@ -442,6 +456,7 @@ Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. 
 - **Opoziv i trag:** zaštićeni opoziv u tri faze; otvaranje povezanog članka iz traga radi ispravke trenutnih vrednosti. Direktno se opoziva samo poslednje dozvoljeno čuvanje, ne proizvoljan istorijski snimak.
 - **Tim:** jedan panel sadrži članove/napredak, izvore po fazama, opcije skrininga i uvezene izvore. Oznake Vlasnik zadatka / Pregledač i koder / Arbitar i meniji članova prikazuju uloge. Vlasnik bira Svi / Izabrani / Pauzirano; članstvo i liste zadataka se automatski osvežavaju.
 - **PRISMA:** samostalan ručni unos ili selektivan uvoz pokazatelja, ažurirani pregledi/drugi izvori i CSV porekla. Nepoznate vrednosti zahtevaju potvrdu; studije i izveštaji se broje odvojeno, jedan izveštaj po studiji je izričit izbor.
+- **Sertifikat recall-a i pravila zaustavljanja:** na kontrolnim tačkama (50/70/85/95%) slučajni uzorak nepregledanog fonda, ručno ocenjen bez novih relevantnih nalaza, podržava tvrdnju da je ukupni recall ≥ 95% prema hipergeometrijskoj gornjoj granici; interfejs navodi da pouzdanost nije fiksnih 95% (tačna tabela u izveštaju), a nizovi isključenja su samo napomena o napretku, bez bezbednosne garancije. Metodologija i podaci: [sertifikat recall-a](docs/methodology/recall_certificate.md).
 
 **Ažuriranje:** preuzmite [najnovije izdanje](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) i prvo kopirajte ceo direktorijum podataka. Klijent 2.0.5 možda neće automatski najaviti 2.0.5.1; preuzmite ispravku direktno. Ispravljena provera podržava četiri dela verzije.
 
@@ -480,6 +495,7 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 - **실행 취소 및 기록:** 세 단계에 보호된 실행 취소를 제공합니다. 기록에서 연결 문헌을 열어 현재 값을 수정할 수 있지만 직접 취소는 조건을 충족하는 최근 저장만 가능합니다.
 - **팀:** 구성원·진행률, 단계별 출처, 선별 옵션, 가져온 출처를 한 패널에 모읍니다. 작업 소유자 / 선별 및 코딩 담당자 / 판정자 표시와 구성원 메뉴로 역할을 구분합니다. 소유자는 전체 / 선택 / 일시 중지를 설정하며 구성원과 작업 목록은 자동 갱신됩니다.
 - **PRISMA:** 독립 수동 입력과 선택적 작업 지표 가져오기, 갱신 고찰·기타 출처 분기, 지표 출처 CSV를 지원합니다. 미상 값은 확인해야 합니다. 연구 수와 보고서 수는 별개이며 보고서 1개당 연구 1개는 명시적으로 선택합니다.
+- **리콜 증명서와 정지 규칙:** 검사 지점(50/70/85/95%) 도달 시 미선별 풀에서 무작위 표본을 수동 판정하고 새 관련 문헌이 없으면, 초기하 상계에 따라 "전체 리콜 ≥95%" 정지 제안을 제공합니다. 화면은 신뢰도가 고정 95%가 아님을 밝히며(정확한 수치표는 보고서 참조), 연속 제외는 진행 알림일 뿐 안전 보장이 아닙니다. 방법론과 데이터: [리콜 증명서](docs/methodology/recall_certificate.md).
 
 **업데이트:** 전체 데이터 폴더를 백업한 뒤 [최신 릴리스](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest)를 받으세요. 2.0.5는 2.0.5.1을 자동 알리지 않을 수 있으므로 직접 내려받으세요. 수정된 검사기는 네 부분 버전을 지원합니다.
 
@@ -525,6 +541,7 @@ ReviewFlow — рабочая среда для систематических �
 - **Отмена и журнал:** защищённая отмена в трёх этапах; открытие связанной записи из журнала для исправления текущих значений. Напрямую отменяется только последнее допустимое сохранение, а не произвольный старый снимок.
 - **Команда:** общая панель участников/прогресса, источников по этапам, вариантов решений и импортированных источников. Значки Владелец задачи / Специалист по отбору и кодированию / Арбитр и меню участников показывают роли. Владелец выбирает Все / Выбранные / Приостановлено; состав и списки задач обновляются автоматически.
 - **PRISMA:** независимый ручной ввод и выборочный импорт показателей задачи, обновлённые обзоры/другие источники и CSV происхождения показателей. Неизвестные значения требуют подтверждения; исследования и отчёты считаются отдельно, «один отчёт на исследование» — явный выбор.
+- **Сертификат полноты и правила остановки:** в контрольных точках (50/70/85/95 %) случайная выборка из неотобранного пула, вручную оценённая без новых релевантных находок, подтверждает заявление «общая полнота ≥ 95 %» по гипергеометрической верхней границе; интерфейс указывает, что уверенность не является фиксированными 95 % (точная таблица — в отчёте), а серии исключений — лишь подсказка о прогрессе без гарантии безопасности. Методология и данные: [сертификат полноты](docs/methodology/recall_certificate.md).
 
 **Обновление:** скачайте [последний выпуск](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest), предварительно скопировав весь каталог данных. Клиент 2.0.5 может не сообщить о 2.0.5.1 автоматически; скачайте исправление напрямую. Исправленная проверка поддерживает четыре компонента версии.
 
@@ -625,6 +642,7 @@ La présence d'une méthode ne signifie pas qu'elle a été entièrement validé
 - **Annulation et traçabilité :** annulation protégée dans les trois étapes ; ouvrir une référence liée au journal pour corriger sa valeur actuelle. Seul le dernier enregistrement admissible peut être annulé directement, sans restauration arbitraire d’anciens instantanés.
 - **Équipe :** un panneau réunit membres/progression, sources autorisées par étape, options de sélection et sources importées. Les badges Responsable de la tâche / Responsable du dépistage et du codage / Arbitre et menus des membres précisent les rôles. Le propriétaire choisit Toutes / Sélectionnées / En pause ; listes et adhésions sont actualisées automatiquement.
 - **PRISMA :** saisie manuelle indépendante ou import sélectif des indicateurs d’une tâche, branches de revue actualisée/autres sources et CSV de provenance. Les valeurs inconnues doivent être confirmées ; études et rapports sont distincts, avec un raccourci explicite « un rapport par étude ».
+- **Certificat de rappel et règles d'arrêt :** aux points de contrôle (50/70/85/95 %), un échantillon aléatoire du pool non trié, évalué manuellement sans nouvelle référence pertinente, étaye la déclaration « rappel global ≥ 95 % » selon la borne supérieure hypergéométrique ; l'interface précise que la confiance n'est pas un 95 % fixe (table exacte dans le rapport) et les séries d'exclusions ne sont qu'un indicateur d'avancement, sans garantie de sécurité. Méthodologie et données : [certificat de rappel](docs/methodology/recall_certificate.md).
 
 **Mise à niveau :** utilisez la [dernière version](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) et sauvegardez tout le dossier de données. Le client 2.0.5 peut ne pas signaler automatiquement 2.0.5.1 ; téléchargez ce correctif directement. La vérification corrigée prend en charge quatre composantes.
 

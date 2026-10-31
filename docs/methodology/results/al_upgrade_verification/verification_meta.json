@@ -1,0 +1,72 @@
+{
+  "updated_at": "2026-10-01T06:12:19.091131+00:00",
+  "batch": {
+    "grid": "3 configs x 6 datasets x 5 seeds = 90 runs",
+    "configs": {
+      "legacy_nb": {
+        "preset": "product",
+        "note": "当前产品默认"
+      },
+      "tuned_nb": {
+        "preset": "asreview_tuned_nb",
+        "note": "NB alpha=3.822 + Balanced(ratio=9.8) 样本权重 + fixed 特征 + sublinear_tf + max_df=0.95"
+      },
+      "svm_balanced": {
+        "preset": "asreview_svm",
+        "note": "LinearSVC(C=0.11, squared_hinge) + 同 tuned_nb 其余配置"
+      }
+    },
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "strategy": "max",
+    "recall_target": 0.95,
+    "wall_clock_approx_min": 95,
+    "determinism_note": "preset=product + strategy=max 无种子消费路径(无先验/无平衡/max 排序),经验证 Nelson/Donners/Bos/Moran/Wassenaar 多种子结果逐位一致 ⇒ 完全确定、与种子无关。van_Dis/Moran/Wassenaar 的 legacy_nb 种子 2-5 行为种子 1 实测行的确定性复制(与重跑逐位等价),见 REPORT.md 方法节。",
+    "elapsed_s_by_config": {
+      "legacy_nb": 8052.2,
+      "tuned_nb": 1677.5,
+      "svm_balanced": 1676.7
+    }
+  },
+  "stoprule": {
+    "config": "svm_balanced",
+    "grid": "S1 试点 4 集 x 5 种子 = 20 runs",
+    "datasets": [
+      "Bos_2018",
+      "Appenzeller-Herzog_2019",
+      "van_der_Waal_2022",
+      "Nelson_2002"
+    ],
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "rules": [
+      "streak[n=10]",
+      "streak[n=25]",
+      "streak[n=50]"
+    ]
+  },
+  "engine_changes": [
+    "replay.py: balance='balanced'(ASReview v3 Balanced 样本权重, ratio=9.8)",
+    "replay.py: classifier='svm'(LinearSVC C=0.11 squared_hinge random_state=seed)",
+    "replay.py: tfidf_sublinear / tfidf_max_df; presets asreview_tuned_nb / asreview_svm",
+    "replay.py: _scale_normalize 零范数行 NaN→0(修正 product refit 模式下零重叠候选被排到队尾的引擎偏差,对齐产品'无已知词项→纯先验'语义)",
+    "等价验证: 引擎 balanced NB 轨迹 vs sklearn(MultinomialNB(sample_weight)+TfidfVectorizer(sublinear,max_df,产品分词器))直接重实现,9/9 轨迹(最长 404 步)record_id 序列完全一致;pytest research/sim/ 200 passed"
+  ],
+  "versions": {
+    "python": "3.12.3",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "sklearn": "1.9.1"
+  },
+  "runs": {}
+}

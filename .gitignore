@@ -15,6 +15,12 @@ instance/
 *.sqlite3
 *.log
 
+# W7: the published methodology corpus under docs/methodology/data/ is tracked
+# research input (recall-certificate provenance + SYNERGY slice), not user data.
+# Without this negation `data/` would drop it, and a clean checkout would fail
+# build/tests/test_w7_recall_certificate_docs.py.
+!docs/methodology/data/
+
 # Python and editor artifacts
 __pycache__/
 *.py[cod]

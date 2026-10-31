@@ -99,15 +99,39 @@ function manifestModulesMatching(root,manifest,patterns){
      passes merely because index.html links `mobile_concept.css`. CSS
      references are therefore matched as whole quoted specifiers.
    * a dead file must fail even when its name is a suffix of a live one, so
-     both checks anchor on a word/quote boundary instead of raw containment. */
+     both checks anchor on a word/quote boundary instead of raw containment.
+
+   Reachability is not only `<script src>`. A Service Worker (2.1.4 W5:
+   custom_frontend/sw.js) is never a script element - index.html reaches it
+   through `navigator.serviceWorker.register('./sw.js', {scope:'./'})`, so the
+   manifest parser (which reads script src / dynamic import / workerSrc)
+   legitimately never lists it. Treating that file as dead would force the PWA
+   shell to be either deleted or smuggled into the manifest as a lie. The rule
+   therefore also accepts top-level JS reachable through a quoted
+   `serviceWorker.register(...)` specifier resolved from index.html. This is a
+   form-of-reachability exemption, not a filename allowlist: an unregistered
+   sw.js (or any other unreferenced JS) still fails. */
 const CSS_REFERENCE=(html,file)=>{
   const escaped=file.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   return new RegExp('(?:^|["\'\\s(/,])'+escaped+'(?:["\'\\s)?,#]|$)').test(html);
+};
+/* Files index.html reaches through a Service Worker registration, as repo-relative
+   paths under custom_frontend/ (same normalization as loadScriptManifest). */
+const serviceWorkerSpecs=(html)=>{
+  const out=[];
+  for(const match of html.matchAll(/serviceWorker\s*\.\s*register\s*\(\s*["']([^"']+)["']/g)){
+    let rel=match[1].split('?')[0].split('#')[0];
+    if(rel.startsWith('./'))rel=rel.slice(2);
+    if(!rel||rel.startsWith('/')||rel.startsWith('../'))continue; /* outside custom_frontend/ */
+    out.push(path.posix.normalize(rel));
+  }
+  return out;
 };
 function assertNoUnloadedFrontendFiles(root,manifest){
   const dir=path.join(root,'custom_frontend');
   const list=manifest||loadScriptManifest(root);
   const html=fs.readFileSync(path.join(dir,'index.html'),'utf8');
+  const swFiles=serviceWorkerSpecs(html);
   const problems=[];
   for(const file of fs.readdirSync(dir)){
     if(!/\.(?:js|mjs|css)$/.test(file))continue;
@@ -115,7 +139,7 @@ function assertNoUnloadedFrontendFiles(root,manifest){
     if(file.endsWith('.css')){
       if(!CSS_REFERENCE(html,file))
         problems.push('custom_frontend/'+file+' is not referenced by index.html - dead file (delete it or link it)');
-    }else if(!list.includes(file)){
+    }else if(!list.includes(file)&&!swFiles.includes(file)){
       problems.push('custom_frontend/'+file+' is not loaded by index.html - dead file (delete it or load it)');
     }
   }

@@ -674,16 +674,39 @@ class MM9_26_InitDbMigrationDegradation(unittest.TestCase):
 
 
 class MM10_14_LivingReviewPluginContractDoc(unittest.TestCase):
-    """MM10-14：模块 docstring 与 check-now 的 409 实现对齐（仅文档，不删模块）。"""
+    """MM10-14：模块 docstring 与 check-now 的实现对齐（仅文档，不删模块）。
 
-    def test_docstring_states_unwired_contract(self):
+    历史：本钉子在 2.1.4-r8 fl3 钉住「check-now 未接线、固定 409
+    protected_import_required」的收紧契约。r8 功能批 W3 把 check-now 复活
+    （延迟导入本插件拉 PubMed 增量 → 虚拟 RIS → 受保护导入），而遗留**上传**
+    路由 import-update 仍保持固定 409。两者都是现行契约，断言因此改为钉住
+    「docstring 与实现一致」而不是钉住某个历史状态词。
+    """
+
+    def test_docstring_states_wired_contract(self):
         import custom_backend.living_review_plugin as plugin
         doc = plugin.__doc__
         # 基线：docstring 声称「check-now 端点才延迟导入并调用它」——与实现相反。
-        self.assertIn("当前未接线", doc)
-        self.assertIn("409", doc)
+        # W3 复活后这句话才是事实：断言它回到文档里，并保留模块默认关闭红线。
+        self.assertIn("延迟\n  导入并调用它", doc)
         self.assertIn("W3", doc)
-        self.assertNotIn("才延迟导入并调用它", doc)
+        self.assertIn("默认关闭", doc)
+        self.assertIn("409", doc)
+        self.assertIn("protected_import_required", doc)
+        # 未接线时代的措辞不得残留（会误导读者以为 check-now 不联网）。
+        self.assertNotIn("check-now 端点目前**不调用**本模块", doc)
+
+    def test_check_now_really_calls_the_plugin(self):
+        """docstring 的接线声明必须与 main.py 的实现一致（不靠人工维护）。"""
+        source = (REPO_ROOT / "custom_backend" / "main.py").read_text(encoding="utf-8")
+        start = source.index('"/api/tasks/{task_id}/living-review/check-now"')
+        # 端点体到下一个顶层装饰器/@app 路由为止
+        end = source.find("\n@app.", start + 1)
+        body = source[start:end if end != -1 else len(source)]
+        self.assertIn("from custom_backend.living_review_plugin import", body)
+        self.assertIn("fetch_pubmed_updates", body)
+        self.assertNotIn("protected_import_required", body,
+                         "check-now 已由 W3 复活；固定 409 属于 import-update 路由")
 
     def test_module_functions_kept_for_w3_revival(self):
         import custom_backend.living_review_plugin as plugin

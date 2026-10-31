@@ -121,9 +121,19 @@ jobs:
           # (every matrix runner image ships node) and run from the checkout
           # root: ml_batch.test.cjs reads custom_frontend/index.html relative
           # to the working directory.
+          # W2 (2.1.4-r8): pdf_fetch_ui.test.cjs nails the PDF auto-fetch
+          # frontend module (default-off zero-render, three outcome paths,
+          # ten-language corpus). Local-green only would leave it unguarded
+          # on every release platform, so it joins the same node --test run.
+          # W3 (2.1.4-r8): living_review.test.cjs nails the revived PubMed
+          # check (manual check-now wiring, graceful 409 degradation, and the
+          # sliced in-session timer that must never overflow the 32-bit delay).
           node --test build/tests/import_review_model.test.cjs \
                       build/tests/import_review_updates.test.cjs \
-                      build/tests/ml_batch.test.cjs
+                      build/tests/ml_batch.test.cjs \
+                      build/tests/study_design_badge.test.cjs \
+                      build/tests/pdf_fetch_ui.test.cjs \
+                      build/tests/living_review.test.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}
