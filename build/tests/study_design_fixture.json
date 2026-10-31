@@ -1,0 +1,864 @@
+{
+ "meta": {
+  "source": "PubMed E-utilities (https://eutils.ncbi.nlm.nih.gov), esearch+efetch",
+  "fetched_on": "2026-10-30",
+  "per_class": 6,
+  "queries": {
+   "rct": "randomized controlled trial[Publication Type]",
+   "systematic_review": "systematic review[Publication Type] NOT meta-analysis[Publication Type]",
+   "meta_analysis": "meta-analysis[Publication Type]",
+   "cohort": "cohort[Title/Abstract]",
+   "case_control": "case-control[Title/Abstract]",
+   "cross_sectional": "cross-sectional[Title/Abstract]",
+   "diagnostic": "(diagnostic accuracy[Title/Abstract]) OR (sensitivity and specificity[Title/Abstract])",
+   "other": "case reports[Publication Type]"
+  },
+  "dedupe": "同一 PMID 跨类/类内重复按先到先得保留一次；夹具为独立文献",
+  "duplicates_skipped": 2,
+  "gold": "检索类别即金标（选择偏差与方法学限制见 docs/methodology/study_design_classifier.md）",
+  "abstract_truncated_to": 400,
+  "license_note": "题录与摘要片段版权归原作者/PubMed；仅作测试夹具随库分发，不作商业用途。"
+ },
+ "items": [
+  {
+   "zotero_key": "PMID-42958764",
+   "title": "Study Protocol: Efficacy of Jintiange Capsule in Lumbar Disc Herniation: A Single-Center, Randomized Controlled Trial.",
+   "abstract": "Lumbar disc herniation (LDH) is a leading cause of chronic low back pain (LBP), severely impairing patients' quality of life and imposing a substantial global socioeconomic burden. Conservative treatment remains the first-line clinical option, but the commonly prescribed drug celecoxib carries a risk of gastrointestinal bleeding or perforation. Traditional Chinese medicine preparations have been p",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Randomized Controlled Trial"
+    ]
+   },
+   "gold": "rct",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Randomized Controlled Trial"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958676",
+   "title": "A multicenter, randomized, double-blind, double-dummy, positive-controlled study of the general treatment method using Tanreqing capsule in uncomplicated influenza.",
+   "abstract": "To investigate the effects of the method of clearing heat, resolving phlegm, and detoxification, represented by Tanreqing capsule (TRQC, ), on influenza. A total of 122 patients with uncomplicated influenza in the Beijing-Tianjin area were randomly divided into an observation group and a control group. They were treated with TRQC plus oseltamivir placebo or oseltamivir plus TRQC placebo for 5 d, r",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Randomized Controlled Trial",
+     "Multicenter Study"
+    ]
+   },
+   "gold": "rct",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Randomized Controlled Trial",
+    "Multicenter Study"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958675",
+   "title": "Bufei Huoxue capsules enhance lung function in pneumoconiosis: a multicenter, randomized clinical trial.",
+   "abstract": "To clarify the efficacy and safety of Bufei Huoxue (BFHX) capsules for the treatment of pneumoconiosis. This multicenter, double-blind, randomized, placebo-controlled trial enrolled patients with pneum-oconiosis from five centers between June 2020 and June 2023. Participants were randomized 1∶1 to receive oral BFHX capsules or matched placebo (4 capsules, thrice daily) for 24 weeks. The primary en",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Randomized Controlled Trial",
+     "Multicenter Study"
+    ]
+   },
+   "gold": "rct",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Randomized Controlled Trial",
+    "Multicenter Study"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958619",
+   "title": "Treatment of Small Peri-Implant Buccal Dehiscence Defects With SCTG or GBR: 3-Year Results of a Pilot Study.",
+   "abstract": "To evaluate and compare subepithelial connective tissue grafts (SCTG) and guided bone regeneration (GBR) for the treatment of small peri-implant buccal bone dehiscences over a 3-year follow-up, in terms of profilometric contour change, peri-implant parameters and patient-reported outcome measures (PROMs). Patients presenting with small buccal bone dehiscences (≤ 3 mm) after single implant placemen",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Randomized Controlled Trial"
+    ]
+   },
+   "gold": "rct",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Randomized Controlled Trial"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958513",
+   "title": "Self-operated home ultrasound for pre-labor pushing training: a proof-of-concept study.",
+   "abstract": "To evaluate the feasibility and acceptability of self-operated home ultrasound for visual biofeedback training among nulliparous women, enabling visualization of fetal head descent and practice of second-stage pushing prior to labor. This was a prospective feasibility study conducted within the framework of an ongoing randomized controlled trial. Term nulliparous women at 37-41 weeks' gestation un",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Randomized Controlled Trial"
+    ]
+   },
+   "gold": "rct",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Randomized Controlled Trial"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958476",
+   "title": "Classical popliteal sciatic block versus Crosswise Approach to Popliteal Sciatic (CAPS) block for below-knee surgery: a randomised controlled trial.",
+   "abstract": "Ultrasound-guided popliteal sciatic nerve block is frequently used for below-knee surgery. The classical approach often requires lateral decubitus or prone positioning, which may be uncomfortable for patients with lower limb injuries. The Crosswise Approach to Popliteal Sciatic (CAPS) block allows the procedure to be performed with the patient supine. This randomised trial compared the classical a",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Randomized Controlled Trial",
+     "Comparative Study"
+    ]
+   },
+   "gold": "rct",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Randomized Controlled Trial",
+    "Comparative Study"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959053",
+   "title": "Quality of osteoporosis management guidelines produced in China: a systematic review.",
+   "abstract": "This study employed the AGREE II and AGREE-REX instruments to assess the methodological rigor and recommendation quality of Chinese clinical practice guidelines (CPGs) for osteoporosis care. A systematic search was conducted across CNKI, SinoMed, Wanfang, VIP, Medlive, and the Chinese Medical Association website for CPGs published between January 2014 and December 2025. AGREE II was used to evalua",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review"
+    ]
+   },
+   "gold": "systematic_review",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959049",
+   "title": "Breathing exercises as adjunct therapy in adult asthma: a systematic review.",
+   "abstract": "Despite optimal pharmacological treatment, a substantial proportion of adult asthma patients remain symptomatic. Breathing exercises have emerged as a non-pharmacological adjunct specifically targeting dysfunctional breathing patterns (chronic hyperventilation, tachypnea, and aberrant ventilatory mechanics) that pharmacotherapy does not adequately address. Evidence for their efficacy across outcom",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review"
+    ]
+   },
+   "gold": "systematic_review",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959033",
+   "title": "Influencing factors of type 2 diabetes remission: a systematic review and meta-analysis.",
+   "abstract": "To identify factors influencing type 2 diabetes mellitus (T2DM) remission and compare differences across intervention types and remission criteria. T2DM remission was defined as HbA1c < 6.5% (48 mmol/mol), measured at least 3 months after cessation of glucose-lowering pharmacotherapy. Relevant literature on factors influencing T2DM remission was searched in English-language databases, with the sea",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review"
+    ]
+   },
+   "gold": "systematic_review",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959031",
+   "title": "Gut mycobiome dysbiosis in inflammatory bowel disease: a systematic review and meta-analysis.",
+   "abstract": "The intestinal mycobiome is increasingly recognized as an important component of host-microbiota interactions in inflammatory bowel disease (IBD), yet its contribution to intestinal immune dysregulation remains incompletely characterized. We aimed to characterize alterations in the intestinal mycobiome in patients with inflammatory bowel disease, including Crohn's disease and ulcerative colitis, c",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review"
+    ]
+   },
+   "gold": "systematic_review",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958936",
+   "title": "Heat Stroke Cooling Devices for Prehospital Use: A Systematic Review.",
+   "abstract": "Heat stroke and heat exhaustion (HS/HE) are life-threatening conditions requiring immediate intervention. Cooling devices play a critical role in emergency and prehospital care, yet their effectiveness and field readiness are inconsistently reported. This systematic review evaluates commercially available cooling devices for the treatment of HS/HE with an emphasis on device feasibility, performanc",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review",
+     "Review"
+    ]
+   },
+   "gold": "systematic_review",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review",
+    "Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958847",
+   "title": "Artificial Intelligence-powered Advances in Phytomedicine: A Systematic Review on Plant-based Drug Discovery Software.",
+   "abstract": "Herbal medicines contain complex phytochemicals that offer therapeutic potential, but their long-term adverse effects remain challenging to determine. Traditional herbal medicine preparation methods are often labor-intensive, non-standardized, and face difficulties in identifying active ingredients. By improving medication development, optimization, and discovery procedures, Artificial Intelligenc",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review"
+    ]
+   },
+   "gold": "systematic_review",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958857",
+   "title": "The role of artificial intelligence in predicting late-onset intrauterine growth restriction in singleton pregnancies: a systematic review and meta-analysis.",
+   "abstract": "Late-onset intrauterine growth restriction (IUGR) is difficult to detect and is associated with adverse perinatal outcomes. This systematic review and meta-analysis evaluated the performance of artificial intelligence (AI) models, including machine learning (ML) and deep learning, for predicting late-onset IUGR in singleton pregnancies. PubMed, Scopus, and Web of Science were searched for studies ",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Meta-Analysis"
+    ]
+   },
+   "gold": "meta_analysis",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Meta-Analysis"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958657",
+   "title": "Efficacy and safety of moxibustion therapy for bronchial asthma: a systematic review and network Meta-analysis.",
+   "abstract": "To evaluate the efficacy and safety of different moxibustion therapies for treating asthma. Five databases were searched up to July 27, 2025, to identify randomized controlled trials (RCTs) assessing moxibustion for bronchial asthma. Outcomes included response rates, pulmonary function, and immune biomarkers. Paired and network meta-analyses were conducted using Stata 18 and R Studio, with risk of",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review",
+     "Network Meta-Analysis"
+    ]
+   },
+   "gold": "meta_analysis",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review",
+    "Network Meta-Analysis"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958558",
+   "title": "Serum and salivary uric acid levels in oral submucous fibrosis: a systematic review and meta-analysis.",
+   "abstract": "This study aimed to evaluate differences in serum uric acid (SeUA) and salivary uric acid (SaUA) levels between patients with oral submucous fibrosis (OSF) and healthy controls. PubMed, Embase, Web of Science, Google Scholar, and the Cochrane Library were searched for studies reporting uric acid (UA) levels in OSF through July 2025, without language restrictions. Study quality was assessed using t",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review",
+     "Meta-Analysis"
+    ]
+   },
+   "gold": "meta_analysis",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review",
+    "Meta-Analysis"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958361",
+   "title": "The effect of diets enriched with high-oleic sources on anthropometric, inflammatory, and blood pressure outcomes: a systematic review and meta-analysis.",
+   "abstract": "High-oleic diets (HODs) have been proposed to improve obesity-related and inflammatory outcomes, yet randomized evidence remains inconsistent. This systematic review and meta-analysis evaluated the effects of HODs compared with low-oleic diets (LODs) on anthropometric, inflammatory, and blood pressure indices. Randomized controlled trials assessing HODs versus LODs in adults were systematically id",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review",
+     "Meta-Analysis"
+    ]
+   },
+   "gold": "meta_analysis",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review",
+    "Meta-Analysis"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958331",
+   "title": "Effects of selenium supplementation on glycemic indices and oxidative-stress biomarkers in adults: a systematic review, meta-analysis, and dose-response analysis of randomized controlled trials.",
+   "abstract": "Diabetes and metabolic syndrome are major public health challenges closely linked to oxidative stress, inflammation, and impaired insulin signaling. Selenium, an essential trace element with antioxidant and immunomodulatory roles, has been proposed as an adjunctive strategy for metabolic regulation; however, evidence from randomized trials remains inconsistent. We evaluated the effects of selenium",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review",
+     "Meta-Analysis",
+     "Review"
+    ]
+   },
+   "gold": "meta_analysis",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review",
+    "Meta-Analysis",
+    "Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958323",
+   "title": "Effects of prune on bone health; a systematic review and meta-analysis of clinical trials.",
+   "abstract": "Earlier randomized controlled trials (RCTs) investigating the effects of prune on bone health provided inconsistent findings. This study aims to summarize the literature and elucidate the effect of prune on bone health. In February 2025, PubMed, Scopus, Web of Science, and Google Scholar were searched for RCTs. The review was submitted to PROSPERO (CRD420250655812) and conducted according to the P",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Systematic Review",
+     "Meta-Analysis"
+    ]
+   },
+   "gold": "meta_analysis",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Systematic Review",
+    "Meta-Analysis"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959076",
+   "title": "Association of NCCRP1 expression with T category and in vitro growth-related characteristics of head and neck squamous cell carcinoma FaDu cells.",
+   "abstract": "Nonspecific cytotoxic cell receptor protein 1 (NCCRP1), which is expressed in normal squamous epithelium, has been reported as a prognostic marker for esophageal squamous cell carcinoma and triple-negative breast cancer. Here, we evaluated expression of NCCRP1 in head and neck squamous cell carcinoma (HNSCC) and adjacent normal mucosa, its association with clinicopathological features, and in vitr",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cohort",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959072",
+   "title": "Pretransplant plasma soluble PD-1 and recurrence after liver transplantation in ICI-treated hepatocellular carcinoma: an exploratory biomarker study.",
+   "abstract": "Immune checkpoint inhibitors (ICIs) are increasingly used as bridging or downstaging therapy before liver transplantation (LT) for hepatocellular carcinoma (HCC), but biomarkers of posttransplant recurrence in this setting are lacking. We evaluated the association between pretransplant plasma soluble programmed death-1 (sPD-1) and posttransplant outcomes after pretransplant ICI therapy. We enrolle",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cohort",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959061",
+   "title": "Atrial Fibrillation in Tribal and Non-tribal Populations: A Comparative Analysis From Eastern India.",
+   "abstract": "Background Atrial fibrillation (AF) is an increasingly prevalent arrhythmia in India, where rheumatic heart disease and cardiometabolic etiologies coexist. This study compared the demographic profile, clinical presentation, associated clinical conditions, echocardiographic characteristics, thromboembolic risk, and anticoagulation practices between tribal patients and non-tribal patients in Eastern",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cohort",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959058",
+   "title": "Physiological reserve and early recovery across oncologic and non-oncologic abdominal surgery: a prospective multicenter interaction analysis.",
+   "abstract": "Frailty and low handgrip strength are established markers of limited physiological reserve, but it is uncertain whether their prognostic meaning differs between oncologic and non-oncologic surgery. We examined whether oncologic indication modifies the associations of preoperative frailty and baseline handgrip strength with early postoperative outcomes. This secondary analysis used a prospective co",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cohort",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959048",
+   "title": "Enteropathy in inborn and acquired errors of immunity: histological patterns and clinical correlates.",
+   "abstract": "Enteropathy is a significant and under-recognised complication of inborn errors of immunity (IEI), frequently misclassified as inflammatory bowel disease (IBD) or coeliac disease due to overlapping and non-specific histopathological findings. Diagnostic criteria remain poorly defined, contributing to substantial diagnostic delay and associated morbidity. We conducted a structured literature review",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cohort",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959047",
+   "title": "Association of MAGEA4 expression with molecular and immune subtypes and clinical outcomes in recurrent bladder cancer.",
+   "abstract": "This study assessed MAGEA4 expression in recurrent bladder cancer, examined its relationships with molecular and immune subtypes, and evaluated its association with treatment response and prognosis. This single-center exploratory cohort study enrolled 20 patients. RNA sequencing was performed on recurrent tumor tissue samples. The EU molecular subtypes were determined. Immune subtypes were classif",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cohort",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958905",
+   "title": "Association of CAF-Related Stromal Markers and IMP3 Expression With Lymph Node Metastasis in Early Colorectal Cancer.",
+   "abstract": "Accurate risk stratification for lymph node metastasis (LNM) is needed after endoscopic resection of early-stage colorectal cancer (CRC). We explored the associations of cancer-associated fibroblast (CAF)-related markers and insulin-like growth factor 2 mRNA-binding protein 3 (IMP3) expression with LNM. We analyzed data from 155 patients with pT1 CRC who were treated by primary or additional surge",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "case_control",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958725",
+   "title": "Capsular Repair Improves 12-Month Healing and Favorable Healing Correlates With Better Early Patient-Reported Outcome Measures in Femoroacetabular Impingement Syndrome Patients Undergoing Hip Arthroscopy.",
+   "abstract": "To evaluate the effect of capsular repair on capsular healing and the healing status on early clinical outcomes in femoroacetabular impingement syndrome patients undergoing hip arthroscopy. Data collected between July 2022 and December 2024 were reviewed. Patients with femoroacetabular impingement syndrome who underwent hip arthroscopy with interportal capsulotomies were included. Patients with a ",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "case_control",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958441",
+   "title": "Multi-omics, multi-tissue analysis reveal role of extracellular matrix remodeling and sphingolipid homeostasis in edematous malnutrition (kwashiorkor).",
+   "abstract": "Edematous malnutrition, aka kwashiorkor, is a phenotype of severe malnutrition whose pathophysiology remains poorly understood. In this case-control study, we employed plasma lipidomics, metabolomics, and proteomics, urine metabolomics and gut microbiome profiling to delineate molecular features specific to kwashiorkor in 60 children aged 6-59 months from Niger compared to marasmus (n = 60) and no",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "case_control",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958432",
+   "title": "School-weariness is associated with enhanced emotional stroop interference and selective autonomic differences in junior middle school students.",
+   "abstract": "School-weariness (SW) is a pattern of persistent negative affect toward learning and school, with cognitive devaluation of academic activities. SW is associated with reduced academic motivation, poorer academic functioning, and internalizing/somatic problems, but its cognitive-affective processes and autonomic correlates remain unclear. This study examined whether SW is associated with enhanced em",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "case_control",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958338",
+   "title": "Prevalence of Factor V Leiden mutation in yemeni women with gestational diabetes mellitus and recurrent pregnancy loss: a case-control study.",
+   "abstract": "Gestational diabetes mellitus (GDM) is one of the most common metabolic disorders during pregnancy and has been associated with recurrent pregnancy loss (RPL) and other obstetric complications. The Factor V Leiden (FVL) is a common inherited thrombophilic mutation. However, data on the prevalence of the FVL mutation among Yemeni women with GDM and a history of RPL remain scarce. Therefore, this ca",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "case_control",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958222",
+   "title": "Data-driven identification of modifiable risk factors for colorectal cancer in Palestine using machine learning methods.",
+   "abstract": "Colorectal cancer (CRC) is a growing public health concern in Palestine, yet limited evidence is available on locally relevant behavioral, dietary, socioeconomic, and contextual predictors. Machine learning (ML) may support prevention-oriented risk stratification by identifying complex predictive patterns among potentially modifiable factors. This study aimed to identify important predictors of CR",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "case_control",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959074",
+   "title": "Dietary frequency, body satisfaction, anxiety symptoms, and depressive symptoms among offspring of healthcare workers in China.",
+   "abstract": "Dietary behaviors may be associated with body image and emotional health in young people, but evidence integrating these outcomes in Chinese populations remains limited. This study examined associations of dietary frequency with body satisfaction, anxiety symptoms, and depressive symptoms. This cross-sectional study included 584 offspring of healthcare workers aged 10-24 years in Zhejiang, China. ",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cross_sectional",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959065",
+   "title": "Identifying future geriatric nurses: psychometric evaluation of the German Willingness to Work with Elderly People Scale among nursing students.",
+   "abstract": "In German-speaking countries, where geriatric care faces a persistent nursing shortage, nursing students are expected to play a key role in addressing future workforce needs. Currently, there is a lack of valid and reliable instruments to assess nursing students' willingness to work with older adults. This cross-sectional study aimed to validate the German version of the Willingness to Work with E",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cross_sectional",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959063",
+   "title": "Association between infant crawling characteristics and fundamental movement skill development in preschool children.",
+   "abstract": "This study examined the associations between infant crawling experience and crawling characteristics and fundamental movement skill (FMS) development in preschool children to characterize population-level associations and generate hypotheses for prospective research. A retrospective cross-sectional design was used, including 557 children aged 3-6 years from kindergartens in Qufu, Shandong Province",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cross_sectional",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959030",
+   "title": "Gratitude and happiness among university students: a cross-sectional study in teacher education.",
+   "abstract": "This study examined the association between gratitude and happiness among education students at a public university in Tacna, Peru, including four dimensions of happiness: positive sense of life, life satisfaction, personal fulfillment, and joy of living. A quantitative, non-experimental, cross-sectional correlational design was used. Participants were 507 students (313 women and 194 men) aged 18-",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cross_sectional",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959027",
+   "title": "Nutritional literacy profiles and their association with dietary motivation in adolescents with chronic kidney disease.",
+   "abstract": "To explore potential categories of nutritional literacy among adolescents with chronic kidney disease and differences in dietary motivations across these categories. This cross-sectional study included 433 adolescents with chronic kidney disease treated in the pediatric department of a tertiary hospital between March and September 2025. Latent profile analysis identified nutrition literacy profile",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cross_sectional",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959022",
+   "title": "A social exchange perspective on employee performance in Sierra Leone's public sector: the roles of authentic leadership, participative decision-making, and trust.",
+   "abstract": "Based on Social Exchange Theory (SET) and Social Information Processing (SIP), this research attempts to explore the effect that Participative Decision-Making (PDM) has on the performance of employees working in Sierra Leone's public sector using Affective Trust, Work Engagement, Affective Commitment, and Organizational Citizenship Behavior (OCB) as mediating variables in relation to Authentic Lea",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "cross_sectional",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959036",
+   "title": "Application of LLM combined with knowledge base in improving C-TIRADS grading of thyroid nodules.",
+   "abstract": "This study used the unified text-based grading results of senior sonographers as the primary reference (this text benchmark is not pathological diagnostic gold standard) to evaluate the concordance of text-derived C-TIRADS grades assigned by six large language models (LLMs), with and without FastGPT Retrieval-Augmented Generation (RAG) knowledge base assistance. Our primary endpoint was the concor",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "diagnostic",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958768",
+   "title": "Recent Update in the Diagnosis of Eustachian Tube Dysfunction: A Comprehensive Review of the Eustachian Tube Function Test.",
+   "abstract": "Eustachian tube dysfunction (ETD) is a prevalent otolaryngologic condition that plays a central role in the pathogenesis of various middle ear diseases; however, there is no universally accepted gold-standard test for its diagnosis. In this narrative review, currently available Eustachian tube (ET) function tests are comprehensively evaluated, encompassing subjective patient-reported outcome measu",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Review"
+    ]
+   },
+   "gold": "diagnostic",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Review"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958730",
+   "title": "Australian Speech-Language Pathologists' perspectives on using cervical auscultation in the detection of aspiration in infants and children.",
+   "abstract": "Cervical auscultation (CA), a technique based on listening to swallow and breath sounds, has high diagnostic accuracy in detecting aspiration risk in children. Despite this, most Australian Speech-Language Pathologists (SLPs) do not routinely use CA in clinical practice. This study aimed to identify barriers and enablers of CA use from the perspectives of Australian paediatric SLPs. Participants w",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "diagnostic",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958682",
+   "title": "Population-Specific CT-Derived Sarcopenia Cutoff Values and Inter-Vertebral Level Correlations in Healthy Thai Adults Using Automated Muscle Segmentation.",
+   "abstract": "Establishing optimal sarcopenia cutoffs is essential, as L3 is not always included in CT imaging, and reference levels vary across populations. The absence of Southeast Asia-specific thresholds may lead to misclassification, highlighting the need for regionally appropriate diagnostic criteria. This study establishes population-specific sarcopenia cutoffs (T10-S1) in the Thai population and defines",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "diagnostic",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958679",
+   "title": "Assessment of damp-heat impeding syndrome in rheumatoid arthritis: development and validation of a diagnostic scale.",
+   "abstract": "To develop a novel quantitative scale for Damp-Heat Impeding Syndrome (DHIS) in rheumatoid arthritis (RA) and to enhance diagnostic reliability through a combined consensus- and data-driven approach grounded in Traditional Chinese Medicine (TCM) principles, thereby addressing the limitations of existing expert-consensus-based tools. Scale items were selected from the China Rheumatoid Arthritis Reg",
+   "raw": {
+    "PT": [
+     "Journal Article",
+     "Validation Study"
+    ]
+   },
+   "gold": "diagnostic",
+   "pubmed_publication_types": [
+    "Journal Article",
+    "Validation Study"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42958523",
+   "title": "Integrated serum and synovial biomarker profiling reveals inflammatory and cartilage remodeling signatures in age-restricted knee osteoarthritis.",
+   "abstract": "Knee osteoarthritis (OA) is a complex disease characterized by inflammation, cartilage degeneration, and tissue remodeling. Although many biomarkers have been investigated, the combined biological significance of systemic and local biomarkers is not fully understood. This study aimed to comprehensively address serum and synovial biomarkers associated with inflammation, cartilage turnover, and meta",
+   "raw": {
+    "PT": [
+     "Journal Article"
+    ]
+   },
+   "gold": "diagnostic",
+   "pubmed_publication_types": [
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959073",
+   "title": "Coronary artery compression in percutaneous pulmonary valve implantation: a case series.",
+   "abstract": "Catastrophic complications of coronary artery compression after percutaneous pulmonary valve implantation (PPVI) are uncommon in patients with a dysfunctional native right ventricular outflow tract after Tetralogy of Fallot repair (rTOF). Nonetheless, we report three rTOFs with a high risk of compromising coronary blood flow for PPVI. This risk has been elucidated by multimodal assessments, includ",
+   "raw": {
+    "PT": [
+     "Case Reports",
+     "Journal Article"
+    ]
+   },
+   "gold": "other",
+   "pubmed_publication_types": [
+    "Case Reports",
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959069",
+   "title": "Endoscope-Assisted Bilateral Supraorbital Craniotomies for Reconstruction of a Traumatic Cerebrospinal Fluid Leak in a Complex Skull Base Fracture: A Case Report.",
+   "abstract": "Background Surgical management of traumatic cerebrospinal fluid (CSF) leakage traditionally requires extensive craniotomy. Here, we present a tailored supraorbital craniotomy using an endoscopic technique for complex skull base trauma. Methods We report the case of a patient with extensive anterior skull base fractures and persistent CSF rhinorrhea despite lumbar drainage. Case Description A 21-ye",
+   "raw": {
+    "PT": [
+     "Case Reports",
+     "Journal Article"
+    ]
+   },
+   "gold": "other",
+   "pubmed_publication_types": [
+    "Case Reports",
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959060",
+   "title": "Multifocal FDG-avid pancreatic pseudomasses mimicking metastases during pembrolizumab for axillary recurrence of triple-negative breast cancer: a case report of immune-related pancreatitis.",
+   "abstract": "Immune checkpoint inhibitors (ICIs) are associated with a wide spectrum of immune-related adverse events (irAEs), reflecting enhanced immune activation. Pancreatic involvement is rare and typically presents as asymptomatic hyperlipasemia or diffuse inflammatory changes. Focal or multifocal mass-like presentations are uncommon and may mimic pancreatic malignancy, posing a significant diagnostic cha",
+   "raw": {
+    "PT": [
+     "Case Reports",
+     "Journal Article"
+    ]
+   },
+   "gold": "other",
+   "pubmed_publication_types": [
+    "Case Reports",
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959055",
+   "title": "Case Report: Brucella-associated complications following thoracic endovascular aortic repair: a case series of three patients.",
+   "abstract": "Brucellosis is a rare but potentially fatal cause of vascular graft infection. Evidence regarding Brucella-associated complications after thoracic endovascular aortic repair (TEVAR) remains limited. Case presentation: We report three elderly male patients who developed severe aortic complications following TEVAR, including pseudoaneurysm formation and aorto-esophageal fistula. All patients had a h",
+   "raw": {
+    "PT": [
+     "Case Reports",
+     "Journal Article"
+    ]
+   },
+   "gold": "other",
+   "pubmed_publication_types": [
+    "Case Reports",
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959041",
+   "title": "Crystalline κ-light-chain proximal tubulopathy in Waldenström macroglobulinemia with an IgA nephropathy pattern: a case report and systematic review.",
+   "abstract": "Light-chain proximal tubulopathy (LCPT) is a rare renal manifestation of monoclonal gammopathy that is exceptionally uncommon in Waldenström macroglobulinemia (WM). We report a case of crystalline κ-LCPT in WM and conduct a literature review of WM-associated LCPT and crystal-storing histiocytosis (CSH). A 65-year-old man with a 4-year history of intermittent hematuria and proteinuria developed pro",
+   "raw": {
+    "PT": [
+     "Case Reports",
+     "Journal Article"
+    ]
+   },
+   "gold": "other",
+   "pubmed_publication_types": [
+    "Case Reports",
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  },
+  {
+   "zotero_key": "PMID-42959039",
+   "title": "Case Report: A case of postneurosurgery Klebsiella pneumoniae meningitis with longitudinal CSF cytokine profiling and combined intrathecal therapy.",
+   "abstract": "A 47-year-old woman with poorly controlled diabetes developed acute fever, headache, seizures, and progressive confusion during an admission for glycemic management. Neurological examination showed mild meningeal signs, and brain MRI demonstrated diffuse linear leptomeningeal enhancement. Lumbar puncture revealed strikingly viscous, 'jelly-like' cerebrospinal fluid (CSF), and culture identified Kl",
+   "raw": {
+    "PT": [
+     "Case Reports",
+     "Journal Article"
+    ]
+   },
+   "gold": "other",
+   "pubmed_publication_types": [
+    "Case Reports",
+    "Journal Article"
+   ],
+   "year": 2026,
+   "abstract_truncated_to": 400
+  }
+ ]
+}

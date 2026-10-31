@@ -5585,6 +5585,30 @@ from custom_backend.ai_suggest_api import register_ai_suggest_routes
 
 register_ai_suggest_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR)
 
+# W1 Zotero 直连（B5）：只读本机回环 127.0.0.1:23119（Zotero 7 本地 API，无需
+# 钥匙，绝不触碰 Zotero 云）；默认关——无任何后台/定时请求，仅用户在导入页显式
+# 点击时出站；集合条目合成 RIS 虚拟文件经 app.state.review_imports.upload() 走
+# 受保护导入（去重/待审/溯源全管线复用）；失败优雅降级 409 绝不 500。
+from custom_backend.zotero_local_api import register_zotero_local_routes
+
+register_zotero_local_routes(app, require_user, _task_or_404, _task_visible_to)
+
+# W2 PDF 自动获取（DOI→Unpaywall（email 参数）→开放 PDF→check_pdf_bytes→save_pdf
+# 落盘+轨迹）：联网默认关（任务级 pdf_fetch_settings.json 缺省 enabled=false，
+# 未启用一律 403 且零出站）；出站仅 stdlib urllib（_NoRedirectHandler 先例、
+# 短超时、读取上限）；Crossref 元数据只读建议，绝不静默改库。
+from custom_backend.pdf_fetch_api import register_pdf_fetch_routes
+
+register_pdf_fetch_routes(app, require_user, _task_or_404, _screener_db, _pdfs_dir, _trace_context)
+
+# W4 预置分类器（B3）：研究设计分类只读端点（GET /api/tasks/{id}/study-designs）。
+# 纯本地正则启发式（coscreen/al/study_design.py，复用 evidence_mapper 规则），
+# 零联网零写库；取数走工作流 runtime 的只读目录（不建成员筛选员库）；
+# 全部导入/读库/分类异常降级为 200+available=false（绝不 500）。
+from custom_backend.study_design_api import register_study_design_routes
+
+register_study_design_routes(app, require_user, _task_or_404, _task_visible_to)
+
 from custom_backend.report_evidence_api import register_report_evidence_routes
 register_report_evidence_routes(app, require_user)
 
@@ -6418,10 +6442,13 @@ def get_shared_ranking(
 #   coscreen/living_review.py（纯计算模块）；
 # - 第二层：save-search 生成 PubMed 可点击 URL（仅拼字符串，点击后的检索由
 #   用户浏览器完成，后端不联网）；
-# - 第三层（可选插件，默认关闭）：check-now 延迟导入
-#   custom_backend/living_review_plugin.py 调 PubMed E-utilities，失败返回降级
-#   提示（不 500、不中断离线功能）；enable-auto 只把开关写入 task.json 的
-#   "living_review_auto" 字段，绝不启动后台线程。
+# - 第三层（可选插件，默认关闭，W3 复活）：check-now 延迟导入
+#   custom_backend/living_review_plugin.py 调 PubMed E-utilities（唯一联网
+#   出口；显式 UA、短超时、读取上限、拒绝重定向），拉取结果合成虚拟 RIS
+#   文件走 review_imports.upload() 受保护导入待审（不直接入库、不重算合并）；
+#   失败统一 PubMedPluginError → 409 降级提示（不 500、不中断离线功能）；
+#   enable-auto 只把开关写入 task.json 的 "living_review_auto" 字段，绝不
+#   启动后台线程——「自动」由前端页面会话内定时器实现，应用关闭即停。
 # 检索式与更新历史存 {task_dir}/living_review.json（读-改-写 + 原子写，与
 # task.json 同一把路径级互斥锁）。本段为纯追加，不修改上方任何既有行。
 
@@ -6444,12 +6471,72 @@ class LivingReviewAutoIn(BaseModel):
 
 
 class LivingReviewCheckIn(BaseModel):
-    """check-now 的可选结局层：缺省时只走去重/导入/AL，跳过 Meta 对比。"""
+    """check-now 请求体（W3 检索订阅复活）。
 
+    - ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；
+      缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。
+    - 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，
+      受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。
+    """
+
+    query_string: str = Field(default="", max_length=4000)
+    since_date: str = Field(default="", max_length=10)
     comparison: str = Field(default="", max_length=300)
     outcome: str = Field(default="", max_length=300)
     timepoint: str = Field(default="", max_length=100)
     measure: str = Field(default="", max_length=30)
+
+
+def _pubmed_updates_to_ris(articles: list[dict]) -> str:
+    """插件返回的 Article 形状 dict 列表 → RIS 文本（虚拟导入文件）。
+
+    只写 ris_parser 会读回的标签：``ID  - PMID-<pmid>`` 作为全局稳定来源键
+    （无空白、非纯数字序号，不会被解析器降级），使同一 PMID 在去重层按精确
+    键识别为既有文献（不会作为不同文献重复入库）。行身份的三元组是
+    ``(source_id, digest, row_index)``——source_id 由文件名决定（端点用固定
+    名 ``pubmed-update.ris``），因此同一 PMID 集合重复拉取时复用既有源记录；
+    PMID 集合变化会改变 digest，按「同一文件被改动后重导」的正常语义处理。
+    多行文本（标题/摘要）折叠为单行：rispy 续行文法与本生成器的最小交集。
+    """
+
+    def one_line(value: object) -> str:
+        return " ".join(str(value or "").split())
+
+    lines: list[str] = []
+    for article in articles:
+        if not isinstance(article, dict):
+            continue
+        lines.append("TY  - JOUR")
+        title = one_line(article.get("title"))
+        if title:
+            lines.append(f"TI  - {title}")
+        for author in str(article.get("authors") or "").split(";"):
+            author = author.strip()
+            if author:
+                lines.append(f"AU  - {author}")
+        journal = one_line(article.get("journal"))
+        if journal:
+            lines.append(f"JO  - {journal}")
+        try:
+            year = int(article.get("year")) if article.get("year") else None
+        except (TypeError, ValueError):
+            year = None  # 年份形态异常时宁缺毋错，不阻断整批虚拟文件
+        if year:
+            lines.append(f"PY  - {year}")
+        doi = one_line(article.get("doi"))
+        if doi:
+            lines.append(f"DO  - {doi}")
+        abstract = one_line(article.get("abstract"))
+        if abstract:
+            lines.append(f"AB  - {abstract}")
+        url = one_line(article.get("url"))
+        if url:
+            lines.append(f"UR  - {url}")
+        key = one_line(article.get("zotero_key"))
+        if key:
+            lines.append(f"ID  - {key}")
+        lines.append("ER  - ")
+    return "\n".join(lines) + "\n"
 
 
 def _living_review_store(info: tasks_mod.TaskInfo) -> Path:
@@ -6622,8 +6709,10 @@ def living_review_enable_auto(task_id: str, body: LivingReviewAutoIn,
                               user: dict = Depends(require_user)) -> dict:
     """开启/关闭自动监控（显式操作，默认关闭）。
 
-    只把设置写入 task.json 的 "living_review_auto" 字段——不启动任何后台
-    线程/定时任务；增量拉取永远由用户手动点击 check-now 触发。
+    只把设置写入 task.json 的 "living_review_auto" 字段——后端不启动任何
+    后台线程/定时任务。「自动」的实现是前端 living_review.js 在**页面会话
+    内**按间隔触发 check-now（应用关闭即停）；后端永远只在收到显式 HTTP
+    请求时才联网拉取。
     """
     info = _task_or_404(task_id)
     settings = {"enabled": bool(body.enabled),
@@ -6638,19 +6727,200 @@ def living_review_enable_auto(task_id: str, body: LivingReviewAutoIn,
     return {"living_review_auto": settings}
 
 
-@app.post("/api/tasks/{task_id}/living-review/check-now")
-def living_review_check_now(task_id: str, body: LivingReviewCheckIn | None = None,
-                            user: dict = Depends(require_user)) -> dict:
-    """Prevent the legacy fetch-and-write path; retain saved searches and history."""
-    app.state.review_imports.authorize(task_id, user, None)
-    # No fetch, article write, analysis rerun, history mutation or last-run advance.
-    # The original exported database file must enter the protected import service.
-    raise HTTPException(409, {
-        "code": "protected_import_required",
-        "message": "Export the search results and use protected Import review. Select the original source file there; review metadata and candidates before activation. Living Review history is retained.",
+def _pubmed_unavailable(task_id: str, exc: Exception) -> HTTPException:
+    """PubMedPluginError → 结构化 409，并按失败类型给**可执行**的指引。
+
+    r8-r3 评审 high：原先所有失败都劝用户「稍后重试」，但体量类失败（响应
+    超过读取上限、命中数过多、超时于大批量）重试永远不会成功——检索式命中
+    量是常量。这里按异常文案分流：体量类给出缩小检索式/缩短日期窗口/分批
+    导入三种可操作路径，网络类才建议重试。附带命中量上限说明，使「上限与
+    命中量」的关系对用户可见。
+    """
+    text = str(exc)
+    volume = any(marker in text for marker in ("读取上限", "超时", "timed out", "截断"))
+    if volume:
+        message = (
+            f"PubMed 增量拉取未完成（{text}）。本次检索的命中量可能过大。"
+            "可执行的处理：① 在检索式中加上限缩条件（如 AND review[pt]、"
+            "限定 [tiab] 或日期范围）；② 把「上次检索日期」改近一些以缩小增量窗口；"
+            "③ 直接从 PubMed 分批导出文件，经导入页受保护导入。")
+        hint = "reduce_query_or_window"
+    else:
+        message = (
+            f"PubMed 检索暂不可用（{text}）。离线功能不受影响：请稍后重试，"
+            "或从 PubMed 导出文件后经导入页受保护导入。")
+        hint = "retry_or_manual_import"
+    from custom_backend.living_review_plugin import (
+        EFETCH_PAGE_SIZE,
+        MAX_RESPONSE_BYTES,
+        RETMAX,
+    )
+    return HTTPException(409, {
+        "code": "pubmed_unavailable",
+        "message": message,
+        "hint": hint,
+        "limits": {
+            "max_records_per_check": RETMAX,
+            "efetch_page_size": EFETCH_PAGE_SIZE,
+            "max_response_bytes": MAX_RESPONSE_BYTES,
+        },
         "import_url": f"/api/tasks/{task_id}/import",
         "review_url": f"/api/tasks/{task_id}/import-batches",
     })
+
+
+@app.post("/api/tasks/{task_id}/living-review/check-now")
+async def living_review_check_now(task_id: str,
+                                  body: LivingReviewCheckIn | None = None,
+                                  user: dict = Depends(require_user)) -> dict:
+    """真实拉取 PubMed 增量 → 虚拟 RIS 文件 → 受保护导入（W3 复活）。
+
+    治理红线：本端点是 living_review_plugin 的**唯一**生产调用方，且只在
+    收到本请求时才延迟导入并联网（默认关闭；无后台服务）。拉取结果不直接
+    入库——合成虚拟 RIS 文件（``_pubmed_updates_to_ris``，PMID 稳定键）走
+    ``review_imports.upload()`` 与手工上传同一条受保护管线：staged 待审、
+    元数据/候选核验、显式激活、溯源与撤销全继承。虚拟文件名固定
+    （``pubmed-update.ris``），与手工重复上传同名同字节文件同径：同批次
+    再次拉回相同 PMID 集合时不新增源记录（batch 收据仍会新增，与手工重
+    上传一致）；PMID 集合变化时按「改动过的同一文件重导」语义追加新行。
+    不重算合并（激活后由分析页单独运行）；成功后追加 living_review 历史并
+    推进检索式 last_run_date（不覆盖用户录入的 total_hits_last）。
+
+    降级契约：**插件**任何失败（不可达/超时/重定向被拒/坏响应）统一
+    PubMedPluginError → 409 ``pubmed_unavailable`` + 手动导入指引，绝不
+    500、不中断离线功能。注意降级覆盖的是检索阶段；进入受保护导入管线后
+    的失败与其他导入端点同语义（沿用管线既有错误映射）。
+    """
+    info = _task_or_404(task_id)
+    app.state.review_imports.authorize(task_id, user, None)
+    payload = body or LivingReviewCheckIn()
+
+    state = _read_living_review_state(info)
+    pubmed_records = [row for row in state["search_records"]
+                      if isinstance(row, dict)
+                      and row.get("database") == "pubmed"
+                      and str(row.get("query_string") or "").strip()]
+    query = (payload.query_string or "").strip()
+    record = next((row for row in pubmed_records
+                   if str(row.get("query_string")).strip() == query), None)
+    if not query:
+        if not pubmed_records:
+            raise _bad("请先保存 PubMed 检索式（save-search）或在请求中提供 query_string。", 400)
+        record = pubmed_records[0]
+        query = str(record["query_string"]).strip()
+    since = (payload.since_date or "").strip()
+    if not since and record is not None:
+        since = str(record.get("last_run_date") or "").strip()
+    if since and not _LR_DATE_RE.match(since):
+        raise _bad("since_date 必须为 YYYY-MM-DD。", 400)
+    if not since:
+        raise _bad("缺少增量起始日期：请提供 since_date，或先为检索式填写上次检索日期。", 400)
+
+    # 默认关闭红线：插件只在本次显式请求内延迟导入；失败统一可捕获
+    from custom_backend.living_review_plugin import (
+        PubMedPluginError,
+        fetch_pubmed_updates,
+    )
+    try:
+        articles = await run_in_threadpool(fetch_pubmed_updates, query, since)
+    except PubMedPluginError as exc:
+        raise _pubmed_unavailable(task_id, exc) from exc
+
+    # 截断即不完整（r8-r3 评审 medium）：一次检查最多 RETMAX 条，命中数超过
+    # 该上限时拿到的只是前 RETMAX 条。此时若照常入库并把游标推进到今天，
+    # 剩下的文献会被永久跳过（下一次从今天起算）。因此先判截断，直接给可执行
+    # 指引，绝不写入半截增量。
+    from custom_backend.living_review_plugin import RETMAX
+    if len(articles) >= RETMAX:
+        raise _pubmed_unavailable(task_id, PubMedPluginError(
+            f"本次增量命中超过 {RETMAX} 条上限，结果被截断"))
+
+    # 固定文件名（r8 评审 medium）：source 身份 = 完整文件名（import_sources.detect
+    # 的 identity='filename:…'）。按秒时间戳命名会让每次检查都生成新 source_id，
+    # 同一 PMID 反复新增 staged 源记录。固定名 + 固定内容 → 与手工重复上传同一
+    # 文件完全同径（source_id/digest/row_index 三者相同 → 复用既有行，不新增）。
+    # 增量集合变化时 digest 变化，与「手工重导一份改动过的文件」同语义（既有行
+    # 保留、新行追加），此处如实记录而不宣称更强的不变量。
+    name = "pubmed-update.ris"
+    import_result = None
+    if articles:
+        virtual = UploadFile(file=BytesIO(
+            _pubmed_updates_to_ris(articles).encode("utf-8")), filename=name)
+        # 与手工上传同一条受保护管线（authorize/dedup/staged/溯源/历史）
+        import_result = await app.state.review_imports.upload(
+            task_id, user, [virtual], batch=False,
+            source_ids=None, job_id=None, screener=None)
+
+    when = datetime.now().isoformat(timespec="seconds")
+    # 结果口径（r8 评审 medium）：只取管线返回的真实字段，不再用 len(articles)
+    # 冒充「新增」。protected/staged 批次在激活前不推进筛选与合并，故
+    # activated_new=0、pending_records>0；fresh 任务与手工上传同径直接激活。
+    result = import_result or {}
+    activated_new = int(result.get("n_new") or 0)
+    pending_new = int(result.get("pending_records") or 0)
+    staged = bool(result.get("staged"))
+    duplicates = int(result.get("duplicates_against_db") or 0)
+    if not articles:
+        change_report = f"自 {since} 起 PubMed 无新增（检索式命中 0 条）。"
+    elif staged:
+        change_report = (
+            f"PubMed 增量 {len(articles)} 条已进入受保护导入待审"
+            f"（批 {result.get('batch_id')}：待审记录 {pending_new} 条，"
+            f"与库内既有文献匹配 {duplicates} 条）；请到「导入核验」确认候选与"
+            "元数据后激活。激活前不改变筛选队列与合并结果。")
+    else:
+        change_report = (
+            f"PubMed 增量 {len(articles)} 条已直接导入"
+            f"（新入库 {activated_new} 条，与库内既有文献匹配 {duplicates} 条）；"
+            "本任务尚无研究记录，导入沿用首个来源的即时激活口径。"
+            "合并结果需在分析页单独重跑。")
+
+    def _mutate(latest: dict) -> None:
+        latest["history"].append({
+            "when": when, "source": "pubmed", "label": name,
+            "comparison": payload.comparison, "outcome": payload.outcome,
+            "timepoint": payload.timepoint, "measure": payload.measure,
+            "fetched": len(articles),
+            "n_new": activated_new,
+            "pending_new": pending_new,
+            "duplicates_removed": duplicates,
+            "al_available": None, "conclusion_changed": False,
+            "meta_before": None, "meta_after": None,
+            "change_report": change_report,
+        })
+        for row in latest["search_records"]:
+            if (isinstance(row, dict) and row.get("database") == "pubmed"
+                    and str(row.get("query_string") or "").strip() == query):
+                # R3（禁止静默覆盖）：total_hits_last 是用户录入的检索式总命中，
+                # 不因一次增量拉取被改写；本次拉取条数另记 last_fetched_count。
+                #
+                # 游标推进（r8-r3 评审 medium）：只有「本次拉取可信且未截断」才
+                # 推进 last_run_date。可信性由三件事保证：① 服务端按
+                # mindate+maxdate 成对过滤（真网实测取效，且有钉子）；
+                # ② 命中数未达 RETMAX（截断已在上方直接 409，不入库不推进）；
+                # ③ 插件任一批失败即整次抛错（不会半截入库）。
+                # 不用「发表年份 >= 起始年」作判据：真网实测 3531 条
+                # 2026-10 录入的检索里存在 DP=2022 的记录（在线优先/回溯标引
+                # 时 DP 早于 EDAT 属正常），用年份判定会把正常结果误判成失真。
+                row["last_fetched_count"] = len(articles)
+                row["last_checked_at"] = when
+                row["last_run_date"] = when[:10]
+
+    state = _mutate_living_review_state(info, _mutate)
+    history_entry = next((entry for entry in reversed(state["history"])
+                          if entry.get("label") == name), None)
+    return {
+        "checked": True, "source": "pubmed",
+        "query_string": query, "since_date": since,
+        "fetched": len(articles), "virtual_file": name,
+        "activated_new": activated_new, "pending_new": pending_new,
+        "already_present": duplicates, "staged": staged,
+        "import": import_result,
+        "import_url": f"/api/tasks/{task_id}/import",
+        "review_url": f"/api/tasks/{task_id}/import-batches",
+        "history_entry": history_entry,
+        "search_records": state["search_records"],
+    }
 
 
 # ---- Batch W12 endpoints (additive) ----

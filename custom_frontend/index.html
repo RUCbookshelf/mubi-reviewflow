@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>木笔ReviewFlow · 协同文献筛选</title>
+<link rel="manifest" href="./manifest.webmanifest?v=20261030-r8-W5PWA1">
 <link rel="stylesheet" href="./pdfjs/pdf_viewer.css?v=20260929-ui3">
 <style>
 /* ==================================================================
@@ -6423,6 +6424,10 @@ async function renderScreen() {
     typeof score === 'number' ? el('div', { class: 'al-score', title: '机器学习相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练' },
       el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(score * 100) + '%' })),
       el('span', { class: 'num', text: T('机器学习相关度 {0}%', (score * 100).toFixed(1)) })) : null,
+    /* W4 预置分类器：研究设计徽标（随机对照试验/系统综述/…/未识别），
+       插在 AL 分数条旁（无分数条时也显示）；模块未加载时为 null（被下方
+       filter 剔除），模块加载但分类不可用时自行移除节点。 */
+    window.StudyDesignBadge ? StudyDesignBadge.badge(r) : null,
     el('div', { class: 'absbox', text: nz(r.abstract) ? T('摘要：') + nz(r.abstract) : T('（无摘要）') }),
     el('div', { class: 'row scr-decisions', style: 'margin-bottom:0' },
       el('button', { class: 'btn b-inc', id: 'btnInc', text: '1 纳入', onclick: () => screenDecide('include') }),
@@ -6433,6 +6438,10 @@ async function renderScreen() {
   WorkflowControls.decorateStage('screen');
   const saved = WorkflowControls.activeItem('screen')?.saved;
   if (saved && S.screenEditingKey === r.zotero_key) window.WorkspaceUndo?.restoreReason(reason, customReason, saved.exclusion_reason || saved.reason || '');
+  /* W4 预填不代存：判为非 RCT 的已识别设计 → 仅预选「研究设计不符」排除理由
+     （复用 ai_suggest 采纳＝填控件模式），必须在 markDecisionClean 之前执行，
+     预填后的值进入「干净」基线；数据晚到时由模块补填并重置基线。 */
+  window.StudyDesignBadge?.prefill(reason, r);
   WorkflowControls.markDecisionClean('screen');
 }
 let screenRequestVersion = 0;
@@ -9042,6 +9051,10 @@ restartButton.addEventListener('click', async () => {
   if (AUTH_TOKEN) {
     try { await enterApp(); return; } catch (e) { /* 令牌失效：api() 已回登录屏 */ }
   }
+  /* r8 W5 第 3 轮评审：离线登录说明改由 offline_banner.js 统一创建/清理
+     （内联 static 定位会被 .login-bg 盖住，且 navigator.onLine 在后端挂掉时
+     恒为 true、触发条件不成立；模块侧按「是否由离线快照交付」判定并补样式）。
+     认证行为不变：仍落到登录屏，仍不提供离线编辑。 */
   $('#authScreen').style.display = 'flex';
   if (window.RiverFX) RiverFX.layout();
 })();
@@ -9140,7 +9153,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_grade.js?v=20261002-language-wrap-final1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
-<script src="./living_review.js?v=20261012-workflow6"></script>
+<script src="./living_review.js?v=20261030-r8-w3-2"></script>
 <script src="./evidence_mapper.js?v=20261002-release1"></script>
 <link rel="stylesheet" href="./mobile_concept.css?v=20261013-disclosure5">
 <script src="./mobile_concept_locale.js?v=20261013-motion13"></script>
@@ -9154,5 +9167,25 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./report_evidence.js?v=2.1.4-r5"></script>
 <!-- AI 抽取建议（BYOK）：建议卡+逐条确认流+设置页（任务 B7；追加式接入，自带十语言词条，独立容错） -->
 <script src="./ai_suggest.js?v=20261028-r7-frontsec1"></script>
+<!-- W1 Zotero 直连（2.1.4-r8）：导入页「从本机 Zotero 导入」入口+集合选择对话框（回环 127.0.0.1:23119，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
+<script src="./zotero_import.js?v=20261030-r8-zotero1"></script>
+<!-- W2 PDF 自动获取（2.1.4-r8）：初筛文献卡「获取全文」+任务设置卡开关/批量入口（DOI→Unpaywall；联网默认关、仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
+<script src="./pdf_fetch.js?v=20261030-r8-w2pdf1"></script>
+<!-- W4 预置分类器（2.1.4-r8）：初筛卡研究设计徽标+排除理由预填不代存（纯本地规则端点，无联网；自带十语言词条，textContent 渲染，独立容错） -->
+<script src="./study_design_badge.js?v=20261030-r8-w4sd1"></script>
+<!-- W5 PWA 离线壳（2.1.4-r8）：离线只读快照提示条模块（自包含 IIFE＋十语言词条，textContent 渲染）＋ Service Worker 注册（相对路径；本组独占文档最末锚点） -->
+<script src="./offline_banner.js?v=20261030-r8-W5PWA1"></script>
+<script>
+'use strict';
+/* W5 PWA：注册离线壳 Service Worker。相对 './sw.js' ＋ scope './' → 根路径与
+   /reviewflow/ 子路径部署同构；失败仅告警不阻断（离线壳不可用不影响应用）。
+   离线只读快照由 sw.js 兜底提示，不做离线编辑（docs/MOBILE_INTERFACE.md 口径）。 */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' })
+    .catch(function (err) {
+      console.warn('[W5-PWA] Service Worker 注册失败（离线壳不可用，应用不受影响）：', err);
+    });
+}
+</script>
 </body>
 </html>
