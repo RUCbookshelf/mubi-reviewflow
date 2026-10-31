@@ -17,7 +17,7 @@
 
   function renderResult(result, requestBody, current) {
     const table = el('table');
-    table.append(el('thead', {}, el('tr', {}, ...['结局', '研究数', '合并估计', 'SE（分析尺度）', '95% CI', '边际 Q（抽样方差）'].map(label => el('th', { text:label })))));
+    table.append(el('thead', {}, el('tr', {}, ...['结局', '研究数', '合并估计', 'SE（分析尺度）', '95% CI', '边际 Q（抽样方差）'].map(label => el('th', { text:T(label) })))));
     const body = el('tbody');
     (result.estimates || []).forEach(item => body.append(el('tr', {},
       ...[item.outcome, item.n_studies, item.estimate, item.se,
@@ -37,7 +37,7 @@
       }));
       heterogeneity = el('p', { class:'hint', text:T('研究间方差：{0}。研究间相关：{1}。{2}',variances,correlations.join('; '),result.fit?.boundary ? T('边界解，谨慎解读相关系数。') : '') });
     }
-    const audit = el('details', {}, el('summary', { text:'查看协方差与输入快照' }),
+    const audit = el('details', {}, el('summary', { text:T('查看协方差与输入快照') }),
       el('pre', { class:'hint', text:JSON.stringify({ between_study_covariance:result.between_study_covariance,
         fit:result.fit, coefficient_covariance:result.coefficient_covariance,
         input_snapshot:result.input_snapshot, limitations:result.limitations }, null, 2) }));
@@ -83,8 +83,8 @@
       body.append(el('tr', {}, ...cells));
     });
     table.append(body);
-    area.append(table, el('label', { class:'lbl', text:'协方差来源或假设（必填）' }));
-    const note = el('input', { class:'input', 'data-note':'', placeholder:'例如：原文表 3 的相关系数，或预设假设及理由',
+    area.append(table, el('label', { class:'lbl', text:T('协方差来源或假设（必填）') }));
+    const note = el('input', { class:'input', 'data-note':'', placeholder:T('例如：原文表 3 的相关系数，或预设假设及理由'),
       'aria-label':T("{0} covariance source", box.dataset.studyId) });
     note.value = prepared.notes.get(box.dataset.studyId) || '';
     note.addEventListener('input', () => { prepared.notes.set(box.dataset.studyId, note.value); invalidateResult(); });
@@ -93,14 +93,14 @@
 
   $('#anDependentPrepare').addEventListener('click', () => {
     try {
-      if (!S.task) throw new Error('请先选择任务');
+      if (!S.task) throw Object.assign(new Error(T('请先选择任务')), {rfLocalized:true});
       const comparison = anValue('anComparison').trim();
       const timepoint = anValue('anTimepoint').trim();
       const measure = anValue('anMeasure');
-      if (!comparison || !timepoint) throw new Error('请先填写比较和时间点');
+      if (!comparison || !timepoint) throw Object.assign(new Error(T('请先填写比较和时间点')), {rfLocalized:true});
       const rows = anEffects.filter(row => Number(row.selected) === 1 && row.comparison === comparison &&
         row.timepoint === timepoint && row.measure === measure);
-      if (new Set(rows.map(row => row.outcome)).size < 2) throw new Error('此层至少需要两个已选用的结局');
+      if (new Set(rows.map(row => row.outcome)).size < 2) throw Object.assign(new Error(T('此层至少需要两个已选用的结局')), {rfLocalized:true});
       prepared = { taskId:S.task.task_id, comparison, timepoint, measure, rows,
         covariances:new Map(), notes:new Map() };
       blocks.replaceChildren(); invalidateResult();
@@ -126,10 +126,10 @@
     invalidateResult();
     const current = request;
     try {
-      if (!prepared || prepared.taskId !== S.task?.task_id) throw new Error('请先载入当前层的结果');
+      if (!prepared || prepared.taskId !== S.task?.task_id) throw Object.assign(new Error(T('请先载入当前层的结果')), {rfLocalized:true});
       if (prepared.comparison !== anValue('anComparison').trim() ||
           prepared.timepoint !== anValue('anTimepoint').trim() || prepared.measure !== anValue('anMeasure'))
-        throw new Error('比较、时间点或效应指标已变化，请重新载入结果');
+        throw Object.assign(new Error(T('比较、时间点或效应指标已变化，请重新载入结果')), {rfLocalized:true});
       const requestBlocks = Array.from(blocks.querySelectorAll('[data-study-id]')).map(box => {
         const rows = selectedRows(box);
         if (!rows.length) return null;
@@ -137,26 +137,27 @@
           if (i === j) return row.se ** 2;
           const key = [Math.min(row.result_id, other.result_id), Math.max(row.result_id, other.result_id)].join(':');
           const value = prepared.covariances.get(key);
-          if (value === undefined || value.trim() === '') throw new Error(T('请填写 {0} 的结局间协方差',box.dataset.studyId));
+          if (value === undefined || value.trim() === '') throw Object.assign(new Error(T('请填写 {0} 的结局间协方差',box.dataset.studyId)), {rfLocalized:true});
           const number = Number(value);
-          if (!Number.isFinite(number)) throw new Error('协方差必须是有限数值');
+          if (!Number.isFinite(number)) throw Object.assign(new Error(T('协方差必须是有限数值')), {rfLocalized:true});
           return number;
         }));
         const note = rows.length > 1 ? (prepared.notes.get(box.dataset.studyId) || '').trim() : 'SE from saved study result';
-        if (!note) throw new Error(T('请填写 {0} 的协方差来源或假设',box.dataset.studyId));
+        if (!note) throw Object.assign(new Error(T('请填写 {0} 的协方差来源或假设',box.dataset.studyId)), {rfLocalized:true});
         return { study_id:box.dataset.studyId, result_ids:rows.map(row => row.result_id), covariance,
           covariance_source_note:note };
       }).filter(Boolean);
-      if (requestBlocks.length < 2) throw new Error('至少需要两项独立研究');
+      if (requestBlocks.length < 2) throw Object.assign(new Error(T('至少需要两项独立研究')), {rfLocalized:true});
       const counts = new Map();
       requestBlocks.forEach(block => block.result_ids.forEach(id => {
         const outcome = prepared.rows.find(row => row.result_id === id).outcome;
         counts.set(outcome, (counts.get(outcome) || 0) + 1);
       }));
-      if ([...counts.values()].some(count => count < 2)) throw new Error('每个结局至少需要两项独立研究');
+      if ([...counts.values()].some(count => count < 2)) throw Object.assign(new Error(T('每个结局至少需要两项独立研究')), {rfLocalized:true});
       const model = anValue('anDependentModel');
-      if (!model) throw new Error('请选择相关结局联合合并模型');
-      if (model === 'random_reml_un' && (counts.size < 2 || counts.size > 8)) throw new Error('Random-effects REML requires two to eight outcomes');
+      if (!model) throw Object.assign(new Error(T('请选择相关结局联合合并模型')), {rfLocalized:true});
+      if (model === 'random_reml_un' && (counts.size < 2 || counts.size > 8))
+        throw Object.assign(new Error(T('随机效应 REML 模型要求 2 至 8 个结局')), {rfLocalized:true});
       runButton.disabled = true;
       const started = performance.now();
       const reference = model === 'random_reml_un' && counts.size === 5

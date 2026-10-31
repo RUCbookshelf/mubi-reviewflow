@@ -33,6 +33,37 @@
     const taskCard = anchorBtn ? anchorBtn.closest('.card') : null;
     if (!anchorBtn || !taskCard || !document.querySelector('.page[data-p="home"]')) return;   // 结构不符：安静退出
 
+    /* ---- 十语言词条自包含注册（RFLang.register，中文为源串，槽序
+       zh/en/fr/ru/es/ja/pt/de/sr/ko；与 ai_suggest.js 同款追加式注册）。
+       r8-fixpool 新增：B08-N5 日期窗披露、LUNA4-03 在途编辑提示。
+       译法存疑槽位：sr/ko（无既定术语表对照，按字面直译，待评审员机检）。 ---- */
+    try {
+      if (typeof RFLang !== 'undefined' && typeof RFLang.register === 'function') {
+        RFLang.register([
+          ['日期窗仅适用于 PubMed 检索式；Embase 与 Cochrane 链接不含日期过滤。',
+           'The date window applies only to the PubMed strategy; the Embase and Cochrane links carry no date filter.',
+           'La fenêtre de dates ne s’applique qu’à la stratégie PubMed ; les liens Embase et Cochrane ne comportent aucun filtre de dates.',
+           'Окно дат применяется только к поисковой стратегии PubMed; ссылки Embase и Cochrane не содержат фильтра по датам.',
+           'La ventana de fechas se aplica solo a la estrategia de PubMed; los enlaces de Embase y Cochrane no incluyen ningún filtro de fechas.',
+           '日付範囲は PubMed の検索式にのみ適用されます。Embase と Cochrane のリンクには日付フィルタが含まれません。',
+           'A janela de datas aplica-se apenas à estratégia do PubMed; os links do Embase e do Cochrane não incluem filtro de datas.',
+           'Das Zeitfenster gilt nur für die PubMed-Suchstrategie; die Embase- und Cochrane-Links enthalten keinen Datumsfilter.',
+           'Опсег датума се примењује само на PubMed стратегију препраге; везе за Embase и Cochrane не садрже филтер датума.',
+           '날짜 범위는 PubMed 검색식에만 적용됩니다. Embase 및 Cochrane 링크에는 날짜 필터가 포함되지 않습니다.'],
+          ['保存期间表单又有修改，界面最新内容尚未保存。',
+           'The form was edited while saving; the latest on-screen content has not been saved.',
+           'Le formulaire a été modifié pendant l’enregistrement ; le contenu le plus récent affiché n’a pas été enregistré.',
+           'Форма была изменена во время сохранения; последнее отображаемое содержимое не сохранено.',
+           'El formulario se modificó mientras se guardaba; el contenido más reciente mostrado no se ha guardado.',
+           '保存中にフォームが編集されました。画面上の最新内容は保存されていません。',
+           'O formulário foi editado durante o salvamento; o conteúdo mais recente exibido não foi salvo.',
+           'Das Formular wurde während des Speicherns bearbeitet; der aktuell angezeigte Inhalt wurde nicht gespeichert.',
+           'Образац је измењен током чувања; најновији приказани садржај није сачуван.',
+           '저장 중 양식이 수정되었습니다. 화면의 최신 내용은 저장되지 않았습니다.'],
+        ]);
+      }
+    } catch (e) { /* 单点故障：注册失败不阻断本模块 */ }
+
     /* ---- 样式（随模块注入，不占用 index.html 既有样式段） ---- */
     const style = document.createElement('style');
     style.textContent = [
@@ -40,13 +71,13 @@
       '.rf-protocol-card h3{margin:0 0 6px;font-size:.95rem}',
       '.rf-pd-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px}',
       '.rf-pd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;margin:10px 0}',
-      '.rf-pico-card{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin:0;background:var(--bg)',
+      '.rf-pico-card{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin:0;background:var(--bg)}',
       '.rf-pico-card b{font-size:.85rem}',
       '.rf-pico-card .input{max-width:100%}',
       '.rf-syn-row{display:flex;gap:6px;align-items:center;margin-top:4px}',
       '.rf-syn-row .input{flex:1;min-width:0;font-size:.8rem;padding:4px 8px}',
       '.rf-chipbox{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}',
-      '.rf-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 10px;font-size:.78rem;background:var(--bg)',
+      '.rf-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:2px 10px;font-size:.78rem;background:var(--bg)}',
       '.rf-chip button{border:none;background:none;color:var(--danger);cursor:pointer;font-weight:700;padding:0 2px}',
       '.rf-strategy{border:1px dashed var(--border);border-radius:10px;padding:8px 10px;margin-top:8px}',
       '.rf-strategy pre{margin:6px 0 0;padding:8px 10px;background:var(--bg);border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:.78rem}',
@@ -88,6 +119,11 @@
 
     function safe(fn) { return function () { try { fn.apply(this, arguments); } catch (e) { /* 单点故障 */ } }; }
 
+    /* LUNA4-03：表单内容修订号。输入框经 panel 的 input 事件递增；按钮驱动的
+       增删（MeSH/同义词/标准芯片）不派发 input，必须显式调用本函数，否则保存
+       在途期间用按钮做的编辑不会触发「最新内容尚未保存」提示。 */
+    function touchForm() { formRevision++; }
+
     /* 目标任务的 API 前缀：当前选中任务走全局 taskApi()，其余任务显式拼路径 */
     function taskBase(taskId) {
       if (typeof S !== 'undefined' && S.task && S.task.task_id === taskId && typeof taskApi === 'function') return taskApi();
@@ -122,7 +158,7 @@
     }
     function chip(text, onRemove) {
       const x = el('button', { type: 'button', text: '✕', title: T('移除'), 'aria-label': T('移除 {0}', text) });
-      x.addEventListener('click', safe(onRemove));
+      x.addEventListener('click', safe(() => { touchForm(); onRemove(); }));   // LUNA4-03：芯片删除也计入修订号
       return el('span', { class: 'rf-chip', translate: 'no' }, el('span', { text: text }), x);
     }
 
@@ -166,6 +202,7 @@
         if (!picoState[slot.key].meshTerms.includes(v)) picoState[slot.key].meshTerms.push(v);
         meshInput.value = '';
         renderMeshChips();
+        touchForm();                                // LUNA4-03：按钮驱动编辑也计入修订号
       }));
       meshInput.addEventListener('keydown', safe(e => { if (e.key === 'Enter') { e.preventDefault(); addMesh.click(); } }));
 
@@ -184,6 +221,7 @@
       addSyn.addEventListener('click', safe(() => {
         picoState[slot.key].synonyms.push('');
         renderSynRows();
+        touchForm();                                // LUNA4-03：按钮驱动编辑也计入修订号
       }));
       function renderSynRows() {
         synBox.replaceChildren();
@@ -232,6 +270,7 @@
         if (!state.tags.includes(v)) state.tags.push(v);
         input.value = '';
         renderChips();
+        touchForm();                                // LUNA4-03：按钮/回车驱动编辑也计入修订号
       }
       add.addEventListener('click', safe(addTag));
       input.addEventListener('keydown', safe(e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }));
@@ -352,6 +391,7 @@
         let body;
         try { body = collectBody(); } catch (e) { toast(e.message, 'warn'); return; }
         ticket = ++version;
+        const revision = formRevision;   // LUNA4-03：提交快照后的修订号（检测请求在途期间的表单编辑）
         genBtn.disabled = true; saveBtn.disabled = true; targetSel.disabled = true;
 
         let taskId = targetSel.value === '__new__' ? null : targetSel.value;
@@ -383,6 +423,10 @@
           anchoredTaskId = taskId;
           renderStrategies(p.search_strategies || []);
           statusLine.textContent = T('方案已保存到任务 {0}（{1} 条检索式）。', taskId, String((p.search_strategies || []).length));
+          if (formRevision !== revision) {
+            /* LUNA4-03：请求在途期间表单又被编辑——已保存的是发送快照，界面最新内容尚未保存 */
+            statusLine.textContent += ' ' + T('保存期间表单又有修改，界面最新内容尚未保存。');
+          }
           if (isSave) {
             nextBox.hidden = false;
             if (typeof toast === 'function') toast(T('✓ 方案已保存并嵌入任务《{0}》', body.title), 'inc');
@@ -425,6 +469,13 @@
             text: T('在浏览器中打开 ↗'), style: 'padding:4px 10px;font-size:.78rem' }));
         }
         strategyBox.append(el('div', { class: 'rf-strategy' }, head, pre));
+      }
+      /* B08-N5：日期窗只拼进 PubMed 链接（Embase 为导航链接、Cochrane 无日期参数）——
+         检测到日期过滤时明示，避免误以为四库同窗 */
+      const hasDateWindow = strategies.some(st => st && st.database === 'pubmed' &&
+        typeof st.url === 'string' && st.url.indexOf('filter=dates.') >= 0);
+      if (hasDateWindow) {
+        strategyBox.append(el('p', { class: 'hint', text: T('日期窗仅适用于 PubMed 检索式；Embase 与 Cochrane 链接不含日期过滤。') }));
       }
       strategyBox.append(el('p', { class: 'hint', text: T('检索式由本地规则生成（Cochrane Handbook ch.4）；「在浏览器中打开」仅为导航链接，本应用不发起网络请求。Embase 链接仅定位到检索页，需手动粘贴执行。') }));
     }

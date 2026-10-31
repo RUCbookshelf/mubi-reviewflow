@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from math import exp, fsum, isfinite, log, sqrt
+from math import exp, fsum, isfinite, log, sqrt, ulp
 from numbers import Real
 
 import numpy as np
@@ -209,21 +209,46 @@ def fit_adjusted_stratified_cox(
         fraction = 1.0
         while fraction >= 2**-30:
             candidate = beta + fraction * step
-            try:
-                candidate_likelihood = evaluate(candidate)[0]
-            except ValueError:
-                candidate_likelihood = float("-inf")
-            if candidate_likelihood >= likelihood + 1e-4 * fraction * direction:
-                beta = candidate
-                break
+            if not np.array_equal(candidate, beta):
+                try:
+                    candidate_likelihood = evaluate(candidate)[0]
+                except ValueError:
+                    candidate_likelihood = float("-inf")
+                if candidate_likelihood >= likelihood + 1e-4 * fraction * direction:
+                    beta = candidate
+                    break
             fraction *= 0.5
         else:
-            raise ValueError("adjusted Cox fit failed to converge; separation or weak identification is possible")
+            # MM10-04: once the predicted improvement drops below the likelihood
+            # value's own rounding noise, every trial step measures as a 1-2 ULP
+            # decrease and the search stalls a representable distance from the
+            # optimum -- the fit then spent its iterations on null steps
+            # (candidate == beta) and reported "separation or weak
+            # identification" for a well-conditioned problem. When the full
+            # Newton step's predicted improvement is below that noise floor and
+            # its measured change is within it, take the step: the score and
+            # information it is computed from are far above their own noise.
+            noise = 8.0 * ulp(likelihood)
+            full_step = beta + step
+            try:
+                full_likelihood = evaluate(full_step)[0]
+            except ValueError:
+                full_likelihood = float("-inf")
+            if (1e-4 * direction <= noise
+                    and full_likelihood - likelihood >= -noise
+                    and np.any(full_step != beta)):
+                beta = full_step
+            else:
+                raise ValueError("adjusted Cox fit failed to converge; try a different "
+                                 "covariate_center before assuming separation or weak "
+                                 "identification")
     if not converged:
         _, score, _ = evaluate(beta)
         converged = np.max(np.abs(score)) <= tolerance
     if not converged:
-        raise ValueError("adjusted Cox fit did not converge; separation or weak identification is possible")
+        raise ValueError("adjusted Cox fit did not converge; try a different "
+                         "covariate_center before assuming separation or weak "
+                         "identification")
 
     _, score, information = evaluate(beta)
     try:

@@ -564,6 +564,7 @@ def export_coding_notes_markdown(db_path: StrPath, out_md: StrPath) -> Path:
     dims = coding.list_dimensions(db_path)
     all_notes = _notes_index(db_path)
     titles = _coding_titles(db_path)
+    images_by_note = _coding_images_index(db_path, coding)
 
     sections: list[tuple[str, list[str]]] = []
     n_notes = 0
@@ -571,8 +572,12 @@ def export_coding_notes_markdown(db_path: StrPath, out_md: StrPath) -> Path:
     for key in _coding_row_keys(db_path, coding, all_notes):
         blocks: list[str] = []
         for dim in dims:
+            # D-05-01：此前以 5 个位置实参调 4 形参函数（db_path/coding 挤占
+            # dim_id/key 槽位且必 TypeError）——按 _coding_notes_and_images 的
+            # 实际签名（dim_id, key, notes, images_by_note）修正，图片索引与
+            # export_coding_long 同款批量取回。
             note_text, images = _coding_notes_and_images(
-                db_path, coding, int(dim["id"]), key, all_notes
+                int(dim["id"]), key, all_notes, images_by_note
             )
             if not note_text.strip() and not images:
                 continue  # 该维度无任何备注内容：不产生小节

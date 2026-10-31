@@ -9,9 +9,10 @@ out/external_reviews/mm9_verify_g4.md 双双 confirmed）：
   after_json」全等比较永久失配 → 迁移后 available=False、真实 HTTP
   POST /import-batches/{id}/undo 409；即便放行，restore() 也会把
   before_json 里的旧 canonical_key 回写。修法：两列入清单（结构感知
-  同步——快照内嵌真实表整行，只改与库内列同步的键位，库内未迁移的
-  staged_key/incoming_key/article_json 等位置必须原样保留，否则全等
-  比较同样失配）。
+  同步——快照内嵌真实表整行，只改与库内列同步的键位与内嵌 JSON 载荷，
+  否则全等比较同样失配；r8 起 staged_key/incoming_key/article_json 等
+  位置已随 MM9-23/24 纳入库内同步、快照随之同步，钉子见
+  test_r8_fl2_migration.py）。
 - MM9-21：workflow_screen_rounds.snapshot_json 是 {文章键: 指纹}，文章键
   在 JSON 对象键名位（带引号精确 token 替换可命中）。滞留旧键时轮次
   keys/pending_keys 全为库内已不存在的旧键：completed 永不收敛、初筛
@@ -186,15 +187,17 @@ class ImportUndoMigrationTests(unittest.TestCase):
                     "SELECT after_json FROM workflow_import_undo WHERE id=1").fetchone()[0]
             self.assertEqual(after_json_1, after_json_2,
                              "重复迁移改写了撤销快照（幂等被破坏）")
-            # 键位级断言：与库内迁移同步的键列换成新键；库内未迁移的位置
-            # （staged_key/incoming_key/内嵌 article_json 等，MM9-23/24 口径
-            # 另行处理）原样保留——这正是 available() 全等比较通过的前提。
+            # 键位级断言：与库内迁移同步的键列换成新键（r8 MM9-23 起
+            # staged_key/incoming_key 已入白名单、内嵌 article_json 等载荷
+            # 已随 MM9-24 同函数同步，快照与库内逐位一致——这正是
+            # available() 全等比较通过的前提）。
             snap = json.loads(after_json_1)
             self.assertEqual(snap["records"][0]["canonical_key"], new_key)
             self.assertEqual(snap["proposals"][0]["canonical_key"], new_key)
             self.assertEqual(snap["articles"][0]["zotero_key"], new_key)
             self.assertEqual(snap["acceptances"][0]["zotero_key"], new_key)
-            self.assertEqual(snap["records"][0]["staged_key"], legacy)
+            self.assertEqual(snap["records"][0]["staged_key"], new_key)
+            self.assertEqual(snap["records"][0]["incoming_key"], new_key)
             # 主断言（修前 available=False → 红）：迁移前最后一条撤销条目仍可用
             with closing(workflow.connect(db, read_only=True)) as conn:
                 info = review_undo.available(conn, "b2", "u1")

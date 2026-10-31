@@ -3,7 +3,7 @@ function anAuditReportButtons(path, params, prefix, isCurrent, body) {
   const row = el('div',{class:'row'});
   const taskId = S.task?.task_id, current = () => isCurrent() && S.task?.task_id === taskId;
   for (const format of ['docx','pptx','csv','tex']) {
-    const button = el('button',{class:'btn b-out',type:'button',text:'Export '+(format === 'tex' ? 'LaTeX' : format.toUpperCase())+' audit'});
+    const button = el('button',{class:'btn b-out',type:'button',text:T('Export {0} audit', format === 'tex' ? 'LaTeX' : format.toUpperCase())});
     button.addEventListener('click',async () => {
       if (!current()) return;
       const label = button.textContent;

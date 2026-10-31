@@ -38,7 +38,9 @@ function createAnalysisForestSvg(result, scope, style) {
   // 坐标系防护：任一有限数值都没有时，min/max 为 ±Infinity、x() 全 NaN，
   // 图会静默输出一片空白（P2-11）——显式报错而不是空白图。
   const plotValues=rows.flatMap(row=>[row.mid,row.lo,row.hi]).filter(Number.isFinite);
-  if(!plotValues.length)throw new Error(T('森林图数据不含有限的效应值或区间端点，无法建立坐标系；请检查效应值与 SE。'));
+  /* r8-FL4 评审修正：本地 T() 校验串必须带 rfLocalized，否则非中文界面会把
+     已本地化正文误包进 message() 的「此消息暂未翻译」技术串外壳。 */
+  if(!plotValues.length)throw Object.assign(new Error(T('森林图数据不含有限的效应值或区间端点，无法建立坐标系；请检查效应值与 SE。')),{rfLocalized:true});
   const values=rows.flatMap(row=>[row.lo,row.hi]).filter(Number.isFinite);if(!pointEstimate)values.push(toScale(neutral));
   const min=Math.min(...values),max=Math.max(...values),span=max-min||1;
   const x=value=>left+(value-min)/span*(right-left);

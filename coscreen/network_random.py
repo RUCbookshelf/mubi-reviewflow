@@ -311,7 +311,15 @@ def synthesize_network_random(studies: list[dict], measure: str, reference: str)
             "converged": True,
             "optimizer": "bounded_scalar_profile",
             "iterations": int(optimized.nfev),
-            "reml_log_likelihood": float(-objective - residual_df * math.log(scale)),
+            # MM10-09: the profile objective carries a "- logdet(design)" term
+            # (see evaluate()), so "-objective - df*log(scale)" equals the true
+            # REML log-likelihood plus 0.5*logdet(X'X) -- a design-dependent
+            # offset that made this diagnostic incomparable across networks.
+            # Verified on single-contrast fixtures: reported - true REML ll was
+            # exactly 0.5*logdet(X'X) (agreement 1e-14); subtract it here.
+            "reml_log_likelihood": float(
+                -objective - residual_df * math.log(scale) - 0.5 * float(logdet_design)
+            ),
             "tau2": tau2,
             "boundary": boundary,
             "gradient_norm": gradient_norm,

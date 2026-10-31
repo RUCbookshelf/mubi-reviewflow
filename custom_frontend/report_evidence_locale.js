@@ -33,7 +33,7 @@
  ['综述者解释（可选）','Reviewer interpretation (optional)','Interprétation du réviseur (facultatif)','Интерпретация рецензента (необязательно)','Interpretación del revisor (opcional)','レビュー者の解釈（任意）','Interpretação do revisor (opcional)','Interpretation (optional)','Тумачење рецензента (опционо)','검토자 해석 (선택)'],
  ['JBI 发现可信度','JBI finding credibility','Crédibilité du résultat JBI','Достоверность вывода JBI','Credibilidad del hallazgo JBI','JBI 知見の信頼性','Credibilidade do achado JBI','JBI-Glaubwürdigkeit des Befunds','Веродостојност налаза JBI','JBI 결과 신뢰성'],
  ['明确支持','Unequivocal','Sans équivoque','Однозначный','Inequívoco','明確な裏付け','Inequívoco','Eindeutig','Недвосмислено','명확한 뒷받침'],
- ['可信','Credible','Crédible','Достоверный','Creíble','可信','Credível','Glaubwürdig','Веродостојно','신뢰 가능'],
+ ['可信','Credible','Crédible','Достоверный','Creíble','信頼できる','Credível','Glaubwürdig','Веродостојно','신뢰 가능'],
  ['缺乏支持','Unsupported','Non étayé','Без подтверждения','Sin respaldo','裏付けなし','Sem suporte','Unbelegt','Без поткрепе','뒷받침 없음'],
  ['新增发现','Add finding','Ajouter un résultat','Добавить вывод','Añadir hallazgo','知見を追加','Adicionar achado','Befund hinzufügen','Додај налаз','결과 추가'],
  ['保存证据草稿','Save evidence draft','Enregistrer la preuve','Сохранить черновик данных','Guardar evidencia','根拠の下書きを保存','Salvar evidência','Evidenzentwurf speichern','Сачувај доказ','근거 초안 저장'],

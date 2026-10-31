@@ -93,8 +93,15 @@ def synthesize_dependent_effects(effects: list[dict], blocks: list[dict], model:
             variance = float(row["se"]) * float(row["se"])
             if not math.isfinite(variance) or variance <= 0:
                 raise ValueError(f"effect result {row['result_id']} sampling variance is outside the finite range")
+            # F-02: a fixed abs_tol=1e-14 let a diagonal of 1e-14 pass against a
+            # declared variance of 1e-20 (SE 1e-10), silently inflating the GLS
+            # SE by 1000x. The absolute floor only ever dominated below
+            # variance ≈ 1e-8 (se ≈ 1e-4), where it swallowed relative
+            # mismatches of any size; variance-scale agreement is pure rel_tol
+            # here. Exact matches (diff == 0) and every mismatch that rel_tol
+            # already rejected keep their verdicts bit-for-bit.
             if not math.isclose(covariance[index, index], variance,
-                                rel_tol=1e-6, abs_tol=1e-14):
+                                rel_tol=1e-6, abs_tol=0.0):
                 raise ValueError(f"study {study_id} covariance diagonal must match each selected effect SE squared")
         try:
             np.linalg.cholesky(covariance)

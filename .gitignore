@@ -40,3 +40,12 @@ build/*.msi
 # behind when it fails between install and cleanup)
 release-assets/
 build/validator_deps/
+
+# FL8/F1-3: local packaging work dirs, download cache, staging and the
+# per-script mutex lock folders (stale locks are reclaimed automatically)
+build/work-linux/
+build/work-macos/
+build/dist/
+build/staging/
+build/downloads/
+build/.build-*.lock/

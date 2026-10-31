@@ -7,7 +7,13 @@ import math
 
 from scipy.stats import t as student_t
 
-from .cluster_trial_effects import _exp, _integer, _number, calculate_cluster_trial_effect
+from .cluster_trial_effects import (
+    _exp,
+    _integer,
+    _number,
+    _reciprocal_gap,
+    calculate_cluster_trial_effect,
+)
 
 
 def calculate_cluster_trial_variable_size_effect(values: dict) -> dict:
@@ -117,9 +123,12 @@ def calculate_cluster_trial_variable_size_effect(values: dict) -> dict:
                 de_c / events_c, de_c / (n_c - events_c),
             ))
         elif values["measure"] == "RR":
+            # F-04: same cancellation guard as the base calculator (the
+            # duplicate expression here would otherwise re-cancel to zero on
+            # the huge-count inputs the base call now accepts).
             variance = math.fsum((
-                de_t * (1 / events_t - 1 / n_t),
-                de_c * (1 / events_c - 1 / n_c),
+                de_t * _reciprocal_gap(events_t, n_t),
+                de_c * _reciprocal_gap(events_c, n_c),
             ))
         else:
             risk_t, risk_c = events_t / n_t, events_c / n_c

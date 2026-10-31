@@ -42,8 +42,17 @@ def probe(target: Path | None = None) -> list[str]:
     command = [str(python), str(APP / 'windows_start.py'), '--check']
     if target:
         command.append(str(target))
-    result = subprocess.run(command, cwd=APP, env={**os.environ, 'PYTHONIOENCODING':'utf-8'}, capture_output=True, text=True, encoding='utf-8',
-                            errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=120)
+    # GLM3-01: a slow/cold machine can make the 120s probe deadline expire even
+    # though the runtime is healthy. subprocess.TimeoutExpired used to escape
+    # to the outer except in main(), which reported "ReviewFlow 未能启动 ...
+    # 请重新安装应用" (reinstall) instead of the repair/retry branch. Catch it
+    # here and return it as an ordinary finding so the user lands in the
+    # repair flow with an honest reason and can simply try again.
+    try:
+        result = subprocess.run(command, cwd=APP, env={**os.environ, 'PYTHONIOENCODING':'utf-8'}, capture_output=True, text=True, encoding='utf-8',
+                                errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=120)
+    except subprocess.TimeoutExpired:
+        return ['依赖检测超时（120 秒未完成）：机器可能正忙，请关闭其他程序后重试；若持续超时请重新安装或联系维护者。']
     if result.stdout.strip():
         try:
             return json.loads(result.stdout)

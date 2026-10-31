@@ -18,8 +18,9 @@
  * 维度取值是语言中立的稳定代码（后端文档约定），显示名经 T() 映射；
  * 期刊名/年份/代表词为题录数据，原样显示不翻译。
  *
- * 事件接入（追加式）：reviewflow:analysis-loaded（文献就绪后可点格）、
- * reviewflow:analysis-task-changed（复位）、reviewflow:language-changed（重渲染）。
+ * 事件接入（追加式）：reviewflow:analysis-task-changed（复位）、
+ * reviewflow:language-changed（重渲染）。（GLM14-01：点击格时实时读
+ * anArticles，无需监听 analysis-loaded；头注此前声称监听该事件与实现不符。）
  *
  * 单点故障：初始化与全部回调自行捕获异常；网络仅经全局 api() 访问本应用 API。
  */
@@ -250,7 +251,11 @@
       svg.setAttribute('viewBox', '0 0 ' + svgW + ' ' + svgH);
       svg.setAttribute('width', String(svgW));
       svg.setAttribute('height', String(svgH));
-      svg.setAttribute('role', 'img');
+      /* LUNA4-02：容器不能是 role="img"——该角色会其后代在可访问性树中被“当作
+         一张图”整体呈现，单元格的 role=button/tabindex 虽在 DOM 上存在，读屏仍
+         无法逐格到达。改为 role="group"（本仓 research_trace.js:76 同款），
+         保留同一 aria-label 作为分组名。 */
+      svg.setAttribute('role', 'group');
       svg.setAttribute('aria-label', T('证据地图热力图：{0} × {1}', dimLabel(mapDims.x), dimLabel(mapDims.y)));
 
       const max = Math.max(1, ...d.matrix.flat().filter(v => Number.isFinite(v)));
@@ -289,12 +294,14 @@
             x, y, width: cellW - 2, height: cellH - 2, rx: 3,
             class: count > 0 ? 'countcell' : 'gapcell',
           });
+          /* LUNA4-02：两种格都可点开详情，键盘/读屏同等可达
+             （tabindex/role 对零计数缺口格同样生效，Enter/Space 同样可开） */
+          rect.setAttribute('tabindex', '0');
+          rect.setAttribute('role', 'button');
           if (count > 0) {
             rect.setAttribute('fill', 'var(--primary)');
             rect.setAttribute('fill-opacity', String(0.18 + 0.82 * (count / max)));
             rect.setAttribute('stroke', 'var(--border)');
-            rect.setAttribute('tabindex', '0');
-            rect.setAttribute('role', 'button');
           }
           const tip = mk('title', {}, '');
           tip.textContent = valueLabel(mapDims.x, xLabels[i]) + ' × ' + valueLabel(mapDims.y, yLabels[j]) +
@@ -305,13 +312,11 @@
               x: x + (cellW - 2) / 2, y: y + (cellH - 2) / 2 + 4, 'text-anchor': 'middle',
             }, String(count));
             label.setAttribute('style', 'font-size:11px;fill:' + (count / max > 0.45 ? '#fff' : 'var(--ink)'));
-            rect.addEventListener('click', safe(() => openCell(i, j)));
-            rect.addEventListener('keydown', safe(ev => {
-              if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openCell(i, j); }
-            }));
-          } else {
-            rect.addEventListener('click', safe(() => openCell(i, j)));
           }
+          rect.addEventListener('click', safe(() => openCell(i, j)));
+          rect.addEventListener('keydown', safe(ev => {
+            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openCell(i, j); }
+          }));
         }
       }
 

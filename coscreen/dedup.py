@@ -212,7 +212,6 @@ def _key_merge_confirmed(a: Article, b: Article) -> bool:
 class _UnionFind:
     def __init__(self, n: int) -> None:
         self._parent = list(range(n))
-        self._size = [1] * n
 
     def find(self, i: int) -> int:
         parent = self._parent
@@ -227,15 +226,17 @@ class _UnionFind:
         ra, rb = self.find(a), self.find(b)
         if ra == rb:
             return
-        # 较小索引者为根 → 输入顺序靠前的条目保留；同侧以按大小合并
-        # 防止长链退化（复审门禁墙钟：模糊层 4M 次 find 曾占 ~0.6s+
-        # find_duplicates 主循环放大），路径压缩后均摊近 O(1)
+        # 较小索引者为根 → 输入顺序靠前的条目保留。根选择只按索引，
+        # **不做**按大小/按秩的合并策略：最小索引根是「保留输入顺序靠前
+        # 条目」产品语义的承载，让大树的根胜出会破坏它——防长链退化由
+        # 路径压缩单独承担（复审 D-05-03 口径：均摊近 O(1)；门禁墙钟
+        # 参照：模糊层 4M 次 find 曾占 ~0.6s+、find_duplicates 主循环
+        # 放大）。原注释声称同侧按树的大小选根，而实现从未比较大小、
+        # 大小数组只写不读——死状态已删，注释如实对齐实现。
         if ra < rb:
             self._parent[rb] = ra
-            self._size[ra] += self._size[rb]
         else:
             self._parent[ra] = rb
-            self._size[rb] += self._size[ra]
 
 
 # ---------------------------------------------------------------------------

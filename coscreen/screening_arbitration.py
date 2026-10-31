@@ -278,7 +278,14 @@ def get_decision_arbitration(store_path: StrPath, record_id: int) -> dict[str, A
             row = conn.execute(
                 "SELECT * FROM screening_arbitrations WHERE id=?", (record_id,)
             ).fetchone()
-        except sqlite3.OperationalError:
+        # MM11-08：只捕 OperationalError 时，局部页损坏（属主表可读、仲裁表
+        # b-tree 页损坏）抛父类 sqlite3.DatabaseError 冒泡成 500。按「读不到
+        # 保存的仲裁快照 = 无记录」降级为 None（与表缺失/锁同口径）；但排除
+        # ProgrammingError（调用写法错，如参数绑定失败）——那是缺陷而非损坏，
+        # 不得冒充「无记录」被静默吞掉。
+        except sqlite3.ProgrammingError:
+            raise
+        except sqlite3.DatabaseError:
             return None
     return _read_record(row) if row else None
 
@@ -296,6 +303,10 @@ def latest_decision_arbitration(store_path: StrPath, stage: str) -> dict[str, An
                 "SELECT * FROM screening_arbitrations WHERE stage=? ORDER BY id DESC LIMIT 1",
                 (stage,),
             ).fetchone()
-        except sqlite3.OperationalError:
+        # MM11-08：同 get_decision_arbitration——捕父类 DatabaseError，局部
+        # 页损坏降级为 None（无已保存仲裁），不再 500；ProgrammingError 除外。
+        except sqlite3.ProgrammingError:
+            raise
+        except sqlite3.DatabaseError:
             return None
     return _read_record(row) if row else None

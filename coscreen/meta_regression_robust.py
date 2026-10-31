@@ -363,6 +363,37 @@ def robust_meta_regression(rows, moderators, *, model, vcov_type, level=0.95) ->
                     "cluster. CR2 with Satterthwaite df, rather than modified KH, is the "
                     "recommended small-sample default in the cluster-robust literature "
                     "(Pustejovsky & Tipton 2018; Imbens & Kolesar 2016).")
+    if vcov in {"cr0", "cr1"}:
+        # MM10-08: CR0/CR1 with one study per cluster are anti-conservative:
+        # E[u_i^2] = sigma_i^2 (1 - h_i) shrinks exactly the high-leverage
+        # (small-variance) studies, so the robust SEs systematically understate
+        # the true sampling SE and the type I error rate inflates. The reviewed
+        # simulation design (k=8, tau2=0.05, heterogeneous weights, minimax
+        # full audit 10 §MM10-08) measured realized two-sided rejection of a
+        # true null at 0.1105 (CR0) and 0.0921 (CR1) against a nominal 0.05 --
+        # about 2.2x and 1.8x. That magnitude is design- and k-specific: it
+        # shrinks as k grows, so the quantified figure is cited only in the
+        # few-study regime where it was measured (k <= 20, the same threshold
+        # as the few-study warning above); for larger k the warning states the
+        # direction without quoting a number it cannot support.
+        mechanism = ("the sandwich meat downweights precisely the high-leverage "
+                     "small-variance studies")
+        if k <= 20:
+            multiplier = "about 2.2x" if vcov == "cr0" else "about 1.8x"
+            warnings.append(
+                f"vcov_type={vcov!r} is anti-conservative with one study per cluster and "
+                "few studies: in the reviewed k=8 simulation design its realized two-sided "
+                f"rejection of a true null reached {multiplier} the nominal 0.05 level, "
+                f"because {mechanism}. Treat its intervals and p-values as optimistic "
+                "and prefer vcov_type='cr2' (the recommended small-sample default) unless "
+                "this estimator is required for comparison.")
+        else:
+            warnings.append(
+                f"vcov_type={vcov!r} is anti-conservative with one study per cluster: "
+                f"{mechanism}, so its intervals and p-values run optimistic. The bias "
+                "shrinks as the number of studies grows and is not quantified for this k; "
+                "prefer vcov_type='cr2' (the recommended small-sample default) unless "
+                "this estimator is required for comparison.")
 
     vcov_labels = {
         "cr0": "CR0 sandwich (Eicker 1963; Huber 1967; White 1980; Liang & Zeger 1986)",

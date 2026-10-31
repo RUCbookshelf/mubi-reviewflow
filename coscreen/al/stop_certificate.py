@@ -50,6 +50,18 @@ class RecallCertificate:
         sampling_fraction: float = 0.30, # φ
         look_fractions: tuple[float, ...] = (0.50, 0.70, 0.85, 0.95),
     ):
+        # MM10-11: 构造器此前无域校验——recall_target=0 使 threshold() 除零、
+        # recall_target=1.5 发出"负的可容忍剩余数"证书、alpha=2 /
+        # sampling_fraction≤0 或 >1 也能照常签发。这里按参数各自的数学
+        # 定义域拒绝（默认参数不受影响）。
+        if not 0 < recall_target <= 1:
+            raise ValueError(f"recall_target 必须在 (0, 1] 内，得到 {recall_target!r}")
+        if not 0 < alpha < 1:
+            raise ValueError(f"alpha 必须在 (0, 1) 内，得到 {alpha!r}")
+        if not 0 < sampling_fraction <= 1:
+            raise ValueError(
+                f"sampling_fraction 必须在 (0, 1] 内，得到 {sampling_fraction!r}"
+            )
         self.recall_target = recall_target
         self.alpha = alpha
         self.sampling_fraction = sampling_fraction
@@ -72,8 +84,10 @@ class RecallCertificate:
 
         ``k_t`` 为签名兼容保留(抽样量只由池大小与抽样比例决定,
         不随阈值变化)。``pool_size <= 0`` 时返回 0(池空则无需抽样)。
+        MM10-11: 结果夹到非负——修前负池给出负抽样量,使
+        ``sample_size < required`` 守卫恒成立、证书被直接发放。
         """
-        return math.ceil(pool_size * self.sampling_fraction)
+        return max(0, math.ceil(pool_size * self.sampling_fraction))
 
     def certified_confidence(self, pool_size: int, k_t: int, sample_size: int) -> float:
         """证书通过时的真实置信度 = 1 − P(X=0 | K=k_t+1)(超几何上界)。

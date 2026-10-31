@@ -17,5 +17,8 @@ def hsroc_view(fit):
             'Harbord et al. (2007), Biostatistics 8:239–251. DOI: 10.1093/biostatistics/kxl004.',
             'Harbord & Whiting (2009), Stata Journal 9:211–229. DOI: 10.1177/1536867X0900900203.',
         ]}
-    except (ImportError, ValueError, RuntimeError, ArithmeticError, KeyError) as exc:
+    # MM9-16：fit 是外部传入的合成结果字典，补 TypeError/AttributeError 覆盖
+    # 非 dict / 字段型别不符的边界输入，降级为 available=False 而非 5xx。
+    except (ImportError, ValueError, RuntimeError, ArithmeticError, KeyError,
+            TypeError, AttributeError) as exc:
         return {'available': False, 'reason': f'HSROC presentation unavailable: {exc}'}

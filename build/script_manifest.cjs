@@ -84,5 +84,44 @@ function manifestModulesMatching(root,manifest,patterns){
   });
 }
 
+/* MM9-09: the manifest used to be a one-way street - it could tell which
+   modules a harness MAY inject, but a frontend file that index.html never
+   loads (mobile_workspace.js/.css) shipped in every package unnoticed because
+   the packaging scripts copy the whole directory. This reverse rule fails the
+   gate while any dead top-level frontend file exists:
+   * every top-level custom_frontend/*.js/.mjs must appear in the online manifest;
+   * every top-level custom_frontend/*.css must be referenced by index.html.
+   Subdirectories (pdfjs/ internals) are exempt - they are reached through
+   the modules that load them.
+
+   Two traps this rule must not fall into (both found in review):
+   * a bare `html.includes(file)` is a SUBSTRING test: a dead `concept.css`
+     passes merely because index.html links `mobile_concept.css`. CSS
+     references are therefore matched as whole quoted specifiers.
+   * a dead file must fail even when its name is a suffix of a live one, so
+     both checks anchor on a word/quote boundary instead of raw containment. */
+const CSS_REFERENCE=(html,file)=>{
+  const escaped=file.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp('(?:^|["\'\\s(/,])'+escaped+'(?:["\'\\s)?,#]|$)').test(html);
+};
+function assertNoUnloadedFrontendFiles(root,manifest){
+  const dir=path.join(root,'custom_frontend');
+  const list=manifest||loadScriptManifest(root);
+  const html=fs.readFileSync(path.join(dir,'index.html'),'utf8');
+  const problems=[];
+  for(const file of fs.readdirSync(dir)){
+    if(!/\.(?:js|mjs|css)$/.test(file))continue;
+    if(!fs.statSync(path.join(dir,file)).isFile())continue;
+    if(file.endsWith('.css')){
+      if(!CSS_REFERENCE(html,file))
+        problems.push('custom_frontend/'+file+' is not referenced by index.html - dead file (delete it or link it)');
+    }else if(!list.includes(file)){
+      problems.push('custom_frontend/'+file+' is not loaded by index.html - dead file (delete it or load it)');
+    }
+  }
+  if(problems.length)
+    throw Error('MM9-09 reverse manifest rule: '+problems.join('; '));
+}
+
 module.exports={loadScriptManifest,findWorkspaceModule,manifestFiles,
-  manifestModuleDefining,manifestModulesMatching};
+  manifestModuleDefining,manifestModulesMatching,assertNoUnloadedFrontendFiles};

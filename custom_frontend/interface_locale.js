@@ -283,7 +283,15 @@
   ],
   [
     "例如：95",
-    "e.g. 95"
+    "e.g. 95",
+    "p. ex. 95",
+    "напр., 95",
+    "p. ej. 95",
+    "例：95",
+    "p. ex. 95",
+    "z. B. 95",
+    "нпр. 95",
+    "예: 95"
   ],
   [
     "例如：人年",
@@ -345,7 +353,15 @@
   ],
   [
     "来源页码、表格或图号",
-    "Source page, table or figure"
+    "Source page, table or figure",
+    "Page, tableau ou figure de la source",
+    "Страница, таблица или рисунок источника",
+    "Página, tabla o figura de la fuente",
+    "出典のページ・表・図番号",
+    "Página, tabela ou figura da fonte",
+    "Seite, Tabelle oder Abbildung der Quelle",
+    "Страна, табела или слика извора",
+    "출처 페이지, 표 또는 그림 번호"
   ],
   [
     "诊断研究的来源页码、表格或图号", "Diagnostic source page, table or figure", "Page, tableau ou figure source de l’étude diagnostique", "Страница, таблица или номер рисунка в источнике диагностического исследования", "Página, tabla o figura fuente del estudio diagnóstico", "診断研究の出典ページ、表、または図番号", "Página, tabela ou figura de origem do estudo diagnóstico", "Quellenseite, Tabelle oder Abbildungsnummer der Diagnosestudie", "Страница, табела или број слике у извору дијагностичке студије", "진단 연구의 출처 페이지, 표 또는 그림 번호"
@@ -810,35 +826,99 @@
   ],
   [
     "，第 4 章；Borenstein 等（2021），",
-    ", ch. 4; Borenstein et al. (2021),"
+    ", ch. 4; Borenstein et al. (2021),",
+    ", ch. 4 ; Borenstein et al. (2021),",
+    ", гл. 4; Borenstein et al. (2021),",
+    ", cap. 4; Borenstein et al. (2021),",
+    "、第4章；Borenstein et al. (2021),",
+    ", cap. 4; Borenstein et al. (2021),",
+    ", Kap. 4; Borenstein et al. (2021),",
+    ", погл. 4; Borenstein et al. (2021),",
+    ", 제4장; Borenstein et al. (2021),"
   ],
   [
     "，第 3–5 章；Borenstein 等（2021），",
-    ", ch. 3–5; Borenstein et al. (2021),"
+    ", ch. 3–5; Borenstein et al. (2021),",
+    ", ch. 3–5 ; Borenstein et al. (2021),",
+    ", гл. 3–5; Borenstein et al. (2021),",
+    ", caps. 3–5; Borenstein et al. (2021),",
+    "、第3–5章；Borenstein et al. (2021),",
+    ", caps. 3–5; Borenstein et al. (2021),",
+    ", Kap. 3–5; Borenstein et al. (2021),",
+    ", погл. 3–5; Borenstein et al. (2021),",
+    ", 제3–5장; Borenstein et al. (2021),"
   ],
   [
     "，第 5 章，第 121–133 页；",
-    ", ch. 5, pp. 121–133；"
+    ", ch. 5, pp. 121–133;",
+    ", ch. 5, p. 121–133 ;",
+    ", гл. 5, с. 121–133;",
+    ", cap. 5, pp. 121–133;",
+    "、第5章pp.121–133；",
+    ", cap. 5, pp. 121–133;",
+    ", Kap. 5, S. 121–133;",
+    ", погл. 5, стр. 121–133;",
+    ", 제5장 pp.121–133;"
   ],
   [
     "，第 6 章，第 183–184 页，公式 6.1–6.7。",
-    ", ch. 6, pp. 183–184, Eqs. 6.1–6.7."
+    ", ch. 6, pp. 183–184, Eqs. 6.1–6.7.",
+    ", ch. 6, p. 183–184, éq. 6.1–6.7.",
+    ", гл. 6, с. 183–184, ур. 6.1–6.7.",
+    ", cap. 6, pp. 183–184, ecs. 6.1–6.7.",
+    "、第6章pp.183–184、式 6.1–6.7。",
+    ", cap. 6, pp. 183–184, eqs. 6.1–6.7.",
+    ", Kap. 6, S. 183–184, Gl. 6.1–6.7.",
+    ", погл. 6, стр. 183–184, јед. 6.1–6.7.",
+    ", 제6장 pp.183–184, 식 6.1–6.7."
   ],
   [
     "，第 8 章，第 199–215 页；Borenstein 等（2021），",
-    ", ch. 8, pp. 199–215; Borenstein et al. (2021),"
+    ", ch. 8, pp. 199–215; Borenstein et al. (2021),",
+    ", ch. 8, p. 199–215 ; Borenstein et al. (2021),",
+    ", гл. 8, с. 199–215; Borenstein et al. (2021),",
+    ", cap. 8, pp. 199–215; Borenstein et al. (2021),",
+    "、第8章pp.199–215；Borenstein et al. (2021),",
+    ", cap. 8, pp. 199–215; Borenstein et al. (2021),",
+    ", Kap. 8, S. 199–215; Borenstein et al. (2021),",
+    ", погл. 8, стр. 199–215; Borenstein et al. (2021),",
+    ", 제8장 pp.199–215; Borenstein et al. (2021),"
   ],
   [
     "，第 11 章，第 271–275 页；Harrer 等（2022），",
-    ", ch. 11, pp. 271–275; Harrer et al. (2022),"
+    ", ch. 11, pp. 271–275; Harrer et al. (2022),",
+    ", ch. 11, p. 271–275 ; Harrer et al. (2022),",
+    ", гл. 11, с. 271–275; Harrer et al. (2022),",
+    ", cap. 11, pp. 271–275; Harrer et al. (2022),",
+    "、第11章pp.271–275；Harrer et al. (2022),",
+    ", cap. 11, pp. 271–275; Harrer et al. (2022),",
+    ", Kap. 11, S. 271–275; Harrer et al. (2022),",
+    ", погл. 11, стр. 271–275; Harrer et al. (2022),",
+    ", 제11장 pp.271–275; Harrer et al. (2022),"
   ],
   [
     "，第 12 章，第 12.2.2.2 节，第 340–342 页。",
-    ", Chapter 12, §12.2.2.2, pp. 340–342."
+    ", Chapter 12, §12.2.2.2, pp. 340–342.",
+    ", ch. 12, §12.2.2.2, p. 340–342.",
+    ", гл. 12, §12.2.2.2, с. 340–342.",
+    ", cap. 12, §12.2.2.2, pp. 340–342.",
+    "、第12章§12.2.2.2、pp.340–342。",
+    ", cap. 12, §12.2.2.2, pp. 340–342.",
+    ", Kap. 12, §12.2.2.2, S. 340–342.",
+    ", погл. 12, §12.2.2.2, стр. 340–342.",
+    ", 제12장 §12.2.2.2, pp.340–342."
   ],
   [
     "，第 2 版，第 39 章，第 351、354–355 页；",
-    ", 2nd ed., ch. 39, pp. 351, 354–355;"
+    ", 2nd ed., ch. 39, pp. 351, 354–355;",
+    ", 2e éd., ch. 39, p. 351, 354–355 ;",
+    ", 2-е изд., гл. 39, с. 351, 354–355;",
+    ", 2.ª ed., cap. 39, pp. 351, 354–355;",
+    "、第2版第39章pp.351、354–355；",
+    ", 2.ª ed., cap. 39, pp. 351, 354–355;",
+    ", 2. Aufl., Kap. 39, S. 351, 354–355;",
+    ", 2. изд., погл. 39, стр. 351, 354–355;",
+    ", 제2판 제39장 pp.351, 354–355;"
   ],
   [
     "独立组中，正关联表示治疗组事件比例更高。观测到的二分类关联可选择 PHI。潜在关联的元分析可使用 Bonett–Price 近似；该方法假设潜在连续变量服从二元正态分布，并按定义给每个单元格加 0.5。两种方法均使用自然尺度标准误且受边际分布影响，须彼此分开，并与连续结局的 Fisher z 分开分析。正态区间可能超出相关系数的取值范围。", "Independent groups: positive association means a higher event proportion in group t. Choose PHI for observed binary association. For a latent association meta-analysis, Bonett–Price is the recommended approximation; it assumes underlying bivariate-normal continuous variables and adds 0.5 to every cell by definition. Both use natural-scale SE, depend on marginal splits, and must be analyzed separately from each other and continuous-outcome Fisher z. Normal intervals may exceed correlation bounds.", "Dans des groupes indépendants, une association positive indique une proportion d’événements plus élevée dans le groupe traité. Choisissez le coefficient φ pour une association binaire observée. Pour une méta-analyse d’associations latentes, l’approximation de Bonett–Price peut être utilisée ; elle suppose des variables continues sous-jacentes suivant une loi normale bivariée et ajoute par définition 0,5 à chaque cellule. Les deux méthodes utilisent une erreur-type sur l’échelle naturelle, dépendent de la répartition marginale et doivent être analysées séparément l’une de l’autre et du z de Fisher pour les critères continus. Les intervalles normaux peuvent dépasser les limites possibles d’une corrélation.", "Независимые группы: положительная связь означает более высокую долю событий в группе лечения. Для наблюдаемой бинарной связи выберите PHI. Для метаанализа латентной связи можно использовать приближение Bonett–Price; оно предполагает, что лежащие в основе непрерывные переменные имеют совместное нормальное распределение, и по определению добавляет 0,5 к каждой ячейке. Оба метода используют SE на исходной шкале и зависят от маргинальных распределений; их следует анализировать отдельно друг от друга и отдельно от Fisher z для непрерывных исходов. Нормальные интервалы могут выходить за допустимые границы корреляции.", "En grupos independientes, una asociación positiva indica una proporción de eventos más alta en el grupo de tratamiento. Elija el coeficiente phi (φ) para una asociación binaria observada. Para un metanálisis de asociaciones latentes, puede usarse la aproximación de Bonett–Price, que supone variables continuas subyacentes con distribución normal bivariante y añade 0,5 a cada celda por definición. Ambos métodos usan un error estándar en la escala natural, dependen de la distribución marginal y deben analizarse por separado entre sí y del z de Fisher para desenlaces continuos. Los intervalos normales pueden exceder los límites posibles de una correlación.", "独立群では、正の関連は治療群のイベント割合が高いことを意味します。観測された二値の関連には PHI を選択できます。潜在的な関連のメタ解析には Bonett–Price の近似を使用できます。この方法は潜在連続変数が二変量正規分布に従うと仮定し、定義により各セルに 0.5 を加えます。いずれも自然尺度の標準誤差を用い、周辺割合に依存するため、相互に、また連続アウトカムの Fisher z とは分けて解析してください。正規区間は相関係数の範囲を超えることがあります。", "Em grupos independentes, uma associação positiva indica uma proporção de eventos maior no grupo de tratamento. Escolha o coeficiente phi (φ) para uma associação binária observada. Para uma metanálise de associações latentes, pode-se usar a aproximação de Bonett–Price, que pressupõe variáveis contínuas subjacentes com distribuição normal bivariada e acrescenta 0,5 a cada célula por definição. Ambos os métodos usam erro padrão na escala natural, dependem da distribuição marginal e devem ser analisados separadamente entre si e do z de Fisher para desfechos contínuos. Intervalos normais podem ultrapassar os limites possíveis de uma correlação.", "Unabhängige Gruppen: Eine positive Assoziation bedeutet einen höheren Ereignisanteil in der Behandlungsgruppe. Für eine beobachtete binäre Assoziation wählen Sie PHI. Für eine Metaanalyse latenter Assoziationen kann die Bonett–Price-Näherung verwendet werden; sie setzt zugrunde liegende bivariate normalverteilte kontinuierliche Variablen voraus und addiert definitionsgemäß 0,5 zu jeder Zelle. Beide Verfahren verwenden den SE auf der natürlichen Skala und hängen von den Randverteilungen ab. Analysieren Sie sie getrennt voneinander und getrennt von Fisher-z für kontinuierliche Endpunkte. Normale Intervalle können außerhalb des zulässigen Korrelationsbereichs liegen.", "Независне групе: позитивна повезаност значи већи удео догађаја у терапијској групи. За посматрану бинарну повезаност изаберите PHI. За метаанализу латентне повезаности може се користити Bonett–Price апроксимација; она претпоставља да основне континуалне варијабле имају биваријантну нормалну расподелу и по дефиницији додаје 0,5 свакој ћелији. Обе методе користе SE на природној скали и зависе од маргиналних расподела; анализирајте их одвојено једну од друге и од Fisher z за континуалне исходе. Нормални интервали могу прећи границе дозвољених вредности корелације.", "독립군에서 양의 연관은 치료군의 사건 비율이 더 높다는 뜻입니다. 관측된 이분형 연관에는 PHI를 선택할 수 있습니다. 잠재 연관의 메타분석에는 Bonett–Price 근사를 사용할 수 있습니다. 이 방법은 잠재 연속 변수가 이변량 정규분포를 따른다고 가정하며 정의상 모든 셀에 0.5를 더합니다. 두 방법 모두 원척도 표준오차를 사용하고 주변 비율에 영향을 받으므로 서로 간에, 그리고 연속 결과의 Fisher z와 별도로 분석해야 합니다. 정규 구간은 상관계수 범위를 벗어날 수 있습니다."
@@ -1521,6 +1601,14 @@
   ],
   [
     "{0} · {1}% {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1} % {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1} % {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1} % {2}",
+    "{0} · {1}% {2}",
     "{0} · {1}% {2}"
   ],
   [
@@ -1544,6 +1632,14 @@
   ],
   [
     "{0} {1}：{2}。{3}。",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1} : {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}：{2}。{3}。",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
     "{0} {1}: {2}. {3}."
   ],
   [
@@ -1576,7 +1672,15 @@
   ],
   [
     "／{0}",
-    " per {0}"
+    " per {0}",
+    " / {0}",
+    " на {0}",
+    " / {0}",
+    "／{0}",
+    " / {0}",
+    " / {0}",
+    " / {0}",
+    " / {0}"
   ],
   [
     "{0}：{1}（95% 置信区间 {2}）。", "{0}: {1} (95% CI {2}).", "{0} : {1} (IC à 95 % {2}).", "{0}: {1} (95%-й доверительный интервал {2}).", "{0}: {1} (IC del 95 % {2}).", "{0}：{1}（95%信頼区間 {2}）。", "{0}: {1} (IC de 95% {2}).", "{0}: {1} (95%-Konfidenzintervall {2}).", "{0}: {1} (95% интервал поверења {2}).", "{0}: {1}(95% 신뢰구간 {2})."
@@ -4562,16 +4666,16 @@
     "무작위 검증 권장: 남은 {0}건 중 무작위로 {1}건을 뽑아 선별하세요"
   ],
   [
-    "证书通过 ✅ 以 ≥95% 置信度，总召回 ≥95%（剩余相关 ≤ {0} 条）",
-    "Certificate passed ✅ With ≥95% confidence, total recall ≥95% (at most {0} relevant records left)",
-    "Certificat validé ✅ Avec une confiance ≥95 %, rappel total ≥95 % (au plus {0} références pertinentes restantes)",
-    "Сертификат пройден ✅ С уверенностью ≥95% суммарная полнота ≥95% (релевантных осталось ≤ {0})",
-    "Certificado superado ✅ Con una confianza ≥95 %, recuperación total ≥95 % (quedan ≤ {0} referencias pertinentes)",
-    "証明書合格 ✅ 信頼度 ≥95% で総合リコール ≥95%（残り関連文献 ≤ {0} 件）",
-    "Certificado aprovado ✅ Com confiança ≥95%, recall total ≥95% (restam ≤ {0} referências relevantes)",
-    "Zertifikat bestanden ✅ Mit ≥95 % Konfidenz gilt: Gesamt-Recall ≥95 % (höchstens {0} relevante Referenzen verbleiben)",
-    "Сертификат положен ✅ Са поузданошћу ≥95%, укупни одзив ≥95% (преостало релевантних ≤ {0})",
-    "증명서 통과 ✅ 신뢰도 ≥95%로 총 재현율 ≥95%(남은 관련 문헌 ≤ {0}건)"
+    "证书通过 ✅ 抽验未见新相关，总召回 ≥95%（剩余相关 ≤ {0} 条；置信度按超几何随已发现相关数与抽验量变化，并非固定 95%）",
+    "Certificate passed ✅ No new relevant records found in the sample; total recall ≥95% (at most {0} relevant records left; the confidence follows the hypergeometric distribution and varies with relevant records found and sample size — it is not a fixed 95%)",
+    "Certificat validé ✅ Aucune nouvelle référence pertinente trouvée dans l’échantillon ; rappel total ≥95 % (au plus {0} références pertinentes restantes ; la confiance suit la loi hypergéométrique et varie selon les références pertinentes trouvées et la taille de l’échantillon — elle n’est pas fixée à 95 %)",
+    "Сертификат пройден ✅ В выборке не найдено новых релевантных записей; суммарная полнота ≥95% (релевантных осталось ≤ {0}; уверенность следует гипергеометрическому распределению и меняется с числом найденных релевантных записей и объёмом выборки — это не фиксированные 95%)",
+    "Certificado superado ✅ No se hallaron nuevas referencias pertinentes en el muestreo; recuperación total ≥95 % (quedan ≤ {0} referencias pertinentes; la confianza sigue la distribución hipergeométrica y varía con las referencias pertinentes halladas y el tamaño muestral — no es un 95 % fijo)",
+    "証明書合格 ✅ 抽出検査で新たな関連文献は見つかりませんでした。総合リコール ≥95%（残り関連文献 ≤ {0} 件。信頼度は超幾何分布に従い、発見済み関連数と抽出数に応じて変動し、固定した 95% ではありません）",
+    "Certificado aprovado ✅ Nenhuma nova referência relevante encontrada na amostragem; recall total ≥95% (restam ≤ {0} referências relevantes; a confiança segue a distribuição hipergeométrica e varia com as referências relevantes encontradas e o tamanho da amostra — não é um 95% fixo)",
+    "Zertifikat bestanden ✅ Keine neuen relevanten Referenzen in der Stichprobe gefunden; Gesamt-Recall ≥95 % (höchstens {0} relevante Referenzen verbleiben; das Konfidenzniveau folgt der hypergeometrischen Verteilung und variiert mit der Anzahl gefundener relevanter Referenzen und dem Stichprobenumfang — es ist kein fester 95-%-Wert)",
+    "Сертификат положен ✅ У узорку нису пронађене нове релевантне референце; укупни одзив ≥95% (преостало релевантних ≤ {0}; поузданост следи хипергеометријску расподелу и мења се са бројем пронађених релевантних и величином узорка — није фиксних 95%)",
+    "증명서 통과 ✅ 표본 검사에서 새로운 관련 문헌이 발견되지 않았습니다. 총 재현율 ≥95%(남은 관련 문헌 ≤ {0}건. 신뢰도는 초기하 분포를 따르며 발견된 관련 수와 표본 크기에 따라 변동하고 고정된 95%가 아닙니다)"
   ],
   [
     "证书未通过 ❌ 抽验中发现 {0} 条新的相关文献，请继续筛选",
@@ -4648,7 +4752,7 @@
   ["开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。", "When on, the screening view hides Machine Learning relevance scores and badges (references are still Machine Learning-ordered); when off, scores are shown with a for-reference-only note. The preference is stored in this browser only.", "Activé, la vue de sélection masque les scores de pertinence par apprentissage automatique et les badges (les références restent ordonnées par l’apprentissage automatique) ; désactivé, les scores s’affichent avec la mention « à titre indicatif ». La préférence n’est conservée que dans ce navigateur.", "Во включённом режиме экран отбора скрывает оценки релевантности машинного обучения и значки (порядок публикаций остаётся определённым машинным обучением); в выключенном — оценки показываются с пометкой «только для справки». Настройка хранится только в этом браузере.", "Activado, la vista de cribado oculta las puntuaciones y las insignias de relevancia del aprendizaje automático (las referencias siguen ordenadas por aprendizaje automático); desactivado, se muestran las puntuaciones con la nota de que son solo orientativas. La preferencia se guarda solo en este navegador.", "オンの場合、スクリーニング画面に 機械学習 の関連度スコアとバッジを表示しません（文献は引き続き 機械学習 順で並びます）。オフの場合はスコアを表示し、参考値である旨を注記します。設定はこのブラウザーにのみ保存されます。", "Ativado, a visão de triagem oculta as pontuações e os emblemas de relevância do aprendizado de máquina (as referências continuam ordenadas pelo aprendizado de máquina); desativado, as pontuações aparecem com a nota de uso apenas orientativo. A preferência fica guardada somente neste navegador.", "Wenn aktiviert, verbirgt die Screening-Ansicht ML-Relevanzwerte und Badges (die Referenzen bleiben ML-sortiert); wenn deaktiviert, werden die Werte mit dem Hinweis „nur zur Orientierung“ gezeigt. Die Einstellung wird nur in diesem Browser gespeichert.", "Када је укључено, екран скрининга скрива оцене релевантности машинског учења и значке (референце остају поређане машинским учењем); када је искључено, оцене се приказују уз напомену да су само оријентационе. Подешавање се чува само у овом прегледачу.", "켜면 선별 화면에서 머신러닝 관련도 점수와 배지를 숨깁니다(문헌 순서는 여전히 머신러닝 정렬). 끄면 점수를 표시하고 참고용임을 밝힙니다. 설정은 이 브라우저에만 저장됩니다."],
   ["机器学习分数仅供参考，不应影响判断", "Machine Learning scores are for reference only and should not influence your judgement", "Les scores par apprentissage automatique sont donnés à titre indicatif et ne doivent pas influencer votre jugement", "Оценки машинного обучения приведены только для справки и не должны влиять на ваше суждение", "Las puntuaciones del aprendizaje automático son solo orientativas y no deben influir en su juicio", "機械学習 スコアは参考値であり、判断に影響を与えるものではありません", "As pontuações do aprendizado de máquina são apenas orientativas e não devem influenciar seu julgamento", "ML-Werte sind nur zur Orientierung und sollten Ihr Urteil nicht beeinflussen", "Оцене машинског учења су само оријентационе и не треба да утичу на вашу оцену", "머신러닝 점수는 참고용이며 판단에 영향을 주어서는 안 됩니다"],
   [
-    "人群（P）", "Population (P)", "Population (P)", "Популяция (P)", "Población (P)", "人群（P）", "População (P)", "Population (P)", "Популација (P)", "대상 집단(P)"
+    "人群（P）", "Population (P)", "Population (P)", "Популяция (P)", "Población (P)", "集団（P）", "População (P)", "Population (P)", "Популација (P)", "대상 집단(P)"
   ],
   [
     "干预（I）", "Intervention (I)", "Intervention (I)", "Вмешательство (I)", "Intervención (I)", "介入（I）", "Intervenção (I)", "Intervention (I)", "Интервенција (I)", "중재(I)"
@@ -5951,7 +6055,9 @@
     "Referenzstandard (reference_standard)",
     "референтни стандард (reference_standard)",
     "참조 표준(reference_standard)"
-  ]
+  ],
+  /* r8 FL4（MM11-12 #12）：mobile_concept.js:73 的 T('Work scope') 此前无词条 */
+  ["工作范围", "Work scope", "Périmètre de travail", "Объём работы", "Alcance del trabajo", "作業範囲", "Escopo do trabalho", "Arbeitsumfang", "Обим посла", "작업 범위"]
 ];
  RFLang.register(rows);
  window.RFInterfaceVocabulary=Object.freeze(rows.map(row=>Object.freeze(row.slice())));

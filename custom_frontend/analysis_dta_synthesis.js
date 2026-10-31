@@ -108,12 +108,12 @@
         return;
       }
       const table = el('table'), body = el('tbody');
-      table.append(el('thead', {}, el('tr', {}, el('th', {text:'HSROC parameter'}), el('th', {text:'Estimate'}))), body);
+      table.append(el('thead', {}, el('tr', {}, el('th', {text:T('HSROC parameter')}), el('th', {text:'Estimate'}))), body);
       for (const [key, label] of [['lambda','Λ · accuracy'], ['theta','Θ · threshold'], ['beta','β · shape'],
         ['variance_alpha','σα² · accuracy variance'], ['variance_theta','σθ² · threshold variance']]) {
         body.append(el('tr', {}, el('th', {scope:'row', text:label}), el('td', {text:fmt(hsroc[key])})));
       }
-      host.append(table, el('p', {class:'hint',text:'Accuracy and threshold variances are on their latent HSROC parameter scales. Descriptive HSROC curve and parameters only: no HSROC parameter CI or shape significance test. The separate bivariate prediction region is shown on the plot when available.'}),
+      host.append(table, el('p', {class:'hint',text:T('Accuracy and threshold variances are on their latent HSROC parameter scales. Descriptive HSROC curve and parameters only: no HSROC parameter CI or shape significance test. The separate bivariate prediction region is shown on the plot when available.')}),
         ...hsroc.warnings.map(text => el('p', {class:'hint',text})),
         el('p', {class:'hint',text:hsroc.sources.join(' ') + ' Verify the original text and cite these methods when publishing.'}));
       record = {task_id:S.task.task_id, query:Object.fromEntries(query), result:hsroc};

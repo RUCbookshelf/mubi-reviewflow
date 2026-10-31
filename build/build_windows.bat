@@ -36,6 +36,15 @@ set "PYEMBED_VER=3.12.10"
 set "PYEMBED_ZIP=python-%PYEMBED_VER%-embed-amd64.zip"
 set "PYEMBED_URL=https://www.python.org/ftp/python/%PYEMBED_VER%/%PYEMBED_ZIP%"
 set "GETPIP_URL=https://bootstrap.pypa.io/get-pip.py"
+rem MM9-13: both bootstrap downloads are verified with certutil against these
+rem pinned digests before anything executes them (the Linux build already did
+rem this for appimagetool). python.org serves an immutable per-version file;
+rem bootstrap.pypa.io/get-pip.py is a rolling file that changes whenever pip
+rem releases, so a mismatch after an upstream rotation is a deliberate hard
+rem stop: verify the new file and update GETPIP_SHA256 in the same change -
+rem never delete the check.
+set "PYEMBED_SHA256=4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
+set "GETPIP_SHA256=f4448a01e3ab2914c65f4ca59d4cacba6b2dbde19a483fbac46587f8bbaff424"
 set "DOWNLOADS=%SRCDIR%\downloads"
 set "STAGING=%SRCDIR%\staging\ReviewFlow"
 set "INSTALLER=%SRCDIR%\Output\ReviewFlow-Setup-x64.exe"
@@ -64,6 +73,13 @@ if "%UNC%"=="0" goto :build
 echo   Network/WSL path detected - building from a local copy.
 set "BUILDROOT=%LOCALAPPDATA%\ReviewFlow-build"
 call :log "relocating: %BUILDROOT%"
+rem F1-3: hold the build lock for the whole relocation. The relocated build
+rem below inherits the ownership (RF_LOCK_HANDED_DOWN) and does not release
+rem it, because this wrapper still has to copy the installer back afterwards.
+set "LOCKDIR=%BUILDROOT%\build\.build-windows.lock"
+call :acquire_lock
+if errorlevel 1 goto :end_fail
+set "RF_BUILD_LOCK_HELD=1"
 mkdir "%BUILDROOT%\build" 2>nul
 if not exist "%BUILDROOT%\build" goto :fail_nolocal
 if exist "%BUILDROOT%\build\staging" rmdir /s /q "%BUILDROOT%\build\staging" 2>nul
@@ -78,6 +94,13 @@ set "COPYFAIL="
 for %%P in (custom_backend custom_frontend coscreen) do call :copydir "%%P"
 if defined COPYFAIL goto :fail_copy
 copy /y "%SRCPARENT%\THIRD_PARTY_NOTICES.md" "%BUILDROOT%\THIRD_PARTY_NOTICES.md" >nul
+if errorlevel 1 goto :fail_copy
+rem N-01: the relocated tree must also carry the root VERSION file. The inner
+rem build copies it into the staging layout; without this line the UNC path
+rem built installers whose installed app reported version 0.0.0
+rem (coscreen/__init__.py and update_check.py fall back), while the installer
+rem metadata only looked right because `call` inherits the outer APP_VERSION.
+copy /y "%SRCPARENT%\VERSION" "%BUILDROOT%\VERSION" >nul
 if errorlevel 1 goto :fail_copy
 
 echo   Building inside the local copy ...
@@ -104,12 +127,25 @@ echo.
 echo   Double-click the installer above to install ReviewFlow.
 echo.
 pause
+call :release_lock
 exit /b 0
 
 rem ============================================================
 rem  Real build (always runs from a local directory)
 rem ============================================================
 :build
+rem F1-3: lock the build directory unless the outer UNC wrapper already holds
+rem it for us (RF_BUILD_LOCK_HELD). mkdir is atomic in cmd.exe, so a second
+rem concurrent build stops here instead of deleting the first one's staging.
+if not defined RF_BUILD_LOCK_HELD (
+  set "LOCKDIR=%SRCDIR%\.build-windows.lock"
+  call :acquire_lock
+  if errorlevel 1 goto :end_fail
+) else (
+  rem Inherited lock: leave it for the wrapper to release after the copyback.
+  set "RF_LOCK_HANDED_DOWN=1"
+  set "RF_LOCK_OWNED=1"
+)
 cd /d "%SRCDIR%"
 if not exist "installer.nsi" if not exist "installer.iss" goto :fail_cd
 if not exist "launcher.py" goto :fail_cd
@@ -149,15 +185,14 @@ call :log "installer compiler: %INSTALLER_ENGINE%"
 
 call :log "[1/6] downloading embedded Python %PYEMBED_VER%"
 echo [1/6] downloading embedded Python %PYEMBED_VER% ...
-if exist "%DOWNLOADS%\%PYEMBED_ZIP%" goto :zip_ready
 if not exist "%DOWNLOADS%" mkdir "%DOWNLOADS%" 2>nul
-curl -L --fail --retry 2 -o "%DOWNLOADS%\%PYEMBED_ZIP%" "%PYEMBED_URL%" >>"%LOG%" 2>&1
-if errorlevel 1 goto :fail_dlpy
-:zip_ready
-if exist "%DOWNLOADS%\get-pip.py" goto :pip_ready
-curl -L --fail --retry 2 -o "%DOWNLOADS%\get-pip.py" "%GETPIP_URL%" >>"%LOG%" 2>&1
-if errorlevel 1 goto :fail_dlgetpip
-:pip_ready
+rem MM9-13: every artifact is hash-checked BEFORE it runs - including files
+rem already sitting in the downloads cache from an earlier run, so a tampered
+rem or truncated cache can no longer be replayed silently. A cached file whose
+rem digest mismatches is deleted and fetched once more; a second mismatch
+rem aborts the build.
+call :fetch_verified "%PYEMBED_URL%" "%DOWNLOADS%\%PYEMBED_ZIP%" "%PYEMBED_SHA256%" || goto :fail_dlpy
+call :fetch_verified "%GETPIP_URL%" "%DOWNLOADS%\get-pip.py" "%GETPIP_SHA256%" || goto :fail_dlgetpip
 
 call :log "[2/6] unpacking runtime and installing pip"
 echo [2/6] unpacking runtime and installing pip ...
@@ -244,6 +279,11 @@ node "%SRCDIR%\validate_import_review_static.cjs" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
 node "%SRCDIR%\validate_team_prisma_static.js" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
+rem MM9-07: verify the staged payload tree against the checked-out sources
+rem with the same gate CI runs on the built artifact - previously every local
+rem Windows build shipped without this check.
+"%STAGING%\runtime\python.exe" "%SRCDIR%\verify_release_payload.py" windows >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
 set "REVIEWFLOW_VALIDATION_DEPENDENCIES="
 if exist "%SRCDIR%\validator_deps" rmdir /s /q "%SRCDIR%\validator_deps" >nul 2>nul
 
@@ -271,6 +311,9 @@ if errorlevel 1 goto :fail_compiler
 if not exist "%INSTALLER%" goto :fail_noexe
 
 :done
+rem F1-3: release the build lock on the success path (the failure path
+rem releases in :end_fail; only the owning process releases).
+call :release_lock
 echo.
 echo ============================================================
 echo   BUILD OK
@@ -354,6 +397,9 @@ call :err "installer compilation failed: %INSTALLER_ENGINE%"
 goto :end_fail
 
 :end_fail
+rem F1-3: release the build lock on every failure path (guarded - a process
+rem that failed to ACQUIRE the lock must never delete the owner's lock).
+call :release_lock
 rem Show the captured tool output as well as the failed build step.
 if exist "%LOG%" type "%LOG%"
 echo.
@@ -409,3 +455,67 @@ echo [ERROR] %~1
 if not defined LOGOK goto :eof
 >>"%LOG%" echo [ERROR] %~1
 goto :eof
+
+:acquire_lock
+rem F1-3: atomic mutual exclusion via mkdir (atomic in cmd.exe).
+rem %LOCKDIR% must be set by the caller. There is deliberately NO automatic
+rem reclaim of an abandoned lock: every pid-based reclaim scheme is racy (the
+rem winner must rd+mkdir, and a contender holding the stale pid will "take
+rem over" the freshly created live lock - measured up to 4 of 4 builds inside
+rem the section). A crashed build leaves the directory behind and the next
+rem build stops with an actionable message; RF_BUILD_LOCK_HELD (set by the UNC
+rem wrapper) tells an inner build it inherited an already-held lock.
+if not defined RF_BUILD_LOCK_HELD (
+  mkdir "%LOCKDIR%" 2>nul
+  if errorlevel 1 goto :lock_busy
+)
+set "RF_LOCK_OWNED=1"
+rem Record the owning cmd.exe so a later build can name it in its error
+rem message. For /f runs its command through one child cmd.exe, so the
+rem query walks two parent levels up from PowerShell's own process.
+set "LOCKPID="
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$p)).ParentProcessId"`) do set "LOCKPID=%%P"
+if defined LOCKPID > "%LOCKDIR%\pid" echo %LOCKPID%
+exit /b 0
+:lock_busy
+set "LOCKHOLDER="
+if exist "%LOCKDIR%\pid" set /p LOCKHOLDER=<"%LOCKDIR%\pid"
+call :err "another ReviewFlow packaging build holds %LOCKDIR%%LOCKHOLDER%; stop it first (delete the folder only if no build is running)"
+exit /b 1
+
+:release_lock
+rem F1-3: only the owning process removes the lock, and an inner build must not
+rem remove the lock its outer UNC wrapper still holds - the wrapper still has
+rem to copy the installer back after the inner build returns.
+if not defined RF_LOCK_OWNED goto :eof
+if defined RF_LOCK_HANDED_DOWN goto :eof
+if defined LOCKDIR if exist "%LOCKDIR%" rd /s /q "%LOCKDIR%" >nul 2>nul
+set "RF_LOCK_OWNED="
+goto :eof
+
+:fetch_verified
+rem MM9-13: %1=URL %2=cache path %3=pinned sha256. A cached file is
+rem re-verified on every run; a mismatch deletes it and re-downloads once.
+call :sha256_matches "%~2" "%~3"
+if not errorlevel 1 exit /b 0
+if exist "%~2" del /q "%~2" >nul 2>nul
+curl -L --fail --retry 2 -o "%~2" "%~1" >>"%LOG%" 2>&1
+if errorlevel 1 exit /b 1
+call :sha256_matches "%~2" "%~3"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:sha256_matches
+rem MM9-13: %1=file %2=expected sha256; exit 0 iff certutil's digest of %1
+rem equals %2 (case-insensitive). certutil prints the digest on the line after
+rem a localized header; the two length checks reject a localized error message
+rem that took the digest line's place (certutil text is locale-dependent).
+if not exist "%~1" exit /b 1
+set "ACTUAL_SHA256="
+for /f "usebackq skip=1 delims=" %%H in (`certutil -hashfile "%~1" SHA256 2^>nul`) do if not defined ACTUAL_SHA256 set "ACTUAL_SHA256=%%H"
+if not defined ACTUAL_SHA256 exit /b 1
+if "%ACTUAL_SHA256:~63,1%"=="" exit /b 1
+if not "%ACTUAL_SHA256:~64%"=="" exit /b 1
+if /i not "%ACTUAL_SHA256%"=="%~2" exit /b 1
+exit /b 0
+

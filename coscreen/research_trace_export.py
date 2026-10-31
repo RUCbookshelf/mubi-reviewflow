@@ -1474,4 +1474,9 @@ def validate_import_package(package: bytes | bytearray | memoryview) -> dict[str
         raise TracePackageError("Manifest event count does not match events.jsonl.")
     return {"manifest": manifest, "events": events,
             "package_sha256": hashlib.sha256(raw).hexdigest(),
-            "origin_actors": sorted({str(e.get("actor_id", e.get("actor_alias", ""))) for e in events})}
+            # B08-N6：actor_id 键存在但值为 null 时，e.get("actor_id", …) 返回
+            # None → str(None) 产出幻影演员 "None"。改为真值回退链，与导入侧
+            # research_trace.import_event 的 `if event.get("actor_id") else …`
+            # 同一口径：null 回退 alias，两者皆空才落空串。
+            "origin_actors": sorted({str(e.get("actor_id") or e.get("actor_alias") or "")
+                                     for e in events})}
