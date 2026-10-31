@@ -57,6 +57,24 @@ def _decode(text: str, encoding: str):
     return decode_bytes_with_confidence(text.encode(encoding), "probe.txt")
 
 
+def _decode_in_file(title: str, encoding: str = "cp1252"):
+    """把题录放进真实形态的 CSV 正文再解码。
+
+    评审的 #17 用例是**整份导出文件**里的一个标题；裸标题串（如 '©Über'）
+    的非 ASCII 占比 40% 会先被既有的 ``_MAX_CP1252_NON_ASCII_RATE=0.2``
+    可行性门拒掉——那是另一个既有守卫，不是 #17 的判据。用真实文件正文
+    （ASCII 行占主体）才能单独检验词首证据本身。
+    """
+    body = (
+        "Key,Title,DOI,Publication Year,Author\n"
+        "A1,First English study,10.1/a,2019,Doe\n"
+        "A2,Second English study,10.1/b,2020,Roe\n"
+        f'M1,"{title}",10.1/muller,2021,Mueller\n'
+        "A3,Third English study,10.1/c,2022,Poe\n"
+    )
+    return decode_bytes_with_confidence(body.encode(encoding), "probe.csv")
+
+
 class Cp1252SymbolPrefixTests(unittest.TestCase):
     """#17：©/®/° 前缀标题不再被 GBK 误解。撤修复必红。"""
 
@@ -72,6 +90,77 @@ class Cp1252SymbolPrefixTests(unittest.TestCase):
     def test_space_after_symbol_still_cp1252(self):
         decoded, _ = _decode("© Springer", "cp1252")
         self.assertEqual(decoded, "© Springer")
+
+    def test_accented_word_after_copyright_symbol_decodes_cp1252(self):
+        # 评审第 3 轮残留 high 原样回放：第 3 轮判据要求 © 后**两个字节都是
+        # ASCII 字母**，于是「© + 重音/变音符开头的词」整类落回 GBK
+        # （©Müller -> '㎝黮ler'、©Éditions -> '┥ditions'），跨版本重导
+        # 新增重复行。修法：符号后「字母+高位重音字母」或「高位重音字母+
+        # 字母」同样计 cp1252 词首证据。撤修复（回到两字节都须 ASCII 字母）
+        # 此用例必红。
+        for text in ("©Müller, Hans", "©Éditions du Seuil",
+                     "©Ökologie der Stadt", "©Åke Svensson",
+                     "©Øresund", "©Ça va", "®Müller GmbH",
+                     "©Größe der Stichprobe", "©Über", "©Émile"):
+            with self.subTest(text=text):
+                decoded, warnings = _decode_in_file(text)
+                self.assertIn(f'"{text}"', decoded,
+                              f"© + 重音词被整类翻成 GBK: "
+                              f"{decoded.splitlines()[3]!r}")
+                self.assertTrue(warnings, "非 UTF-8 解码必须有告警")
+
+    def test_symbol_original_ascii_pair_rule_not_regressed(self):
+        # 第 3 轮原判据（ASCII 字母 + ASCII 字母）不得回归——评审原话
+        # 「同时保住 ©Springer 类原判据不回归」。
+        for text in ("©The Author(s) 2020", "©Springer-Verlag Berlin",
+                     "©Oxford University Press", "©MILLER", "©the author"):
+            with self.subTest(text=text):
+                decoded, _ = _decode_in_file(text)
+                self.assertIn(f'"{text}"', decoded)
+
+    def test_accented_copyright_title_reimport_has_no_duplicate_row(self):
+        # 跨版本（评审实测口径）：2.1.3 已按 cp1252 正确入库的 ©Müller 题录，
+        # 用真实 CLI 子进程重导同一文件必须原地更新（新增 0 条），不得新增
+        # 第二行（修复前 "新增 1 条" + 库内出现 '㎝黮ler, Hans'）。
+        import sqlite3
+        from contextlib import closing
+
+        from coscreen import db as db_mod
+        from coscreen.models import Article, compute_content_hash
+
+        with tempfile.TemporaryDirectory(prefix="rf_r8b17ac_") as tmp:
+            tmp = Path(tmp)
+            csv = tmp / "accented.csv"
+            csv.write_bytes(
+                'Key,Title,DOI\nM1,"©Müller, Hans",10.1/m\n'.encode("cp1252"))
+            db = str(tmp / "t.db")
+            db_mod.init_db(db)
+            title = "©Müller, Hans"
+            db_mod.upsert_articles(db, [Article(
+                zotero_key="M1", title=title, doi="10.1/m",
+                content_hash=compute_content_hash("10.1/m", title))], [])
+            proc = _run_cli(["import", "--file", str(csv), "--db", db])
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("新增 0 条", proc.stdout,
+                          "© + 重音词文件重导必须原地更新（修复前新增 1 行）")
+            with closing(sqlite3.connect(db)) as conn:
+                rows = conn.execute(
+                    "SELECT zotero_key, title FROM articles").fetchall()
+            self.assertEqual([r[0] for r in rows], ["M1"])
+            self.assertEqual(rows[0][1], title, "标题不得为 GBK 乱码")
+
+    def test_gbk_unit_symbol_before_ascii_letter_stays_gbk(self):
+        # 同行判据的另一侧：GBK 的 ㎡/㎏/㎜ 后紧接 ASCII 字母（'5㎡pH'、
+        # '25㎜Hg'）在字节形态上与 '@ + 两个字母' 无法区分，靠「单位符号
+        # 前是数字」排除左侧边界。旧判据曾把 '5㎡pH' 翻成 '5©OpH'。
+        # 撤左侧边界（改回只看右侧两字节）此用例必红。
+        for text in ("5㎡pH", "20㎡pH", "5㎡AB", "5㎝AB", "25㎜Hg",
+                     "40㎎kg", "5㎝a"):
+            with self.subTest(text=text):
+                decoded, _ = decode_bytes_with_confidence(
+                    text.encode("gbk"), "probe.csv")
+                self.assertEqual(decoded, text,
+                                 f"GBK 单位符号被误翻成 cp1252: {decoded!r}")
 
     def test_real_gbk_symbol_char_not_flipped(self):
         # 防线：真实 GBK 文本里的全角/兼容符号（如 ㎡ 经自身 GBK 编码出现，

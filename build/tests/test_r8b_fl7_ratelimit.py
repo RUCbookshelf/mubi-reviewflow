@@ -390,6 +390,144 @@ class EventTicketTtlTests(unittest.TestCase):
                                     authorization=f"Bearer {self.token}"))
         self.assertEqual(ctx.exception.status_code, 410)
 
+    # ------------------------------------------------------------------
+    # r8 复审残留（r6 #41 四轮）：多凭证并存时每类凭证的失效语义必须
+    # 独立生效。修复前 `if ticket is not None:` 先于 token 判定且在
+    # else 分支内，`?ticket=<有效票>&token=<24h JWT>` 先走 ticket 分支
+    # 即 200——并存即可绕开 token 的 410。
+    # ------------------------------------------------------------------
+    def _drive(self, query: str, *, ticket, token, authorization=None):
+        """直接驱动端点协程（与既有 U5-P10 系列同法：TestClient 拉无限流
+        会死锁）。返回 HTTPException 或响应对象。"""
+        import asyncio
+
+        from fastapi import HTTPException
+        from starlette.requests import Request
+
+        from custom_backend.main import task_events
+
+        headers = [(b"content-type", b"text/plain")]
+        if authorization:
+            headers.append((b"authorization", authorization.encode("latin-1")))
+        scope = {"type": "http", "method": "GET", "path": "/api/events",
+                 "headers": headers, "query_string": query.encode("ascii")}
+        try:
+            return asyncio.run(task_events(
+                Request(scope), ticket=ticket, token=token,
+                authorization=authorization))
+        except HTTPException as exc:  # noqa: PERF203 - 测试内直取状态码
+            return exc
+
+    def _assert_410(self, outcome, case: str):
+        from fastapi import HTTPException
+        self.assertIsInstance(outcome, HTTPException,
+                              f"{case}：必须 410，不得放行事件流")
+        self.assertEqual(outcome.status_code, 410, case)
+        self.assertEqual(outcome.headers.get("Deprecation"), "true", case)
+        self.assertIn("ticket", str(outcome.detail), case)
+
+    def test_valid_ticket_plus_valid_token_is_410(self):
+        """r8 残留主项（评审实测原话）：ticket=<有效票>&token=<24h JWT>
+        修复前 200 → 修复后 410（token 的下线语义不被票据短路）。"""
+        from urllib.parse import quote
+
+        from custom_backend.main import _event_tickets
+
+        ticket, _ = _event_tickets.issue(self.uid, "ticket-ttl")
+        query = (f"ticket={quote(ticket, safe='')}"
+                 f"&token={quote(self.token, safe='')}")
+        self._assert_410(
+            self._drive(query, ticket=ticket, token=self.token),
+            "ticket(有效)+token(有效)")
+
+    def test_valid_ticket_plus_garbage_token_is_410(self):
+        """token 的值不影响判定：URL 里出现 ?token= 即 410（哪怕票据本身
+        有效、token 值甚至是伪造的——下线针对的是「JWT 进 URL」这个面）。"""
+        from urllib.parse import quote
+
+        from custom_backend.main import _event_tickets
+
+        ticket, _ = _event_tickets.issue(self.uid, "ticket-ttl")
+        query = f"ticket={quote(ticket, safe='')}&token=garbage"
+        self._assert_410(
+            self._drive(query, ticket=ticket, token="garbage"),
+            "ticket(有效)+token(伪造)")
+
+    def test_garbage_ticket_plus_token_is_410(self):
+        """顺序无关：票据无效不得把 token 的 410 降级成票据的 401。"""
+        from urllib.parse import quote
+
+        query = f"ticket=forged&token={quote(self.token, safe='')}"
+        self._assert_410(
+            self._drive(query, ticket="forged", token=self.token),
+            "ticket(伪造)+token(有效)")
+
+    def test_valid_ticket_plus_token_plus_bearer_is_410(self):
+        """三类凭证并存：Bearer 或票据都无法豁免 URL token 的 410。"""
+        from urllib.parse import quote
+
+        from custom_backend.main import _event_tickets
+
+        ticket, _ = _event_tickets.issue(self.uid, "ticket-ttl")
+        query = (f"ticket={quote(ticket, safe='')}"
+                 f"&token={quote(self.token, safe='')}")
+        self._assert_410(
+            self._drive(query, ticket=ticket, token=self.token,
+                        authorization="Bearer " + self.token),
+            "ticket+token+Bearer")
+
+    def test_ticket_plus_token_real_http_is_410(self):
+        """真实 HTTP 传输层复核（评审探针同款形态）。
+
+        **注意**：本用例在修复前形态下会**挂死**而非报红——修复前 200 是
+        无限 SSE 流，TestClient 会等响应体读完（repo 既有 U5-P10 注释即记载
+        该传输限制）。因此不加超时守护，让「不返回 410 就被拉住的流」以
+        外层 pytest 超时暴露；判定本身仍以 410 + Deprecation 头为准。
+        """
+        from custom_backend.main import _event_tickets
+
+        ticket, _ = _event_tickets.issue(self.uid, "ticket-ttl")
+        r = self.client.get(
+            "/api/events",
+            params={"ticket": ticket, "token": self.token},
+            headers={"Authorization": "Bearer " + self.token})
+        self.assertEqual(r.status_code, 410, r.text)
+        self.assertEqual(r.headers.get("deprecation"), "true")
+        self.assertIn("ticket", r.json()["detail"])
+
+    def test_valid_ticket_alone_still_streams(self):
+        """兼容性钉（r8 残留修复的约束）：出货前端只用 ?ticket=
+        （custom_frontend/index.html:5571-5575，先 POST 换票再
+        EventSource('/api/events?ticket=' + ...)），修复不得把它打成 410。"""
+        from custom_backend.main import _event_tickets
+
+        ticket, _ = _event_tickets.issue(self.uid, "ticket-ttl")
+        response = self._drive(f"ticket={ticket}", ticket=ticket, token=None)
+        self.assertNotIsInstance(response, Exception, "有效票据仅用 ?ticket= 必须放行")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("deprecation", response.headers)
+
+    def test_bearer_alone_still_streams(self):
+        """兼容性钉：无 ticket/token 时 Bearer 路径不变（脚本/集成方）。"""
+        response = self._drive("", ticket=None, token=None,
+                               authorization="Bearer " + self.token)
+        self.assertNotIsInstance(response, Exception, "Bearer 路径必须保持 200")
+        self.assertEqual(response.status_code, 200)
+
+    def test_token_check_precedes_ticket_branch_in_source(self):
+        """结构钉：token 的 410 判定必须在 ticket 分支之前、且处于函数体
+        顶层（缩进 4）而非 else 分支内（上一版的绕过形态）。"""
+        src = (REPO / "custom_backend" / "main.py").read_text(encoding="utf-8")
+        body = src.split("async def task_events(")[1].split("@app.get")[0]
+        token_check = body.index("if token is not None:")
+        ticket_check = body.index("if ticket is not None:")
+        self.assertLess(token_check, ticket_check,
+                        "token 的 410 判定必须先于 ticket 分支（r6 #41 四轮）")
+        line = body[:token_check].rsplit("\n", 1)[1]
+        self.assertEqual(line, "    ",
+                         "token 判定必须在函数体顶层（缩进 4），不得嵌在 else 里")
+
+
 class RequirementsLockTests(unittest.TestCase):
     """#38 锁版本子项：fastapi 上界 + starlette 显式声明。"""
 

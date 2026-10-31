@@ -1848,6 +1848,36 @@ async def task_events(request: Request,
                       token: str | None = Query(default=None),
                       authorization: str | None = Header(default=None)):
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    # r6 #41（query token 下线时间表：先 Deprecation 头、后 410）：
+    # 只要 URL 里出现 `?token=` 就 410——**不看请求是否另带 Bearer、也不看
+    # 是否另带 ticket**（r8 复审实测：上一版把本判定放在 `else:` 分支里，
+    # `?ticket=<有效票>&token=<24h JWT>` 先走 ticket 分支即 200，token 的
+    # 410 被整体跳过——并存即可绕开下线）。各类凭证的失效语义必须独立生效，
+    # 不能用「另一类凭证有效」把本类的下线决定短路掉；故本判定前移到凭证
+    # 分派之前，对所有并存组合都成立。
+    #
+    # 已知后果（**未获产品签署，待裁决**，不在本组擅自核销）：v2.1.3
+    # 已发布标签页仍用 `/api/events?token=`（git show v2.1.3:custom_frontend/
+    # index.html 实测），升级后未刷新的标签页会撞 410 → 只剩 30s 轮询、
+    # 协作通知实时性丢失，刷新页面即恢复。handoff
+    # （docs/handoff/r6-review-fixes/upload-security.md:39）要求
+    # 「先 Deprecation 头、后 410」的时间表，本组无法自行证明「后 410」
+    # 的时点已到；若产品要求保留一个版本周期的 200+Deprecation，改回
+    # 本节为加头放行即可（r7 的既有实现形态）。出货前端只用 `?ticket=`
+    # （custom_frontend/index.html:5571-5575：先 POST 换票再
+    # `EventSource('/api/events?ticket=' + ...)`，URL 中从不带 token），
+    # 因此本判定不会影响现行 SSE 客户端。
+    if token is not None:
+        raise HTTPException(
+            410,
+            "事件流 token 查询参数已下线（410 Gone）：完整 JWT 进 URL 会"
+            "泄漏到反代/访问日志与浏览器历史；请先 POST /api/events/ticket"
+            " 换取一次性短期票据，再以 ?ticket= 连接 /api/events。",
+            headers={
+                "Deprecation": "true",
+                "Warning": '299 reviewflow "token query parameter is removed'
+                           ' (410); use POST /api/events/ticket"',
+            })
     if ticket is not None:
         # U5-P10：短期一次性票据（POST /api/events/ticket 换取）。签发时已
         # 走完整 require_user 校验，这里只恢复身份并立即消费（防重放）。
@@ -1857,35 +1887,8 @@ async def task_events(request: Request,
                                 headers={"WWW-Authenticate": "Bearer"})
         user = {"user_id": payload["user_id"], "username": payload["username"]}
     else:
-        # r6 #41（query token 下线时间表：先 Deprecation 头、后 410）：
-        # 只要 URL 里出现 `?token=` 就 410——**不看请求是否另带 Bearer**
-        # （三轮复审实测：上一版加的 `and not authorization` 门控把下线决定
-        # 变成「只对 EventSource 生效」，而 EventSource 恰恰是新前端已不再
-        # 用 token 的那条路径；24h JWT 进 URL 的泄露面与请求是否带 Bearer
-        # 无关）。下线面因此完整：任何能设 Header 的脚本/第三方集成也不再
-        # 能靠带 Bearer 继续用旧参数。
-        #
-        # 已知后果（**未获产品签署，待裁决**，不在本组擅自核销）：v2.1.3
-        # 已发布标签页仍用 `/api/events?token=`（git show v2.1.3:custom_frontend/
-        # index.html 实测），升级后未刷新的标签页会撞 410 → 只剩 30s 轮询、
-        # 协作通知实时性丢失，刷新页面即恢复。handoff
-        # （docs/handoff/r6-review-fixes/upload-security.md:39）要求
-        # 「先 Deprecation 头、后 410」的时间表，本组无法自行证明「后 410」
-        # 的时点已到；若产品要求保留一个版本周期的 200+Deprecation，改回
-        # 本节为加头放行即可（r7 的既有实现形态）。
-        if token is not None:
-            raise HTTPException(
-                410,
-                "事件流 token 查询参数已下线（410 Gone）：完整 JWT 进 URL 会"
-                "泄漏到反代/访问日志与浏览器历史；请先 POST /api/events/ticket"
-                " 换取一次性短期票据，再以 ?ticket= 连接 /api/events。",
-                headers={
-                    "Deprecation": "true",
-                    "Warning": '299 reviewflow "token query parameter is removed'
-                               ' (410); use POST /api/events/ticket"',
-                })
         # EventSource cannot set a Bearer header. Reuse all normal auth checks.
-        user = require_user(request, authorization or (f"Bearer {token}" if token else None))
+        user = require_user(request, authorization)
 
     async def stream():
         queue = BUS.subscribe(user["user_id"])

@@ -116,6 +116,82 @@ _CP1252_LETTER_BYTES = frozenset(
     b for b in range(0xC0, 0x100) if b not in (0xD7, 0xF7)
 )
 
+# r8 #17 第 4 轮：©/®/° 词首证据的左侧边界。cp1252 的 © 出现在字段开头、
+# 空白、ASCII 标点或拉丁字母之后（'©The'、'(©Müller)'、'x©The'）；而 GBK
+# 文本里的 ㎡/㎎/㎝/㏒ 单位符号几乎总紧跟数字或汉字（'20㎡'、'直径5㎝'、
+# '以㎝为'）。因此「前一字节是数字或高位字节」时不把该符号当 cp1252 词首
+# ——这正是旧判据把 '5㎡pH' 误翻成 '5©OpH' 的一整类。代价是 '2©The' 形态
+# 不再被识别（真实题录里 © 紧贴数字几乎只出现在 '1999©…' 的无空格版权行，
+# 且同义写法可用空白/标点形态）；取舍以 GBK 真文件的正确性优先。
+_ASCII_SYMBOL_BOUNDARY_BYTES = frozenset(
+    b for b in range(0x21, 0x7F) if not chr(b).isdigit()
+) | frozenset({0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20})
+
+
+def _is_ascii_letter(byte: int) -> bool:
+    """ASCII 字母字节（A-Z/a-z）。"""
+    return 0x41 <= byte <= 0x5A or 0x61 <= byte <= 0x7A
+
+
+def _symbol_lead_evidence(data: bytes) -> tuple[int, int]:
+    """统计 ©/®/° 词首证据，并返回这些证据位置**自身**在 GBK 视图里解出的
+    CJK 字符数（第二项），供调用方从「GBK 侧 CJK 总数」中扣除。
+
+    扣除的必要性（r8 #17 第 4 轮）：'©Größe' 的 A9 F6 在 GBK 视图解出
+    一个「汉字」，若把它算进 CJK 主体，单个符号证据就永远过不了
+    ``evidence*2 > cjk`` 的门槛（1*2 > 2 不成立）——符号证据被自己制造
+    的乱码字符抵消，判据等于失效。该字符由 cp1252 字节对产生、不是
+    真实中文，故不计入主体；真实 GBK 单位符号（'area ㎡ used'）本就
+    不构成证据，不会走到这里。
+    """
+    evidence = 0
+    explained_cjk = 0
+    for i in range(len(data)):
+        if data[i] not in (0xA9, 0xAE, 0xB0):
+            continue
+        if not _is_symbol_lead_evidence(data, i):
+            continue
+        evidence += 1
+        if i + 1 < len(data) and data[i + 1] >= 0x40:
+            try:
+                decoded = data[i:i + 2].decode("gbk")
+            except UnicodeDecodeError:
+                decoded = ""
+            if len(decoded) == 1 and _is_cjk_char(decoded):
+                explained_cjk += 1
+    return evidence, explained_cjk
+
+
+def _is_symbol_lead_evidence(data: bytes, i: int) -> bool:
+    """data[i] ∈ {©=0xA9, ®=0xAE, °=0xB0} 处是否构成 cp1252 词首证据。
+
+    r8 #17 第 4 轮（评审第 3 轮残留 high）：第 3 轮的判据要求符号后
+    **两个字节都是 ASCII 字母**，把「© + 重音/变音符开头的词」整类判成
+    无证据——'©Müller'（A9 4D FC 6C…，第二字节是 ü=0xFC）与
+    '©Éditions'（A9 C9 64…，第一字节就是 É=0xC9）都会整篇落回 GBK
+    （'㎝黮ler' / '┥ditions'），跨版本重导因此新增重复行（评审实测真实
+    CLI 子进程复现）。现按「符号后的前两个字节是否可信的 cp1252 词首续写」
+    判定，三种形态任一成立即计证据：
+
+      ASCII 字母 + ASCII 字母   → '©The'/'©Springer'/'©Oxford'（原判据保留）
+      ASCII 字母 + 高位字母     → '©Müller'（0x4D 0xFC）、'©MÜLLER'
+      高位字母   + ASCII 字母   → '©Éditions'（0xC9 0x64）、'©Ökologie'
+
+    三形态都不成立时不计证据：GBK 的 ㎡/㎎/㎜/㎝/㏒（0xA9 + 单个字母）后
+    面跟空格、括号、数字或汉字（'area ㎡ used' → A9 4F 20），不构成续写。
+    左侧边界另见 _ASCII_SYMBOL_BOUNDARY_BYTES：'5㎡pH'（A9 4F 70 48）在
+    字节形态上与 '©OpH' 无法区分，靠「单位符号前是数字」排除（旧判据
+    曾把 '5㎡pH' 误翻成 '5©OpH'）。
+    """
+    if i > 0 and data[i - 1] not in _ASCII_SYMBOL_BOUNDARY_BYTES:
+        return False
+    if i + 2 >= len(data):
+        return False
+    first, second = data[i + 1], data[i + 2]
+    if _is_ascii_letter(first):
+        return _is_ascii_letter(second) or second in _CP1252_LETTER_BYTES
+    return first in _CP1252_LETTER_BYTES and _is_ascii_letter(second)
+
 
 def _is_gb2312_level1(ch: str) -> bool:
     """是否 GB2312 一级常用汉字（0xB0A1–0xD7F9 区）——中文姓名/常用词的
@@ -143,13 +219,15 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
     - 候选解码**不允许出现替换字符**：含 U+FFFD 的候选一律不采纳（复审
       实测：损坏 GBK 曾带着乱码行静默导入；2.1.3 基线为响亮拒绝）；
     - GBK 与 cp1252 双候选均可行时择优：cp1252 自身要求非 ASCII ≤ 20%；
-      GBK 的 mojibake 标记只在此刻用于择优——common 档标记（含 r8 #17 的
-      ©/®/°+ASCII 字节对证据）**占 CJK 主体**（evidence*2 > cjk）且 GBK
-      候选不含 GB2312 一级常用汉字（r8 #19 守卫）时改选 cp1252（附「疑似
-      乱码」告警）；单个 common 标记不再单独触发翻转（稀释 GBK 真文件
-      曾被整文翻成 cp1252 乱码）；cp1252 不可行时绝不因标记否决 GBK；
-      GBK 候选解不出任何 CJK 字符时按 cp1252（r8 #17）；全部高位字节均
-      为 cp1252 字母区且两两成对、CJK 稀疏时优先 cp1252（Größe 形态）；
+      GBK 的 mojibake 标记只在此刻用于择优——common 档标记与 r8 #17 的
+      ©/®/° 词首证据（后接「字母+字母」「字母+高位重音字母」「高位重音
+      字母+字母」之一，且符号左侧不是数字/高位字节，见
+      _is_symbol_lead_evidence）**占 CJK 主体**（evidence*2 > GBK 视图中
+      未被该证据自身解释掉的 CJK 数）且 GBK 候选不含 GB2312 一级常用汉字
+      （r8 #19 守卫）时改选 cp1252（附「疑似乱码」告警）；单个 common
+      标记不再单独触发翻转（稀释 GBK 真文件曾被整文翻成 cp1252 乱码）；
+      cp1252 不可行时绝不因标记否决 GBK；全部高位字节均为 cp1252 字母区
+      且两两成对、CJK 稀疏时优先 cp1252（Größe 形态）；
     - 无候选可行时抛 ParseError 列出已尝试编码——宁可显式失败，不可静默乱码。
     """
     try:
@@ -214,22 +292,19 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
             for i, b in enumerate(data) if b >= 0x80
         )
         sparse_cjk = cjk / max(1, len(text_gbk)) <= 0.05
-        # r8 #17（评审 R2/R3 收口）：cp1252 符号字节（©=0xA9/®=0xAE/°=0xB0）
-        # 后接 **两个 ASCII 字母** 时才计 cp1252 证据——这是字节层面唯一可
-        # 判别的信号：
-        #   '©The'/'©Springer'/'©Oxford'  → A9 + 两个字母，是 cp1252 词首；
-        #   GBK 的 ㎡/㎎/㎜/㎝/㏕/㏒ → A9 0x4F/0x4A/… + 空格/括号/结尾，
-        #   后一字节不是字母（'area ㎡ used' → A9 4F 20）。
-        # 于是 GBK 单位符号（㎡ ㎎ ㎜ ㎝ 一类，双字节 = 0xA9+字母）不再构成
-        # cp1252 证据，而 © 前缀标题仍能正确选 cp1252。评审实测第 1 轮的
-        # 「词首/前导数字」启发式两头误判（'area ㎡' 坏、'area 20㎡' 对），
-        # 现改为单个字母 + 后续字母的双字节判据（不再依赖位置猜测）。
-        symbol_lead_pairs = sum(
-            1 for i in range(len(data) - 2)
-            if data[i] in (0xA9, 0xAE, 0xB0)
-            and ((0x41 <= data[i + 1] <= 0x5A) or (0x61 <= data[i + 1] <= 0x7A))
-            and ((0x41 <= data[i + 2] <= 0x5A) or (0x61 <= data[i + 2] <= 0x7A))
-        )
+        # r8 #17（评审第 3 轮残留 high，第 4 轮修）：cp1252 符号字节
+        # （©=0xA9/®=0xAE/°=0xB0）位于**词首**且后接一个可续写 cp1252 词
+        # 的字节对时计证据，见 _is_symbol_lead_evidence：
+        #   '©The'/'©Springer'/'©Oxford' → 字母+字母（第 3 轮原判据，保留）；
+        #   '©Müller'  → A9 4D FC 6C：字母 + 高位重音字母（ü=0xFC）；
+        #   '©Éditions'→ A9 C9 64 69：高位重音字母（É=0xC9）+ 字母。
+        # 第 3 轮要求后两字节**都是 ASCII 字母**，把「© + 重音/变音符开头的
+        # 词」整类判成无证据并落回 GBK（'㎝黮ler' / '┥ditions'），跨版本
+        # 重导新增重复行（评审以真实 CLI 子进程复现）。词首左侧边界同时
+        # 排除了 GBK 单位符号前的数字/汉字（'20㎡'、'5㎝'），故
+        # 'area ㎡ used'（A9 4F 20）与 '5㎡pH'（A9 4F 70 48，替身是数字）
+        # 都不计入。
+        symbol_lead_pairs, symbol_explained_cjk = _symbol_lead_evidence(data)
         marker_evidence = common_markers + symbol_lead_pairs
         # r8 #19：翻转前加 GB2312 一级常用字守卫（与下方 paired_letters 分支
         # 同口径）——GBK 候选解出真实中文（姓名/常用词编码区）时绝不因
@@ -238,7 +313,11 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
         # （英文为主 + 少量中文题录，臟=GBK C54B 曾单命中翻转）保持 GBK。
         has_level1 = any(
             _is_gb2312_level1(ch) for ch in text_gbk if _is_cjk_char(ch))
-        if marker_evidence and not has_level1 and marker_evidence * 2 > cjk:
+        # 抹掉由 cp1252 符号证据自身产生的乱码字符后再比（见
+        # _symbol_lead_evidence：'©Größe' 的 A9 F6 会解出一个假汉字，
+        # 不扣除则该证据永远被自己制造的主体抵消）。
+        cjk_body = max(0, cjk - symbol_explained_cjk)
+        if marker_evidence and not has_level1 and marker_evidence * 2 > cjk_body:
             # 形态二：cp1252 弯引号/重音字母/符号 + ASCII 被 GBK 误解
             # （'…抯…'、'©Springer'→'㏒pringer'）。©/®/° 前缀用例由上面的
             # symbol_lead_pairs 证据覆盖（评审 R2：#17 的一条 "cjk==0 即
