@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import re
 import secrets
@@ -316,6 +317,29 @@ class RateLimiter:
 login_limiter = RateLimiter(max_events=5, window_seconds=60.0)
 
 
+def _ipv6_prefix64_key(host: str) -> str | None:
+    """IPv6 地址归一到 /64 前缀桶 key（r6 #42）；非 IPv6/解析失败返回 None。
+
+    同一 /64 内轮换源地址曾各占一个限流桶（实测 ``2001:db8:0:1::1`` 与
+    ``::2`` 各放行 5 次、合计 10 次/窗口，第 6 次同地址才 429）——/64 是
+    IPv6 常见分配粒度，按前缀分桶与 IPv4 共享 NAT 出口的既有口径对齐。
+    IPv4-mapped 地址（``::ffff:a.b.c.d``）按 IPv4 处理不折叠（否则全部
+    v4-mapped 对端会塌缩进同一桶）；zone id（``fe80::1%eth0``）剥离后再
+    解析。带 ``/64`` 后缀保证与逐地址 key 的命名空间不重叠。
+    """
+    text = host.strip()
+    if ":" not in text:
+        return None
+    try:
+        addr = ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return None
+    if addr.version != 6 or addr.ipv4_mapped is not None:
+        return None
+    network = ipaddress.ip_network(f"{addr}/64", strict=False)
+    return f"{network.network_address}/64"
+
+
 def rate_limit_key(action: str, client_host: str | None,
                    forwarded_for: str | None = None) -> str:
     """限流桶 key：按**直连对端 IP**分桶，X-Forwarded-For 一律忽略（U5-P5/R6-S1）。
@@ -330,9 +354,30 @@ def rate_limit_key(action: str, client_host: str | None,
       客户端 IP，客户端伪造/轮换 XFF 无法影响桶 key，无法绕过限流；
     - 反向代理部署：应用层看到的所有对端都是反代机，应用层限流退化为
       单一共享桶——**此时限流必须由反代层按真实客户端 IP 完成**
-      （limit_req 完整配置见 docs/deployment/UBUNTU_SERVER.md）。
+      （limit_req 完整配置见 docs/deployment/UBUNTU_SERVER.md）；
+    - IPv6 对端按 /64 前缀归一分桶（r6 #42，见 :func:`_ipv6_prefix64_key`）：
+      同一 /64 内轮换源地址不再各占一个桶。
+
+    **risk-accepted 登记（r6 #40，2.1.4 轮）**：NAT/反向代理拓扑下所有客户端
+    共用 ``login:<反代对端>`` 单桶——攻击者 5 次失败即可让同出口的受害用户
+    正确密码登录也被 429（r6 实测）。产品接受该取舍：应用层不信任
+    X-Forwarded-For（伪造可绕过），限流按真实客户端 IP 由**反代层**承担
+    （UBUNTU_SERVER.md 的 ``limit_req_zone $binary_remote_addr`` 即此口径，
+    应用层桶只作为纵深第二层）。缓解/可选可信代理 opt-in 说明：
+
+    - 已署拓扑（默认）：TLS 反代 + ``--no-proxy-headers``，反代侧按
+      ``$binary_remote_addr`` 限流，应用层共享桶退化无害；
+    - opt-in 可信代理（如需应用层精确计数）：仅在反代**剥离并改写**
+      X-Forwarded-For 为真实客户端 IP、且应用以可信跳数/网段白名单校验
+      直连对端后再采信该头——应用默认不做（信任 XFF = 任何直连客户端
+      可伪造头自选桶键绕过限流）；落地时需同时调整本函数与部署文档，
+      属后续轮次的独立工程，不在本登记内。
     """
-    return f"{action}:{client_host or '?'}"
+    host = (client_host or "?").strip() or "?"
+    prefix64 = _ipv6_prefix64_key(host)
+    if prefix64 is not None:
+        host = prefix64
+    return f"{action}:{host}"
 
 
 # ---------------------------------------------------------------------------
@@ -993,19 +1038,19 @@ class AuthBodyLimitMiddleware:
 # ---------------------------------------------------------------------------
 
 class EventTicketStore:
-    """``/api/events`` 的短期一次性票据（默认 5 分钟）。
+    """``/api/events`` 的短期一次性票据（默认 60 秒，r6 #41 对齐 handoff）。
 
     EventSource 无法设置 Authorization 头，旧方案把 24h JWT 放进 URL
     查询参数——完整凭据进入反代/访问日志与浏览器历史。改由已认证客户端
     ``POST /api/events/ticket``（凭 Bearer）换取短时效票据，再用票据连
     接事件流：票据一次性（连接时消费）、过期即作废，泄露面从 24h 降到
-    5 分钟且不可重放。
+    60 秒且不可重放（handoff 要求「票据 60s 一次性」；此前为 300s）。
 
     容量有界（``max_active``）：签发与消费时都清理过期票据，达到上限时
     逐出最早过期者——反复签发不能无限撑大内存（评审低危残余的收口）。
     """
 
-    def __init__(self, ttl_seconds: float = 300.0,
+    def __init__(self, ttl_seconds: float = 60.0,
                  max_active: int = 10_000) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")

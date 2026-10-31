@@ -1710,7 +1710,8 @@ class UploadSecurityTests(unittest.TestCase):
         r = self.client.post("/api/events/ticket", headers=self.auth())
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        self.assertEqual(body["expires_in"], 300)
+        # r6 #41：票据 TTL 对齐 handoff「60s 一次性」（此前 300s）
+        self.assertEqual(body["expires_in"], 60)
         ticket = body["ticket"]
         # 无效票据 -> 401（HTTPException，不建立事件流）
         with self.assertRaises(HTTPException) as ctx:
@@ -1730,21 +1731,33 @@ class UploadSecurityTests(unittest.TestCase):
                                     ticket=ticket, token=None, authorization=None))
         self.assertEqual(ctx.exception.status_code, 401)
 
-    def test_u5p10_legacy_token_deprecation_header(self):
+    def test_u5p10_legacy_token_gone_410(self):
+        """r6 #41：query token 下线时间表（先 Deprecation 头、后 410）进入
+        410 阶段——旧 token 查询参数一律 410 Gone（保留弃用提醒头指路票据
+        流）；出货前端自票据流上线起即不用 ?token=（见上方前端断言）。"""
+        from fastapi import HTTPException
         from custom_backend.main import task_events
         query = f"token={quote(self.user['token'], safe='')}"
-        response = asyncio.run(task_events(
-            self._events_request(query), ticket=None,
-            token=self.user["token"], authorization=None))
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers.get("deprecation"), "true")
-        self.assertIn("deprecated", response.headers.get("warning", ""))
-        # 响应头在构造时即完成 latin-1 编码（非 ASCII 会直接抛错），能取到
-        # raw_headers 即证明弃用提醒头无 U5-P6 同型的编码问题。
-        self.assertTrue(all(isinstance(v, bytes) for _k, v in response.raw_headers))
-        self.assertIn("retry:", self._first_sse_chunk(response))
-        # 完全无凭据：401
-        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            asyncio.run(task_events(
+                self._events_request(query), ticket=None,
+                token=self.user["token"], authorization=None))
+        self.assertEqual(ctx.exception.status_code, 410)
+        self.assertIn("ticket", str(ctx.exception.detail))
+        # 弃用提醒头仍随 410 下发（构造即 latin-1 编码，非 ASCII 会抛错）
+        self.assertEqual(ctx.exception.headers.get("Deprecation"), "true")
+        self.assertIn("removed", ctx.exception.headers.get("Warning", ""))
+        # r6 #41 三轮：URL 里出现 token 即 410——**即使同时带 Bearer**
+        # （下线面不因 Header 凭据存在而收窄；EventSource 恰是不带 Header 的
+        # 那条已迁移路径）。
+        with self.assertRaises(HTTPException) as ctx2:
+            asyncio.run(task_events(
+                self._events_request(query,
+                                     authorization="Bearer " + self.user["token"]),
+                ticket=None, token=self.user["token"],
+                authorization="Bearer " + self.user["token"]))
+        self.assertEqual(ctx2.exception.status_code, 410)
+        # 完全无凭据：仍 401（不带 token 的裸 Authorization 缺失路径不变）
         with self.assertRaises(HTTPException) as ctx:
             asyncio.run(task_events(self._events_request(""),
                                     ticket=None, token=None, authorization=None))

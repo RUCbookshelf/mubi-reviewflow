@@ -326,7 +326,7 @@ def _cached_replay():
                 "已加载的记录仍可核验",
                 "证书通过 ✅ 抽验未见新相关，总召回 ≥95%（剩余相关 ≤ {0} 条；置信度按超几何随已发现相关数与抽验量变化，并非固定 95%）",
                 "证书通过 ✅ 以 ≥95% 置信度，总召回 ≥95%（剩余相关 ≤ {0} 条）",
-                "此任务为升级前创建（无负责人）。当前版本暂无自助认领入口：可在桌面版重建任务协作，或联系服务器管理员处理。",
+                "此任务为升级前创建（无负责人）。该任务的历史参与者可在服务器模式下重新登记负责人以恢复管理；协作库损坏时先执行协作库修复。也可在桌面版打开同一数据目录重建任务协作。",
                 "Fisher z 尺度", "logit 尺度",
             ),
             tuple(NEW_DICTIONARY_KEYS) + tuple(NEW_ENGLISH_KEYS) + MM9_06_SYNTHESIS_KEYS,
@@ -481,7 +481,17 @@ class LUNA4TranslationFixTests(unittest.TestCase):
         self.assertEqual(result["jaSimplified"], [],
                          "LUNA4-04：ja 槽仍含简体专用字形（日文新字体写作另一字）的键：%r"
                          % (result["jaSimplified"][:5],))
-        row = result["keys"]["此任务为升级前创建（无负责人）。当前版本暂无自助认领入口：可在桌面版重建任务协作，或联系服务器管理员处理。"]
+        # r6 老账批并合：#31 合法改写了该条的 zh 源串（旧串宣称「当前版本暂无
+        # 自助认领入口」，rebind 端点落地后该断言已不成立，改为指向受支持的
+        # 「重新登记负责人」入口）。LUNA4-04 的守护对象是 ja 槽字形（U+5354
+        # 「協作」而非 U+534F「协作」），与 zh 措辞无关——故按新源串取行，
+        # 断言本身不变；下方 jaU534F/jaSimplified 全词典扫描仍覆盖旧串移除后的
+        # 同一行。两侧语义（#31 文案修正 + LUNA4-04 字形归一）均保留。
+        _r6_legacy_hint = ("此任务为升级前创建（无负责人）。该任务的历史参与者可在服务器模式下"
+                           "重新登记负责人以恢复管理；协作库损坏时先执行协作库修复。"
+                           "也可在桌面版打开同一数据目录重建任务协作。")
+        row = result["keys"][_r6_legacy_hint]
+        self.assertIsNotNone(row, "LUNA4-04：词典回放未命中升级前任务提示行（#31 新源串）")
         self.assertIn("タスク協作", row[5], "LUNA4-04：ja 译文应使用「協作」（U+5354）：%r" % row[5])
         src = (FRONTEND / "ai_suggest.js").read_text(encoding="utf-8")
         self.assertNotIn("タスク协作", src, "LUNA4-04：ai_suggest.js 仍含简体「协作」")

@@ -383,26 +383,48 @@ def list_role_grants(
 
     L-09-01（复审扫尾）：task_id 必传，理由同 authorize_action——缺省时
     _owner 的属主-任务绑定校验被跳过，属主判定退化为「该库登记的任意任务」。
-    """
+    该守卫在异常映射之外先抛 ValueError——必须早于下方
+    ``except (FileNotFoundError, ValueError)``，否则 L-09-01 的必传契约
+    会被折叠成 PermissionError。
+
+    异常口径与 get_owner/is_owner/is_participant 对齐（r6 #35）：确定性否定
+    （库不存在/无属主行/绑定不匹配 -> 不是属主，无权枚举）抛 PermissionError；
+    不确定故障（锁超时/读失败 -> OwnerUnavailableError、库永久损坏 ->
+    CollaborationStoreCorruptError）上抛由 HTTP 层映射 503/409——修复前裸
+    ``sqlite3.OperationalError``/``sqlite3.DatabaseError`` 使 team_progress/
+    context 以 500 收场，而非该函数族自立的 503 重试口径。"""
     actor_user_id = _user_id(actor_user_id, "actor_user_id")
     if task_id is None:
         raise ValueError("task_id is required for list_role_grants")
-    with closing(_connect(Path(store), read_only=True)) as conn:
-        owner = _owner(conn, task_id)
-        if int(owner["owner_user_id"]) != actor_user_id:
-            raise PermissionError("only the task owner may list collaboration roles")
-        return [
-            {
-                "user_id": int(row["user_id"]),
-                "role": row["role"],
-                "granted_by": int(row["granted_by"]),
-                "granted_at": row["granted_at"],
-            }
-            for row in conn.execute(
-                "SELECT user_id,role,granted_by,granted_at FROM collaboration_role_grants "
-                "ORDER BY user_id,role"
-            )
-        ]
+    try:
+        with closing(_connect(Path(store), read_only=True)) as conn:
+            owner = _owner(conn, task_id)
+            if int(owner["owner_user_id"]) != actor_user_id:
+                raise PermissionError("only the task owner may list collaboration roles")
+            return [
+                {
+                    "user_id": int(row["user_id"]),
+                    "role": row["role"],
+                    "granted_by": int(row["granted_by"]),
+                    "granted_at": row["granted_at"],
+                }
+                for row in conn.execute(
+                    "SELECT user_id,role,granted_by,granted_at FROM collaboration_role_grants "
+                    "ORDER BY user_id,role"
+                )
+            ]
+    except PermissionError:
+        raise
+    except (FileNotFoundError, ValueError):
+        # 确定性否定：无属主/绑定不匹配/库未初始化——无人有权枚举。
+        raise PermissionError("only the task owner may list collaboration roles")
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"role grant lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"role grant lookup failed: {exc}") from exc
 
 
 def list_participant_ids(
@@ -454,6 +476,12 @@ def authorize_action(
     handoff C5（复审扫尾）：task_id 必传——缺省时按"任意属主"判定的旧
     口径会让拷贝/错放的任务库以任意任务身份通过授权，调用方必须显式给
     出当前任务 id（全部既有调用点均已传 info.task_id）。
+
+    异常口径与 is_owner/is_participant 对齐（r6 #36 / MM-11）：只有**确定性
+    否定**（库不存在/无属主行/绑定不匹配 -> legacy，确无该角色）返回 False；
+    锁超时/读失败抛 OwnerUnavailableError（HTTP 503 重试）、库永久损坏抛
+    CollaborationStoreCorruptError（desktop 409 修库指引 / server 503）——
+    修复前 ``except (...): return False`` 把可重试故障折叠成 403 权限拒绝。
     """
     user_id = _user_id(user_id)
     if action not in _ACTION_ROLES:
@@ -470,5 +498,14 @@ def authorize_action(
                 (user_id, _ACTION_ROLES[action]),
             ).fetchone()
             return row is not None
-    except (OSError, sqlite3.Error, ValueError):
-        return False
+    except FileNotFoundError:
+        return False  # 库不存在 = legacy：确无角色
+    except ValueError:
+        return False  # 无属主行 / 绑定不匹配 / 表未初始化：确无角色
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"action authorization lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"action authorization lookup failed: {exc}") from exc

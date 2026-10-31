@@ -203,15 +203,15 @@ def cmd_import(args: argparse.Namespace) -> int:
     combined = known + articles
     offset = len(known)
     # DOI/键匹配覆盖 known+本批（复审 #3：跨批次重复打标记不重复插入）；
-    # 模糊层只扫本批（评审 R1 返修·FB4：库内既有相似标题对不属于本批
-    # 候选，且避免每次导入对整个库重复 O(n^2) 扫描与重复打印）。
-    _, report = find_duplicates(combined, include_fuzzy=False)
-    _, batch_report = find_duplicates(articles)
-    for pair in batch_report.fuzzy_pairs:  # 批内索引平移到合并视图，供键刷新
-        pair.kept_index += offset
-        pair.dup_index += offset
-    report.fuzzy_pairs = batch_report.fuzzy_pairs
-    report.note = batch_report.note
+    # 模糊层自 r8 #11 起同样在合并视图上扫描（include_fuzzy 默认开）——
+    # 与 living_review/Web legacy_plan 同一口径：此前 combined 跑
+    # include_fuzzy=False、模糊只扫本批，「批×库」近重复（同作者异键、
+    # 双方无 DOI、token_set≈97）CLI 零提示而 living_review 报
+    # pending_candidates，同一输入三条路径两种结论。FB4 的「库内既有
+    # 相似标题对不属于本批候选、不得重复打印」由下方展示/计数过滤保持；
+    # 合并视图模糊扫描成本与 living_review 增量更新同级（分块 + 生成树
+    # 去重 + FUZZY_PAIR_LIMIT 上限）。
+    _, report = find_duplicates(combined)
     # 键消歧（U1-P3/U1-P6/R6-D2；评审 R1 返修·FB1/FB3）：键相同但未合并
     # 的条目加确定性 sha256 后缀；与库内同键条目兼容（同一文献）时保留原
     # 键走更新路径，无来源 Key 的生成键按 _fallback_id → content_hash →
@@ -242,13 +242,26 @@ def cmd_import(args: argparse.Namespace) -> int:
         1 for pos in range(offset, len(combined))
         if roots[pos] == pos and combined[pos].zotero_key not in existing_keys
     )
+    # 沿用/命中库内键走 UPDATE 路径的行数（stabilize 已就地改写 articles 的
+    # 键，此时读到的即最终键）。
+    updated_existing = sum(1 for a in articles if a.zotero_key in existing_keys)
+    # r8 #5（口径文案）：「精确重复」只计被判为另一行同一文献、不单独进入
+    # 筛选的本批记录（批内合并/跨批打标记）；沿用库内键的更新行归
+    # 「更新库内」——修复前 len(articles)-screenable 把纯重导的库内更新
+    # 也计成精确重复（『精确重复 2』与『重复标记 0』并存，按该字段记
+    # duplicates_removed 的脚本会多记）。
+    exact_dup_count = max(0, len(articles) - screenable - updated_existing)
     incoming_keys = {a.zotero_key for a in articles}
     mark_pairs = report.exact_pairs
     screening_count = screenable
     if args.auto_merge_fuzzy:
-        mark_pairs = report.exact_pairs + report.fuzzy_pairs
-        # opt-in 自动合并口径：进入筛选数按合并后保留数打印——模糊候选
+        # opt-in 自动合并口径：只把 **dup 侧是本批键** 的模糊候选并入标记
+        # （r8 #11 合并视图扫描后 fuzzy_pairs 含库内既有对，标记它们会改写
+        # 与本批无关的库内行）；进入筛选数按合并后保留数打印——模糊候选
         # 每个不同的本批 dup_key 记一条被移除（与 DB 可筛选行数一致）。
+        mark_pairs = report.exact_pairs + [
+            p for p in report.fuzzy_pairs if p.dup_key in incoming_keys
+        ]
         fuzzy_removed = len({
             p.dup_key for p in report.fuzzy_pairs
             if p.dup_key != p.kept_key and p.dup_key in incoming_keys
@@ -274,8 +287,8 @@ def cmd_import(args: argparse.Namespace) -> int:
     ]
 
     print(
-        f"导入 {len(articles)} 条 | 精确重复 {len(articles) - screenable} | "
-        f"进入筛选 {screening_count} 条"
+        f"导入 {len(articles)} 条 | 精确重复 {exact_dup_count} | "
+        f"更新库内 {updated_existing} | 进入筛选 {screening_count} 条"
     )
     if fuzzy_pairs:
         if args.auto_merge_fuzzy:

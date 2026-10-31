@@ -47,6 +47,38 @@ _NAME_PARTICLES: frozenset[str] = frozenset(
     "ten ter te ver vanden vander".split()
 )
 
+# 世代后缀（R6-D3 第 2 点）：Jr/Sr/III 等不是名也不是姓，判定前从尾部剔除
+# （'John Smith Jr' 的末 token 'Jr' 曾被当姓氏 → 姓 'jr'）。'v'（罗马数字 5）
+# 与单字母缩写形态上不可区分，不列入——按缩写处理对兼容性判定无害。
+_NAME_SUFFIXES: frozenset[str] = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
+
+def _strip_name_suffixes(words: list[str]) -> list[str]:
+    """剔除姓名 token 序列尾部的世代后缀（Jr/Sr/III…，可带点/逗号）。
+
+    至少保留一个 token（'Jr' 单独出现时不剔）。'John Smith Jr.' →
+    ['John','Smith']，'Smith Jr, John' 的姓氏段 → ['Smith']。
+    """
+    end = len(words)
+    while end > 1 and words[end - 1].strip(".,").lower() in _NAME_SUFFIXES:
+        end -= 1
+    return words[:end]
+
+
+def _trailing_token_is_initial(token: str) -> bool:
+    """末位 token 是否按缩写处理（与 ``_is_trailing_name_token`` 同口径）。
+
+    评审 R2 收口：r8b 第 1 轮曾在此对「整串全小写 + 两字母无点」豁免缩写
+    判定以修 #16 残余（'john wu' 姓氏取 'john'），但该豁免把 PubMed 全小写
+    导出的 'smith ja'（姓 smith / 名 ja）反向误判为姓 'ja'，同一文献的大小写
+    规范化导出新增重复行。大小写信号在「全小写串」里不可用，任何单向豁免
+    都会在两类形态间转移错误——故此处恢复基线口径（全小写两字母按缩写，
+    残余如实登记），改由比较层做**双读容忍**（见 dedup._first_authors_compatible：
+    谁是谁的姓氏无法判定时，两种读法任一成立即视为同一作者），两类形态的
+    重复行都不再产生，且不改变任何姓名解析结果（R1/R2）。
+    """
+    return _is_trailing_name_token(token)
+
 # 机构作者判定标记：功能词与常见组织词（小写整词匹配）。无逗号整串中出现
 # 任一标记，或实义词数 >= 4 且不含姓名缩写时，按机构作者整串比较（U1-P2）
 _ORG_MARKER_WORDS: frozenset[str] = frozenset(
@@ -269,10 +301,16 @@ def first_author_surname(authors: str | list | None) -> str:
 
     - 识别两种姓名顺序："Smith, John"（姓在前，逗号分隔）与 "John Smith"
       （名在前）都得到 "smith"；带缩写尾的 "Smith J"/"Smith J. A." 亦然；
+    - 世代后缀（Jr/Sr/III/IV，R6-D3）判定前从尾部剔除："John Smith Jr" ->
+      "smith"（修复前 'jr' 被当姓氏，同人 'John Smith' 被判键冲突）；
     - 姓氏助词前缀（van/von/de/der/di/da/…）剥离后比较：
       "van der Berg, J." -> "berg"，"van Dijk, A." -> "dijk"（不同姓，可区分）；
     - 机构作者（无逗号、多词、含功能/组织词或 >=4 个实义词）按整串小写
       比较："The Cochrane Collaboration" -> "the cochrane collaboration"；
+    - 末位缩写判定按基线口径（含整串全小写时的两字母 token：'john wu'
+      的姓氏取 'john'、'smith ja' 的名取 'ja'）。**大小写变体不再由解析层
+      修复**——比较层对「一侧全小写 + 对面一侧含大写」做备选读法容忍
+      （见 dedup._caseless_alt_reading），解析结果本身保持不变（R1）；
     - 空作者/空首段返回 ""——调用方必须视为门控不通过，而不是两空相等。
 
     纯函数、确定性；仅用于比较，不回写解析结果。
@@ -288,10 +326,12 @@ def first_author_surname(authors: str | list | None) -> str:
         return ""
 
     if "," in head:
-        # 姓在前："van der Berg, J. A." -> 姓氏段 "van der Berg"
-        surname_words = [w for w in head.split(",")[0].split() if w]
+        # 姓在前："van der Berg, J. A." -> 姓氏段 "van der Berg"；
+        # 世代后缀剔除："Smith Jr, John" -> 姓氏段 ["Smith"]
+        surname_words = _strip_name_suffixes(
+            [w for w in head.split(",")[0].split() if w])
     else:
-        words = [w for w in head.split() if w]
+        words = _strip_name_suffixes([w for w in head.split() if w])
         if not words:
             return ""
         if _looks_institutional(words):
@@ -300,11 +340,13 @@ def first_author_surname(authors: str | list | None) -> str:
         # （"Smith J" PubMed 风格、"van Dijk A"），则前面整段是姓氏；
         # 否则末词是姓氏。
         # 尾位扫描：末 token 用尾位豁免规则（两字母全小写/带点也按缩写），
-        # 其后逐个回退只认严格缩写（"Smith J. A." 的中间缩写）
+        # 其后逐个回退只认严格缩写（"Smith J. A." 的中间缩写）。
+        # 注意：解析层对整串全小写不做额外豁免（第 1 轮曾做、已被撤销，
+        # 大小写变体的容忍改在 dedup 比较层）。
         end = len(words)
         while end > 1:
             token = words[end - 1]
-            is_initial = (_is_trailing_name_token(token)
+            is_initial = (_trailing_token_is_initial(token)
                           if end == len(words) else _is_name_initial(token))
             if not is_initial:
                 break
@@ -329,6 +371,8 @@ def first_author_given_names(authors: str | list | None) -> str:
 
     - "Smith, John" -> "john"；"Smith, J. A." -> "j a"；
     - "John Wu" -> "john"（末词为姓）；"Smith JA" -> "ja"（缩写也是名）；
+    - 世代后缀（Jr/Sr/III…，R6-D3）不是名："John Smith Jr" -> "john"，
+      "Smith, John Jr" -> "john"（修复前 given 含 'jr'）；
     - 空作者/空首段 -> ""（调用方按「缺名视为兼容」处理，不得两空相等）。
 
     纯函数；与 first_author_surname 共用同一姓名顺序/缩写判定口径。
@@ -344,22 +388,24 @@ def first_author_given_names(authors: str | list | None) -> str:
         return ""
     if "," in head:
         given_text = head.split(",", 1)[1]
+        tokens = [token.strip(".,: ").lower() for token in given_text.split()]
+        tokens = _strip_name_suffixes([t for t in tokens if t])
+        return " ".join(tokens)
+    words = _strip_name_suffixes([w for w in head.split() if w])
+    if len(words) < 2:
+        return ""  # 单词串无从分名姓
+    end = len(words)
+    while end > 1:
+        token = words[end - 1]
+        is_initial = (_trailing_token_is_initial(token)
+                      if end == len(words) else _is_name_initial(token))
+        if not is_initial:
+            break
+        end -= 1
+    if end == len(words):
+        given_text = " ".join(words[:-1])   # 末词是姓
     else:
-        words = [w for w in head.split() if w]
-        if len(words) < 2:
-            return ""  # 单词串无从分名姓
-        end = len(words)
-        while end > 1:
-            token = words[end - 1]
-            is_initial = (_is_trailing_name_token(token)
-                          if end == len(words) else _is_name_initial(token))
-            if not is_initial:
-                break
-            end -= 1
-        if end == len(words):
-            given_text = " ".join(words[:-1])   # 末词是姓
-        else:
-            given_text = " ".join(words[end:])  # 缩写尾是名
+        given_text = " ".join(words[end:])  # 缩写尾是名
     tokens = [token.strip(".,: ").lower() for token in given_text.split()]
     return " ".join(token for token in tokens if token)
 
@@ -368,13 +414,27 @@ def given_names_compatible(given_a: str, given_b: str) -> bool:
     """名的兼容性（R6-D4）：能证明不同才不兼容，缺名按元数据补全口径兼容。
 
     - 任一侧为空 -> True；
+    - **助词对称剥离（r8 #12，评审 R2 收口）**：比较前先剔助词 token
+      （de/la/van…）——姓氏侧早已剥离，名侧保留曾使 'Maria de la Cruz' 与
+      'Maria Cruz'/'M. de la Cruz'（同一人的元数据变体）被判不兼容。
+      但剥离**只在两侧都仍有其他 token 时**生效：名本身就是助词
+      （'Li, De' / 'Li, Di' / 'Li, John'）或被剥空时保留原 token 比较——
+      修复前剥空即落「缺名=兼容」，把可证不同的作者（de vs di、de vs
+      john）判成兼容并静默覆盖库内行（同一缺陷 r6 #14/#15 的反向复现）；
     - 双侧均含全名词 -> 全名词序列必须一致（"john" vs "jane" -> False，
       「Editorial」Smith, John vs Smith, Jane 同键同题坍缩的根因）；
     - 至少一侧只有缩写 -> 首字母有交集即兼容（"j" vs "john" -> True）。
       纯缩写互比（"j a" vs "j b"）无法证明不同，按兼容（残余如实声明）。
     """
-    tokens_a = [t for t in given_a.split() if t]
-    tokens_b = [t for t in given_b.split() if t]
+
+    def _split(given: str) -> list[str]:
+        tokens = [t for t in given.split() if t]
+        stripped = [t for t in tokens if t.lower() not in _NAME_PARTICLES]
+        # 剥空（名=助词）时保留原 token：可证不同的作者不得因剥离而变兼容
+        return stripped or tokens
+
+    tokens_a = _split(given_a)
+    tokens_b = _split(given_b)
     if not tokens_a or not tokens_b:
         return True
     full_a = [t for t in tokens_a if len(t) > 1]

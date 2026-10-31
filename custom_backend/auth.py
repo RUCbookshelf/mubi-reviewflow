@@ -158,17 +158,30 @@ def validate_password(password: str) -> str:
 
 
 def create_user(username: str, password: str) -> dict:
-    """注册新用户；重名抛 AuthError。返回 ``{id, username}``。"""
+    """注册新用户；重名抛 AuthError。返回 ``{id, username}``。
+
+    r6 #39/#45：重名检查前移到 ``hash_password`` **之前**——此前哈希先于
+    查重，每次重名注册都烧一轮 rounds=12 bcrypt（r6 实测 12 连重名 2.17s
+    CPU ≈ 0.18s/次），而注册端点对失败尝试 refund 不占限流额，未认证者
+    可用重名/保留名无限轰炸 CPU。前移后失败注册只剩一次只读查询，「重名
+    重试不占额」的宽容语义保留且不再有 bcrypt 消耗；事务内的最终查重
+    保留，并发注册同一用户名仍由 BEGIN IMMEDIATE 临界区兜底。
+    """
     clean = validate_username(username)
     if reserved_screener_collision(clean):
         # U4-P2：slug 撞上任务目录保留文件名 collaboration.db 的用户名
         # 会把个人筛选库写进任务协作权限库，注册即拒绝。
         raise AuthError("该用户名与任务协作数据库保留文件名冲突，请换一个用户名。")
     validate_password(password)
+    key = sanitize_component(clean, "_").casefold()
+    # r6 #45：查重前移（hash 前）——见 docstring；此处只读预检。
+    with closing(_connect()) as conn:
+        if any(sanitize_component(row[0], "_").casefold() == key
+               for row in conn.execute("SELECT username FROM users")):
+            raise AuthError("用户名与已有账号的筛选员数据路径冲突，请换一个用户名。")
     password_hash = hash_password(password)
     with closing(_connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
-        key = sanitize_component(clean, "_").casefold()
         if any(sanitize_component(row[0], "_").casefold() == key
                for row in conn.execute("SELECT username FROM users")):
             raise AuthError("用户名与已有账号的筛选员数据路径冲突，请换一个用户名。")

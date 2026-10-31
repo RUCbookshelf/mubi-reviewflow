@@ -7,6 +7,7 @@
 - 上传与路径安全：任务锁规范化（URL 别名不再派生第二把锁）、上传体积与文件部件数预检、限流按直连来源防伪造、上传端点鉴权前置；SSE 进度流改用短期票据，长期令牌不再出现在 URL／反代日志／浏览器历史中。
 - 认证与账户安全：注册／登录请求体上限与 422 回显收敛、bcrypt 口令长度上限显式校验、登录限流只计失败尝试；CSV 导出补公式注入防护。
 - 协作权限与受保护撤销：属主解析失败的重试语义、legacy 任务统一口径、保留名／幽灵任务收口；撤销守卫幂等化并核验证据文件存在性。
+- 受保护撤销的证据摘要与升级迁移（进阶说明，需运维知悉）：证据摘要不再把备注时间戳纳入，因此「同值重存刷新时间戳」不再误判为下游变更（修复前这类条目会被拒绝撤销）。修复范围**分两类，口径如下（勿扩大）**：全文快照形态（2.1.3 及更早）的存量 screen/fulltext 条目在升级后可直接撤销（纯时间戳漂移不再阻断），历史审计快照原样保留、迁移不改写；摘要形态（2.1.4 早期构建）只有可证明「内容未变、仅摘要公式变更」的条目（存量摘要恰等于当前内容按旧公式重算）才会被迁移为新公式并保留旧摘要，否则**保留旧摘要、继续按守卫失配阻断**——摘要不可逆，升级前已发生时间戳漂移或内容编辑的摘要形态条目**无法**在升级时判定或修复，仍会提示「已保存结果或下游工作已变更」，属有意的保守取舍（撤销不得静默覆盖较新的下游工作），可用「重建任务协作／在副本上人工核对」处理。
 - 去重引擎保守化：自动合并仅保留可核验证据，模糊／键冲突改入人工候选；CJK 尾标点不再破坏 DOI 相等；消歧键拼接前安全截断，杜绝死锁文献。
 - 文献解析器：RIS 标签映射与键消歧补齐、编码双候选择优与 GBK 回退、缺 ER 不再整文件拒绝。
 - PRISMA 表单与流程图：数字勾稽补全（other 列、理由余量、研究≤报告）、DOT 标签转义、空决策不计入分母。
@@ -20,6 +21,7 @@
 - Security-hardening release: upload and path safety (canonical task locks, size and part-count prechecks, direct-peer rate limiting, auth before locks), short-lived SSE tickets replacing long-lived tokens in URLs.
 - Account security: register/login body limits, bcrypt length validation, failure-only login throttling, CSV formula-injection protection.
 - Collaboration and protected undo: owner-resolution retry semantics, unified legacy-task handling, idempotent undo guards with evidence-file checks.
+- Undo evidence digests and upgrade migration (advanced note for operators): evidence digests no longer include note timestamps, so a same-value re-save no longer looks like downstream work (such entries were previously refused). The fix covers **two distinct cases — read the scope exactly as written**: full-snapshot journal entries (2.1.3 and earlier) become undoable after upgrading (pure timestamp drift no longer blocks), and the migration never rewrites them, so their audit text is preserved; **digest-form** entries (early 2.1.4 builds) are migrated only where it can prove the content is unchanged and only the digest formula differs (the stored digest equals the current content hashed with the old formula), as a new digest plus a retained old one; otherwise they **keep the old digest and stay blocked** by the guard. Digests are irreversible: digest-form entries that had already drifted or been edited before the upgrade **cannot** be judged or repaired at upgrade time and may still report “saved result or downstream work has changed” — a deliberate conservative trade-off (Undo must never silently overwrite newer downstream work); recover them by recreating task collaboration or by reconciling on a copy.
 - Deduplication made conservative: auto-merge only with verifiable evidence; ambiguous cases become manual candidates; DOI equality no longer broken by CJK punctuation.
 - RIS parser: tag mapping, key disambiguation, dual-candidate encoding selection with GBK fallback.
 - PRISMA forms and diagrams: numeric cross-checks, DOT label escaping, empty decisions excluded from denominators.

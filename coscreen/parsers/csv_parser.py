@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -115,6 +116,82 @@ _CP1252_LETTER_BYTES = frozenset(
     b for b in range(0xC0, 0x100) if b not in (0xD7, 0xF7)
 )
 
+# r8 #17 第 4 轮：©/®/° 词首证据的左侧边界。cp1252 的 © 出现在字段开头、
+# 空白、ASCII 标点或拉丁字母之后（'©The'、'(©Müller)'、'x©The'）；而 GBK
+# 文本里的 ㎡/㎎/㎝/㏒ 单位符号几乎总紧跟数字或汉字（'20㎡'、'直径5㎝'、
+# '以㎝为'）。因此「前一字节是数字或高位字节」时不把该符号当 cp1252 词首
+# ——这正是旧判据把 '5㎡pH' 误翻成 '5©OpH' 的一整类。代价是 '2©The' 形态
+# 不再被识别（真实题录里 © 紧贴数字几乎只出现在 '1999©…' 的无空格版权行，
+# 且同义写法可用空白/标点形态）；取舍以 GBK 真文件的正确性优先。
+_ASCII_SYMBOL_BOUNDARY_BYTES = frozenset(
+    b for b in range(0x21, 0x7F) if not chr(b).isdigit()
+) | frozenset({0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20})
+
+
+def _is_ascii_letter(byte: int) -> bool:
+    """ASCII 字母字节（A-Z/a-z）。"""
+    return 0x41 <= byte <= 0x5A or 0x61 <= byte <= 0x7A
+
+
+def _symbol_lead_evidence(data: bytes) -> tuple[int, int]:
+    """统计 ©/®/° 词首证据，并返回这些证据位置**自身**在 GBK 视图里解出的
+    CJK 字符数（第二项），供调用方从「GBK 侧 CJK 总数」中扣除。
+
+    扣除的必要性（r8 #17 第 4 轮）：'©Größe' 的 A9 F6 在 GBK 视图解出
+    一个「汉字」，若把它算进 CJK 主体，单个符号证据就永远过不了
+    ``evidence*2 > cjk`` 的门槛（1*2 > 2 不成立）——符号证据被自己制造
+    的乱码字符抵消，判据等于失效。该字符由 cp1252 字节对产生、不是
+    真实中文，故不计入主体；真实 GBK 单位符号（'area ㎡ used'）本就
+    不构成证据，不会走到这里。
+    """
+    evidence = 0
+    explained_cjk = 0
+    for i in range(len(data)):
+        if data[i] not in (0xA9, 0xAE, 0xB0):
+            continue
+        if not _is_symbol_lead_evidence(data, i):
+            continue
+        evidence += 1
+        if i + 1 < len(data) and data[i + 1] >= 0x40:
+            try:
+                decoded = data[i:i + 2].decode("gbk")
+            except UnicodeDecodeError:
+                decoded = ""
+            if len(decoded) == 1 and _is_cjk_char(decoded):
+                explained_cjk += 1
+    return evidence, explained_cjk
+
+
+def _is_symbol_lead_evidence(data: bytes, i: int) -> bool:
+    """data[i] ∈ {©=0xA9, ®=0xAE, °=0xB0} 处是否构成 cp1252 词首证据。
+
+    r8 #17 第 4 轮（评审第 3 轮残留 high）：第 3 轮的判据要求符号后
+    **两个字节都是 ASCII 字母**，把「© + 重音/变音符开头的词」整类判成
+    无证据——'©Müller'（A9 4D FC 6C…，第二字节是 ü=0xFC）与
+    '©Éditions'（A9 C9 64…，第一字节就是 É=0xC9）都会整篇落回 GBK
+    （'㎝黮ler' / '┥ditions'），跨版本重导因此新增重复行（评审实测真实
+    CLI 子进程复现）。现按「符号后的前两个字节是否可信的 cp1252 词首续写」
+    判定，三种形态任一成立即计证据：
+
+      ASCII 字母 + ASCII 字母   → '©The'/'©Springer'/'©Oxford'（原判据保留）
+      ASCII 字母 + 高位字母     → '©Müller'（0x4D 0xFC）、'©MÜLLER'
+      高位字母   + ASCII 字母   → '©Éditions'（0xC9 0x64）、'©Ökologie'
+
+    三形态都不成立时不计证据：GBK 的 ㎡/㎎/㎜/㎝/㏒（0xA9 + 单个字母）后
+    面跟空格、括号、数字或汉字（'area ㎡ used' → A9 4F 20），不构成续写。
+    左侧边界另见 _ASCII_SYMBOL_BOUNDARY_BYTES：'5㎡pH'（A9 4F 70 48）在
+    字节形态上与 '©OpH' 无法区分，靠「单位符号前是数字」排除（旧判据
+    曾把 '5㎡pH' 误翻成 '5©OpH'）。
+    """
+    if i > 0 and data[i - 1] not in _ASCII_SYMBOL_BOUNDARY_BYTES:
+        return False
+    if i + 2 >= len(data):
+        return False
+    first, second = data[i + 1], data[i + 2]
+    if _is_ascii_letter(first):
+        return _is_ascii_letter(second) or second in _CP1252_LETTER_BYTES
+    return first in _CP1252_LETTER_BYTES and _is_ascii_letter(second)
+
 
 def _is_gb2312_level1(ch: str) -> bool:
     """是否 GB2312 一级常用汉字（0xB0A1–0xD7F9 区）——中文姓名/常用词的
@@ -142,10 +219,15 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
     - 候选解码**不允许出现替换字符**：含 U+FFFD 的候选一律不采纳（复审
       实测：损坏 GBK 曾带着乱码行静默导入；2.1.3 基线为响亮拒绝）；
     - GBK 与 cp1252 双候选均可行时择优：cp1252 自身要求非 ASCII ≤ 20%；
-      GBK 的 mojibake 标记只在此刻用于择优——common 档标记单个命中或
-      占 CJK 主体时改选 cp1252（附「疑似乱码」告警），cp1252 不可行时
-      绝不因标记否决 GBK；全部高位字节均为 cp1252 字母区且两两成对、
-      CJK 稀疏时优先 cp1252（Größe 形态）；
+      GBK 的 mojibake 标记只在此刻用于择优——common 档标记与 r8 #17 的
+      ©/®/° 词首证据（后接「字母+字母」「字母+高位重音字母」「高位重音
+      字母+字母」之一，且符号左侧不是数字/高位字节，见
+      _is_symbol_lead_evidence）**占 CJK 主体**（evidence*2 > GBK 视图中
+      未被该证据自身解释掉的 CJK 数）且 GBK 候选不含 GB2312 一级常用汉字
+      （r8 #19 守卫）时改选 cp1252（附「疑似乱码」告警）；单个 common
+      标记不再单独触发翻转（稀释 GBK 真文件曾被整文翻成 cp1252 乱码）；
+      cp1252 不可行时绝不因标记否决 GBK；全部高位字节均为 cp1252 字母区
+      且两两成对、CJK 稀疏时优先 cp1252（Größe 形态）；
     - 无候选可行时抛 ParseError 列出已尝试编码——宁可显式失败，不可静默乱码。
     """
     try:
@@ -210,10 +292,39 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
             for i, b in enumerate(data) if b >= 0x80
         )
         sparse_cjk = cjk / max(1, len(text_gbk)) <= 0.05
-        if common_markers and (
-            common_markers == 1 or common_markers * 2 > cjk
-        ):
-            # 形态二：cp1252 弯引号/重音字母 + ASCII 被 GBK 误解（'…抯…'）
+        # r8 #17（评审第 3 轮残留 high，第 4 轮修）：cp1252 符号字节
+        # （©=0xA9/®=0xAE/°=0xB0）位于**词首**且后接一个可续写 cp1252 词
+        # 的字节对时计证据，见 _is_symbol_lead_evidence：
+        #   '©The'/'©Springer'/'©Oxford' → 字母+字母（第 3 轮原判据，保留）；
+        #   '©Müller'  → A9 4D FC 6C：字母 + 高位重音字母（ü=0xFC）；
+        #   '©Éditions'→ A9 C9 64 69：高位重音字母（É=0xC9）+ 字母。
+        # 第 3 轮要求后两字节**都是 ASCII 字母**，把「© + 重音/变音符开头的
+        # 词」整类判成无证据并落回 GBK（'㎝黮ler' / '┥ditions'），跨版本
+        # 重导新增重复行（评审以真实 CLI 子进程复现）。词首左侧边界同时
+        # 排除了 GBK 单位符号前的数字/汉字（'20㎡'、'5㎝'），故
+        # 'area ㎡ used'（A9 4F 20）与 '5㎡pH'（A9 4F 70 48，替身是数字）
+        # 都不计入。
+        symbol_lead_pairs, symbol_explained_cjk = _symbol_lead_evidence(data)
+        marker_evidence = common_markers + symbol_lead_pairs
+        # r8 #19：翻转前加 GB2312 一级常用字守卫（与下方 paired_letters 分支
+        # 同口径）——GBK 候选解出真实中文（姓名/常用词编码区）时绝不因
+        # 标记翻成 cp1252；并撤销「单个 common 标记即翻转」的捷径：仅当
+        # 标记证据占 CJK 主体（evidence*2 > cjk）才翻转。稀释 GBK 真文件
+        # （英文为主 + 少量中文题录，臟=GBK C54B 曾单命中翻转）保持 GBK。
+        has_level1 = any(
+            _is_gb2312_level1(ch) for ch in text_gbk if _is_cjk_char(ch))
+        # 抹掉由 cp1252 符号证据自身产生的乱码字符后再比（见
+        # _symbol_lead_evidence：'©Größe' 的 A9 F6 会解出一个假汉字，
+        # 不扣除则该证据永远被自己制造的主体抵消）。
+        cjk_body = max(0, cjk - symbol_explained_cjk)
+        if marker_evidence and not has_level1 and marker_evidence * 2 > cjk_body:
+            # 形态二：cp1252 弯引号/重音字母/符号 + ASCII 被 GBK 误解
+            # （'…抯…'、'©Springer'→'㏒pringer'）。©/®/° 前缀用例由上面的
+            # symbol_lead_pairs 证据覆盖（评审 R2：#17 的一条 "cjk==0 即
+            # 选 cp1252" 捷径曾把 GBK 编码的**纯西文**题录整篇翻成 cp1252
+            # ——'±'→'¡À'、'°'→'¡ã'、'α'→'¦Á'、'㎡'→'©O'，并让 2.1.3 库
+            # 重导读成新行；该捷径逻辑既无钉子保护也无行为收益，已删除，
+            # 现一律只在有 cp1252 侧标记证据时才翻转——R2 保守方向）。
             return candidates["cp1252"], [
                 f"{filename} 非 UTF-8 编码：检测到疑似 GBK 乱码标记，已按 CP1252 "
                 "解码；若标题/作者应为中文，请将文件重新另存为 UTF-8 后导入"
@@ -326,25 +437,50 @@ def _normalize_header(name: str) -> str:
     return " ".join(str(name).split()).lower()
 
 
-def _build_column_map(columns: list[str]) -> dict[str, str]:
-    """内部字段名 -> 原始列名；同名列取首个，保证确定性。"""
-    colmap: dict[str, str] = {}
+# pandas 对重复表头的自动改名形态：'DOI' 第二次出现被改为 'DOI.1'
+_MANGLED_DUP_HEADER_RE = re.compile(r"^(?P<base>.+)\.\d+$")
+
+
+def _build_column_map(columns: list[str]) -> dict[str, str | list[str]]:
+    """内部字段名 -> 原始列名（映射到同名字段的**全部**列，按出现序）。
+
+    r8 #18：重复表头（如 ``Key,Title,DOI,DOI``）此前只认第一个同名列——
+    pandas 会把后出现的重名列改名为 ``'DOI.1'``，值写在后列时被静默丢弃。
+    现还原 ``基名.N`` 改名形态并把全部同名列收进映射，取值时按序取首个
+    非空（R2：不拒绝重复表头的合法导出），并由调用方对重复映射发显式警告。
+    """
+    colmap: dict[str, list[str]] = {}
     for col in columns:
-        field = _COLUMN_ALIASES.get(_normalize_header(col))
+        normalized = _normalize_header(col)
+        field = _COLUMN_ALIASES.get(normalized)
+        if field is None:
+            mangled = _MANGLED_DUP_HEADER_RE.match(normalized)
+            if mangled:
+                field = _COLUMN_ALIASES.get(mangled.group("base"))
         if field is not None:
-            colmap.setdefault(field, col)
+            colmap.setdefault(field, []).append(col)
     return colmap
 
 
-def _row_getter(row: dict, colmap: dict[str, str]):
-    """返回按内部字段名取值的取值函数（缺失列/缺失值一律返回 ""）。"""
+def _row_getter(row: dict, colmap: dict[str, str | list[str]]):
+    """返回按内部字段名取值的取值函数（缺失列/缺失值一律返回 ""）。
+
+    同名字段有多个映射列时按出现序取**首个非空值**（r8 #18：值写在
+    后出现的重复列不再被静默丢弃）。
+    """
 
     def get(field: str) -> str:
-        original = colmap.get(field)
-        if original is None:
+        originals = colmap.get(field)
+        if not originals:
             return ""
-        value = row.get(original, "")
-        return "" if value is None else str(value).strip()
+        if isinstance(originals, str):  # 外部手工构造的旧形态映射，兼容
+            originals = [originals]
+        for original in originals:
+            value = row.get(original, "")
+            text = "" if value is None else str(value).strip()
+            if text:
+                return text
+        return ""
 
     return get
 
@@ -411,6 +547,15 @@ def parse_csv(path: str | Path) -> list[Article]:
         raise ParseError(
             f"CSV 缺少必需列 Title（实际表头: {list(frame.columns)}）"
         )
+    # r8 #18：重复映射表头显式告警（值按首个非空合并，不再静默丢后列）。
+    for field, columns_of_field in colmap.items():
+        if isinstance(columns_of_field, list) and len(columns_of_field) > 1:
+            print(
+                f"警告：{p.name} 表头存在重复的 {field} 列"
+                f"（{', '.join(repr(c) for c in columns_of_field)}）："
+                "按出现序取首个非空值，后列的值不再被丢弃；请检查导出配置",
+                file=sys.stderr,
+            )
 
     records = frame.to_dict("records")
     # 行号映射与 pandas 记录数不一致（极端引号/空白行差异）时退回 idx+2，
@@ -497,8 +642,31 @@ def parse_csv(path: str | Path) -> list[Article]:
                         or not years_compatible(prev_year, year)):
                     demoted = True
                     reason = "与本文件内另一条文献同键同题，但作者/年份不同，不是同一文献"
-                # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见身份
-                # 不覆盖——后续同键记录仍与首条比较，不被中间行的缺字段稀释
+                else:
+                    # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见键，
+                    # 后续同键记录仍与**补全后的身份**比较（r8 #14，与 RIS
+                    # 路同款）——修复前首见身份永不补全，首行缺作者/年份时
+                    # 同键同题但作者/年份可证不同的行被静默合并成一列。
+                    completed: list[str] = []
+                    if not prev_surname and surname:
+                        prev_surname = surname
+                        completed.append("作者姓")
+                    if not prev_given and given:
+                        prev_given = given
+                        completed.append("作者名")
+                    if prev_year is None and year is not None:
+                        prev_year = year
+                        completed.append("年份")
+                    if completed:
+                        seen_keys[key_raw] = (
+                            prev_hash, prev_surname, prev_given, prev_year)
+                        record_warnings.append(
+                            f"CSV 第 {physical_line} 行：来源键 {key_raw!r} 的"
+                            f"同文件首见身份缺{'/'.join(completed)}，已用本行非空"
+                            "值补全（同键同题按同一文献保留键；若非同一文献"
+                            "请人工核对）"
+                        )
+                        print(f"警告：{record_warnings[-1]}", file=sys.stderr)
             else:
                 seen_keys[key_raw] = (content_hash, surname, given, year)
         if demoted:

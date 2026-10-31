@@ -313,8 +313,13 @@ class StaticGuardTests(unittest.TestCase):
         （令牌, 词典内容 sha256）钉成一对：任一侧单独变更即红，迫使后续
         任何词典改动同步上调令牌并更新本处 PINNED。"""
         import hashlib
-        pinned_token = '20261030-r8fl4'
-        pinned_sha256 = 'ba7dccf98504c7b63880194f92013a8d12e4cbade400eac9e9b38d4e46a6c334'
+        # r6 老账批并合（本批 47 项收尾）：C1（r8.1 FL4 语言包）与本批
+        # （r8b FL6 协作/撤销词条）各自往 interface_locale.js 追加词条，合并后
+        # 内容为两侧并集——既非 20261030-r8fl4，也非 20261030-r8b-fl6-locale1。
+        # 按本测试既定约定「词典内容变更必须同步上调 ?v= 并更新 PINNED」，
+        # 重新 bump 一枚令牌并与合并后内容钉对。
+        pinned_token = '20261031-r6merge1'
+        pinned_sha256 = '30c95f119cd82ae187c9e2a42f81b4409299ac7bcbec939ad355f644c645de2c'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')

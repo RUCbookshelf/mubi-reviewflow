@@ -125,8 +125,10 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
             ctx = runtime.context(task_id, user)
             with closing(workflow_store.connect(ctx.actor_db, read_only=True)) as conn:
                 if staged:
-                    row = conn.execute('SELECT path,zotero_key FROM workflow_evidence_uploads WHERE id=? AND task_id=? AND actor_id=?',
-                                       (identity, task_id, str(user['user_id']))).fetchone()
+                    # r6 #28：尾点别名存量 staged 行同键兼容（规范 id 恒无尾点，
+                    # rtrim 只影响修复前以别名落库的行）。
+                    row = conn.execute("SELECT path,zotero_key FROM workflow_evidence_uploads WHERE id=? AND rtrim(task_id,'. ')=? AND actor_id=?",
+                                       (identity, task_id.rstrip('. '), str(user['user_id']))).fetchone()
                 else:
                     row = conn.execute('SELECT i.path,n.zotero_key FROM coding_note_images i JOIN coding_notes n ON n.id=i.note_id WHERE i.id=?', (identity,)).fetchone()
             if row is None or runtime.article_row(ctx.actor_db, row[1]) is None:
@@ -155,16 +157,30 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
     def status(task_id: str, stage: Stage, screener: str | None = None,
                user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
-        db = screener_db(info, screener or user["username"])
-        if app.state.review_workflow.context(info.task_id, user).actor_db.resolve() != db.resolve():
+        # R6-U4/#24：状态查询整体只读——不建库、不跑自愈 DDL（写路径保持懒建）。
+        # 库文件不存在时在触达 runtime.context（其自身的懒建链会重建属主库）
+        # 之前直接返回空态：删除个人库后 GET /undo/* 不再把库重建出来。
+        db = screener_db(info, screener or user["username"], ensure=False)
+        if not db.is_file():
+            # 无库空态：保留任务可见性口径（不得因省去 context 而放宽越权探测）。
+            if not app.state.review_workflow.visible(info, user):
+                raise HTTPException(403, "Undo is limited to your own workspace.")
+            return {"latest": None, "undo_available": True}
+        # 只读上下文：不建库、不跑迁移/ensure_fields（修复前 context() 会让成员
+        # 请求顺带创建属主库并灌入整套表，且把删掉的列/表自愈补回）。
+        if app.state.review_workflow.readonly_context(info.task_id, user).actor_db.resolve() != db.resolve():
             raise HTTPException(403, 'Undo is limited to your own workspace.')
         context = TraceContext(task_id=info.task_id, actor_id=user["user_id"])
         latest = workspace_undo.latest(db, context, stage)
         available = bool(latest.get('undo_available', True)) if latest else True
+        if latest is not None and available:
+            # R6-U5/#23：只读守卫预检——与 POST restore 的 snapshot_matches 拒绝
+            # 同口径，下游工作已变更（必然 409 "downstream work has changed"）
+            # 的条目不再标为可撤销。
+            available = workspace_undo.guard_matches(db, context, stage, latest['entry_id'])
         if latest is not None and not available:
-            # R6-U5/#25：状态判定与 undo 的 MISSING_EVIDENCE_FILE 拒绝同口径——
-            # 文件已不在数据目录的条目不再标为可撤销（latest 置空使前端撤销
-            # 按钮禁用，409 后 refresh 即停止循环点击）。
+            # R6-U5/#25：文件缺失/守卫失配的条目置空 latest，前端撤销按钮禁用，
+            # 409 后 refresh 即停止循环点击。
             latest = None
         return {"latest": latest, "undo_available": available}
 

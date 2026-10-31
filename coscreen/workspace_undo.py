@@ -126,21 +126,35 @@ def evidence_snapshot(conn: sqlite3.Connection, key: str, dimensions: list[int] 
     return result
 
 
-def _evidence_digest(state: dict) -> str:
-    """证据维度内容摘要。图片行抹去路径字段参与摘要：数据目录迁移会整体
-    改写绝对路径，文件位置不属于证据内容（图片身份由 id/sha256/OCR 承载），
-    这样迁移前后摘要一致，迁移不会破坏 screen/fulltext 撤销守卫。
+def _evidence_digest(state: dict, *, legacy_timestamps: bool = False) -> str:
+    """证据维度内容摘要。图片行抹去路径字段、备注行抹去 created_at/updated_at
+    参与摘要（R6-U2/#23 + r6 #22）：数据目录迁移会整体改写绝对路径，修复前
+    库的同值重存会刷新时间戳——文件位置与时间戳都不是证据内容（图片身份由
+    id/sha256/OCR 承载、备注身份由行 id/文本承载），剔除后迁移与时间戳漂移
+    不再破坏 screen/fulltext 撤销守卫（A→B→A 改回原文不再被纯时间戳差阻断）。
 
-    备注行的 created_at/updated_at **保留**在摘要内（R6-U2/#23）：历史
-    screen/fulltext 条目存的是摘要哈希、无法在比较时重算，改动摘要公式会使
-    既有条目的撤销全部永久失配（不可无迁移变更）；"同值重存刷新时间戳→摘要
-    失配"的根因改在源头收口——coding_evidence.save_form 对业务值/备注文本
-    未变化的维度不再刷新 updated_at（幂等保存），时间戳不再漂移。"""
+    旧公式（时间戳入摘要）的存量**摘要形态**条目哈希不可逆——升级迁移 v7
+    （coding_evidence._rewrite_legacy_guard_digests）仅重写这批条目的摘要；
+    **全文快照形态**条目（v2.1.3 及更早）不改写，由 _guard_state 在比较时按
+    当前公式重算，因此时间戳漂移可撤销、升级前真实下游编辑仍阻断。
+
+    ``legacy_timestamps=True`` 按**旧公式**（备注 created_at/updated_at 入
+    摘要）计算：仅用于升级迁移判定「旧摘要能否由当前内容按旧公式重现」，
+    从而区分「仅公式变更」与「内容真的变了」（见 coding_evidence.
+    _rewrite_legacy_guard_digests）。"""
     def without_path(image):
         if not isinstance(image, list):
             return image
         return [field if index != 2 else '' for index, field in enumerate(image)]
-    normalized = {'note': state.get('note'),
+    def without_timestamps(note):
+        # coding._NOTE_COLUMNS = (id, dimension_id, zotero_key, text, created_at, updated_at)
+        if not isinstance(note, list):
+            return note
+        return [field for index, field in enumerate(note) if index not in (4, 5)]
+    note = state.get('note')
+    if not legacy_timestamps:
+        note = without_timestamps(note)
+    normalized = {'note': note,
                   'images': [without_path(image) for image in (state.get('images') or [])]}
     return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
 
@@ -345,19 +359,54 @@ def _latest(conn: sqlite3.Connection, context: TraceContext, stage: str) -> dict
 def latest(db: str | Path, context: TraceContext, stage: str) -> dict | None:
     """最新可撤销条目（状态接口）。coding 条目附带回滚所需图片的文件存在性
     判定（undo_available，R6-U5/#25）：与 undo() 的 MISSING_EVIDENCE_FILE
-    拒绝同口径——文件缺失时调用方不得再把该条目标为可撤销。"""
-    from coscreen.db import _connect
+    拒绝同口径——文件缺失时调用方不得再把该条目标为可撤销。
+
+    只读连接（R6-U4/#24）：不建库、不跑自愈 DDL——对不存在的库文件返回
+    None，DROP 掉的列/表不被顺手补回；DDL 自愈仅保留写路径
+    （begin_save/undo）。"""
+    from coscreen.review_workflow import connect as _connect_readonly
     if stage not in STAGES:
         raise ValueError("Unknown Undo stage.")
-    with closing(_connect(db)) as conn:
+    path = Path(db)
+    if not path.is_file():
+        return None
+    with closing(_connect_readonly(path, read_only=True)) as conn:
         result = _latest(conn, context.normalized(), stage)
         if result is not None and stage == 'coding':
             row = conn.execute('SELECT before_json FROM workspace_undo WHERE id=?',
                                (result['entry_id'],)).fetchone()
             before = json.loads(row[0]) if row else {}
             if isinstance(before.get('evidence'), dict):
-                result['undo_available'] = _evidence_files_available(db, before['evidence'])
+                result['undo_available'] = _evidence_files_available(path, before['evidence'])
     return result
+
+
+def guard_matches(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> bool:
+    """只读守卫预检（R6-U5/#23）：与 undo() 的 snapshot_matches 拒绝同口径。
+
+    状态接口据此置 undo_available——下游工作已变更（POST restore 必然 409
+    "downstream work has changed"）的条目不再标为可撤销，前端不再可无限重复
+    点击。守卫表不可读（旧库缺表等）按不可撤销处理：不把必然失败的条目
+    标为可撤销。"""
+    from coscreen.review_workflow import connect as _connect_readonly
+    path = Path(db)
+    if not path.is_file():
+        return False
+    context = context.normalized()
+    with closing(_connect_readonly(path, read_only=True)) as conn:
+        if not _exists(conn):
+            return False
+        row = conn.execute(
+            "SELECT zotero_key,before_json,after_json FROM workspace_undo "
+            "WHERE id=? AND task_id=? AND actor_id=? AND stage=? AND undone=0",
+            (entry_id, context.task_id, str(context.actor_id), stage)).fetchone()
+        if row is None:
+            return False
+        before, after = json.loads(row[1]), json.loads(row[2])
+        try:
+            return snapshot_matches(conn, stage, row[0], before, after)
+        except sqlite3.Error:
+            return False
 
 
 def _evidence_files_available(db: str | Path, evidence: dict) -> bool:
@@ -401,28 +450,55 @@ def _release_request_summaries(conn: sqlite3.Connection, context: TraceContext, 
                          (context.task_id, str(context.actor_id), request_id))
 
 
+def _sweep_orphan_request_summaries(conn: sqlite3.Connection, context: TraceContext) -> None:
+    """回收没有任何撤销 journal 关联的编码表单请求摘要（r6 #21）。
+
+    修复前的 save_form 在 no-op 保存（record_save 因 before==after 不建
+    journal）时也先落了 workflow_form_requests 摘要；撤销业务状态后重放该
+    request_id 会命中旧摘要直接返回"成功"，而值并未写回（假成功），且该摘要
+    没有任何 journal 条目可关联、撤销自身条目也释放不到它。journal 行从不
+    删除（见模块保留策略披露），因此"无 journal 关联的摘要"只可能是 no-op
+    摘要——撤销编码条目时一并回收，使重放重新执行保存。"""
+    from coscreen.review_workflow import has_table
+    if not (has_table(conn, 'workflow_form_requests') and _exists(conn)):
+        return
+    conn.execute(
+        "DELETE FROM workflow_form_requests WHERE task_id=? AND actor_id=? AND request_id IS NOT NULL "
+        "AND request_id NOT IN (SELECT request_id FROM workspace_undo WHERE task_id=? AND actor_id=? "
+        "AND request_id IS NOT NULL)",
+        (context.task_id, str(context.actor_id), context.task_id, str(context.actor_id)))
+
+
 def release_detached_uploads(conn: sqlite3.Connection, context: TraceContext, key: str) -> None:
     """保存后把不再被引用的证据上传 attached 复位为 0，让 7 天 GC 可回收（U3-P8）。
 
     仅当该上传的文件已不被任何 coding_note_images 行引用、且未被任何活跃
-    （未 superseded）coding 撤销快照引用时复位——撤销恢复仍需要该文件。
-    screen/fulltext 快照不恢复图片文件，不构成引用。快照 JSON 与上传行存有
-    同一路径字符串，但 JSON 会转义反斜杠/引号，因此按 json.dumps 后的转义
-    形态做 LIKE 子串判定（路径中的 %/_ 最多造成保守保留，不会误回收）。"""
+    （未 superseded、未撤销）coding 撤销快照引用时复位——撤销恢复仍需要该
+    文件；已撤销（undone=1）的快照不再可能被恢复，不构成引用（r6 #25：修复
+    前保护集未排除 undone 条目，两次撤销回到无图态后 attached 恒为 1，7 天
+    GC 永远收不到该上传）。screen/fulltext 快照不恢复图片文件，不构成引用。
+    快照 JSON 与上传行存有同一路径字符串，但 JSON 会转义反斜杠/引号，因此按
+    json.dumps 后的转义形态做 LIKE 子串判定（路径中的 %/_ 最多造成保守保留，
+    不会误回收）。"""
     context = context.normalized()
-    if not _exists(conn):
-        return
+    from coscreen.review_workflow import has_table
+    if not _exists(conn) or not has_table(conn, 'workflow_evidence_uploads'):
+        return  # 旧库（无 workflow v3 表）无上传可回收（undo 亦会调到这里）
+    # r6 #25×#28：task_id 用 rtrim('. ') 兼容匹配——修复前（R6-C3 之前）以
+    # Windows 尾点别名落库的 staged 行属同一物理任务的同一上传；精确匹配会
+    # 漏掉这批行，撤销后 attached 恒为 1、7 天 GC 收不到文件。
+    task_key = context.task_id.rstrip('. ')
     rows = conn.execute(
-        "SELECT id,path FROM workflow_evidence_uploads WHERE task_id=? AND actor_id=? AND zotero_key=? AND attached=1",
-        (context.task_id, str(context.actor_id), key)).fetchall()
+        "SELECT id,path FROM workflow_evidence_uploads WHERE rtrim(task_id,'. ')=? AND actor_id=? AND zotero_key=? AND attached=1",
+        (task_key, str(context.actor_id), key)).fetchall()
     for uid, raw in rows:
         if conn.execute("SELECT 1 FROM coding_note_images WHERE path=? LIMIT 1", (raw,)).fetchone():
             continue
         pattern = f"%{json.dumps(raw, ensure_ascii=False)[1:-1]}%"
         if conn.execute(
-            "SELECT 1 FROM workspace_undo WHERE task_id=? AND actor_id=? AND stage='coding' AND superseded=0 "
-            "AND (before_json LIKE ? OR after_json LIKE ?) LIMIT 1",
-            (context.task_id, str(context.actor_id), pattern, pattern)).fetchone():
+            "SELECT 1 FROM workspace_undo WHERE rtrim(task_id,'. ')=? AND actor_id=? AND stage='coding' "
+            "AND superseded=0 AND undone=0 AND (before_json LIKE ? OR after_json LIKE ?) LIMIT 1",
+            (task_key, str(context.actor_id), pattern, pattern)).fetchone():
             continue
         conn.execute("UPDATE workflow_evidence_uploads SET attached=0 WHERE id=?", (uid,))
 
@@ -515,6 +591,14 @@ def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> di
             # 同请求重试必须重新执行保存，而不是命中幂等摘要返回撤销前的旧结果（U3-P4）。
             if request_id:
                 _release_request_summaries(conn, context, request_id)
+            if stage == 'coding':
+                # r6 #21：回收没有任何 journal 关联的 no-op 请求摘要（修复前
+                # save_form 先落摘要后判 no-op，撤销后重放会假成功）。
+                _sweep_orphan_request_summaries(conn, context)
+                # r6 #25：撤销恢复/删除了证据引用后按当前引用状态补偿复位
+                # attached——undo 自身此前从不复位，撤销后不再被引用的上传
+                # 永远 attached=1，7 天 staging GC 收不到（文件与行双双滞留）。
+                release_detached_uploads(conn, context, key)
         restored = (_row(conn, _TABLES[stage], key) if stage in _TABLES else None)
         return {"undone": True, "zotero_key": key, "latest": _latest(conn, context, stage),
                 'access_context': SUBMISSION_EVIDENCE if stage == 'coding' and is_submission_evidence(before, after) else 'personal',

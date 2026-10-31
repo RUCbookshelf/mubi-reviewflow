@@ -69,11 +69,15 @@ __all__ = [
 
 @dataclass
 class PrismaFlow:
-    """PRISMA 流程各节点计数。included + excluded <= screened 恒成立。
+    """PRISMA 流程各节点计数。included + excluded <= screened 恒成立
+    （r6 #49：include/exclude 跨桶互斥——同一键分落两桶的重复键行按首
+    现行归属只计一次并告警；正常入口 merge_decisions 拒绝单侧重复键，
+    该形态只来自手工/历史合并表）。
 
     warnings 为勾稽提示（U6-P11/R6-F5）：如 identified − duplicates_removed
-    ≠ screened 的未完成筛选提示、resolved/stage2 键域外键忽略提示；
-    不改变计数本身，随 to_dict 一并导出供 CLI stats.json 呈现。
+    ≠ screened 的未完成筛选提示、resolved/stage2 键域外键忽略提示、
+    跨桶重复键折叠提示（r6 #49）；不改变计数本身，随 to_dict 一并导出
+    供 CLI stats.json 呈现。
     """
 
     identified: int
@@ -159,51 +163,104 @@ def _screened_mask(merged: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
     return mask
 
 
-def _unique_key_count(merged: pd.DataFrame, mask: pd.Series) -> tuple[int, bool]:
-    """mask 命中行按 zotero_key 去重计数（R6-F5：agree 路径与 resolved 路径
-    同法按键去重，included+excluded<=screened 在重复键输入下也成立）。
+def _cross_bucket_warning(overlap: list[str], source: str) -> str:
+    """r6 #49 跨桶互斥告警文案（键名最多列 5 个，保持确定性）。"""
+    shown = ", ".join(overlap[:5]) + ("…" if len(overlap) > 5 else "")
+    return (
+        f"{source} 有 {len(overlap)} 个键同时落入 include 与 exclude 桶"
+        f"（跨桶重复键，按首现行归属只计一次）: {shown}"
+    )
 
-    返回 (键数, 是否存在重复键)；无 zotero_key 列时按行数计（兼容最小表）。
+
+def _split_exclusive(
+    merged: pd.DataFrame, inc_mask: pd.Series, exc_mask: pd.Series
+) -> tuple[set[str], set[str], list[str]]:
+    """把 include/exclude 两桶拆成**跨桶互斥**的键集合（r6 #49）。
+
+    逐桶 ``nunique`` 只保证桶内去重：同一键既有一致 include 行又有一致
+    exclude 行时会双双计数（r6 实测同键两行 agree include/agree exclude →
+    screened=1、included=1、excluded=1，included+excluded=2 > screened=1，
+    docstring 不变量被打破且无任何告警）。跨桶重复键按**首现行**归属只
+    保留在一侧并返回重复键清单；正常入口 merge_decisions 对单侧重复键抛
+    ValueError，该形态只来自手工/历史合并表。
+
+    无 zotero_key 列的最小表无法按键折叠（screened 同为行口径），按原样
+    返回行掩码的键集合（空键集合 → 调用方退回行计数）。
+    返回 (included_keys, excluded_keys, 跨桶重叠键清单)。
     """
     if "zotero_key" not in merged.columns:
-        return int(mask.sum()), False
-    keys = merged.loc[mask.fillna(False), "zotero_key"].fillna("").astype(str)
-    return int(keys.nunique()), int(len(keys)) != int(keys.nunique())
+        return set(), set(), []
+    keys = merged["zotero_key"].fillna("").astype(str)
+    inc_keys = set(keys[inc_mask.fillna(False)])
+    exc_keys = set(keys[exc_mask.fillna(False)])
+    overlap = sorted(inc_keys & exc_keys)
+    if not overlap:
+        return inc_keys, exc_keys, []
+    overlap_set = set(overlap)
+    first_is_include: dict[str, bool] = {}
+    inc_filled = inc_mask.fillna(False).to_numpy()
+    exc_filled = exc_mask.fillna(False).to_numpy()
+    keys_array = keys.to_numpy()
+    for pos in range(len(merged)):
+        key = keys_array[pos]
+        if key in first_is_include or key not in overlap_set:
+            continue
+        if inc_filled[pos]:
+            first_is_include[key] = True
+        elif exc_filled[pos]:
+            first_is_include[key] = False
+    inc_kept = (inc_keys - overlap_set) | {k for k, v in first_is_include.items() if v}
+    exc_kept = (exc_keys - overlap_set) | {k for k, v in first_is_include.items() if not v}
+    return inc_kept, exc_kept, overlap
 
 
-def _agree_counts_two(merged: pd.DataFrame) -> tuple[int, int]:
-    """双筛选员一致决策计数：(included, excluded)。空决策不算一致（U6-P7）。
+def _bucket_counts_exclusive(
+    merged: pd.DataFrame, inc_mask: pd.Series, exc_mask: pd.Series, source: str
+) -> tuple[int, int, list[str]]:
+    """include/exclude 两桶互斥后的计数 (included, excluded, warnings)。"""
+    if "zotero_key" not in merged.columns:
+        return int(inc_mask.sum()), int(exc_mask.sum()), []
+    inc_kept, exc_kept, overlap = _split_exclusive(merged, inc_mask, exc_mask)
+    warns = [_cross_bucket_warning(overlap, source)] if overlap else []
+    return len(inc_kept), len(exc_kept), warns
 
-    R6-F5（复审）：含 zotero_key 列时按**唯一键**计数——重复键行输入下
-    行计数会突破 included+excluded<=screened 的 docstring 不变量。
+
+def _agree_counts_two(merged: pd.DataFrame) -> tuple[int, int, list[str]]:
+    """双筛选员一致决策计数：(included, excluded, warnings)。
+
+    空决策不算一致（U6-P7）。R6-F5（复审）：含 zotero_key 列时按**唯一键**
+    计数；r6 #49 进一步保证 include/exclude **跨桶互斥**（同一键分落两桶
+    时按首现行归属只计一次并告警）。
     """
+    return _bucket_counts_exclusive(merged, *_agree_masks(merged), "合并表")
+
+
+def _agree_masks(merged: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """双筛选员「一致 include / 一致 exclude」行掩码。"""
     a = _decision_series(merged, "decision_A")
     b = _decision_series(merged, "decision_B")
     if "decision_B" in merged.columns:
-        inc_mask = (a == "include") & (b == "include")
-        exc_mask = (a == "exclude") & (b == "exclude")
-    else:  # 兼容仅 decision_A + status 的最小表
-        agree = merged["status"].astype(str).str.strip().str.lower() == "agree"
-        inc_mask = agree & (a == "include")
-        exc_mask = agree & (a == "exclude")
-    included, _ = _unique_key_count(merged, inc_mask)
-    excluded, _ = _unique_key_count(merged, exc_mask)
-    return included, excluded
+        return (a == "include") & (b == "include"), (a == "exclude") & (b == "exclude")
+    # 兼容仅 decision_A + status 的最小表
+    agree = merged["status"].astype(str).str.strip().str.lower() == "agree"
+    return agree & (a == "include"), agree & (a == "exclude")
 
 
 def _agree_decision_keys(merged: pd.DataFrame, decision: str) -> set[str]:
-    """双方一致为 decision 的 zotero_key 集合（空决策不算一致）。"""
+    """双方一致为 decision、且跨桶互斥折叠后仍归属该侧的 zotero_key 集合。
+
+    two_stage 以本集合为 stage2 键域：若直接用「全部 agree include 键」，
+    同键另有 agree exclude 行时会落进 stage2 域内，stage1 与 stage2 各计
+    一次（r6 #49 二轮实测 excluded=2 > screened=1）。按与
+    :func:`_bucket_counts_exclusive` 相同的首现行折叠口径取键，保证域与
+    计数一致、且结果与行序无关的最终归属互补。
+    """
+    if decision not in ("include", "exclude"):
+        raise ValueError(f"unsupported decision: {decision!r}")
     if "zotero_key" not in merged.columns:
         raise ValueError("合并表缺少 zotero_key 列（需要 merge_decisions 的输出）")
-    a = _decision_series(merged, "decision_A")
-    b = _decision_series(merged, "decision_B")
-    keys = merged["zotero_key"].fillna("").astype(str)
-    if "decision_B" in merged.columns:
-        mask = (a == decision) & (b == decision)
-    else:  # 兼容仅 decision_A + status 的最小表
-        agree = merged["status"].astype(str).str.strip().str.lower() == "agree"
-        mask = agree & (a == decision)
-    return set(keys[mask])
+    inc_kept, exc_kept, _ = _split_exclusive(merged, *_agree_masks(merged))
+    return inc_kept if decision == "include" else exc_kept
 
 
 def _resolved_decisions(
@@ -288,13 +345,20 @@ def prisma_from_merge(
         if "zotero_key" not in merged.columns:
             raise ValueError("给出 resolved 时 merged 需含 zotero_key 列")
         screened_keys = set(merged.loc[mask, "zotero_key"].fillna("").astype(str))
+        # r6 #49（三轮）：resolved 决定归属时，非 resolved 分支的跨桶告警不再
+        # 触发——但「同一键既有一致 include 又有一致 exclude 行」这一事实仍
+        # 存在（正常入口不可能产生，只来自手工/历史合并表），须照报。
+        _, _, cross_overlap = _split_exclusive(merged, *_agree_masks(merged))
+        if cross_overlap:
+            warns.append(_cross_bucket_warning(cross_overlap, "合并表（resolved 口径）"))
         decisions, ignored = _resolved_decisions(resolved, screened_keys)
         included = sum(1 for value in decisions.values() if value == "include")
         excluded = sum(1 for value in decisions.values() if value == "exclude")
         if ignored:
             warns.append(_resolved_warning(ignored, "resolved"))
     else:
-        included, excluded = _agree_counts_two(merged)
+        included, excluded, cross_warns = _agree_counts_two(merged)
+        warns.extend(cross_warns)
 
     duplicates_removed = _count_duplicates(report)
     # MM6-02：report=None 的兜底口径统一为**键级**（决策表唯一键数），
@@ -383,11 +447,14 @@ def prisma_from_merge_multi(
         for name in names:
             col = agree[f"decision_{name}"].fillna("")
             shared = shared.where(shared != "", col)
-        # R6-F5（复审）：按唯一键计数（重复键行不突破 screened 不变量）
+        # R6-F5（复审）：按唯一键计数；r6 #49：跨桶互斥（同键分落 include/
+        # exclude 两桶按首现行归属只计一次并告警，included+excluded<=
+        # screened 恒成立）。
         inc_mask = (shared == "include").reindex(merged_multi.index, fill_value=False)
         exc_mask = (shared == "exclude").reindex(merged_multi.index, fill_value=False)
-        included, _ = _unique_key_count(merged_multi, inc_mask)
-        excluded, _ = _unique_key_count(merged_multi, exc_mask)
+        included, excluded, cross_warns = _bucket_counts_exclusive(
+            merged_multi, inc_mask, exc_mask, "合并表")
+        warns.extend(cross_warns)
 
     # MM-08（MM6-02 补齐 multi 路径）：勾稽检查与 agree 路径同一措辞、
     # 同样无条件执行——修复前 multi 路径 identified 恒 =screened 倒是恒
@@ -426,16 +493,22 @@ def prisma_two_stage(
       unscreened 自 stage1 透传（r1 评审：identified 沿用 stage1 键级口径
       而不透传 unscreened 会让「identified = screened + unscreened」在
       two_stage 上破）。
-    - 复筛决策只统计落在初筛纳入键域（stage1 双方一致 include 的键）内的
-      条目：键域外与重复键忽略并记入 warnings（R6-F5），保证
-      included + excluded <= screened 恒成立（复筛在初筛纳入子集上进行，
-      其排除对象已被初筛排除计数覆盖，故不相加两次）。
+    - 复筛决策只统计落在初筛纳入键域内的条目：键域外与重复键忽略并记入
+      warnings（R6-F5）。**键域与 stage1 计数同口径**（r6 #49：跨桶重复键
+      按首现行归属折叠后的 include 侧），因此 included 键与 stage2 排除键
+      互不重叠，included + excluded <= screened 对任意行序成立。
     - 键域口径如实声明（复审）：stage1 **经仲裁纳入**的键（resolved1 形态）
       目前不在本函数键域内——尚无 resolved1 入参，传入前需先把仲裁结果
       并入 stage1_merged 的决策列；越域条目按 warning 显式忽略，不静默
       也不计入（扩展 resolved1 属后续轮次，见集成指示文档）。
     """
     stage1 = prisma_from_merge(stage1_merged)
+    # r6 #49（二轮阻断项）：stage2 键域必须与 stage1 的跨桶互斥口径一致。
+    # 旧实现取「全部 agree include 键」为域——同键（agree include +
+    # agree exclude）既算 stage1 include 又落进 stage2 排除侧，
+    # `stage1.excluded + excluded2` 就让 included+excluded 突破 screened
+    # （实测 exclude 行在前时 1/0/2，且与行序相关）。折叠后的 include 侧
+    # 键与 exclude 侧键互斥 ⇒ 两侧不再重叠，不变量与行序无关。
     include_keys = _agree_decision_keys(stage1_merged, "include")
     if "zotero_key" not in stage2_merged.columns:
         raise ValueError("stage2_merged 需含 zotero_key 列（需要 merge_decisions 的输出）")
@@ -448,7 +521,20 @@ def prisma_two_stage(
         included = sum(1 for value in decisions.values() if value == "include")
         excluded2 = sum(1 for value in decisions.values() if value == "exclude")
         if ignored:
-            warns.append(_resolved_warning(ignored, "resolved2"))
+            # r6 #49（三轮）：键域收窄后，stage1 判定为 exclude 的键也会落在
+            # 「域外」。它并非幽灵/未筛键，而是**与初筛归属冲突**——两者
+            # 语义不同，混报「域外」会误导用户去查筛选覆盖。分开计数与措辞。
+            stage1_exclude = _agree_decision_keys(stage1_merged, "exclude")
+            conflict = [k for k in ignored if k in stage1_exclude]
+            ghost = [k for k in ignored if k not in stage1_exclude]
+            if conflict:
+                shown = ", ".join(conflict[:5]) + ("…" if len(conflict) > 5 else "")
+                warns.append(
+                    f"resolved2 有 {len(conflict)} 个键与初筛归属冲突"
+                    f"（stage1 判为排除、复筛仲裁判为纳入/排除），已按初筛口径忽略: {shown}"
+                )
+            if ghost:
+                warns.append(_resolved_warning(ghost, "resolved2"))
     else:
         a2 = _decision_series(stage2_merged, "decision_A")
         b2 = _decision_series(stage2_merged, "decision_B")
@@ -459,8 +545,9 @@ def prisma_two_stage(
             agree2 = stage2_merged["status"].astype(str).str.strip().str.lower() == "agree"
             inc_mask = agree2 & (a2 == "include")
             exc_mask = agree2 & (a2 == "exclude")
-        included, _ = _unique_key_count(stage2_merged, inc_mask & in_domain)
-        excluded2, _ = _unique_key_count(stage2_merged, exc_mask & in_domain)
+        included, excluded2, cross_warns = _bucket_counts_exclusive(
+            stage2_merged, inc_mask & in_domain, exc_mask & in_domain, "stage2")
+        warns.extend(cross_warns)
         n_out = int(((inc_mask | exc_mask) & ~in_domain).sum())
         if n_out:
             warns.append(

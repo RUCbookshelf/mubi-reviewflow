@@ -13,7 +13,7 @@ from pathlib import Path
 
 from coscreen import coding, review_workflow as workflow
 
-MIGRATION_VERSION = 3
+MIGRATION_VERSION = 7
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 _SCHEMA = """
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS workflow_form_requests(task_id TEXT NOT NULL,actor_id
 
 
 def migrate(db: str | Path) -> None:
-    # 快路径（门禁墙钟）：基础迁移(v1)与自身版本(v3)齐全时 migrate 是无操作
+    # 快路径（门禁墙钟）：基础迁移(v1)与自身版本(v7)齐全时 migrate 是无操作
     # ——一次只读连接判齐即返回（原先每个 API 请求经 ensure_fields 进来要开
     # 2 个只读连接逐个重查）；未建库/旧库走完整链，首建与升级行为不变。
     path = Path(db)
@@ -47,6 +47,10 @@ def migrate(db: str | Path) -> None:
             return
         # 备份只保护既有库；本进程新建、尚在首建链中的库没有可备份的数据。
         if not workflow.is_fresh_database(path):
+            # 备份文件名保持 .pre-workflow-v3.bak 稳定标识（不经版本号拼装）：
+            # 升级链后续可能再改写 DDL，但「升级前最后一份完整备份」的语义不变；
+            # docs/WORKFLOW_CONTROLS.md:36/137 与 docs/WORKFLOW_VALIDATION.md:60
+            # 均以该名称为运维口径，随版本号改名会让既有指引失效。
             backup = path.with_name(path.name + '.pre-workflow-v3.bak')
             if not backup.exists():
                 with closing(sqlite3.connect(backup)) as target:
@@ -65,7 +69,91 @@ def migrate(db: str | Path) -> None:
                 conn.execute('ALTER TABLE workspace_undo ADD COLUMN request_id TEXT')
             if 'superseded' not in columns:
                 conn.execute('ALTER TABLE workspace_undo ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0')
+            # r6 #22（v7）：仅**摘要形态**存量条目的摘要按当前公式重写；全文
+            # 快照形态（v2.1.3 及更早）不改写，由比较视图按新公式重算（详见
+            # _rewrite_legacy_guard_digests）。版本号取 7：workflow_migrations
+            # 版本号是全模块共享命名空间（1=workflow、2=review_imports、3=v3 旧版/
+            # import_review_undo、4=import_sources、5=文件名迁移、6=screening_rounds），
+            # 4 已被占用会误判已迁移。
+            _rewrite_legacy_guard_digests(conn)
         conn.execute('INSERT INTO workflow_migrations VALUES(?,?)', (MIGRATION_VERSION, coding._now()))
+
+
+def _rewrite_legacy_guard_digests(conn: sqlite3.Connection) -> None:
+    """r6 #22 旧库兼容迁移（v7）：**可证明才重写**——摘要形态存量条目仅在能
+    证明「内容未变、只有摘要公式变了」时改写，其余一律保持阻断。
+
+    #22 的修复声明边界（收窄后的准确口径，勿扩大）：
+    - **能达到的**：v2.1.3 及更早的**全文快照形态**条目，在升级后遇到纯时间戳
+      漂移时可以撤销（旧公式把 note 时间戳算入摘要，修复前必然 409）；本函数
+      不改写它们，由 ``_guard_state`` 按当前公式重算比较两侧。
+    - **能达到的**：摘要形态条目中**可证明**（存量摘要 == f_old(当前内容)）的
+      那部分，迁移改写为新公式摘要并保留 ``legacy_digest``，升级后可撤销。
+    - **达不到的（如实保留为残留面）**：摘要形态 + 升级前发生过时间戳漂移或
+      内容编辑的条目。摘要不可逆，f_old(当前内容) 已无法复现存量摘要，因此
+      **不能**判定也无法修复——继续 409，须由用户人工核对。这是有意的保守
+      取舍：宁可留下误拒，也不得静默覆盖较新的下游工作。
+
+    形态判据：
+    - **全文快照形态**（v2.1.3 及更早：``evidence_snapshot`` 未传 guard=True）
+      **一律不改写**——``_guard_state`` 比较时按当前公式重算，纯时间戳漂移可
+      撤销、升级前真实编辑仍阻断（内容在快照里，可精确判定）。
+    - **摘要形态**（257d96c..326df44 窗口的构建，哈希不可逆）只有在**能证明
+      内容未变、仅公式变更**时才重写：用当前库内状态按**旧公式**重算，得到
+      的哈希与存量摘要**逐字节相同**才改写为新公式摘要。此时可证"旧摘要 =
+      f_old(当前内容)"，即从上次保存到升级之间内容确实没变。
+    - 否则（旧摘要与 f_old(当前内容) 不同）**保留旧摘要不放宽**：这说明内容
+      真的变了（或无法判定），照旧按守卫失配阻断（宁可 409）。撤销守卫的
+      核心语义（不得静默覆盖更新的下游工作）优先于"清理残留误拒"。
+
+    旧公式摘要随条目保留在 ``legacy_digest`` 键内（不参与比较），供审计与
+    后续人工核对；升级前被阻断的摘要形态条目属于可接受的残留面，已在
+    RELEASE_NOTES 中披露。"""
+    from coscreen import workspace_undo as undo_mod
+    columns = {r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
+    if not {'stage', 'zotero_key', 'after_json', 'undone'} <= columns:
+        return
+    superseded = 'AND superseded=0 ' if 'superseded' in columns else ''
+    rows = conn.execute(
+        f"SELECT id,zotero_key,after_json FROM workspace_undo WHERE stage IN ('screen','fulltext') "
+        f"AND undone=0 {superseded}").fetchall()
+    for entry_id, key, after_json in rows:
+        try:
+            after = json.loads(after_json)
+        except ValueError:
+            continue
+        evidence = after.get('coding_evidence') if isinstance(after, dict) else None
+        if not isinstance(evidence, dict) or not evidence:
+            continue
+        # 仅摘要形态条目：全文快照交给比较视图按新公式重算（不改写、不损审计）。
+        digest_dims = [dim for dim, snap in evidence.items()
+                       if isinstance(snap, dict) and isinstance(snap.get('digest'), str)]
+        if not digest_dims:
+            continue
+        rewritten = dict(evidence)
+        changed = False
+        for dim in digest_dims:
+            try:
+                snap = undo_mod.evidence_snapshot(conn, key, [int(dim)], guard=False).get(str(dim))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(snap, dict) or not undo_mod._dim_has_data(snap):
+                continue  # 维度已无数据：真实下游变更，保留旧摘要（继续阻断）
+            stored = evidence[dim]['digest']
+            # 关键判据：存量摘要必须等于「当前内容 + 旧公式」——只有此时可证
+            # 内容未变、差异全在公式（时间戳入摘要）上，迁移才是安全的。
+            if undo_mod._evidence_digest(snap, legacy_timestamps=True) != stored:
+                continue
+            fresh = undo_mod._evidence_digest(snap)
+            if fresh == stored:
+                continue
+            rewritten[dim] = {'digest': fresh, 'legacy_digest': stored}
+            changed = True
+        if not changed:
+            continue
+        after['coding_evidence'] = rewritten
+        conn.execute('UPDATE workspace_undo SET after_json=? WHERE id=?',
+                     (json.dumps(after, ensure_ascii=False), entry_id))
 
 
 def definition(dim: dict) -> str:
@@ -245,8 +333,10 @@ def stage_upload(db: str | Path, task_id: str, actor_id: int, key: str, dim: int
     with closing(workflow.connect(db)) as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
         coding._require_dimension(conn, dim)
-        old = conn.execute('SELECT id,path FROM workflow_evidence_uploads WHERE task_id=? AND actor_id=? AND zotero_key=? AND dimension_id=? AND sha256=?',
-                           (task_id, str(actor_id), key, dim, digest)).fetchone()
+        # r6 #28：task_id 以 rtrim('. ') 兼容匹配——修复前（R6-C3 之前）以
+        # Windows 尾点别名落库的 staged 行与规范 id 是同一物理任务的同一上传。
+        old = conn.execute("SELECT id,path FROM workflow_evidence_uploads WHERE rtrim(task_id,'. ')=? AND actor_id=? AND zotero_key=? AND dimension_id=? AND sha256=?",
+                           (task_id.rstrip('. '), str(actor_id), key, dim, digest)).fetchone()
         uid = old[0] if old else str(uuid.uuid4())
         root = assets_dir(db)
         if root.resolve() != root:
@@ -305,6 +395,13 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
         if submission_evidence:
             payload['access_context'] = undo.SUBMISSION_EVIDENCE
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        # r6 #21：no-op 保存（record_save 因 before==after 不建 journal）不再落
+        # 幂等摘要——摘要先于快照落库时，撤销后重放同 request_id 会命中旧摘要
+        # 直接返回"成功"，而业务值并未写回（假成功），且该摘要无 journal 可
+        # 关联、永不清除。摘要改为在 record_save 确认产生 journal 后写入；同
+        # 一事务提交，重试语义不变（保存中途失败整体回滚，摘要与 journal
+        # 同生同灭）。
+        pending_summary = None
         if context.request_id:
             old = conn.execute('SELECT digest FROM workflow_form_requests WHERE task_id=? AND actor_id=? AND request_id=?',
                                (context.task_id, str(context.actor_id), context.request_id)).fetchone()
@@ -312,8 +409,7 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
                 if old[0] != digest:
                     raise ValueError('Request ID was already used for a different form.')
                 return
-            conn.execute('INSERT INTO workflow_form_requests VALUES(?,?,?,?)',
-                         (context.task_id, str(context.actor_id), context.request_id, digest))
+            pending_summary = (context.task_id, str(context.actor_id), context.request_id, digest)
         prepared = {did: coding._require_dimension(conn, did) for did in dims}
         if not conn.execute('SELECT 1 FROM articles WHERE zotero_key=?', (key,)).fetchone():
             raise ValueError('Article no longer exists.')
@@ -366,8 +462,9 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
                     trace.capture_event(conn, context, stage='coding', action='coding_note_image_removed', subject_id=key,
                         before={'id': image_id, 'sha256': existing[image_id][1]}, after=None, field=field)
                 for uid in dict.fromkeys(intent.get('upload_ids', [])):
-                    upload = conn.execute('SELECT path,sha256 FROM workflow_evidence_uploads WHERE id=? AND task_id=? AND actor_id=? AND zotero_key=? AND dimension_id=?',
-                        (uid, context.task_id, str(context.actor_id), key, did)).fetchone()
+                    # r6 #28：尾点别名存量 staged 行同键兼容（见 stage_upload 注释）。
+                    upload = conn.execute("SELECT path,sha256 FROM workflow_evidence_uploads WHERE id=? AND rtrim(task_id,'. ')=? AND actor_id=? AND zotero_key=? AND dimension_id=?",
+                        (uid, context.task_id.rstrip('. '), str(context.actor_id), key, did)).fetchone()
                     if not upload or not Path(upload[0]).is_file() or Path(upload[0]).is_symlink() or Path(upload[0]).resolve().parent != assets_dir(db):
                         raise ValueError('Staged evidence is unavailable or belongs to another field.')
                     if conn.execute('SELECT 1 FROM coding_note_images WHERE note_id=? AND sha256=?', (nid, upload[1])).fetchone():
@@ -380,6 +477,9 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
         if submission_evidence:
             before['access_context'] = after['access_context'] = undo.SUBMISSION_EVIDENCE
         undo.record_save(conn, context, 'coding', key, before, after)
+        # r6 #21：仅在本次保存真的产生了撤销 journal（非 no-op）时落幂等摘要。
+        if pending_summary is not None and before != after:
+            conn.execute('INSERT INTO workflow_form_requests VALUES(?,?,?,?)', pending_summary)
         # 保存后复位不再被引用的上传附件标记，让 7 天垃圾回收可回收（U3-P8）；
         # 仍被 coding_note_images 或活跃撤销快照引用的文件保持 attached=1。
         undo.release_detached_uploads(conn, context, key)
