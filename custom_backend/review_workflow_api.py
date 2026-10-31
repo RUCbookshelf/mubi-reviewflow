@@ -44,6 +44,33 @@ class WorkflowRuntime:
         with self._locks_guard:
             return self._locks.setdefault(task_id, threading.RLock())
 
+    def readonly_context(self, task_id: str, user: dict) -> WorkflowContext:
+        """只读上下文（R6-U4/#24）：与 context() 同一访问判定，但**不建库、
+        不跑迁移/ensure_fields**——只解析权限与 actor 库路径。
+
+        用于撤销状态等纯读端点：修复前 status 走 context()，会让
+        screener_db(ensure=True) 的懒建链重建个人库、跑 store.migrate/
+        ensure_fields 自愈 DDL，甚至为成员创建**属主**库并灌入整套表
+        （r6 复审实测 48 张表）。属主/成员的个人库按既有命名规则只拼路径，
+        不触达磁盘写。"""
+        info = self.task_lookup(task_id)
+        task_id = info.task_id
+        collab = task_collaboration.shared_store_path(info.dir)
+        owner = task_collaboration.get_owner(collab, task_id=task_id)
+        if owner is not None:
+            if not (owner["owner_user_id"] == user["user_id"]
+                    or task_collaboration.is_participant(
+                        collab, user["user_id"], task_id=task_id)):
+                raise HTTPException(403, "Task access denied.")
+        elif not self.visible(info, user):
+            raise HTTPException(403, "Task access denied.")
+        actor_db = info.dir / (tasks.slugify_screener(user["username"]) + ".db")
+        if owner is None:
+            return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
+        owner_db = info.dir / (tasks.slugify_screener(owner["owner_username"]) + ".db")
+        return WorkflowContext(info, user, owner, owner_db, actor_db,
+                               owner["owner_user_id"] == user["user_id"], "personal", collab)
+
     def context(self, task_id: str, user: dict) -> WorkflowContext:
         info = self.task_lookup(task_id)
         # R6-C3/#35：锁与权限键统一规范 task_id——find_task 会把尾点别名解析到
@@ -260,8 +287,17 @@ class WorkflowRuntime:
                         last = workspace_undo._latest(conn, context, stage)
                         if last and last['entry_id'] == operation[0]:
                             same = workspace_undo.snapshot_matches(conn, stage, key, before, after)
-                            actions.update(undo_entry_id=last['entry_id'], can_undo=reason is None and same,
-                                           reason=reason or (None if same else 'saved_state_changed'))
+                            # r6 #26：can_undo 与 undo() 的 MISSING_EVIDENCE_FILE
+                            # 拒绝同口径地检查待恢复图片文件存在性——修复前只比
+                            # DB 状态，文件被删后轨迹抽屉的 Undo this save 仍可点、
+                            # 点击后 409。
+                            files_ok = (stage != 'coding' or 'evidence' not in before
+                                        or workspace_undo._evidence_files_available(
+                                            ctx.actor_db, before['evidence']))
+                            actions.update(undo_entry_id=last['entry_id'],
+                                           can_undo=reason is None and same and files_ok,
+                                           reason=reason or (None if (same and files_ok) else
+                                                             ('missing_evidence_file' if same else 'saved_state_changed')))
                     # Trace lifecycle UUIDs and workflow field UUIDs are separate namespaces.
                     # Resolve only this authenticated actor's current, unretired lifecycle.
                     actions['current_field'] = None
@@ -309,10 +345,20 @@ class WorkflowRuntime:
 
     def sync_catalog(self, ctx: WorkflowContext) -> None:
         if ctx.owner is not None and not ctx.can_manage:
-            from custom_backend.shared_corpus import sync_shared_articles
-            sync_shared_articles(ctx.info.dir, owner_username=ctx.owner["owner_username"],
-                                 member_username=ctx.user["username"],
-                                 catalog_revision=store.catalog_revision(ctx.owner_db))
+            from custom_backend.shared_corpus import (ReservedScreenerCollisionError,
+                                                      sync_shared_articles)
+            try:
+                sync_shared_articles(ctx.info.dir, owner_username=ctx.owner["owner_username"],
+                                     member_username=ctx.user["username"],
+                                     catalog_revision=store.catalog_revision(ctx.owner_db))
+            except ReservedScreenerCollisionError:
+                # r6 #29：升级前已存在的撞名授权成员的目录同步收敛为 409 撞名
+                # 改名指引（修复前裸 ValueError -> work-queue/articles 500）。
+                from custom_backend.main import COLLABORATION_RESERVED_NAME_MESSAGE
+                raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                          "message_key": "coding.collaboration_reserved_name", "params": {},
+                                          "details": "Username collides with the reserved collaboration database filename",
+                                          "message": COLLABORATION_RESERVED_NAME_MESSAGE})
 
     @staticmethod
     def article_rows(db: Path, *, compact: bool = False) -> list[dict]:

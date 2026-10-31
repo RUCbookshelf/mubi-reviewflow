@@ -142,6 +142,13 @@ def file_level_warnings(text: str, filename: str) -> list[str]:
                     "起的记录尚未以 \"ER  -\" 结束；已在该处补全 ER 把两条记录拆分"
                     "导入（否则 rispy 会把它们合并为一条字段互相污染的嵌合记录）。"
                 )
+                # r8 #20（告警归属）：_split_chimera_records 会在该行前插入
+                # 合成 ER——前一条已完整导入，**新 TY 开启的记录**才是后续
+                # 在途记录。同步推进在途状态，使文件尾截断告警点名真正被
+                # 丢弃的记录（修复前取在途区域首个 TI，把已导入的首条误报
+                # 成"未被导入"，真正被静默丢弃的末条反而无人点名）。
+                open_line = lineno
+                ty_count += 1
     if in_record:
         title = _in_flight_title(lines, open_line - 1)
         title_hint = f"（标题：{title}）" if title else ""
@@ -306,8 +313,34 @@ def parse_ris(path: str | Path) -> list[Article]:
                         or not years_compatible(prev_year, year)):
                     demoted = True
                     reason = "与本文件内另一条文献同键同题，但作者/年份不同，不是同一文献"
-                # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见身份
-                # 不覆盖——后续同键记录仍与首条比较，不被中间行的缺字段稀释
+                else:
+                    # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见键，
+                    # 后续同键记录仍与**补全后的身份**比较（r8 #14）——修复前
+                    # 首见身份永不补全，首条缺作者/年份时任何后续记录都与
+                    # 空洞身份兼容，同键同题但作者/年份可证不同的记录
+                    # （空→Smith→Jones）被静默合并成一列（DB 只剩最后一条）。
+                    # 现用后续非空元数据补全首见身份并显式警告，第 3 条起
+                    # 与补全身份比较，可证不同即降级为自动键。
+                    completed: list[str] = []
+                    if not prev_surname and surname:
+                        prev_surname = surname
+                        completed.append("作者姓")
+                    if not prev_given and given:
+                        prev_given = given
+                        completed.append("作者名")
+                    if prev_year is None and year is not None:
+                        prev_year = year
+                        completed.append("年份")
+                    if completed:
+                        seen_keys[source_key] = (
+                            prev_hash, prev_surname, prev_given, prev_year)
+                        record_warnings.append(
+                            f"RIS 第 {record_no} 条记录：来源键 {source_key!r} 的"
+                            f"同文件首见身份缺{'/'.join(completed)}，已用本条非空值"
+                            "补全（同键同题按同一文献保留键；若非同一文献"
+                            "请人工核对）"
+                        )
+                        print(f"警告：{record_warnings[-1]}", file=sys.stderr)
             else:
                 seen_keys[source_key] = (content_hash, surname, given, year)
         if demoted:

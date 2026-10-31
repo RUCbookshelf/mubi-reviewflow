@@ -3,9 +3,10 @@
 第 1 层 精确（自动合并仅保留可机器核验的证据，U1-P1/U1-P3，与 Web 导入的
     受保护核验/人工候选哲学对齐）：
     a) 规范化 DOI 非空且相等；或
-    b) zotero_key 相等且 DOI/标题不冲突（双方 DOI 均非空时以 DOI 裁决；
-       否则要求标题规范化后**完全相等**且首作者兼容，R6-D1——一词之差
-       如 women/men、phase2/phase3 不再凭 token_set_ratio>=90 自动合并）。
+    b) zotero_key 相等且 DOI/标题/年份不冲突（双方 DOI 均非空时以 DOI
+       裁决；否则要求标题规范化后**完全相等**、首作者兼容且年份兼容
+       （r8 #8/#15），R6-D1——一词之差如 women/men、phase2/phase3 不再凭
+       token_set_ratio>=90 自动合并，同键同题同作者异年也不再静默覆盖）。
     键相等但 DOI 不等、标题不完全相等或首作者不兼容 → key_conflict_pairs
     候选（不合并，由 stabilize_conflicting_keys 消歧键后各自入库）。
 第 2 层 模糊（U1-P1/U1-P10）：仅对精确层存活且双方 DOI 均为空的条目做
@@ -38,8 +39,9 @@ import unicodedata
 from rapidfuzz import fuzz, process
 
 from coscreen import config
-from coscreen.models import Article
+from coscreen.models import Article, compute_content_hash
 from coscreen.normalize import (
+    _strip_name_suffixes,
     first_author_given_names,
     first_author_surname,
     given_names_compatible,
@@ -157,6 +159,28 @@ def _first_author_token(authors: str) -> str:
     return first_author_surname(authors)
 
 
+def _caseless_alt_reading(authors: str, other: str) -> tuple[str, str] | None:
+    """全小写一侧的备选读法（末词为姓、其余为名）；不满足条件返回 None。
+
+    条件（评审 R2/R3）：本侧整体无大写（无大小写信号），且**对面一侧含大写
+    字母**（由对面提供「谁是大写姓氏」的证据）。任一侧带逗号时不做（姓前
+    形态无歧义）。两侧都全小写 -> None：'wu li' 与 'li wu' 是不同作者的
+    姓名倒序，不得静默合并。
+    """
+    head = str(authors or "").split(";")[0].strip()
+    other_head = str(other or "").split(";")[0].strip()
+    if not head or "," in head or "," in other_head:
+        return None
+    if head != head.lower():
+        return None
+    if other_head == other_head.lower():
+        return None
+    words = _strip_name_suffixes([w for w in head.split() if w])
+    if len(words) < 2:
+        return None
+    return (" ".join(words[-1:]).lower().strip(".,:"), " ".join(words[:-1]).lower())
+
+
 def _first_authors_compatible(a: Article, b: Article) -> bool:
     """首作者是否兼容（R6-D1 + 评审 R1 返修·FB2 + R6-D3/D4 名的区分度）。
 
@@ -169,7 +193,11 @@ def _first_authors_compatible(a: Article, b: Article) -> bool:
       重导不得因作者缺失被判为不同文献（基线 4a06688 的 _key_merge_confirmed
       同样为 True——标题 token>=100 即合并，作者不参与裁决）。库行缺作者
       而本批带作者时由 stabilize 发"元数据补全"警告，不改变合并行为；
-    - 双方均无作者视为兼容——无作者元数据记录重导的常见形态。
+    - 双方均无作者视为兼容——无作者元数据记录重导的常见形态；
+    - **全小写一侧的双读容忍（评审 R2/R3）**：'John Wu' vs 'john wu' 这类
+      一侧无大小写信号的写法，该侧姓与名的归属无法从字面断定——**对面一侧
+      的大写提供证据时**才试该侧的备选读法；两侧都全小写时不启用
+      （'wu li' vs 'li wu' 是不同作者的姓名倒序）。
     """
     surname_a = _first_author_token(a.authors)
     surname_b = _first_author_token(b.authors)
@@ -177,16 +205,30 @@ def _first_authors_compatible(a: Article, b: Article) -> bool:
         # 任一侧缺作者：不能证明"作者不同"，按元数据补全处理（不阻断合并）
         return True
     if fuzz.ratio(surname_a, surname_b) < config.FUZZY_AUTHOR_THRESHOLD:
+        alt_a = _caseless_alt_reading(a.authors, b.authors)
+        if alt_a is not None and (
+                fuzz.ratio(alt_a[0], surname_b) >= config.FUZZY_AUTHOR_THRESHOLD
+                and given_names_compatible(
+                    alt_a[1], first_author_given_names(b.authors))):
+            return True
+        alt_b = _caseless_alt_reading(b.authors, a.authors)
+        if alt_b is not None and (
+                fuzz.ratio(surname_a, alt_b[0]) >= config.FUZZY_AUTHOR_THRESHOLD
+                and given_names_compatible(
+                    first_author_given_names(a.authors), alt_b[1])):
+            return True
         return False
     return given_names_compatible(
         first_author_given_names(a.authors), first_author_given_names(b.authors))
 
 
 def _key_merge_confirmed(a: Article, b: Article) -> bool:
-    """键相等时是否允许自动合并（U1-P3，R6-D1 收紧）。
+    """键相等时是否允许自动合并（U1-P3，R6-D1 收紧；r8 #8/#15 年份门）。
 
     - 双方规范化 DOI 均非空时以 DOI 裁决（相等才合并）；
-    - 否则要求**标题规范化后完全相等**且**首作者兼容**才允许自动合并。
+    - 否则要求**标题规范化后完全相等**、**首作者兼容**且**年份兼容**
+      （双侧均明确且不同 -> 不合并，r8 #8/#15：同键同题同作者异年
+      静默覆盖 year 并继承既有筛选决策的路径收口）才允许自动合并。
       此前"标题 token_set_ratio >= 90 即合并"的口径对一词之差几乎不敏感
       （women/men=98.41、phase2/3=93.18、retraction 前缀=100、词序反转=100），
       同键 + 双方 DOI 为空时不同文献被静默合并并覆盖；现一律改报
@@ -201,6 +243,8 @@ def _key_merge_confirmed(a: Article, b: Article) -> bool:
     if not title_a or not title_b:
         return False
     if title_a != title_b:
+        return False
+    if not years_compatible(a.year, b.year):
         return False
     return _first_authors_compatible(a, b)
 
@@ -564,10 +608,18 @@ def stabilize_conflicting_keys(
       起即持久化的 sha1(doi|title)，不受 authors 缺失/年份抽取口径漂移
       影响）→（规范化标题+首作者姓氏+年份）。命中沿用库内键走 UPDATE
       路径；与库内行同组合并的生成键成员同样沿用库内键。既有库主键
-      永不重写。
+      永不重写。r8 补充：内容层的同内容键**逐候选尝试**（首个 DOI 冲突
+      的库内行跳过后试同键其他行，#3）；入批 DOI 已属于另一条库内行时
+      不沿用内容层命中的目标（以 DOI 归属为准并显式警告，#2）。
+    - **沿用库内键的字段保留（r8 #1/#7/#13）**：combined 与分离两条
+      沿用路径上，本批缺失的字段（doi/authors/year/journal/url/abstract）
+      保留库内非空值并显式警告——沿用的语义是「同一文献的元数据更新」，
+      绝不让稀疏重导把库内元数据清空；回填 DOI 后按同公式重算
+      content_hash。
     - ``warnings``（可选出参）：收集需向用户显式提示的事件——多条本批
       记录内容匹配到同一库内行（后写覆盖前写，R3 显式警告不改变行为）、
-      库内行缺作者而本批补全元数据（FB2/FB5）。
+      库内行缺作者而本批补全元数据（FB2/FB5）、沿用库内键时的字段保留
+      提示（r8 #1/#7/#13）。
     """
     n = len(articles)
     uf = _UnionFind(n)
@@ -588,6 +640,68 @@ def stabilize_conflicting_keys(
                 "（同一文献，保留键走更新路径）"
             )
 
+    def _metadata_replacement_note(key: str, db_art: Article, art: Article) -> None:
+        """并入库内行时该行的非空元数据会被本批值改写：显式列出改动（评审 R2）。
+
+        exact_doi 组把本批记录并入库内行后，upsert 用本批值覆盖该行的
+        title/authors/year（`_preserve_library_metadata` 只补空字段）——库内行
+        与本批记录内容不同（同 DOI 但题名/作者/年可证不同）时，用户必须知道
+        另一篇文献的元数据将被替换，而不是只收到一句"某个键未被沿用"。
+        """
+        changes: list[str] = []
+        if (_norm_title(db_art.title) and _norm_title(art.title)
+                and _norm_title(db_art.title) != _norm_title(art.title)):
+            changes.append(f"title {db_art.title!r} → {art.title!r}")
+        if (_first_author_token(db_art.authors) and _first_author_token(art.authors)
+                and not _first_authors_compatible(db_art, art)):
+            changes.append(f"authors {db_art.authors!r} → {art.authors!r}")
+        if not years_compatible(db_art.year, art.year):
+            changes.append(f"year {db_art.year} → {art.year}")
+        if changes:
+            _warn(
+                f"库内行 {key} 将按本批记录改写元数据（同一 DOI 但内容不同）："
+                f"{'；'.join(changes)}——请人工核对是否同一文献"
+            )
+
+    def _preserve_library_metadata(key: str, db_art: Article, art: Article) -> None:
+        """沿用库内键走更新路径时，本批缺失的字段保留库内非空值（r8 #1/#7/#13）。
+
+        生产调用点（cli/living_review）均为 combined 形态（known 在 articles
+        内），字段保留曾只写在 ``j is None`` 分离分支里（死代码）：稀疏重导
+        （同键同题但缺 AU/PY/JO/DOI 的记录）经 upsert 全列覆写把库内非空
+        authors/year/journal/doi/abstract/url 清成空值且零警告。现同一保留
+        逻辑在分离与 combined 两条沿用路径上生效：本批为空的字段回填库内
+        既有值并显式警告，本批非空字段照常更新（合法的元数据补全/修正不
+        受影响——R2：不得把稀疏更新变成拒绝）。
+
+        回填 DOI 后按同公式重算 content_hash（r8 #13）：解析时按「无 DOI」
+        算出的摘要与落库字段不一致，会使后续 content_hash 层身份匹配失效。
+
+        保留集（评审 R3 收口加入 title）：doi/**title**/authors/year/journal/
+        url/abstract。此前 title 不在集内，「库内 Real Title + 本批同 DOI 但
+        无 TI」的重导会把库内标题清成空串且无任何提示（实测 title=''、
+        stderr 空）——标题是文献最基本的身份字段，缺失时必须保留库内值。
+        item_type/source_format/raw_json 仍由 upsert 全列覆写（「RIS 全字段行
+        → 同 key 的稀疏 CSV」会把两者改写为 CSV 形态、raw_json 缩短），
+        如实登记为残余。本批非空值一律优先，合法的元数据补全不受影响。
+        """
+        preserved: list[str] = []
+        for field_name in ("doi", "title", "authors", "year", "journal", "url",
+                           "abstract"):
+            db_value = getattr(db_art, field_name, None)
+            if db_value and not getattr(art, field_name, None):
+                setattr(art, field_name, db_value)
+                preserved.append(field_name)
+        if preserved:
+            _warn(
+                f"沿用库内键 {key} 时，本批缺失的字段"
+                f"（{', '.join(preserved)}）保留了库内既有值——"
+                "请人工复核元数据是否需要更新"
+            )
+        fresh_hash = compute_content_hash(art.doi, art.title)
+        if art.content_hash != fresh_hash:
+            art.content_hash = fresh_hash
+
     known_by_key: dict[str, Article] = {}
     if known:
         for art in known:
@@ -601,7 +715,9 @@ def stabilize_conflicting_keys(
     fallback_index: dict[str, str] = {}   # raw["_fallback_id"] -> 库内键
     record_id_index: dict[str, str] = {}  # raw["_record_id"] -> 库内键（U2-P5）
     hash_index: dict[str, str] = {}       # content_hash -> 库内键
-    content_index: dict[tuple[str, str, str, object], str] = {}
+    doi_index: dict[str, str] = {}        # 规范化 DOI -> 库内键（r8 #2 归属检查）
+    # 内容键 -> 库内键全集（r8 #3：首个候选 DOI 冲突时试同键其他行）
+    content_index: dict[tuple[str, str, str, object], list[str]] = {}
     for key_text, art in known_by_key.items():
         raw = art.raw if isinstance(art.raw, dict) else {}
         record_id = str(raw.get("_record_id") or "").strip()
@@ -612,9 +728,12 @@ def stabilize_conflicting_keys(
             fallback_index.setdefault(fallback_id, key_text)
         if art.content_hash:
             hash_index.setdefault(art.content_hash, key_text)
+        doi_text = _norm_doi(art.doi)
+        if doi_text:
+            doi_index.setdefault(doi_text, key_text)
         match_key = _content_match_key(art)
         if match_key[0]:  # 空标题不参与内容匹配（空标题无区分度）
-            content_index.setdefault(match_key, key_text)
+            content_index.setdefault(match_key, []).append(key_text)
     key_positions: dict[str, int] = {}
     for i, art in enumerate(articles):
         key_positions.setdefault(art.zotero_key, i)
@@ -628,10 +747,12 @@ def stabilize_conflicting_keys(
         化，不受 authors 缺失/年份口径漂移影响；复审 D2 回归修复：哈希命中
         **必须叠加首作者兼容门**——content_hash 只含 doi|title，同题不同
         作者会命中，直接沿用会把 2.1.3 的同题坍缩重新引入；不兼容时显式
-        警告并落后续层，绝不静默沿用。年份不参与裁决：与
-        _key_merge_confirmed 同口径（标题相等+作者兼容即为同一文献），
-        2.1.3↔2.1.4 的年份抽取口径漂移（FB1/FB3 验收）仍可沿用）
-        →（规范化标题+首作者姓氏+名+年份）。
+        警告并落后续层，绝不静默沿用。r8 复审：双方年份均明确且不同时同样
+        不静默沿用（沿用会使新记录继承旧记录挂同一键上的筛选决策）；
+        _fallback_id/_record_id 层不设年份门（FB3 年份抽取口径漂移验收
+        依赖同文件行沿用）→（规范化标题+首作者姓氏+名+年份；r8 #3：该键
+        的全部库内行按序尝试，首个 DOI 冲突的候选跳过后继续试同键其他行，
+        全部不可用才告警放弃）。
         """
         raw = art.raw if isinstance(art.raw, dict) else {}
         record_id = str(raw.get("_record_id") or "").strip()
@@ -660,21 +781,52 @@ def stabilize_conflicting_keys(
                 )
             else:
                 return key_text
+        doi_new = _norm_doi(art.doi)
         match_key = _content_match_key(art)
-        if match_key[0] and match_key in content_index:
-            key_text = content_index[match_key]
+        for key_text in content_index.get(match_key, ()) if match_key[0] else ():
+            # r8 #3：同内容键的全部库内行按序尝试——首个候选因 DOI 冲突或
+            # 作者/年份不兼容不可用时，不再整桶放弃（空 DOI 的同内容行
+            # 本可兼容沿用，曾被静默跳过导致新增第 3 行）。
             db_art = known_by_key.get(key_text)
-            if db_art is None or (
-                    _first_authors_compatible(art, db_art)
+            if db_art is None:
+                continue
+            doi_known = _norm_doi(db_art.doi)
+            if doi_known and doi_new and doi_known != doi_new:
+                continue  # DOI 冲突：该库内行是另一文献，试同键其他行
+            if (_first_authors_compatible(art, db_art)
                     and years_compatible(art.year, db_art.year)):
                 return key_text
+        if match_key[0] and content_index.get(match_key):
             _warn(
-                f"记录与库内行 {key_text} 的标题/作者/年份匹配层命中但身份不"
-                "兼容，未沿用库内键（视为不同文献，各自成行）"
+                f"记录与库内行 {content_index[match_key][0]} 的标题/作者/年份匹配"
+                "层命中但身份不兼容，未沿用库内键（视为不同文献，各自成行）"
             )
         return None
 
     adopted_targets: dict[str, list[int]] = {}  # 库内键 -> 命中的本批下标
+    seen_doi = set()  # 本批已接受身份的 DOI（r8 #2 来源键路径跨行归属）
+
+    def _doi_owned_elsewhere(art: Article, target: str) -> str | None:
+        """入批 DOI 是否已属于**另一条**库内行或本批已接受的其他键（r8 #2）。
+
+        生成键路径与来源键路径共用同一守卫：带来源键的记录（ID K1）此前
+        完全绕过检查，库内 K1 无 DOI、K2 持 10.1/x 时仍把 DOI 写进 K1 →
+        两行同 DOI 且零警告（评审 R2）。返回归属键或 None。
+        """
+        doi_new = _norm_doi(art.doi)
+        if not doi_new:
+            return None
+        owner = doi_index.get(doi_new)
+        if owner is not None and owner != target:
+            return owner
+        return None
+
+    def _warn_doi_owner(target: str, owner: str) -> None:
+        _warn(
+            f"记录的 DOI 已属于库内另一行 {owner}，键 {target} 未被采用为该"
+            "记录的身份（以 DOI 归属为准，请人工核对是否同一文献）"
+        )
+
     for i, art in enumerate(articles):
         if not _is_generated_key_article(art):
             continue
@@ -695,7 +847,14 @@ def stabilize_conflicting_keys(
             doi_known, doi_new = _norm_doi(db_art.doi), _norm_doi(art.doi)
             if doi_known and doi_new and doi_known != doi_new:
                 continue  # DOI 冲突：不同文献，不沿用库内键
-            # 评审 R2 返修·FB-B：content/_fallback 分层命中沿用库内键且库行
+            owner = _doi_owned_elsewhere(art, target)
+            if owner is not None:
+                # r8 #2：入批 DOI 已属于另一条库内行时不沿用本目标，由 DOI
+                # 相等的 exact 证据把记录链到归属行（与 Web prepare 同一
+                # 身份选择）。归属行元数据将被本批改写时显式列出改动。
+                _warn_doi_owner(target, owner)
+                _metadata_replacement_note(owner, known_by_key[owner], art)
+                continue            # 评审 R2 返修·FB-B：content/_fallback 分层命中沿用库内键且库行
             # 缺作者时，同样发"元数据补全"警告（与来源键路径同一口径，
             # 不静默改写库行 authors）。
             _metadata_completion_note(target, db_art, art)
@@ -709,24 +868,12 @@ def stabilize_conflicting_keys(
             uf.union(j, i)
         elif j is None:
             # 分离传参形态（known 不在 articles 内）：直接沿用库内键。
-            # r8 复审（#1）：沿用后交 upsert 全行覆盖曾把库内**非空** DOI/
-            # 作者/年份/期刊清成空值（重导缺 DOI 的同题同作者记录 → 库内
-            # DOI 变 ''，零警告）。沿用的语义是「同一文献的元数据更新」：
-            # 本批为空的字段保留库内非空值并显式警告，交人工复核。
+            # r8 #1/#7/#13：沿用的语义是「同一文献的元数据更新」——本批
+            # 为空的字段保留库内非空值并显式警告，交人工复核；回填 DOI
+            # 后重算 content_hash。
             db_art = known_by_key.get(target)
             if db_art is not None:
-                preserved = []
-                for field in ("doi", "authors", "year", "journal", "url", "abstract"):
-                    db_value = getattr(db_art, field, None)
-                    if db_value and not getattr(art, field, None):
-                        setattr(art, field, db_value)
-                        preserved.append(field)
-                if preserved:
-                    _warn(
-                        f"沿用库内键 {target} 时，本批缺失的字段"
-                        f"（{', '.join(preserved)}）保留了库内既有值——"
-                        "请人工复核元数据是否需要更新"
-                    )
+                _preserve_library_metadata(target, db_art, art)
             art.zotero_key = target
     for target, hits in adopted_targets.items():
         if len(hits) > 1:
@@ -775,6 +922,12 @@ def stabilize_conflicting_keys(
                 # 绝不改键（R1：既有库主键永不重写）。
                 if final_key[root] != art.zotero_key:
                     art.zotero_key = final_key[root]
+                # r8 #1/#7/#13（combined 形态）：沿用库内键走更新路径时，
+                # 本批缺失的字段保留库内非空值（否则 upsert 全列覆写把库内
+                # authors/year/journal/doi 清空且零警告）。
+                db_keep = known_by_key.get(art.zotero_key)
+                if db_keep is not None and db_keep is not art:
+                    _preserve_library_metadata(art.zotero_key, db_keep, art)
                 continue
             # 以下两种情况必须改名，否则 upsert 主键会覆盖别的行：
             # 1) 本条目的字面键被批内其他合并组占用为保留键；
@@ -801,7 +954,56 @@ def stabilize_conflicting_keys(
                     # 与库内同键条目兼容保留原键（更新路径）：库行缺作者时
                     # 本批元数据补全，显式警告（FB2）
                     _metadata_completion_note(art.zotero_key, db_art, art)
+                    if id(art) not in known_ids and db_art is not art:
+                        # r8 #1/#7/#13（combined 形态，来源键路径）：本批
+                        # 成员保留库内同键（同一文献，upsert 走更新路径），
+                        # 本批缺失的字段保留库内非空值，不被全列覆写清空。
+                        _preserve_library_metadata(art.zotero_key, db_art, art)
                 occupied.setdefault(art.zotero_key, root)
+
+    # ---- r8 #2（来源键路径收口，评审 R2）：库内两行同 DOI 的静默形态 ----
+    # 带来源键的记录（ID K1）不经过上面的生成键身份匹配，其 DOI 写入由
+    # 键级合并 + upsert 完成——库内 K1 无 DOI、K2 持 10.1/x 时插入同 DOI
+    # 记录，K1 被 exact_key 更新后与 K2 同 DOI（K2 未被 exact_doi 并组，
+    # 因为库内行参与列表且 K2 的 DOI 与本批未标记冲突），零警告。此处按
+    # 最终键域统一检查：同一 DOI 落到了两行且无 is_duplicate_of 关系时，
+    # 显式警告并点名两行（不改变合并/更新行为——R2：不以拒绝替代提示；
+    # 该形态与 Web prepare 的 by_doi 归属选择的分叉在此披露，人工可复核）。
+    final_doi_owner: dict[str, str] = {}
+    for key_text, db_art in known_by_key.items():
+        doi_known = _norm_doi(db_art.doi)
+        if doi_known and id(db_art) in known_ids:
+            final_doi_owner.setdefault(doi_known, key_text)
+    # 已由精确证据打成重复的行（dup_key -> kept_key）：DOI 重复是正常结构
+    # （同一论文的两个来源各一行），不是 #2 的静默缺陷。
+    duplicate_targets = {
+        pair.dup_key: pair.kept_key for pair in pairs
+        if pair.method in ("exact_doi", "exact_key") and pair.dup_key != pair.kept_key
+    }
+    for i, art in enumerate(articles):
+        if id(art) in known_ids:
+            continue
+        doi_new = _norm_doi(art.doi)
+        if not doi_new:
+            continue
+        owner = final_doi_owner.get(doi_new)
+        if owner is None:
+            final_doi_owner[doi_new] = art.zotero_key
+            continue
+        if owner == art.zotero_key:
+            continue
+        # 评审 R3：只在两条都是**非重复主行**时告警——同一论文的两个来源
+        # （PubMed K1 + Embase K2 同 DOI）由 exact_doi 打成 is_duplicate_of
+        # 属正常结构；逐条告警会把真问题淹没在噪音里（实测同一文件 4 条
+        # 同 DOI 记录曾产生 3 条一模一样的假警告）。
+        if (duplicate_targets.get(art.zotero_key) == owner
+                or duplicate_targets.get(owner) == art.zotero_key):
+            continue
+        _warn(
+            f"库内行 {owner} 已持有 DOI {doi_new}，本批记录以 {art.zotero_key} "
+            "入库并写入同一 DOI——两行均为非重复主行（本记录按来源键定为"
+            "另一文献，与 Web 导入按 DOI 归属的选择不同）请人工核对"
+        )
 
     # 同步全部配对的键（含 fuzzy/exact_key_conflict 候选对）。改名后自指的
     # 配对（双方归一到同一键，如同键同 DOI 的自然坍缩/生成键沿用库内键）

@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -142,10 +143,13 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
     - 候选解码**不允许出现替换字符**：含 U+FFFD 的候选一律不采纳（复审
       实测：损坏 GBK 曾带着乱码行静默导入；2.1.3 基线为响亮拒绝）；
     - GBK 与 cp1252 双候选均可行时择优：cp1252 自身要求非 ASCII ≤ 20%；
-      GBK 的 mojibake 标记只在此刻用于择优——common 档标记单个命中或
-      占 CJK 主体时改选 cp1252（附「疑似乱码」告警），cp1252 不可行时
-      绝不因标记否决 GBK；全部高位字节均为 cp1252 字母区且两两成对、
-      CJK 稀疏时优先 cp1252（Größe 形态）；
+      GBK 的 mojibake 标记只在此刻用于择优——common 档标记（含 r8 #17 的
+      ©/®/°+ASCII 字节对证据）**占 CJK 主体**（evidence*2 > cjk）且 GBK
+      候选不含 GB2312 一级常用汉字（r8 #19 守卫）时改选 cp1252（附「疑似
+      乱码」告警）；单个 common 标记不再单独触发翻转（稀释 GBK 真文件
+      曾被整文翻成 cp1252 乱码）；cp1252 不可行时绝不因标记否决 GBK；
+      GBK 候选解不出任何 CJK 字符时按 cp1252（r8 #17）；全部高位字节均
+      为 cp1252 字母区且两两成对、CJK 稀疏时优先 cp1252（Größe 形态）；
     - 无候选可行时抛 ParseError 列出已尝试编码——宁可显式失败，不可静默乱码。
     """
     try:
@@ -210,10 +214,38 @@ def decode_bytes_with_confidence(data: bytes, filename: str) -> tuple[str, list[
             for i, b in enumerate(data) if b >= 0x80
         )
         sparse_cjk = cjk / max(1, len(text_gbk)) <= 0.05
-        if common_markers and (
-            common_markers == 1 or common_markers * 2 > cjk
-        ):
-            # 形态二：cp1252 弯引号/重音字母 + ASCII 被 GBK 误解（'…抯…'）
+        # r8 #17（评审 R2/R3 收口）：cp1252 符号字节（©=0xA9/®=0xAE/°=0xB0）
+        # 后接 **两个 ASCII 字母** 时才计 cp1252 证据——这是字节层面唯一可
+        # 判别的信号：
+        #   '©The'/'©Springer'/'©Oxford'  → A9 + 两个字母，是 cp1252 词首；
+        #   GBK 的 ㎡/㎎/㎜/㎝/㏕/㏒ → A9 0x4F/0x4A/… + 空格/括号/结尾，
+        #   后一字节不是字母（'area ㎡ used' → A9 4F 20）。
+        # 于是 GBK 单位符号（㎡ ㎎ ㎜ ㎝ 一类，双字节 = 0xA9+字母）不再构成
+        # cp1252 证据，而 © 前缀标题仍能正确选 cp1252。评审实测第 1 轮的
+        # 「词首/前导数字」启发式两头误判（'area ㎡' 坏、'area 20㎡' 对），
+        # 现改为单个字母 + 后续字母的双字节判据（不再依赖位置猜测）。
+        symbol_lead_pairs = sum(
+            1 for i in range(len(data) - 2)
+            if data[i] in (0xA9, 0xAE, 0xB0)
+            and ((0x41 <= data[i + 1] <= 0x5A) or (0x61 <= data[i + 1] <= 0x7A))
+            and ((0x41 <= data[i + 2] <= 0x5A) or (0x61 <= data[i + 2] <= 0x7A))
+        )
+        marker_evidence = common_markers + symbol_lead_pairs
+        # r8 #19：翻转前加 GB2312 一级常用字守卫（与下方 paired_letters 分支
+        # 同口径）——GBK 候选解出真实中文（姓名/常用词编码区）时绝不因
+        # 标记翻成 cp1252；并撤销「单个 common 标记即翻转」的捷径：仅当
+        # 标记证据占 CJK 主体（evidence*2 > cjk）才翻转。稀释 GBK 真文件
+        # （英文为主 + 少量中文题录，臟=GBK C54B 曾单命中翻转）保持 GBK。
+        has_level1 = any(
+            _is_gb2312_level1(ch) for ch in text_gbk if _is_cjk_char(ch))
+        if marker_evidence and not has_level1 and marker_evidence * 2 > cjk:
+            # 形态二：cp1252 弯引号/重音字母/符号 + ASCII 被 GBK 误解
+            # （'…抯…'、'©Springer'→'㏒pringer'）。©/®/° 前缀用例由上面的
+            # symbol_lead_pairs 证据覆盖（评审 R2：#17 的一条 "cjk==0 即
+            # 选 cp1252" 捷径曾把 GBK 编码的**纯西文**题录整篇翻成 cp1252
+            # ——'±'→'¡À'、'°'→'¡ã'、'α'→'¦Á'、'㎡'→'©O'，并让 2.1.3 库
+            # 重导读成新行；该捷径逻辑既无钉子保护也无行为收益，已删除，
+            # 现一律只在有 cp1252 侧标记证据时才翻转——R2 保守方向）。
             return candidates["cp1252"], [
                 f"{filename} 非 UTF-8 编码：检测到疑似 GBK 乱码标记，已按 CP1252 "
                 "解码；若标题/作者应为中文，请将文件重新另存为 UTF-8 后导入"
@@ -326,25 +358,50 @@ def _normalize_header(name: str) -> str:
     return " ".join(str(name).split()).lower()
 
 
-def _build_column_map(columns: list[str]) -> dict[str, str]:
-    """内部字段名 -> 原始列名；同名列取首个，保证确定性。"""
-    colmap: dict[str, str] = {}
+# pandas 对重复表头的自动改名形态：'DOI' 第二次出现被改为 'DOI.1'
+_MANGLED_DUP_HEADER_RE = re.compile(r"^(?P<base>.+)\.\d+$")
+
+
+def _build_column_map(columns: list[str]) -> dict[str, str | list[str]]:
+    """内部字段名 -> 原始列名（映射到同名字段的**全部**列，按出现序）。
+
+    r8 #18：重复表头（如 ``Key,Title,DOI,DOI``）此前只认第一个同名列——
+    pandas 会把后出现的重名列改名为 ``'DOI.1'``，值写在后列时被静默丢弃。
+    现还原 ``基名.N`` 改名形态并把全部同名列收进映射，取值时按序取首个
+    非空（R2：不拒绝重复表头的合法导出），并由调用方对重复映射发显式警告。
+    """
+    colmap: dict[str, list[str]] = {}
     for col in columns:
-        field = _COLUMN_ALIASES.get(_normalize_header(col))
+        normalized = _normalize_header(col)
+        field = _COLUMN_ALIASES.get(normalized)
+        if field is None:
+            mangled = _MANGLED_DUP_HEADER_RE.match(normalized)
+            if mangled:
+                field = _COLUMN_ALIASES.get(mangled.group("base"))
         if field is not None:
-            colmap.setdefault(field, col)
+            colmap.setdefault(field, []).append(col)
     return colmap
 
 
-def _row_getter(row: dict, colmap: dict[str, str]):
-    """返回按内部字段名取值的取值函数（缺失列/缺失值一律返回 ""）。"""
+def _row_getter(row: dict, colmap: dict[str, str | list[str]]):
+    """返回按内部字段名取值的取值函数（缺失列/缺失值一律返回 ""）。
+
+    同名字段有多个映射列时按出现序取**首个非空值**（r8 #18：值写在
+    后出现的重复列不再被静默丢弃）。
+    """
 
     def get(field: str) -> str:
-        original = colmap.get(field)
-        if original is None:
+        originals = colmap.get(field)
+        if not originals:
             return ""
-        value = row.get(original, "")
-        return "" if value is None else str(value).strip()
+        if isinstance(originals, str):  # 外部手工构造的旧形态映射，兼容
+            originals = [originals]
+        for original in originals:
+            value = row.get(original, "")
+            text = "" if value is None else str(value).strip()
+            if text:
+                return text
+        return ""
 
     return get
 
@@ -411,6 +468,15 @@ def parse_csv(path: str | Path) -> list[Article]:
         raise ParseError(
             f"CSV 缺少必需列 Title（实际表头: {list(frame.columns)}）"
         )
+    # r8 #18：重复映射表头显式告警（值按首个非空合并，不再静默丢后列）。
+    for field, columns_of_field in colmap.items():
+        if isinstance(columns_of_field, list) and len(columns_of_field) > 1:
+            print(
+                f"警告：{p.name} 表头存在重复的 {field} 列"
+                f"（{', '.join(repr(c) for c in columns_of_field)}）："
+                "按出现序取首个非空值，后列的值不再被丢弃；请检查导出配置",
+                file=sys.stderr,
+            )
 
     records = frame.to_dict("records")
     # 行号映射与 pandas 记录数不一致（极端引号/空白行差异）时退回 idx+2，
@@ -497,8 +563,31 @@ def parse_csv(path: str | Path) -> list[Article]:
                         or not years_compatible(prev_year, year)):
                     demoted = True
                     reason = "与本文件内另一条文献同键同题，但作者/年份不同，不是同一文献"
-                # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见身份
-                # 不覆盖——后续同键记录仍与首条比较，不被中间行的缺字段稀释
+                else:
+                    # 兼容（含单侧缺作者/年份的元数据补全口径）：保留首见键，
+                    # 后续同键记录仍与**补全后的身份**比较（r8 #14，与 RIS
+                    # 路同款）——修复前首见身份永不补全，首行缺作者/年份时
+                    # 同键同题但作者/年份可证不同的行被静默合并成一列。
+                    completed: list[str] = []
+                    if not prev_surname and surname:
+                        prev_surname = surname
+                        completed.append("作者姓")
+                    if not prev_given and given:
+                        prev_given = given
+                        completed.append("作者名")
+                    if prev_year is None and year is not None:
+                        prev_year = year
+                        completed.append("年份")
+                    if completed:
+                        seen_keys[key_raw] = (
+                            prev_hash, prev_surname, prev_given, prev_year)
+                        record_warnings.append(
+                            f"CSV 第 {physical_line} 行：来源键 {key_raw!r} 的"
+                            f"同文件首见身份缺{'/'.join(completed)}，已用本行非空"
+                            "值补全（同键同题按同一文献保留键；若非同一文献"
+                            "请人工核对）"
+                        )
+                        print(f"警告：{record_warnings[-1]}", file=sys.stderr)
             else:
                 seen_keys[key_raw] = (content_hash, surname, given, year)
         if demoted:

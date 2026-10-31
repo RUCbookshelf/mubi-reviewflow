@@ -28,8 +28,11 @@
   理由**（PRISMA_REFERENCE §7 S2 行）——仅报单一总数（未拆分）时为
   **warning**（官方模板合规，ok=True）；一旦填写了拆分行则 Σ 必须与
   排除数相等（error，拆分口径自担）。S3 全文理由仍走 R8。
-- R14（U6-P2，推断口径）：末框「纳入研究数 ≤ 纳入报告数」（每个纳入
-  研究至少对应一份报告）；研究数为 0 而报告数 >0 仅 warning。
+- R14（U6-P2，推断口径；r6 #54 修正）：末框「纳入研究数 vs 纳入报告数」
+  ——报告数为 0 且研究数 >0 仍 error（无任何报告却纳入研究）；研究数 >
+  报告数且报告数 ≥ 1 降为 **warning**（R14W，官方模板明示 multi-study
+  report 为合法形态，可在备注中说明，不阻断导出）；研究数为 0 而报告数
+  >0 仅 warning。
 
 规则号后缀约定（r6 评审反馈 1 的范围裁决）：产品前端 prFriendlyMsg
 （index.html，不在本泳道允许改动段）按规则号 token 用**页面 db 列
@@ -830,9 +833,13 @@ def validate(form: PrismaFormData) -> ValidationResult:
     )
 
     # ---- R14：纳入研究数 ≤ 纳入报告数（U6-P2，推断口径）----
-    # 官方末框两行（studies / reports of included studies）隐含每个纳入
-    # 研究至少对应一份报告：研究数多于报告数为 error（数字自洽）；研究数
-    # 为 0 而报告数 >0 仅 warning（可能是填写口径问题，不阻断）。
+    # 官方末框两行（studies / reports of included studies）。r6 #54 口径
+    # 修正：官方 PRISMA 2020 模板明示 multi-study report（一份报告含多项
+    # 研究 → 研究数 > 报告数）为合法形态——研究数多于报告数且**报告数 ≥ 1**
+    # 时降为 warning（可在备注中说明，不再阻断导出；此前一律 error 曾把
+    # 官方模板合法数字挡在门外，updated 综述连上一版合法数字都无法导入）；
+    # 报告数为 0 且研究数 > 0 仍为 error（无任何报告却纳入研究，数字自洽
+    # 问题）；研究数为 0 而报告数 >0 仅 warning（可能是填写口径问题）。
     if is_updated:
         study_report_pairs = (
             ("previous_studies", form.previous_studies, "previous_reports", form.previous_reports, "上一版综述纳入"),
@@ -846,13 +853,26 @@ def validate(form: PrismaFormData) -> ValidationResult:
         )
     for studies_field, studies, _reports_field, reports, label in study_report_pairs:
         if studies > reports:
-            err(
-                "R14",
-                f"{label}研究数({studies}) 多于{label}报告数({reports})：每个纳入研究至少对应一份报告",
-                f"{label} studies({studies}) exceed {label} reports({reports}):"
-                " every included study has at least one report",
-                field=studies_field,
-            )
+            if reports <= 0:
+                err(
+                    "R14",
+                    f"{label}研究数({studies}) 多于{label}报告数({reports})：每个纳入研究至少对应一份报告",
+                    f"{label} studies({studies}) exceed {label} reports({reports}):"
+                    " every included study has at least one report",
+                    field=studies_field,
+                )
+            else:
+                # token 用 R14W（提示态）：multi-study report 合法形态不阻断
+                # 导出，文案提示可在备注中说明（r6 #54）。
+                warnings.append(Issue(
+                    "R14W",
+                    f"{label}研究数({studies}) 多于{label}报告数({reports})：官方模板允许"
+                    "一份报告含多项研究（multi-study report），如确为该形态可在备注中说明",
+                    f"{label} studies({studies}) exceed {label} reports({reports}):"
+                    " the official template allows multi-study reports (one report"
+                    " covering several studies); if that is your case, explain it"
+                    " in a note",
+                ))
         elif studies == 0 and reports > 0:
             warnings.append(Issue(
                 "R14",

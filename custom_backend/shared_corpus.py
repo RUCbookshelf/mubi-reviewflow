@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS articles (
 """
 
 
+class ReservedScreenerCollisionError(ValueError):
+    """用户名 slug 与任务目录保留库名（collaboration.db）相撞（r6 #29）。
+
+    升级前已存在的撞名账号/授权会走到这里：调用方应收敛为 409 撞名改名指引
+    （COLLABORATION_RESERVED_NAME_MESSAGE），不得把协作权限库当成员个人库
+    初始化或同步目录（修复前为裸 ValueError -> work-queue/articles 500）。
+    继承 ValueError：既有按 ValueError 捕获的调用路径语义不变。"""
+
+
 def _user_db_path(task_dir: str | Path, username: str) -> Path:
     if not isinstance(username, str) or not _USERNAME_RE.fullmatch(username):
         raise ValueError("username is not a valid server account name")
@@ -36,7 +45,8 @@ def _user_db_path(task_dir: str | Path, username: str) -> Path:
     slug = tasks.slugify_screener(username)
     filename = f"{slug}.db"
     if filename.casefold() == COLLABORATION_DB_FILENAME.casefold():
-        raise ValueError("username maps to the reserved collaboration database")
+        raise ReservedScreenerCollisionError(
+            "username maps to the reserved collaboration database")
     candidate = root / filename
     if candidate.is_symlink():
         raise ValueError("user database must not be a symbolic link")
