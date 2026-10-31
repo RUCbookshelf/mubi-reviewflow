@@ -4,6 +4,11 @@
 MM10-19 的 R2 边角（sqlite3.Row 行对象不得被拒）＋协变量值非映射 → ValueError；
 MM11-08 的 ProgrammingError 必须继续抛出。
 
+R8 收尾评审残留（负缓存不可失效 + docstring 与实现相反）追加
+``R3_02_NegativeCacheInvalidation`` 一类 7 条：写入成功 / 读到持久钥 / 文件
+指纹改变（先坏后好再坏）时清除 ``_replace_blocked_until``，冷却期内仍做一次
+零等待重读接住并发创建者，并钉住 docstring 的失效契约。
+
 逐条对应 inventory_缓修池72条.md 的 FL3 条目；每条钉子在**基线（a080fde）
 上实测为红**（撤掉对应修复即回到该红态），修复后为绿：
 
@@ -41,11 +46,14 @@ MM11-08 的 ProgrammingError 必须继续抛出。
 - R3-02（auth.py）：并发首初始化时一个 worker 返回的密钥 ≠ 持久密钥；
   修复后首建者写后重读持久值、替换失败方有界等待重读（双进程实测收敛）。
 """
+import contextlib
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from contextlib import closing
@@ -73,6 +81,27 @@ def _tmp_db(prefix: str) -> Path:
     return Path(directory) / "task.db"
 
 
+#: 本机环境警示：C 盘曾满，探针/临时产物一律落 E: 盘。新钉子统一走此根；
+#: 该盘不可用时才退回系统临时目录（老用例沿用 ``tempfile`` 不动）。
+_TMP_ROOT = Path("E:/rf214tmp/fl3")
+
+
+@contextlib.contextmanager
+def _e_tmp_dir(prefix: str):
+    """E: 盘临时目录（存在则用，不可用退回 ``TemporaryDirectory``）。"""
+    try:
+        _TMP_ROOT.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix=prefix, dir=str(_TMP_ROOT)))
+    except OSError:  # E: 不可用（CI 等）——退回系统临时目录
+        with tempfile.TemporaryDirectory(prefix=prefix) as fallback:
+            yield fallback
+        return
+    try:
+        yield str(directory)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _import_auth(testcase, data_dir: str):
     """取得一份**干净**的 custom_backend.auth 状态，并在用例结束时完整还原。
 
@@ -84,6 +113,9 @@ def _import_auth(testcase, data_dir: str):
     previous_env = os.environ.get("COBOOKSHELF_DATA_DIR")
     previous_state = (auth_module._EMERGENCY_SECRET,
                       auth_module._EMERGENCY_WRITE_LOGGED)
+    # R8 收尾：负缓存按路径记账，跨用例残留会让后续用例命中别的数据目录的
+    # 冷却（路径唯一，实际不会误命中，但快照/还原更干净且能断言其清空）。
+    previous_cache = dict(auth_module._replace_blocked_until)
 
     def restore():
         if previous_env is None:
@@ -92,11 +124,14 @@ def _import_auth(testcase, data_dir: str):
             os.environ["COBOOKSHELF_DATA_DIR"] = previous_env
         (auth_module._EMERGENCY_SECRET,
          auth_module._EMERGENCY_WRITE_LOGGED) = previous_state
+        auth_module._replace_blocked_until.clear()
+        auth_module._replace_blocked_until.update(previous_cache)
 
     testcase.addCleanup(restore)
     os.environ["COBOOKSHELF_DATA_DIR"] = data_dir
     auth_module._EMERGENCY_SECRET = None
     auth_module._EMERGENCY_WRITE_LOGGED = False
+    auth_module._replace_blocked_until.clear()
     return auth_module
 
 
@@ -828,6 +863,199 @@ sys.stdout.write(auth._secret())
             # 采用并发创建者的持久钥，而不是本方 secret / 应急钥
             self.assertEqual(result, competing)
             self.assertEqual(secret_path.read_text(encoding="utf-8").strip(), competing)
+
+
+class R3_02_NegativeCacheInvalidation(unittest.TestCase):
+    """R8 收尾评审残留：``_REPLACE_BLOCKED`` 负缓存必须可失效。
+
+    第 3 轮把「永久独占文件」从每请求付窗口降到「首请求一次 + 稳态零代价」，
+    但负缓存装上后**永不撤销**：写入成功 / 文件恢复后仍在 30s 冷却期内，期间
+    真实并发创建者被静默跳过收敛（返回应急钥而磁盘是对方的钥），R3-02 原问题
+    在小窗口内复发。且 ``_secret`` docstring 当时声称「读取与写重试照旧…
+    下一次调用即自愈」，与实现相反。
+
+    修复：成功写回 / 读到有效持久钥 / 目标文件指纹改变（先坏后好再坏）即清除
+    该路径的负缓存；冷却期内仍做一次零等待重读，接住刚写完的并发创建者。
+    逐条在基线（1db6d5e 的 auth.py）上实测为红，修复后为绿。
+    """
+
+    def _blocked_replace(self, auth_module, secret_path):
+        """让 ``os.replace`` 仅对目标密钥文件失败（其余路径原样放行）。"""
+        real_replace = os.replace
+
+        def replace_or_block(src, dst, *args, **kwargs):
+            if str(dst) == str(secret_path):
+                raise PermissionError(13, "sharing violation")
+            return real_replace(src, dst, *args, **kwargs)
+
+        patcher = mock.patch.object(auth_module.os, "replace", replace_or_block)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        return patcher
+
+    def _install_cooldown(self, auth_module, secret_path) -> None:
+        """走真实路径装上一次负缓存：空文件 + 替换恒被挡住 → 一次窗口后记账。"""
+        ignore = self._blocked_replace(auth_module, secret_path)
+        try:
+            first = auth_module._secret()
+        finally:
+            ignore.stop()
+        self.assertTrue(auth_module._replace_blocked_until,
+                        "前置不成立：负缓存未被安装（首位请求未付窗口？）")
+        self.assertIsInstance(first, str)
+        self.assertEqual(len(first), 64, "挡住期间走应急口径（64 位）")
+
+    # ---- 失效口径 --------------------------------------------------------
+
+    def test_successful_atomic_write_clears_cooldown(self):
+        """写入成功（替换恢复可用）→ 负缓存清除并以磁盘钥为准。"""
+        with _e_tmp_dir("rf_r8_r302e_") as data_dir:
+            auth_module = _import_auth(self, data_dir)
+            secret_path = auth_module.data_dir() / ".jwt_secret"
+            secret_path.write_text("", encoding="utf-8")
+            self._install_cooldown(auth_module, secret_path)
+            key = str(secret_path)
+            self.assertIn(key, auth_module._replace_blocked_until)
+            healed = auth_module._secret()  # 替换已恢复：原子写成功
+            # 基线：成功后不清除，冷却项残留到 30s 后（本断言为红）。
+            self.assertNotIn(key, auth_module._replace_blocked_until)
+            self.assertEqual(secret_path.read_text(encoding="utf-8").strip(), healed)
+            self.assertEqual(len(healed), 64)
+
+    def test_recovered_secret_file_clears_cooldown(self):
+        """文件恢复（已有有效持久钥）→ 早退路径也必须清除负缓存。"""
+        with _e_tmp_dir("rf_r8_r302f_") as data_dir:
+            auth_module = _import_auth(self, data_dir)
+            secret_path = auth_module.data_dir() / ".jwt_secret"
+            secret_path.write_text("", encoding="utf-8")
+            self._install_cooldown(auth_module, secret_path)
+            recovered = "f" * 64
+            secret_path.write_text(recovered, encoding="utf-8")
+            # 基线：早退返回正确值但负缓存原样保留（本断言为红）。
+            self.assertEqual(auth_module._secret(), recovered)
+            self.assertEqual(auth_module._replace_blocked_until, {})
+
+    def test_cooldown_read_adopts_just_written_concurrent_secret(self):
+        """冷却期内仍做零等待重读：并发创建者刚写完的钥必须被采用，而不是
+        退回应急钥（这是「静默跳过收敛」的最小复现形态）。
+
+        注入口径：目标文件的前三次读（入口 existing、锁内双检、FileExistsError
+        分支的 winner 重读）返回空串，仅**第四次**（冷却分支的零等待重读）返回
+        并发创建者的钥；文件本身不动，故 stat 指纹不变——确保走到的是「冷却期
+        零等待重读」分支而不是「指纹变化重开窗口」分支，也排除基线在前三处
+        重读碰巧接住的情况。
+        """
+        with _e_tmp_dir("rf_r8_r302g_") as data_dir:
+            auth_module = _import_auth(self, data_dir)
+            secret_path = auth_module.data_dir() / ".jwt_secret"
+            secret_path.write_text("", encoding="utf-8")
+            self._install_cooldown(auth_module, secret_path)
+            competing = "d" * 64
+            self._blocked_replace(auth_module, secret_path)
+
+            real_read = Path.read_text
+            budget = {"empty_reads": 3}
+
+            def read_with_late_write(self_path, *args, **kwargs):
+                text = real_read(self_path, *args, **kwargs)
+                if str(self_path) != str(secret_path):
+                    return text
+                if budget["empty_reads"] > 0:
+                    budget["empty_reads"] -= 1
+                    return ""
+                return competing
+
+            with mock.patch.object(Path, "read_text", read_with_late_write):
+                result = auth_module._secret()
+            self.assertEqual(budget["empty_reads"], 0, "前置不成立：未耗尽入口读预算")
+            # 基线：冷却期内不再重读 → 返回应急钥（≠ competing）→ 红。
+            self.assertEqual(result, competing)
+
+    def test_break_heal_break_then_concurrent_creator_converges(self):
+        """完整残留场景（先坏后好再坏 + 真实并发创建者）：冷却期内不得静默
+        跳过收敛。基线：首次坏装缓存 → 恢复后缓存不清 → 再坏时跳过等待直接
+        返回旧应急钥，与磁盘钥分叉。"""
+        with _e_tmp_dir("rf_r8_r302h_") as data_dir:
+            auth_module = _import_auth(self, data_dir)
+            secret_path = auth_module.data_dir() / ".jwt_secret"
+            secret_path.write_text("", encoding="utf-8")
+            self._install_cooldown(auth_module, secret_path)      # 坏
+            healed = "e" * 64
+            secret_path.write_text(healed, encoding="utf-8")      # 好
+            self.assertEqual(auth_module._secret(), healed)       # 缓存应被清除
+            secret_path.write_text("", encoding="utf-8")          # 再坏
+            self._blocked_replace(auth_module, secret_path)
+
+            competing = "d" * 64
+            calls = []
+
+            def fake_converge(path):
+                calls.append(str(path))
+                path.write_text(competing, encoding="utf-8")
+                return competing
+
+            with mock.patch.object(auth_module, "_await_concurrent_creator",
+                                   fake_converge):
+                result = auth_module._secret()
+            # 基线：缓存残留 → 零次收敛等待 → 返回旧应急钥（红）。
+            self.assertEqual(calls, [str(secret_path)])
+            self.assertEqual(result, competing)
+            self.assertEqual(secret_path.read_text(encoding="utf-8").strip(), competing)
+
+    def test_fingerprint_change_reopens_the_window(self):
+        """文件指纹变化（= 「先坏后好再坏」的判据）必须让冷却失效、重新付窗口。"""
+        with _e_tmp_dir("rf_r8_r302i_") as data_dir:
+            auth_module = _import_auth(self, data_dir)
+            secret_path = auth_module.data_dir() / ".jwt_secret"
+            secret_path.write_text("", encoding="utf-8")
+            self._install_cooldown(auth_module, secret_path)
+            self._blocked_replace(auth_module, secret_path)
+            # 目标文件被换过（mtime/size 变），但仍为空：旧判断失效。
+            secret_path.write_text("", encoding="utf-8")
+            os.utime(secret_path, ns=(time.time_ns(), time.time_ns()))
+            calls = []
+            with mock.patch.object(
+                    auth_module, "_await_concurrent_creator",
+                    lambda path: calls.append(str(path)) or None):
+                auth_module._secret()
+            # 基线：命中残留冷却 → 零次等待（红）；修复：指纹不符 → 重新等待一次。
+            self.assertEqual(calls, [str(secret_path)])
+
+    # ---- 稳态不回归 ------------------------------------------------------
+
+    def test_permanent_block_still_reaches_zero_wait_after_clear(self):
+        """清除后再次被永久挡住：重新付一次窗口，随后回到零等待（性能不回归）。"""
+        with _e_tmp_dir("rf_r8_r302j_") as data_dir:
+            auth_module = _import_auth(self, data_dir)
+            secret_path = auth_module.data_dir() / ".jwt_secret"
+            secret_path.write_text("", encoding="utf-8")
+            self._install_cooldown(auth_module, secret_path)
+            auth_module._secret()  # 恢复 → 成功写回并清除缓存
+            secret_path.write_text("", encoding="utf-8")  # 再次坏
+            self._blocked_replace(auth_module, secret_path)
+            started = time.monotonic()
+            first = auth_module._secret()   # 重新付一次窗口
+            first_elapsed = time.monotonic() - started
+            started = time.monotonic()
+            for _ in range(3):
+                self.assertEqual(auth_module._secret(), first)
+            steady = time.monotonic() - started
+            self.assertLess(first_elapsed, 0.4, f"首个请求耗时 {first_elapsed:.3f}s")
+            self.assertLess(steady, 0.2, f"稳态 3 次合计 {steady:.3f}s")
+
+    # ---- 文档与实现一致 --------------------------------------------------
+
+    def test_docstring_states_invalidation_contract(self):
+        """文档钉子：docstring 必须如实写明负缓存可失效（写入成功/读到持久钥/
+        指纹改变），删掉实现里的清除或改回旧文案即红。"""
+        with _e_tmp_dir("rf_r8_r302k_") as data_dir:
+            doc = _import_auth(self, data_dir)._secret.__doc__
+        self.assertIn("负缓存", doc)
+        self.assertIn("立即失效", doc)
+        self.assertIn("指纹", doc)
+        self.assertIn("零等待重读", doc)
+        # 旧文案（与实现相反）不得复活。
+        self.assertNotIn("期间不再等待，读取与写重试照旧", doc)
 
 
 if __name__ == "__main__":

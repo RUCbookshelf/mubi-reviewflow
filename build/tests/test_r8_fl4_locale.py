@@ -95,6 +95,7 @@ NEW_DICTIONARY_KEYS = (
     "至少需要两项独立研究",
     "每个结局至少需要两项独立研究",
     "请选择相关结局联合合并模型",
+    "随机效应 REML 模型要求 2 至 8 个结局",
     "拟合方法：{0}；结点：{1}；参照剂量：{2}",
     "方法来源：",
     "比值尺度",
@@ -241,9 +242,17 @@ for (const [zh, row] of dictionary) {
 }
 /* ja 槽简体"协"(U+534F) 扫描（LUNA4-04 口径：基线仅 ai_suggest.js:150 一处） */
 const u534f = [];
+/* 第 4 轮扩展：避免只盯单字。下面这组字在日文新字体里一律写作另一个字形，
+   出现在 ja 槽即为简体中文串泄漏（同一个 LUNA4-04 病灶的其它实例：
+   「个/为/变/权/选」见于 Peese 说明、「筛」见于标题候选提示）。 */
+const SIMPLIFIED_ONLY = '个为变权选筛协设认证术样关实级质评审录导择确页图发经验构标题义书读间时险遗范围处输规则计误转换缩扩边际检测杂优调务员团队归历简详细总览对错隐藏启闭键词项侧头码试备贝贴态补偿预拟伪纳库储辑销账访问请响类汇统联链续继暂临说帮馈沟环默签';
+const jaSimp = [];
 for (const [zh, row] of dictionary) {
   if (typeof zh !== 'string' || zh !== row[0]) continue;
-  if (String(row[5]).includes('协')) u534f.push(zh);
+  const ja = String(row[5]);
+  if (ja.includes('协')) u534f.push(zh);
+  const bad = [...new Set([...ja].filter(c => SIMPLIFIED_ONLY.includes(c)))];
+  if (bad.length) jaSimp.push([zh, bad.join('')]);
 }
 const keys = {};
 for (const key of input.keys) {
@@ -267,6 +276,7 @@ process.stdout.write(JSON.stringify({
   fallbackKeys: [...new Set(fallback.map(f => f[0]))],
   fallbackSlots: fallback.length,
   jaU534F: u534f,
+  jaSimplified: jaSimp,
   keys,
   newKeyRegs,
   displayFallback,
@@ -466,6 +476,11 @@ class LUNA4TranslationFixTests(unittest.TestCase):
         result = _cached_replay()
         self.assertEqual(result["jaU534F"], [],
                          "LUNA4-04：ja 槽仍含简体「协」(U+534F) 的键：%r" % (result["jaU534F"][:5],))
+        # 第 4 轮扩展：只扫「协」一个字符抓不住「个/为/变/权/选/筛」等同类泄漏
+        # （实测 A 波基线里另有两行 ja 槽含简体字：Peese 拟合说明与标题候选提示）。
+        self.assertEqual(result["jaSimplified"], [],
+                         "LUNA4-04：ja 槽仍含简体专用字形（日文新字体写作另一字）的键：%r"
+                         % (result["jaSimplified"][:5],))
         row = result["keys"]["此任务为升级前创建（无负责人）。当前版本暂无自助认领入口：可在桌面版重建任务协作，或联系服务器管理员处理。"]
         self.assertIn("タスク協作", row[5], "LUNA4-04：ja 译文应使用「協作」（U+5354）：%r" % row[5])
         src = (FRONTEND / "ai_suggest.js").read_text(encoding="utf-8")
@@ -529,6 +544,10 @@ class MM10_07CallSiteTests(unittest.TestCase):
             "T('请先载入当前层的结果')", "T('协方差必须是有限数值')",
             "T('至少需要两项独立研究')", "T('每个结局至少需要两项独立研究')",
             "T('请选择相关结局联合合并模型')",
+            # r8.1 FL4：这两条此前是裸字面量（REML 结局数上限是英文原样，
+            # 「请先选择任务」走 toast 时未过 T()），非中文界面无译文可用。
+            "T('随机效应 REML 模型要求 2 至 8 个结局')",
+            "T('请先选择任务')",
         ):
             self.assertIn(literal, dependent,
                           "MM10-07：analysis_dependent_synthesis.js 缺 T() 包裹 %r" % literal)

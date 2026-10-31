@@ -245,8 +245,12 @@ _SECRET_CONVERGE_TIMEOUT_SECONDS = 0.12
 _SECRET_CONVERGE_STEP_SECONDS = 0.02
 #: ``_REPLACE_BLOCKED`` 的进程内负缓存：同一路径在窗口内等不到收敛，说明
 #: 「替换被永久挡住」（Windows 上被杀软/索引/备份以 share-deny-delete 打开
-#: 是常态），此时本进程在冷却期内**不再等待**（读取照旧、每次仍重试写与
-#: 收敛判定），避免每个鉴权请求反复付窗口代价。
+#: 是常态），此时本进程在冷却期内**不再做收敛等待**（读取照旧、写入仍每次
+#: 重试），避免每个鉴权请求反复付窗口代价。
+#: 该判断只在「目标文件与安装缓存时形态相同」的前提下成立——写入成功、读到
+#: 有效持久钥（文件已恢复/并发创建者已写完），或目标文件指纹（stat）改变时，
+#: 缓存立即清除（见 :func:`_clear_blocked_cooldown` 与
+#: :func:`_target_fingerprint`），不会把真实并发创建者静默跳过收敛。
 _SECRET_BLOCKED_COOLDOWN_SECONDS = 30.0
 #: 持久密钥的可采用形态：64 位十六进制（``token_hex(32)`` 的产物）。大小写
 #: 均接受——产品写入恒为小写，但校验只用于排除「对方尚未写完的截断钥」，
@@ -257,8 +261,38 @@ _SECRET_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _REPLACE_BLOCKED = "replace_blocked"  # 临时文件已写好，仅替换被并发持有者挡住
 _UNWRITABLE = "unwritable"            # 目录/文件不可写（只读介质、权限、占位）
 
-#: 路径 -> 冷却截止的 monotonic 时刻（_REPLACE_BLOCKED 负缓存）。
-_replace_blocked_until: dict[str, float] = {}
+#: 路径 -> ``(冷却截止 monotonic 时刻, 目标文件指纹)``（_REPLACE_BLOCKED
+#: 负缓存）。指纹见 :func:`_target_fingerprint`。
+_replace_blocked_until: dict[str, tuple[float, tuple[int, int] | None]] = {}
+
+
+def _target_fingerprint(path: Path) -> tuple[int, int] | None:
+    """``.jwt_secret`` 的轻量指纹 ``(st_mtime_ns, st_size)``；取不到为 None。
+
+    只用于判断「负缓存安装后目标文件是否变过」。Windows 上 ``share-deny-
+    delete`` 打开不影响 ``stat``，因此该调用通常不会因独占而失败。取不到
+    （返回 None）时由调用方比较：两次都取不到视为「形态未变」，一次取不到
+    一次取到视为「形态变了」。无论哪种情况，冷却期内的零等待重读仍在，文件
+    真正恢复（可读且形态合法）时会被读到并清除缓存，故 stat 不可用不会让
+    并发创建者被静默跳过。
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _clear_blocked_cooldown(path: Path) -> None:
+    """清除该路径的 ``_REPLACE_BLOCKED`` 负缓存。
+
+    负缓存只编码「替换被**永久**挡住」这一判断；一旦写入成功（临时文件已
+    落位、replace 成功）或读到有效的持久钥（文件已恢复/并发创建者已写完），
+    该判断即失效，必须立即清除，否则冷却期内的真实并发创建者会被静默跳过
+    收敛：本进程返回应急钥而磁盘是对方的钥，同一部署内签发/校验不同钥。
+    该操作在每次成功路径上都是 O(1) 的 dict pop，不构成稳态开销。
+    """
+    _replace_blocked_until.pop(str(path), None)
 
 
 def _atomic_write_secret(path: Path, secret: str, *, reason: list | None = None) -> bool:
@@ -367,9 +401,20 @@ def _secret() -> str:
     - 不可写介质（只读/权限/路径被占位）零等待直接降级；
     - ``os.replace`` 被**永久**挡住时（Windows 上杀软/索引/备份以
       share-deny-delete 打开 ``.jwt_secret`` 是常态），首个请求付一次窗口
-      代价后做 30s 进程内负缓存：期间不再等待，读取与写重试照旧，数据目录
-      恢复可写后下一次调用即自愈。即该场景是「一次 120ms + 稳态零额外开销」，
-      不是每请求付费。
+      代价后做 30s 进程内负缓存：期间**不再付窗口代价**（每次仍尝试原子写，
+      并做一次零等待重读，见下），数据目录恢复可写后下一次调用即自愈。即该
+      场景是「一次 120ms + 稳态零额外开销」，不是每请求付费。
+      负缓存**不是**单向的：它只编码「替换被永久挡住」这一判断，以下任一
+      情形立即失效（见 :func:`_clear_blocked_cooldown` /
+      :func:`_target_fingerprint`）——
+        * 任一成功写回（首建 O_EXCL 写完，或原子替换成功）；
+        * 读到有效的持久钥（早退、锁内双检、并发收敛等待成功，以及冷却期内
+          那一次零等待重读读到形态合法的值）；
+        * 目标文件指纹（``st_mtime_ns`` / ``st_size``）与安装缓存时不同，
+          即「文件先坏后好再坏」：旧判断已失效，重新付一次完整窗口去等真实
+          并发创建者。
+      因此冷却期内的真实并发创建者不会被静默跳过收敛（R3-02 语义不缩水），
+      同时稳态仍不为每个请求付 120ms。
     - 形态校验（64 位 hex）只施加于**并发窗口内读到的值**（排除对方尚未
       写完的截断钥）；早退路径直接采用文件/环境变量里已有的密钥，不施加
       该限制，以免拒绝运维手工放置的非 token_hex 形态密钥。
@@ -383,6 +428,8 @@ def _secret() -> str:
     except OSError:
         existing = ""
     if existing:
+        # 文件已恢复/对方已写完：负缓存所编码的「永久挡住」判断失效。
+        _clear_blocked_cooldown(path)
         return existing
     global _EMERGENCY_SECRET
     with _secret_lock:
@@ -392,6 +439,7 @@ def _secret() -> str:
         except OSError:
             winner = ""
         if winner:
+            _clear_blocked_cooldown(path)
             return winner
         secret = secrets.token_hex(32)
         try:
@@ -416,9 +464,11 @@ def _secret() -> str:
             except OSError:
                 return _emit_secret_via_emergency(secret)
             if winner:
+                _clear_blocked_cooldown(path)
                 return winner
             reason: list[str] = []
             if _atomic_write_secret(path, secret, reason=reason):
+                _clear_blocked_cooldown(path)
                 _EMERGENCY_SECRET = None
                 return secret
             # R3-02（Windows 镜像）：原子替换失败常因另一进程正持有首建 fd、
@@ -429,18 +479,36 @@ def _secret() -> str:
             if _REPLACE_BLOCKED in reason:
                 key = str(path)
                 now = time.monotonic()
-                if _replace_blocked_until.get(key, 0.0) > now:
-                    # 冷却期内：此前已等过一个完整窗口仍未收敛，判定为「替换
-                    # 被永久挡住」（Windows share-deny-delete 常态）。读照旧、
-                    # 写照旧，只是不再为它反复付窗口代价。
-                    pass
+                cached = _replace_blocked_until.get(key)
+                if (cached is not None and cached[0] > now
+                        and cached[1] is not None
+                        and cached[1] == _target_fingerprint(path)):
+                    # 冷却期内且文件形态未变：不再付完整窗口代价，但仍做一次
+                    # **零等待重读**——真实并发创建者往往刚刚写完，这一步以
+                    # 一次 read（微秒级）把它接住，不静默跳过收敛。读到有效
+                    # 钥即采用并清除缓存。该分支只会在「本次调用开始时文件为
+                    # 空、现在非空」时命中，即一定是并发写入，故施加形态校验
+                    # （对方可能只写了一半），不以截断钥签发令牌。
+                    try:
+                        late = path.read_text(encoding="utf-8").strip()
+                    except OSError:
+                        late = ""
+                    if _secret_shape_ok(late):
+                        _clear_blocked_cooldown(path)
+                        _EMERGENCY_SECRET = None
+                        return late
                 else:
+                    # 无冷却项、冷却已过期，或目标文件指纹变了（先坏后好再坏
+                    # / 对方刚写完）：旧判断失效，重新付一次完整窗口。
                     converged = _await_concurrent_creator(path)
                     if converged:
-                        _replace_blocked_until.pop(key, None)
+                        _clear_blocked_cooldown(path)
                         _EMERGENCY_SECRET = None
                         return converged
-                    _replace_blocked_until[key] = now + _SECRET_BLOCKED_COOLDOWN_SECONDS
+                    _replace_blocked_until[key] = (
+                        now + _SECRET_BLOCKED_COOLDOWN_SECONDS,
+                        _target_fingerprint(path),
+                    )
             return _emit_secret_via_emergency(secret)
         except OSError:
             # R3-03：首开失败但非「已存在」（密钥路径被目录占用、只读数据
@@ -455,6 +523,8 @@ def _secret() -> str:
             # 首建后写失败（极可能留下空文件，下次调用走原子重写自愈）
             return _emit_secret_via_emergency(secret)
         _EMERGENCY_SECRET = None
+        # 首建成功即写入成功：负缓存所编码的「替换被永久挡住」判断失效。
+        _clear_blocked_cooldown(path)
         # R3-02：并发首初始化收敛——O_EXCL 创建与首写之间，另一进程可能已把
         # 空文件原子替换为新钥（POSIX 下本 fd 指向已被替换的旧 inode，写入
         # 落在已解除链接的副本上；Windows 下对方替换失败、走应急口径）。写后

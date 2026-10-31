@@ -366,16 +366,20 @@ class MM1004IpdCoxNoiseFloorTests(unittest.TestCase):
 class MM1107BayesianDfCapTests(unittest.TestCase):
     """MM11-07：df 接近上界时的失败必须可行动，且不得做错误归因。
 
-    两轮的教训都写在这里：
+    三轮的教训都写在这里（第三轮钉的是作用域）：
     - 第一轮把 _MAX_PRIOR_DF 降到 1e8 = R2 违规（基线在本夹具上 df=5e8…3e9
       全部成功且 mu.mean 与 normal 家族极限相差 ≤3e-9，被 1e8 全部误拒）；
-    - 第二轮的替代文案「the Student-t prior is numerically equivalent to a
-      normal prior … use the normal family」本身是错的：在 k=2 反例
-      （y=[-0.57,-0.54]、se=[0.24,0.14]）上 df=1e8 成功、df=1e6/1e7/1e9/1e12
-      都失败，且 normal 家族在同一数据上也失败。同一数据换 df 就能成功，
-      所以失败不可能是「先验已退化为 normal」。
-    现行修法：上界不动、文案只陈述可观察事实与可用旋钮（df / 家族），
-    不做因果归因，并显式说明这不等于分离或弱识别。
+    - 第二轮把文案绑成「the Student-t prior is numerically equivalent to a
+      normal prior … use the normal family」，在 k=2 反例（y=[-0.57,-0.54]、
+      se=[0.24,0.14]）上被证伪：df=1e8 成功、df=1e6/1e7/1e9/1e12 都失败，
+      normal 家族在同一数据上也失败；
+    - 第三轮把建议的作用域放大到所有 student_t 失败（无 df 下限），于是
+      普通用户会选的 df=3/5/10/30/100 上也发出「试更小的 df / 用 normal
+      家族」，而这批输入下两个旋钮都无效——那是新增误导（medium）。
+    现行修法：df < _DF_DIAGNOSTIC_FLOOR 的失败一律给中性诊断且不付探针
+    成本；df 达阈值时才在同一批 rows 上实测候选（更小 df、normal 家族），
+    只有实测收敛的候选才会写进文案。因此「建议」必然是「在同一数据上
+    成立的设置」，而不只是「看起来相关的旋钮」。
     """
 
     ROWS = [{"study_id": f"S{i+1}", "measure": "MD", "estimate": 0.3 + 0.02 * i,
@@ -401,12 +405,39 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
         self.assertIn("not by itself evidence", message,
                       msg="必须说明这不等于分离/弱识别，避免用户去删数据")
 
+    def test_regular_df_failures_get_neutral_diagnostic(self):
+        """第三轮钉子：df=3/5/10/30/100 的网格失败不得发出 df/家族建议。
+
+        评审实测：在 k=2 反例上这批 df 全部失败，更小 df 全失败、normal
+        家族也失败，两个旋钮都无效。文案必须中性，且不许出现「smaller
+        df」「normal family」这类在数据上站不住的引导。
+        """
+        rows = [{"study_id": "S1", "measure": "MD", "estimate": -0.57, "se": 0.24},
+                {"study_id": "S2", "measure": "MD", "estimate": -0.54, "se": 0.14}]
+        for df in (3.0, 5.0, 10.0, 30.0, 100.0):
+            with self.subTest(df=df):
+                with self.assertRaises(ValueError) as ctx:
+                    self._fit(df, rows=rows)
+                message = str(ctx.exception)
+                self.assertIn("grid refinement did not converge", message)
+                self.assertIn(f"df={df:g}", message, msg="失败仍须点名先验参数")
+                self.assertNotIn("smaller df", message,
+                                 msg=f"df={df:g} 上更小 df 实测无效，不得建议")
+                self.assertNotIn("normal family", message,
+                                 msg=f"df={df:g} 上 normal 家族实测同样失败，不得建议")
+                self.assertIn("not attributed", message,
+                              msg="普通 df 的失败必须明确不做 df/家族归因")
+                self.assertIn("not by itself evidence", message,
+                              msg="中性的同时仍须说明这不等于分离/弱识别")
+
     def test_diagnostic_does_not_contradict_its_own_advice(self):
         """评审要求的自洽钉子：文案里被推荐的替代方案必须在同一数据上成立。
 
-        反例夹具上 normal 家族同样失败，因此任何「use the normal family」
-        式断言都必须是条件性的（"if a diffuse t prior was only a formality"），
-        并且不得出现「同一数据换 df 就成功」的矛盾归因。
+        反例夹具上 normal 家族同样失败，df=1e6/1e7/1e9/1e12 也失败（只有
+        df=1e8 因数值巧合成功），因此这里任何「use the normal family」式
+        断言都站不住。第三轮之后的契约更强：不仅不得做矛盾归因，而且在这
+        批 rows 上实测不到收敛候选时，文案根本不给「smaller df」建议——
+        只陈述「没试出更小的 df 能收敛」。
         """
         rows = [{"study_id": "S1", "measure": "MD", "estimate": -0.57, "se": 0.24},
                 {"study_id": "S2", "measure": "MD", "estimate": -0.54, "se": 0.14}]
@@ -422,9 +453,96 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._fit(1e6, rows=rows)
         message = str(ctx.exception)
-        self.assertIn("if a diffuse t prior was only a formality", message,
-                      msg="normal 家族在此数据上不可行，建议必须是条件句")
+        self.assertNotIn("normal family", message,
+                         msg="normal 家族在此数据上失败，不得建议")
+        self.assertNotIn("smaller df", message,
+                         msg="实测没有更小的 df 收敛，不得给出「更小 df」建议")
+        self.assertIn("not shown to be the cause", message,
+                      msg="必须明确说明 df 未被证明是原因")
         self.assertNotIn("equivalent to a normal prior", message)
+
+    def test_advice_names_a_df_proven_to_settle(self):
+        """建议里点名的 df 必须在本夹具上实测收敛——不能只是「更小就推荐」。
+
+        df=1e12 在本夹具上失败，文案点名 df=1e8。这里独立复跑该 df，确认它
+        确实收敛（第三轮之前文案只是"试更小的 df"，不保证点名值可用）。
+        """
+        import re
+
+        with self.assertRaises(ValueError) as ctx:
+            self._fit(1e12)
+        named = re.search(r"does settle on these rows \(df=([0-9.e+\-]+)\)",
+                          str(ctx.exception))
+        self.assertIsNotNone(named, msg=f"文案未点名任何实测收敛的 df：{ctx.exception}")
+        self.assertLess(float(named.group(1)), 1e12)
+        self._fit(float(named.group(1)))  # 点名值必须真的收敛，否则抛错即红
+
+    def test_lucky_df_between_failures_is_not_recommended(self):
+        """第三轮的核心钉子：孤立收敛点不得成为建议。
+
+        k=2 反例上 df=1e8 成功，但 df=1e7 与 df=1e9 都失败——该夹具没有
+        「df 越大越难算」的阈值结构，因此即使 1e8 能算，也不许建议。文案
+        必须中性，且不得点名 1e8。
+        """
+        rows = [{"study_id": "S1", "measure": "MD", "estimate": -0.57, "se": 0.24},
+                {"study_id": "S2", "measure": "MD", "estimate": -0.54, "se": 0.14}]
+        # 前提复核：1e7 失败、1e8 成功、1e9 失败（非阈值结构）
+        for df, should_settle in ((1e7, False), (1e8, True), (1e9, False)):
+            with self.subTest(df=df):
+                if should_settle:
+                    self._fit(df, rows=rows)
+                else:
+                    with self.assertRaises(ValueError):
+                        self._fit(df, rows=rows)
+        with self.assertRaises(ValueError) as ctx:
+            self._fit(1e9, rows=rows)
+        message = str(ctx.exception)
+        self.assertNotIn("df=1e+08", message,
+                         msg="1e8 是夹在两次失败之间的孤立成功，不得被推荐")
+        self.assertNotIn("smaller df", message)
+        self.assertIn("not shown to be the cause", message)
+
+    def test_isolated_success_gets_its_own_honest_wording(self):
+        """孤立成功点存在时，中性诊断也不能说「没有任何 df 收敛」（那是假话）。
+
+        夹具（k=3，实测）：df=1e10 失败，而 1e2 步长梯子上出现「失败→成功→
+        失败」的孤立成功，因而既不能推荐也不能声称全失败。文案必须落到
+        「没有一致收敛」这一支，且不得点名任何 df。
+        """
+        rows = [{"study_id": "S0", "measure": "MD",
+                 "estimate": -0.500826731375809, "se": 0.17232803715009687},
+                {"study_id": "S1", "measure": "MD",
+                 "estimate": -0.5437122878609378, "se": 0.20759857813849897},
+                {"study_id": "S2", "measure": "MD",
+                 "estimate": -0.506466670394568, "se": 0.18155852458647231}]
+        with self.assertRaises(ValueError) as ctx:
+            self._fit(1e10, rows=rows)
+        message = str(ctx.exception)
+        self.assertIn("did not settle consistently", message,
+                      msg=f"孤立成功必须用「不一致」措辞，而非「一个都没收敛」：{message}")
+        self.assertNotIn("No alternative df value", message)
+        self.assertNotIn("does settle on these rows", message)
+
+    def test_probe_failure_never_masks_the_original_error(self):
+        """探针只做诊断：探针里抛出的非 ValueError 不得替换掉原本的值错误。
+
+        用包装器模拟「探针路径炸出 RuntimeError」：外层调用仍必须是
+        ValueError（4xx 契约），而不是把诊断时的意外异常漏给用户。
+        """
+        from unittest import mock
+
+        original = bayesian_robust_meta.fit_bayesian_robust_meta
+
+        def explode_in_probe(*args, **kwargs):
+            if kwargs.get("_diagnostic_probe") is False:
+                raise RuntimeError("probe blew up")
+            return original(*args, **kwargs)
+
+        with mock.patch.object(bayesian_robust_meta, "fit_bayesian_robust_meta",
+                               side_effect=explode_in_probe):
+            with self.assertRaises(ValueError) as ctx:
+                self._fit(1e12)
+        self.assertIn("grid refinement did not converge", str(ctx.exception))
 
     def test_cap_itself_unchanged(self):
         """上界仍是 1e12：1e12+1 以上才以 df 上界拒绝（基线同口径）。"""

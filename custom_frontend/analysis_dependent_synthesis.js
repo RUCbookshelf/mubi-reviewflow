@@ -93,7 +93,7 @@
 
   $('#anDependentPrepare').addEventListener('click', () => {
     try {
-      if (!S.task) throw new Error('请先选择任务');
+      if (!S.task) throw Object.assign(new Error(T('请先选择任务')), {rfLocalized:true});
       const comparison = anValue('anComparison').trim();
       const timepoint = anValue('anTimepoint').trim();
       const measure = anValue('anMeasure');
@@ -156,7 +156,8 @@
       if ([...counts.values()].some(count => count < 2)) throw Object.assign(new Error(T('每个结局至少需要两项独立研究')), {rfLocalized:true});
       const model = anValue('anDependentModel');
       if (!model) throw Object.assign(new Error(T('请选择相关结局联合合并模型')), {rfLocalized:true});
-      if (model === 'random_reml_un' && (counts.size < 2 || counts.size > 8)) throw new Error('Random-effects REML requires two to eight outcomes');
+      if (model === 'random_reml_un' && (counts.size < 2 || counts.size > 8))
+        throw Object.assign(new Error(T('随机效应 REML 模型要求 2 至 8 个结局')), {rfLocalized:true});
       runButton.disabled = true;
       const started = performance.now();
       const reference = model === 'random_reml_un' && counts.size === 5

@@ -37,10 +37,29 @@ TAU_FAMILIES = {"half_normal", "half_student_t"}
 # normal limit to <1e-9, and those fits succeed). The defect was never the
 # cap itself but the unhelpful diagnostic: df near the cap can exhaust grid
 # refinement, and the failure said only "grid refinement did not converge".
-# The raise site now names the prior parameter and the available levers, and
-# makes no causal claim (see the comment there), so no previously accepted
-# input changes verdict.
+#
+# Round 3 nailed the *scope* of the replacement advice. The round-2 message
+# ("try a smaller df, or the normal family") fired for every student_t grid
+# failure, including the df 3/5/10/30/100 values users routinely pick, where a
+# probe (see _grid_failure_message) shows that neither remedy settles: e.g. on
+# y=[-0.57,-0.54], se=[0.24,0.14] every df from 1 to 1e7 fails and the normal
+# family fails too. Advice is now emitted only where it is *measured* to work:
+# df at or above _DF_DIAGNOSTIC_FLOOR, and only when smaller df shows a
+# threshold pattern on these same rows. Everywhere else the failure keeps a
+# neutral diagnostic, so no accepted verdict changes (raise sites only).
 _MAX_PRIOR_DF = 1e12
+# Below this df the t prior is a genuine modeling choice rather than a
+# near-normal formality, so "use a smaller df" is not a knob worth probing;
+# such failures take the neutral diagnostic and never pay probe cost.
+_DF_DIAGNOSTIC_FLOOR = 1e3
+# Probes re-fit the same rows at geometrically smaller df. A recommendation
+# needs a leading run of at least _DF_MONOTONE_RUN settled fits with no settled
+# fit above a failure -- a "df too large" threshold, not a lucky value: on the
+# reviewed counterexample df=1e8 settles while 1e7 and 1e9 both fail, and
+# recommending that lottery is the very misleading advice this round removes.
+_DF_DIAGNOSTIC_LADDER_STEPS = 3
+_DF_PROBE_MIN = 2.0
+_DF_MONOTONE_RUN = 2
 _LOG_2PI = math.log(2.0 * math.pi)
 _BULK_NODES = 48
 _TAIL_NODES = 14
@@ -96,6 +115,116 @@ def _validate_tau_prior(family: object, scale: object, df: object) -> dict:
     return {"family": family, "scale": scale, "df": df}
 
 
+def _grid_failure_message(
+    rows: Sequence[Mapping],
+    *,
+    df_mu: float,
+    mu_prior_mean: object,
+    mu_prior_scale: object,
+    tau_prior_family: object,
+    tau_prior_scale: object,
+    tau_prior_df: object,
+    probe: bool,
+) -> str:
+    """Diagnostic for an exhausted grid refinement under a Student-t mu prior.
+
+    MM11-07 round 3: advice is emitted only for the sub-domain where it is
+    *measured* to work, and only with a threshold, not a lucky, pattern:
+
+    - ``df_mu`` below :data:`_DF_DIAGNOSTIC_FLOOR` is a regular t setting, not
+      a near-normal formality; those failures (the df 3/5/10/30/100 values a
+      user routinely picks) get the neutral diagnostic and pay no probe cost.
+    - above the floor, df values one, two, ... ladder steps below ``df_mu`` are
+      re-fitted on the same rows. "Use a smaller df" is claimed only when those
+      probes show a *threshold* pattern on the df axis: a leading run of at
+      least :data:`_DF_MONOTONE_RUN` settled fits, with no settled fit above
+      any failure. A single workable df surrounded by failures is a numerical
+      coincidence, not a cause, and buys no advice. The largest df in the run
+      is the one named, since it is the closest workable setting.
+    - the normal family is mentioned only if it also settles on these rows.
+
+    Every failure that does not clear those gates is reported neutrally, so the
+    message never recommends a knob that this data shows to be ineffective.
+    """
+    header = (
+        f"grid refinement did not converge with mu prior df={df_mu:g}: the "
+        "adaptive quadrature did not settle for this prior and data combination. "
+    )
+    footer = " This is not by itself evidence of separated or weakly identified data."
+    if df_mu < _DF_DIAGNOSTIC_FLOOR:
+        return header + (
+            f"df={df_mu:g} is a regular Student-t setting, so this failure is not "
+            "attributed to df or to the choice of prior family."
+        ) + footer
+    if not probe:
+        return header + "The df setting is not shown to be the cause here." + footer
+    common = {
+        "mu_prior_mean": mu_prior_mean,
+        "mu_prior_scale": mu_prior_scale,
+        "tau_prior_family": tau_prior_family,
+        "tau_prior_scale": tau_prior_scale,
+        "tau_prior_df": tau_prior_df,
+    }
+    ladder = []
+    candidate = df_mu
+    for _ in range(_DF_DIAGNOSTIC_LADDER_STEPS):
+        candidate = candidate / 1e2
+        if candidate < _DF_PROBE_MIN:
+            break
+        ladder.append(candidate)
+    # Ascending df. A "df is too large" story requires a threshold pattern on
+    # that axis: a prefix of settled fits followed by failures, never a
+    # success above a failure again (that would be a lucky df, not a cause).
+    ascending = sorted(ladder)
+    flags = [_probe_settles(rows, value, common) for value in ascending]
+    run = 0
+    while run < len(flags) and flags[run]:
+        run += 1
+    threshold_pattern = run >= _DF_MONOTONE_RUN and not any(flags[run:])
+    if not threshold_pattern:
+        # Two neutral variants, because saying "none settled" would itself be a
+        # false claim when a probe did settle but only as an isolated island
+        # between failures (the lottery this round refuses to recommend).
+        if any(flags):
+            detail = (
+                "Smaller df values did not settle consistently on these rows (a "
+                "settled value appeared only between failures), so the df "
+                "setting is not shown to be the cause here."
+            )
+        else:
+            detail = (
+                "No alternative df value tried on these rows settled, so the df "
+                "setting is not shown to be the cause here."
+            )
+        return header + detail + footer
+    verified_df = ascending[run - 1]
+    message = header + (
+        f"A smaller df does settle on these rows (df={verified_df:g}); retry "
+        "with that setting if it is acceptable for your prior."
+    )
+    if _probe_settles(rows, None, common):
+        message += " The normal family also settles on these rows."
+    return message + footer
+
+
+def _probe_settles(rows: Sequence[Mapping], df: float | None, common: dict) -> bool:
+    """True iff re-fitting ``rows`` with this mu prior completes without error.
+
+    ``df=None`` probes the normal family. A probe is diagnostic only, so it
+    swallows every failure -- including non-``ValueError`` ones -- rather than
+    letting an exploratory re-fit turn the caller's clean rejection into a
+    different exception.
+    """
+    family = "normal" if df is None else "student_t"
+    try:
+        fit_bayesian_robust_meta(
+            rows, mu_prior_family=family, mu_prior_df=df,
+            _diagnostic_probe=False, **common)
+    except Exception:  # noqa: BLE001 - probes must never mask the real failure
+        return False
+    return True
+
+
 def fit_bayesian_robust_meta(
     rows: Sequence[Mapping],
     *,
@@ -106,6 +235,7 @@ def fit_bayesian_robust_meta(
     tau_prior_family: object,
     tau_prior_scale: object,
     tau_prior_df: object,
+    _diagnostic_probe: bool = True,
 ) -> dict:
     """Summarize a normal-normal random-effects model under robust priors.
 
@@ -116,6 +246,10 @@ def fit_bayesian_robust_meta(
     Half-t(scale, df) prior, all declared on the analysis scale. ``scale`` is
     the scale parameter of the t distribution, not its standard deviation.
     Every prior argument is required: there is no default prior.
+
+    ``_diagnostic_probe`` is private: it is False only for the re-fits that
+    :func:`_grid_failure_message` runs to verify a candidate remedy, so those
+    probes cannot recursively probe again.
     """
     mu_prior = _validate_mu_prior(mu_prior_family, mu_prior_mean, mu_prior_scale, mu_prior_df)
     tau_prior = _validate_tau_prior(tau_prior_family, tau_prior_scale, tau_prior_df)
@@ -434,20 +568,23 @@ def fit_bayesian_robust_meta(
         if not agrees(refined, final):
             # MM11-07: the old message ("grid refinement did not converge")
             # suggested numerical instability without saying what the user can
-            # do. Name the failing prior parameter and the two levers instead.
-            # Deliberately no causal attribution: on the reviewed
-            # counterexample (k=2, y=[-0.57,-0.54], se=[0.24,0.14]) df=1e8
-            # settles while df=1e6/1e7/1e9/1e12 do not, and the normal family
-            # fails on the same rows too -- so the failure is a joint property
-            # of this prior/data pair, not of "the t prior being a normal".
+            # do. The replacement went through two review rounds on *scope*:
+            # naming levers for every student_t failure told users at df=3/5/
+            # 10/30/100 to shrink df or switch family even though neither
+            # settles there -- advice must be measured, not assumed. See
+            # _grid_failure_message: it recommends a setting only after that
+            # setting is observed to converge on these same rows.
             if student_mu:
-                raise ValueError(
-                    "grid refinement did not converge with mu prior df="
-                    f"{df_mu:g}: the adaptive quadrature did not settle for this "
-                    "prior and data combination. Try a smaller df, or the normal "
-                    "family if a diffuse t prior was only a formality; this is not "
-                    "by itself evidence of separated or weakly identified data"
-                )
+                raise ValueError(_grid_failure_message(
+                    rows,
+                    df_mu=df_mu,
+                    mu_prior_mean=mu_prior_mean,
+                    mu_prior_scale=mu_prior_scale,
+                    tau_prior_family=tau_prior_family,
+                    tau_prior_scale=tau_prior_scale,
+                    tau_prior_df=tau_prior_df,
+                    probe=_diagnostic_probe,
+                ))
             raise ValueError("grid refinement did not converge")
         base, refined = refined, final
         nodes = (4 * _BULK_NODES, 4 * _TAIL_NODES)
