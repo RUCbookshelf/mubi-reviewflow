@@ -318,8 +318,11 @@ class StaticGuardTests(unittest.TestCase):
         # 内容为两侧并集——既非 20261030-r8fl4，也非 20261030-r8b-fl6-locale1。
         # 按本测试既定约定「词典内容变更必须同步上调 ?v= 并更新 PINNED」，
         # 重新 bump 一枚令牌并与合并后内容钉对。
-        pinned_token = '20261031-r6merge1'
-        pinned_sha256 = '30c95f119cd82ae187c9e2a42f81b4409299ac7bcbec939ad355f644c645de2c'
+        # r9 收尾批（C3 合并功能批之后）：C3 features 侧更新了 interface_locale.js
+        # 内容（含 r9 各泳道新增词条）但未同步本令牌钉对，令牌仍是 20261031-r6merge1
+        # 而内容已漂移到 49d27dbc…。按本测试既定约定重新 bump 令牌并与当前内容钉对。
+        pinned_token = '20261101-r9merge1'
+        pinned_sha256 = '49d27dbc6dcb1c7de35456d3eab78d80b2d8a8a01f7e512b468fd17b001086fe'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')

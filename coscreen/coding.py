@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import unicodedata
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -374,6 +375,51 @@ def list_dimensions(db: StrPath) -> list[dict]:
     return [_row_to_dimension(r) for r in rows]
 
 
+def _reconcile_saved_values(
+    conn: sqlite3.Connection, dim_id: int, new_dim: dict
+) -> list[tuple[str, str, str]]:
+    """维度定义变更时校验并规范化其存量编码值（r9 F2-90）。
+
+    在**同一事务内**先全量校验、再统一改写，因此失败不会留下半迁移状态：
+    - 存量值按新定义走 :func:`_normalize_value`（choice 逐项 ∈ 新选项且单选
+      不多值；numeric 必须有限数值）——任一值非法 -> 中文 ValueError，列出
+      受影响文献键，本次改型整体拒绝（不让库内值与新定义静默矛盾）；
+    - 全部通过后只把"规范化形态与原文不同"的行改写为新形态（选项顺序/首尾
+      空白/多选顺序），其余行原样保留（含 updated_at，不制造伪变更）；
+    - 该维度设为必需证据字段时，备注/图片（evidence）不依赖 dtype，不改动。
+
+    返回被改写的 ``(zotero_key, old, new)`` 列表，供调用方补发审计事件。
+    """
+    rows = conn.execute(
+        "SELECT zotero_key, value FROM coding_values WHERE dimension_id=? "
+        "ORDER BY zotero_key",
+        (int(dim_id),),
+    ).fetchall()
+    normalized: list[tuple[str, str, str]] = []  # (key, old, new)
+    rejected: list[str] = []
+    for key, value in rows:
+        try:
+            new_value = _normalize_value(new_dim, value)
+        except ValueError:
+            rejected.append(str(key))
+            continue
+        if new_value != (value or ""):
+            normalized.append((str(key), value or "", new_value))
+    if rejected:
+        shown = ", ".join(rejected[:10]) + (" …" if len(rejected) > 10 else "")
+        raise ValueError(
+            f"维度「{new_dim['name']}」已有 {len(rejected)} 条保存值不符合新定义"
+            f"（{shown}）。请先清除这些值或另选类型后再改型，已保存的研究不会被自动改写。"
+        )
+    for key, _old, new_value in normalized:
+        conn.execute(
+            "UPDATE coding_values SET value=?, updated_at=? "
+            "WHERE dimension_id=? AND zotero_key=?",
+            (new_value, _now(), int(dim_id), key),
+        )
+    return normalized
+
+
 def update_dimension(
     db: StrPath,
     dim_id: int,
@@ -446,6 +492,22 @@ def update_dimension(
                     f"position 必须为整数: {fields['position']!r}"
                 ) from exc
 
+        # r9 F2-90：类型/选项口径变了就必须同步处理已保存的编码值——旧实现
+        # 只改定义，库内 'A|B' 之类在新定义下已非法的值照旧被 complete_keys
+        # 计入"已完成"并逐字进导出（数据污染，且读取侧不再有任何校验）。
+        # 每个存量值按新定义重新校验：仍合法则写成规范化形态（选项顺序/空白
+        # 归一，与 save_coding_value 同口径）；已非法则整体拒绝本次改型并
+        # 指明文献键，让用户先清值或另选类型（与 import_scheme 拒绝"自动改写
+        # 已保存研究"的既有政策一致，同 docs/WORKFLOW_CONTROLS.md:85）。
+        definition_changed = (
+            validated["dtype"] != current["dtype"]
+            or validated["options"] != list(current["options"])
+            or bool(validated["multi_select"]) != bool(current["multi_select"])
+        )
+        migrated: list[tuple[str, str, str]] = []
+        if definition_changed:
+            migrated = _reconcile_saved_values(conn, int(dim_id), validated)
+
         _ensure_name_free(conn, validated["name"], exclude_id=int(dim_id))
         try:
             conn.execute(
@@ -468,6 +530,16 @@ def update_dimension(
             from coscreen.research_trace import capture_event
 
             after_field = _trace_dimension(conn, trace_context, _require_dimension(conn, dim_id))
+            # 定义变更同时迁移了存量值的规范化形态时，逐条留下值变更事件
+            # （subject 与 save_coding_value 同为 zotero_key，action 同集合），
+            # 使"改型 + 改写"在审计链上可追溯、可撤销定位。
+            for key, old_value, new_value in migrated:
+                capture_event(
+                    conn, trace_context, stage="coding",
+                    action="coding_value_cleared" if not new_value else "coding_value_changed",
+                    subject_id=key, before={"value": old_value},
+                    after={"value": new_value}, field=after_field,
+                )
             capture_event(
                 conn, trace_context, stage="coding", action="field_definition_changed",
                 subject_id=after_field["field_id"], before=old_field, after=after_field,
@@ -699,15 +771,22 @@ def export_scheme(db: StrPath) -> dict:
 
     - 维度顺序 = :func:`list_dimensions` 的 ``(section, position, id)`` 序，
       与共享给另一位编码员的方案 JSON 完全一致；
-    - 条目字段固定为 name/dtype/options/multi_select/unit/description/section/
-      position（不含本地 id/created_at），因此同一入库状态两次导出逐键相等；
+    - 条目键集**固定**为 name/dtype/options/multi_select/unit/description/
+      section/position/field_id（不含本地 id/created_at）——``field_id`` 是稳定
+      字段 UUID，导入端据此精确匹配；维度尚无 UUID 时该键取 ``null``（导入端
+      按"无显式身份"处理并分配新 UUID），**但不省略**；
+    - r9 F2-98：旧实现按 ``d.get("field_id")`` 有无合并该键，于是同一逻辑状态
+      在"已跑 ensure_fields 与没跑过"两种库上导出 9 键 vs 8 键两套载荷，与
+      文档宣称的固定键集矛盾。现在恒输出同一键集，"同一入库状态两次导出
+      逐键相等"成立，按固定键集解析的消费方不会再遇到意外缺失键；
     - 落盘时建议 ``json.dumps(scheme, ensure_ascii=False, indent=2, sort_keys=True)``
       以获得字节级确定的文件。
     """
     from coscreen.coding_evidence import field_rows
     return {
         "version": SCHEME_VERSION,
-        "dimensions": [{**_scheme_entry(d), **({"field_id": d["field_id"]} if d.get("field_id") else {})} for d in field_rows(db)],
+        "dimensions": [{**_scheme_entry(d), "field_id": d.get("field_id") or None}
+                       for d in field_rows(db)],
     }
 
 
@@ -758,6 +837,51 @@ def _validated_scheme_entries(data: Any) -> list[dict]:
     return entries
 
 
+def _scheme_snapshot(conn: sqlite3.Connection) -> list[dict]:
+    """import_scheme 的字段快照：在**调用方事务内**读，与落库共用同一快照。
+
+    与 :func:`coscreen.coding_evidence.field_rows` 同形（维度公开字典 + 已有
+    ``field_id``），但复用调用方连接，避免事务外陈旧快照（r9 F2-89）。
+    """
+    from coscreen.review_workflow import has_table
+
+    fields: dict[int, str] = {}
+    if has_table(conn, "workflow_coding_fields"):
+        fields = {
+            int(row[0]): row[1]
+            for row in conn.execute("SELECT dimension_id, field_id FROM workflow_coding_fields")
+        }
+    rows = conn.execute(
+        f"SELECT {', '.join(_DIM_COLUMNS)} FROM coding_dimensions "
+        "ORDER BY section, position, id"
+    ).fetchall()
+    snapshot = []
+    for row in rows:
+        dim = _row_to_dimension(row)
+        if dim["id"] in fields:
+            dim["field_id"] = fields[dim["id"]]
+        snapshot.append(dim)
+    return snapshot
+
+
+def _required_field_ids(conn: sqlite3.Connection) -> set[str]:
+    """事务内读取工作流必需字段 ID（与 review_workflow.settings 同口径）。"""
+    from coscreen.review_workflow import has_table
+
+    if not has_table(conn, "workflow_state"):
+        return set()
+    row = conn.execute(
+        "SELECT evidence_json FROM workflow_state WHERE singleton=1"
+    ).fetchone()
+    if row is None:
+        return set()
+    try:
+        values = json.loads(row[0] or "[]")
+    except ValueError:  # 库内设置被外部改坏：按"无必需字段"处理，不阻断导入
+        return set()
+    return {str(value) for value in values} if isinstance(values, list) else set()
+
+
 def import_scheme(
     db: StrPath,
     data: dict,
@@ -773,14 +897,21 @@ def import_scheme(
     """
     from coscreen import coding_evidence as evidence
     from coscreen.research_trace import begin_capture_transaction, begin_write_request, capture_event, finish_write_request
-    from coscreen.review_workflow import settings
     import uuid
     entries = _validated_scheme_entries(data)
     evidence.migrate(db)
-    existing = evidence.field_rows(db)
-    required = set(settings(db)['evidence_required_field_ids'])
     with closing(_connect(db)) as conn, conn:
         conn.execute('BEGIN IMMEDIATE')
+        # r9 F2-89：字段映射的全部决策（existing/required/同名冲突）必须在
+        # 写事务**内**基于同一快照读取。旧实现在 BEGIN IMMEDIATE 之前各开
+        # 一条只读连接取快照（coding.py:780-781 旧行号）：跨进程（uvicorn
+        # --workers N，进程内 schema_guard 互斥不覆盖 worker 之间）并发
+        # add_dimension/import_scheme 可使快照与落库之间出现同名字段，随后
+        # 的 INSERT 撞 UNIQUE(name) 裸抛 IntegrityError → 端点只捕 ValueError
+        # → 500。现改为事务内快照 + INSERT 的 IntegrityError 统一翻译为
+        # ValueError（与 add_dimension/update_dimension 同文案口径）。
+        existing = _scheme_snapshot(conn)
+        required = _required_field_ids(conn)
         if trace_context is not None:
             begin_capture_transaction(conn, trace_context, 'coding')
             replay, result = begin_write_request(conn, trace_context, stage='coding', operation='coding_scheme_import',
@@ -809,6 +940,19 @@ def import_scheme(
         for old in removed:
             if conn.execute('SELECT 1 FROM coding_values WHERE dimension_id=? UNION ALL SELECT 1 FROM coding_notes WHERE dimension_id=? LIMIT 1', (old['id'], old['id'])).fetchone():
                 raise ValueError('Scheme replacement would remove saved research. Preserve its fields.')
+            # r9 F2-91：删除"必需但尚无数据"的字段旧实现直接放行——被删维度的
+            # field_id 仍留在 workflow_evidence_requirements 与
+            # settings()['evidence_required_field_ids']，mapping() 随即报
+            # required_field_missing，complete_keys 逢 issues 返回空集，全任务
+            # 证据被判未完成、coded 恒 0（且导入当时无任何提示）。与上方
+            # "A required field identity cannot be replaced" 同一政策：移除
+            # 必需字段必须先由属主在 workflow-settings 复核需求清单（该清空
+            # /调整路径已存在），方案导入不得代为静默移除。
+            if old.get('field_id', str(old['id'])) in required:
+                raise ValueError(
+                    'Scheme replacement would remove a required evidence field. '
+                    'Review the task evidence requirements before importing this scheme.'
+                )
         for old in removed:
             conn.execute('DELETE FROM coding_dimensions WHERE id=?', (old['id'],))
             conn.execute('DELETE FROM workflow_coding_fields WHERE dimension_id=?', (old['id'],))
@@ -825,14 +969,41 @@ def import_scheme(
                 ceiling = max([d['id'] for d in existing] + [int(r[0]) for r in conn.execute("SELECT seq FROM sqlite_sequence WHERE name='coding_dimensions'")] + [0])
                 current = conn.execute('SELECT COALESCE(MAX(id),0) FROM coding_dimensions').fetchone()[0]
                 did = max(ceiling, current) + 1
-                conn.execute('INSERT INTO coding_dimensions(id,name,dtype,options_json,multi_select,unit,description,section,position,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                    (did, entry['name'], entry['dtype'], _options_json(entry['options']), int(entry['multi_select']), entry['unit'], entry['description'], entry['section'], entry['position'] if replace else entry['position']+offset, _now()))
+                try:
+                    conn.execute('INSERT INTO coding_dimensions(id,name,dtype,options_json,multi_select,unit,description,section,position,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                        (did, entry['name'], entry['dtype'], _options_json(entry['options']), int(entry['multi_select']), entry['unit'], entry['description'], entry['section'], entry['position'] if replace else entry['position']+offset, _now()))
+                except sqlite3.IntegrityError as exc:  # UNIQUE(name)/PRIMARY KEY 兜底
+                    # r9 F2-89：与 add_dimension/update_dimension 同口径翻译为
+                    # 中文业务 ValueError（端点只捕 ValueError，不再裸 500）。
+                    if 'name' in str(exc):
+                        raise ValueError(
+                            f"维度名称已存在: {entry['name']!r}（请改用其他名称）"
+                        ) from exc
+                    raise ValueError(
+                        'Scheme import conflicted with another field change. Reload the scheme and retry.'
+                    ) from exc
             fid = entry.get('field_id') or (old or {}).get('field_id') or str(uuid.uuid4())
-            conn.execute('INSERT INTO workflow_coding_fields VALUES(?,?,?) ON CONFLICT(dimension_id) DO UPDATE SET field_id=excluded.field_id,definition_json=excluded.definition_json',
-                (did, fid, evidence.definition(entry)))
+            try:
+                conn.execute('INSERT INTO workflow_coding_fields VALUES(?,?,?) ON CONFLICT(dimension_id) DO UPDATE SET field_id=excluded.field_id,definition_json=excluded.definition_json',
+                    (did, fid, evidence.definition(entry)))
+            except sqlite3.IntegrityError as exc:  # UNIQUE(field_id) 兜底
+                raise ValueError(
+                    'Scheme field identity is already used by another field. Reload the scheme and retry.'
+                ) from exc
             if trace_context:
-                capture_event(conn, trace_context, stage='coding', action='field_definition_changed' if old else 'field_definition_created',
-                    subject_id=fid, before=_scheme_entry(old) if old else None, after=_scheme_entry(entry), field=_trace_dimension(conn, trace_context, _require_dimension(conn, did)))
+                # r9 F2-92：field 实参先于 capture_event 求值，而 _trace_dimension
+                # -> field_lifecycle 会无条件 INSERT/UPDATE trace_field_lifecycles
+                # （research_trace.py:504 起自身无 is_recording 门控）。所以必须
+                # 在传参前先判录制状态，与同模块其余调用点（add_dimension:351、
+                # update_dimension:414、delete_dimension:653、save_coding_value:929）
+                # 以及 begin_write_request 的 "Recording-off writes do not create
+                # rows" 边界同口径。录制关闭时 capture_event 本就返回 None，故
+                # 事件面逐位不变，只是不再产生无事件的 lifecycle 痕迹写。
+                from coscreen.research_trace import is_recording
+
+                if is_recording(conn, trace_context, 'coding'):
+                    capture_event(conn, trace_context, stage='coding', action='field_definition_changed' if old else 'field_definition_created',
+                        subject_id=fid, before=_scheme_entry(old) if old else None, after=_scheme_entry(entry), field=_trace_dimension(conn, trace_context, _require_dimension(conn, did)))
         if trace_context:
             finish_write_request(conn, trace_context, len(entries))
     return len(entries)
@@ -841,6 +1012,42 @@ def import_scheme(
 # ---------------------------------------------------------------------------
 # 编码值
 # ---------------------------------------------------------------------------
+
+def _canonical_numeric_text(text: str) -> str:
+    """把"通过 float() 校验但非 ASCII 常规写法"的数值规整为可交换文本（r9 F2-93）。
+
+    Python 的 ``float()`` 接受下划线分组（``"1_000"``）与非 ASCII 数字
+    （``"١٢٣"``、``"１２３"``）。旧实现用它判合法却把**原文**入库，导出
+    （export.py 逐字输出）后 R/SPSS/Excel 读成文本或解析失败，且同值的多种
+    文本表示（``"1e3"``/``"1000"``/``"1_000"``）互相不等。这里只做"去掉
+    下划线分组 + 非 ASCII 十进制数字折成 ASCII 数字"，**保留用户书写的数值
+    写法与精度**（不做 Decimal.normalize 之类的指数化重排）：
+    - 已是纯 ASCII 且无下划线的文本逐字保留（既有库值、导出与值比较逐位
+      不变；不新增对合法输入的拒绝）；
+    - 折 ASCII 后若 ``float()`` 值与原文本不同（理论上不会发生），放弃改写
+      并原样返回，宁可保留原文也不篡改数值。
+    """
+    if text.isascii() and "_" not in text:
+        return text
+    cleaned = text.replace("_", "")
+    converted: list[str] = []
+    for char in cleaned:
+        if char.isascii():
+            converted.append(char)
+            continue
+        try:
+            digit = unicodedata.digit(char)
+        except (TypeError, ValueError):
+            return text  # 未知的非 ASCII 形态：不猜，保留原文
+        converted.append(str(digit))
+    candidate = "".join(converted)
+    try:
+        if float(candidate) != float(text):
+            return text
+    except (OverflowError, ValueError):
+        return text
+    return candidate
+
 
 def _normalize_value(dim: dict, value: str) -> str:
     """按维度类型规整编码值（choice 校验 + 规范化；text/numeric 去首尾空白）。"""
@@ -854,7 +1061,7 @@ def _normalize_value(dim: dict, value: str) -> str:
             valid = False
         if not valid:
             raise ValueError(f"维度「{dim['name']}」必须保存有限数值: {value!r}")
-        return text
+        return _canonical_numeric_text(text)
     if dim["dtype"] != "choice":
         return text
     if not text:
@@ -1318,6 +1525,10 @@ def coding_queue(db: StrPath, mode: str | None = None) -> list[str]:
       ``coding_queue_mode`` 尚未落地，后端无设置存储；落地后在此接入读取）；
     - ``mode="stage2"``：复筛 ``stage2_decisions`` 中 ``decision == "include"``
       的键；**为空时回退**初筛 ``decisions`` 的纳入键（复筛尚未开始时可直接编码）；
+      回退时排除**已被复筛明确处置**的文献（``exclude`` 与 ``maybe`` 都排除，
+      r9 F2-95：旧实现只排 ``maybe``，复筛刚起步、include 仍为 0 时被复筛排除
+      的文献会经初筛纳入路径重回编码队列，与"有 include 时 exclude 正确缺席"
+      的主路径自相矛盾）；
     - ``mode="stage1"``：初筛 ``decisions`` 的纳入键；
     - 其他显式 mode -> 中文 ValueError。
     """
@@ -1328,11 +1539,12 @@ def coding_queue(db: StrPath, mode: str | None = None) -> list[str]:
         )
     if resolved == QUEUE_MODE_STAGE1:
         return _include_keys(list_decisions(db))
-    stage2_keys = _include_keys(list_stage2_decisions(db))
+    stage2_rows = list_stage2_decisions(db)
+    stage2_keys = _include_keys(stage2_rows)
     if stage2_keys:
         return stage2_keys
-    stage2_maybe = {row["zotero_key"] for row in list_stage2_decisions(db) if row["decision"] == "maybe"}
-    return [key for key in _include_keys(list_decisions(db)) if key not in stage2_maybe]
+    stage2_decided = {row["zotero_key"] for row in stage2_rows}  # exclude / maybe
+    return [key for key in _include_keys(list_decisions(db)) if key not in stage2_decided]
 
 
 def coding_progress(db: StrPath, *, owner_db: StrPath | None = None) -> dict:

@@ -32,7 +32,12 @@ from typing import TYPE_CHECKING, Any
 
 from coscreen import config
 from coscreen.al.ranker import RankingResult
-from coscreen.dedup import KEY_MAX_LEN, DuplicatePair, compliant_key_for_overlong
+from coscreen.dedup import (
+    KEY_MAX_LEN,
+    DuplicatePair,
+    compliant_key_for_overlong,
+    fresh_key_for_overlong,
+)
 from coscreen.measure_registry import MEASURE_CODES
 from coscreen.models import Article
 
@@ -634,6 +639,36 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def is_coscreen_database(db_path: StrPath) -> bool:
+    """该文件是否为可识别的文献库（r9 夜扫 b11·F2-78）。
+
+    CLI 的 stats/export/restore/simulate 一旦拿到坏路径（目录、无权限）或
+    任意非 SQLite 文件（如 ``fake.db`` 文本），底层 sqlite3 直接抛英文
+    ``DatabaseError: file is not a database``/``unable to open database
+    file`` 逃出 main → traceback + exit 1。把「可打开 + 至少含 articles
+    表」做成显式预检，调用方据此打印中文错误并返回退出码 2。
+
+    只读检查：不改库、不建库（不会在坏路径上留下空文件）。非 coscreen
+    库（合法 SQLite 但无 articles 表）同样返回 False——向它写决策只会
+    自带建表，让用户以为导入成功了别的库。
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    try:
+        # mode=ro：路径是目录/无权限时直接抛 OperationalError 而不是建库。
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles'"
+            ).fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return False
+    return row is not None
+
+
 def init_db(db_path: StrPath) -> None:
     """建库建表（幂等，可重复调用）。"""
     with closing(_connect(db_path)) as conn, conn:
@@ -1145,12 +1180,35 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
         occupied = {row[0] for row in conn.execute(
             "SELECT zotero_key FROM articles").fetchall()}
         renames: list[tuple[str, str]] = []
+        # r9 夜扫 b12·F3-37：合规目标必须先按**单键**计算，再检查是否与
+        # 既有行/其他迁移目标撞键。反例：两条仅第 288 位之后不同、尾 12hex
+        # 相同的超长来源键按历史形态截断会折叠到同一 300 目标，后到者只能
+        # 拿 serial ``-2`` 目标——该目标取决于库里是否有兄弟键，违反
+        # compliant_key_for_overlong 的「确定性、可重算」。
+        # 修法：撞键（且不是与自身旧键比较）时改用 fresh_key_for_overlong
+        # ——全键 sha256 后缀，单键可重算、互不折叠；目标仍与既有行撞键时
+        # 才按 serial 重试。
+        chosen: dict[str, str] = {}
+        taken = set(occupied)
         for old in overlong:
             target = compliant_key_for_overlong(old)
+            if target in taken:
+                # 折叠/占用：改用只依赖本键的 fresh 目标
+                fresh = fresh_key_for_overlong(old)
+                if fresh not in taken:
+                    target = fresh
             serial = 2
-            while target in occupied:  # 目标键已被既有行占用：确定性 serial 重试
-                target = compliant_key_for_overlong(old, serial)
+            first_choice = target
+            while target in taken:  # 确定性 serial 重试
+                if first_choice == compliant_key_for_overlong(old):
+                    target = fresh_key_for_overlong(old, serial)
+                else:
+                    target = compliant_key_for_overlong(old, serial)
                 serial += 1
+            taken.add(target)
+            chosen[old] = target
+        for old in overlong:
+            target = chosen[old]
             occupied.discard(old)
             occupied.add(target)
             renames.append((old, target))
@@ -1236,9 +1294,23 @@ def upsert_articles(
     ``preserve_existing`` leaves every existing article column untouched.
     """
     if conn is None:
-        with closing(_connect(db_path)) as owned, owned:
-            return upsert_articles(db_path, articles, duplicate_pairs, title_review_groups,
-                                   conn=owned, preserve_existing=preserve_existing)
+        with closing(_connect(db_path)) as owned:
+            # r9 夜扫 b12·F3-31：``SELECT MAX(import_order)`` 原先在 autocommit
+            # 下先读、首个 INSERT 才隐式开事务——并发导入可读到同一旧值，
+            # 产生重复排序键（import_order 无 UNIQUE）。读取与写入必须同处
+            # 一个 BEGIN IMMEDIATE 写事务：先取库级写锁再读 MAX，第二个写者
+            # 排队到第一个提交后才读，天然串行化。这里不引入进程内全局锁，
+            # 单进程正常路径只是多一次事务边界（R2 行为不变）。
+            owned.execute("BEGIN IMMEDIATE")
+            try:
+                summary = upsert_articles(
+                    db_path, articles, duplicate_pairs, title_review_groups,
+                    conn=owned, preserve_existing=preserve_existing)
+                owned.commit()
+            except BaseException:
+                owned.rollback()
+                raise
+            return summary
     # dup_key -> kept_key；并解析链式指向（A->B->C 解析为 A->C），兜底外部传入的配对。
     # 自指配对（dup_key == kept_key，即同 zotero_key 的重复行）不产生标记：
     # 两行在主键 upsert 时自然合并为一条，幸存行是"保留条目"而非重复条目。
@@ -1326,6 +1398,20 @@ def upsert_articles(
                 conn.execute(
                     "DELETE FROM title_duplicate_reviews WHERE review_id=?", (prior[0],)
                 )
+                # r9 夜扫 b04·F3-33：被合并删除的 prior 组的撤销条目必须同时
+                # 消费（undo=1）。否则该条目永远占据 actor 的「最新未消费」
+                # 位置且永不置 undone，撤销永久抛「相关记录已有后续变更」，
+                # 更早的撤销条目也全部不可达（死条目阻塞）。
+                conn.execute(
+                    "UPDATE title_duplicate_undo SET undone=1 WHERE review_id=? AND undone=0",
+                    (prior[0],),
+                )
+            # 兜底：历史遗留的、指向已不存在 review 的死条目一次性消费，避免
+            # 升级前产生的死条目继续阻塞（本函数是唯一写入 undo 表的入口之一）。
+            conn.execute(
+                "UPDATE title_duplicate_undo SET undone=1 WHERE undone=0 AND review_id NOT IN "
+                "(SELECT review_id FROM title_duplicate_reviews)"
+            )
         else:
             review_id = uuid.uuid4().hex
             conn.execute(
@@ -1353,8 +1439,14 @@ def upsert_articles(
 
 
 def list_articles(db_path: StrPath, include_duplicates: bool = False) -> list[Article]:
-    """按 import_order 列出文献；默认过滤掉重复条目。"""
-    sql = f"SELECT {', '.join(_ARTICLE_COLUMNS)} FROM articles"
+    """按 import_order 列出文献；默认过滤掉重复条目。
+
+    ``include_duplicates=True`` 时每行以**附加属性** ``is_duplicate_of``
+    带出重复标记（值即保留条目键，非重复为 None）。该属性不在 Article
+    的声明字段里（不参与相等/序列化，R1 结构不变），供 dedup 的身份索引
+    区分「筛选可见行」与「已标重复行」（r9 夜扫 b04·F3-36）。
+    """
+    sql = f"SELECT {', '.join(_ARTICLE_COLUMNS)}, is_duplicate_of FROM articles"
     if not include_duplicates:
         sql += (
             " WHERE is_duplicate_of IS NULL AND NOT EXISTS ("
@@ -1366,7 +1458,12 @@ def list_articles(db_path: StrPath, include_duplicates: bool = False) -> list[Ar
     sql += " ORDER BY import_order, zotero_key"
     with closing(_connect(db_path)) as conn:
         rows = conn.execute(sql).fetchall()
-    return [_row_to_article(r) for r in rows]
+    articles = []
+    for row in rows:
+        article = _row_to_article(row[:-1])
+        article.is_duplicate_of = row[-1]  # type: ignore[attr-defined]
+        articles.append(article)
+    return articles
 
 
 def list_title_duplicate_reviews(
@@ -1483,6 +1580,42 @@ def undo_title_duplicate_review(db_path: StrPath, actor: str) -> bool:
     return True
 
 
+def _title_review_marks_before_duplicate(
+    conn: sqlite3.Connection, review_id: str,
+) -> dict[str, str | None]:
+    """该组「被判为 duplicate 之前」的成员 is_duplicate_of 原值（b04·F3-29）。
+
+    撤销日志逐条记录每次决策的 before/after 整组快照。倒序扫描本组日志，
+    找到最近一条「after=duplicate 且 before 不是 duplicate」的条目——那条
+    决策正是把成员标记写成本组 keeper 的动作，其 before 的 ``articles``
+    三元组（zotero_key, is_duplicate_of, content_hash）即标记出现前的真实
+    值。找不到（例如库外改写/日志被清理）时返回空 dict，调用方据此不改写
+    任何行（保守：宁可保留标记也不臆测一个回滚值）。
+    """
+    rows = conn.execute(
+        "SELECT before_json,after_json FROM title_duplicate_undo "
+        "WHERE review_id=? ORDER BY seq DESC", (review_id,),
+    ).fetchall()
+    for before_json, after_json in rows:
+        try:
+            before = json.loads(before_json)
+            after = json.loads(after_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            continue
+        if (after.get("review") or [None])[0] != "duplicate":
+            continue
+        if (before.get("review") or [None])[0] == "duplicate":
+            continue
+        return {
+            entry[0]: entry[1]
+            for entry in (before.get("articles") or [])
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2
+        }
+    return {}
+
+
 def decide_title_duplicate_review(
     db_path: StrPath, review_id: str, decision: str, keeper_key: str = "",
     decided_by: str = "",
@@ -1495,11 +1628,12 @@ def decide_title_duplicate_review(
         conn.execute("BEGIN IMMEDIATE")
         before = _title_review_snapshot(conn, review_id)
         row = conn.execute(
-            "SELECT status,members_json FROM title_duplicate_reviews WHERE review_id=?",
+            "SELECT status,members_json,keeper_key FROM title_duplicate_reviews WHERE review_id=?",
             (review_id,),
         ).fetchone()
         if row is None:
             return False
+        prior_status, prior_keeper = row[0], row[2]
         members = json.loads(row[1])
         keys = {m["zotero_key"] for m in members}
         if decision == "duplicate":
@@ -1512,10 +1646,43 @@ def decide_title_duplicate_review(
                 [(keeper_key, key) for key in duplicate_keys],
             )
             status = "duplicate"
-        elif decision == "not_duplicate":
-            status = "not_duplicate"
         else:
-            status = "undecided"
+            # r9 夜扫 b04·F3-29：把已判 duplicate 的组翻转为 not_duplicate /
+            # undecided 时，必须回滚**本组上一次 duplicate 决策写入的**标记，
+            # 否则成员从此被 list_articles/get_progress 永久过滤（除逐条回放
+            # undo 链外无产品内恢复）。
+            #
+            # 回滚**只**针对「当前标记仍等于本次决策前 keeper」的成员：若该行
+            # 之后又被别的组改写（标记值已变），那不是本次决策的产物，保持
+            # 原样——绝不覆盖后续变更。回滚值取本次决策前的快照（before），
+            # 因此先前由精确去重/导入写入的标记原样恢复。
+            if prior_status == "duplicate" and prior_keeper:
+                # 回滚值必须取「本组被判为 duplicate **之前**」的状态：那正是
+                # 该组制造这些标记的原点。撤销日志里记录了每次决策的 before
+                # 快照——找最近一条「决策后=duplicate 且决策前≠duplicate」的
+                # 条目，其 before 即标记出现前的真实值（NULL 或此前由精确
+                # 去重/导入写入的标记），绝不臆测。
+                origin_marks = _title_review_marks_before_duplicate(conn, review_id)
+                # 找不到原点（日志被清理/库外改写）时 origin_marks 为空：
+                # 此时**不改写任何行**（保守——宁可保留标记，也不臆测一个
+                # 回滚值把别的组写的标记抹掉）。
+                rollback = [
+                    (origin_marks[key], key)
+                    for member in members
+                    for key in [member["zotero_key"]]
+                    if key != prior_keeper
+                    and origin_marks
+                    and key in origin_marks
+                    and conn.execute(
+                        "SELECT is_duplicate_of FROM articles WHERE zotero_key=?",
+                        (key,)).fetchone() == (prior_keeper,)
+                ]
+                if rollback:
+                    conn.executemany(
+                        "UPDATE articles SET is_duplicate_of=? WHERE zotero_key=?",
+                        rollback,
+                    )
+            status = "not_duplicate" if decision == "not_duplicate" else "undecided"
         conn.execute(
             "UPDATE title_duplicate_reviews SET status=?,keeper_key=?,decision_by=?,updated_at=? WHERE review_id=?",
             (status, keeper_key if decision == "duplicate" else "", decided_by, now, review_id),

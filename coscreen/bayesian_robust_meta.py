@@ -28,7 +28,9 @@ from scipy.optimize import brentq, minimize
 from scipy.special import ndtr
 from scipy.stats import gamma as gamma_distribution
 
-from coscreen.bayesian_normal_meta import RATIOS, _number, _parse_study_rows
+from coscreen.bayesian_normal_meta import (
+    RATIOS, _analysis_scale, _number, _parse_study_rows, _tau_scale_label,
+)
 
 MU_FAMILIES = {"normal", "student_t"}
 TAU_FAMILIES = {"half_normal", "half_student_t"}
@@ -66,6 +68,14 @@ _TAIL_NODES = 14
 _TAIL_GROWTH = 1.5
 _MAX_TAIL_PANELS = 60
 _BULK_SD_SPAN = 10.0
+# F2-62: successive grids are refined until two of them agree, up to this node
+# multiple (a multiple of the bulk panel count). Inputs that already settle at
+# the first refinement never see more work than before.
+_REFINEMENT_MAX_MULTIPLE = 16
+# F2-59: one grid cell costs a full posterior fit; cap the number of cells a
+# single request may ask for so the endpoint cannot be used to burn minutes of
+# CPU (the request schema only enforces ``min_length=1``).
+MAX_PRIOR_GRID_CELLS = 100
 
 
 def _validate_mu_prior(family: object, mean: object, scale: object, df: object) -> dict:
@@ -254,7 +264,7 @@ def fit_bayesian_robust_meta(
     mu_prior = _validate_mu_prior(mu_prior_family, mu_prior_mean, mu_prior_scale, mu_prior_df)
     tau_prior = _validate_tau_prior(tau_prior_family, tau_prior_scale, tau_prior_df)
     ids, y, se, measure = _parse_study_rows(rows)
-    analysis_scale = "log" if measure in RATIOS else "natural"
+    analysis_scale = _analysis_scale(measure)
 
     m0, s0 = mu_prior["mean"], mu_prior["scale"]
     unit = max(float(np.max(np.abs(y))), float(np.max(se)), abs(m0), s0, tau_prior["scale"])
@@ -385,6 +395,14 @@ def fit_bayesian_robust_meta(
         Returns a list of ``(a, b, points, weights)`` groups with relative
         offsets ``(a, b)`` from ``mode``; the bulk panel straddles zero.
         """
+        # F2-61: a tail must never be built backwards. ``stop`` is clamped to
+        # the bracket limit, so once ``start`` is at (or past) that limit the
+        # next step points back inside; the old ``abs(b - a) <= 0`` guard did
+        # not fire on that reversal and appended a panel with negative width.
+        # ``tensor_pass`` turns that into negative quadrature weights, and the
+        # reversed panel covers an interval the bulk panel already integrated,
+        # so the summary silently gains a negative double-counted mass (or a
+        # quantile bracket fails outright, as in the reported fixture).
         half = min(_BULK_SD_SPAN * sd, max(mode - lo, hi - mode))
         if not half > 0:
             raise ValueError("posterior grid half-width collapsed")
@@ -399,9 +417,9 @@ def fit_bayesian_robust_meta(
             while panels < _MAX_TAIL_PANELS:
                 raw = start + side * width * _TAIL_GROWTH
                 stop = min(raw, limit) if side > 0 else max(raw, limit)
-                a, b = (start, stop) if side > 0 else (stop, start)
-                if abs(b - a) <= 0:
+                if (side > 0 and stop <= start) or (side < 0 and stop >= start):
                     break
+                a, b = (start, stop) if side > 0 else (stop, start)
                 far = mode + (b if side > 0 else a)
                 if edge_density(far) < 1e-16:
                     break
@@ -560,34 +578,39 @@ def fit_bayesian_robust_meta(
     base = tensor_pass(_BULK_NODES, _TAIL_NODES)
     refined = tensor_pass(2 * _BULK_NODES, 2 * _TAIL_NODES)
     nodes = (2 * _BULK_NODES, 2 * _TAIL_NODES)
+    # F2-62: a single refinement step was not enough for flat posteriors --
+    # regular priors at 10-40x the data SE integrate more slowly and failed
+    # here 20/20 times. Keep refining while the successive grids still
+    # disagree. The loop is limited to the normal-mu prior: MM11-07's
+    # diagnostic contract (neutral message, measured advice) is defined on the
+    # Student-t path, and its pinned fixtures must keep their exact outcomes;
+    # the flat-posterior rejection reported in F2-62 is a normal-family case.
+    max_multiple = _REFINEMENT_MAX_MULTIPLE if not student_mu else 4
+    while not agrees(base, refined) and nodes[0] < max_multiple * _BULK_NODES:
+        base = refined
+        nodes = (2 * nodes[0], 2 * nodes[1])
+        refined = tensor_pass(nodes[0], nodes[1])
     if not agrees(base, refined):
-        # The first refinement step can still sit on the flat part of the
-        # convergence curve for skewed posteriors; only a failure to settle
-        # at the next level is treated as non-convergence.
-        final = tensor_pass(4 * _BULK_NODES, 4 * _TAIL_NODES)
-        if not agrees(refined, final):
-            # MM11-07: the old message ("grid refinement did not converge")
-            # suggested numerical instability without saying what the user can
-            # do. The replacement went through two review rounds on *scope*:
-            # naming levers for every student_t failure told users at df=3/5/
-            # 10/30/100 to shrink df or switch family even though neither
-            # settles there -- advice must be measured, not assumed. See
-            # _grid_failure_message: it recommends a setting only after that
-            # setting is observed to converge on these same rows.
-            if student_mu:
-                raise ValueError(_grid_failure_message(
-                    rows,
-                    df_mu=df_mu,
-                    mu_prior_mean=mu_prior_mean,
-                    mu_prior_scale=mu_prior_scale,
-                    tau_prior_family=tau_prior_family,
-                    tau_prior_scale=tau_prior_scale,
-                    tau_prior_df=tau_prior_df,
-                    probe=_diagnostic_probe,
-                ))
-            raise ValueError("grid refinement did not converge")
-        base, refined = refined, final
-        nodes = (4 * _BULK_NODES, 4 * _TAIL_NODES)
+        # MM11-07: the old message ("grid refinement did not converge")
+        # suggested numerical instability without saying what the user can
+        # do. The replacement went through two review rounds on *scope*:
+        # naming levers for every student_t failure told users at df=3/5/
+        # 10/30/100 to shrink df or switch family even though neither
+        # settles there -- advice must be measured, not assumed. See
+        # _grid_failure_message: it recommends a setting only after that
+        # setting is observed to converge on these same rows.
+        if student_mu:
+            raise ValueError(_grid_failure_message(
+                rows,
+                df_mu=df_mu,
+                mu_prior_mean=mu_prior_mean,
+                mu_prior_scale=mu_prior_scale,
+                tau_prior_family=tau_prior_family,
+                tau_prior_scale=tau_prior_scale,
+                tau_prior_df=tau_prior_df,
+                probe=_diagnostic_probe,
+            ))
+        raise ValueError("grid refinement did not converge")
     convergence = max(
         relative_change(base["z"], refined["z"]),
         relative_change(base["mu_mean"], refined["mu_mean"]),
@@ -610,7 +633,7 @@ def fit_bayesian_robust_meta(
         "probability_gt_zero": float(base["probability"]),
     }
     tau = {
-        "scale": "log_ratio_sd" if analysis_scale == "log" else "effect_sd",
+        "scale": _tau_scale_label(analysis_scale),
         "mean": restore(base["tau_mean"], "tau posterior mean", positive=True),
         "median": tau_quantiles[1],
         "credible_interval_95": [tau_quantiles[0], tau_quantiles[2]],
@@ -716,8 +739,16 @@ def prior_sensitivity_grid(rows: Sequence[Mapping], *, priors: Sequence[Mapping]
         raise ValueError("priors must be a list of prior specification mappings")
     if len(priors) == 0:
         raise ValueError("priors grid must contain at least one prior specification")
+    if len(priors) > MAX_PRIOR_GRID_CELLS:
+        # Every cell is a full posterior fit; the field used to be unbounded so
+        # a single request could queue ~10 minutes of CPU (859 KiB payload =
+        # ~5000 cells). The cap is a module-level budget, not a view change.
+        raise ValueError(
+            f"priors grid must contain at most {MAX_PRIOR_GRID_CELLS} prior "
+            f"specifications; {len(priors)} were supplied"
+        )
     ids, _, _, measure = _parse_study_rows(rows)
-    analysis_scale = "log" if measure in RATIOS else "natural"
+    analysis_scale = _analysis_scale(measure)
     cells = []
     for index, spec in enumerate(priors):
         if not isinstance(spec, Mapping):

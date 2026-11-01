@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -197,7 +198,14 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     # 全部条目入库：重复条目按 duplicate_pairs 标记 is_duplicate_of（SPEC §5），
     # 进度统计（get_progress）只计非重复条目。
-    db_mod.init_db(args.db)
+    # r9 夜扫 b11·F2-78：坏 --db 路径（父目录不存在/不可写）此前直接抛英文
+    # ``OperationalError: unable to open database file`` 逃出 main → exit 1。
+    # 建库失败属用户侧错误：中文提示 + 退出码 2；合法新路径行为不变。
+    try:
+        db_mod.init_db(args.db)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"导入失败：无法创建或打开数据库 {args.db}：{exc}", file=sys.stderr)
+        return 2
     known = db_mod.list_articles(args.db, include_duplicates=True)
     existing_keys = {a.zotero_key for a in known}
     combined = known + articles
@@ -332,8 +340,19 @@ def cmd_export(args: argparse.Namespace) -> int:
     if not Path(args.db).is_file():
         print(f"导出失败：数据库不存在: {args.db}", file=sys.stderr)
         return 2
-    out = export_decisions(args.db, args.out)
-    decisions = db_mod.list_decisions(args.db)
+    try:
+        if not db_mod.is_coscreen_database(args.db):
+            print(f"导出失败：不是 {config.APP_NAME} 数据库: {args.db}", file=sys.stderr)
+            return 2
+        # r9 夜扫 b11·F2-77：原先先写盘、后计数——写盘成功而随后的计数读取
+        # 失败时，用户拿到 exit≠0 却已经有一个看起来完整的导出文件。改为
+        # **先取计数、后写盘**：任何读取/校验失败都不会留下半成品文件，写盘
+        # 失败也翻译成中文 + 退出码 2（不再 traceback/exit 1）。
+        decisions = db_mod.list_decisions(args.db)
+        out = export_decisions(args.db, args.out)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"导出失败：{exc}", file=sys.stderr)
+        return 2
     print(f"已导出 {len(decisions)} 条决策到 {out}")
     return 0
 
@@ -367,7 +386,15 @@ def cmd_merge(args: argparse.Namespace) -> int:
         print(f"合并失败：读取决策 CSV 出错：{exc}", file=sys.stderr)
         return 2
 
-    merged = merge_decisions(df_a, df_b)
+    # r9 夜扫 b03·F2-74：merge_decisions 的键校验同样抛 ValueError（"B 侧
+    # zotero_key 必须为 …"）。此前该异常逃出本函数 → traceback + exit 1，
+    # 违反「0 成功 / 2 用户侧错误」契约。校验属用户输入错误，一律翻译成
+    # 中文提示 + 退出码 2（不是放宽校验，只是把拒绝变成契约内的拒绝）。
+    try:
+        merged = merge_decisions(df_a, df_b)
+    except ValueError as exc:
+        print(f"合并失败：{exc}", file=sys.stderr)
+        return 2
     summary = summarize(merged)
     reason_dist = exclusion_reason_distribution(merged)
 
@@ -378,28 +405,26 @@ def cmd_merge(args: argparse.Namespace) -> int:
     flow = prisma_from_merge(merged)
 
     outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    detail_path = outdir / "merged_detail.csv"
-    merged.to_csv(detail_path, index=False, encoding="utf-8-sig")
-
-    conflicts = merged[merged["status"] == "conflict"]
-    conflict_path = outdir / "conflicts.csv"
-    conflicts.to_csv(conflict_path, index=False, encoding="utf-8-sig")
-
-    stats_payload = {
-        "summary": dataclasses.asdict(summary),
-        "kappa": _kappa_to_json_dict(kappa),
-        "exclusion_reason_distribution": reason_dist,
-        "prisma": flow.to_dict(),
-    }
-    stats_path = outdir / "stats.json"
-    stats_path.write_text(
-        json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    written, error = _write_merge_outputs(
+        outdir,
+        {
+            "merged_detail.csv": lambda p: merged.to_csv(p, index=False, encoding="utf-8-sig"),
+            "conflicts.csv": lambda p: merged[merged["status"] == "conflict"].to_csv(
+                p, index=False, encoding="utf-8-sig"),
+            "stats.json": lambda p: p.write_text(
+                json.dumps({
+                    "summary": dataclasses.asdict(summary),
+                    "kappa": _kappa_to_json_dict(kappa),
+                    "exclusion_reason_distribution": reason_dist,
+                    "prisma": flow.to_dict(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8"),
+            "prisma.dot": lambda p: p.write_text(prisma_dot(flow), encoding="utf-8"),
+        },
     )
-
-    dot_path = outdir / "prisma.dot"
-    dot_path.write_text(prisma_dot(flow), encoding="utf-8")
+    if error is not None:
+        print(f"合并失败：写出结果文件出错：{error}", file=sys.stderr)
+        return 2
+    conflicts = merged[merged["status"] == "conflict"]
 
     print(
         f"合并完成：共 {summary.n_total} 条 | 一致 {summary.n_agree} | "
@@ -419,6 +444,30 @@ def cmd_merge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _write_merge_outputs(outdir: Path, writers: dict) -> tuple[list[str], str | None]:
+    """写出合并结果文件；任何 OSError 转中文错误（不吐 traceback、不 exit 1）。
+
+    r9 夜扫 b11·F2-77：merge 的写路径此前无异常处理——``--outdir``
+    指向普通文件时抛 ``FileExistsError [WinError 183]``、权限不足时抛
+    ``PermissionError``，都逃出 main 变成 traceback + exit 1，违反 0/2
+    退出码契约。这里统一捕获并返回 (已写文件, 错误文案)，由调用方打印并
+    返回 2。失败时已写出的文件如实列出（不谎报全部成功）。
+    """
+    written: list[str] = []
+    try:
+        outdir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return written, f"无法创建输出目录 {outdir}：{exc}"
+    for name, writer in writers.items():
+        path = outdir / name
+        try:
+            writer(path)
+        except OSError as exc:
+            return written, f"{name}：{exc}"
+        written.append(name)
+    return written, None
+
+
 def _merge_from_files(args: argparse.Namespace) -> int:
     """--files 路径：按参数顺序加载 N 份 CSV，构建 {"R1": df1, ...} 后进入多人合并。"""
     named: dict = {}
@@ -436,7 +485,13 @@ def _merge_from_files(args: argparse.Namespace) -> int:
 
 def _merge_multi(named: dict, file_labels: dict[str, str], outdir: Path) -> int:
     """多人合并路径（N>=2）：合并 -> 汇总 -> 两两 kappa -> 写出 4 个文件。"""
-    merged = merge_decisions_multi(named)
+    # r9 夜扫 b03·F2-74：与两人路径同口径——merge_decisions_multi 的键校验
+    # ValueError 属用户输入错误，翻译成退出码 2（不吐 traceback）。
+    try:
+        merged = merge_decisions_multi(named)
+    except ValueError as exc:
+        print(f"合并失败：{exc}", file=sys.stderr)
+        return 2
     summary = summarize_multi(merged)
     reason_dist = exclusion_reason_distribution_multi(merged)
 
@@ -450,34 +505,32 @@ def _merge_multi(named: dict, file_labels: dict[str, str], outdir: Path) -> int:
 
     flow = prisma_from_merge_multi(merged)
 
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    detail_path = outdir / "merged_detail.csv"
-    merged.to_csv(detail_path, index=False, encoding="utf-8-sig")
-
-    conflicts = merged[merged["status"] == "conflict"]
-    conflict_path = outdir / "conflicts.csv"
-    conflicts.to_csv(conflict_path, index=False, encoding="utf-8-sig")
-
-    stats_payload = {
-        "summary": _multi_summary_to_json_dict(summary),
-        "kappa": {
-            "pairwise": {
-                f"{left}{_PAIRWISE_KEY_SEP}{right}": _kappa_to_json_dict(result)
-                for (left, right), result in pairwise.items()
-            },
-            "light": light,
+    written, error = _write_merge_outputs(
+        outdir,
+        {
+            "merged_detail.csv": lambda p: merged.to_csv(p, index=False, encoding="utf-8-sig"),
+            "conflicts.csv": lambda p: merged[merged["status"] == "conflict"].to_csv(
+                p, index=False, encoding="utf-8-sig"),
+            "stats.json": lambda p: p.write_text(
+                json.dumps({
+                    "summary": _multi_summary_to_json_dict(summary),
+                    "kappa": {
+                        "pairwise": {
+                            f"{left}{_PAIRWISE_KEY_SEP}{right}": _kappa_to_json_dict(result)
+                            for (left, right), result in pairwise.items()
+                        },
+                        "light": light,
+                    },
+                    "exclusion_reason_distribution": reason_dist,
+                    "prisma": flow.to_dict(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8"),
+            "prisma.dot": lambda p: p.write_text(prisma_dot(flow), encoding="utf-8"),
         },
-        "exclusion_reason_distribution": reason_dist,
-        "prisma": flow.to_dict(),
-    }
-    stats_path = outdir / "stats.json"
-    stats_path.write_text(
-        json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    dot_path = outdir / "prisma.dot"
-    dot_path.write_text(prisma_dot(flow), encoding="utf-8")
+    if error is not None:
+        print(f"合并失败：写出结果文件出错：{error}", file=sys.stderr)
+        return 2
+    conflicts = merged[merged["status"] == "conflict"]
 
     print(
         f"合并完成：共 {summary.n_total} 条 | 一致 {summary.n_agree} | "
@@ -512,8 +565,17 @@ def cmd_stats(args: argparse.Namespace) -> int:
     if not Path(args.db).is_file():
         print(f"统计失败：数据库不存在: {args.db}", file=sys.stderr)
         return 2
+    # r9 夜扫 b11·F2-78：非 SQLite 文件/无权限路径此前直接抛英文 traceback
+    # （db.py:579 file is not a database）→ exit 1。预检后给中文提示 + exit 2。
+    if not db_mod.is_coscreen_database(args.db):
+        print(f"统计失败：不是 {config.APP_NAME} 数据库: {args.db}", file=sys.stderr)
+        return 2
 
-    progress = db_mod.get_progress(args.db)
+    try:
+        progress = db_mod.get_progress(args.db)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"统计失败：{exc}", file=sys.stderr)
+        return 2
     if progress["total"] == 0:
         print("数据库为空（0 条文献）：请先用 import 子命令导入文献。")
         return 0
@@ -563,9 +625,12 @@ def cmd_restore(args: argparse.Namespace) -> int:
     if not Path(args.db).is_file():
         print(f"恢复失败：数据库不存在: {args.db}", file=sys.stderr)
         return 2
+    if not db_mod.is_coscreen_database(args.db):
+        print(f"恢复失败：不是 {config.APP_NAME} 数据库: {args.db}", file=sys.stderr)
+        return 2
     try:
         n = import_decisions_csv(args.db, args.file)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, sqlite3.Error) as exc:
         print(f"恢复失败：{exc}", file=sys.stderr)
         return 2
     print(f"已恢复 {n} 条决策到 {args.db}")
@@ -583,7 +648,14 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     if not Path(args.db).is_file():
         print(f"模拟失败：数据库不存在: {args.db}", file=sys.stderr)
         return 2
-    articles = db_mod.list_articles(args.db, include_duplicates=False)
+    if not db_mod.is_coscreen_database(args.db):
+        print(f"模拟失败：不是 {config.APP_NAME} 数据库: {args.db}", file=sys.stderr)
+        return 2
+    try:
+        articles = db_mod.list_articles(args.db, include_duplicates=False)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"模拟失败：{exc}", file=sys.stderr)
+        return 2
     db_keys = {a.zotero_key for a in articles}
 
     try:
@@ -592,11 +664,33 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         print(f"模拟失败：读取黄金标准 CSV 出错：{exc}", file=sys.stderr)
         return 2
 
-    gold_all = {
-        row["zotero_key"]: row["decision"]
-        for _, row in df.iterrows()
-        if row["zotero_key"]
-    }
+    # r9 夜扫 b11·F2-79：同一 zotero_key 在黄金 CSV 出现多行时，字典推导
+    # 静默取最后一行——指标随行序变化且无任何提示（实测「相关 1 vs 2」
+    # 「平均发现位次 3.00 vs 2.00」）。同值的重复行仍照常接受（合法冗余）；
+    # 只有**互相冲突**的标签才算歧义输入：显式报错并列出冲突键，退出码 2。
+    gold_all: dict[str, str] = {}
+    conflicting: dict[str, set[str]] = {}
+    for _, row in df.iterrows():
+        key = row["zotero_key"]
+        if not key:
+            continue
+        decision = row["decision"]
+        if key in gold_all and gold_all[key] != decision:
+            conflicting.setdefault(key, {gold_all[key]}).add(decision)
+            continue
+        gold_all.setdefault(key, decision)
+    if conflicting:
+        sample = ", ".join(
+            f"{key!r}（{' / '.join(sorted(values))}）"
+            for key, values in sorted(conflicting.items())[:5]
+        )
+        print(
+            f"模拟失败：黄金标准 CSV 中有 {len(conflicting)} 个键带多个冲突标签"
+            f"（同一文献不能既是 include 又是 exclude）：{sample}"
+            f"{'…' if len(conflicting) > 5 else ''}",
+            file=sys.stderr,
+        )
+        return 2
     extra = sorted(k for k in gold_all if k not in db_keys)
     if extra:
         sample = ", ".join(repr(k) for k in extra[:5])

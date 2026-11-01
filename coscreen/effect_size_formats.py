@@ -56,6 +56,53 @@ def _check_rd_range(measure: str, *values: float) -> None:
         raise ValueError("risk differences and confidence limits must be between -1 and 1")
 
 
+def _reported_half_unit(value: float) -> float:
+    """The half unit of the last reported decimal place of ``value``.
+
+    Reported effect estimates and confidence limits are rounded before
+    publication ("HR 1.5 (1.2–2.0)"), so the midpoint they imply can differ
+    from the reported estimate by up to that rounding. ``repr`` yields the
+    shortest round-tripping decimal string, i.e. the precision the author
+    actually wrote (``1.5`` -> 0.05, ``0.611`` -> 0.0005, full-precision
+    floats -> their last ULP). This is the width of the reporting grain, not
+    a numerical tolerance.
+    """
+    text = repr(abs(float(value)))
+    mantissa, _, exponent = text.lower().partition("e")
+    decimals = len(mantissa.partition(".")[2])
+    place = int(exponent) if exponent else 0
+    return 0.5 * 10.0 ** (place - decimals)
+
+
+def _interval_asymmetry_tolerance(estimate: float, low: float, high: float,
+                                  reported_scale: str) -> float:
+    """Allowed asymmetry of a reported interval around its estimate.
+
+    The numbers are taken as reported, so the allowance is the publication
+    grain of the decimals actually written. ``reported_scale`` names what the
+    calculator had to do with them before testing symmetry:
+
+    ``"identity"``    the reported numbers already are the analysis scale
+                      (natural additive effects, Fisher z, or a CI already
+                      reported on the log scale), so a rounding of ``h``
+                      moves the value by ``h``;
+    ``"log_of_reported"`` the reported natural-scale ratio is log-transformed,
+                      so a rounding of ``h`` in ``x`` moves ``log(x)`` by
+                      about ``h/x``.
+
+    The estimate and both limits each contribute. The log budget is capped at
+    0.25 so a coarsely reported small ratio cannot admit an interval whose
+    midpoint is unrelated to the estimate.
+    """
+    if reported_scale == "log_of_reported":
+        grain = (2 * _reported_half_unit(estimate) / abs(estimate)
+                 + _reported_half_unit(low) / abs(low)
+                 + _reported_half_unit(high) / abs(high))
+        return min(grain, 0.25)
+    return (2 * _reported_half_unit(estimate)
+            + _reported_half_unit(low) + _reported_half_unit(high))
+
+
 def _ci_result(measure: str, estimate: float, ci_low: float, ci_high: float,
                confidence_level: object, scale: str, input_data: dict,
                entry_method: str) -> dict:
@@ -99,8 +146,22 @@ def _ci_result(measure: str, estimate: float, ci_low: float, ci_high: float,
     else:
         raise ValueError("unsupported generic measure")
 
-    if not math.isclose(analysis_estimate - analysis_low, analysis_high - analysis_estimate,
-                        rel_tol=1e-7, abs_tol=1e-12):
+    # F4-20: a CI re-derived from an exact SE is symmetric to round-off, but a
+    # published CI is rounded to the reported precision (HR 1.5 (1.2-2.0)).
+    # The gate therefore allows the publication grain of the reported numbers,
+    # so it still rejects an interval whose midpoint is not the reported
+    # estimate.
+    reported_scale = ("log_of_reported"
+                      if measure in _RATIO_MEASURES and scale == "natural"
+                      else "identity")
+    lower_arm = analysis_estimate - analysis_low
+    upper_arm = analysis_high - analysis_estimate
+    tolerance = max(
+        _interval_asymmetry_tolerance(estimate, ci_low, ci_high, reported_scale),
+        1e-7 * max(abs(lower_arm), abs(upper_arm)),
+        1e-12,
+    )
+    if not abs(lower_arm - upper_arm) <= tolerance:
         raise ValueError("confidence interval must be symmetric around estimate on the analysis scale")
     se = (analysis_high - analysis_low) / (2 * critical)
     if not math.isfinite(se) or se <= 0:

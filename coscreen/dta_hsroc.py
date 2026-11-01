@@ -83,6 +83,21 @@ def _require_keys(params: dict, keys: tuple[str, ...], label: str) -> None:
         raise ValueError(f"params is missing required {label} keys: {', '.join(missing)}")
 
 
+def _check_bivariate_domain(tau_s: float, tau_c: float, rho: float) -> None:
+    """两侧共用的双变量有效域门（r9 L6a / b14·F3-99）。
+
+    正向 ``hsroc_from_bivariate`` 与逆向 ``bivariate_from_hsroc`` 必须接受同一
+    个参数域：契约（本模块 docstring、``coscreen.dta_prediction_region``、
+    ``dta_analysis.synthesize`` 的拟合边界）都是 tau > 0.002 且 |rho| < 0.99。
+    逆向原先只查方差为正，能产出回喂正向即被拒的「合法」输出，形成没有出口的
+    往返；这里把门收在一处，两条路径共用同一判据与同一文案。
+    """
+    if tau_s <= _BOUNDARY_TAU_SD or tau_c <= _BOUNDARY_TAU_SD:
+        raise ValueError("HSROC transformation unavailable for a near-boundary between-study SD")
+    if abs(rho) >= _BOUNDARY_ABS_CORRELATION:
+        raise ValueError("HSROC transformation unavailable for a near-boundary correlation")
+
+
 def _validated_bivariate(params: dict) -> tuple[float, float, float, float, float]:
     _require_keys(params, _BIVARIATE_KEYS, "bivariate")
     mu_s = _finite_float("logit_sensitivity_mean", params["logit_sensitivity_mean"])
@@ -90,10 +105,7 @@ def _validated_bivariate(params: dict) -> tuple[float, float, float, float, floa
     tau_s = _finite_float("tau_sensitivity", params["tau_sensitivity"])
     tau_c = _finite_float("tau_specificity", params["tau_specificity"])
     rho = _finite_float("random_effect_correlation", params["random_effect_correlation"])
-    if tau_s <= _BOUNDARY_TAU_SD or tau_c <= _BOUNDARY_TAU_SD:
-        raise ValueError("HSROC transformation unavailable for a near-boundary between-study SD")
-    if abs(rho) >= _BOUNDARY_ABS_CORRELATION:
-        raise ValueError("HSROC transformation unavailable for a near-boundary correlation")
+    _check_bivariate_domain(tau_s, tau_c, rho)
     variance_s, variance_c, covariance = tau_s * tau_s, tau_c * tau_c, rho * tau_s * tau_c
     if not all(math.isfinite(value) for value in (variance_s, variance_c, covariance)):
         raise ValueError("between-study covariance must be finite and positive definite")
@@ -102,9 +114,29 @@ def _validated_bivariate(params: dict) -> tuple[float, float, float, float, floa
     return mu_s, mu_c, tau_s, tau_c, rho
 
 
+def _roundtrip_ok(pairs, scale: float) -> bool:
+    """往返校验：按变换量级缩放的容差（r9 L6a / b11·F3-100）。
+
+    原实现用绝对容差 1e-8，把「参数本身量级大」误判成「变换数值失稳」：契约
+    合法的 1e9 量级拟合均值，经 lambda/theta 的加减抵消后仅浮点舍入就超过
+    1e-8（1e9 量级下双精度间距约 1e-7），于是抛 RuntimeError。容差改为
+    ``1e-8 * max(1, scale)``，``scale`` 取本次变换的中间量量级（正/逆向都用
+    lambda/theta）——O(1) 参数上与原绝对容差同量级（常规回归不受影响，
+    结果值也不变，只有接受判定放宽到与量级匹配），大数量级按相对误差判定。
+    """
+    tolerance = _ROUNDTRIP_TOLERANCE * max(1.0, scale)
+    return all(abs(a - b) <= tolerance for a, b in pairs)
+
+
 def _hsroc_values_to_bivariate(lambda_: float, theta: float, beta: float,
                                variance_alpha: float, variance_theta: float) -> dict:
-    exp_up, exp_down = math.exp(0.5 * beta), math.exp(-0.5 * beta)
+    # r9 L6a / b13·F3-96：|beta| ≳ 1420 时 math.exp 抛 OverflowError（非
+    # ValueError），破坏模块「非法参数一律 ValueError」的契约；按输入越界
+    # 转成 ValueError（同族的 1419 已由下行方差检查以 ValueError 拒绝）。
+    try:
+        exp_up, exp_down = math.exp(0.5 * beta), math.exp(-0.5 * beta)
+    except OverflowError as exc:
+        raise ValueError("HSROC shape parameter beta is outside the representable range") from exc
     common = variance_theta + 0.25 * variance_alpha
     variance_s = exp_down * exp_down * common
     variance_c = exp_up * exp_up * common
@@ -117,8 +149,15 @@ def _hsroc_values_to_bivariate(lambda_: float, theta: float, beta: float,
     rho = covariance / (sd_s * sd_c)
     if not math.isfinite(rho) or abs(rho) >= 1:
         raise ValueError("derived between-study covariance must be finite and positive definite")
-    return {"logit_sensitivity_mean": (0.5 * lambda_ + theta) * exp_down,
-            "logit_specificity_mean": (0.5 * lambda_ - theta) * exp_up,
+    # r9 L6a / b13·F3-97：派生均值溢出为 inf 后曾经流入输出与往返校验，把
+    # 「输入超域」误报为 RuntimeError "numerically unstable"。与正向 :173-175
+    # 同口径，派生均值非有限一律 ValueError。
+    mu_s = (0.5 * lambda_ + theta) * exp_down
+    mu_c = (0.5 * lambda_ - theta) * exp_up
+    if not all(math.isfinite(value) for value in (mu_s, mu_c)):
+        raise ValueError("derived logit means must be finite for valid HSROC parameters")
+    return {"logit_sensitivity_mean": mu_s,
+            "logit_specificity_mean": mu_c,
             "tau_sensitivity": sd_s,
             "tau_specificity": sd_c,
             "random_effect_correlation": rho}
@@ -175,9 +214,10 @@ def hsroc_from_bivariate(params: dict, *, source_provenance=None) -> dict:
         raise ValueError("HSROC parameters must be finite for valid bivariate inputs")
 
     reverse = _hsroc_values_to_bivariate(lambda_, theta, beta, variance_alpha, variance_theta)
-    roundtrip = max(abs(reverse[key] - value)
-                    for key, value in zip(_BIVARIATE_KEYS, (mu_s, mu_c, tau_s, tau_c, rho)))
-    if not roundtrip <= _ROUNDTRIP_TOLERANCE:
+    pairs = [(reverse[key], value) for key, value in
+             zip(_BIVARIATE_KEYS, (mu_s, mu_c, tau_s, tau_c, rho))]
+    roundtrip = max(abs(a - b) for a, b in pairs)
+    if not _roundtrip_ok(pairs, max(abs(lambda_), abs(theta))):
         raise RuntimeError("round-trip check failed; transformation is numerically unstable "
                            "for these parameters")
 
@@ -203,6 +243,12 @@ def bivariate_from_hsroc(params: dict, *, source_provenance=None) -> dict:
     five bivariate field names of ``coscreen.dta_analysis.synthesize``, a
     ``roundtrip_check`` against the supplied HSROC parameters, a deep copy of
     ``input_data``, ``warnings``, ``method``, and the formula identification.
+
+    The inverse enforces the same bivariate valid domain as
+    ``hsroc_from_bivariate`` (tau > 0.002, |rho| < 0.99): an HSROC parameter
+    set whose implied between-study SDs or correlation fall outside it is
+    rejected instead of being returned as output that the forward transform
+    would refuse.
     """
     _require_keys(params, _HSROC_KEYS, "HSROC")
     lambda_ = _finite_float("lambda", params["lambda"])
@@ -214,6 +260,11 @@ def bivariate_from_hsroc(params: dict, *, source_provenance=None) -> dict:
         raise ValueError("HSROC variances must be positive")
 
     reverse = _hsroc_values_to_bivariate(lambda_, theta, beta, variance_alpha, variance_theta)
+    # r9 L6a / b14·F3-99：逆向输出必须落在与正向相同的双变量有效域内，否则
+    # 回喂 hsroc_from_bivariate 必被拒，构成没有出口的往返（docstring 曾宣称
+    # 两侧验证一致）。门收在 _check_bivariate_domain，与正向共用同一判据与文案。
+    _check_bivariate_domain(reverse["tau_sensitivity"], reverse["tau_specificity"],
+                            reverse["random_effect_correlation"])
     forward_ratio = reverse["tau_specificity"] / reverse["tau_sensitivity"]
     forward_beta = math.log(forward_ratio)
     forward_product = reverse["tau_sensitivity"] * reverse["tau_specificity"]
@@ -226,10 +277,11 @@ def bivariate_from_hsroc(params: dict, *, source_provenance=None) -> dict:
                            reverse["logit_specificity_mean"] * forward_down)
     forward_alpha = 2.0 * forward_product * (1.0 + forward_rho)
     forward_vartheta = 0.5 * forward_product * (1.0 - forward_rho)
-    roundtrip = max(abs(forward_lambda - lambda_), abs(forward_theta - theta),
-                    abs(forward_beta - beta), abs(forward_alpha - variance_alpha),
-                    abs(forward_vartheta - variance_theta))
-    if not roundtrip <= _ROUNDTRIP_TOLERANCE:
+    pairs = [(forward_lambda, lambda_), (forward_theta, theta),
+             (forward_beta, beta), (forward_alpha, variance_alpha),
+             (forward_vartheta, variance_theta)]
+    roundtrip = max(abs(a - b) for a, b in pairs)
+    if not _roundtrip_ok(pairs, max(abs(lambda_), abs(theta))):
         raise RuntimeError("round-trip check failed; transformation is numerically unstable "
                            "for these parameters")
 

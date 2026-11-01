@@ -69,13 +69,31 @@ SHAPE_LABELS: dict[str, str] = {
 DATA_SHAPES = tuple(SHAPE_LABELS)
 
 
-def _path(shape: str, module: str, function: str, required: set[str] | str,
+def _required_fields(required: set[str] | list[str] | str) -> list[str]:
+    """``required_fields`` 的唯一出口：**永远**是 ``list[str]``（b14·F4-26）。
+
+    修复前 ``_path`` 对集合排序、对字符串原样返回，负载里 6 条路径的
+    ``required_fields`` 是整句描述（str）：唯一前端消费方
+    （``analysis_entry_guidance.js``）只接 ``Array.isArray`` 的值、其余整体
+    丢弃换通用提示，API 消费方迭代该字段还会得到逐字符输出。这里在模块层
+    单点收口：集合/元组按名排序、字符串包成单元素列表（不丢信息、不拒绝
+    任何现存声明），下游无需再猜类型。
+    """
+    if isinstance(required, str):
+        return [required]
+    if isinstance(required, (set, frozenset)):
+        return sorted(required)
+    return [str(field) for field in required]
+
+
+def _path(shape: str, module: str, function: str,
+          required: set[str] | list[str] | str,
           rank: int, measure: str, cautions: list[str]) -> dict:
     return {
         "shape": shape,
         "entry_module": module,
         "entry_function": function,
-        "required_fields": sorted(required) if isinstance(required, set) else required,
+        "required_fields": _required_fields(required),
         "precision_rank": rank,
         "precision_label": PRECISION_LADDER[rank],
         "produces_measure": measure,
@@ -156,7 +174,9 @@ _SHAPE_PATHS: dict[str, list[dict]] = {
         _path("single_proportion_events_n", "coscreen.single_group_formats",
               "calculate_single_group_effect (single_proportion_events_n)",
               {"events", "total"}, 1, "LOGIT_PROP",
-              ["0 或全部事件时按模块内置校正处理，结果以 logit 尺度合成"]),
+              ["事件数为 0 或等于总数（边界比例）时该格式不支持：模块不做连续性校正，"
+               "需在原报告中核对事件计数或改用其他录入格式",
+               "结果以 logit 尺度合成"]),
     ],
     "single_rate_events_n": [
         _path("single_rate_events_n", "coscreen.single_group_formats",
@@ -188,9 +208,11 @@ _SHAPE_PATHS: dict[str, list[dict]] = {
     "effect_ci": [
         _path("effect_ci", "coscreen.effect_size_formats",
               "calculate_effect (generic_ci)",
-              {"measure", "estimate", "ci_low", "ci_high", "confidence_level", "scale"}, 2,
+              {"measure", "estimate", "ci_low", "ci_high", "confidence_level", "scale",
+               "ci_method"}, 2,
               "RR / OR / HR / RATE_RATIO / RD / MD / SMD / FISHER_Z",
-              ["比值型 CI 一律按对数尺度正态近似反推 SE；scale 必须显式"]),
+              ["比值型 CI 一律按对数尺度正态近似反推 SE；scale 必须显式",
+               "只接受报告为 Wald/正态近似的区间：ci_method 须为 wald_normal"]),
     ],
     "effect_p": [
         _path("effect_p", "coscreen.effect_size_formats",
@@ -208,8 +230,9 @@ _SHAPE_PATHS: dict[str, list[dict]] = {
     "hazard_ratio_ci": [
         _path("hazard_ratio_ci", "coscreen.effect_size_formats",
               "calculate_effect (hazard_ratio_ci)",
-              {"estimate", "ci_low", "ci_high", "confidence_level"}, 2, "HR",
-              ["CI 按对数尺度正态近似反推 SE"]),
+              {"estimate", "ci_low", "ci_high", "confidence_level", "ci_method"}, 2, "HR",
+              ["CI 按对数尺度正态近似反推 SE",
+               "只接受报告为 Wald/正态近似的区间：ci_method 须为 wald_normal"]),
     ],
     "median_survival": [
         _path("median_survival", "coscreen.survival_summary_conversion",
@@ -241,7 +264,7 @@ _SHAPE_PATHS: dict[str, list[dict]] = {
         _path("zero_cell_binary", "coscreen.zero_cell_effects",
               "calculate_zero_cell_effect (format zero_cell_binary)",
               {"events_t", "total_t", "events_c", "total_c", "measure", "correction"}, 2,
-              "RR / OR / RD",
+              "RR / OR",
               ["连续性校正必须显式选择；双零/全事件研究对相对效应无信息，应保存原始计数",
                "校正后的 SE 已非纯计数似然，比直接臂级计数低一档"]),
     ],
@@ -249,13 +272,13 @@ _SHAPE_PATHS: dict[str, list[dict]] = {
         _path("cluster_design_effect", "coscreen.cluster_trial_effects",
               "calculate_cluster_trial_effect (cluster_trial_design_effect)",
               "clusters、icc(+source)、analysis_status、arm 级 mean/sd 或 events", 4,
-              "按 outcome_type：MD / SMD / RR / OR / RD",
+              "按 outcome_type：MD（连续）/ RR、OR、RD（二分类）",
               ["设计效应调整降低精度（阶梯第 4 档）；ICC 来源必须登记",
                "analysis_status 必须显式，防止重复调整"]),
         _path("cluster_design_effect", "coscreen.cluster_trial_variable_size",
               "calculate_cluster_trial_variable_size_effect (cluster_trial_variable_size_design_effect)",
               "outcome_type、measure、icc(+source)、analysis_status、arms", 4,
-              "按 outcome_type：MD / SMD / RR / OR / RD",
+              "按 outcome_type：MD（连续）/ RR、OR、RD（二分类）",
               ["变大小整群用精确权重；同样不得与未调整臂级数据混池"]),
     ],
     "dta_2x2": [
@@ -368,7 +391,11 @@ def recommend_entry_routes(available: list[str]) -> dict:
     candidates = [copy.deepcopy(path) for path in candidates]
 
     chosen_set = set(chosen)
-    combinations = [rule for rule in _COMBINATION_RULES if rule["if"] <= chosen_set]
+    # 组合建议同样深拷贝：_COMBINATION_RULES 是模块级静态表，直接返回其 dict
+    # 会让调用方（API 层序列化后由前端加工的负载）就地改写跨请求/跨 shape
+    # 生效——与上方 candidates 的 deepcopy 同口径（v14·F4-21）。
+    combinations = [copy.deepcopy(rule) for rule in _COMBINATION_RULES
+                    if rule["if"] <= chosen_set]
 
     return {
         "available": chosen,

@@ -80,9 +80,23 @@ def i2_h_interval(q: float, k: int, level: float = 0.95) -> dict:
         h = math.sqrt(h_squared)
 
     z = float(norm.ppf(1 - (1 - level) / 2))
+    # ``norm.ppf(1.0)`` is ``inf``: for level so close to 1 that ``1 - level``
+    # rounds the upper tail probability to 0 (level = 1 - 2**-53), the raw
+    # critical value left the finite range and produced ``h_ci=(1.0, inf)`` and
+    # a degenerate ``i2_ci=(0.0, 0.0)`` with an empty warnings list (F4-69).
+    # ``isf`` evaluates the same quantile in the tail that stays representable.
+    if not math.isfinite(z):
+        z = float(norm.isf((1 - level) / 2))
+    if not math.isfinite(z) or z <= 0:
+        raise ValueError("level is too close to 1 for a representable interval")
     centre = math.log(h)
     h_lower = max(1.0, math.exp(centre - z * se_lnh))
-    h_upper = math.exp(centre + z * se_lnh)
+    try:
+        h_upper = math.exp(centre + z * se_lnh)
+    except OverflowError as exc:
+        raise ValueError("level is too close to 1 for a representable interval") from exc
+    if not math.isfinite(h_upper):
+        raise ValueError("level is too close to 1 for a representable interval")
 
     def to_i2_percent(h_value: float) -> float:
         proportion = (h_value * h_value - 1) / (h_value * h_value)

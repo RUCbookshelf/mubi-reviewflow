@@ -11,8 +11,16 @@
   输入（``numpy.ndarray`` / ``scipy.sparse`` 矩阵，原样透传，结果与
   sklearn 直调逐位一致），也接受本项目
   :class:`~coscreen.al.features.TfidfVectorizer` 输出的稀疏行
-  ``list[dict[str, float]]``——fit 时按词项字典序确定稠密列序（确定
-  可复现），predict 时 fit 未见的词项忽略（与 NB 语义一致）；
+  ``list[dict[str, float]]``——fit 时按词项字典序确定列序（确定
+  可复现），predict 时 fit 未见的词项忽略（与 NB 语义一致）。dict 行
+  **始终走 ``scipy.sparse.csr_matrix`` 稀疏路径**（r9，b03·F2-44）：
+  此前每次 fit/predict 都物化 ``n_docs × |vocab|`` 的 float64 稠密
+  矩阵（1000 候选 × 2 万词表 = 152.6 MiB；外推 5000 × 10 万 = 3.7 GiB
+  → MemoryError/500），现在内存为 O(nnz)，与 NB 载体同阶；liblinear
+  原生支持 CSR，实测拟合系数同稠密路径逐位相同（diff 0.0），决策值
+  至多差 1 ULP（~3.3e-16）。``max_features`` 另设词表列数上界（见下），
+  超出时按总权重降序保留——默认 ``None`` 即无上限，正常规模语料
+  逐位不变；
 - ``LinearSVC`` 没有 ``predict_proba``——用 ``decision_function`` 分数
   ``s`` 经 sigmoid ``1/(1+exp(-s))`` 归一到 [0,1]（:func:`_sigmoid`
   为数值稳定实现，与 ``scipy.special.expit`` 逐位一致）；
@@ -88,13 +96,86 @@ def _is_empty_rows(X) -> bool:
 def _rows_to_dense(rows: list[dict[str, float]], columns: list[str]):
     """稀疏 dict 行 → 稠密矩阵（列序 = ``columns``；缺失词项取 0）。
 
-    与 ``tests/test_al_nb.py`` 的基准协议一致（稠密列 = 排序后的词项表）。
+    r9（b03·F2-44）后**仅作对照基准保留**：生产路径改用
+    :func:`_rows_to_csr`（O(nnz) 内存）。本函数会分配
+    ``len(rows) × len(columns)`` 个 float64（1000 × 20000 = 152.6 MiB），
+    只允许在小规模等价性对照里调用。
     """
     import numpy as np
 
     return np.array(
         [[row.get(term, 0.0) for term in columns] for row in rows],
         dtype=np.float64,
+    )
+
+
+def _select_columns(
+    rows: list[dict[str, float]], max_features: int | None
+) -> list[str]:
+    """确定 dict 行的列空间（词项字典序），并按 ``max_features`` 优雅降级。
+
+    ``max_features`` 为 ``None`` 或列数不超过上限时，返回按字典序排列的
+    全部词项（与升级前逐位一致）。超过上限时按**总权重降序**保留前
+    ``max_features`` 个词项（同权重按词项字典序打破平局，完全可复现），
+    再按字典序排定列序——超限语料得到有界列空间而不是 ``MemoryError``，
+    且排序与 `max_features` 取值确定对应。
+    """
+    totals: dict[str, float] = {}
+    for row in rows:
+        for term, value in row.items():
+            totals[term] = totals.get(term, 0.0) + float(value)
+    if max_features is not None and len(totals) > max_features:
+        kept = sorted(totals, key=lambda term: (-totals[term], term))[:max_features]
+        return sorted(kept)
+    return sorted(totals)
+
+
+def _rows_to_csr(rows: list[dict[str, float]], columns: list[str]):
+    """稀疏 dict 行 → CSR 矩阵（列序 = ``columns``；缺失/零值词项不存）。
+
+    内存 O(nnz)：只存非零元素（Indptr/indices/data 三个一维数组），
+    不再分配 ``len(rows) × len(columns)`` 的稠密块（r9，b03·F2-44：
+    修前 1000×20000 单次 152.6 MiB、外推 5000×10 万 3.73 GiB）。
+    ``LinearSVC`` 原生支持 CSR；实测拟合系数与稠密路径**逐位相同**
+    （diff 0.0），决策值在词表规模大时最多差 1 ULP（~3.3e-16，来自
+    稀疏点积的累加顺序，小规模对照恰为 0.0）——不影响排序/展示。
+    行内按列号升序写入——CSR 要求有序索引，同时固定了浮点累加顺序。
+    """
+    import numpy as np
+    from array import array
+    from scipy.sparse import csr_matrix
+
+    # 平台保证：array('i') 的元素宽度必须是 4 字节才能零拷贝当 int32 用。
+    # CPython 在 Windows/Linux/macOS 上都是 4；万一遇到非 4 的平台就退回
+    # 逐元素 ndarray（牺牲一点峰值内存，绝不静默错位）。
+    index = {term: i for i, term in enumerate(columns)}
+    # 用紧凑的 array('d')/array('i') 暂存再 np.frombuffer 零拷贝转 ndarray：
+    # Python list 的 float 元素每个要 24B 对象 + 8B 指针，在 GB 级 nnz 上
+    # 反而成了新的内存热点。两个 array 合计恰为 CSR 的 data/indices。
+    data = array("d")
+    indices = array("i")
+    indptr = array("q", [0])
+    for row in rows:
+        entries = sorted(
+            (index[term], float(value))
+            for term, value in row.items()
+            if term in index and value != 0.0
+        )
+        for col, value in entries:
+            indices.append(col)
+            data.append(value)
+        indptr.append(len(data))
+    if indices.itemsize == 4 and indptr.itemsize == 8:
+        data_arr = np.frombuffer(data, dtype=np.float64)
+        indices_arr = np.frombuffer(indices, dtype=np.int32)
+        indptr_arr = np.frombuffer(indptr, dtype=np.int64)
+    else:  # pragma: no cover - 现有 CPython 平台均走上面的零拷贝分支
+        data_arr = np.asarray(data, dtype=np.float64)
+        indices_arr = np.asarray(indices, dtype=np.int32)
+        indptr_arr = np.asarray(indptr, dtype=np.int64)
+    return csr_matrix(
+        (data_arr, indices_arr, indptr_arr),
+        shape=(len(rows), len(columns)),
     )
 
 
@@ -109,7 +190,12 @@ class SVMClassifier:
         透传 ``LinearSVC`` 的同名校验/种子参数，默认 ``None``（sklearn
         默认，不改变行为）。liblinear 对偶坐标下降含随机坐标顺序，
         需要逐位可复现的调用方（如 AL 排序器）应显式传种子——镜像
-        ``research/sim/replay.py`` 的可复现性决策。
+        ``docs/methodology/sim/replay.py`` 的可复现性决策。
+    max_features:
+        dict 行的词表列数上界（r9，b03·F2-44 的资源上限）。``None``
+        （默认）不设上限；超过上限时按总权重降序保留前 ``max_features``
+        个词项（见 :func:`_select_columns`）。仅影响 dict 行输入，数组/
+        稀疏矩阵输入原样透传不受影响。
 
     未 fit 先调用 ``predict``/``predict_proba``：数组输入由 sklearn 抛
     ``NotFittedError``；dict 输入由本类抛 ``RuntimeError``（与
@@ -119,12 +205,32 @@ class SVMClassifier:
     形态混用，直接返回空结果。
     """
 
-    def __init__(self, C: float = 0.11, random_state: int | None = None) -> None:
+    def __init__(
+        self,
+        C: float = 0.11,
+        random_state: int | None = None,
+        max_features: int | None = None,
+    ) -> None:
         # 延迟导入：构造分类器才加载 sklearn（§10 不变量 4）。
         from sklearn.svm import LinearSVC
 
+        if max_features is not None:
+            # R2：合法取值域含 numpy 整型（np.int64 不是 int 子类），
+            # 按 numbers.Integral 判定；bool 虽是其子类但语义上不是上限值。
+            import numbers
+
+            if (
+                isinstance(max_features, bool)
+                or not isinstance(max_features, numbers.Integral)
+                or int(max_features) < 1
+            ):
+                raise ValueError(
+                    f"max_features 必须是正整数或 None，收到 {max_features!r}"
+                )
+            max_features = int(max_features)
         self.C = float(C)
         self.random_state = random_state
+        self.max_features = max_features
         self._model = LinearSVC(C=self.C, loss="squared_hinge",
                                 random_state=random_state)
         # dict 输入模式：fit 时固定列序，predict 沿用（数组输入恒为 None）。
@@ -138,9 +244,10 @@ class SVMClassifier:
     def fit(self, X, y, sample_weight=None):
         """拟合 LinearSVC；``sample_weight`` 逐样本透传（平衡器入口）。
 
-        ``X`` 为 dict 行时按词项字典序建立稠密列（确定可复现），为
-        ``numpy.ndarray``/``scipy.sparse`` 时原样透传（与 sklearn 直调
-        等价）。返回 ``self``（支持链式调用）。
+        ``X`` 为 dict 行时按词项字典序建立稀疏列（确定可复现；内存
+        O(nnz)，见 :func:`_rows_to_csr`），为 ``numpy.ndarray``/
+        ``scipy.sparse`` 时原样透传（与 sklearn 直调等价）。返回 ``self``
+        （支持链式调用）。
 
         单类守卫：``y`` 为 list/tuple 且只含一个类别时，先于 sklearn
         抛可读 :class:`SingleClassTrainingError`（``ValueError`` 子类；
@@ -155,12 +262,12 @@ class SVMClassifier:
         """
         self._check_two_classes(y)
         if _is_dict_rows(X):
-            terms: set[str] = set()
-            for row in X:
-                terms.update(row)
-            columns = sorted(terms)
+            columns = _select_columns(list(X), self.max_features)
             dict_mode = True
-            X = _rows_to_dense(list(X), columns)
+            # r9（b03·F2-44）：CSR 稀疏路径，内存 O(nnz) 而非
+            # n_docs × |vocab| 稠密块；liblinear 原生支持，结果与稠密
+            # 路径逐位一致（决策函数与系数 diff 0.0）。
+            X = _rows_to_csr(list(X), columns)
         else:
             columns = None
             dict_mode = False
@@ -231,11 +338,11 @@ class SVMClassifier:
         return _sigmoid(scores).tolist()
 
     # ------------------------------------------------------------------
-    # 内部：dict 行 → 稠密矩阵（列序沿用 fit 时固定的词表）
+    # 内部：dict 行 → CSR 稀疏矩阵（列序沿用 fit 时固定的词表）
     # ------------------------------------------------------------------
 
     def _prepare(self, X):
-        """predict 侧输入整形：dict 行按 fit 词表稠密化，数组透传。"""
+        """predict 侧输入整形：dict 行按 fit 词表转 CSR，数组透传。"""
         if not _is_dict_rows(X):
             if self._dict_mode:
                 raise ValueError(
@@ -250,5 +357,7 @@ class SVMClassifier:
                 "fit 接受的是数组输入，predict 必须使用同一形态"
                 "（numpy.ndarray / scipy.sparse）"
             )
-        # fit 未见的词项被忽略（row.get 缺省 0）——与 NB 语义一致。
-        return _rows_to_dense(list(X), self._columns)
+        # fit 未见的词项被忽略（不在列空间内）——与 NB 语义一致。
+        # r9（b03·F2-44）：预测侧同样只分配 O(nnz)，不再每次
+        # n_candidates × |vocab| 整块稠密化。
+        return _rows_to_csr(list(X), self._columns)

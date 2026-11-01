@@ -37,6 +37,25 @@ def _finite_float(value: object, field: str) -> float:
     return float(value)
 
 
+def _squared(value: float, field: str) -> float:
+    """``value ** 2``，溢出时转 ValueError（F3-82：MD 分支 sd² 未捕获）。
+
+    ``sd=1e200`` 通过有限性校验后 ``sd ** 2`` 抛 ``OverflowError``（非
+    ValueError 子类），绕过端点 ``except ValueError → 4xx`` 变 500。平方
+    溢出意味着该臂方差根本不可表示，按「supported numeric range」拒绝是
+    业务上的正确结论；常规 SD 走同一条 ``** 2``，结果逐位不变。
+    """
+    try:
+        result = value ** 2
+    except OverflowError as exc:
+        raise ValueError(f"{field} is too large: its squared variance overflows the "
+                         "representable range") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{field} is too large: its squared variance overflows the "
+                         "representable range")
+    return result
+
+
 def _dose(arm: Mapping) -> float:
     dose = _finite_float(arm["dose"], "arm dose")
     if dose < 0:
@@ -114,11 +133,16 @@ def arm_summaries_to_dose_curve(study_id: str, arms: list[dict], measure: str,
         raise ValueError("study_id must be a nonempty string")
     if not isinstance(dose_unit, str) or not dose_unit.strip():
         raise ValueError("dose_unit must be a nonempty string")
-    if measure not in _LOG_RATIO_MEASURES | {"MD"}:
+    # F3-84：不可哈希 measure（如 ['RR']）旧实现在集合成员判断处抛 TypeError。
+    if not isinstance(measure, str) or measure not in _LOG_RATIO_MEASURES | {"MD"}:
         raise ValueError("measure must be RR, OR or MD; the Greenland-Longnecker "
                          "covariance is defined for log ratios and mean differences")
     if not isinstance(arms, list) or len(arms) < 3:
         raise ValueError("at least three dose arms (reference plus two contrasts) are required")
+    # F3-80：参考臂选择旧实现直接 ``"person_time" in arms[0]``，None/非 Mapping
+    # 臂在字段检查之前就抛 TypeError。先逐臂确认是 Mapping 再决定字段集。
+    if not all(isinstance(arm, Mapping) for arm in arms):
+        raise ValueError("every dose arm must be an object")
 
     if measure == "MD":
         expected = {"dose", "n", "mean", "sd"}
@@ -129,7 +153,7 @@ def arm_summaries_to_dose_curve(study_id: str, arms: list[dict], measure: str,
         expected = {"dose", "events", "total"}
     clean_arms = []
     for arm in arms:
-        if not isinstance(arm, Mapping) or set(arm) != expected:
+        if set(arm) != expected:
             if measure == "RR":
                 raise ValueError("RR arm fields must be exactly ['dose', 'events', 'total'] or "
                                  "['dose', 'events', 'person_time'], consistently across arms")
@@ -164,10 +188,11 @@ def arm_summaries_to_dose_curve(study_id: str, arms: list[dict], measure: str,
         # diagonal only; mixing that pooled estimate with the referent arm's
         # own sd_0^2/n_0 off-diagonal is not positive definite when the
         # referent SD dominates, so legitimate studies were rejected.)
-        ref_variance = float(ref["sd"]) ** 2 / ref["n"]
+        ref_variance = _squared(float(ref["sd"]), "reference sd") / ref["n"]
         contrasts = [{"dose": float(arm["dose"]),
                       "estimate": float(arm["mean"]) - float(ref["mean"])} for arm in active]
-        variances = [float(arm["sd"]) ** 2 / arm["n"] + ref_variance for arm in active]
+        variances = [_squared(float(arm["sd"]), "arm sd") / arm["n"] + ref_variance
+                     for arm in active]
         covariance_scale = "natural"
     elif rate_arm:
         ref_variance = 1 / ref["events"]

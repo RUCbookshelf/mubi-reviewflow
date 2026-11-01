@@ -3,17 +3,42 @@
 from __future__ import annotations
 
 import math
-import warnings
 from numbers import Real
 from typing import Mapping, Sequence
 
 import numpy as np
-from scipy.integrate import IntegrationWarning, quad
+from scipy.integrate import quad
 from scipy.optimize import brentq, minimize_scalar
 from scipy.special import ndtr
 
 RATIOS = {"RR", "OR", "HR", "RATE_RATIO"}
 MEASURES = RATIOS | {"RD", "MD", "SMD", "FISHER_Z"}
+
+
+def _analysis_scale(measure: str) -> str:
+    """Analysis-scale label shared with ``review_analysis.effect_scale_label``.
+
+    Ratio measures are logged internally (``"log"``), Fisher-z correlations
+    stay on the ``"fisher_z"`` scale and every other measure is ``"natural"``.
+    The label describes the scale of the numbers only; it carries no display
+    transformation.
+    """
+    if measure in RATIOS:
+        return "log"
+    if measure == "FISHER_Z":
+        return "fisher_z"
+    return "natural"
+
+
+#: Scale word for the between-study SD of each analysis scale. ``log`` keeps the
+#: historical literal (``log_ratio_sd``); the Fisher-z scale had been folded into
+#: ``effect_sd`` (F2-58), which contradicted both ``analysis_scale`` in the same
+#: payload and the shared ``effect_scale_label`` vocabulary.
+_TAU_SCALE_LABELS = {"log": "log_ratio_sd", "fisher_z": "fisher_z_sd"}
+
+
+def _tau_scale_label(analysis_scale: str) -> str:
+    return _TAU_SCALE_LABELS.get(analysis_scale, "effect_sd")
 
 
 def _number(value: object, name: str) -> float:
@@ -30,15 +55,26 @@ def _number(value: object, name: str) -> float:
 
 def _integrate(function, lower=-math.inf, upper=math.inf, *, loose=False):
     epsabs, epsrel = (1e-8, 1e-7) if loose else (2e-11, 2e-10)
+    # ``full_output=1`` makes QUADPACK report a failure through its return value
+    # instead of ``IntegrationWarning``. The previous implementation installed a
+    # process-wide ``catch_warnings(record=True)`` window and treated *any*
+    # warning recorded in it as its own; ``warnings`` filters are global, not
+    # per-thread, so a concurrent analysis emitting IntegrationWarning failed an
+    # unrelated fit (and a genuine warning could be stolen by another thread,
+    # bypassing this gate). Reading the status code keeps the check local to
+    # this integration.
     try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", IntegrationWarning)
-            value, error = quad(function, lower, upper, epsabs=epsabs, epsrel=epsrel,
-                                limit=300)
+        result = quad(function, lower, upper, epsabs=epsabs, epsrel=epsrel,
+                      limit=300, full_output=1)
     except (FloatingPointError, OverflowError, ValueError) as exc:
         raise ValueError("posterior quadrature failed") from exc
+    # Success returns ``(value, error)`` -- plus ``infodict`` when the interval
+    # is empty. A QUADPACK failure appends the message string instead.
+    if len(result) not in (2, 3) or (len(result) == 3 and not isinstance(result[2], dict)):
+        raise ValueError("posterior quadrature did not converge")
+    value, error = result[0], result[1]
     error_limit = max(1e-7, abs(value) * 1e-6) if loose else max(1e-9, abs(value) * 1e-7)
-    if caught or not math.isfinite(value) or not math.isfinite(error) or error > error_limit:
+    if not math.isfinite(value) or not math.isfinite(error) or error > error_limit:
         raise ValueError("posterior quadrature did not converge")
     return value, error
 
@@ -104,7 +140,7 @@ def fit_bayesian_normal_meta(
         raise ValueError("tau prior scale must be positive for a proper half-normal prior")
 
     ids, y, se, measure = _parse_study_rows(rows)
-    analysis_scale = "log" if measure in RATIOS else "natural"
+    analysis_scale = _analysis_scale(measure)
     unit = max(float(np.max(np.abs(y))), float(np.max(se)), abs(mu0), mu_sd, tau_sd)
     y_raw = y
     y, se, mu0, mu_sd, tau_sd = y / unit, se / unit, mu0 / unit, mu_sd / unit, tau_sd / unit
@@ -223,6 +259,70 @@ def fit_bayesian_normal_meta(
             return 1.0
         return min(1.0, max(0.0, integral(lambda _x: 1.0, -math.inf, u) / z))
 
+    # ---- fallback CDF -------------------------------------------------------
+    # ``quad`` over ``(-inf, u)`` can step over the narrow log-tau density spike
+    # when u sits far out in the tail: the returned mass is then wrong, the CDF
+    # is non-monotone and ``brentq`` lands on a point whose CDF misses the
+    # target by a jump (F2-56: every fit with k >= 200 failed this way). The
+    # primary path is kept bit-for-bit, because inputs that already integrate
+    # correctly must not move; when its convergence gate fails, the quantile is
+    # retried against a piecewise CDF built on geometric panels measured from
+    # the posterior mode, which cannot skip the spike.
+    _panel_tables: list[tuple[list[tuple[float, float]], list[float], float]] = []
+
+    def _panel_cdf_tables():
+        if _panel_tables:
+            return _panel_tables[0]
+        bounds: list[tuple[float, float]] = []
+        for side in (-1, 1):
+            position, step, panels = float(mode.x), 0.25, 0
+            while panels < 400:
+                following = position + side * step
+                following = (max(following, -745.0) if side < 0 else min(following, 350.0))
+                bounds.append((following, position) if side < 0 else (position, following))
+                position = following
+                panels += 1
+                if density(following) < 1e-280 or following == (-745.0 if side < 0 else 350.0):
+                    break
+                step *= 1.4
+        bounds.sort()
+        running, cumulative = 0.0, []
+        for lower, upper in bounds:
+            running += quad(lambda x: density(x), lower, upper,
+                            epsabs=1e-14, epsrel=1e-13, limit=400)[0]
+            cumulative.append(running)
+        if not math.isfinite(running) or running <= 0:
+            raise ValueError("posterior quadrature did not converge")
+        _panel_tables.append((bounds, cumulative, running))
+        return _panel_tables[0]
+
+    def _panel_index(bounds, value):
+        low, high = 0, len(bounds) - 1
+        while low < high:
+            middle = (low + high) // 2
+            if bounds[middle][1] < value:
+                low = middle + 1
+            else:
+                high = middle
+        return low
+
+    def _panel_mass(lower, upper):
+        return quad(lambda x: density(x), lower, upper,
+                    epsabs=1e-14, epsrel=1e-13, limit=400)[0]
+
+    def robust_tau_cdf(u):
+        bounds, cumulative, total = _panel_cdf_tables()
+        if u <= bounds[0][0]:
+            return 0.0
+        if u >= bounds[-1][1]:
+            return 1.0
+        index = _panel_index(bounds, u)
+        running = cumulative[index - 1] if index else 0.0
+        lower, upper = bounds[index]
+        if u > lower:
+            running += _panel_mass(lower, min(u, upper))
+        return min(1.0, max(0.0, running / total))
+
     def mu_cdf(value):
         def conditional_cdf(u):
             mean, variance = conditional(tau_at(u))
@@ -230,7 +330,22 @@ def fit_bayesian_normal_meta(
 
         return min(1.0, max(0.0, integral(conditional_cdf) / z))
 
-    def quantile(cdf, probability, center, *, initial_width=4.0, tau_domain=False):
+    def robust_mu_cdf(value):
+        bounds, _cumulative, total = _panel_cdf_tables()
+        mass = 0.0
+        for lower, upper in bounds:
+            if lower >= value:
+                break
+            def weighted(x, value=value):
+                mean, variance = conditional(tau_at(x))
+                return density(x) * float(ndtr((value - mean) / math.sqrt(variance)))
+
+            mass += quad(weighted, lower, min(upper, value),
+                         epsabs=1e-14, epsrel=1e-13, limit=400)[0]
+        return min(1.0, max(0.0, mass / total))
+
+    def quantile(cdf, probability, center, *, initial_width=4.0, tau_domain=False,
+                 robust_cdf=None):
         width = initial_width
         for _ in range(24):
             left, right = center - width, center + width
@@ -255,10 +370,45 @@ def fit_bayesian_normal_meta(
         except (ValueError, RuntimeError, OverflowError) as exc:
             raise ValueError("posterior quantile calculation failed") from exc
         if abs(cdf(root) - probability) > 1e-6:
+            if robust_cdf is not None:
+                recovered = _robust_quantile(probability, center, tau_domain=tau_domain,
+                                             robust_cdf=robust_cdf)
+                if recovered is not None:
+                    return recovered
             raise ValueError("posterior quantile calculation did not converge")
         return root
 
-    tau_quantiles_s = [tau_sd * math.exp(quantile(tau_cdf, p, float(mode.x), tau_domain=True))
+    def _robust_quantile(probability, center, *, tau_domain, robust_cdf):
+        """Re-bracket and solve on the panel CDF; ``None`` if it does not settle.
+
+        The bracket found with the direct CDF can be wrong when that CDF skipped
+        the density spike, so the interval is re-expanded against ``robust_cdf``
+        itself, then solved with a tolerance that matches the panel quadrature
+        (1e-12 relative mass, verified to 1e-6 absolute).
+        """
+        width = 4.0 if tau_domain else 8.0
+        for _ in range(24):
+            left, right = center - width, center + width
+            if tau_domain:
+                left, right = max(-745.0, left), min(350.0, right)
+            if robust_cdf(left) <= probability <= robust_cdf(right):
+                break
+            width *= 2
+        else:
+            return None
+        if not left < right:
+            return None
+        try:
+            root = brentq(lambda x: robust_cdf(x) - probability, left, right,
+                          xtol=1e-12, rtol=4 * np.finfo(float).eps, maxiter=200)
+        except (ValueError, RuntimeError, OverflowError):
+            return None
+        if abs(robust_cdf(root) - probability) > 1e-6:
+            return None
+        return root
+
+    tau_quantiles_s = [tau_sd * math.exp(quantile(tau_cdf, p, float(mode.x), tau_domain=True,
+                                                   robust_cdf=robust_tau_cdf))
                        for p in (0.025, 0.5, 0.975)]
 
     def mu_conditional_variance(u):
@@ -269,7 +419,8 @@ def fit_bayesian_normal_meta(
     if not math.isfinite(mu_second) or mu_second <= 0:
         raise ValueError("posterior variance of mu is unstable")
     mu_sd_post_s = math.sqrt(mu_second)
-    mu_quantiles_s = [quantile(mu_cdf, p, mu_mean_s, initial_width=8 * mu_sd_post_s)
+    mu_quantiles_s = [quantile(mu_cdf, p, mu_mean_s, initial_width=8 * mu_sd_post_s,
+                               robust_cdf=robust_mu_cdf)
                       for p in (0.025, 0.5, 0.975)]
 
     def mu_probability_gt_zero(u):
@@ -302,7 +453,7 @@ def fit_bayesian_normal_meta(
         "probability_gt_zero": float(probability_gt_zero),
     }
     tau = {
-        "scale": "log_ratio_sd" if analysis_scale == "log" else "effect_sd",
+        "scale": _tau_scale_label(analysis_scale),
         "mean": tau_mean,
         "median": tau_quantiles[1],
         "credible_interval_95": [tau_quantiles[0], tau_quantiles[2]],

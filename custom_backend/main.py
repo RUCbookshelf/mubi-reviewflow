@@ -6432,13 +6432,29 @@ def _dta_count(values: dict, key: str) -> int:
     ``float(2**63-1) == 2**63`` 的舍入误判为"非整数"，与本端点主路径
     （DtaResultIn 直接入库 200）口径相反；而 2**63 恰为 float 可精确表示，
     反而穿过校验在 INSERT 处 OverflowError 500。
+
+    b15·F4-43（含 F4-47）：本函数与 ``extraction_templates._coerce_number``
+    是同一 apply 请求的两层校验——map 层刻意接受数字字符串与整数值浮点
+    （``float(str(value).strip())``），保存层此前只认 ``int/float`` 实例，
+    于是 schema 合法的 ``tp='3'`` 在 map 层算出 DOR、保存层随即以
+    "TP 必须是非负整数" 拒绝（误导性 400，同一提交两层口径分裂）。此处按
+    map 层同一口径放宽：数字字符串与整数值浮点一律接受，非整数/非有限/
+    越界仍拒绝（R2：守卫放宽到合法域，不新增对合法输入的拒绝）。int 直传
+    保持精确（不复经 float，F-06 的 2**63-1 边界不变）。
     """
     raw = values.get(key)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+    if isinstance(raw, bool):
         raise ValueError(f"{key.upper()} 必须是非负整数")
-    if isinstance(raw, float) and raw != int(raw):
-        raise ValueError(f"{key.upper()} 必须是非负整数")
-    count = int(raw)
+    if isinstance(raw, int):
+        count = raw
+    else:
+        try:
+            number = raw if isinstance(raw, float) else float(str(raw).strip())
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError(f"{key.upper()} 必须是非负整数") from exc
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{key.upper()} 必须是非负整数")
+        count = int(number)
     if count < 0:
         raise ValueError(f"{key.upper()} 必须是非负整数")
     if count > 2**63 - 1:

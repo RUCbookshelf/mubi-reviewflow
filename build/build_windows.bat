@@ -19,13 +19,25 @@ rem  Log: build_windows.log (next to this script; %TEMP% as fallback).
 rem  The window stays open on failure so the reason can be read.
 rem ============================================================
 chcp 65001 >nul
-setlocal
+setlocal EnableExtensions
 title MuBi ReviewFlow - Windows build
 
 set "SRCDIR=%~dp0"
 if "%SRCDIR:~-1%"=="\" set "SRCDIR=%SRCDIR:~0,-1%"
+rem F1-19: bind each external tool to the exact path its `where` lookup reports
+rem (see :resolve_where). This runs before the lock because the UNC wrapper
+rem takes the lock before the :build stage; a tool that is genuinely missing is
+rem still diagnosed by the explicit checks in :build, so this pass is silent.
+call :resolve_where curl.exe CURL_EXE
+call :resolve_where powershell.exe POWERSHELL_EXE
+call :resolve_where node.exe NODE_EXE
+rem F1-34/F1-40: the version comes from the root VERSION file or the build
+rem stops here. The old "0.0.0" fallback (and installer.iss/nsi's stale
+rem "2.0.1") silently produced installers that claim a version nobody chose -
+rem exactly what the N-01 UNC fix had to undo for the app itself.
+if not exist "%SRCDIR%\..\VERSION" goto :fail_noversion
 for /f "usebackq delims=" %%V in ("%SRCDIR%\..\VERSION") do set "APP_VERSION=%%V"
-if not defined APP_VERSION set "APP_VERSION=0.0.0"
+if not defined APP_VERSION goto :fail_noversion
 
 set "LOG=%SRCDIR%\build_windows.log"
 (>"%LOG%" echo MuBi ReviewFlow Windows build log) 2>nul
@@ -87,7 +99,12 @@ if exist "%BUILDROOT%\build\Output" rmdir /s /q "%BUILDROOT%\build\Output" 2>nul
 
 echo   Copying sources to %BUILDROOT% ...
 call :log "copying build folder ..."
-robocopy "%SRCDIR%" "%BUILDROOT%\build" /E /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache staging appdir Output downloads /XF *.AppImage *.tar.gz *.log >>"%LOG%" 2>&1
+rem F1-17: /PURGE removes destination files whose source disappeared. Plain /E
+rem only adds and overwrites, so after a rename/delete upstream the relocated
+rem tree kept the old file and :copyapp packed it into the installer. The
+rem /XD and /XF exclusions are still honoured for deletion, so build outputs
+rem (staging, Output, downloads) are never purged from under the build.
+robocopy "%SRCDIR%" "%BUILDROOT%\build" /E /PURGE /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache staging appdir Output downloads /XF *.AppImage *.tar.gz *.log >>"%LOG%" 2>&1
 if errorlevel 8 goto :fail_copy
 set "SRCPARENT=%SRCDIR%\.."
 set "COPYFAIL="
@@ -158,9 +175,17 @@ if defined MISSING goto :fail_src
 
 where curl.exe >nul 2>nul
 if errorlevel 1 goto :fail_nocurl
+rem F1-19: `where` proved an exe exists somewhere; bind each tool to THAT path.
+rem The old code then called the bare name, which cmd resolves through
+rem PATH+PATHEXT - a curl.bat/curl.cmd earlier in PATH ran instead of the
+rem approved curl.exe and, being an inter-batch call without `call`, never gave
+rem control back (the rest of the build silently did not run).
+call :resolve_where curl.exe CURL_EXE
+if not defined CURL_EXE goto :fail_nocurl
 where powershell.exe >nul 2>nul
 if errorlevel 1 goto :fail_nops
-
+call :resolve_where powershell.exe POWERSHELL_EXE
+if not defined POWERSHELL_EXE goto :fail_nops
 set "PF86=%ProgramFiles(x86)%"
 set "PF64=%ProgramFiles%"
 set "ISCC="
@@ -168,14 +193,14 @@ for %%P in ("%PF86%\Inno Setup 6\ISCC.exe" "%PF64%\Inno Setup 6\ISCC.exe" "%PF86
 if defined ISCC set "INSTALLER_ENGINE=Inno Setup"
 if defined ISCC goto :compiler_ready
 where ISCC.exe >nul 2>nul
-if not errorlevel 1 set "ISCC=ISCC.exe"
+if not errorlevel 1 call :resolve_where ISCC.exe ISCC
 if defined ISCC set "INSTALLER_ENGINE=Inno Setup"
 if defined ISCC goto :compiler_ready
 set "MAKENSIS="
 if exist "%PF86%\NSIS\makensis.exe" set "MAKENSIS=%PF86%\NSIS\makensis.exe"
 if not defined MAKENSIS if exist "%PF64%\NSIS\makensis.exe" set "MAKENSIS=%PF64%\NSIS\makensis.exe"
 if not defined MAKENSIS where makensis.exe >nul 2>nul
-if not defined MAKENSIS if not errorlevel 1 set "MAKENSIS=makensis.exe"
+if not defined MAKENSIS if not errorlevel 1 call :resolve_where makensis.exe MAKENSIS
 if not defined MAKENSIS goto :fail_nocompiler
 set "INSTALLER_ENGINE=NSIS"
 :compiler_ready
@@ -196,10 +221,32 @@ call :fetch_verified "%GETPIP_URL%" "%DOWNLOADS%\get-pip.py" "%GETPIP_SHA256%" |
 
 call :log "[2/6] unpacking runtime and installing pip"
 echo [2/6] unpacking runtime and installing pip ...
-if exist "%SRCDIR%\staging" rmdir /s /q "%SRCDIR%\staging" 2>nul
+rem F1-24: a locked staging tree (antivirus scan, a leftover process, an open
+rem Explorer window) used to make the silent `rmdir ... 2>nul` fail while the
+rem `if not exist runtime` guard then read the SURVIVING old tree as present,
+rem so Expand-Archive -Force stacked a new runtime on top of the old one and
+rem the mixed tree shipped. The cleanup result is now checked and a tree that
+rem could not be removed is a hard stop instead of a silent mix.
+rem The check is a fresh process on purpose: cmd.exe's own `if exist` can still
+rem answer "not there" for a directory that was only partially removed in the
+rem same cmd.exe, while Test-Path reports what the next Expand-Archive will
+rem find. The query goes through a temporary .ps1 so no path ever has to
+rem survive cmd/PowerShell quote nesting (an inline escaped path silently
+rem matched nothing - measured).
+if not exist "%SRCDIR%\staging" goto :staging_clean
+rmdir /s /q "%SRCDIR%\staging" 2>nul
+call :path_exists "%SRCDIR%\staging" RF_STAGING_LEFT
+if defined RF_STAGING_LEFT goto :fail_stageclean
+:staging_clean
 mkdir "%STAGING%\runtime" 2>nul
 if not exist "%STAGING%\runtime" goto :fail_staging
-powershell -NoProfile -Command "Expand-Archive -Force '%DOWNLOADS%\%PYEMBED_ZIP%' '%STAGING%\runtime'" >>"%LOG%" 2>&1
+rem F1-20: Expand-Archive's paths go through -LiteralPath, so a repository
+rem folder whose name contains an apostrophe ("Kang's docs") is no longer cut
+rem short by the single-quoted argument and misreported as "unpacking failed".
+rem The destination is passed WITHOUT a trailing backslash: `...\runtime\"`
+rem makes that backslash escape the closing quote, PowerShell then reads a
+rem mangled path and reports the same misleading unpack error (measured).
+"%POWERSHELL_EXE%" -NoProfile -NonInteractive -Command "Expand-Archive -Force -LiteralPath \"%DOWNLOADS%\%PYEMBED_ZIP%\" -DestinationPath \"%STAGING%\runtime\"" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_expand
 rem the embedded distribution disables site-packages by default
 >"%STAGING%\runtime\python312._pth" echo python312.zip
@@ -223,18 +270,17 @@ echo [4/6] copying application files ...
 set "COPYFAIL="
 for %%P in (custom_backend custom_frontend coscreen) do call :copyapp "%%P"
 if defined COPYFAIL goto :fail_copy
-copy /y "%SRCDIR%\launcher.py" "%STAGING%\launcher.py" >nul
-copy /y "%SRCDIR%\..\VERSION" "%STAGING%\VERSION" >nul
-copy /y "%SRCDIR%\requirements-app.txt" "%STAGING%\requirements-app.txt" >nul
-copy /y "%SRCDIR%\..\THIRD_PARTY_NOTICES.md" "%STAGING%\THIRD_PARTY_NOTICES.md" >nul
-copy /y "%SRCDIR%\windows_start.py" "%STAGING%\windows_start.py" >nul
-copy /y "%SRCDIR%\repair_reviewflow.bat" "%STAGING%\repair_reviewflow.bat" >nul
-copy /y "%SRCDIR%\windows_smoke.py" "%STAGING%\windows_smoke.py" >nul
-copy /y "%SRCDIR%\icon.ico" "%STAGING%\icon.ico" >nul
-copy /y "%SRCDIR%\icon_256.png" "%STAGING%\icon_256.png" >nul
-if not exist "%STAGING%\launcher.py" goto :fail_copy
-if not exist "%STAGING%\windows_start.py" goto :fail_copy
-if not exist "%STAGING%\repair_reviewflow.bat" goto :fail_copy
+rem F1-26: all nine entry points are copied AND verified. The old block ran
+rem nine unchecked `copy /y ... >nul` lines and then verified only three of
+rem them, so a missing/unreadable THIRD_PARTY_NOTICES.md (a licence obligation)
+rem produced a "successful" build with no notices file: the installers package
+rem the whole staging tree and never reference the name, so neither ISCC nor
+rem makensis would notice either.
+set "STAGECOPYFAIL="
+for %%F in (launcher.py requirements-app.txt windows_start.py repair_reviewflow.bat windows_smoke.py icon.ico icon_256.png) do call :stagecopy "%SRCDIR%\%%F" "%STAGING%\%%F"
+call :stagecopy "%SRCDIR%\..\VERSION" "%STAGING%\VERSION"
+call :stagecopy "%SRCDIR%\..\THIRD_PARTY_NOTICES.md" "%STAGING%\THIRD_PARTY_NOTICES.md"
+if defined STAGECOPYFAIL goto :fail_copy
 
 rem Embedded Python ignores the temporary paths used by pip build isolation.
 rem setuptools and wheel are installed above; build pure-Python svglib in place.
@@ -275,9 +321,11 @@ rem degrades its git-diff augmentation by itself when the build tree is not a
 rem git checkout, so it runs unconditionally here.
 where node.exe >nul 2>nul
 if errorlevel 1 goto :fail_no_node
-node "%SRCDIR%\validate_import_review_static.cjs" >>"%LOG%" 2>&1
+call :resolve_where node.exe NODE_EXE
+if not defined NODE_EXE goto :fail_no_node
+"%NODE_EXE%" "%SRCDIR%\validate_import_review_static.cjs" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
-node "%SRCDIR%\validate_team_prisma_static.js" >>"%LOG%" 2>&1
+"%NODE_EXE%" "%SRCDIR%\validate_team_prisma_static.js" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
 rem MM9-07: verify the staged payload tree against the checked-out sources
 rem with the same gate CI runs on the built artifact - previously every local
@@ -298,17 +346,27 @@ if not "%SMOKE%"=="0" goto :fail_smoke
 
 call :log "[6/6] compiling the installer with %INSTALLER_ENGINE%"
 echo [6/6] compiling the installer (%INSTALLER_ENGINE%) ...
+rem F1-18: the previous installer used to be deleted BEFORE the compiler ran,
+rem so a failed compile (disk full, an antivirus lock, a broken .iss) left the
+rem build machine with no usable installer at all. The old artifact is moved
+rem aside first and restored when this compile fails.
+if exist "%SRCDIR%\Output" if not exist "%INSTALLER%.prev" if exist "%INSTALLER%" move /y "%INSTALLER%" "%INSTALLER%.prev" >nul 2>nul
 if exist "%INSTALLER%" del /q "%INSTALLER%"
 if not exist "%SRCDIR%\Output" mkdir "%SRCDIR%\Output"
 if /I "%INSTALLER_ENGINE%"=="Inno Setup" goto :compile_inno
-"%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "installer.nsi" >>"%LOG%" 2>&1
+rem F1-38: installer.nsi is UTF-8. Without /INPUTCHARSET (and without a BOM)
+rem makensis decodes it with the build machine's ANSI code page, which on a
+rem CJK ACP aborts with "Bad text encoding" - or, on an ACP that happens to
+rem accept the bytes, ships a mojibake wizard.
+"%MAKENSIS%" /INPUTCHARSET UTF8 /DAPP_VERSION=%APP_VERSION% "installer.nsi" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_compiler
 goto :compile_done
 :compile_inno
 "%ISCC%" /DAppVersion=%APP_VERSION% "installer.iss" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_compiler
 :compile_done
-if not exist "%INSTALLER%" goto :fail_noexe
+if not exist "%INSTALLER%" goto :fail_compiler
+if exist "%INSTALLER%.prev" del /q "%INSTALLER%.prev" >nul 2>nul
 
 :done
 rem F1-3: release the build lock on the success path (the failure path
@@ -332,6 +390,12 @@ rem  Failure exits: always report a reason and keep the window open
 rem ============================================================
 :fail_nolocal
 call :err "cannot create the local build folder: %BUILDROOT%"
+goto :end_fail
+:fail_noversion
+call :err "VERSION file not found or empty next to the build folder: %SRCDIR%\..\VERSION"
+goto :end_fail
+:fail_stageclean
+call :err "the previous staging tree could not be removed (a process or antivirus scan may hold it): %SRCDIR%\staging - close ReviewFlow and retry"
 goto :end_fail
 :fail_copy
 call :err "copying the sources failed (robocopy reported an error). Source: %SRCDIR%"
@@ -393,7 +457,11 @@ call :err "smoke test failed - see %SRCDIR%\build_windows_smoke.log"
 type "%SRCDIR%\build_windows_smoke.log" >>"%LOG%"
 goto :end_fail
 :fail_compiler
-call :err "installer compilation failed: %INSTALLER_ENGINE%"
+rem F1-18: put the previous installer back so a failed compile does not cost
+rem the build machine its last usable installer.
+if not exist "%INSTALLER%" if exist "%INSTALLER%.prev" move /y "%INSTALLER%.prev" "%INSTALLER%" >nul 2>nul
+if exist "%INSTALLER%" call :err "installer compilation failed: %INSTALLER_ENGINE% (the previous installer was kept)"
+if not exist "%INSTALLER%" call :err "installer compilation failed: %INSTALLER_ENGINE%"
 goto :end_fail
 
 :end_fail
@@ -426,7 +494,8 @@ goto :eof
 :copydir
 rem %~1 = folder name, copied into the relocated build root
 if not exist "%SRCPARENT%\%~1" goto :copydir_missing
-robocopy "%SRCPARENT%\%~1" "%BUILDROOT%\%~1" /E /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache /XF SPEC.md *Zone.Identifier >>"%LOG%" 2>&1
+rem F1-17: /PURGE - see the note on the build-folder copy above.
+robocopy "%SRCPARENT%\%~1" "%BUILDROOT%\%~1" /E /PURGE /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache /XF SPEC.md *Zone.Identifier >>"%LOG%" 2>&1
 if errorlevel 8 set "COPYFAIL=1"
 goto :eof
 :copydir_missing
@@ -436,24 +505,84 @@ goto :eof
 :copyapp
 rem %~1 = folder name, copied into the staging tree
 if not exist "%SRCDIR%\..\%~1" goto :copyapp_missing
-robocopy "%SRCDIR%\..\%~1" "%STAGING%\%~1" /E /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache /XF SPEC.md *Zone.Identifier >>"%LOG%" 2>&1
+rem F1-17: staging is wiped at [2/6], so a plain /E is enough here - but the
+rem relocated copy above can leave a deleted-upstream file behind, so /PURGE
+rem keeps this pass authoritative too.
+robocopy "%SRCDIR%\..\%~1" "%STAGING%\%~1" /E /PURGE /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache /XF SPEC.md *Zone.Identifier >>"%LOG%" 2>&1
 if errorlevel 8 set "COPYFAIL=1"
 goto :eof
 :copyapp_missing
 call :log "note: %~1 not found in the source tree (skipped)"
 goto :eof
 
+:stagecopy
+rem F1-26: %1 = source file, %2 = staged destination. One checked copy; a
+rem failure is recorded so the caller can stop, and the missing file is named.
+copy /y "%~1" "%~2" >nul 2>nul
+if not exist "%~2" (
+  call :err "cannot stage %~nx2 (source: %~1)"
+  set "STAGECOPYFAIL=1"
+)
+goto :eof
+
+:resolve_where
+rem F1-19: bind %1 (an exe name) to the FIRST full path `where` reports, in %2
+rem (the variable to set). %2 stays undefined when `where` finds nothing or
+rem only reports a non-exe shadow, so the caller can fail with its own message.
+set "%~2="
+for /f "usebackq delims=" %%I in (`where %~1 2^>nul`) do if not defined %~2 if /I "%%~xI"=="%~x1" set "%~2=%%I"
+goto :eof
+
+:path_exists
+rem F1-24: %1 = path, %2 = variable to set when the path EXISTS. The test runs
+rem in a brand-new PowerShell process because cmd.exe's own `if exist` can
+rem report a directory as absent after a partial rmdir in the same cmd.exe
+rem (measured), and the path is handed over in a temp .ps1 so neither cmd's
+rem nor PowerShell's quote nesting can mangle it. The scratch file lives next
+rem to the build log, not in %TEMP%. Unset POWERSHELL_EXE falls back to cmd's
+rem own check so the subroutine is still usable standalone.
+set "%~2="
+set "RF_PE_SCRIPT=%SRCDIR%\rf_path_exists_%RANDOM%%RANDOM%.ps1"
+> "%RF_PE_SCRIPT%" echo if (Test-Path -LiteralPath $args[0]) { exit 3 } else { exit 0 }
+if defined POWERSHELL_EXE (
+  if defined LOGOK (
+    "%POWERSHELL_EXE%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%RF_PE_SCRIPT%" "%~1" >>"%LOG%" 2>&1
+  ) else (
+    "%POWERSHELL_EXE%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%RF_PE_SCRIPT%" "%~1" >nul 2>&1
+  )
+  if not errorlevel 1 goto :path_exists_clean
+  set "%~2=1"
+  goto :path_exists_done
+)
+if exist "%~1" set "%~2=1"
+:path_exists_done
+del "%RF_PE_SCRIPT%" >nul 2>nul
+goto :eof
+:path_exists_clean
+del "%RF_PE_SCRIPT%" >nul 2>nul
+goto :eof
+
 :log
-echo [%TIME%] %~1
-if not defined LOGOK goto :eof
->>"%LOG%" echo [%TIME%] %~1
+rem F1-21: %~1 is echoed through a delayed-expansion variable. A bare
+rem `echo [%TIME%] %~1` re-parsed the message, so a path containing `&` was cut
+rem at the ampersand and the tail ran as a command (cmd's "system cannot find
+rem the path" went to the log instead of the message). `echo(` prints the whole
+rem line literally, even when it would start with a switch.
+setlocal EnableDelayedExpansion
+set "RFLINE=[%TIME%] %~1"
+echo(!RFLINE!
+if defined LOGOK >>"%LOG%" echo(!RFLINE!
+endlocal
 goto :eof
 
 :err
+rem F1-21: same re-parsing hazard as :log - see the note there.
+setlocal EnableDelayedExpansion
+set "RFLINE=[ERROR] %~1"
 echo.
-echo [ERROR] %~1
-if not defined LOGOK goto :eof
->>"%LOG%" echo [ERROR] %~1
+echo(!RFLINE!
+if defined LOGOK >>"%LOG%" echo(!RFLINE!
+endlocal
 goto :eof
 
 :acquire_lock
@@ -471,12 +600,26 @@ if not defined RF_BUILD_LOCK_HELD (
 )
 set "RF_LOCK_OWNED=1"
 rem Record the owning cmd.exe so a later build can name it in its error
-rem message. For /f runs its command through one child cmd.exe, so the
-rem query walks two parent levels up from PowerShell's own process.
+rem message. For /f runs its command through one child cmd.exe, so the query
+rem walks two parent levels up from PowerShell's own process. The query goes
+rem through a temporary .ps1 (a literal `for /f` with an inline web of quotes
+rem breaks cmd's own parser) and the whole command is wrapped in an extra pair
+rem of quotes because for /f strips the outer pair - that keeps
+rem "%POWERSHELL_EXE%" (a full path that may contain spaces) as one token.
+rem When PowerShell was not resolved - the subroutine is also exercised on its
+rem own by the regression nails - the pid is simply unknown; the lock itself
+rem is still owned, and :lock_busy names it without a pid.
 set "LOCKPID="
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$p)).ParentProcessId"`) do set "LOCKPID=%%P"
+if defined POWERSHELL_EXE call :lock_pid
 if defined LOCKPID > "%LOCKDIR%\pid" echo %LOCKPID%
 exit /b 0
+:lock_pid
+set "RF_PID_SCRIPT=%LOCKDIR%\..\rf_lock_pid.ps1"
+> "%RF_PID_SCRIPT%" echo $p=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId
+>>"%RF_PID_SCRIPT%" echo (Get-CimInstance Win32_Process -Filter ('ProcessId='+$p)).ParentProcessId
+for /f "usebackq delims=" %%P in (`""%POWERSHELL_EXE%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%RF_PID_SCRIPT%""`) do set "LOCKPID=%%P"
+del "%RF_PID_SCRIPT%" >nul 2>nul
+goto :eof
 :lock_busy
 set "LOCKHOLDER="
 if exist "%LOCKDIR%\pid" set /p LOCKHOLDER=<"%LOCKDIR%\pid"
@@ -499,7 +642,7 @@ rem re-verified on every run; a mismatch deletes it and re-downloads once.
 call :sha256_matches "%~2" "%~3"
 if not errorlevel 1 exit /b 0
 if exist "%~2" del /q "%~2" >nul 2>nul
-curl -L --fail --retry 2 -o "%~2" "%~1" >>"%LOG%" 2>&1
+"%CURL_EXE%" -L --fail --retry 2 -o "%~2" "%~1" >>"%LOG%" 2>&1
 if errorlevel 1 exit /b 1
 call :sha256_matches "%~2" "%~3"
 if errorlevel 1 exit /b 1

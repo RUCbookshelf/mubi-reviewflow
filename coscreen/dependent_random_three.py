@@ -8,9 +8,18 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import norm
 
+from coscreen.dependent_random import (_EvaluationBudget, _GRADIENT_RTOL,
+                                       _coefficient_standard_errors,
+                                       _optimizer_options,
+                                       _pairwise_overlap_counts)
+
 
 _Z_975 = float(norm.ppf(.975))
 _RATIOS = {"RR", "OR", "HR", "RATE_RATIO"}
+# The stationarity gate (F3-62), the wall-clock budget (F3-54/F3-58), the
+# guarded coefficient-covariance diagonal (F3-50/F3-60) and the injective
+# pairwise-overlap report (F3-56) all live in dependent_random so that every
+# carrier in this family shares one value and one code path.
 _CITATION_REMINDER = (
     "Report the source and assumptions for each within-study covariance matrix; "
     "cite Cheung (2015), Chapter 5, §5.3, pp. 127–133."
@@ -173,6 +182,15 @@ def synthesize_random_reml_un_three(
     starts = (initial, correlated_start(.35), correlated_start(-.35))
     bounds = ((0.0, None), (None, None), (0.0, None),
               (None, None), (None, None), (0.0, None))
+    budget = _EvaluationBudget()
+
+    def budgeted(parameters: np.ndarray) -> float:
+        # F3-54/F3-58 family: once the wall-clock budget expires every further
+        # evaluation returns +inf, so the remaining starts stop on L-BFGS-B's
+        # ordinary no-improvement path instead of consuming a shared worker
+        # thread for minutes.
+        return budget.guard(evaluate(parameters))
+
     valid_fits = []
     failures = []
     optimizer_succeeded = False
@@ -180,20 +198,16 @@ def synthesize_random_reml_un_three(
     boundary_objectives = []
     information_failed = False
     for start_index, start in enumerate(starts, start=1):
+        if budget.expired() and valid_fits:
+            break
         try:
             optimized = minimize(
-                evaluate,
+                budgeted,
                 start,
                 method="L-BFGS-B",
                 jac="3-point",
                 bounds=bounds,
-                options={
-                    "ftol": 1e-15,
-                    "gtol": 1e-10,
-                    "maxiter": 5000,
-                    "maxls": 100,
-                    "finite_diff_rel_step": 1e-5,
-                },
+                options=_optimizer_options(),
             )
         except (FloatingPointError, OverflowError, ValueError) as exc:
             failures.append(str(exc))
@@ -215,7 +229,7 @@ def synthesize_random_reml_un_three(
             if optimized.x[index] <= 1e-7 and gradient[index] > 0:
                 gradient[index] = 0.0
         gradient_norm = float(np.linalg.norm(gradient, ord=np.inf))
-        if not math.isfinite(gradient_norm) or gradient_norm > 1e-4:
+        if not math.isfinite(gradient_norm) or gradient_norm > _GRADIENT_RTOL * max(1.0, abs(objective)):
             failures.append(f"projected gradient norm {gradient_norm:.3g}")
             continue
 
@@ -244,6 +258,11 @@ def synthesize_random_reml_un_three(
         })
 
     if not valid_fits:
+        if budget.exhausted:
+            raise ValueError(
+                "random-effects REML exceeded its computation budget before reaching a "
+                "converged fit; reduce the number of studies or outcomes per run"
+            )
         if boundary_reached:
             raise ValueError(
                 "random-effects REML reached a singular covariance boundary; "
@@ -284,8 +303,10 @@ def synthesize_random_reml_un_three(
         raise ValueError("estimated between-study covariance is not positive semidefinite")
 
     estimates = []
+    # F3-60 family: shared positive-diagonal guard instead of a bare math.sqrt.
+    standard_errors = _coefficient_standard_errors(coefficient_covariance)
     for index, outcome in enumerate(outcome_order):
-        se = math.sqrt(float(coefficient_covariance[index, index]))
+        se = standard_errors[index]
         lower = float(coefficients[index]) - _Z_975 * se
         upper = float(coefficients[index]) + _Z_975 * se
         if not all(math.isfinite(value) for value in (se, lower, upper)):
@@ -310,10 +331,7 @@ def synthesize_random_reml_un_three(
             "ci_upper": float(ci_upper),
         })
 
-    pairwise_overlaps = {
-        f"{outcome_order[left]}|{outcome_order[right]}": count
-        for (left, right), count in pair_counts.items()
-    }
+    pairwise_overlaps = _pairwise_overlap_counts(pair_counts, outcome_order)
     warnings = []
     if min(pair_counts.values()) < 5:
         warnings.append(

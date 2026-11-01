@@ -24,8 +24,33 @@ class UndoIn(BaseModel):
 
 
 class EvidenceIn(BaseModel):
-    keep_image_ids: list[Annotated[int, Field(ge=1)]] = Field(default_factory=list, max_length=100)
+    """单个维度的证据保存意图。
+
+    r9 L3（b11·F3-23 的 API 面）：``keep_image_ids`` 缺省/``null`` = 保留该维度
+    现有**全部**图片，与模块层 ``coding_evidence.save_form`` 的"不带该键即
+    全部保留"同一读法。修复前默认空列表且上限 100：单备注累积 >100 张后既
+    发不出 101 条（422），省略又按空集删光——"全部保留"根本无法表达。显式
+    列表仍是精确集合语义（列出即保留这些、其余删除），上限保持 100 不变。
+    """
+    keep_image_ids: list[Annotated[int, Field(ge=1)]] | None = Field(default=None, max_length=100)
     upload_ids: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=100)
+
+
+def _evidence_intents(evidence: dict[int, EvidenceIn] | None) -> dict[int, dict] | None:
+    """把请求模型转成模块层意图：``keep_image_ids`` 为 None 时**省略该键**。
+
+    不能只把 None 传下去——模块层按"键是否存在"区分"全部保留"与"精确集合"，
+    ``{'keep_image_ids': None}`` 会让 ``set(None)`` 抛 TypeError（500）。
+    """
+    if evidence is None:
+        return None
+    intents: dict[int, dict] = {}
+    for did, value in evidence.items():
+        intent = value.model_dump()
+        if intent.get("keep_image_ids") is None:
+            intent.pop("keep_image_ids", None)
+        intents[did] = intent
+    return intents
 
 
 class CodingBatchIn(BaseModel):
@@ -106,7 +131,7 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                 if context is None:
                     raise HTTPException(503, 'Undo is unavailable. Please try again.')
                 coding_evidence.save_form(ctx.actor_db, body.zotero_key, {}, notes=body.notes,
-                    evidence={did: value.model_dump() for did, value in body.evidence.items()} if body.evidence is not None else None,
+                    evidence=_evidence_intents(body.evidence),
                     trace_context=context, submission_evidence=True)
                 result = runtime.coding_result(ctx, body.zotero_key, body.draft)
                 result['access_context'] = workspace_undo.SUBMISSION_EVIDENCE
@@ -237,7 +262,7 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                 if ctx.actor_db.resolve() != db.resolve():
                     raise HTTPException(403, 'Coding evidence is limited to your own workspace.')
                 coding_evidence.save_form(db, body.zotero_key, body.values, notes=body.notes,
-                    evidence={did: value.model_dump() for did, value in body.evidence.items()} if body.evidence is not None else None,
+                    evidence=_evidence_intents(body.evidence),
                     trace_context=context)
                 result = app.state.review_workflow.coding_result(ctx, body.zotero_key, body.draft)
         except ValueError as exc:

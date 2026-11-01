@@ -31,8 +31,16 @@ def _ensure_locator(conn) -> None:
 def save_result(db: DbPath, study_id: str, index_test: str, target_condition: str,
                 threshold: str, reference_standard: str, tp: int, fp: int, fn: int,
                 tn: int, source_key: str, source_locator: str = "") -> None:
-    if not all(str(v).strip() for v in (study_id, index_test, target_condition,
-                                       threshold, reference_standard, source_key)):
+    # r9 L6a / b05·F3-92：校验用 str(...).strip() 判空，但链接检查与 INSERT
+    # 曾用未剥离的 study_id/source_key，带首尾空白的合法 ID 会被误导性地拒成
+    # "source report must be linked to this study"。这里一次归一化六个文本字段，
+    # 校验、链接检查与入库共用同一份剥离后的值（与 review_analysis.save_study
+    # 的剥离口径一致）；已剥离的输入逐位不变。
+    study_id, index_test, target_condition, threshold, reference_standard, source_key = (
+        str(value).strip() for value in (study_id, index_test, target_condition,
+                                         threshold, reference_standard, source_key))
+    if not all((study_id, index_test, target_condition, threshold,
+                reference_standard, source_key)):
         raise ValueError("study, test, condition, threshold, reference and source report are required")
     if any(type(v) is not int or v < 0 for v in (tp, fp, fn, tn)):
         raise ValueError("TP/FP/FN/TN must be nonnegative integers")
@@ -54,14 +62,19 @@ def save_result(db: DbPath, study_id: str, index_test: str, target_condition: st
                      "source_locator=CASE WHEN source_key=excluded.source_key "
                      "THEN COALESCE(NULLIF(excluded.source_locator,''),source_locator) ELSE excluded.source_locator END,"
                      "source_key=excluded.source_key",
-                     (study_id, index_test.strip(), target_condition.strip(), threshold.strip(),
-                      reference_standard.strip(), tp, fp, fn, tn, source_key, source_locator.strip()))
+                     (study_id, index_test, target_condition, threshold,
+                      reference_standard, tp, fp, fn, tn, source_key, source_locator.strip()))
 
 
 def _binomial_ci(k: int, n: int) -> tuple[float, float]:
     from scipy.stats import beta
     return (0.0 if k == 0 else float(beta.ppf(.025, k, n-k+1)),
             1.0 if k == n else float(beta.ppf(.975, k+1, n-k)))
+
+
+def _quoted(values) -> str:
+    """把候选值集合渲染成稳定、可读的错误文案片段（排序后加引号）。"""
+    return ", ".join(repr(value) for value in sorted(values))
 
 
 def list_results(db: DbPath) -> list[dict]:
@@ -75,9 +88,16 @@ def list_results(db: DbPath) -> list[dict]:
     result = []
     for row in rows:
         data = dict(zip(keys, row))
-        data.update(sensitivity=row[5]/(row[5]+row[7]), specificity=row[8]/(row[8]+row[6]),
-                    sensitivity_ci=_binomial_ci(row[5], row[5]+row[7]),
-                    specificity_ci=_binomial_ci(row[8], row[8]+row[6]))
+        # r9 L6a / b14·F4-14：共享读表函数不得对库外写入的简并 2×2 行抛裸
+        # ZeroDivisionError（非 ValueError，端点只捕 ValueError → 500）。
+        # 分母为 0 时比例无定义，回显 None；行本身仍完整返回，由各分析入口
+        # 的既有零参与者守卫给出可读的 ValueError。
+        diseased, non_diseased = row[5] + row[7], row[8] + row[6]
+        data.update(
+            sensitivity=row[5] / diseased if diseased else None,
+            specificity=row[8] / non_diseased if non_diseased else None,
+            sensitivity_ci=_binomial_ci(row[5], diseased),
+            specificity_ci=_binomial_ci(row[8], non_diseased))
         result.append(data)
     return result
 
@@ -97,15 +117,33 @@ def synthesize(db: DbPath, index_test: str, target_condition: str, threshold: st
     if not rows:
         raise ValueError("no diagnostic accuracy results for this test and condition")
     thresholds = {r["threshold"] for r in rows}
+    # r9 L6a / b13·F3-94：显式传入的阈值/参考标准若不在已收集集合内，曾经静默
+    # 过滤成空列表、再落成 "requires at least five independent studies"，把真实
+    # 原因（串不匹配，如 '5mm' vs '5 mm'）藏起来。这里在过滤前给出带候选值的
+    # 诊断；命中集合的合法输入走原路径，结果逐位不变。
+    if threshold is not None and threshold not in thresholds:
+        raise ValueError(
+            f"threshold {threshold!r} was not recorded for this test and condition; "
+            f"recorded thresholds: {_quoted(thresholds)}")
     if threshold is None and len(thresholds) != 1:
         raise ValueError("select one threshold; multiple thresholds from a study are correlated")
     threshold = threshold or next(iter(thresholds))
     rows = [r for r in rows if r["threshold"] == threshold]
     standards = {r["reference_standard"] for r in rows}
+    if reference_standard is not None and reference_standard not in standards:
+        raise ValueError(
+            f"reference standard {reference_standard!r} was not recorded for this test, "
+            f"condition and threshold; recorded reference standards: {_quoted(standards)}")
     if reference_standard is None and len(standards) != 1:
         raise ValueError("select one reference standard")
     reference_standard = reference_standard or next(iter(standards))
     rows = [r for r in rows if r["reference_standard"] == reference_standard]
+    # r9 L6a / b14·F4-14：库外写入/部分拷贝的简并 2×2 行（tp+fn=0 或 tn+fp=0）
+    # 现在由 list_results 如实回显（比例列为 None），不再在共享读表函数里抛裸
+    # ZeroDivisionError。分析入口在此给出可读的 ValueError（端点 → 400），
+    # 与 save_result 的同名守卫同一口径；正常数据不受影响。
+    if any(r["tp"] + r["fn"] == 0 or r["tn"] + r["fp"] == 0 for r in rows):
+        raise ValueError("each selected study must contain diseased and non-diseased participants")
     if len(rows) < 5:
         raise ValueError("bivariate synthesis requires at least five independent studies")
     if len({r["study_id"] for r in rows}) != len(rows):

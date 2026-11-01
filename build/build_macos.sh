@@ -21,6 +21,24 @@ validate_app_version() {
     echo "ERROR: VERSION contains '${1:-}'; expected MAJOR.MINOR[.PATCH[.HOTFIX]] with numeric components only (e.g. 2.1.4)" >&2
     return 1
   fi
+  # F1-13: the CFBundleVersion encoding below packs PATCH and HOTFIX into one
+  # component (PATCH*100 + HOTFIX) and therefore only stays injective while
+  # HOTFIX is at most two digits. Past that it collided with a later patch
+  # release and the ordering stopped being monotonic: 2.1.4.100 and 2.1.5.0
+  # both produced 2.1.500, 2.1.4.1000 and 2.1.14.0 both 2.1.1400. The
+  # assumption is a property of the encoding, so it is checked here with a
+  # readable message instead of being implicit - deliberately WITHOUT
+  # renumbering the historical tags (2.0.5.1-2.0.5.3 must keep mapping to the
+  # bundle versions Apple already saw). CFBundleVersion is limited to three
+  # period-separated integers, so appending the hotfix as a fourth component
+  # is not an option either.
+  local comps hotfix
+  IFS='.' read -r -a comps <<<"$1"
+  hotfix="${comps[3]:-0}"
+  if [ "$((10#$hotfix))" -gt 99 ]; then
+    echo "ERROR: VERSION '${1}' has HOTFIX ${hotfix}; CFBundleVersion packs PATCH and HOTFIX into one component, so hotfix numbers 0-99 are supported (a four-component macOS bundle version is not allowed)" >&2
+    return 1
+  fi
 }
 
 compute_bundle_versions() {
@@ -29,6 +47,11 @@ compute_bundle_versions() {
   IFS='.' read -r major minor patch hotfix <<<"$1"
   patch="${patch:-0}"
   hotfix="${hotfix:-0}"
+  # F1-13: PATCH*100+HOTFIX is injective only while HOTFIX does not exceed two
+  # digits; validate_app_version above now enforces that bound, so a hotfix
+  # release can no longer silently share a CFBundleVersion with a later patch
+  # release. The encoding itself is deliberately unchanged, because Apple has
+  # already consumed the values of every published tag (2.0.5.1-2.0.5.3).
   build="$major.$minor.$((10#$patch * 100 + 10#$hotfix))"
   short="$1"
   case "$1" in *.*.*.*) short="$major.$minor.$patch" ;; esac
@@ -120,8 +143,31 @@ sips -z 1024 1024 "$BUILD/icon_256.png" --out "$ICONSET/icon_512x512@2x.png" >/d
 rm -f "$ICONSET/icon_64x64.png"
 iconutil -c icns "$ICONSET" -o "$BUILD/work-macos/ReviewFlow.icns"
 
+# F1-7: PyInstaller used to take whatever architecture the runner happened to
+# have. The release matrix labels this artifact macos-x64 while `macos-14`
+# runners are arm64, so the DMG's real architecture was a property of the
+# machine, not of the release - and nothing downstream looked at the Mach-O.
+# The target is now derived from the HOST explicitly and passed to PyInstaller
+# (PyInstaller refuses to cross-build, so a mismatch is caught, not shipped),
+# and the frozen executable's architecture is asserted after the build.
+# REVIEWFLOW_MACOS_ARCH overrides the host when the label and the runner
+# disagree - the operator must then run on a matching machine.
+resolve_target_arch() {
+  local machine="${1:-}"
+  case "$machine" in
+    arm64|aarch64) echo "arm64" ;;
+    x86_64|amd64|x64) echo "x86_64" ;;
+    *) return 1 ;;
+  esac
+}
+TARGET_ARCH="$(resolve_target_arch "${REVIEWFLOW_MACOS_ARCH:-$(uname -m)}")" || {
+  echo "ERROR: unsupported machine '${REVIEWFLOW_MACOS_ARCH:-$(uname -m)}' for a macOS build (expected arm64 or x86_64)" >&2
+  exit 1
+}
+
 "$PY" -m PyInstaller \
   --noconfirm --clean --onedir --windowed --name "$APP_NAME" \
+  --target-architecture "$TARGET_ARCH" \
   --icon "$BUILD/work-macos/ReviewFlow.icns" \
   --add-data "$ROOT/custom_backend:custom_backend" \
   --add-data "$ROOT/custom_frontend:custom_frontend" \
@@ -132,6 +178,23 @@ iconutil -c icns "$ICONSET" -o "$BUILD/work-macos/ReviewFlow.icns"
   "$BUILD/launcher.py" --distpath "$DIST" --workpath "$BUILD/work-macos/pyinstaller"
 
 APP="$DIST/$APP_NAME.app"
+# F1-7: assert the artifact really is the architecture the release claims. The
+# DMG is named/uploaded from the matrix label, so a silently different slice
+# would be published under the wrong platform name.
+FROZEN_EXE="$APP/Contents/MacOS/$APP_NAME"
+if [ ! -f "$FROZEN_EXE" ]; then
+  echo "ERROR: the frozen executable is missing: $FROZEN_EXE" >&2
+  exit 1
+fi
+FROZEN_ARCHS="$(lipo -archs "$FROZEN_EXE" 2>/dev/null || true)"
+case " $FROZEN_ARCHS " in
+  *" $TARGET_ARCH "*) : ;;
+  *)
+    echo "ERROR: the built app is '${FROZEN_ARCHS:-unknown}', expected '$TARGET_ARCH' (set REVIEWFLOW_MACOS_ARCH to the architecture of this machine)" >&2
+    exit 1
+    ;;
+esac
+echo "built architecture: $TARGET_ARCH"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier edu.ruc.bookshelf.reviewflow" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUNDLE_VERSION" "$APP/Contents/Info.plist" || \
   /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $BUNDLE_VERSION" "$APP/Contents/Info.plist"

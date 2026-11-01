@@ -9,6 +9,11 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import norm
 
+from coscreen.dependent_random import (_EvaluationBudget, _GRADIENT_RTOL,
+                                       _coefficient_standard_errors,
+                                       _optimizer_options,
+                                       _pairwise_overlap_counts)
+
 
 _Z_975 = float(norm.ppf(.975))
 _RATIOS = {"RR", "OR", "HR", "RATE_RATIO"}
@@ -66,8 +71,30 @@ def _synthesize_random_reml_un(
     n_outcomes = len(outcome_order)
     if len(set(outcome_order)) != n_outcomes:
         raise ValueError("outcomes must be distinct")
+    # F3-57: the shared core assumed at least two outcomes (it takes
+    # itertools.combinations over range(n_outcomes) and then min() of the pair
+    # counts), so a one-outcome call escaped as a bare "min() arg is an empty
+    # sequence" instead of a domain error. The public entry gates 5-8 outcomes;
+    # this guard only restates the core's own lower bound in domain terms.
+    if n_outcomes < 2:
+        raise ValueError("random_reml_un requires at least two outcomes")
 
     outcome_index = {outcome: index for index, outcome in enumerate(outcome_order)}
+    # F3-55: rows_by_block and matrices are positional inputs; a silently
+    # shorter matrices list made zip() drop the trailing studies, so a fit was
+    # reported as converged=True on fewer studies than the caller supplied
+    # (the dossier measured n_paired=20 with 19 matrices). Requiring equal
+    # lengths turns that into a domain error rather than a quiet misfit.
+    if len(rows_by_block) != len(matrices):
+        raise ValueError(
+            "each study block needs exactly one within-study covariance matrix "
+            f"({len(rows_by_block)} blocks, {len(matrices)} matrices)"
+        )
+    for rows, matrix in zip(rows_by_block, matrices):
+        if len(matrix) != len(rows):
+            raise ValueError(
+                "each within-study covariance matrix must match its study block's row count"
+            )
     outcomes_by_block = [
         [outcome_index[row["outcome"]] for row in rows]
         for rows in rows_by_block
@@ -233,25 +260,30 @@ def _synthesize_random_reml_un(
         (0.0, None) if index in diagonal_positions else (None, None)
         for index in range(n_parameters)
     )
+    budget = _EvaluationBudget()
+
+    def budgeted(parameters: np.ndarray) -> float:
+        # F3-54: five starts at maxiter 5000 with a 3-point Jacobian is minutes
+        # of CPU per request; once the budget expires each further evaluation
+        # returns +inf so the remaining starts stop immediately. A fit that
+        # already passed every diagnostic is still returned.
+        return budget.guard(evaluate(parameters))
+
     valid_fits = []
     failures = []
     boundary_objectives = []
     information_failed = False
     for start_index, start in enumerate(starts, start=1):
+        if budget.expired() and valid_fits:
+            break
         try:
             optimized = minimize(
-                evaluate,
+                budgeted,
                 start,
                 method="L-BFGS-B",
                 jac="3-point",
                 bounds=bounds,
-                options={
-                    "ftol": 1e-15,
-                    "gtol": 1e-10,
-                    "maxiter": 5000,
-                    "maxls": 100,
-                    "finite_diff_rel_step": 1e-5,
-                },
+                options=_optimizer_options(),
             )
         except (FloatingPointError, OverflowError, ValueError) as exc:
             failures.append(str(exc))
@@ -271,7 +303,7 @@ def _synthesize_random_reml_un(
             if optimized.x[index] <= 1e-7 and gradient[index] > 0:
                 gradient[index] = 0.0
         gradient_norm = float(np.linalg.norm(gradient, ord=np.inf))
-        if not math.isfinite(gradient_norm) or gradient_norm > 1e-4:
+        if not math.isfinite(gradient_norm) or gradient_norm > _GRADIENT_RTOL * max(1.0, abs(objective)):
             failures.append(f"projected gradient norm {gradient_norm:.3g}")
             continue
 
@@ -299,6 +331,11 @@ def _synthesize_random_reml_un(
         })
 
     if not valid_fits:
+        if budget.exhausted:
+            raise ValueError(
+                "random-effects REML exceeded its computation budget before reaching a "
+                "converged fit; reduce the number of studies or outcomes per run"
+            )
         if boundary_objectives:
             raise ValueError(
                 "random-effects REML reached a singular covariance boundary; "
@@ -328,8 +365,9 @@ def _synthesize_random_reml_un(
         raise ValueError("random-effects REML estimates are outside the finite numerical range")
 
     estimates = []
+    standard_errors = _coefficient_standard_errors(coefficient_covariance)
     for index, outcome in enumerate(outcome_order):
-        se = math.sqrt(float(coefficient_covariance[index, index]))
+        se = standard_errors[index]
         lower = float(coefficients[index]) - _Z_975 * se
         upper = float(coefficients[index]) + _Z_975 * se
         if not all(math.isfinite(value) for value in (se, lower, upper)):
@@ -354,10 +392,7 @@ def _synthesize_random_reml_un(
             "ci_upper": float(ci_upper),
         })
 
-    pairwise_overlaps = {
-        f"{outcome_order[left]}|{outcome_order[right]}": count
-        for (left, right), count in pair_counts.items()
-    }
+    pairwise_overlaps = _pairwise_overlap_counts(pair_counts, outcome_order)
     warnings = []
     if min(pair_counts.values()) < _STABLE_PAIR_OVERLAP:
         warnings.append(

@@ -112,6 +112,49 @@ FROZEN_ENTRY_NAMES = {'macos': 'ReviewFlow', 'linux': 'ReviewFlow'}
 EXCLUDE_DIRS = {'__pycache__', '.pytest_cache'}
 EXCLUDE_FILES = {'SPEC.md'}
 EXCLUDE_SUFFIXES = ('Zone.Identifier',)
+# F1-83: the VERSION check used to accept a matching copy ANYWHERE under the
+# payload (payload_root.rglob('VERSION')), so a stale or missing shipped
+# VERSION passed as soon as some nested duplicate - runtime/embedded/VERSION, a
+# wheelhouse copy - happened to carry the same bytes.
+#
+# A fixed list of exact paths would be wrong in the other direction: PyInstaller
+# puts --add-data output in _internal/ on 6.x (AppDir/usr/bin/_internal/VERSION,
+# ReviewFlow.app/Contents/Frameworks/_internal/VERSION), and pinning only one
+# spelling would reject a legitimate payload - the same class of over-strict
+# gate this wave is fixing. The rule stays "any matching copy passes", but the
+# copies that may vouch are restricted to ones the package actually ships:
+# build-time generated/downloaded trees (runtime/, wheelhouse/,
+# third_party_sources/ - already documented above as not source content) can no
+# longer stand in for a VERSION the payload really ships.
+VERSION_GENERATED_DIRS = {'runtime', 'wheelhouse', 'third_party_sources'}
+
+
+def _version_candidates(payload_root: Path):
+    """Payload VERSION files that may vouch for the shipped version."""
+    found = []
+    for path in Path(payload_root).rglob('VERSION'):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(Path(payload_root))
+        if any(part in VERSION_GENERATED_DIRS for part in relative.parts[:-1]):
+            continue
+        found.append((relative.as_posix(), path))
+    return sorted(found)
+
+
+def read_version(path: Path) -> str:
+    """Read VERSION as UTF-8 regardless of the host's default encoding (F1-88).
+
+    The writer in main() uses encoding='utf-8' while this read used
+    Path.read_text() with the process default codec. On a cp936 host the manifest
+    recorded '2.1.4-尾' for a UTF-8 '2.1.4-β' (the UTF-8 bytes decoded as GBK),
+    and a BOM raised UnicodeDecodeError: 'gbk' codec after the release had been
+    verified. Both sides now agree on UTF-8, a BOM is tolerated (utf-8-sig), and
+    undecodable bytes fail with the path instead of a codec traceback."""
+    try:
+        return path.read_bytes().decode('utf-8-sig')
+    except UnicodeDecodeError as error:
+        raise SystemExit(f'VERSION is not valid UTF-8: {path} ({error})') from error
 
 
 def sha256_file(path: Path) -> str:
@@ -236,7 +279,7 @@ def _compare_root_files(source_root, payload_root, platform, problems, files):
             problems.append(f'payload differs from source: {source_rel} ({payload_rel})')
 
 
-def _verify_version(source_root, payload_root, problems, files):
+def _verify_version(source_root, payload_root, platform, problems, files):
     source_version = source_root / 'VERSION'
     if not source_version.is_file():
         problems.append('source tree is missing VERSION')
@@ -245,9 +288,11 @@ def _verify_version(source_root, payload_root, problems, files):
     files['VERSION'] = expected
     if payload_root is None:
         return
-    candidates = [path for path in payload_root.rglob('VERSION') if path.is_file()]
-    if not any(sha256_file(path) == expected for path in candidates):
-        problems.append('payload VERSION is missing or differs from the source VERSION')
+    candidates = _version_candidates(Path(payload_root))
+    if not any(sha256_file(path) == expected for _relative, path in candidates):
+        problems.append('payload VERSION is missing or differs from the source VERSION '
+                        'outside the generated trees (runtime/, wheelhouse/, '
+                        'third_party_sources/)')
 
 
 def verify_payload(source_root, payload_root, platform, require_payload=False):
@@ -272,7 +317,7 @@ def verify_payload(source_root, payload_root, platform, require_payload=False):
         if platform in FROZEN_ENTRY_NAMES:
             _verify_frozen_entries(Path(payload_root), platform, problems, frozen)
         _compare_root_files(source_root, Path(payload_root), platform, problems, files)
-        _verify_version(source_root, Path(payload_root), problems, files)
+        _verify_version(source_root, Path(payload_root), platform, problems, files)
     elif require_payload:
         mode = 'payload-compare'
         problems.append(f'payload tree not found: {payload_root} (CI must not degrade)')
@@ -286,10 +331,36 @@ def verify_payload(source_root, payload_root, platform, require_payload=False):
             for rel, digest in collect_tree(source_dir).items():
                 files[f'{source_rel}/{rel}'] = digest
         _compare_root_files(source_root, None, platform, problems, files)
-        _verify_version(source_root, None, problems, files)
+        _verify_version(source_root, None, platform, problems, files)
     return {'ok': not problems, 'mode': mode, 'problems': problems, 'files': files,
             'frozen': frozen, 'platform': platform,
             'payload': str(payload_root) if payload_root else None}
+
+
+def resolve_commit(environ=None):
+    """Resolve the commit the manifest pins, fail-closed (F1-87).
+
+    The manifest used to record os.environ.get('GITHUB_SHA') verbatim, so a run
+    without that variable published a manifest with "commit": null and still
+    exited 0 - the one field that ties the published hashes to a revision
+    silently became meaningless. CI sets GITHUB_SHA; a local build has a git
+    checkout, so fall back to `git rev-parse HEAD`. Only when neither exists
+    (an extracted source tree outside git, no CI) does the manifest say so
+    explicitly instead of writing null as if nothing happened.
+    """
+    environ = os.environ if environ is None else environ
+    sha = (environ.get('GITHUB_SHA') or '').strip()
+    if sha:
+        return sha
+    try:
+        import subprocess
+        resolved = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True,
+            text=True, timeout=30, check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        resolved = ''
+    return resolved or 'unversioned-worktree'
 
 
 def main():
@@ -303,8 +374,10 @@ def main():
     output = root / 'release-assets'
     output.mkdir(exist_ok=True)
     (output / f'build-manifest-{platform}.json').write_text(json.dumps({
-        'version': (root / 'VERSION').read_text().strip(), 'platform': platform,
-        'commit': os.environ.get('GITHUB_SHA'), 'mode': result['mode'],
+        # F1-88: read with the same UTF-8 codec the writer uses (see read_version).
+        'version': read_version(root / 'VERSION').strip(), 'platform': platform,
+        # F1-87: never null - CI's GITHUB_SHA, else the checked-out HEAD.
+        'commit': resolve_commit(), 'mode': result['mode'],
         'file_count': len(result['files']), 'files': result['files'],
         # MM9-02: entries the per-file comparison cannot reach on the frozen
         # platforms - the PyInstaller entry point's whole digest and the source
