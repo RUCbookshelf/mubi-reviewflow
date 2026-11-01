@@ -19,13 +19,79 @@ continuous outcomes.
 
 from __future__ import annotations
 
-import copy
 import math
+from fractions import Fraction
 
 _FORMAT = "binary_correlation_conversion"
 _TRANSFORMS = ("phi", "r_equiv_approx")
 _FIELDS = {"events_t", "total_t", "events_c", "total_c", "transform"}
 _OPTIONAL_FIELDS = {"source_provenance"}
+
+#: 审计载荷（``input_data``/``source_provenance``）的嵌套深度上限。
+#: deepcopy 深度族的族内统一常量（与 ``cluster_trial_effects`` /
+#: ``glass_delta_effect`` 同值同形，三载体须同步修改）。
+_MAX_PROVENANCE_DEPTH = 32
+_DEEP_PROVENANCE_PLACEHOLDER = "<nesting too deep>"
+
+
+def _sanitize_provenance(value, _depth: int = 0):
+    """source_provenance 有界拷贝（deepcopy 族 F2-66 + 零校验族 F2-67 的统一入口）。
+
+    客户端可控的 ``source_provenance`` 此前由 ``copy.deepcopy`` 整树复制：
+    嵌套约 500 层即抛 ``RecursionError``（非 ValueError），穿出只捕
+    ValueError 的端点 → 500。此处以深度上限 + 有限性清洗替代递归 deepcopy：
+    - 容器递归重建成新的 dict/list（不再走 deepcopy 的递归实现）；
+    - 深度达到 ``_MAX_PROVENANCE_DEPTH`` 的子树整体替换为占位字符串——
+      不拒绝输入（R2：客户端可能携带任意嵌套的来源信息，拒绝即新增严格性）；
+    - 非有限浮点（nan/±inf）替换为占位字符串：裸 NaN 落库后 GET 回读 null
+      （同族 F2-84 口径）。
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"<non-finite {value!r}>"
+    if isinstance(value, (dict, list, tuple)):
+        if _depth >= _MAX_PROVENANCE_DEPTH:
+            return _DEEP_PROVENANCE_PLACEHOLDER
+        if isinstance(value, dict):
+            return {key: _sanitize_provenance(item, _depth + 1)
+                    for key, item in value.items()}
+        cleaned = [_sanitize_provenance(item, _depth + 1) for item in value]
+        return tuple(cleaned) if isinstance(value, tuple) else cleaned
+    return value
+
+
+def _copy_input(values: dict) -> dict:
+    """有界结构化拷贝（替代递归 ``copy.deepcopy``，深/宽结构一律新容器）。
+
+    provenance 走同一清洗器，故 ``source_provenance`` 的深度封顶与非有限
+    清洗与其余字段口径一致（F2-66 / F2-67 同族同入口）；容器全部重建，
+    返回结果不与调用方输入共享可变对象，与旧 deepcopy 的可变隔离语义等价。
+    """
+    return _sanitize_provenance(values)
+
+
+def _exact_parts(a: int, b: int, c: int, d: int) -> tuple[int, int]:
+    """返回 (phi 分子, 分母平方) 的精确整数形式。
+
+    F2-68：|phi| 的判定必须在整数域做。``(a*d-b*c)**2 < (a+b)*(c+d)*(a+c)*(b+d)``
+    等价于 |phi|<1 且无舍入——直接比较浮点商时，合法表（如 a=d≈4.5e16、
+    b=c=1，数学上 phi = 1−4.4e-17）会因 int→float 舍入把商算成 1.0，被
+    「完全分离」守卫误拒。计数上限 2**63，四项乘积 < 2**256，Python 整数
+    无溢出。
+    """
+    numerator = a * d - b * c
+    denominator_squared = (a + b) * (c + d) * (a + c) * (b + d)
+    return numerator, denominator_squared
+
+
+def _exact_one_minus_phi_sq(a: int, b: int, c: int, d: int) -> float:
+    """精确的 1−phi²（浮点可表示的极小量，用于方差近似）。
+
+    ``(D − N²)/D`` 用 Fraction 精确计算后再转 float：对接近 ±1 的表，
+    直接浮点算 ``1 - phi*phi`` 只有一个 ulp 的精度（phi 舍入到 1.0 时为 0）。
+    """
+    numerator, denominator_squared = _exact_parts(a, b, c, d)
+    return float(Fraction(denominator_squared - numerator * numerator,
+                          denominator_squared))
 
 
 def _count(value: object, name: str) -> int:
@@ -112,23 +178,37 @@ def _warnings(transform: str, a: int, b: int, c: int, d: int,
 def _phi(a: int, b: int, c: int, d: int, data: dict) -> dict:
     """phi coefficient and its approximate SE (Bonett 2021, eqs 3.11-3.12)."""
     n = a + b + c + d
+    numerator, denominator_squared = _exact_parts(a, b, c, d)
+    # F2-68：|phi|=1 ⇔ (ad−bc)² = (a+b)(c+d)(a+c)(b+d)，在整数域精确成立。
+    # 该判定只用于复核浮点守卫的拒绝：守卫触发时才看精确值，据此区分
+    # 「真分离」与「合法大表被舍入成 1」。守卫未触发时行为与基线与逐位一致
+    # （只放宽、不收紧——不新增对合法输入的拒绝，R2）。
+    exact_degenerate = numerator * numerator >= denominator_squared
     try:
-        phi = (a * d - b * c) / math.sqrt((a + b) * (c + d) * (a + c) * (b + d))
+        phi = numerator / math.sqrt(denominator_squared)
     except (OverflowError, ValueError) as exc:
         raise ValueError("the 2x2 counts must imply a finite phi") from exc
     if not math.isfinite(phi):
         raise ValueError("the 2x2 counts must imply a finite phi")
+    saturated = False
     if phi <= -1 or phi >= 1:
-        raise ValueError(
-            "the table implies complete separation (phi = +/-1); no "
-            "correlation-scale conversion is reported for degenerate tables"
-        )
+        if exact_degenerate:
+            raise ValueError(
+                "the table implies complete separation (phi = +/-1); no "
+                "correlation-scale conversion is reported for degenerate tables"
+            )
+        # 数学上 |phi|<1，但需计数 ≳2e16 才能与 1 区分，float64 商舍入到 1。
+        # 取最接近的内点而不拒绝：合法表不得被误报为完全分离（R2）。
+        saturated = True
+        phi = math.nextafter(1.0, 0.0) if phi > 0 else math.nextafter(-1.0, 0.0)
     p_t, p_c = (a + b) / n, (c + d) / n
     p_event, p_nonevent = (a + c) / n, (b + d) / n
     row_diff = p_t - p_c
     col_diff = p_event - p_nonevent
     denominator = math.sqrt(p_t * p_c * p_event * p_nonevent)
-    v1 = 1 - phi * phi
+    # 1−phi² 在饱和分支用精确有理数：phi 已舍入到 1 的邻域时浮点 1−phi²
+    # 只剩 0 或 1 ulp 的意义。常规输入保持原浮点表达式，结果逐位不变。
+    v1 = _exact_one_minus_phi_sq(a, b, c, d) if saturated else 1 - phi * phi
     v2 = phi + 0.5 * phi ** 3
     v3 = row_diff * col_diff / denominator
     v4 = 0.75 * phi * phi * (row_diff * row_diff / (p_t * p_c)
@@ -187,10 +267,11 @@ def _r_equiv_approx(a: int, b: int, c: int, d: int, data: dict) -> dict:
             "positive variance approximation"
         )
     if rho <= -1 or rho >= 1:
-        raise ValueError(
-            "the table implies a degenerate equivalent correlation; no "
-            "conversion is reported"
-        )
+        # F2-68：rho = cos(π/(1+t)) 对任意有限 t>0 都严格落在 (−1,1)，本分支
+        # 只由 cos 在 0 附近舍入到 ±1 触发（合法大表被误报为退化）。真退化表
+        # （如 20/20 vs 0/20）算出的是 0.997，不经此处。取最接近的内点而非
+        # 拒绝：不新增对合法输入的拒绝（R2）。
+        rho = math.nextafter(1.0, 0.0) if rho > 0 else math.nextafter(-1.0, 0.0)
     se = math.sqrt(variance)
     p_t, p_c = (a + b) / n, (c + d) / n
     p_event, p_nonevent = (a + c) / n, (b + d) / n
@@ -235,7 +316,7 @@ def calculate_binary_correlation_conversion(values: dict) -> dict:
             "transform; source_provenance is optional"
         )
 
-    data = copy.deepcopy(values)
+    data = _copy_input(values)
     if not isinstance(data["transform"], str) or data["transform"] not in _TRANSFORMS:
         raise ValueError(f"transform must be one of {', '.join(_TRANSFORMS)}")
     if "source_provenance" in data and not isinstance(data["source_provenance"], dict):

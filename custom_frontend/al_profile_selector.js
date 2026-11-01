@@ -25,8 +25,12 @@
        后端将来新增的预设按响应键序追加在末尾。 */
     const PREFERRED_ORDER = ['legacy', 'tuned', 'cjk', 'svm'];
     // Display vocabulary only; identifiers and backend profile parameters are unchanged.
-    const PRESET_LABELS = {"legacy": "经典预设", "tuned": "优化朴素贝叶斯预设", "cjk": "中日韩文本 SVM 预设", "svm": "线性 SVM 预设"};
-    const PRESET_DESCRIPTIONS = {"legacy": "保留原有朴素贝叶斯配置，用于兼容旧任务。", "tuned": "调整文本特征、朴素贝叶斯参数和类别平衡；效果取决于当前任务的数据与标签。", "cjk": "线性 SVM，包含中日韩文本的字符二元组特征；效果取决于当前任务的数据与标签。", "svm": "线性 SVM，使用文本特征与类别平衡；效果取决于当前任务的数据与标签。"};
+    // b09·F2-16（r9 L4b）：cjk 与 svm 运行时完全相同（字符二元组本是所有预设的
+    // 默认特征），后端 profiles.py 已如实改口径；这两行文案随之后不再把 CJK
+    // 字符二元组当作 cjk 独有能力（旧文案留在界面上就是虚假卖点）。两串都是
+    // workflow_locale.js 的十语言词条键，改动须同步词典。
+    const PRESET_LABELS = {"legacy": "经典预设", "tuned": "优化朴素贝叶斯预设", "cjk": "中文兼容预设", "svm": "线性 SVM 预设"};
+    const PRESET_DESCRIPTIONS = {"legacy": "保留原有朴素贝叶斯配置，用于兼容旧任务。", "tuned": "调整文本特征、朴素贝叶斯参数和类别平衡；效果取决于当前任务的数据与标签。", "cjk": "与 SVM 模式运行时完全相同（字符二元组本就是所有预设的默认特征），保留该名称用于兼容已选择它的任务。", "svm": "线性 SVM，使用文本特征与类别平衡；效果取决于当前任务的数据与标签。"};
     let version = 0;            // 异步票据：任务切换后丢弃过期响应
     let handledTaskId;          // 已初始化下拉的任务（重复 task-loaded 去重）
     let current = null;         // 会话内经确认生效的预设（null=未设置→显示默认）

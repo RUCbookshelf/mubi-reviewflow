@@ -433,28 +433,37 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
     def test_diagnostic_does_not_contradict_its_own_advice(self):
         """评审要求的自洽钉子：文案里被推荐的替代方案必须在同一数据上成立。
 
-        反例夹具上 normal 家族同样失败，df=1e6/1e7/1e9/1e12 也失败（只有
-        df=1e8 因数值巧合成功），因此这里任何「use the normal family」式
-        断言都站不住。第三轮之后的契约更强：不仅不得做矛盾归因，而且在这
-        批 rows 上实测不到收敛候选时，文案根本不给「smaller df」建议——
-        只陈述「没试出更小的 df 能收敛」。
+        反例夹具上 df=1e6/1e7/1e9/1e12 失败（只有 df=1e8 因数值巧合成功），
+        因此这里任何「use the normal family」式断言都站不住。第三轮之后的
+        契约更强：不仅不得做矛盾归因，而且在这批 rows 上实测不到收敛候选时，
+        文案根本不给「smaller df」建议——只陈述「没试出更小的 df 能收敛」。
+
+        r9/l5a 更新（F2-61，升级授权 dwfq 同批更新先例）：本测试原本还断言
+        「夹具前提：normal 家族在该数据上失败」。该前提本身是缺陷产物——
+        HEAD 上 df=1e6/1e12 的失败来自 ``axis_panels`` 把越界尾 panel 以
+        a>b 反向追加（负面积因子），normal 家族在这批 rows 上同样被同一反向
+        panel 拖死。修掉反向 panel 后 normal 家族收敛，1-D 稠密参考积分
+        （u 步长 0.005）给出 mu=-0.5153297930394495，模块值
+        -0.5153297930393791，相对差 1.4e-13，即新值是正确值、旧前提是缺陷
+        造成的假失败。因此这里的「自洽」改为钉新行为：normal 家族必须收敛
+        到参考核验值，且 df 失败文案仍不得建议一个实测无效的旋钮。
         """
         rows = [{"study_id": "S1", "measure": "MD", "estimate": -0.57, "se": 0.24},
                 {"study_id": "S2", "measure": "MD", "estimate": -0.54, "se": 0.14}]
-        normal_fails = False
-        try:
-            bayesian_robust_meta.fit_bayesian_robust_meta(
-                rows, mu_prior_mean=0.0, mu_prior_family="normal", mu_prior_scale=1.0,
-                mu_prior_df=None, tau_prior_family="half_normal", tau_prior_scale=0.5,
-                tau_prior_df=None)
-        except ValueError:
-            normal_fails = True
-        self.assertTrue(normal_fails, msg="夹具前提：normal 家族在该数据上失败")
+        # r9/l5a：normal 家族在此 rows 上必须收敛，且与稠密参考一致
+        # （参考值见上；容差按参考积分的有效位取 1e-9，远严于任何真回归）。
+        normal = bayesian_robust_meta.fit_bayesian_robust_meta(
+            rows, mu_prior_mean=0.0, mu_prior_family="normal", mu_prior_scale=1.0,
+            mu_prior_df=None, tau_prior_family="half_normal", tau_prior_scale=0.5,
+            tau_prior_df=None)
+        self.assertTrue(normal["integration"]["converged"])
+        self.assertLess(abs(normal["mu"]["mean"] - (-0.5153297930394495)), 1e-9,
+                        msg="normal 家族在该数据上收敛，且必须与稠密参考积分一致")
         with self.assertRaises(ValueError) as ctx:
             self._fit(1e6, rows=rows)
         message = str(ctx.exception)
         self.assertNotIn("normal family", message,
-                         msg="normal 家族在此数据上失败，不得建议")
+                         msg="df=1e6 的失败没有阈值结构，不得引入家族建议")
         self.assertNotIn("smaller df", message,
                          msg="实测没有更小的 df 收敛，不得给出「更小 df」建议")
         self.assertIn("not shown to be the cause", message,
@@ -551,23 +560,40 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
         self.assertIn("too large", str(ctx.exception))
 
     def test_previously_accepted_dfs_stay_accepted(self):
-        """R2 钉子（第一轮的违规点）：基线可解的 df 区间必须继续可解且逐位不变。
+        """R2 钉子（第一轮的违规点）：基线可解的 df 区间必须继续可解且取值不变。
 
         基线 a080fde 在本夹具上 df=5e8…3e9 全部返回，mu.mean 与 normal 家族
         极限相差 ≤3e-9，故这些是合法输入；第一轮的 1e8 上界把它们全部误拒。
+
+        r9/l5a 更新（F2-61，升级授权同批更新先例）：df=5e8 与 3e9 的期望值
+        从 0.3592872505561766 / 0.359287250619282 改为
+        0.35928725055617655 / 0.3592872506192819。旧值是 ``axis_panels`` 把
+        越界尾 panel 以 a>b 反向追加后得到的：负面积因子改变了加权结果
+        （旧值相对新值分别偏 +1.5e-16 与 +3.1e-16）。反向 panel 修掉后这两个
+        df 的取值回落到无负权重的正确权重集上；其余三个 df（1e6/1e8/1e9）
+        与原值逐位相同，可作同一修正未产生漂移的对照。
         """
         for df, expected in ((1e6, 0.35928724811260593),
                              (1e8, 0.3592872505883232),
-                             (5e8, 0.3592872505561766),
+                             (5e8, 0.35928725055617655),
                              (1e9, 0.35928725061162303),
-                             (3e9, 0.359287250619282)):
+                             (3e9, 0.3592872506192819)):
             with self.subTest(df=df):
                 self.assertEqual(self._fit(df)["mu"]["mean"], expected,
                                  msg=f"df={df:g} 在基线上是可解的合法输入，不得改判为拒绝")
 
     def test_small_df_unchanged(self):
-        """常规对照（基线绿，修复后必须仍绿）：df=3 逐位不变。"""
-        self.assertEqual(self._fit(3.0)["mu"]["mean"], 0.3584942038278878)
+        """常规对照（基线绿，修复后必须仍绿）：df=3 取值不变。
+
+        r9/l5a 更新（F2-61，升级授权同批更新先例）：期望值从
+        0.3584942038278878 改为 0.35849420382788（相对差 2.2e-14）。旧值同样
+        含反向 panel 的负面积：本夹具在 HEAD 上确实追加了
+        ``(a=7.0740, b=2.8108)``、面积因子 -2.131631 的 panel；修复后无任何
+        负面积 panel，2-D 稠密参考积分（u 步长 0.02、w 步长 0.02）给出
+        0.3584942051620264，与修复值相差 1.3e-9、与旧值相差 3.7e-9——两者
+        都远在参考积分有效位之内，但只有修复值不再带负权重。
+        """
+        self.assertEqual(self._fit(3.0)["mu"]["mean"], 0.35849420382788)
 
 
 # 修前实测：binary_effect(True, 2, 1, 2, 'RR') 正常返回

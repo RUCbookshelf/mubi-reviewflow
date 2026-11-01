@@ -483,6 +483,22 @@ _LEGACY_DISAMBIG_TAIL_RE = re.compile(
     r"^(?P<base>.+)-(?P<suffix>[0-9a-f]{12})(?:-(?P<serial>[1-9]\d*))?$"
 )
 
+#: 梯度判定常数：历史公式的后缀是 sha256(base|content_id)[:12]；后缀里的
+#: content_id 不随键保存，因此**单键**无法区分「真消歧后缀」与「来源键自带
+#: 的 -12hex 尾段」（r9 夜扫 b12·F3-37）。本模块保留单键公式（MM6-04 的
+#: 重导沿用链依赖它），并在迁移层用 :func:`fresh_key_for_overlong` 消解
+#: 折叠：见 db.migrate_overlong_keys 的「同目标」分支。
+def fresh_key_for_overlong(key: str, serial: int | None = None) -> str:
+    """按**全键**哈希生成超长键的合规目标（单键确定性、可重算，F3-37）。
+
+    与 :func:`compliant_key_for_overlong` 的非消歧分支同一公式；单独暴露，
+    供迁移在「多个超长键折叠到同一目标」时改用——每个目标只依赖自己的键，
+    不再随库内是否有同前缀的兄弟键而变（修前第二条只能靠 serial 变成
+    ``…-2``）。
+    """
+    fresh = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    return _suffixed_disambig_key(key, fresh, serial)
+
 
 def compliant_key_for_overlong(key: str, serial: int | None = None) -> str:
     """把超长键（>KEY_MAX_LEN）改写为现行公式的合规键（≤300，MM6-03）。
@@ -495,6 +511,12 @@ def compliant_key_for_overlong(key: str, serial: int | None = None) -> str:
       sha256 前 12 位作后缀（确定性、可重算），截断拼接。
     - serial 供迁移的目标键碰撞重试（与导入侧 serial 重试同形态）。
 
+    单键不可判定性（r9 夜扫 b12·F3-37）：``base`` 尾段的 12hex 也可能只是
+    来源键内容里恰好出现的字符，此时按历史形态截断会让「仅第 288 位之后
+    不同」的两条键折叠到同一目标。content_id 不在键里，单键无从证明——
+    迁移层改用 :func:`fresh_key_for_overlong` 消解该折叠（见
+    ``db.migrate_overlong_keys``）；本函数保留历史形态，MM6-04 沿用链不变。
+
     len(key) ≤ KEY_MAX_LEN 时原样返回（幂等守卫，调用方不应依赖）。
     """
     if len(key) <= _DISAMBIG_KEY_MAX_LEN:
@@ -504,13 +526,65 @@ def compliant_key_for_overlong(key: str, serial: int | None = None) -> str:
         retry = int(match.group("serial")) if serial is None and match.group("serial") else serial
         return _suffixed_disambig_key(
             match.group("base"), match.group("suffix"), retry)
-    fresh = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
-    return _suffixed_disambig_key(key, fresh, serial)
+    return fresh_key_for_overlong(key, serial)
+
+
+
+
+def _known_rows(index: dict[str, object], key: str) -> tuple[Article, ...]:
+    """按库内键取候选行（兼容单值 dict 与「同键多行」分组 dict）。
+
+    r9 夜扫 b04·F3-35：``known_by_key`` 原先用 setdefault 只保留每个键的首行，
+    同键其余行的「同键是否同一文献」判定永远不参与，本应走更新路径的记录被
+    误判键冲突、加后缀成新行。索引改为 key -> 行列表；本函数把两种形态归一
+    （既有调用/测试仍可传 dict[str, Article]）。
+    """
+    value = index.get(key)
+    if value is None:
+        return ()
+    if isinstance(value, Article):
+        return (value,)
+    return tuple(value)  # type: ignore[arg-type]
+
+
+def _known_row(index: dict[str, object], key: str) -> Article | None:
+    """按库内键取**首选**行（首个活动行；无活动行时取首行），无则 None。"""
+    rows = _known_rows(index, key)
+    for row in rows:
+        if not getattr(row, "is_duplicate_of", None):
+            return row
+    return rows[0] if rows else None
+
+
+def _known_confirms(index: dict[str, object], key: str, art: Article) -> bool:
+    """该键下的**任一行**是否与本条记录确认为同一文献（b04·F3-35）。"""
+    return any(_key_merge_confirmed(row, art) for row in _known_rows(index, key))
+
+
+def _canonical_known_key(index: dict[str, object], key: str) -> str:
+    """库内键按 is_duplicate_of 链解析到「筛选可见」的保留键（b04·F3-36）。
+
+    重复标记行（标题重复复审把别的成员定为 keeper 后留下的旧行）在筛选/
+    进度里不可见；本批记录若沿用它的键，刷新会写进不可见行、keeper 永远
+    陈旧。链解析到无标记的保留行；环/缺行时返回原位（保守：不改身份）。
+    """
+    seen: set[str] = set()
+    current = key
+    while current and current not in seen:
+        seen.add(current)
+        rows = _known_rows(index, current)
+        if not rows:
+            return current
+        nxt = getattr(rows[0], "is_duplicate_of", None)
+        if not nxt:
+            return current
+        current = nxt
+    return key
 
 
 def _disambiguation_key(
     key: str, art: Article, occupied: set[str],
-    known_by_key: dict[str, Article],
+    known_by_key: dict[str, object],
 ) -> str:
     """为冲突键生成确定性消歧键：键 + "-" + sha256(键|稳定内容标识)[:12]。
 
@@ -536,19 +610,17 @@ def _disambiguation_key(
     # 跳过——短键管线形态不变（R2）。
     legacy = _legacy_disambig_candidate(key, suffix)
     if legacy != candidate:
-        db_art = known_by_key.get(legacy)
-        if db_art is not None and _key_merge_confirmed(db_art, art):
+        # b04·F3-35：同键多行时逐行探测，任一行是同一文献即沿用。
+        if _known_confirms(known_by_key, legacy, art):
             return legacy  # 库内持修复前超长消歧键的同一文献：沿用走更新路径
-    db_art = known_by_key.get(candidate)
-    if db_art is not None and _key_merge_confirmed(db_art, art):
+    if _known_confirms(known_by_key, candidate, art):
         return candidate  # 同一文献首导时的消歧键：沿用走更新路径
     serial = 2
     while candidate in occupied:
         candidate = _suffixed_disambig_key(key, suffix, serial)
         legacy = _legacy_disambig_candidate(key, suffix, serial)
         if legacy != candidate:
-            db_art = known_by_key.get(legacy)
-            if db_art is not None and _key_merge_confirmed(db_art, art):
+            if _known_confirms(known_by_key, legacy, art):
                 return legacy  # serial 形态的历史键同理沿用
         serial += 1
     return candidate
@@ -703,10 +775,13 @@ def stabilize_conflicting_keys(
         if art.content_hash != fresh_hash:
             art.content_hash = fresh_hash
 
-    known_by_key: dict[str, Article] = {}
+    known_by_key: dict[str, list[Article]] = {}
     if known:
         for art in known:
-            known_by_key.setdefault(art.zotero_key, art)
+            # b04·F3-35：同键多行全部保留（不再 setdefault 丢弃后到行）——
+            # 「同键是否同一文献」的裁决必须看该键的**全部**库内行，否则
+            # 本应走更新路径的记录被误判键冲突、加后缀成新行。
+            known_by_key.setdefault(art.zotero_key, []).append(art)
     known_ids = {id(art) for art in known or ()}
 
     # ---- 生成键身份匹配：沿用库内键，保持跨公式版本的身份连续 ----
@@ -719,7 +794,21 @@ def stabilize_conflicting_keys(
     doi_index: dict[str, str] = {}        # 规范化 DOI -> 库内键（r8 #2 归属检查）
     # 内容键 -> 库内键全集（r8 #3：首个候选 DOI 冲突时试同键其他行）
     content_index: dict[tuple[str, str, str, object], list[str]] = {}
-    for key_text, art in known_by_key.items():
+    # b04·F3-36：身份索引优先登记**未标记重复**的库内行。标题重复复审把后
+    # 导入成员定为 keeper 后，先导入的重复标记行因 import_order 靠前而首见，
+    # 重导的无来源键记录沿用该行 → 刷新写进筛选不可见的行、keeper 元数据
+    # 永远陈旧。两遍构建：先活动行（每层 setdefault 首见），再重复标记行
+    # 兜底——库里只有重复标记行时仍走沿用路径（零新增行，行为不变）。
+    # 重复标记来自 Article 的 is_duplicate_of 字段（list_articles 填充）。
+    ordered_known = [
+        art for art in (known or ())
+        if not getattr(art, "is_duplicate_of", None)
+    ] + [
+        art for art in (known or ())
+        if getattr(art, "is_duplicate_of", None)
+    ]
+    for art in ordered_known:
+        key_text = art.zotero_key
         raw = art.raw if isinstance(art.raw, dict) else {}
         record_id = str(raw.get("_record_id") or "").strip()
         if record_id:
@@ -734,7 +823,9 @@ def stabilize_conflicting_keys(
             doi_index.setdefault(doi_text, key_text)
         match_key = _content_match_key(art)
         if match_key[0]:  # 空标题不参与内容匹配（空标题无区分度）
-            content_index.setdefault(match_key, []).append(key_text)
+            bucket = content_index.setdefault(match_key, [])
+            if key_text not in bucket:
+                bucket.append(key_text)
     key_positions: dict[str, int] = {}
     for i, art in enumerate(articles):
         key_positions.setdefault(art.zotero_key, i)
@@ -764,7 +855,7 @@ def stabilize_conflicting_keys(
             return fallback_index[fallback_id]
         if art.content_hash and art.content_hash in hash_index:
             key_text = hash_index[art.content_hash]
-            db_art = known_by_key.get(key_text)
+            db_art = _known_row(known_by_key, key_text)
             if db_art is not None and not _first_authors_compatible(art, db_art):
                 _warn(
                     f"记录与库内行 {key_text} 的内容哈希相同（标题一致），但首作者"
@@ -788,15 +879,14 @@ def stabilize_conflicting_keys(
             # r8 #3：同内容键的全部库内行按序尝试——首个候选因 DOI 冲突或
             # 作者/年份不兼容不可用时，不再整桶放弃（空 DOI 的同内容行
             # 本可兼容沿用，曾被静默跳过导致新增第 3 行）。
-            db_art = known_by_key.get(key_text)
-            if db_art is None:
-                continue
-            doi_known = _norm_doi(db_art.doi)
-            if doi_known and doi_new and doi_known != doi_new:
-                continue  # DOI 冲突：该库内行是另一文献，试同键其他行
-            if (_first_authors_compatible(art, db_art)
-                    and years_compatible(art.year, db_art.year)):
-                return key_text
+            # b04·F3-35：键下可能有多行，逐行判定（不再只看首行）。
+            for db_art in _known_rows(known_by_key, key_text):
+                doi_known = _norm_doi(db_art.doi)
+                if doi_known and doi_new and doi_known != doi_new:
+                    continue  # DOI 冲突：该库内行是另一文献，试同键其他行
+                if (_first_authors_compatible(art, db_art)
+                        and years_compatible(art.year, db_art.year)):
+                    return key_text
         if match_key[0] and content_index.get(match_key):
             _warn(
                 f"记录与库内行 {content_index[match_key][0]} 的标题/作者/年份匹配"
@@ -843,7 +933,11 @@ def stabilize_conflicting_keys(
         target = _match_legacy_key(art)
         if target is None:
             continue
-        db_art = known_by_key.get(target)
+        # b04·F3-36：身份索引命中重复标记行时改挂其 keeper（链解析）——重导
+        # 刷新写进筛选可见的保留行，keeper 元数据不再长期陈旧；标记行本身
+        # 保持原样。无标记（常态）时该解析恒等，行为不变。
+        target = _canonical_known_key(known_by_key, target)
+        db_art = _known_row(known_by_key, target)
         if db_art is not None:
             doi_known, doi_new = _norm_doi(db_art.doi), _norm_doi(art.doi)
             if doi_known and doi_new and doi_known != doi_new:
@@ -854,7 +948,9 @@ def stabilize_conflicting_keys(
                 # 相等的 exact 证据把记录链到归属行（与 Web prepare 同一
                 # 身份选择）。归属行元数据将被本批改写时显式列出改动。
                 _warn_doi_owner(target, owner)
-                _metadata_replacement_note(owner, known_by_key[owner], art)
+                owner_art = _known_row(known_by_key, owner)
+                if owner_art is not None:
+                    _metadata_replacement_note(owner, owner_art, art)
                 continue            # 评审 R2 返修·FB-B：content/_fallback 分层命中沿用库内键且库行
             # 缺作者时，同样发"元数据补全"警告（与来源键路径同一口径，
             # 不静默改写库行 authors）。
@@ -872,7 +968,7 @@ def stabilize_conflicting_keys(
             # r8 #1/#7/#13：沿用的语义是「同一文献的元数据更新」——本批
             # 为空的字段保留库内非空值并显式警告，交人工复核；回填 DOI
             # 后重算 content_hash。
-            db_art = known_by_key.get(target)
+            db_art = _known_row(known_by_key, target)
             if db_art is not None:
                 _preserve_library_metadata(target, db_art, art)
             art.zotero_key = target
@@ -897,18 +993,27 @@ def stabilize_conflicting_keys(
     for root in sorted(groups):
         rep = articles[root]
         key = rep.zotero_key
-        db_art = known_by_key.get(key)
-        if (db_art is not None and not _key_merge_confirmed(db_art, rep)) or key in occupied:
+        # b04·F3-35：同键多行时不再只看首行——该键下**任一行**与本组代表
+        # 确认为同一文献即保留原键走更新路径（此前首行不兼容就整键判冲突，
+        # 本应更新的记录被加后缀成新行）。库内已有确认行时，即使该键已被
+        # 本批先到组占用也按「同一文献的更新」处理：库内每个键只可能有一
+        # 物理行，两组合写同一行正是更新语义（真实库中该形态只在此处由
+        # 对同一键的重复行构造得出；不同文献的键冲突仍走下方改名）。
+        known_rows = known_by_key.get(key)
+        confirmed_known = bool(known_rows) and _known_confirms(known_by_key, key, rep)
+        if (known_rows and not confirmed_known) or (key in occupied and not confirmed_known):
             # 与库内同键条目冲突，或被本批先到组占用：加确定性后缀
             chosen = _disambiguation_key(key, rep, set(occupied), known_by_key)
             renames.append((key, chosen))
             rep.zotero_key = chosen
         else:
             chosen = key
-            if db_art is not None:
+            if known_rows:
                 # 与库内同键条目兼容（同一文献）保留原键：库行缺作者时
                 # 本批元数据补全，显式警告（FB2）
-                _metadata_completion_note(key, db_art, rep)
+                preferred = _known_row(known_by_key, key)
+                if preferred is not None:
+                    _metadata_completion_note(key, preferred, rep)
         occupied[chosen] = root
         final_key[root] = chosen
 
@@ -921,12 +1026,18 @@ def stabilize_conflicting_keys(
                 # 生成键成员并入**库内行**为根的组（DOI/内容匹配）：沿用
                 # 库内键走更新路径（身份连续，不计入消歧清单）。库内行自身
                 # 绝不改键（R1：既有库主键永不重写）。
-                if final_key[root] != art.zotero_key:
-                    art.zotero_key = final_key[root]
+                #
+                # b04·F3-36：组长是「已标重复」的库内行（标题重复复审把后导
+                # 入成员定为 keeper 后留下的旧行）时，沿用的键必须链解析到
+                # 其 keeper——否则刷新写进筛选不可见的行、keeper 元数据永远
+                # 陈旧。无标记（常态）时解析恒等，行为不变。
+                adopt_key = _canonical_known_key(known_by_key, final_key[root])
+                if adopt_key != art.zotero_key:
+                    art.zotero_key = adopt_key
                 # r8 #1/#7/#13（combined 形态）：沿用库内键走更新路径时，
                 # 本批缺失的字段保留库内非空值（否则 upsert 全列覆写把库内
                 # authors/year/journal/doi 清空且零警告）。
-                db_keep = known_by_key.get(art.zotero_key)
+                db_keep = _known_row(known_by_key, art.zotero_key)
                 if db_keep is not None and db_keep is not art:
                     _preserve_library_metadata(art.zotero_key, db_keep, art)
                 continue
@@ -937,10 +1048,11 @@ def stabilize_conflicting_keys(
             #    原键：upsert 走既有行的更新路径，重复关系由 is_duplicate_of
             #    标记表达。改名一律加后缀成为独立行，绝不改名为组键。
             keeper = occupied.get(art.zotero_key)
-            db_art = known_by_key.get(art.zotero_key)
+            db_art = _known_row(known_by_key, art.zotero_key)
             occupied_elsewhere = (
                 (keeper is not None and keeper != root)
-                or (db_art is not None and not _key_merge_confirmed(db_art, art))
+                or (bool(known_by_key.get(art.zotero_key))
+                    and not _known_confirms(known_by_key, art.zotero_key, art))
             )
             if occupied_elsewhere:
                 new_key = _disambiguation_key(
@@ -971,10 +1083,11 @@ def stabilize_conflicting_keys(
     # 显式警告并点名两行（不改变合并/更新行为——R2：不以拒绝替代提示；
     # 该形态与 Web prepare 的 by_doi 归属选择的分叉在此披露，人工可复核）。
     final_doi_owner: dict[str, str] = {}
-    for key_text, db_art in known_by_key.items():
-        doi_known = _norm_doi(db_art.doi)
-        if doi_known and id(db_art) in known_ids:
-            final_doi_owner.setdefault(doi_known, key_text)
+    for key_text, rows in known_by_key.items():
+        for db_art in rows:
+            doi_known = _norm_doi(db_art.doi)
+            if doi_known and id(db_art) in known_ids:
+                final_doi_owner.setdefault(doi_known, key_text)
     # 已由精确证据打成重复的行（dup_key -> kept_key）：DOI 重复是正常结构
     # （同一论文的两个来源各一行），不是 #2 的静默缺陷。
     duplicate_targets = {

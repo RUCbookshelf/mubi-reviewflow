@@ -289,6 +289,20 @@ def export_articles_ris(
 # 高亮笔记 Markdown 导出（SPEC §14）
 # ---------------------------------------------------------------------------
 
+#: Markdown 行内文本的换行折叠（v14·F4-39）：任意 CRLF/CR/LF → 单个空格。
+#: 原实现只把 LF 换成空格，CRLF 文本导出后残留裸 \r（"alpha\r\nbeta" →
+#: "alpha\r beta"），裸回车会让下游按行解析的列表结构错乱。口径与旧实现
+#: 逐字相同（每个换行符换成一个空格，不吞相邻空白），只是把 CR 与 CRLF
+#: 一并纳入。
+_MARKDOWN_NEWLINE_RE = re.compile(r"\r\n|\r|\n")
+
+
+def _markdown_inline(value: object) -> str:
+    """把多行文本压成 Markdown 单行：每个换行符换成一个空格，其余原样。"""
+    text = "" if value is None else str(value)
+    return _MARKDOWN_NEWLINE_RE.sub(" ", text)
+
+
 def export_highlights_markdown(db_path: StrPath, out_md: StrPath) -> Path:
     """把高亮笔记导出为 Markdown；返回写入路径。
 
@@ -329,9 +343,14 @@ def export_highlights_markdown(db_path: StrPath, out_md: StrPath) -> Path:
                 lines.append(f"### 第 {hl.page} 页")
                 lines.append("")
             color_label = COLOR_LABELS.get(hl.color, hl.color)
-            lines.append(f"- 【{color_label}】{hl.text.replace(chr(10), ' ')}")
+            # v14·F4-39：CRLF 只归一 LF 时导出残留裸 \r（"alpha\r\nbeta" →
+            # "alpha\r beta"），裸回车会让下游按行解析的列表结构错乱；与 RIS
+            # 路径的 _ris_one_line 同口径把任意换行序列折叠为单个空格。
+            lines.append(
+                f"- 【{color_label}】{_markdown_inline(hl.text)}"
+            )
             if (hl.note or "").strip():
-                lines.append(f"  - 笔记：{hl.note.strip()}")
+                lines.append(f"  - 笔记：{_markdown_inline(hl.note.strip())}")
     text = "\n".join(lines)
     if highlights:
         text += "\n"
@@ -348,6 +367,9 @@ def export_highlights_markdown(db_path: StrPath, out_md: StrPath) -> Path:
 
 #: 编码矩阵 CSV 的前两列（其后每维度一列，列名 = 维度名）
 CODING_MATRIX_HEAD_COLUMNS = ["zotero_key", "title"]
+
+#: 矩阵表头里被文献元数据占用的列名；编码维度不得覆盖它们（v14·F4-35）
+_MATRIX_RESERVED_COLUMNS = frozenset(CODING_MATRIX_HEAD_COLUMNS)
 
 #: 编码长表 CSV 的固定列（SPEC §15.3）
 CODING_LONG_COLUMNS = [
@@ -385,32 +407,47 @@ def _notes_index(db_path: StrPath) -> dict[tuple[int, str], dict]:
     优先走编码数据层的 ``list_coding_notes``（SPEC §15.1 的读侧工具，一次查询
     取回全库备注）；数据层缺席（ImportError）或没有该读接口时，按 §15.1 的
     DDL 只读直查 coding_notes（表不存在时返回空索引，不建表）。
+
+    v14·F4-36：库文件不存在时直接返回空索引——此前的回退分支用裸
+    ``sqlite3.connect(path)`` 兜底，对不存在的路径会**新建**一个空库文件
+    （读备注的导出反而写盘）；损坏的库也不再折叠成「没有备注」（那会让导出
+    静默产出空备注、看起来像正常结果），改为中文 ``ValueError``。
     """
+    if not Path(db_path).is_file():
+        return {}
     try:
         coding = _coding_layer()
     except ImportError:
         coding = None
     reader = getattr(coding, "list_coding_notes", None) if coding is not None else None
     if callable(reader):
-        return {
-            (int(row["dimension_id"]), str(row["zotero_key"])): {
-                "id": int(row["id"]),
-                "text": row.get("text") or "",
+        try:
+            return {
+                (int(row["dimension_id"]), str(row["zotero_key"])): {
+                    "id": int(row["id"]),
+                    "text": row.get("text") or "",
+                }
+                for row in (reader(db_path) or [])
             }
-            for row in (reader(db_path) or [])
-        }
-
-    import sqlite3
-    from contextlib import closing
+        except sqlite3.DatabaseError:
+            # 损坏/不可读的库：转到只读回退，由它给出明确中文错误（绝不把
+            # 「读不了」折叠成「没有备注」）。
+            pass
 
     try:
-        with closing(sqlite3.connect(str(db_path))) as conn:
+        # 只读 URI 打开：不建文件、不建表、不触发自愈迁移（docstring 契约）。
+        with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro",
+                                     uri=True)) as conn:
             rows = conn.execute(
                 "SELECT id, dimension_id, zotero_key, text FROM coding_notes "
                 "ORDER BY dimension_id, id"
             ).fetchall()
-    except sqlite3.Error:  # 表不存在 / 库不可读：视作没有备注
-        return {}
+    except sqlite3.OperationalError as exc:  # 表不存在：视作没有备注
+        if "no such table" in str(exc).lower():
+            return {}
+        raise ValueError(f"编码备注无法读取（数据库不可用）：{exc}") from exc
+    except sqlite3.Error as exc:  # 损坏 / 非 sqlite 文件
+        raise ValueError(f"编码备注无法读取（数据库不可用）：{exc}") from exc
     return {
         (int(dim_id), str(key)): {"id": int(note_id), "text": text or ""}
         for note_id, dim_id, key, text in rows
@@ -437,16 +474,47 @@ def _coding_row_keys(
     SPEC §15.3 要求行序 = import_order；行集合取「编码队列」（工作台的编码
     范围，coding_queue 缺省读设置）与「已有编码值或备注的文献」的并集——
     队列外的历史数据不因队列模式切换而在导出中静默消失。
+
+    v14·F4-38：行集合只排除**已确认**的重复条目（``is_duplicate_of`` 非空），
+    不再经 ``list_articles`` 的缺省过滤连带排除「待人工复核的标题候选组」
+    成员——候选组未裁决前该文献仍是独立研究，其编码值不得在 matrix/long/
+    counts 三路导出里静默消失；裁决为 duplicate 后照旧排除（含其编码值）。
     """
     queue = set(coding.coding_queue(db_path))
     note_keys = {key for (_dim, key) in notes}
     valued_keys = set(coding.get_coding_values_all(db_path))  # 单连接全量，替代逐篇探测
+    all_articles = db_mod.list_articles(db_path, include_duplicates=True)
+    confirmed_duplicates = _confirmed_duplicate_keys(db_path)
     keys: list[str] = []
-    for art in db_mod.list_articles(db_path):  # 已按 import_order 排序
+    for art in all_articles:  # 已按 import_order 排序
         key = art.zotero_key
+        if key in confirmed_duplicates:
+            continue
         if key in queue or key in note_keys or key in valued_keys:
             keys.append(key)
     return keys
+
+
+def _confirmed_duplicate_keys(db_path: StrPath) -> set[str]:
+    """已确认的重复条目键（``articles.is_duplicate_of`` 非空）。
+
+    只读直查（不建表、不迁移）；库文件缺失时视作没有重复条目。直查失败
+    （表不存在/库不可读）时退回 ``list_articles`` 的两口径差集，保证**绝不**
+    把已确认重复当成正常行导出。
+    """
+    if not Path(db_path).is_file():
+        return set()
+    try:
+        with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro",
+                                     uri=True)) as conn:
+            return {row[0] for row in conn.execute(
+                "SELECT zotero_key FROM articles WHERE is_duplicate_of IS NOT NULL"
+            )}
+    except sqlite3.Error:
+        all_keys = {a.zotero_key
+                    for a in db_mod.list_articles(db_path, include_duplicates=True)}
+        unique_keys = {a.zotero_key for a in db_mod.list_articles(db_path)}
+        return all_keys - unique_keys
 
 
 def _coding_images_index(db_path: StrPath, coding) -> dict[int, list[dict]]:
@@ -480,10 +548,33 @@ def _coding_titles(db_path: StrPath) -> dict[str, str]:
     }
 
 
+def _coding_matrix_columns(dims: list[dict]) -> list[tuple[dict, str]]:
+    """矩阵导出列：``[(维度, 列名)]``；与文献元数据列同名的维度加限定后缀。
+
+    维度名由用户自定（§15.1 只保证维度之间唯一），可以恰好叫 ``title`` 或
+    ``zotero_key``。若直接把维度名当列名，``DataFrame(columns=...)`` 会产出
+    两个同名表头，行字典里后写者覆盖先写者——CSV 出现重复列且真实题名丢失
+    （v14·F4-35）。这里给冲突列加 ``" [维度]"`` 限定后缀，并保证后缀后的列名
+    仍全局唯一（后缀本身也可能撞上别的维度名）。
+    """
+    taken = set(_MATRIX_RESERVED_COLUMNS)
+    out: list[tuple[dict, str]] = []
+    for dim in dims:
+        name = str(dim["name"])
+        if name in taken:
+            name = f"{name} [维度]"
+            while name in taken:
+                name = f"{name}_"
+        taken.add(name)
+        out.append((dim, name))
+    return out
+
+
 def export_coding_matrix(db_path: StrPath, out_csv: StrPath) -> Path:
     """编码矩阵 CSV（SPEC §15.3）：行 = 文献、列 = 维度；返回写入路径。
 
-    - 首两列 zotero_key / title，其后每个维度一列（列名 = 维度名，§15.1 保证唯一）；
+    - 首两列 zotero_key / title，其后每个维度一列（列名 = 维度名，与保留列
+      同名时加 " [维度]" 后缀，见 :func:`_coding_matrix_columns`）；
     - 多选维度的值按 "|" 连接（数据层即以该形式存储，原样输出）；
     - 行序 = 文献 import_order（见 _coding_row_keys）；空值写空串；
     - utf-8-sig（Excel 直接打开中文不乱码）；同一数据库状态两次导出字节级一致。
@@ -493,13 +584,14 @@ def export_coding_matrix(db_path: StrPath, out_csv: StrPath) -> Path:
     notes = _notes_index(db_path)
     titles = _coding_titles(db_path)
     values_all = coding.get_coding_values_all(db_path)  # 单连接批量（P2-10）
-    columns = CODING_MATRIX_HEAD_COLUMNS + [d["name"] for d in dims]
+    dim_columns = _coding_matrix_columns(dims)
+    columns = CODING_MATRIX_HEAD_COLUMNS + [column for _dim, column in dim_columns]
     rows = []
     for key in _coding_row_keys(db_path, coding, notes):
         values = values_all.get(key, {})
         row = {"zotero_key": key, "title": titles.get(key, "")}
-        for dim in dims:
-            row[dim["name"]] = values.get(int(dim["id"]), "") or ""
+        for dim, column in dim_columns:
+            row[column] = values.get(int(dim["id"]), "") or ""
         rows.append(row)
     df = pd.DataFrame(rows, columns=columns)
     out = Path(out_csv)

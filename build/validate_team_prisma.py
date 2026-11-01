@@ -5,12 +5,56 @@ import sys
 import tempfile
 import json
 import asyncio
+import atexit
+import shutil
 import sqlite3
 from pathlib import Path
+
+if not __debug__:
+    # F1-73: this gate enforces every check with a bare `assert` (43, no raises).
+    # Under `python -O` they are compiled away - including in the sibling gates
+    # that run this file through runpy - so the gate printed "passed" and exited
+    # 0 while its fixture writes still executed. Refuse the optimized
+    # interpreter rather than report an unchecked green run.
+    raise SystemExit('run this gate without -O: assertions are the gate')
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'build'))
 DATA=Path(tempfile.mkdtemp(prefix='reviewflow-team-prisma-validation-'))
+
+
+def _remove_disposable_data():
+    """F1-72: the mkdtemp tree was never removed.
+
+    Every run - including a failing one, because the cleanup has to survive the
+    exception that ends the gate - left a full research-shaped data directory
+    (SQLite catalogues, WAL files, attachments) behind in temp. The directory is
+    disposable by construction (COBOOKSHELF_DATA_DIR is pointed at it below), so
+    it is removed at interpreter exit; the diagnostic paths are printed before
+    that and stay in the output.
+
+    Windows keeps a handle open while any sqlite3.Connection still exists: the
+    gate's own `with wf.connect(...) as conn:` blocks commit but do not close,
+    and the module-level `conn` binding keeps the last one alive. Connections are
+    closed here first, then the tree is retried; a leftover file owned by an
+    external process is reported rather than silently ignored."""
+    import gc
+    import time
+    for _ in range(5):
+        gc.collect()
+        for obj in gc.get_objects():
+            if isinstance(obj,sqlite3.Connection):
+                try:obj.close()
+                except sqlite3.Error:pass
+        shutil.rmtree(DATA,ignore_errors=True)
+        if not DATA.exists():
+            return
+        time.sleep(0.2)
+    for path in sorted(DATA.rglob('*')):
+        print('disposable data left behind: '+str(path),file=sys.stderr)
+
+
+atexit.register(_remove_disposable_data)
 os.environ['COBOOKSHELF_DATA_DIR']=str(DATA)
 os.environ['REVIEWFLOW_MODE']='server'
 os.environ.pop('REVIEWFLOW_RUNTIME_OVERLAY',None)

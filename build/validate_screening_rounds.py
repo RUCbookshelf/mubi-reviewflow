@@ -8,6 +8,13 @@ import asyncio
 import time
 from pathlib import Path
 
+if not __debug__:
+    # F1-68: all 21 checks in this gate are bare `assert`s and there is no
+    # non-assert enforcement layer, so `python -O` compiled them away and the
+    # gate printed "passed" with exit 0. Refuse the optimized interpreter; a
+    # gate that cannot check anything must not report a pass.
+    raise SystemExit('run this gate without -O: assertions are the gate')
+
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'build'))
 DATA=Path(tempfile.mkdtemp(prefix='reviewflow-team-prisma-validation-'))

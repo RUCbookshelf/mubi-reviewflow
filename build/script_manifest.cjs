@@ -15,6 +15,42 @@
    entry exists on disk, so a deleted pdfjs module fails the gate loudly. */
 const fs=require('fs'),path=require('path');
 
+/* b08·F1-62 (r9 L7c): an attribute merely NAMED like a loader (data-src) is not
+   `src`, and a '>' inside a quoted attribute value does not end the tag. The old
+   /<script\b[^>]*\bsrc\s*=/ treated data-src="./ghost.js" as a loaded module (the
+   manifest then demanded a file the browser never loads) and stopped the match at
+   a quoted '>' (a real loader silently fell out of the manifest). Same scanner
+   discipline as build/validate_import_review_static.cjs: read the tag to its
+   real '>', then read attributes positionally instead of regexing the raw text. */
+function scriptTags(html){
+  const tags=[],open=/<script\b/gi;let match;
+  while((match=open.exec(html))){
+    let index=open.lastIndex,quote=null;
+    for(;index<html.length;index++){
+      const char=html[index];
+      if(quote){if(char===quote)quote=null;}else if(char==='"'||char==="'")quote=char;else if(char==='>')break;
+    }
+    if(index>=html.length)throw Error('unterminated <script> tag in index.html');
+    tags.push(html.slice(open.lastIndex,index));
+    open.lastIndex=index+1;
+  }
+  return tags;
+}
+function attributes(text){
+  const map={};
+  for(const match of text.matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g))
+    map[match[1].toLowerCase()]=match[2]??match[3]??match[4]??'';
+  return map;
+}
+/* Only the exact `src` attribute is a loader; data-src/lazy-src/anything else
+   is not. Values a scanner cannot read as an attribute are ignored rather than
+   guessed, so a malformed tag can never invent a module. */
+function scriptSrcs(html){
+  return scriptTags(html)
+    .map(attrs=>attributes(attrs).src)
+    .filter(src=>src!==undefined&&src!=='');
+}
+
 function loadScriptManifest(root){
   const html=fs.readFileSync(path.join(root,'custom_frontend','index.html'),'utf8');
   const files=[];
@@ -27,7 +63,7 @@ function loadScriptManifest(root){
     const file=path.posix.normalize(rel);       /* keep subdirs: pdfjs/pdf.min.mjs */
     if(!files.includes(file))files.push(file);
   };
-  for(const match of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi))push(match[1]);
+  for(const spec of scriptSrcs(html))push(spec);
   for(const match of html.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g))push(match[1]);
   for(const match of html.matchAll(/\bworkerSrc\s*=\s*["']([^"']+)["']/g))push(match[1]);
   if(!files.length)throw Error('no modules parsed from custom_frontend/index.html');

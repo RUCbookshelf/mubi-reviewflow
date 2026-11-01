@@ -37,6 +37,13 @@ _EXTREME_PROBABILITY = 0.005  # near-boundary warning threshold for Se / Sp
 _ZERO_CORRECTION = 0.5
 _DEFAULT_SEED = 20260924
 
+#: r9 L6a / b14·F4-4：``n_samples`` 的硬上界。蒙特卡洛交叉检验按
+#: ``2 float64 / 样本`` 线性分配（``rng.multivariate_normal``），1e9 样本约
+#: 15-16 GiB；此处与 ``coscreen.bootstrap_interval.MAX_N_BOOT`` 取同一预算量级
+#: （20 万次抽样已远超判断百分位区间是否稳定所需），越界按 ValueError 拒绝，
+#: 端点回 400 而不是把同步 worker 拖进巨量分配。
+MAX_N_SAMPLES = 200_000
+
 _METHOD_SUMMARY = ("positive and negative likelihood ratios derived at the bivariate "
                    "summary point by the delta method on the log scale using the "
                    "estimation covariance of the fitted means (Zwinderman & Bossuyt "
@@ -143,7 +150,15 @@ def _validated_covariance(mean_covariance) -> tuple[float, float, float] | None:
         raise ValueError("mean_covariance must be symmetric")
     if variance_s <= 0 or variance_c <= 0:
         raise ValueError("mean_covariance variances must be positive")
-    if variance_s * variance_c - covariance * covariance <= 0:
+    # r9 L6a / b15·F4-5：正定性判据原为 ``vs*vc - cov*cov <= 0``，在 1e308
+    # 量级下两个乘积都溢出为 inf，差值为 inf-inf=nan，而 ``nan <= 0`` 恒为
+    # False，判据被整体绕过（随后在下游 math.exp 处 OverflowError 早退）。
+    # 保留原表达式作为快路径（全部可表示输入的判定与结果逐位不变），仅在它
+    # 算不出有限符号时改用代数等价、不会溢出的 |cov| < sqrt(vs)*sqrt(vc)。
+    determinant = variance_s * variance_c - covariance * covariance
+    if math.isnan(determinant):
+        determinant = 1.0 if abs(covariance) < math.sqrt(variance_s) * math.sqrt(variance_c) else 0.0
+    if not determinant > 0:
         raise ValueError("mean_covariance must be positive definite")
     return variance_s, variance_c, covariance
 
@@ -172,7 +187,11 @@ def summary_likelihood_ratios(logit_sensitivity_mean, logit_specificity_mean,
 
     ``n_samples > 0`` adds a Monte Carlo percentile cross-check that draws the
     fitted means from their bivariate normal estimation distribution (the
-    documented procedure of ``mada::SummaryPts``).
+    documented procedure of ``mada::SummaryPts``); it therefore requires
+    ``mean_covariance`` and is rejected with ``ValueError`` when it is absent.
+    ``n_samples`` is capped at ``MAX_N_SAMPLES`` (200 000): the draws are
+    allocated in memory, so a larger request is rejected with ``ValueError``
+    instead of exhausting the worker.
     """
     mu_s = _finite_float("logit_sensitivity_mean", logit_sensitivity_mean)
     mu_c = _finite_float("logit_specificity_mean", logit_specificity_mean)
@@ -181,6 +200,20 @@ def summary_likelihood_ratios(logit_sensitivity_mean, logit_specificity_mean,
     if n_samples:
         if type(n_samples) is not int or n_samples < 1:
             raise ValueError("n_samples must be a positive integer")
+        if n_samples > MAX_N_SAMPLES:
+            raise ValueError(
+                f"n_samples must not exceed {MAX_N_SAMPLES}: the Monte Carlo cross-check "
+                "allocates memory proportional to n_samples")
+        # r9 L6a / b06·F4-7：交叉检验从「拟合均值的估计分布」抽样，而这个分布
+        # 就是 mean_covariance。没有协方差时抽样无定义，旧代码把 validated=None
+        # 一路传进 _sampling_cross_check 并在解包处抛
+        # ``TypeError: cannot unpack non-iterable NoneType``——非 ValueError，
+        # 端点只捕 ValueError。请求本身自相矛盾，明确拒绝并说明缺哪个参数。
+        if validated is None:
+            raise ValueError(
+                "n_samples requires the 2x2 estimation covariance (mean_covariance) of the "
+                "fitted means: the Monte Carlo cross-check draws from that distribution, so "
+                "it cannot run without it")
 
     se_pooled = _expit(mu_s)
     sp_pooled = _expit(mu_c)
@@ -310,6 +343,18 @@ def _validated_tables(tables) -> list[dict]:
             counts[cell] = value
         if counts["tp"] + counts["fn"] == 0 or counts["tn"] + counts["fp"] == 0:
             raise ValueError("both diseased and non-diseased groups must contain participants")
+        # r9 L6a / b14·F4-3：计数没有上界时，10**400 直传 float() 抛
+        # OverflowError（非 ValueError），逃出模块「非法输入一律 ValueError」
+        # 的契约。只把「无法转成有限浮点」的计数按输入越界拒绝——凡是能转成
+        # 有限 float 的计数（含 2**53 以上、精度已损失者）一律照旧放行，不新增
+        # 对合法计数的拒绝。
+        for cell in ("tp", "fp", "fn", "tn"):
+            try:
+                float(counts[cell])
+            except OverflowError as exc:
+                raise ValueError(
+                    f"table {index + 1} '{cell}' count is too large to convert to a "
+                    "floating-point value for a log likelihood ratio") from exc
         study_id = table.get("study_id", f"study {index + 1}")
         validated.append({"study_id": str(study_id), **counts,
                           "raw": {key: copy.deepcopy(value) for key, value in table.items()}})
@@ -328,6 +373,27 @@ def _study_log_ratios(table: dict, corrected: bool) -> dict:
     var_minus = 1.0 / fn - 1.0 / diseased + 1.0 / tn - 1.0 / non_diseased
     return {"ln_lr_positive": ln_plus, "var_ln_lr_positive": var_plus,
             "ln_lr_negative": ln_minus, "var_ln_lr_negative": var_minus}
+
+
+def _positive_variances(pairs, label: str) -> list[tuple[float, float]]:
+    """把 (值, 方差) 对收成逆方差可用的形态（r9 L6a / b05·F4-2）。
+
+    合法但极大的计数会让逐研究 delta 方差在双精度下下溢成 0.0
+    （``tp=fp=10**17`` 时 ``1/tp - 1/(tp+fn)`` 恰为 0），随后
+    ``1.0 / variance`` 抛 ZeroDivisionError——非 ValueError，端点只捕
+    ValueError，500 后该筛选条件永久打挂。零/下溢方差意味着该研究在
+    逆方差模型里权重无限大，不存在有限的可报告合并值，因此按「不支持
+    数值范围」拒绝（比静默产出 inf 权重更安全，也不影响任何常规计数）。
+    """
+    screened = []
+    for value, variance in pairs:
+        if not math.isfinite(variance) or variance <= 0.0:
+            raise ValueError(
+                f"a study's {label} log likelihood-ratio variance is zero or non-finite "
+                "at the available floating-point precision (the counts are too large or "
+                "too imbalanced to support inverse-variance pooling)")
+        screened.append((value, variance))
+    return screened
 
 
 def _inverse_variance(values: list[tuple[float, float]]) -> dict:
@@ -411,11 +477,14 @@ def pool_likelihood_ratios(tables, *, correction="none", random_effects: bool = 
         minus_pairs.append((ratios["ln_lr_negative"], ratios["var_ln_lr_negative"]))
 
     def _arm(pairs):
-        fixed = _inverse_variance(pairs)
+        # r9 L6a / b05·F4-2：先过低方差门再进 1/variance，零方差不再以
+        # ZeroDivisionError（非 ValueError）逃出模块。合法输入走同一条
+        # 表达式，结果逐位不变。
+        fixed = _inverse_variance(_positive_variances(pairs, "LR+ and LR-"))
         weights_used = random_effects and fixed["tau2"] > 0.0
         if weights_used:
             adjusted = [(value, variance + fixed["tau2"]) for value, variance in pairs]
-            pooled = _inverse_variance(adjusted)
+            pooled = _inverse_variance(_positive_variances(adjusted, "random-effects"))
         else:
             pooled = fixed
         return {"ln_lr": pooled["estimate"], "se_ln_lr": pooled["se"],

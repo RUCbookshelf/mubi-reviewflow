@@ -2,7 +2,8 @@
 
 与 ``sklearn.naive_bayes.MultinomialNB`` 数值等价（同输入下
 ``predict_scores`` 与 ``predict_proba(...)[:, 1]`` 误差 < 1e-9，
-见 ``tests/test_al_nb.py`` 基准测试）：
+对照脚本 ``docs/methodology/sim/equivalence_check.py`` 的 ``check_nb``
+按 1e-12 验收）：
 
 - 特征对数概率 ``feature_log_prob_[c][t] =
   log((count[c][t] + alpha) / (total_count[c] + alpha * V))``，
@@ -20,7 +21,7 @@
   同时作用于**类先验**（``class_count[c] = Σ w_i``）与**类内特征和**
   （``feat_sum[c][t] = Σ w_i·x_it``），与 sklearn
   ``MultinomialNB.fit(sample_weight=...)``（即 ASReview v3 Balanced 的
-  NB 语义）逐项对应——参考基准 ``research/sim/replay.py`` 的
+  NB 语义）逐项对应——参考基准 ``docs/methodology/sim/replay.py`` 的
   ``_nb_fit_score``。``sample_weight=None``（默认）时数学与代码路径
   均与升级前逐位一致（权重全取 1.0，纯 stdlib）。
 
@@ -52,10 +53,29 @@ class MultinomialNB:
     """
 
     def __init__(self, alpha: float = 1.0) -> None:
-        """``alpha`` 为 Laplace/Lidstone 平滑强度（须为正，与 sklearn 一致）。"""
-        if not alpha > 0:
-            raise ValueError(f"alpha 必须为正数，得到 {alpha!r}")
-        self.alpha = float(alpha)
+        """``alpha`` 为 Laplace/Lidstone 平滑强度。
+
+        契约（r9，b09·F2-12）：**``alpha`` 须为有限正数**。这是一处与
+        sklearn 的**有意偏离**（旧 docstring 曾称"须为正，与 sklearn
+        一致"，对 ``alpha=0`` 失实）：``sklearn.naive_bayes.MultinomialNB``
+        接受 ``alpha=0``（类别内未见词项的对数概率取 ``-inf``，后验常为
+        ``NaN``），但与 :meth:`fit` 的数值契约（有限对数概率、可比较的
+        后验）不相容——与其静默产出 ``NaN`` 分数污染排序，不如在构造时
+        明确拒绝。负值与非有限值 sklearn 同样拒绝；需要"无平滑"语义的
+        调用方应改用 ``sklearn`` 原生实现。
+        """
+        if isinstance(alpha, (str, bytes)):
+            raise ValueError(f"alpha 必须是有限正数，得到 {alpha!r}")
+        try:
+            alpha_value = float(alpha)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"alpha 必须是有限正数，得到 {alpha!r}") from exc
+        # 非有限值（nan/inf）此前穿过 `alpha > 0`：nan 的比较恒假因而
+        # 偶然被拒，inf 则一路照收、在 fit 里把每个对数概率算成 inf-inf
+        # = nan。两者都在构造时明确拒绝（sklearn 同样拒绝）。
+        if not math.isfinite(alpha_value) or not alpha_value > 0.0:
+            raise ValueError(f"alpha 必须为有限正数，得到 {alpha!r}")
+        self.alpha = alpha_value
         self.class_log_prior_: dict[int, float] = {}
         self.feature_log_prob_: dict[int, dict[str, float]] = {}
         self.n_features_: int = 0
@@ -105,22 +125,29 @@ class MultinomialNB:
                 terms.add(term)
                 acc[term] = acc.get(term, 0.0) + w * value
         vocab_size = len(terms)
-        self.n_features_ = vocab_size
         total_weight = class_count[0] + class_count[1]
         if total_weight <= 0.0:
             raise ValueError("sample_weight 全为零，无法拟合")
-        self.class_log_prior_ = {
+        # r9（b09·F2-11）：三个拟合属性在**全部校验通过后**一次性提交。
+        # 此前 ``n_features_`` 先写、全零权重守卫后抛，失败的重新 fit
+        # 会留下「新词表大小 + 旧先验/旧特征对数概率」的混合状态。
+        # 现在失败路径不触碰任何已提交状态（旧模型保持可用），与
+        # :class:`~coscreen.al.svm.SVMClassifier` 的「成功后提交」一致。
+        class_log_prior = {
             c: math.log(class_count[c] / total_weight) if class_count[c] else -math.inf
             for c in (0, 1)
         }
-        self.feature_log_prob_ = {}
+        feature_log_prob: dict[int, dict[str, float]] = {}
         for c in (0, 1):
             denom = sum(feat_sum[c].values()) + self.alpha * vocab_size
-            self.feature_log_prob_[c] = {
+            feature_log_prob[c] = {
                 term: math.log(feat_sum[c].get(term, 0.0) + self.alpha)
                 - math.log(denom)
                 for term in sorted(terms)
             }
+        self.n_features_ = vocab_size
+        self.class_log_prior_ = class_log_prior
+        self.feature_log_prob_ = feature_log_prob
 
     def predict_scores(self, X: list[dict[str, float]]) -> list[float]:
         """返回每条文档的后验 ``P(y=1|x)``（未 fit 先调用 → ``RuntimeError``）。

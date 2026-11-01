@@ -364,22 +364,36 @@ def save_pdf(
                 shutil.copy2(path, backup)
             os.replace(staging, path)
             replaced = True
+        # v06·F4-49：备份清理放在**提交成功之后、恢复守卫之外**，且失败不致命。
+        # 修前这一步在 try 内裸 unlink：Windows 上备份被占用/只读时抛
+        # PermissionError，落进下方 except → 把刚提交的新文件用备份恢复成旧
+        # 文件，DB（已提交新 sha256）与磁盘（旧字节）永久分叉。此刻 DB 与磁盘
+        # 已一致，残留 .backup 文件无害（下次保存会覆盖同名备份并被清理），
+        # 因此只静默忽略清理失败，绝不回滚已提交状态。
         if backup is not None:
-            backup.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                backup.unlink(missing_ok=True)
     except BaseException:
+        restored = False
         if replaced:
             try:
                 if backup is not None and backup.exists():
                     os.replace(backup, path)
+                    restored = True
                 elif not had_file:
                     path.unlink(missing_ok=True)
+                    restored = True
             except OSError:
                 # Preserve the original exception; the backup remains for recovery.
                 pass
-        for temp_path in (staging, backup):
-            if temp_path is not None:
-                with contextlib.suppress(OSError):
-                    temp_path.unlink()
+        for temp_path in (staging,):
+            with contextlib.suppress(OSError):
+                temp_path.unlink()
+        # v06·F4-49 后半：恢复失败时备份是**唯一**可恢复副本，绝不能删。
+        # 只有「尚未替换」或「已成功恢复」两种情形下备份才是多余副本。
+        if backup is not None and (not replaced or restored):
+            with contextlib.suppress(OSError):
+                backup.unlink()
         raise
     return meta
 
@@ -396,9 +410,18 @@ def get_fulltext(db_path: StrPath, zotero_key: str) -> FulltextMeta | None:
 
 
 def load_pdf_bytes(meta: FulltextMeta, max_bytes: int = 100 * 1024 * 1024) -> bytes | None:
-    """按元数据读取 PDF 字节；文件被移动/删除时返回 None（由调用方提示）。"""
+    """按元数据读取 PDF 字节；文件被移动/删除时返回 None（由调用方提示）。
+
+    v15·F4-51：先 ``stat`` 判长度再读——旧实现先把整个文件读进内存再比
+    ``max_bytes``，防御形同虚设（60MB 文件 / 1MB 上限 = 峰值 60MB）。上限
+    之外直接返回 None，不分配缓冲区；``read_bytes`` 后仍复查一次长度，兜住
+    stat 与读之间的竞态（非常规文件系统/并发替换）。
+    """
     try:
-        raw = Path(meta.path).read_bytes()
+        path = Path(meta.path)
+        if path.stat().st_size > max_bytes:
+            return None
+        raw = path.read_bytes()
     except OSError:
         return None
     if len(raw) > max_bytes:  # 防御异常大的文件拖垮 UI
@@ -674,44 +697,59 @@ def add_highlight_rects(db_path: StrPath, zotero_key: str, events: list) -> int:
 
     幂等：kind=highlight 且 (page, text, color) 已存在时跳过——组件重发或
     重复「导入备注」不产生重复行，复筛备注不会被重复追加。
-    校验失败（kind/颜色/页码/空文本）抛 ValueError（中文提示）；
-    zotero_key 不在 articles 表时因外键约束抛 sqlite3.IntegrityError。
+    校验失败（kind/颜色/页码/空文本/某个事件不是对象/rects 不是矩形列表）
+    抛 ValueError（中文提示）；zotero_key 不在 articles 表时因外键约束抛
+    sqlite3.IntegrityError。
+
+    v15·F4-50：幂等判定与写入同处一个 BEGIN IMMEDIATE 写事务，并且**逐条**
+    重新判定（此前的读快照在事务外，双线程同时提交同一 (page,text,color)
+    会各插一行）。并发下后到者等待写锁、拿到锁后看到先到者已提交的行而跳过。
+    v15·F4-52：事件元素/rects 形状不合法时按 docstring 契约抛 ValueError，
+    不再漏出 ``AttributeError: 'str' object has no attribute 'get'`` /
+    ``TypeError: 'int' object is not iterable``。
     """
     normalized: list[tuple[str, int, str, str, str, list]] = []
     for ev in events or []:
-        kind = str((ev or {}).get("kind") or "highlight").strip()
+        if not isinstance(ev, dict):
+            raise ValueError(f"标注事件必须是对象，收到 {type(ev).__name__}")
+        kind = str(ev.get("kind") or "highlight").strip()
         if kind not in EVENT_KINDS:
             raise ValueError(f"非法标注事件类型: {kind!r}，必须为 {EVENT_KINDS} 之一")
-        page = int((ev or {}).get("page") or 0)
+        try:
+            page = int(ev.get("page") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("页码必须为正整数（1 起始）") from exc
         if page < 1:
             raise ValueError("页码必须为正整数（1 起始）")
-        color = str((ev or {}).get("color") or "jade").strip()
+        color = str(ev.get("color") or "jade").strip()
         if color not in HIGHLIGHT_COLORS:
             raise ValueError(
                 f"非法高亮颜色: {color!r}，必须为 {HIGHLIGHT_COLORS} 之一"
             )
-        text = str((ev or {}).get("text") or "").strip()
-        note = str((ev or {}).get("note") or "").strip()
+        text = str(ev.get("text") or "").strip()
+        note = str(ev.get("note") or "").strip()
         if kind == "highlight" and not text:
             raise ValueError("高亮文本不能为空")
         if kind == "note" and not text:
             continue  # 空批注无事发生
-        rects = (ev or {}).get("rects") or []
+        rects = ev.get("rects") or []
+        if not isinstance(rects, (list, tuple)):
+            raise ValueError("rects 必须是坐标列表（每项为 [x0,y0,x1,y1]）")
         normalized.append((kind, page, text, color, note, list(rects)))
 
     count = 0
     with closing(_connect(db_path)) as conn, conn:
-        existing = {
-            (r[0], r[1], r[2])
-            for r in conn.execute(
-                "SELECT page, text, color FROM highlights WHERE zotero_key = ?",
-                (zotero_key,),
-            )
-        }
+        # 幂等判定与写入同处写事务：跨进程由 BEGIN IMMEDIATE 串行化，进程内
+        # 亦不会出现两个连接同时「查无此行 → 各插一行」。
+        conn.execute("BEGIN IMMEDIATE")
         for kind, page, text, color, note, rects in normalized:
             if kind == "highlight":
-                if (page, text, color) in existing:
-                    continue  # 幂等：组件重发 / 重复导入
+                if conn.execute(
+                    "SELECT 1 FROM highlights WHERE zotero_key = ? AND page = ? "
+                    "AND text = ? AND color = ? LIMIT 1",
+                    (zotero_key, page, text, color),
+                ).fetchone():
+                    continue  # 幂等：组件重发 / 重复导入 / 并发先到者已写入
                 rects_json = json.dumps(
                     rects, ensure_ascii=False, separators=(",", ":")
                 )
@@ -719,7 +757,6 @@ def add_highlight_rects(db_path: StrPath, zotero_key: str, events: list) -> int:
                     _INSERT_HIGHLIGHT_RECTS,
                     (zotero_key, page, text, color, note, rects_json, _now()),
                 )
-                existing.add((page, text, color))
             else:  # note：附着到该页最近一条高亮（子查询按 id 降序取最新）
                 prev = conn.execute(
                     "SELECT id, note FROM highlights WHERE zotero_key = ? AND page = ?"
@@ -970,24 +1007,39 @@ def list_stage2_decisions(db_path: StrPath) -> list[dict]:
     return [dict(zip(_STAGE2_LIST_COLUMNS, r)) for r in rows]
 
 
+#: 「可进入筛选序列的文献」谓词（别名固定为 a）——与 :func:`coscreen.db.list_articles`
+#: 的缺省口径逐字同构：排除已确认重复（is_duplicate_of 非空）与**待人工复核**的
+#: 标题候选组成员（imported_in_batch=1 且组状态 pending/undecided）。复筛进度与
+#: 复筛队列必须共用这一个谓词（v06·F4-53：此前进度排除、队列不排除，同一库
+#: 两条路径给出不同的文献集合）。
+_ELIGIBLE_ARTICLE_SQL = (
+    "a.is_duplicate_of IS NULL AND NOT EXISTS ("
+    "SELECT 1 FROM title_duplicate_members m "
+    "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+    "WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1 "
+    "AND r.status IN ('pending','undecided'))"
+)
+
+
 def get_stage2_progress(db_path: StrPath) -> dict:
     """复筛进度：只统计已纳入初筛且非重复的文献。
 
     复筛队列是初筛纳入条目的子集，因此尚未开始初筛时 total 为 0；
     返回 {"total", "screened", "remaining", "include", "exclude", "maybe"}。
+    进度与队列共用 :data:`_ELIGIBLE_ARTICLE_SQL`，两者统计到的文献集合一致。
     """
     counts = {"include": 0, "exclude": 0, "maybe": 0}
     with closing(_connect(db_path)) as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM articles a "
             "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
-            "WHERE a.is_duplicate_of IS NULL"
+            f"WHERE {_ELIGIBLE_ARTICLE_SQL}"
         ).fetchone()[0]
         for decision, cnt in conn.execute(
             "SELECT s.decision, COUNT(*) FROM stage2_decisions s "
             "JOIN articles a ON a.zotero_key = s.zotero_key "
             "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
-            "WHERE a.is_duplicate_of IS NULL "
+            f"WHERE {_ELIGIBLE_ARTICLE_SQL} "
             "GROUP BY s.decision"
         ):
             if decision in counts:
@@ -1015,7 +1067,11 @@ def stage2_queue(
     """构造复筛队列（zotero_key 列表，按文献导入顺序、确定性）。
 
     - mode="own"（默认）：本人初筛 decisions 中 Include 或 Maybe 的键
-      （双盲：只用本人数据库）；
+      （双盲：只用本人数据库），且只保留**可进入筛选序列**的文献——已确认
+      重复（is_duplicate_of 非空）与待人工复核的标题候选组成员不进复筛队列，
+      与 :func:`get_stage2_progress` 共用 :data:`_ELIGIBLE_ARTICLE_SQL`
+      （v06·F4-53：两处口径分裂时 pending 期进度 total 2 vs 队列 3、判 duplicate
+      后队列仍含重复键而进度已排除）；
     - mode="arbitrated":外部传入的双方一致纳入键列表（UI 上传合并明细
       CSV 后经 :func:`parse_merged_includes` 提取），只保留存在于本人库
       （非重复条目）中的键并按导入顺序去重排序；
@@ -1023,10 +1079,21 @@ def stage2_queue(
       时抛 ValueError。
     """
     if mode == "own":
+        # list_decisions 已按 (import_order, zotero_key) 排序；仅补一道
+        # 「可进入筛选序列」过滤，保持原有顺序与双盲口径不变。
+        decisions = list_decisions(db_path)
+        if not any(d["decision"] in {"include", "maybe"} for d in decisions):
+            return []
+        with closing(_connect(db_path)) as conn:
+            eligible = {
+                row[0] for row in conn.execute(
+                    f"SELECT a.zotero_key FROM articles a WHERE {_ELIGIBLE_ARTICLE_SQL}"
+                )
+            }
         return [
             d["zotero_key"]
-            for d in list_decisions(db_path)
-            if d["decision"] in {"include", "maybe"}
+            for d in decisions
+            if d["decision"] in {"include", "maybe"} and d["zotero_key"] in eligible
         ]
     if mode == "arbitrated":
         if arbitrated_keys is None:

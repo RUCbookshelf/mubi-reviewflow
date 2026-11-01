@@ -34,9 +34,20 @@ def synthesize(db: DbPath, index_test: str, target_condition: str,
     """Fit a bivariate threshold meta-regression using one row per study.
 
     If a study has reported multiple thresholds, ``threshold_by_study`` must
-    choose one numeric threshold for it.  The model assumes a linear
-    association between threshold and both logit sensitivity and logit
-    specificity, with correlated normal study random effects.
+    choose one numeric threshold for it.  Keys are normalised by stripping
+    surrounding whitespace before they are matched against the stored study
+    IDs (r9 L6a / b14·F4-16).
+
+    When a study's several stored threshold texts parse to the *same* numeric
+    value (``"0.5"`` and ``"0.50"``), the selection is deterministic rather
+    than contradictory: the rows are ordered by their stored threshold text and
+    the first one is used, whether the threshold is chosen explicitly or left
+    to the automatic path (r9 L6a / b14·F4-17).  ``studies[].threshold`` in the
+    result reports which text was used, so the choice is auditable.
+
+    The model assumes a linear association between threshold and both logit
+    sensitivity and logit specificity, with correlated normal study random
+    effects.
     """
     import numpy as np
     from numpy.polynomial.hermite import hermgauss
@@ -73,21 +84,64 @@ def synthesize(db: DbPath, index_test: str, target_condition: str,
             row[key] = _required_text(row[key], key)
         grouped[row["study_id"]].append(row)
 
+    # r9 L6a / b14·F4-16：键与已剥离的 study_id 差集前先做同一套归一化
+    # （strip）。未归一化时 {" S1 ": 0.5} 会被报成 "unknown study IDs"，把库内
+    # 确实存在的研究误判为不存在。归一化后撞车（同一 ID 两个键）属矛盾输入，
+    # 明确拒绝。
+    choices = None
+    selection_warnings: list[str] = []
     if threshold_by_study is not None:
         if any(not isinstance(study_id, str) or not study_id.strip()
                for study_id in threshold_by_study):
             raise ValueError("threshold_by_study keys must be non-empty study IDs")
-        unknown = set(threshold_by_study) - set(grouped)
+        choices = {}
+        for raw_key, value in threshold_by_study.items():
+            key = raw_key.strip()
+            if key in choices and choices[key] != value:
+                raise ValueError(
+                    f"threshold_by_study selects conflicting thresholds for study {key}")
+            choices[key] = value
+        unknown = set(choices) - set(grouped)
         if unknown:
             raise ValueError("threshold_by_study contains unknown study IDs")
 
+    def _pick(study_id: str, candidates: list[dict]) -> dict:
+        """同一研究多行解析为同一数值时的确定性选择（r9 L6a / b14·F4-17）。
+
+        两行 threshold 文本（如 ``"0.5"`` 与 ``"0.50"``）可解析为同一数值，
+        原先「不选 → 400 multiple thresholds」「选了 → 400 must match exactly
+        one result」互为死路，只能删改库才能恢复。这里按存储文本排序取第一条，
+        结果稳定可复现，并在 warnings 里记下实际用了哪条文本。数值确实不同
+        （真正的多阈值）时仍要求用户选择。
+        """
+        ordered = sorted(candidates, key=lambda row: row["threshold"])
+        chosen = ordered[0]
+        if len({row["threshold"] for row in ordered}) > 1:
+            selection_warnings.append(
+                f"Study {study_id}: thresholds {', '.join(repr(row['threshold']) for row in ordered)} "
+                f"all parse to the same numeric value; {chosen['threshold']!r} was used "
+                "(deterministic choice by stored threshold text).")
+        return chosen
+
     selected = []
     for study_id, study_rows in grouped.items():
-        choice = threshold_by_study.get(study_id) if threshold_by_study is not None else None
+        choice = choices.get(study_id) if choices is not None else None
         if choice is None:
             if len(study_rows) != 1:
-                raise ValueError(
-                    f"study {study_id} has multiple thresholds; select one in threshold_by_study")
+                parsed = []
+                for row in study_rows:
+                    try:
+                        parsed.append((_number(row["threshold"], "threshold"), row))
+                    except ValueError:
+                        continue
+                if len(parsed) != len(study_rows) or len({value for value, _ in parsed}) != 1:
+                    raise ValueError(
+                        f"study {study_id} has multiple thresholds; select one in threshold_by_study")
+                # 所有行解析为同一数值：确定性选择，不再陷入不可解状态。
+                row = _pick(study_id, [candidate for _, candidate in parsed])
+                row["threshold_value"] = _number(row["threshold"], "threshold")
+                selected.append(row)
+                continue
             row = study_rows[0]
             row["threshold_value"] = _number(row["threshold"], "threshold")
             selected.append(row)
@@ -102,9 +156,9 @@ def synthesize(db: DbPath, index_test: str, target_condition: str,
             if threshold_value == value:
                 row["threshold_value"] = threshold_value
                 matches.append(row)
-        if len(matches) != 1:
+        if not matches:
             raise ValueError(f"selected threshold for study {study_id} must match exactly one result")
-        selected.append(matches[0])
+        selected.append(_pick(study_id, matches) if len(matches) > 1 else matches[0])
 
     if len(selected) < 10:
         raise ValueError("threshold meta-regression requires at least 10 independent studies")
@@ -186,6 +240,7 @@ def synthesize(db: DbPath, index_test: str, target_condition: str,
         "Threshold associations are study-level and observational; they do not establish causality.",
         "Confirm threshold units, scale, direction, and clinical comparability across studies.",
         "The model assumes linear threshold associations on both logit scales and one independent threshold per study.",
+        *selection_warnings,
     ]
     boundary = any(lo + .01 >= value or value >= hi - .01
                    for value, (lo, hi) in zip(fit.x, bounds))

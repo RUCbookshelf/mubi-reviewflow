@@ -4,6 +4,17 @@
   const W=WorkflowControls,E=window.WorkflowEvidence={};
   let mode='personal', discovery=null, current=null, ticket=0, baseline='', pending=0, saving=false, readOnlyKey=null, context='', uploadFailed=false, uploadStatus=false;
   const images=new Map(), urls=new Set();
+  /* r9 L3（b11·F3-23 的前端面）：服务端语义是「keep_image_ids 列出即精确集合，
+     不带该键即全部保留」。这里记住每个维度服务端已确认的图片 id —— 只有用户
+     真的删过图才下发列表；没删时省掉该键，单备注累积超过 100 张也不会撞
+     接口的 max_length=100（旧实现每次都把全部 id 塞进去）。 */
+  const savedIds=new Map();
+  const remember=(dim,list)=>savedIds.set(dim,new Set((list||[]).filter(i=>i.id!=null).map(i=>i.id)));
+  const keepFor=(dim,list)=>{
+    const kept=list.filter(i=>i.id!=null).map(i=>i.id),known=savedIds.get(dim)||new Set();
+    /* 只有"服务端已确认的某张图不在当前列表里"才算剔除；否则返回 null 表示
+       不带该键（= 全部保留）。 */
+    return [...known].some(id=>!kept.includes(id))?kept:null;};
   const node=(tag,text,attrs={})=>el(tag,{...attrs,...(text==null?{}:{text:T(text)})});
   const btn=(text,fn)=>node('button',text,{type:'button',class:'btn b-out sm',onclick:fn});
   const literal=(tag,text)=>el(tag,{text:String(text??''),translate:'no'});
@@ -14,7 +25,7 @@
   E.discard=()=>{baseline=signature();};
   E.context=()=>mode==='canonical'?'coding_submission_evidence':'personal';
   E.readOnly=key=>{readOnlyKey=key;};
-  function clear(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();current=null;baseline='';uploadFailed=false;uploadStatus=false;}
+  function clear(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();savedIds.clear();current=null;baseline='';uploadFailed=false;uploadStatus=false;}
   E.discovery=value=>{
     discovery=value;
     const show=!!value?.available && W.settings()?.task_kind==='team';
@@ -126,7 +137,7 @@
         details.append(node('summary',required?'Notes & evidence · Required':'Notes & evidence'));
         const text=el('textarea',{class:'input wf-note','data-dim':dim,translate:'no','data-wf-aria':'Notes & evidence','aria-label':T('Notes & evidence')});text.value=saved.text||'';text.disabled=!writable;text.dataset.wfReadonly=String(!writable);text.addEventListener('input',updateGaps);
         details.append(text,node('p',null,{class:'wf-evidence-gap',role:'status'}));
-        const host=node('div',null,{class:'wf-evidence-images'});images.set(dim,[...(saved.images||[])]);details.append(host);drawImages(dim,host,scope,t,writable);
+        const host=node('div',null,{class:'wf-evidence-images'});images.set(dim,[...(saved.images||[])]);remember(dim,saved.images);details.append(host);drawImages(dim,host,scope,t,writable);
         if(writable){const file=el('input',{type:'file',accept:'image/png,image/jpeg,image/webp',multiple:'','aria-label':T('Upload evidence images')});file.addEventListener('change',()=>{upload([...file.files],dim,host,writable);file.value='';});details.append(file);text.addEventListener('paste',event=>{const files=[...event.clipboardData?.files||[]].filter(f=>f.type.startsWith('image/'));if(files.length){event.preventDefault();upload(files,dim,host,writable);}});}
         card.append(details);
         if(forms.querySelector(':scope>.wf-coding-unit'))forms.append(node('hr',null,{class:'wf-coding-unit-divider','aria-hidden':'true'}));
@@ -143,7 +154,11 @@
     const scope=identity(),t=ticket,key=current.article.zotero_key||current.article.key;
     const notes={},evidence={},values={};
     for(const text of $$('#cbForms .wf-note'))if(text.dataset.wfReadonly!=='true')notes[text.dataset.dim]=text.value;
-    for(const [dim,list] of images){if(!Object.hasOwn(notes,dim))continue;evidence[dim]={keep_image_ids:list.filter(i=>i.id!=null).map(i=>i.id),upload_ids:list.filter(i=>i.upload_id).map(i=>i.upload_id)};}
+    for(const [dim,list] of images){if(!Object.hasOwn(notes,dim))continue;
+      const intent={upload_ids:list.filter(i=>i.upload_id).map(i=>i.upload_id)},keep=keepFor(dim,list);
+      /* 真的删过图才带列表（显式集合语义）；否则省略 = 全部保留（b11·F3-23）。 */
+      if(keep)intent.keep_image_ids=keep;
+      evidence[dim]=intent;}
     for(const control of $$('#cbForms .cb-v')){const dim=control.dataset.dim;if(control.type==='checkbox'){values[dim]??=[];if(control.checked)values[dim].push(control.value);}else values[dim]=[control.value];}
     const body={zotero_key:key,notes,evidence,expected_policy_version:current.policy_version,draft:false};
     if(mode!=='canonical')body.values=Object.fromEntries(Object.entries(values).map(([dim,v])=>[dim,v.join('|')]));
@@ -153,7 +168,7 @@
       const result=await api(mode==='canonical'?discovery.save_url:taskApi()+'/coding/values-batch'+scrQ(),{method:'POST',body});
       if(scope!==identity()||t!==ticket)return false;
       // Rehydrate server association IDs only after the one form transaction succeeds.
-      for(const [dim,saved] of Object.entries(result.evidence||{}))images.set(dim,[...(saved.images||[])]);
+      for(const [dim,saved] of Object.entries(result.evidence||{})){images.set(dim,[...(saved.images||[])]);remember(dim,saved.images);}
       baseline=signature();if(result.progress)applyCodingProgress(result.progress);
       document.dispatchEvent(new CustomEvent('reviewflow:coding-form-saved',{detail:key}));
       await E.render();

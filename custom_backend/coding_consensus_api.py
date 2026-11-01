@@ -230,7 +230,10 @@ def register_coding_consensus_routes(
     @app.get("/api/tasks/{task_id}/coding/freezes/{freeze_id}")
     def get_freeze(task_id: str, freeze_id: int, user: dict = Depends(require_user)):
         info, path, _ = context(task_id, user, "consensus:read")
-        freeze_record = coding_consensus.get_freeze(path, freeze_id)
+        try:
+            freeze_record = coding_consensus.get_freeze(path, freeze_id)
+        except ValueError as exc:
+            raise bad(str(exc)) from exc
         if freeze_record is None:
             raise HTTPException(404, "Coding freeze not found.")
         return freeze_record

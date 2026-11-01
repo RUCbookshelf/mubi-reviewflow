@@ -18,6 +18,11 @@ from scipy.stats import f as f_distribution
 from scipy.stats import t as student_t
 
 _MAX_EFFECTS = 500
+#: Effect/cluster/design IDs are shipped inside every saved snapshot; the
+#: callers build them from result IDs (<= 19 chars) or moderator/design names
+#: (<= 200). A per-ID ceiling keeps a hostile 100k-char label from being copied
+#: into every report and hash of the run (F3-41).
+_MAX_ID_CHARS = 500
 _RANK_TOL = 1e-12
 #: HTZ 检验物化 q² 个 n×n 矩阵（内存 O(q²n²)；q=100/n=100 时约 865MB），
 #: 超过该约束数的联合检验提前拒绝而不是 OOM。
@@ -52,6 +57,10 @@ def _ids(values: Sequence[object], label: str, *, nonempty: bool = True) -> list
     for index, value in enumerate(values):
         if not isinstance(value, str) or (nonempty and not value.strip()):
             raise KernelError("invalid_ids", f"{label}[{index}] must be a non-empty string", field=label)
+        if len(value) > _MAX_ID_CHARS:
+            raise KernelError("invalid_ids",
+                              f"{label}[{index}] must be at most {_MAX_ID_CHARS} characters",
+                              field=label, length=len(value))
         result.append(value.strip())
     if len(result) != len(set(result)) and label in {
         "effect_ids", "covariance_effect_ids", "additive_covariance_effect_ids",
@@ -61,7 +70,56 @@ def _ids(values: Sequence[object], label: str, *, nonempty: bool = True) -> list
     return result
 
 
-def _square_matrix(value: object, label: str) -> np.ndarray:
+def _declared_shape(value: object) -> tuple[int, int] | None:
+    """Return ``(rows, columns)`` when a 2-D input advertises its size cheaply.
+
+    F3-41: ``np.asarray`` used to materialise a whole user-supplied matrix
+    before any dimension check, so a 300x300 sequence was read cell by cell
+    (90000 cells, 8*N**2 bytes) only to be rejected against a shorter ID list.
+    ``shape`` (numpy) and ``len`` of a sequence are available without touching
+    the numeric cells, so the mismatch is reported first. Inputs that expose
+    neither (generators) still fall through to materialisation.
+    """
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        try:
+            dimensions = tuple(int(part) for part in shape)
+        except (TypeError, ValueError):
+            return None
+        return (dimensions[0], dimensions[1]) if len(dimensions) == 2 else None
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return None
+    try:
+        rows = len(value)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+    if rows == 0:
+        return (0, 0)
+    try:
+        columns = len(value[0])  # type: ignore[index]
+    except (TypeError, KeyError, IndexError):
+        return None
+    try:
+        return (rows, int(columns))
+    except (TypeError, ValueError):
+        return None
+
+
+def _square_matrix(value: object, label: str, *, expected: int | None = None,
+                   message: str | None = None, detail: str = "n_ids") -> np.ndarray:
+    if expected is not None:
+        declared = _declared_shape(value)
+        # Only a non-empty square input of the wrong size short-circuits.
+        # Empty, non-square and ragged inputs keep reporting
+        # ``invalid_covariance`` exactly as the materialised check below does,
+        # so no error code changes.
+        if (declared is not None and declared[0] > 0 and declared[0] == declared[1]
+                and declared != (expected, expected)):
+            raise KernelError(
+                "covariance_dimension_mismatch",
+                message or f"{label} dimensions must match its effect IDs",
+                **{detail: expected, "shape": list(declared)},
+            )
     try:
         matrix = np.asarray(value, dtype=float)
     except (TypeError, ValueError, OverflowError):
@@ -69,6 +127,22 @@ def _square_matrix(value: object, label: str) -> np.ndarray:
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or not np.isfinite(matrix).all():
         raise KernelError("invalid_covariance", f"{label} must be a finite square matrix")
     return matrix
+
+
+def _finite_or_none(value: object) -> float | None:
+    """Echo a caller-supplied number only when it is finite (F3-43 / F3-44).
+
+    The failed-run branch of ``rho_sensitivity`` used to hand a NaN or
+    Infinity straight back, and every saved run is serialised with
+    ``allow_nan=False``. A rejected rho is already described by
+    ``reason_code``/``reason``; echoing a non-representable value only made the
+    whole (otherwise successful) run unsaveable.
+    """
+    try:
+        result = float(value)  # type: ignore[arg-type]
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _check_symmetric(matrix: np.ndarray, label: str) -> np.ndarray:
@@ -121,7 +195,10 @@ def transform_effect_directions(
 
     source_ids = _ids(ids if covariance_effect_ids is None else covariance_effect_ids,
                       "covariance_effect_ids")
-    source = _square_matrix(covariance, "covariance")
+    source = _square_matrix(
+        covariance, "covariance", expected=len(source_ids),
+        message="covariance dimensions must match covariance_effect_ids",
+    )
     if source.shape != (len(source_ids), len(source_ids)):
         raise KernelError("covariance_dimension_mismatch", "covariance dimensions must match covariance_effect_ids",
                           n_ids=len(source_ids), shape=list(source.shape))
@@ -229,7 +306,10 @@ def build_working_covariance(
         if matrix is None or covariance_effect_ids is None:
             raise KernelError("missing_covariance_ids", "user covariance requires matrix and covariance_effect_ids")
         source_ids = _ids(covariance_effect_ids, "covariance_effect_ids")
-        source = _square_matrix(matrix, "user covariance")
+        source = _square_matrix(
+            matrix, "user covariance", expected=len(source_ids),
+            message="user covariance dimensions must match covariance_effect_ids",
+        )
         if source.shape != (len(source_ids), len(source_ids)):
             raise KernelError("covariance_dimension_mismatch", "user covariance dimensions must match covariance_effect_ids",
                               n_ids=len(source_ids), shape=list(source.shape))
@@ -313,7 +393,11 @@ def _validate_fit_inputs(
     _ids(effect_ids, "effect_ids")
     covariance = None
     if working_covariance is not None:
-        covariance = _square_matrix(working_covariance, "working covariance")
+        covariance = _square_matrix(
+            working_covariance, "working covariance", expected=len(rows),
+            message="working covariance must match the selected effect count",
+            detail="n_effects",
+        )
         if covariance.shape != (len(rows), len(rows)):
             raise KernelError("covariance_dimension_mismatch", "working covariance must match the selected effect count",
                               n_effects=len(rows), shape=list(covariance.shape))
@@ -327,6 +411,12 @@ def _validate_fit_inputs(
     except (TypeError, ValueError, OverflowError):
         raise KernelError("invalid_design_matrix", "design_matrix must be finite and two-dimensional") from None
     names = _ids(design_names, "design_names")
+    if not names:
+        # F3-47: an empty design was accepted and "fitted" successfully
+        # (coefficients=[], robust_inference.status="available"). The stored
+        # dependent-GLS contract already rejects an empty design_columns list,
+        # so this only closes the module-level gap for direct callers.
+        raise KernelError("empty_design_matrix", "design_names must name at least one design column")
     if len(names) != len(set(names)):
         raise KernelError("duplicate_design_name", "design column names must be unique")
     if x.ndim != 2 or x.shape[0] != len(rows) or x.shape[1] != len(names) or not np.isfinite(x).all():
@@ -350,6 +440,10 @@ def _htz_test(
     null_values: Sequence[Real] | None,
 ) -> dict:
     try:
+        declared = _declared_shape(constraints)
+        if declared is not None and declared[1] != len(beta):
+            return {"status": "unavailable", "reason_code": "invalid_constraints",
+                    "reason": "constraints must have one column per design coefficient"}
         c = np.asarray(constraints, dtype=float)
     except (TypeError, ValueError, OverflowError):
         return {"status": "unavailable", "reason_code": "invalid_constraints",
@@ -388,8 +482,21 @@ def _htz_test(
         code = exc.code if isinstance(exc, KernelError) else "singular_robust_covariance"
         return {"status": "unavailable", "reason_code": code,
                 "reason": "constraint robust covariance is singular or not estimable"}
+    # F3-42: the inverse was taken without a finiteness gate. A near-singular
+    # constraint covariance (e.g. sampling variances around 1e-320) inverts to
+    # inf and the quadratic form then reports statistic=Infinity with
+    # status="available"; every saved run is serialised with
+    # allow_nan=False, so the whole (already successful) fit fails to save.
+    # The same guard already exists on the companion paths (F3-50/F3-60
+    # coefficient SEs); this is its HTZ sibling.
+    if not np.isfinite(omega_inverse).all():
+        return {"status": "unavailable", "reason_code": "invalid_htz_statistic",
+                "reason": "HTZ constraint covariance is too ill-conditioned to invert"}
     contrast = c @ beta - d
     statistic = float(contrast @ omega_inverse @ contrast)
+    if not math.isfinite(statistic):
+        return {"status": "unavailable", "reason_code": "invalid_htz_statistic",
+                "reason": "HTZ statistic is outside the finite numerical range"}
     clusters = len(cluster_maps)
     if q * q * clusters * clusters * 8 > 64 * 1024 * 1024:
         return {"status": "unavailable", "reason_code": "htz_memory_limit",
@@ -425,6 +532,9 @@ def _htz_test(
     delta = max(df_denominator / nu, 0.0)
     f_statistic = delta * statistic / q
     p_value = float(f_distribution.sf(f_statistic, q, df_denominator))
+    if not math.isfinite(f_statistic) or not math.isfinite(p_value):
+        return {"status": "unavailable", "reason_code": "invalid_htz_statistic",
+                "reason": "HTZ statistic is outside the finite numerical range"}
     return {
         "status": "available", "method": "HTZ", "statistic": statistic,
         "f_statistic": f_statistic, "df_numerator": q,
@@ -486,7 +596,10 @@ def fit_dependent_gls(
             raise KernelError("missing_additive_covariance_ids",
                               "additive_covariance requires additive_covariance_effect_ids")
         source_ids = _ids(additive_covariance_effect_ids, "additive_covariance_effect_ids")
-        source = _square_matrix(additive_covariance, "additive covariance")
+        source = _square_matrix(
+            additive_covariance, "additive covariance", expected=len(source_ids),
+            message="additive covariance dimensions must match additive_covariance_effect_ids",
+        )
         if source.shape != (len(source_ids), len(source_ids)):
             raise KernelError("covariance_dimension_mismatch",
                               "additive covariance dimensions must match additive_covariance_effect_ids",
@@ -658,10 +771,12 @@ def fit_dependent_gls(
         "working_covariance": {
             **covariance_spec, "source_note": covariance_source_note,
             "sampling_matrix": sampling_covariance.tolist(),
-            "additive_covariance_effect_ids": (
-                effect_ids if effect_directions is not None
-                else list(additive_covariance_effect_ids or effect_ids)
-            ),
+            # F3-45: the stored matrix is reordered/subset to ``effect_ids``
+            # (see the np.ix_ selection above), so the accompanying ID list must
+            # be ``effect_ids`` as well. Echoing the caller's source order
+            # instead labelled row i with a different effect and every archived
+            # artifact read the matrix against the wrong IDs.
+            "additive_covariance_effect_ids": effect_ids,
             "additive_covariance": additive.tolist(),
             "scale": "total_working_covariance", "matrix": working_covariance.tolist(),
         },
@@ -686,11 +801,50 @@ def fit_dependent_gls(
     return result
 
 
+def _effect_rows(effects: object) -> list[Mapping]:
+    """Normalise the row list shared by the fit, LOCO and rho-sensitivity paths.
+
+    F3-46: ``leave_one_cluster_out`` and ``rho_sensitivity`` indexed the caller's
+    mappings directly, so a malformed row escaped as a bare ``KeyError`` /
+    ``TypeError`` (HTTP 500) while ``fit_dependent_gls`` translated the very
+    same input to a ``KernelError`` (HTTP 400). The checks and codes below
+    mirror ``_validate_fit_inputs`` so every entry point reports one contract.
+    """
+    if not isinstance(effects, (list, tuple)):
+        try:
+            effects = list(effects)  # type: ignore[arg-type]
+        except TypeError:
+            raise KernelError("invalid_effects", "effects must be a sequence of effect mappings") from None
+    for index, row in enumerate(effects):
+        if not isinstance(row, Mapping):
+            raise KernelError("invalid_effect", f"effect {index + 1} must be a mapping")
+        cluster_id = row.get("cluster_id")
+        if not isinstance(cluster_id, str) or not cluster_id.strip():
+            raise KernelError("missing_cluster_id", f"effect {index + 1} needs an explicit independent cluster_id")
+        effect_id = row.get("effect_id")
+        if not isinstance(effect_id, str) or not effect_id.strip():
+            raise KernelError("missing_effect_id", f"effect {index + 1} needs a stable effect_id")
+    return list(effects)
+
+
+def _design_values(design_matrix: object, n_effects: int) -> np.ndarray:
+    """Two-dimensional finite design with one row per effect (F3-46)."""
+    try:
+        x = np.asarray(design_matrix, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        raise KernelError("invalid_design_matrix", "design_matrix must be finite and two-dimensional") from None
+    if x.ndim != 2 or x.shape[0] != n_effects or not np.isfinite(x).all():
+        raise KernelError("invalid_design_matrix",
+                          "design_matrix must be finite with one row per effect")
+    return x
+
+
 def leave_one_cluster_out(
     effects: Sequence[Mapping], design_matrix: object, design_names: Sequence[str], **fit_options: object,
 ) -> dict:
     """Delete each whole independent cluster, refit, and retain IDs and status."""
-    x = np.asarray(design_matrix, dtype=float)
+    effects = _effect_rows(effects)
+    x = _design_values(design_matrix, len(effects))
     # 与 fit 的规范化一致地 strip cluster_id：否则同一簇的空白变体被拆成
     # 两个"簇"，n_clusters/removed 失真（fit 内部按 strip 后的值分组）。
     cluster_order = list(dict.fromkeys(str(row["cluster_id"]).strip() for row in effects))
@@ -737,7 +891,20 @@ def rho_sensitivity(
     if base_kind != "block_correlation":
         raise KernelError("unsupported_rho_sensitivity_covariance",
                           "rho_sensitivity requires block_correlation covariance")
-    x = np.asarray(design_matrix, dtype=float)
+    effects = _effect_rows(effects)
+    x = _design_values(design_matrix, len(effects))
+    # F3-46: the per-rho refit passed ``rho=`` alongside **fit_options, so a
+    # caller-supplied rho (or a non-sequence rho_values) raised a bare TypeError
+    # rather than a KernelError; both are reported here.
+    if "rho" in fit_options:
+        raise KernelError("unused_covariance_option",
+                          "rho_sensitivity sets rho per run; do not also pass rho")
+    if isinstance(rho_values, (str, bytes, bytearray)):
+        raise KernelError("invalid_rho_values", "rho_values must be a sequence of numbers")
+    try:
+        rho_values = list(rho_values)  # type: ignore[arg-type]
+    except TypeError:
+        raise KernelError("invalid_rho_values", "rho_values must be a sequence of numbers") from None
     runs = []
     for rho in rho_values:
         try:
@@ -750,7 +917,7 @@ def rho_sensitivity(
                                     else "inference_unavailable"),
                          "result": result})
         except KernelError as exc:
-            runs.append({"rho": rho if isinstance(rho, (int, float)) else None,
+            runs.append({"rho": _finite_or_none(rho),
                          "status": "failed", "reason_code": exc.code, "reason": str(exc),
                          "details": exc.details})
     return {"method": "rho_sensitivity_reestimated_gls", "reestimate": True,

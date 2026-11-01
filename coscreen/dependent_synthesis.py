@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 import numpy as np
 from scipy.stats import chi2, norm
@@ -15,6 +16,23 @@ _CITATION_REMINDER = (
     "Report the source and assumptions for each within-study covariance matrix; "
     "cite Cheung (2015), Chapter 5, pp. 121–126 (PDF pp. 145–150), especially Eqs. 5.1–5.9."
 )
+#: Highest outcome count the random-effects carriers (dependent_random*) implement.
+_RANDOM_MAX_OUTCOMES = 8
+
+
+def _result_key(value: object, label: str) -> int:
+    """Coerce one saved-result ID to its dictionary key, or report a ValueError.
+
+    F3-71: block ``result_ids`` were used directly as dict keys and set members,
+    so an unhashable element (a list) escaped as a bare ``TypeError`` / ``None``
+    as a raw ``int()`` TypeError, neither of which the endpoint translates.
+    The coercion itself is unchanged (``int(...)``, as the effect table already
+    applied); only the escape becomes a described block error.
+    """
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label} must be an integer result ID") from None
 
 
 def synthesize_dependent_effects(effects: list[dict], blocks: list[dict], model: str = "fixed") -> dict:
@@ -24,9 +42,14 @@ def synthesize_dependent_effects(effects: list[dict], blocks: list[dict], model:
     if len(blocks) < 2:
         raise ValueError("at least two independent studies are required")
 
-    effect_by_id = {int(row["result_id"]): row for row in effects}
-    if len(effect_by_id) != len(effects):
-        raise ValueError("duplicate saved effect result IDs")
+    effect_by_id = {}
+    for row in effects:
+        if not isinstance(row, Mapping):
+            raise ValueError("saved effect rows must be mappings")
+        key = _result_key(row.get("result_id"), "saved effect result_id")
+        if key in effect_by_id:
+            raise ValueError("duplicate saved effect result IDs")
+        effect_by_id[key] = row
 
     seen_studies: set[str] = set()
     seen_results: set[int] = set()
@@ -49,6 +72,8 @@ def synthesize_dependent_effects(effects: list[dict], blocks: list[dict], model:
             raise ValueError(f"study {study_id} needs at least one selected result ID")
         if not note:
             raise ValueError(f"study {study_id} needs a covariance source note")
+        # F3-71: normalise each ID before it is used as a dict key or set member.
+        result_ids = [_result_key(value, f"study {study_id} result ID") for value in result_ids]
         if len(set(result_ids)) != len(result_ids) or any(result_id in seen_results for result_id in result_ids):
             raise ValueError("result IDs must be unique within and across study blocks")
 
@@ -59,7 +84,12 @@ def synthesize_dependent_effects(effects: list[dict], blocks: list[dict], model:
                 raise ValueError(f"effect result {result_id} does not exist in this review")
             if row["selected"] != 1:
                 raise ValueError(f"effect result {result_id} is not selected")
-            if row["study_id"] != study_id:
+            # F3-74: the block study_id is stripped but the stored row's was not,
+            # so a legacy/externally written study_id with surrounding whitespace
+            # never matched its own block ("block 'S1' / row 'S1 '" was rejected
+            # with "does not belong to study S1"). Compare on the same normalised
+            # form; the stored value is echoed unchanged into the snapshot.
+            if str(row["study_id"]).strip() != study_id:
                 raise ValueError(f"effect result {result_id} does not belong to study {study_id}")
             if any(existing["outcome"] == row["outcome"] for existing in rows):
                 raise ValueError(f"study {study_id} has more than one selected result for outcome {row['outcome']}")
@@ -145,6 +175,14 @@ def synthesize_dependent_effects(effects: list[dict], blocks: list[dict], model:
                     for outcome in outcome_order}
     if any(count < 2 for count in study_counts.values()):
         raise ValueError("at least two independent studies are required for every outcome")
+    # F3-72: the random-effects carriers only implement two to eight outcomes,
+    # but that was checked only at the end, after the entire fixed GLS and its
+    # residual Q had been computed. With nine outcomes the request was then
+    # refused for a numerical reason ("residual Q is outside the finite
+    # numerical range") whenever the numbers failed first, hiding the real
+    # cause. The outcome count is known here, before any matrix work.
+    if model == "random_reml_un" and len(outcome_order) > _RANDOM_MAX_OUTCOMES:
+        raise ValueError("random_reml_un supports two to eight outcomes")
 
     outcome_index = {outcome: index for index, outcome in enumerate(outcome_order)}
     n_outcomes = len(outcome_order)

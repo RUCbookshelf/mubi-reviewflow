@@ -71,18 +71,28 @@ def continuous_effect(n_t: int, mean_t: float, sd_t: float,
        any(not math.isfinite(x) for x in (mean_t, sd_t, mean_c, sd_c)) or min(sd_t, sd_c) < 0:
         raise ValueError("each arm needs n >= 2, finite mean and nonnegative SD")
     diff = mean_t-mean_c
-    if measure == "MD":
-        estimate, variance = diff, sd_t**2/n_t + sd_c**2/n_c
-    else:
-        total = n_t+n_c
-        df = total-2
-        pooled_sd = math.sqrt(((n_t-1)*sd_t**2+(n_c-1)*sd_c**2)/df)
-        if pooled_sd == 0:
-            raise ValueError("SMD needs a positive pooled SD")
-        correction = 1-3/(4*df-1)
-        d = diff/pooled_sd
-        estimate = correction*d
-        variance = correction**2 * (total/(n_t*n_c) + d**2/(2*total))
+    # b14·F4-100：:91 的门只做 isfinite，合法有限但极大的臂级 SD（IPD 的
+    # ±1.5e308 参与者值经 stdev 得 1.73e308）在下面的 ``sd_t**2`` 处抛
+    # OverflowError(34)（CPython 的幂运算先抛错，``x*x`` 才是 inf）。该异常
+    # 不在端点 ``except ValueError`` 覆盖内 → HTTP 500。算式逐字保留（正常
+    # 输入的估计与 SE 逐位不变），只在外面把溢出翻译成同一条 ValueError 契约；
+    # 乘法路径溢出成 inf 的中间量由随后的有限性判定接住。
+    try:
+        if measure == "MD":
+            estimate, variance = diff, sd_t**2/n_t + sd_c**2/n_c
+        else:
+            total = n_t+n_c
+            df = total-2
+            pooled_sd = math.sqrt(((n_t-1)*sd_t**2+(n_c-1)*sd_c**2)/df)
+            if pooled_sd == 0:
+                raise ValueError("SMD needs a positive pooled SD")
+            correction = 1-3/(4*df-1)
+            d = diff/pooled_sd
+            estimate = correction*d
+            variance = correction**2 * (total/(n_t*n_c) + d**2/(2*total))
+    except OverflowError as exc:
+        raise ValueError("arm summaries are too large to represent: the sampling variance "
+                         "exceeds the finite range") from exc
     if variance <= 0:
         raise ValueError("zero sampling variance: this result needs a different method")
     return {"measure": measure, "estimate": estimate, "se": math.sqrt(variance), "se_scale": "natural"}

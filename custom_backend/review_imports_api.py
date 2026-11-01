@@ -433,7 +433,15 @@ def register_review_import_routes(app, require_user, **dependencies):
         with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
             try:
                 result = store.batch_summary(conn,batch_id)
-            except KeyError as exc:
+            except (KeyError, ValueError) as exc:
+                # b15·F4-77：batch_summary 沿 record_target→canonical 解析文章身份，
+                # 文章行缺失或 is_duplicate_of 成环时抛的是 **ValueError**，此前的
+                # `except KeyError` 漏捕，GET 详情整页 500（同一状态的 POST undo
+                # 经 mutate 的 except (ValueError,KeyError) 译成 409）。读路径按写
+                # 路径同一口径收口：KeyError → 404（批次不存在），ValueError →
+                # 409（数据需刷新/库外改写需重做），README 提示由前端展示原文由
+                # translate 统一给出。canonical 解析失败的可用性降级见
+                # import_review_undo.available（F4-82）。
                 translate(exc)
             projection = review_projection(conn, batch_id)
             rows = projection[view]

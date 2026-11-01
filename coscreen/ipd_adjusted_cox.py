@@ -2,12 +2,93 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from math import exp, fsum, isfinite, log, sqrt, ulp
 from numbers import Real
 
 import numpy as np
 from scipy.stats import norm
+
+# F4-93: one fit is bounded by a wall-clock budget -- the same guard shape and
+# the same 120 s ceiling the random-effects carriers use (_EvaluationBudget in
+# dependent_random). The review measured a legitimate 3000-row request holding a
+# synchronous worker for 82 s through Newton/Armijo retries, extrapolating to
+# tens of minutes at the 100,000-row model limit. The worst legitimate fits
+# measured while sizing this limit: 100,000 rows with one covariate 13.1 s,
+# 100,000 rows with the 50-covariate cap 44.6 s -- so 120 s never truncates a
+# fit that would have succeeded, and only a runaway search stops early, with a
+# 400 instead of unbounded CPU. ipd_cox_extended shares the value and shape.
+_BUDGET_SECONDS = 120.0
+
+# F4-94/F4-104: complete separation makes the partial likelihood flat, so the
+# observed information collapses relative to the null model. 716 random accepted
+# fits across three sweeps measured ratios from 0.03 to 1.3; fully separated fits
+# measure about 4e-10 (one-stage) and 9e-10 (separated per-study fits). The gate
+# sits five orders of magnitude below the lowest legitimate observation, and
+# ipd_cox_extended uses the same threshold (same family, same guard shape).
+_MIN_INFORMATION_RATIO = 1e-6
+
+
+class _BudgetExceeded(ValueError):
+    """Raised inside evaluate() when the fit's wall-clock budget is spent."""
+
+
+class _EvaluationBudget:
+    """Wall-clock budget shared by the evaluations of one Cox fit (F4-93)."""
+
+    def __init__(self, seconds: float | None = None) -> None:
+        self.seconds = _BUDGET_SECONDS if seconds is None else seconds
+        self.started = time.monotonic()
+        self.exhausted = False
+
+    def expired(self) -> bool:
+        if not self.exhausted and time.monotonic() - self.started >= self.seconds:
+            self.exhausted = True
+        return self.exhausted
+
+    def check(self) -> None:
+        if self.expired():
+            raise _BudgetExceeded(
+                "Cox fit exceeded its computation budget before convergence; "
+                "reduce the number of participant rows or covariates per run"
+            )
+
+
+def _finite_fsum(terms, message: str) -> float:  # noqa: ANN001
+    """``math.fsum`` 的溢出家族统一入口：中间溢出转 ValueError（4xx 契约）。
+
+    fsum 对「各项都有限、部分和却超出 float 范围」的输入抛
+    ``OverflowError``（fsum 溢出族：F2-87/F4-106/F4-95 同型），端点只捕
+    ValueError，于是溢出变成 500。常规输入仍走同一条 fsum，结果逐位不变。
+    """
+    try:
+        return fsum(terms)
+    except OverflowError as exc:
+        raise ValueError(message) from exc
+
+
+def _information_collapse_ratio(evaluate, beta: np.ndarray) -> float | None:  # noqa: ANN001
+    """Smallest-eigenvalue ratio of observed information: fitted fit vs null model.
+
+    F4-94/F4-104 同族判据：完全分离时风险集权重被单个观测支配，拟合点的
+    observed information 相对 beta=0 的零模型坍缩数个数量级。返回 None 表示
+    无法评估（零模型信息非正/求值失败），调用方此时不得新增拒绝（R2）。
+    """
+    try:
+        null_information = evaluate(np.zeros_like(beta))[2]
+    except _BudgetExceeded:
+        raise
+    except ValueError:
+        return None
+    try:
+        null_smallest = float(np.linalg.eigvalsh(null_information)[0])
+        fitted_smallest = float(np.linalg.eigvalsh(evaluate(beta)[2])[0])
+    except np.linalg.LinAlgError:
+        return None
+    if not isfinite(null_smallest) or null_smallest <= 0:
+        return None
+    return fitted_smallest / null_smallest
 
 
 def _number(value: object, label: str) -> float:
@@ -23,11 +104,17 @@ def _number(value: object, label: str) -> float:
 
 
 def _exp_or_none(value: float) -> float | None:
+    """exp() as a reportable ratio: None only when the exponent overflows.
+
+    F4-107: ``result or None`` also folded a correctly rounded underflow (0.0)
+    into None, so an audit table showed a real near-zero bound as a missing
+    value. Keep every finite result, including 0.0.
+    """
     try:
         result = exp(value)
     except OverflowError:
         return None
-    return result or None
+    return result if isfinite(result) else None
 
 
 def fit_adjusted_stratified_cox(
@@ -112,7 +199,13 @@ def fit_adjusted_stratified_cox(
         event_groups[study_id] = groups
     event_total = sum(event_counts)
 
+    budget = _EvaluationBudget()
+
     def evaluate(beta: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+        # F4-93: charge every full evaluation, so Newton steps and each Armijo
+        # trial are covered; a runaway search stops with a 400 instead of
+        # occupying the worker thread indefinitely.
+        budget.check()
         likelihood = 0.0
         score = np.zeros(2)
         information = np.zeros((2, 2))
@@ -126,10 +219,9 @@ def fit_adjusted_stratified_cox(
                 while cursor < len(rows) and rows[cursor][0] >= event_time:
                     _, _, treatment, covariate = rows[cursor]
                     x = np.asarray((treatment, covariate), dtype=float)
-                    try:
-                        eta = fsum((float(beta[0]) * treatment, float(beta[1]) * covariate))
-                    except (OverflowError, ValueError):
-                        raise ValueError("linear predictor is outside numeric range") from None
+                    eta = _finite_fsum(
+                        (float(beta[0]) * treatment, float(beta[1]) * covariate),
+                        "linear predictor is outside numeric range")
                     if not isfinite(eta):
                         raise ValueError("linear predictor is outside numeric range")
                     if maximum is None:
@@ -156,10 +248,9 @@ def fit_adjusted_stratified_cox(
                 relative_event_eta = []
                 for _, _, treatment, covariate in tied_rows:
                     x = np.asarray((treatment, covariate), dtype=float)
-                    try:
-                        eta = fsum((float(beta[0]) * treatment, float(beta[1]) * covariate))
-                    except (OverflowError, ValueError):
-                        raise ValueError("linear predictor is outside numeric range") from None
+                    eta = _finite_fsum(
+                        (float(beta[0]) * treatment, float(beta[1]) * covariate),
+                        "linear predictor is outside numeric range")
                     if not isfinite(eta):
                         raise ValueError("linear predictor is outside numeric range")
                     weight = exp(eta - maximum)
@@ -171,7 +262,9 @@ def fit_adjusted_stratified_cox(
                     relative_event_eta.append(eta - maximum)
 
                 deaths = len(tied_rows)
-                likelihood += fsum(relative_event_eta)
+                # F4-95: the event-term sum was the only fsum without the family guard.
+                likelihood += _finite_fsum(relative_event_eta,
+                                           "linear predictor is outside numeric range")
                 score += tied_x
                 tie_steps = range(deaths) if ties == "efron" else (0,)
                 for tied_index in tie_steps:
@@ -212,6 +305,8 @@ def fit_adjusted_stratified_cox(
             if not np.array_equal(candidate, beta):
                 try:
                     candidate_likelihood = evaluate(candidate)[0]
+                except _BudgetExceeded:
+                    raise
                 except ValueError:
                     candidate_likelihood = float("-inf")
                 if candidate_likelihood >= likelihood + 1e-4 * fraction * direction:
@@ -232,6 +327,8 @@ def fit_adjusted_stratified_cox(
             full_step = beta + step
             try:
                 full_likelihood = evaluate(full_step)[0]
+            except _BudgetExceeded:
+                raise
             except ValueError:
                 full_likelihood = float("-inf")
             if (1e-4 * direction <= noise
@@ -268,6 +365,17 @@ def fit_adjusted_stratified_cox(
         raise ValueError("treatment or covariate effect is not identifiable with a finite Hessian") from None
     if not np.isfinite(covariance).all() or not np.isfinite(score).all():
         raise ValueError("adjusted Cox Hessian does not yield finite estimates")
+    # F4-94: complete separation converges on a flat likelihood (score ~ 0 while
+    # the coefficient runs to the boundary). The Hessian then still passes the
+    # magnitude/condition checks above but its information has collapsed against
+    # the null model, and the reported se (~3e4) with hr_ci (None, None) was a
+    # silently wrong "success". Reject exactly that collapse; the ratio is
+    # evaluated against the same design, so scale and centering cancel.
+    collapse = _information_collapse_ratio(evaluate, beta)
+    if collapse is not None and collapse < _MIN_INFORMATION_RATIO:
+        raise ValueError("treatment or covariate effect is not identifiable: the data appear "
+                         "to separate the groups, so a finite maximum-likelihood estimate "
+                         "does not exist")
     standard_errors = np.sqrt(np.diag(covariance))
     if not np.isfinite(standard_errors).all() or np.any(standard_errors <= 0):
         raise ValueError("adjusted Cox Hessian does not yield finite standard errors")

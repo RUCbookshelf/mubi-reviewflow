@@ -1948,15 +1948,23 @@
         "type": "object"
       },
       "EvidenceIn": {
+        "description": "单个维度的证据保存意图。\n\nr9 L3（b11·F3-23 的 API 面）：``keep_image_ids`` 缺省/``null`` = 保留该维度\n现有**全部**图片，与模块层 ``coding_evidence.save_form`` 的\"不带该键即\n全部保留\"同一读法。修复前默认空列表且上限 100：单备注累积 >100 张后既\n发不出 101 条（422），省略又按空集删光——\"全部保留\"根本无法表达。显式\n列表仍是精确集合语义（列出即保留这些、其余删除），上限保持 100 不变。",
         "properties": {
           "keep_image_ids": {
-            "items": {
-              "minimum": 1.0,
-              "type": "integer"
-            },
-            "maxItems": 100,
-            "title": "Keep Image Ids",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Image Ids"
           },
           "upload_ids": {
             "items": {
