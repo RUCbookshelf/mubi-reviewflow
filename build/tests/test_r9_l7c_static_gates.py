@@ -385,7 +385,7 @@ def test_manifest_data_src_is_not_a_loader(tmp_path):
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout)
-    assert report["syntax_files"] == 115  # ghost_module.js 未混进载入列表
+    assert report["syntax_files"] == 116  # ghost_module.js 未混进载入列表；r11 ERIC 入口 +1
 
 
 def test_manifest_data_src_cannot_mask_a_dead_file(tmp_path):
@@ -409,7 +409,7 @@ def test_manifest_quoted_gt_does_not_hide_a_real_loader(tmp_path):
           MODEL_TAG.replace('<script src=', '<script data-note="a>b" src='))
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout)["syntax_files"] == 115
+    assert json.loads(proc.stdout)["syntax_files"] == 116
 
 
 def test_manifest_helper_only_accepts_the_exact_src_attribute(tmp_path):
@@ -439,7 +439,7 @@ def test_manifest_helper_only_accepts_the_exact_src_attribute(tmp_path):
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ghost"] == [], f"data-src/lazy-src 混进了载入列表：{out['ghost']}"
     assert out["model"] is True, "真 loader 不得因同标签的其他属性被漏掉"
-    assert out["count"] == 115
+    assert out["count"] == 116
 
 
 # --------------------------------------------------------------------------- #

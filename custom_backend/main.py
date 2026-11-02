@@ -5948,6 +5948,15 @@ from custom_backend.zotero_local_api import register_zotero_local_routes
 
 register_zotero_local_routes(app, require_user, _task_or_404, _task_visible_to)
 
+# R11 ERIC 教育检索（2.1.4）：官方 API api.ies.ed.gov（免 key，题录+摘要，1966+）。
+# 默认关——无后台/定时请求，仅用户在导入页显式点击「预览命中」或「检索并导入」
+# 时出站；出站仅 stdlib urllib（_NoRedirectHandler 先例、短超时、读取上限）；
+# 检索结果合成 RIS 虚拟文件经 app.state.review_imports.upload() 走受保护导入
+# （去重/待审/溯源全管线复用）；失败优雅降级 4xx 绝不 500。
+from custom_backend.eric_search_api import register_eric_search_routes
+
+register_eric_search_routes(app, require_user, _task_or_404, _task_visible_to)
+
 # W2 PDF 自动获取（DOI→Unpaywall（email 参数）→开放 PDF→check_pdf_bytes→save_pdf
 # 落盘+轨迹）：联网默认关（任务级 pdf_fetch_settings.json 缺省 enabled=false，
 # 未启用一律 403 且零出站）；出站仅 stdlib urllib（_NoRedirectHandler 先例、

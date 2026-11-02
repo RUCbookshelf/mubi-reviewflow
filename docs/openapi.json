@@ -1947,6 +1947,50 @@
         "title": "EntryGuidanceIn",
         "type": "object"
       },
+      "EricImportBody": {
+        "properties": {
+          "limit": {
+            "default": 500,
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "EricImportBody",
+        "type": "object"
+      },
+      "EricSearchBody": {
+        "properties": {
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "rows": {
+            "default": 20,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "EricSearchBody",
+        "type": "object"
+      },
       "EvidenceIn": {
         "description": "单个维度的证据保存意图。\n\nr9 L3（b11·F3-23 的 API 面）：``keep_image_ids`` 缺省/``null`` = 保留该维度\n现有**全部**图片，与模块层 ``coding_evidence.save_form`` 的\"不带该键即\n全部保留\"同一读法。修复前默认空列表且上限 100：单备注累积 >100 张后既\n发不出 101 条（422），省略又按空集删光——\"全部保留\"根本无法表达。显式\n列表仍是精确集合语义（列出即保留这些、其余删除），上限保持 100 不变。",
         "properties": {
@@ -21339,6 +21383,158 @@
           }
         },
         "summary": "Save Decision"
+      }
+    },
+    "/api/tasks/{task_id}/eric/import": {
+      "post": {
+        "description": "检索并导入：ERIC 题录 → 合成 RIS 虚拟文件 → 受保护导入管线。\n\n写库只经 ``app.state.review_imports.upload()``（去重/待审/激活/溯源\n全部复用）；本模块零数据库写入。联网前先做写入授权，未授权用户不会\n触发任何出站。",
+        "operationId": "eric_import_api_tasks__task_id__eric_import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "screener",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Screener"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EricImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Eric Import Api Tasks  Task Id  Eric Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Eric Import"
+      }
+    },
+    "/api/tasks/{task_id}/eric/search": {
+      "post": {
+        "description": "检索预览（显式手动触发；只读，不写任何数据、不入库）。",
+        "operationId": "eric_search_api_tasks__task_id__eric_search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EricSearchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Eric Search Api Tasks  Task Id  Eric Search Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Eric Search"
       }
     },
     "/api/tasks/{task_id}/evidence-map": {
