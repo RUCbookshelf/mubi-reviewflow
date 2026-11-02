@@ -1,0 +1,600 @@
+{
+ "dataset": "Rothman2008",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 23,
+ "counts": {
+  "PASS": 17,
+  "FAIL": 2,
+  "NOT-RUN": 4,
+  "INFO": 0
+ },
+ "checks": [
+  {
+   "id": "roth1-rd",
+   "dataset": "Rothman2008",
+   "method": "MH RD",
+   "metric": "pooled RD",
+   "observed": 0.03490026933691816,
+   "published": 0.035,
+   "published_decimals": 3,
+   "abs_diff": 9.973066308184564e-05,
+   "rel_diff": 0.0028494475166241607,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.014285714285714285,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-rd-se",
+   "dataset": "Rothman2008",
+   "method": "MH RD",
+   "metric": "SE(RD)",
+   "observed": 0.03189807767813373,
+   "published": 0.032,
+   "published_decimals": 3,
+   "abs_diff": 0.00010192232186627403,
+   "rel_diff": 0.0031850725583210636,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.015625,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-rr-log",
+   "dataset": "Rothman2008",
+   "method": "MH RR",
+   "metric": "logRR",
+   "observed": 0.28183148420493526,
+   "published": 0.28,
+   "published_decimals": 2,
+   "abs_diff": 0.0018314842049352298,
+   "rel_diff": 0.00654101501762582,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.017857142857142856,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-rr",
+   "dataset": "Rothman2008",
+   "method": "MH RR",
+   "metric": "RR",
+   "observed": 1.3255553241551052,
+   "published": 1.33,
+   "published_decimals": 2,
+   "abs_diff": 0.00444467584489483,
+   "rel_diff": 0.0033418615375149095,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0037593984962406013,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-rr-se",
+   "dataset": "Rothman2008",
+   "method": "MH RR",
+   "metric": "SE(logRR)",
+   "observed": 0.2589816280152178,
+   "published": 0.26,
+   "published_decimals": 2,
+   "abs_diff": 0.0010183719847822181,
+   "rel_diff": 0.003916815326085454,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.019230769230769232,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-rr-ci90-low",
+   "dataset": "Rothman2008",
+   "method": "MH RR",
+   "metric": "90% CI low (derived z90)",
+   "observed": 0.8657532117219444,
+   "published": 0.87,
+   "published_decimals": 2,
+   "abs_diff": 0.00424678827805558,
+   "rel_diff": 0.004881365836845494,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.005747126436781609,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-rr-ci90-high",
+   "dataset": "Rothman2008",
+   "method": "MH RR",
+   "metric": "90% CI high (derived z90)",
+   "observed": 2.029558647436212,
+   "published": 2.03,
+   "published_decimals": 2,
+   "abs_diff": 0.0004413525637878557,
+   "rel_diff": 0.0002174150560531309,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0024630541871921187,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth1-cmh",
+   "dataset": "Rothman2008",
+   "method": "CMH test (correct=FALSE)",
+   "metric": "chi2=1.19, p=0.28",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "pool_mantel_haenszel returns no test statistic (A2 §2 output fields)"
+  },
+  {
+   "id": "roth2-ird",
+   "dataset": "Rothman2008",
+   "method": "MH IRD (person-time)",
+   "metric": "IRD per 10^4 PY",
+   "observed": 11.439188257815013,
+   "published": 11.44,
+   "published_decimals": 2,
+   "abs_diff": 0.0008117421849860307,
+   "rel_diff": 7.09564847015761e-05,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "person-time scaled x10000 to integers; result rescaled (identity documented in header)"
+  },
+  {
+   "id": "roth2-ird-se",
+   "dataset": "Rothman2008",
+   "method": "MH IRD (person-time)",
+   "metric": "SE(IRD)",
+   "observed": 3.0777214911432917,
+   "published": 3.09,
+   "published_decimals": 2,
+   "abs_diff": 0.012278508856708115,
+   "rel_diff": 0.003973627461717836,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0016181229773462784,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "Greenland-Robins SE reference"
+  },
+  {
+   "id": "roth2-logirr",
+   "dataset": "Rothman2008",
+   "method": "MH IRR (person-time)",
+   "metric": "logIRR",
+   "observed": 0.3539486426804687,
+   "published": 0.35,
+   "published_decimals": 2,
+   "abs_diff": 0.003948642680468739,
+   "rel_diff": 0.011281836229910684,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.014285714285714287,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth2-irr",
+   "dataset": "Rothman2008",
+   "method": "MH IRR (person-time)",
+   "metric": "IRR",
+   "observed": 1.4246820167514391,
+   "published": 1.42,
+   "published_decimals": 2,
+   "abs_diff": 0.0046820167514392,
+   "rel_diff": 0.003297194895379718,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0035211267605633804,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth2-irr-se",
+   "dataset": "Rothman2008",
+   "method": "MH IRR (person-time)",
+   "metric": "SE(logIRR)",
+   "observed": 0.10671061861517978,
+   "published": 0.11,
+   "published_decimals": 2,
+   "abs_diff": 0.0032893813848202252,
+   "rel_diff": 0.02990346713472932,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.045454545454545456,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "kernel SE(log RR functional form), scale invariant; metafor reference is the Greenland-Robins IRR SE — formula variant question flagged for attribution"
+  },
+  {
+   "id": "roth2-irr-ci90-low",
+   "dataset": "Rothman2008",
+   "method": "MH IRR (person-time)",
+   "metric": "90% CI low (derived z90)",
+   "observed": 1.1953335820848838,
+   "published": 1.19,
+   "published_decimals": 2,
+   "abs_diff": 0.005333582084883881,
+   "rel_diff": 0.004482001752003262,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.004201680672268908,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth2-irr-ci90-high",
+   "dataset": "Rothman2008",
+   "method": "MH IRR (person-time)",
+   "metric": "90% CI high (derived z90)",
+   "observed": 1.6980354934182817,
+   "published": 1.7,
+   "published_decimals": 2,
+   "abs_diff": 0.001964506581718206,
+   "rel_diff": 0.0011555921068930625,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0029411764705882353,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth2-mh-test",
+   "dataset": "Rothman2008",
+   "method": "MH test (correct=FALSE)",
+   "metric": "chi2=11.0162, p=0.0009",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "no test statistic in pool_mantel_haenszel output"
+  },
+  {
+   "id": "roth2-q",
+   "dataset": "Rothman2008",
+   "method": "IRR heterogeneity Q(4)=26.88",
+   "metric": "Q=26.88",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "pool_mantel_haenszel emits no Q statistic"
+  },
+  {
+   "id": "roth3-logor",
+   "dataset": "Rothman2008",
+   "method": "MH OR",
+   "metric": "logOR",
+   "observed": 1.3300340871148708,
+   "published": 1.33,
+   "published_decimals": 2,
+   "abs_diff": 3.408711487074001e-05,
+   "rel_diff": 2.5629409677248127e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0037593984962406013,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth3-or",
+   "dataset": "Rothman2008",
+   "method": "MH OR",
+   "metric": "OR",
+   "observed": 3.781172274625746,
+   "published": 3.78,
+   "published_decimals": 2,
+   "abs_diff": 0.0011722746257460948,
+   "rel_diff": 0.00031012556236669175,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001322751322751323,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth3-or-se",
+   "dataset": "Rothman2008",
+   "method": "MH OR",
+   "metric": "SE(logOR)",
+   "observed": 0.5909896079482079,
+   "published": 0.59,
+   "published_decimals": 2,
+   "abs_diff": 0.0009896079482079045,
+   "rel_diff": 0.0016773016071320417,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00847457627118644,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth3-or-ci90-low",
+   "dataset": "Rothman2008",
+   "method": "MH OR",
+   "metric": "90% CI low (derived z90)",
+   "observed": 1.4303836385397297,
+   "published": 1.43,
+   "published_decimals": 2,
+   "abs_diff": 0.00038363853972978035,
+   "rel_diff": 0.00026827869911173454,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.003496503496503497,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth3-or-ci90-high",
+   "dataset": "Rothman2008",
+   "method": "MH OR",
+   "metric": "90% CI high (derived z90)",
+   "observed": 9.995404998476094,
+   "published": 10.0,
+   "published_decimals": 2,
+   "abs_diff": 0.004595001523906461,
+   "rel_diff": 0.0004595001523906461,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": ""
+  },
+  {
+   "id": "roth3-cmh",
+   "dataset": "Rothman2008",
+   "method": "CMH test",
+   "metric": "chi2=5.81, p=0.02",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §3.1 metafor analyses:rothman2008 (Rothman 2008 Tables 15-1/15-2/15-5)",
+   "note": "no test statistic in pool_mantel_haenszel output"
+  }
+ ],
+ "raw": {
+  "case1": {
+   "RD": {
+    "pooled": 0.03490026933691816,
+    "ci_low": -0.027618814088284968,
+    "ci_high": 0.09741935276212128,
+    "se": 0.03189807767813373,
+    "se_scale": "natural",
+    "measure": "RD",
+    "n_studies": 2,
+    "included_studies": [
+     {
+      "study_id": "Age<55"
+     },
+     {
+      "study_id": "Age 55+"
+     }
+    ],
+    "excluded_studies": [],
+    "method": "Mantel-Haenszel fixed-effect (Cochrane RevMan 5 equations)",
+    "warnings": [
+     "No continuity correction is applied. RevMan documents adding 0.5 to all four cells when empty cells cause individual estimates or standard errors to fail; this implementation keeps raw counts and records strata with no MH contribution as excluded."
+    ]
+   },
+   "RR": {
+    "pooled": 1.3255553241551052,
+    "ci_low": 0.7979070401464857,
+    "ci_high": 2.2021323650351112,
+    "se": 0.2589816280152178,
+    "se_scale": "log",
+    "measure": "RR",
+    "n_studies": 2,
+    "included_studies": [
+     {
+      "study_id": "Age<55"
+     },
+     {
+      "study_id": "Age 55+"
+     }
+    ],
+    "excluded_studies": [],
+    "method": "Mantel-Haenszel fixed-effect (Cochrane RevMan 5 equations)",
+    "warnings": [
+     "No continuity correction is applied. RevMan documents adding 0.5 to all four cells when empty cells cause individual estimates or standard errors to fail; this implementation keeps raw counts and records strata with no MH contribution as excluded."
+    ]
+   }
+  },
+  "case2_studies": [
+   {
+    "study_id": "Age band 1",
+    "events_t": 32,
+    "total_t": 52407,
+    "events_c": 2,
+    "total_c": 18790
+   },
+   {
+    "study_id": "Age band 2",
+    "events_t": 104,
+    "total_t": 43248,
+    "events_c": 12,
+    "total_c": 10673
+   },
+   {
+    "study_id": "Age band 3",
+    "events_t": 206,
+    "total_t": 28612,
+    "events_c": 28,
+    "total_c": 5710
+   },
+   {
+    "study_id": "Age band 4",
+    "events_t": 186,
+    "total_t": 12663,
+    "events_c": 28,
+    "total_c": 2585
+   },
+   {
+    "study_id": "Age band 5",
+    "events_t": 102,
+    "total_t": 5317,
+    "events_c": 31,
+    "total_c": 1462
+   }
+  ],
+  "case2": {
+   "RD_py": {
+    "pooled": 0.0011439188257815014,
+    "ci_low": 0.0005406964980729253,
+    "ci_high": 0.0017471411534900777,
+    "se": 0.00030777214911432917,
+    "se_scale": "natural",
+    "measure": "RD",
+    "n_studies": 5,
+    "included_studies": [
+     {
+      "study_id": "Age band 1"
+     },
+     {
+      "study_id": "Age band 2"
+     },
+     {
+      "study_id": "Age band 3"
+     },
+     {
+      "study_id": "Age band 4"
+     },
+     {
+      "study_id": "Age band 5"
+     }
+    ],
+    "excluded_studies": [],
+    "method": "Mantel-Haenszel fixed-effect (Cochrane RevMan 5 equations)",
+    "warnings": [
+     "No continuity correction is applied. RevMan documents adding 0.5 to all four cells when empty cells cause individual estimates or standard errors to fail; this implementation keeps raw counts and records strata with no MH contribution as excluded."
+    ]
+   },
+   "RR": {
+    "pooled": 1.4246820167514391,
+    "ci_low": 1.1558080080171524,
+    "ci_high": 1.7561038120310608,
+    "se": 0.10671061861517978,
+    "se_scale": "log",
+    "measure": "RR",
+    "n_studies": 5,
+    "included_studies": [
+     {
+      "study_id": "Age band 1"
+     },
+     {
+      "study_id": "Age band 2"
+     },
+     {
+      "study_id": "Age band 3"
+     },
+     {
+      "study_id": "Age band 4"
+     },
+     {
+      "study_id": "Age band 5"
+     }
+    ],
+    "excluded_studies": [],
+    "method": "Mantel-Haenszel fixed-effect (Cochrane RevMan 5 equations)",
+    "warnings": [
+     "No continuity correction is applied. RevMan documents adding 0.5 to all four cells when empty cells cause individual estimates or standard errors to fail; this implementation keeps raw counts and records strata with no MH contribution as excluded."
+    ]
+   }
+  },
+  "case3": {
+   "OR": {
+    "pooled": 3.781172274625746,
+    "ci_low": 1.1873402722478401,
+    "ci_high": 12.041420732180883,
+    "se": 0.5909896079482079,
+    "se_scale": "log",
+    "measure": "OR",
+    "n_studies": 2,
+    "included_studies": [
+     {
+      "study_id": "Age<35"
+     },
+     {
+      "study_id": "Age 35+"
+     }
+    ],
+    "excluded_studies": [],
+    "method": "Mantel-Haenszel fixed-effect (Cochrane RevMan 5 equations)",
+    "warnings": [
+     "No continuity correction is applied. RevMan documents adding 0.5 to all four cells when empty cells cause individual estimates or standard errors to fail; this implementation keeps raw counts and records strata with no MH contribution as excluded."
+    ]
+   }
+  }
+ }
+}

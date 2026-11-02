@@ -82,6 +82,54 @@
     if(!q('.rf-mobile-retry',options))add(button('Retry / refresh',()=>q('button',tools)?.click(),'btn b-out rf-mobile-retry'),options);
     const hint=q('.hint',tools);if(hint&&!q('.rf-mobile-scope-help',options))add(node('p','hint rf-mobile-scope-help',()=>hint.textContent),options);
   }
+  /* ---------- 移动端工作流阶段切换（F41 缓解半步） ----------
+     复筛/编码等高频往返原要先「汉堡→抽屉→条目」两步。这里在三个阶段页顶给一条
+     一级切换 tab（初筛↔复筛↔编码），仍复用现成的 go()，不动导航主干；
+     首页快捷区收敛与完整导航收敛属可放弃包，不做。 */
+  const stageOrder=[['screen','初筛'],['fulltext','复筛'],['bench','编码']];
+  function stageTabs(host){
+    if(!host)return;
+    let strip=q(':scope>.rf-mobile-stage-tabs',host);
+    if(!strip){strip=add(node('nav','rf-mobile-stage-tabs'),host,host.firstChild);strip.setAttribute('role','group');}
+    /* Nodes added through add() land in `added`, so restore() removes the strip
+       with the rest of the presentation layer; labels are refreshed by compose(). */
+    if(strip.getAttribute('aria-label')!==tr('Workflow stages'))strip.setAttribute('aria-label',tr('Workflow stages'));
+    for(const [id,key] of stageOrder){
+      let b=q(':scope>[data-rf-stage="'+id+'"]',strip);
+      if(!b){b=add(button(key,()=>go(id),'rf-mobile-stage-tab'),strip);b.dataset.rfStage=id;}
+      const current=S.page===id;
+      if(b.getAttribute('aria-current')!==(current?'page':null)){if(current)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
+    }
+  }
+  /* ---------- 移动端排除理由行折叠（F38 缓解半步） ----------
+     决策条原始终带一条全宽「排除理由」下拉行（实测 138–140px，占 751px 视口
+     18.4%），而它只在按「3 排除」时才需要。触屏两段式：先点 3 → 展开理由行并
+     聚焦；选好理由后再点 3 才提交（提交逻辑仍走原有 screenDecide，未改一行）。 */
+  const reasonBars=new WeakSet();
+  function reasonBar(host){
+    const bar=q('.scr-decisions',host),select=q('#excReason',host);
+    if(!bar||!select)return;
+    if(!reasonBars.has(bar)){
+      reasonBars.add(bar);
+      const previous=bar.classList.contains('rf-reason-collapsed');
+      states.set(bar,()=>bar.classList.toggle('rf-reason-collapsed',previous));
+      if(!select.value)bar.classList.add('rf-reason-collapsed');
+    }
+  }
+  function revealReason(){
+    const host=page('screen'),bar=q('.scr-decisions',host),select=q('#excReason',host);
+    if(!bar||!select||!bar.classList.contains('rf-reason-collapsed'))return false;
+    bar.classList.remove('rf-reason-collapsed');
+    return true;
+  }
+  /* F44 缓解半步：DOI/类型 chip 在窄屏 meta 行里被整条隐藏，查重与纳入核对失去
+     依据。信息已在「文献信息」折叠区（与摘要同区）里，这里把 DOI 提到折叠区标题上，
+     决策前不展开也能看到，展开后可见文献类型等全部字段。 */
+  function articleDetails(host){
+    const panel=q('#rfScreenMetadata',host);
+    if(panel){const d=panel.closest('.rf-mobile-article-details'),s=d&&q(':scope>summary',d),doi=q('.scr-doi',host);
+      if(s){labels.delete(s);const text=tr('Article details')+(doi?'. '+doi.textContent:'');if(s.textContent!==text)s.textContent=text;}}
+  }
   function screening(){
     const host=page('screen'),mode=q('.al-mode',host),order=q('.rf-screen-order',host);if(!mode||!order)return;
     const options=sheet(host,'Screening options'),shell=block(host,'rf-mobile-queue');move(order,shell);move(q('.rf-screen-order-label',order),shell,order);
@@ -93,8 +141,12 @@
       const old=stop.getAttribute('aria-label');states.set(stop,()=>{if(old===null)stop.removeAttribute('aria-label');else stop.setAttribute('aria-label',old);});
       const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('class','rf-mobile-stop-icon');svg.setAttribute('aria-hidden','true');
       const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d','M9 11l3 3 7-7M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9');svg.append(path);add(svg,stop);
+      /* F43：48px 纯图标按钮上的「方框＋对勾」与「停止」无语义映射，功能接近不可发现。
+         保留图标，并在图标旁补两字短标签（图标＋文字并排，按钮高度仍是 48px）。 */
+      add(node('span','rf-mobile-stop-label','Stop'),stop);
     }
     if(stop)stop.setAttribute('aria-label',T('停止建议'));
+    reasonBar(host);
     const actions=block(host,'rf-mobile-screen-actions');move(q('#scrPos'),actions);move(q('[data-undo-stage="screen"]',q('.rf-screen-tools',host)),actions);
     if(!q('.rf-mobile-screen-options',actions)){const b=opener(options,'Screening options','btn b-out rf-mobile-screen-options');b.textContent='···';labels.delete(b);add(b,actions);}
     q('.rf-mobile-screen-options',actions).setAttribute('aria-label',tr('Screening options'));
@@ -105,6 +157,7 @@
       const d=disclosure(metadata,'Article details','rf-mobile-article-details'),wasHidden=metadata.hidden;
       states.set(metadata,()=>{metadata.hidden=wasHidden;});d.addEventListener('toggle',()=>{metadata.hidden=!d.open;});
     }
+    articleDetails(host);
   }
   function documents(id){
     const host=page(id),coding=id==='bench',options=sheet(host,coding?'Coding options':'Reader options');queue(host,options);
@@ -197,7 +250,8 @@
     for(const [n,a] of moves)if(!n.isConnected&&!a.isConnected)moves.delete(n);
     for(const n of added)if(!n.isConnected){added.delete(n);labels.delete(n);}
     for(const n of states.keys())if(!n.isConnected)states.delete(n);
-    try{if(!media.matches)restore();else{home();screening();documents('fulltext');documents('bench');imports();exports();tables();prisma();trace();help();login();}
+    try{if(!media.matches)restore();else{home();screening();documents('fulltext');documents('bench');imports();exports();tables();prisma();trace();help();login();
+      for(const [id] of stageOrder)stageTabs(page(id));}
       for(const [n,key] of labels)if(n.isConnected&&n.textContent!==tr(key))n.textContent=tr(key);refreshHeader();
     }finally{observer.observe(q('#appMain>.view'),{childList:true,subtree:true});observer.observe(q('#authCard'),{childList:true,subtree:true});observer.observe(q('#capScreen'),{childList:true,subtree:true});observer.observe(q('#barScreen'),{attributes:true,attributeFilter:['style']});}
   }
@@ -209,6 +263,27 @@
   function closeNavigation(){RFNavigationSheet.setOpen(false,{immediate:true});menu.focus({preventScroll:true});}
   q('#rfSidebarToggle').addEventListener('click',()=>{if(media.matches)closeNavigation();});
   document.addEventListener('keydown',e=>{if(media.matches&&e.key==='Escape'&&q('#rfNavigationSheet').contains(document.activeElement))closeNavigation();});
+  /* F38 触屏两段式：折叠态下第一次点「3 排除」只展开理由行并聚焦，
+     第二次点才提交（提交仍由原有 screenDecide 处理，行为/接口未改）。
+     模型预填（StudyDesignBadge）或撤销回填已给理由时不再拦截。 */
+  document.addEventListener('click',e=>{
+    if(!media.matches||!e.target.closest?.('#btnExc'))return;
+    const select=q('#excReason');if(!select||select.value)return;
+    if(!revealReason())return;
+    e.preventDefault();e.stopPropagation();select.focus({preventScroll:true});
+  },true);
+  /* 同一两段式也覆盖实体键盘/外接键盘：折叠态下按 3，原先只弹出「请先选择
+     排除理由」而理由控件是 display:none——提示指向一个看不见的控件，是死路。
+     这里在捕获阶段先把理由行展开，**不拦截事件**：原有的 screenDecide 照常执行，
+     F08 的文字说明与「把焦点交给理由控件」因此都还在（此时控件已可见）。
+     展开态的 3 与已带理由的 3 仍走原有全局键盘流，一行不改。 */
+  document.addEventListener('keydown',e=>{
+    if(!media.matches||e.isComposing||e.key!=='3'||e.ctrlKey||e.metaKey||e.altKey)return;
+    const tag=(e.target.tagName||'').toLowerCase();
+    if(tag==='input'||tag==='textarea'||e.target.isContentEditable)return;
+    const select=q('#excReason');if(!select||select.value)return;
+    revealReason();
+  },true);
   function refreshHeader(){menu.hidden=title.hidden=!media.matches;const info=RFNavigation.pages.find(p=>p.id===S.page);title.textContent=T(info?.label||'');menu.setAttribute('aria-label',T('展开侧边栏'));menu.setAttribute('aria-expanded',q('#rfSidebarToggle')?.getAttribute('aria-expanded')||'false');}
   const observer=new MutationObserver(schedule);
   new MutationObserver(refreshHeader).observe(q('#rfSidebarToggle'),{attributes:true,attributeFilter:['aria-expanded']});

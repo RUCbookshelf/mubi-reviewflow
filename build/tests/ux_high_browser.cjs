@@ -29,6 +29,22 @@ const url = (process.env.REVIEWFLOW_GUARD_URL || 'http://127.0.0.1:18775').repla
 const sessionDir = process.env.REVIEWFLOW_UX_SESSION_DIR || 'E:/uxt-r4-ux';
 fs.mkdirSync(sessionDir, {recursive: true});
 
+/* r10.1：夹具期取数加窄重试——同机多套件并行时实例偶发慢响应导致 undici
+   “terminated”，夹具阶段整跑崩掉；3 次×600ms 退避只兜网络层抖动，
+   4xx/5xx 语义响应原样抛出（不掩盖真实接口错误）。 */
+const fetchRetry = async (request, attempts = 3) => {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try { return await request(); }
+    catch (error) {
+      lastError = error;
+      if (!/terminated|ECONN|socket|network/i.test(String(error && error.message))) throw error;
+      await new Promise(resolve => setTimeout(resolve, 600 * (i + 1)));
+    }
+  }
+  throw lastError;
+};
+
 /* ---------- 真实 API fixture（与 pytest CompletionBadgeBehaviorTests 同款场景） ---------- */
 const ris = entries => entries.map(e => 'TY  - JOUR\n' +
   Object.entries(e).map(([tag, value]) => `${tag}  - ${value}\n`).join('') + 'ER  - ').join('\n');
@@ -117,7 +133,17 @@ async function apiFixtures() {
 }
 
 (async () => {
-  const fixtures = await apiFixtures();
+  /* r10.1：夹具整体带重试——实例慢响应时 undici 偶发 terminated 直接崩整跑；
+     重试会另注册一个时间戳后缀用户，无副作用；语义性 4xx/5xx 不重试原样抛。 */
+  const fixtures = await (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await apiFixtures(); }
+      catch (error) {
+        if (attempt >= 2 || !/terminated|ECONN|socket|network/i.test(String(error && error.message))) throw error;
+        await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+      }
+    }
+  })();
   const browser = await chromium.launch({headless: true});
   const errors = [];
   const page = await browser.newPage({viewport: {width: 1440, height: 950}, locale: 'zh-CN'});
@@ -134,11 +160,19 @@ async function apiFixtures() {
     const card = page.locator('.history-batch').filter({hasText: filename});
     await card.waitFor({state: 'visible', timeout: 15000});
     await card.getByRole('button').first().click();
-    // 等待加载完成：「≥」前缀消失（loadState complete）且工具条就绪。
+    // 等待加载完成（r10-F32 后口径）：「≥」前缀在 0 计数+加载中不再出现，
+    // 不能再当唯一哨兵——改等真负载信号：宿主 aria-busy 解除 + 无「加载中」
+    // 空态文案 + 5 个计数就绪 + 无 ≥ 前缀，四条同时成立才算加载完成。
     await page.waitForFunction(() => {
+      const host = document.querySelector('#wf-import-review');
       const counts = document.querySelectorAll('#wf-import-review .tabs .count');
-      return counts.length === 5 && [...counts].every(c => !c.textContent.startsWith('≥'));
+      const loadingText = document.querySelector('#wf-import-review .card.empty h3');
+      return host && !host.hasAttribute('aria-busy')
+        && counts.length === 5 && [...counts].every(c => !c.textContent.startsWith('≥'))
+        && !(loadingText && loadingText.textContent.includes('loading'));
     }, null, {timeout: 30000});
+    // 再等一个渲染帧，规避「哨兵通过瞬间计数仍在更新」的残余竞态。
+    await page.evaluate(() => new Promise(requestAnimationFrame));
   };
 
   await page.goto(url + '/#workspace/import');
@@ -147,6 +181,13 @@ async function apiFixtures() {
   /* ---------- 高4：hc 现场（已决未启用）三口径一致 + 记录可见 ---------- */
   await check('高4: hc 待启用页签计数=1 且不含「≥」（加载完成）', async () => {
     await openBatch('batchB.ris');
+    /* r10.1：徽标在加载期合法经历 0→终值迁移，load-sentinel 通过后仍可能有
+       一个渲染帧的残余——改为有界等落定（10s），终值仍钉死 '1' 不放松；
+       真回归（终值 0）由本断言超时红 + 下一检查「启用按钮 (1) 且可用」双拦。 */
+    await page.waitForFunction(() => {
+      const badgeReady = document.querySelector('#wf-review-tab-ready .count');
+      return badgeReady && badgeReady.textContent === '1';
+    }, null, {timeout: 10000});
     assert.equal(await badge('ready').textContent(), '1');
   });
   await check('高4: hc 启用按钮计数 (1) 与页签一致且可用', async () => {
@@ -204,20 +245,29 @@ async function apiFixtures() {
     assert.equal(await page.locator('.main-panel .card .badge').filter({hasText: /^已启用$|^Already active$/}).count(), 1,
       '已决并启用的组必须带「已启用」徽标');
   });
-  await check('高4: legacy 已决组徽标「已核验」（真实形状，无启用环节）', async () => {
-    // legacy 标题组来自任务级 title-duplicate-reviews，打开任一批次即并入同一列表
-    //（I.open 的 groups 数据源无条件加载）；已完成分类的队列中选中它再读阅读卡。
-    await page.locator('#wf-review-tab-completed').click();
-    const queueItem = page.locator('#wf-import-review .queue .queue-item:has(.qtitle:text-is("Legacy Same Title Pair"))');
+  await check('高4/#6-A: legacy 已决组在任务级分区可见可点，徽标「已核验」（真实形状，无启用环节）', async () => {
+    // r10-U2（导入12项 #6-A）：legacy 标题组（任务级 title-duplicate_reviews）
+    // 不再并入批次五个分类页签的队列，改由独立分区 [data-legacy-scope]
+    // 承载。旧钉「打开任一批次即并入同一列表」随行为变更同批更新（钉的是
+    // 新语义：仍在批次页可见、可点、徽标不变），校验强度不减。
+    const scope = page.locator('#wf-import-review [data-legacy-scope]');
+    await scope.waitFor({state: 'visible', timeout: 15000});
+    for (const key of ['duplicate', 'metadata', 'ready', 'completed', 'later']) {
+      await page.locator('#wf-review-tab-' + key).click();
+      // 批次页签的队列不得含任务级项（批次页只呈现批次范围）。
+      assert.equal(await page.locator('#wf-import-review .queue .queue-item:has(.qtitle:text-is("Legacy Same Title Pair"))').count(), 0,
+        'legacy 项不得进入批次分类队列（页签 ' + key + '）');
+    }
+    const queueItem = scope.locator('.legacy-queue .queue-item:has(.qtitle:text-is("Legacy Same Title Pair"))');
     await queueItem.waitFor({state: 'visible', timeout: 15000});
+    assert.equal(await queueItem.locator('.badge').filter({hasText: /^已核验$|^Reviewed$/}).count(), 1,
+      '任务级分区的已决项徽标必须是「已核验」，实际：' + await queueItem.locator('.badge').allInnerTexts());
     await queueItem.click();
     const legacyCard = page.locator('.main-panel .card').filter({hasText: 'Legacy Same Title Pair'});
     await legacyCard.waitFor({state: 'visible'});
     // 「已核验」精确匹配（不能匹配到「已核验待启用」——legacy 没有启用环节）。
     assert.equal(await legacyCard.locator('.badge').filter({hasText: /^已核验$|^Reviewed$/}).count(), 1,
       'legacy 已决组徽标必须是「已核验」，实际：' + await legacyCard.locator('.badge').allInnerTexts());
-    assert.equal(await queueItem.locator('.badge').filter({hasText: /^已核验$|^Reviewed$/}).count(), 1,
-      '队列项同款徽标');
   });
 
   /* ---------- 高4（评审补强）：渐进加载竞争——后台阶段保存后权威计数不被快照回退 ---------- */

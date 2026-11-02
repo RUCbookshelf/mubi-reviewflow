@@ -15,7 +15,16 @@
       if(current!==token())return;
       await loadScreen();
       if(action==='finish')await go('fulltext');
-    }catch(error){WorkflowControls.error(error);}finally{busy=false;R.render();}
+    }catch(error){
+      WorkflowControls.error(error);
+      /* F63（UX 批准单 §七）：screening-rounds 的版本冲突现在回
+         {code:'workflow_version_conflict', version, workflow_settings}（与
+         write_guard 同形）。W.error 只是“发起”刷新，未等待完成——这里显式等它
+         落地，保证用户看到冲突提示后立刻重试时手里的 version 已是新值，不再
+         「重试必再 409」。（W.refresh 内部对同一轮已有 flight 去重，不会重复拉取
+         两次相同的策略；返回后 WorkflowControls.version() 即最新。） */
+      if(error?.code==='workflow_version_conflict'&&current===token())await WorkflowControls.refresh('conflict').catch(()=>{});
+    }finally{busy=false;R.render();}
   }
   R.render=()=>{
     const page=document.querySelector('section[data-p="screen"]');if(!page)return;

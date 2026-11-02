@@ -117,3 +117,60 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
 .wf-round-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:12px}
 .wf-round-controls[hidden]{display:none}
 .ft-decide [hidden],.scr-decisions [hidden]{display:none!important}
+
+/* =========================================================================
+   r10-u1：初筛决策栏的就地说明、ML 状态行与历史浮层（全为呈现层规则）
+   每条对应批准单一个条目，取舍见 custom_frontend/screen_reader.js 注释。
+   ========================================================================= */
+/* F09：标签旁常显实际顺序（「当前：导入顺序」），不参与排序。 */
+.rf-reader-page .rf-screen-order-now{font-size:11px;color:var(--muted);white-space:nowrap;padding:0 4px}
+/* F25：已训练条数徽标与「标签不足」提示原在默认隐藏的阅读帮助弹层里，
+   现为卡片上方常驻状态行；无内容时不占位（JS 置 hidden）。 */
+.rf-screen-ml-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px;font-size:12px;color:var(--muted)}
+.rf-screen-ml-status[hidden]{display:none!important}
+.rf-screen-ml-status #alBadge,.rf-screen-ml-status .chip{font-size:11px}
+.rf-screen-ml-status #alHint{font-size:12px;line-height:1.5}
+/* F59：重排期间的轻量指示（「排序更新中…」），落定即移除。 */
+.rf-screen-ranking{display:flex;align-items:center;gap:8px;margin:0 0 8px;padding:5px 10px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--muted);font-size:12px}
+.rf-screen-ranking[hidden]{display:none!important}
+.rf-screen-ranking-dot{width:8px;height:8px;border-radius:50%;background:var(--primary);animation:rf-screen-rank-pulse 1s ease-in-out infinite}
+@keyframes rf-screen-rank-pulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.1)}}
+@media(prefers-reduced-motion:reduce){.rf-screen-ranking-dot{animation:none}}
+/* F08：无理由按「3」时的就地微文案（不抢焦点，2 秒淡出）。 */
+.scr-reason-error{margin:0 0 6px;font-size:12px;line-height:1.5;color:var(--danger);font-weight:600}
+.scr-reason-error[hidden]{display:none!important}
+/* F22：沿用上次理由的可见提示行（改选或点「不复用」即消失）。 */
+.scr-reason-carry{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 6px;font-size:12px;color:var(--primary-dark)}
+.scr-reason-carry>[data-rf-carry-text],.scr-reason-carry>span{padding:3px 8px;border-radius:999px;background:var(--primary-light)}
+.scr-reason-carry .rf-link{background:none;border:0;padding:0;color:var(--muted);font:inherit;text-decoration:underline;cursor:pointer}
+/* F22：>8 条理由时的过滤输入（只隐藏选项，不改取值语义）。 */
+.scr-reason-tools{display:flex;margin:0 0 6px}
+.scr-reason-tools .scr-reason-filter{flex:1;min-width:0;max-width:none!important;font-size:12px;min-height:32px}
+.rf-reader-page .scr-decisions .rf-hist-more{cursor:pointer}
+/* F28：全部已决文献浮层（只读；多步撤销不在本期范围）。 */
+.rf-hist-dialog{width:min(720px,calc(100vw - 32px));max-height:min(78vh,760px);padding:0;border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.rf-hist-dialog::backdrop{background:rgba(16,26,30,.42)}
+.rf-hist-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.rf-hist-close{border:0;background:transparent;color:var(--muted);font-size:15px;cursor:pointer;padding:4px 8px;border-radius:6px}
+.rf-hist-close:hover{background:var(--primary-light)}
+.rf-hist-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border)}
+.rf-hist-tools .input{max-width:180px;min-height:32px;font-size:12px}
+.rf-hist-list{list-style:none;margin:0;padding:6px 10px 14px;overflow:auto;max-height:min(60vh,600px)}
+.rf-hist-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--border)}
+.rf-hist-row:last-child{border-bottom:0}
+.rf-hist-title{min-width:0;overflow-wrap:anywhere;font-size:13px;line-height:1.45}
+.rf-hist-time{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+@media(max-width:600px){.rf-hist-row{grid-template-columns:auto minmax(0,1fr) auto}.rf-hist-time{display:none}}
+/* F09（随版缓解）：首次进初筛的一次性 ML 提示条（可关闭，关闭后不再出现）。 */
+.rf-screen-ml-tip{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 8px;padding:8px 12px;border:1px solid var(--primary-light);border-radius:10px;background:var(--primary-light);color:var(--primary-dark);font-size:12px;line-height:1.5}
+.rf-screen-ml-tip>span{flex:1;min-width:180px}
+.rf-screen-ml-tip .btn{background:var(--surface);border-color:var(--primary);color:var(--primary-dark)}
+.rf-screen-ml-tip-close{border:0;background:none;color:var(--primary-dark);font:inherit;cursor:pointer;padding:2px 6px;border-radius:6px;opacity:.75}
+.rf-screen-ml-tip-close:hover{opacity:1}
+/* F25：撤销按钮旁常显快捷键（此前只在 title 悬停可见，触屏/不悬停用户看不到）。
+   粗指针与窄屏隐藏——那里没有物理键盘，提示只会占宽。 */
+.rf-undo-kbd{margin-left:6px;font-size:10px;line-height:1.4;opacity:.75}
+@media (max-width:760px),(pointer:coarse){.rf-undo-kbd{display:none}}
+/* F12（随版缓解）：批注面板开合后 320ms 内为 PDF 页面重排补间，缓冲缩放突变。 */
+.rf-zoom-settle .pdfViewer .page,.rf-zoom-settle .pdfViewer .page canvas,.rf-zoom-settle .pdfViewer .textLayer{transition:width .3s ease,height .3s ease}
+@media(prefers-reduced-motion:reduce){.rf-zoom-settle .pdfViewer .page,.rf-zoom-settle .pdfViewer .page canvas,.rf-zoom-settle .pdfViewer .textLayer{transition:none}}

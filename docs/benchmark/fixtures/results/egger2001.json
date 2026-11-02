@@ -1,0 +1,347 @@
+{
+ "dataset": "Egger2001",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 10,
+ "counts": {
+  "PASS": 6,
+  "FAIL": 1,
+  "NOT-RUN": 3,
+  "INFO": 0
+ },
+ "checks": [
+  {
+   "id": "egger-reml-tau2",
+   "dataset": "Egger2001",
+   "method": "IV REML random (underlying model)",
+   "metric": "tau2",
+   "observed": 0.19106182486174839,
+   "published": 0.1911,
+   "published_decimals": 4,
+   "abs_diff": 3.817513825160601e-05,
+   "rel_diff": 0.00019976524464472011,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00026164311878597594,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": ""
+  },
+  {
+   "id": "egger-reml-pooled",
+   "dataset": "Egger2001",
+   "method": "IV REML random (underlying model)",
+   "metric": "pooled logOR",
+   "observed": -0.8745475327924144,
+   "published": -0.8745,
+   "published_decimals": 4,
+   "abs_diff": 4.7532792414317626e-05,
+   "rel_diff": 5.435425090259305e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": ""
+  },
+  {
+   "id": "egger-reml-ci-low",
+   "dataset": "Egger2001",
+   "method": "IV REML random (underlying model)",
+   "metric": "95% CI low",
+   "observed": -1.2821870053571485,
+   "published": -1.2822,
+   "published_decimals": 4,
+   "abs_diff": 1.2994642851538174e-05,
+   "rel_diff": 1.0134645805286362e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": ""
+  },
+  {
+   "id": "egger-reml-ci-high",
+   "dataset": "Egger2001",
+   "method": "IV REML random (underlying model)",
+   "metric": "95% CI high",
+   "observed": -0.4669080602276804,
+   "published": -0.4669,
+   "published_decimals": 4,
+   "abs_diff": 8.060227680406484e-06,
+   "rel_diff": 1.726328481560609e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00010708931248661385,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": ""
+  },
+  {
+   "id": "egger-k",
+   "dataset": "Egger2001",
+   "method": "Egger regression (small_study_effects)",
+   "metric": "n_studies",
+   "observed": 15,
+   "published": 15,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "egger-p-rma",
+   "dataset": "Egger2001",
+   "method": "Egger regression (small_study_effects)",
+   "metric": "p (vs regtest rma-version z=-2.8062)",
+   "observed": 0.0072644351977547445,
+   "published": 0.005,
+   "published_decimals": 4,
+   "abs_diff": 0.0022644351977547444,
+   "rel_diff": 0.4528870395509489,
+   "rel_tol_a1": 0.01,
+   "eff_rel_tol": 0.01,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": "kernel regresses y/se on 1/se unweighted (classic Egger 1997 scaled form), not the REML-weighted metafor regtest default"
+  },
+  {
+   "id": "egger-p-lm",
+   "dataset": "Egger2001",
+   "method": "Egger regression (small_study_effects)",
+   "metric": "p (vs regtest classic lm t=-3.1783)",
+   "observed": 0.0072644351977547445,
+   "published": 0.0073,
+   "published_decimals": 4,
+   "abs_diff": 3.556480224525555e-05,
+   "rel_diff": 0.004871890718528157,
+   "rel_tol_a1": 0.01,
+   "eff_rel_tol": 0.01,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": "secondary: same observed p against the classic lm variant - the form closest to the kernel construction"
+  },
+  {
+   "id": "egger-z",
+   "dataset": "Egger2001",
+   "method": "Egger regression test statistic",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": "small_study_effects returns intercept and p only; no z/t statistic field to compare (z=-2.8062 / t=-3.1783 recorded here)"
+  },
+  {
+   "id": "egger-limit-estimates",
+   "dataset": "Egger2001",
+   "method": "regtest limit estimates (as sei->0)",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": "no kernel output corresponds to the limit estimate b (-0.1639 rma / -0.1512 lm)"
+  },
+  {
+   "id": "egger-tau2-se",
+   "dataset": "Egger2001",
+   "method": "SE(tau2)=0.2106",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §8 metafor regtest reference page + metadat::dat.egger2001",
+   "note": "kernel does not expose SE(tau2) (A1 §8 publishes 0.2106)"
+  }
+ ],
+ "raw": {
+  "rows": [
+   {
+    "study_id": "Morton",
+    "estimate": 0.4358974358974359,
+    "se": 1.2470175581550196
+   },
+   {
+    "study_id": "Rasmussen",
+    "estimate": 0.3478260869565218,
+    "se": 0.4140705873951393
+   },
+   {
+    "study_id": "Smith",
+    "estimate": 0.2784992784992785,
+    "se": 0.8081392176215105
+   },
+   {
+    "study_id": "Abraham",
+    "estimate": 0.9574468085106383,
+    "se": 1.4295099922585022
+   },
+   {
+    "study_id": "Feldstedt",
+    "estimate": 1.25,
+    "se": 0.48916839052182665
+   },
+   {
+    "study_id": "Shechter",
+    "estimate": 0.09003831417624521,
+    "se": 1.0722075760626468
+   },
+   {
+    "study_id": "Ceremuzynski",
+    "estimate": 0.2777777777777778,
+    "se": 1.1937336386313322
+   },
+   {
+    "study_id": "Bertschat",
+    "estimate": 0.3037037037037037,
+    "se": 1.6612921473708315
+   },
+   {
+    "study_id": "Singh",
+    "estimate": 0.4987012987012987,
+    "se": 0.5361776495355545
+   },
+   {
+    "study_id": "Pereira",
+    "estimate": 0.1098901098901099,
+    "se": 1.1096479988350727
+   },
+   {
+    "study_id": "Shechter2",
+    "estimate": 0.13026819923371646,
+    "se": 0.7807262443134839
+   },
+   {
+    "study_id": "Golf",
+    "estimate": 0.42735042735042733,
+    "se": 0.6184485689842224
+   },
+   {
+    "study_id": "Thogersen",
+    "estimate": 0.4523809523809524,
+    "se": 0.6258661500361474
+   },
+   {
+    "study_id": "LIMIT-2",
+    "estimate": 0.7413074154524266,
+    "se": 0.1465728657867585
+   },
+   {
+    "study_id": "Shechter3",
+    "estimate": 0.20788121073672186,
+    "se": 0.5740394396423066
+   }
+  ],
+  "yi_vi": [
+   [
+    -0.8303483020734304,
+    1.5550527903469076
+   ],
+   [
+    -1.0560526742493137,
+    0.17145445134575568
+   ],
+   [
+    -1.2783398102850176,
+    0.6530889950579072
+   ],
+   [
+    -0.04348511193973878,
+    2.043498817966903
+   ],
+   [
+    0.22314355131420976,
+    0.2392857142857143
+   ],
+   [
+    -2.4075199861725802,
+    1.1496290861661367
+   ],
+   [
+    -1.2809338454620642,
+    1.425
+   ],
+   [
+    -1.1917027117341217,
+    2.7598915989159885
+   ],
+   [
+    -0.6957479622600027,
+    0.28748647186147186
+   ],
+   [
+    -2.2082744135228043,
+    1.2313186813186816
+   ],
+   [
+    -2.038159882706532,
+    0.6095334685598378
+   ],
+   [
+    -0.8501509293696101,
+    0.3824786324786325
+   ],
+   [
+    -0.7932306391169278,
+    0.3917084377610694
+   ],
+   [
+    -0.29933987406121754,
+    0.021483604984943117
+   ],
+   [
+    -1.5707884646491113,
+    0.3295212782648534
+   ]
+  ],
+  "reml": {
+   "pooled_analysis": -0.8745475327924144,
+   "ci_analysis_low": -1.2821870053571485,
+   "ci_analysis_high": -0.4669080602276804,
+   "tau2": 0.19106182486174839,
+   "q": 20.918382171458163,
+   "i2_percent": 33.07321816166963
+  },
+  "small_study_effects": {
+   "n_studies": 15,
+   "egger_intercept": -1.1924292467406652,
+   "egger_p": 0.0072644351977547445
+  }
+ }
+}

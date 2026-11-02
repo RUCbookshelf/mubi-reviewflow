@@ -72,6 +72,13 @@ class SubmissionEvidenceIn(BaseModel):
     draft: bool = False
 
 
+# F64（UX 批准单 §七）：保存端点（编码表单/提交证据）在轨迹上下文不可用时的
+# 503 文案，逐字对齐 main.py 决策保存的口径「先说明本次修改尚未保存、再给补救
+# 动作」。该串同时在 interface_locale.js 双键注册十语言（errOf 的 detail→T()），
+# 因此中文以外的界面也拿到本语言的同一句，而不是英文的撤销文案。
+SAVE_NOT_SAVED_503 = "本次修改尚未保存。轨迹记录不可用，请重试或暂停记录后重新保存。"
+
+
 def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, trace_context, data_dir) -> None:
     async def upload_evidence(task_id: str, zotero_key: str, dim_id: int, file: UploadFile,
                               user: dict, *, canonical_only: bool = False,
@@ -129,7 +136,11 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                 runtime.validate_evidence_dimensions(ctx, dimensions)
                 context = trace_context(ctx.info, user)
                 if context is None:
-                    raise HTTPException(503, 'Undo is unavailable. Please try again.')
+                    # F64（UX 批准单 §七）：保存端点的 503 此前复用撤销端点的
+                    # 「Undo is unavailable」，用户看不出这次保存是否生效。改为
+                    # 对齐 main.py 决策保存的 503 口径：先说明「本次修改尚未保存」，
+                    # 再给补救动作。撤销端点（下方 restore）仍保留撤销专属文案。
+                    raise HTTPException(503, SAVE_NOT_SAVED_503)
                 coding_evidence.save_form(ctx.actor_db, body.zotero_key, {}, notes=body.notes,
                     evidence=_evidence_intents(body.evidence),
                     trace_context=context, submission_evidence=True)
@@ -255,7 +266,7 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
         db = screener_db(info, screener or user["username"])
         context = trace_context(info, user)
         if context is None:
-            raise HTTPException(503, "Undo is unavailable. Please try again.")
+            raise HTTPException(503, SAVE_NOT_SAVED_503)
         try:
             with app.state.review_workflow.write_guard(task_id, user, "coding", body.zotero_key,
                                                        body.expected_policy_version) as ctx:

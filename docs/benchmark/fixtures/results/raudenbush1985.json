@@ -1,0 +1,771 @@
+{
+ "dataset": "Raudenbush1985",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 22,
+ "counts": {
+  "PASS": 20,
+  "FAIL": 2,
+  "NOT-RUN": 0,
+  "INFO": 0
+ },
+ "checks": [
+  {
+   "id": "rb-reml-tau2",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "tau2",
+   "observed": 0.01881828680527033,
+   "published": 0.019,
+   "published_decimals": 3,
+   "abs_diff": 0.0001817131947296699,
+   "rel_diff": 0.009563852354193153,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.026315789473684213,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-pooled",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "pooled SMD",
+   "observed": 0.08370124072416416,
+   "published": 0.084,
+   "published_decimals": 3,
+   "abs_diff": 0.0002987592758358498,
+   "rel_diff": 0.0035566580456648784,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.005952380952380952,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-se",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "SE(pooled)",
+   "observed": 0.0516406705342824,
+   "published": 0.052,
+   "published_decimals": 3,
+   "abs_diff": 0.00035932946571759494,
+   "rel_diff": 0.006910182033030672,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.009615384615384616,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-z",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "z = pooled/SE",
+   "observed": 1.6208395409699006,
+   "published": 1.621,
+   "published_decimals": 3,
+   "abs_diff": 0.00016045903009942464,
+   "rel_diff": 9.898768050550564e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00030845157310302283,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-ci-low",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "95% CI low",
+   "observed": -0.017512613660528142,
+   "published": -0.018,
+   "published_decimals": 3,
+   "abs_diff": 0.00048738633947185625,
+   "rel_diff": 0.02707701885954757,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.02777777777777778,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-ci-high",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "95% CI high",
+   "observed": 0.18491509510885645,
+   "published": 0.185,
+   "published_decimals": 3,
+   "abs_diff": 8.49048911435446e-05,
+   "rel_diff": 0.00045894535753267354,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.002702702702702703,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-q",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "Q",
+   "observed": 35.82953629959279,
+   "published": 35.83,
+   "published_decimals": 3,
+   "abs_diff": 0.00046370040720944417,
+   "rel_diff": 1.2941680357506117e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-reml-qdf",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "Q df",
+   "observed": 18,
+   "published": 18,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "rb-reml-i2",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "I2 % (derived from published Q)",
+   "observed": 49.76211846703533,
+   "published": 49.762768629639965,
+   "published_decimals": 2,
+   "abs_diff": 0.0006501626046357956,
+   "rel_diff": 1.3065241797027793e-05,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "A1 recomputation policy; page prints 41.86% (see secondary row)"
+  },
+  {
+   "id": "rb-reml-i2-page",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "I2 % (page-printed, secondary)",
+   "observed": 49.76211846703533,
+   "published": 41.86,
+   "published_decimals": 2,
+   "abs_diff": 7.902118467035329,
+   "rel_diff": 0.1887749275450389,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "page value not derivable from the page's own Q=35.830 (df=18); flagged for attribution"
+  },
+  {
+   "id": "rb-reml-h2",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "H2 = Q/df (from published Q)",
+   "observed": 1.9905297944218217,
+   "published": 1.9905555555555554,
+   "published_decimals": 2,
+   "abs_diff": 2.5761133733759323e-05,
+   "rel_diff": 1.294168035745654e-05,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.002511861568518002,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "page prints 1.72 (see secondary row)"
+  },
+  {
+   "id": "rb-reml-h2-page",
+   "dataset": "Raudenbush1985",
+   "method": "IV REML random",
+   "metric": "H2 (page-printed, secondary)",
+   "observed": 1.9905297944218217,
+   "published": 1.72,
+   "published_decimals": 2,
+   "abs_diff": 0.2705297944218217,
+   "rel_diff": 0.15728476419873352,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0029069767441860465,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": true,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "page value not derivable from the page's own Q; flagged for attribution"
+  },
+  {
+   "id": "rb-reml-direct-tau2",
+   "dataset": "Raudenbush1985",
+   "method": "profile_reml_tau2 (direct)",
+   "metric": "tau2",
+   "observed": 0.01881828680527033,
+   "published": 0.019,
+   "published_decimals": 3,
+   "abs_diff": 0.0001817131947296699,
+   "rel_diff": 0.009563852354193153,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.026315789473684213,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-intrcpt",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "intrcpt",
+   "observed": 0.40718534298319914,
+   "published": 0.407,
+   "published_decimals": 3,
+   "abs_diff": 0.00018534298319916598,
+   "rel_diff": 0.00045538816510851593,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0012285012285012287,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-intrcpt-se",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "intrcpt SE",
+   "observed": 0.08703789442289799,
+   "published": 0.087,
+   "published_decimals": 3,
+   "abs_diff": 3.7894422897991054e-05,
+   "rel_diff": 0.0004355680792872535,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00574712643678161,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-slope",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "weeks slope",
+   "observed": -0.15724443098038152,
+   "published": -0.157,
+   "published_decimals": 3,
+   "abs_diff": 0.0002444309803815159,
+   "rel_diff": 0.0015568852253599738,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0031847133757961785,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-slope-se",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "weeks slope SE",
+   "observed": 0.03583122574978362,
+   "published": 0.036,
+   "published_decimals": 3,
+   "abs_diff": 0.00016877425021637887,
+   "rel_diff": 0.004688173617121635,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.01388888888888889,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-tau2",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "residual tau2",
+   "observed": 0.0,
+   "published": 0.0,
+   "published_decimals": 3,
+   "abs_diff": 0.0,
+   "rel_diff": null,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": null,
+   "eff_abs_tol": 0.0005,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "published as 0.000 (boundary) published value is zero; absolute tolerance used"
+  },
+  {
+   "id": "rb-mr-qe",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "QE",
+   "observed": 16.570825296880138,
+   "published": 16.571,
+   "published_decimals": 3,
+   "abs_diff": 0.00017470311986400588,
+   "rel_diff": 1.0542702303059917e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-qe-df",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "QE df",
+   "observed": 17,
+   "published": 17,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "rb-mr-qm",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "QM (joint Wald chi2)",
+   "observed": 19.258711002712648,
+   "published": 19.258,
+   "published_decimals": 3,
+   "abs_diff": 0.0007110027126486784,
+   "rel_diff": 3.691986253238542e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": ""
+  },
+  {
+   "id": "rb-mr-qm-df",
+   "dataset": "Raudenbush1985",
+   "method": "REML meta-regression (weeks capped 3)",
+   "metric": "QM df",
+   "observed": 1,
+   "published": 1,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §2.2 metafor analyses:raudenbush1985 (declared consistent with R&B 1985 eq.(27))",
+   "note": "integer equality required (A1 §9)"
+  }
+ ],
+ "raw": {
+  "rows": [
+   {
+    "study_id": "Rosenthal et al. 1974",
+    "measure": "SMD",
+    "estimate": 0.03,
+    "se": 0.12489995996796796
+   },
+   {
+    "study_id": "Conn et al. 1968",
+    "measure": "SMD",
+    "estimate": 0.12,
+    "se": 0.14696938456699069
+   },
+   {
+    "study_id": "Jose & Cody 1971",
+    "measure": "SMD",
+    "estimate": -0.14,
+    "se": 0.16703293088490065
+   },
+   {
+    "study_id": "Pellegrini & Hicks 1972a",
+    "measure": "SMD",
+    "estimate": 1.18,
+    "se": 0.3729611239794303
+   },
+   {
+    "study_id": "Pellegrini & Hicks 1972b",
+    "measure": "SMD",
+    "estimate": 0.26,
+    "se": 0.36905284174491865
+   },
+   {
+    "study_id": "Evans & Rosenthal 1969",
+    "measure": "SMD",
+    "estimate": -0.06,
+    "se": 0.10295630140987
+   },
+   {
+    "study_id": "Fielder et al. 1971",
+    "measure": "SMD",
+    "estimate": -0.02,
+    "se": 0.10295630140987
+   },
+   {
+    "study_id": "Claiborn 1969",
+    "measure": "SMD",
+    "estimate": -0.32,
+    "se": 0.22
+   },
+   {
+    "study_id": "Kester 1969",
+    "measure": "SMD",
+    "estimate": 0.27,
+    "se": 0.16401219466856726
+   },
+   {
+    "study_id": "Maxwell 1970",
+    "measure": "SMD",
+    "estimate": 0.8,
+    "se": 0.25099800796022265
+   },
+   {
+    "study_id": "Carter 1970",
+    "measure": "SMD",
+    "estimate": 0.54,
+    "se": 0.30199337741083
+   },
+   {
+    "study_id": "Flowers 1966",
+    "measure": "SMD",
+    "estimate": 0.18,
+    "se": 0.22293496809607954
+   },
+   {
+    "study_id": "Keshock 1970",
+    "measure": "SMD",
+    "estimate": -0.02,
+    "se": 0.2889636655359978
+   },
+   {
+    "study_id": "Henrikson 1970",
+    "measure": "SMD",
+    "estimate": 0.23,
+    "se": 0.29
+   },
+   {
+    "study_id": "Fine 1972",
+    "measure": "SMD",
+    "estimate": -0.18,
+    "se": 0.15905973720586866
+   },
+   {
+    "study_id": "Grieger 1970",
+    "measure": "SMD",
+    "estimate": -0.06,
+    "se": 0.16703293088490065
+   },
+   {
+    "study_id": "Rosenthal & Jacobson 1968",
+    "measure": "SMD",
+    "estimate": 0.3,
+    "se": 0.13892443989449804
+   },
+   {
+    "study_id": "Fleming & Anttonen 1971",
+    "measure": "SMD",
+    "estimate": 0.07,
+    "se": 0.0938083151964686
+   },
+   {
+    "study_id": "Ginsburg 1970",
+    "measure": "SMD",
+    "estimate": -0.07,
+    "se": 0.17406895185529211
+   }
+  ],
+  "reml": {
+   "n_studies": 19,
+   "study_ids": [
+    "Rosenthal et al. 1974",
+    "Conn et al. 1968",
+    "Jose & Cody 1971",
+    "Pellegrini & Hicks 1972a",
+    "Pellegrini & Hicks 1972b",
+    "Evans & Rosenthal 1969",
+    "Fielder et al. 1971",
+    "Claiborn 1969",
+    "Kester 1969",
+    "Maxwell 1970",
+    "Carter 1970",
+    "Flowers 1966",
+    "Keshock 1970",
+    "Henrikson 1970",
+    "Fine 1972",
+    "Grieger 1970",
+    "Rosenthal & Jacobson 1968",
+    "Fleming & Anttonen 1971",
+    "Ginsburg 1970"
+   ],
+   "measure": "SMD",
+   "model": "random_reml",
+   "method": "restricted maximum likelihood inverse variance",
+   "ci_method": "normal 95%",
+   "effect_scale": "natural",
+   "pooled_analysis": 0.08370124072416416,
+   "ci_analysis_low": -0.017512613660528142,
+   "ci_analysis_high": 0.18491509510885645,
+   "prediction_interval_analysis_95": [
+    -0.22555084337900835,
+    0.3929533248273367
+   ],
+   "pooled": 0.08370124072416416,
+   "ci_low": -0.017512613660528142,
+   "ci_high": 0.18491509510885645,
+   "prediction_interval_95": [
+    -0.22555084337900835,
+    0.3929533248273367
+   ],
+   "q": 35.82953629959279,
+   "q_df": 18,
+   "q_p": 0.00741931325487901,
+   "i2_percent": 49.76211846703533,
+   "tau2": 0.01881828680527033,
+   "warnings": [
+    "Effect direction is unconfirmed for: Rosenthal et al. 1974, Conn et al. 1968, Jose & Cody 1971, Pellegrini & Hicks 1972a, Pellegrini & Hicks 1972b, Evans & Rosenthal 1969, Fielder et al. 1971, Claiborn 1969, Kester 1969, Maxwell 1970, Carter 1970, Flowers 1966, Keshock 1970, Henrikson 1970, Fine 1972, Grieger 1970, Rosenthal & Jacobson 1968, Fleming & Anttonen 1971, Ginsburg 1970. Check each source against Comparison before interpreting this pool."
+   ],
+   "effects": [
+    {
+     "study_id": "Rosenthal et al. 1974",
+     "measure": "SMD",
+     "estimate": 0.03,
+     "se": 0.12489995996796796
+    },
+    {
+     "study_id": "Conn et al. 1968",
+     "measure": "SMD",
+     "estimate": 0.12,
+     "se": 0.14696938456699069
+    },
+    {
+     "study_id": "Jose & Cody 1971",
+     "measure": "SMD",
+     "estimate": -0.14,
+     "se": 0.16703293088490065
+    },
+    {
+     "study_id": "Pellegrini & Hicks 1972a",
+     "measure": "SMD",
+     "estimate": 1.18,
+     "se": 0.3729611239794303
+    },
+    {
+     "study_id": "Pellegrini & Hicks 1972b",
+     "measure": "SMD",
+     "estimate": 0.26,
+     "se": 0.36905284174491865
+    },
+    {
+     "study_id": "Evans & Rosenthal 1969",
+     "measure": "SMD",
+     "estimate": -0.06,
+     "se": 0.10295630140987
+    },
+    {
+     "study_id": "Fielder et al. 1971",
+     "measure": "SMD",
+     "estimate": -0.02,
+     "se": 0.10295630140987
+    },
+    {
+     "study_id": "Claiborn 1969",
+     "measure": "SMD",
+     "estimate": -0.32,
+     "se": 0.22
+    },
+    {
+     "study_id": "Kester 1969",
+     "measure": "SMD",
+     "estimate": 0.27,
+     "se": 0.16401219466856726
+    },
+    {
+     "study_id": "Maxwell 1970",
+     "measure": "SMD",
+     "estimate": 0.8,
+     "se": 0.25099800796022265
+    },
+    {
+     "study_id": "Carter 1970",
+     "measure": "SMD",
+     "estimate": 0.54,
+     "se": 0.30199337741083
+    },
+    {
+     "study_id": "Flowers 1966",
+     "measure": "SMD",
+     "estimate": 0.18,
+     "se": 0.22293496809607954
+    },
+    {
+     "study_id": "Keshock 1970",
+     "measure": "SMD",
+     "estimate": -0.02,
+     "se": 0.2889636655359978
+    },
+    {
+     "study_id": "Henrikson 1970",
+     "measure": "SMD",
+     "estimate": 0.23,
+     "se": 0.29
+    },
+    {
+     "study_id": "Fine 1972",
+     "measure": "SMD",
+     "estimate": -0.18,
+     "se": 0.15905973720586866
+    },
+    {
+     "study_id": "Grieger 1970",
+     "measure": "SMD",
+     "estimate": -0.06,
+     "se": 0.16703293088490065
+    },
+    {
+     "study_id": "Rosenthal & Jacobson 1968",
+     "measure": "SMD",
+     "estimate": 0.3,
+     "se": 0.13892443989449804
+    },
+    {
+     "study_id": "Fleming & Anttonen 1971",
+     "measure": "SMD",
+     "estimate": 0.07,
+     "se": 0.0938083151964686
+    },
+    {
+     "study_id": "Ginsburg 1970",
+     "measure": "SMD",
+     "estimate": -0.07,
+     "se": 0.17406895185529211
+    }
+   ]
+  },
+  "profile_reml_tau2_direct": {
+   "tau2": 0.01881828680527033,
+   "objective": -22.66527008751747
+  },
+  "metareg": {
+   "n_studies": 19,
+   "study_ids": [
+    "Rosenthal et al. 1974",
+    "Conn et al. 1968",
+    "Jose & Cody 1971",
+    "Pellegrini & Hicks 1972a",
+    "Pellegrini & Hicks 1972b",
+    "Evans & Rosenthal 1969",
+    "Fielder et al. 1971",
+    "Claiborn 1969",
+    "Kester 1969",
+    "Maxwell 1970",
+    "Carter 1970",
+    "Flowers 1966",
+    "Keshock 1970",
+    "Henrikson 1970",
+    "Fine 1972",
+    "Grieger 1970",
+    "Rosenthal & Jacobson 1968",
+    "Fleming & Anttonen 1971",
+    "Ginsburg 1970"
+   ],
+   "measure": "SMD",
+   "effect_scale": "natural",
+   "design_columns": [
+    "(Intercept)",
+    "weeks"
+   ],
+   "coefficients": [
+    {
+     "name": "(Intercept)",
+     "estimate": 0.40718534298319914,
+     "se": 0.08703789442289799,
+     "ci_low": 0.23659420462411945,
+     "ci_high": 0.5777764813422788,
+     "p": 2.893285726783898e-06
+    },
+    {
+     "name": "weeks",
+     "estimate": -0.15724443098038152,
+     "se": 0.03583122574978362,
+     "ci_low": -0.2274723429718816,
+     "ci_high": -0.08701651898888144,
+     "p": 1.1414836212476871e-05
+    }
+   ],
+   "tau2": 0.0,
+   "tau2_null": 0.01881828680527033,
+   "explained_heterogeneity_r2": 1.0,
+   "moderator_test": {
+    "statistic": 19.258711002712648,
+    "statistic_name": "chi-square",
+    "df1": 1,
+    "df2": null,
+    "p_value": 1.141483621247689e-05,
+    "method": "joint Wald chi-square test"
+   },
+   "residual_q": 16.570825296880138,
+   "residual_df": 17,
+   "reml_objective": -33.98027959402077,
+   "method": "random-effects inverse-variance meta-regression with profile REML tau2",
+   "ci_method": "normal 95% Wald",
+   "knha_scale": null,
+   "limitations": [
+    "One effect per independent study for one outcome and time point; within-study covariance is not modeled.",
+    "Study-level associations are ecological and do not establish participant-level effect modification or causality.",
+    "Requires at least 10 studies, a full-rank design, and positive residual degrees of freedom.",
+    "Coefficient estimates can be unstable with sparse covariate levels or near-collinearity.",
+    "Explained heterogeneity R²* = max(0, 1 - tau2_model/tau2_null) when tau2_null > 0; it is None when tau2_null is zero.",
+    "Normal Wald intervals may understate uncertainty in small meta-regressions."
+   ]
+  }
+ }
+}

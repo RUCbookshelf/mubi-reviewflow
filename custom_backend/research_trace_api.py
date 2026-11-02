@@ -46,6 +46,13 @@ _PREVIEW_CACHE_ENTRIES = 4
 _PREVIEW_LOCK = threading.Lock()
 _PREVIEWS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _PREVIEW_BYTES = 0
+# F60（UX 批准单 §六）：导出预览的 413 一律使用同一句已注册十语言的文案
+#（interface_locale.js 的双键行：「导出内容过多，无法生成预览。请缩小导出范围
+# 或减少内容后重试。」）。此前超限页用 f-string 拼「带条数插值」的英文原串——
+# errOf 的纯字符串 detail 走 T() 精确匹配，带插值的串永远命不中词典，九种
+# 非中文界面只能看到英文。事件条数不是用户可操作信息，故从文案中移除。
+_PREVIEW_TOO_LARGE = ("The export is too large to preview. "
+                      "Reduce the selected range or content and try again.")
 
 
 class _Input(BaseModel):
@@ -785,9 +792,9 @@ def _snapshot(info: Any, actor_id: int | str, paths: dict[str, Any],
                     )
                     events.extend(page["events"])
                     if len(events) > MAX_EVENTS:
-                        raise HTTPException(413, f"Filtered export exceeds {MAX_EVENTS} events.")
+                        raise HTTPException(413, _PREVIEW_TOO_LARGE)
                 if len(events) > MAX_EVENTS:
-                    raise HTTPException(413, f"Filtered export exceeds {MAX_EVENTS} events.")
+                    raise HTTPException(413, _PREVIEW_TOO_LARGE)
                 summary = {
                     "event_count": len(events),
                     "history_event_count": whole_summary["event_count"],
@@ -852,7 +859,7 @@ def _cache_preview(task_id: str, actor_id: str, package: bytes, preset: str) -> 
             _, removed = _PREVIEWS.popitem(last=False)
             _PREVIEW_BYTES -= len(removed["package"])
         if len(package) > _PREVIEW_CACHE_BYTES:
-            raise HTTPException(413, "The export is too large to preview. Reduce the selected range or content and try again.")
+            raise HTTPException(413, _PREVIEW_TOO_LARGE)
         preview_id = uuid.uuid4().hex + uuid.uuid4().hex[:8]
         _PREVIEWS[preview_id] = {"owner": owner, "package": package,
                                  "expires_at": now + _PREVIEW_TTL_SECONDS}

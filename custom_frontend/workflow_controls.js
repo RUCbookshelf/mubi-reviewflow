@@ -60,6 +60,45 @@
     const signature=reasonSignature(stage);
     return signature!=null&&decisionBaselines[stage]!==signature;
   });
+  /* ---- F27 半步（r10-u1）：「理由草稿」与「可保存草稿」分开看 ----
+     批准单 F27：仅在下拉选了理由（尚未决策）即判 dirty，此后任何导航都弹模态，
+     而模态的主按钮 Save 对理由草稿必然失败（Save 只会提示「先做决策」）。
+     半步口径（完整「模态改内联」归结构包）：
+       ① 模态正文列出未保存草稿（文献题名＋所选理由）并给「清空草稿」按钮；
+       ② Save 对不可保存的理由草稿置灰并以 title 说明；       */
+  const draftDecisionOf=stage=>($(stage==='screen'?'#excReason':'#ftReason')?.value||'');
+  const draftCustomOf=stage=>($(stage==='screen'?'#excCustomReason':'#ftCustomReason')?.value||'').trim();
+  const draftTitleOf=stage=>{
+    const article=stage==='screen'?S.articles[S.scrIdx]:curFt();
+    return String(article?.title||article?.zotero_key||'').trim();
+  };
+  W.reasonDraft=()=>{
+    for(const stage of ['screen','fulltext']){
+      if(S.page!==stage||decisionBaselines[stage]==null)continue;
+      if(!W.decisionDirty())continue;
+      const picked=draftDecisionOf(stage),custom=draftCustomOf(stage);
+      const reason=picked==='__custom__'?custom:picked;
+      return {stage,title:draftTitleOf(stage),reason:reason||'',custom:picked==='__custom__'};
+    }
+    return null;
+  };
+  /* 只有「理由草稿」而没有其它可保存内容时，Save 无物可存。 */
+  W.reasonDraftOnly=()=>{
+    const draftInfo=W.reasonDraft();
+    if(!draftInfo)return null;
+    const other=W.settingsDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
+    return other?null:draftInfo;
+  };
+  W.clearReasonDraft=stage=>{
+    const target=stage||W.reasonDraft()?.stage;
+    if(!target)return false;
+    const select=$(target==='screen'?'#excReason':'#ftReason'),custom=$(target==='screen'?'#excCustomReason':'#ftCustomReason');
+    if(select){select.value='';select.dispatchEvent(new Event('change',{bubbles:true}));}
+    if(custom){custom.value='';custom.hidden=true;}
+    window.RFScreenReason?.clearMessage?.();
+    W.markDecisionClean(target);
+    return true;
+  };
   W.anyDirty=()=>W.settingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
   const pendingWork=()=>apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving();
   const policyDraftDirty=()=>syncSettingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
@@ -81,7 +120,22 @@
 
   const reasonLabels={article_pending_round:'This article is in a repeat screening round. Finish the round or proceed to full-text screening first.',task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.',missing_evidence_file:'The saved evidence image is no longer in the data directory, so this save cannot be undone.'};
   W.reason = value => T(reasonLabels[value] || value || '');
-  W.errorText = error => error.code&&reasonLabels[error.code]?W.reason(error.code):!error.status?T(error.message):T(error.status===403?'You do not have permission for this action.':'The request could not be completed. Your draft is retained. Review the details and retry.')+' '+error.message;
+  /* F65（r10-u1，前端半步）：403 文案此前是「已译的中文句 + 空格 + 后端英文原串」，
+     中英混排。这里把两段都过 T()（词典按中英双键索引，后端英文原串命中即译全）；
+     仍未注册的技术串只在**不是 403** 时追加——403 的统一句式已说明「你无权执行
+     此操作」，再拼英文原串只会制造混排。结构化原因与指引（缺哪个角色、找谁授权）
+     需前后端契约协同，属结构包，本单不做。 */
+  W.errorText = error => {
+    if (error.code && reasonLabels[error.code]) return W.reason(error.code);
+    if (!error.status) return T(error.message);
+    const base = T(error.status === 403
+      ? 'You do not have permission for this action.'
+      : 'The request could not be completed. Your draft is retained. Review the details and retry.');
+    const detail = T(error.message || '');
+    if (!detail || detail === base) return base;
+    if (error.status === 403 && detail === (error.message || '')) return base;
+    return base + ' ' + detail;
+  };
   W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Source not recorded') : source.name;
   W.error = error => {
     toast(W.errorText(error), 'warn');
@@ -93,7 +147,11 @@
     const original = [...home.children];
     const tabs = n('div', null, {class:'wf-tabs', role:'tablist', 'aria-label':T('Home settings')});
     const indicator = n('i', null, {class:'wf-tab-indicator', 'aria-hidden':'true'});
-    const labels = [['overview','Overview'],['tasks','Tasks & team'],['screening','Screening settings'],['ml','Machine Learning'],['coding','数据提取与编码'],['appearance','Appearance & storage']];
+    /* F15（r10-u1）：设置标签加类型限定词，消除与侧栏页面的逐字/近似同名——
+       「数据提取与编码」与侧栏编码工作区页面逐字相同却指向任务级设置（编码证据
+       要求），改为「编码证据要求」；「Screening settings」与侧栏「文献初筛」/阶段
+       「筛选」近似同名，改为「筛选策略设置」。两个新串已随本批进十语言词典。 */
+    const labels = [['overview','Overview'],['tasks','Tasks & team'],['screening','Screening policy settings'],['ml','Machine Learning'],['coding','Coding evidence requirements'],['appearance','Appearance & storage']];
     for (const [key,label] of labels) {
       const tab = button(label, () => activate(key));
       tab.id = 'wf-tab-' + key; tab.dataset.wfLabel = label;
@@ -120,6 +178,14 @@
     }
     const current = n('div', null, {id:'wf-current-task', class:'card'});
     panels.overview.prepend(current);
+    /* F14（r10-u1）：零任务状态下概览顶部的一步引导卡（与 F13 空态同批）。
+       只在「任务列表已载入且为空」时出现，加载中不闪；样式克制（单行 + 一个
+       主按钮），不与下方 12 张功能卡抢视觉优先级。 */
+    const firstStep = n('div', null, {id:'wf-first-step', class:'card wf-first-step', hidden:''});
+    firstStep.append(n('b','First step: create a task'),
+      n('p','Screening, coding and analysis all run inside a task. Create one to start.',{class:'hint'}),
+      button('Create a task',()=>{activate('tasks');document.getElementById('newTaskName')?.focus();}));
+    panels.overview.prepend(firstStep);
     panels.overview.append(n('div', null, {id:'wf-pending-imports', class:'card', hidden:''}));
     const lang = n('select', null, {class:'input', 'aria-label':T('Language')});
     for (const [value,label] of [['zh-CN','简体中文'],['en','English'],['fr','Français'],['ru','Русский'],['es','Español'],['ja','日本語'],['pt','Português'],['de','Deutsch'],['sr','Српски'],['ko','한국어']]) lang.append(el('option',{value,text:label,translate:'no'}));
@@ -183,8 +249,38 @@
     activate(activeTab);
     const resize=new ResizeObserver(()=>measure(true));resize.observe(tabs);for(const tab of tabs.querySelectorAll('[role=tab]'))resize.observe(tab);
     document.fonts?.ready.then(()=>measure(true));
-    document.addEventListener('reviewflow:language-changed',()=>{for(const tab of tabs.querySelectorAll('[data-wf-label]'))tab.textContent=T(tab.dataset.wfLabel);measure(true);});
+    document.addEventListener('reviewflow:language-changed',()=>{for(const tab of tabs.querySelectorAll('[data-wf-label]'))tab.textContent=T(tab.dataset.wfLabel);measure(true);W.renderCurrentTask?.();});
     W.homeTab=activate;
+    /* F13 / F14（r10-u1）：零任务与加载中必须是两种可见状态。此前占位「正在
+       载入范围…」由 task-context-changed 写入，而唯一的填充点在 refreshPolicy
+       的 :447 守卫之后——零任务新用户永远等不到填充，也看不到空态。这里把
+       「当前任务卡」与「第一步引导卡」的渲染收成一个幂等函数，并在任务列表
+       变化（loadTasks/pickTask 触发的上下文事件）时立即重算。 */
+    W.renderCurrentTask=renderCurrentTask;
+    document.addEventListener('reviewflow:task-list-changed',()=>renderCurrentTask());
+  }
+  /* 判定依据（批准单 F13 风险项「需确认零任务与加载中的判定字段可靠」）：
+     S.tasks 只在 /api/tasks 成功返回后赋值（loadTasks），因此
+     · S.tasks.length===0 → 确属零任务（空态）；
+     · S.task 存在 → 照常显示当前任务；
+     · 其余（有任务列表但 S.task 未定）→ 仍显示载入占位。
+     不使用「settings===null」判空，因为设置刷新期间它本来就可能为 null。 */
+  function renderCurrentTask(){
+    const host=document.getElementById('wf-current-task'),first=document.getElementById('wf-first-step');
+    if(!host)return;
+    const noTasks=Array.isArray(S.tasks)&&S.tasks.length===0;
+    if(first)first.hidden=!noTasks;
+    if(S.task){
+      host.replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue title-and-abstract screening',()=>go('screen')),button('Continue data extraction & coding',()=>go('bench')));
+      return;
+    }
+    if(noTasks){
+      host.replaceChildren(n('b','No task yet'),
+        n('p','Create a task to import records and start screening.',{class:'hint'}),
+        button('Create a task',()=>{window.WorkflowControls?.homeTab?.('tasks');document.getElementById('newTaskName')?.focus();}));
+      return;
+    }
+    host.replaceChildren(n('p','Loading scope…'));
   }
   function policyEditor() {
     if(!settings || W.settingsDirty()) return;
@@ -290,25 +386,70 @@
     W.decorateReasons('screen'); W.decorateReasons('fulltext');
   }
   function mutateReason(stage,method,id,text,field=null) {return run(async()=>{if(method!=='DELETE'&&(!text?.trim()||text.trim().length>2000))throw Error(T('A reason must contain 1–2000 characters.'));await api(taskApi()+'/reason-library'+(id?'/'+encodeURIComponent(id):'')+'?stage='+stage,{method,body:method==='DELETE'?undefined:{text:text.trim(),stage}});if(!field||method==='DELETE'||field.value.trim()===text.trim()){if(field&&method==='POST')field.value='';cleanLibrary(field);}await loadReasons();return !field||!dirtyFields.has(field);});}
+  /* ---- F24（r10-u1）：把「存为常用理由」移出决策行 ----
+     批准单 F24：按钮与自定义输入框挤进决策行、误点即静默 POST 写库。改为收进
+     理由下拉末尾的特殊选项「＋ 将此理由存为常用」——下拉项文案即说明后果，
+     选中后立刻还原到先前的理由（不改变本次决策取值），保存成功后给出带「撤销」
+     的 toast（撤销即 DELETE 同一条目）。写入仍走同一 reason-library 端点。 */
+  const SAVE_REASON_VALUE='__save_reason__';
+  function saveReasonToLibrary(stage,text){
+    const reason=String(text||'').trim();
+    if(!reason){toast(T('请先选择或输入要保存的理由'),'warn');return;}
+    return run(async()=>{
+      const scoped={task:scope(),stage,reason};
+      const created=await api(taskApi()+'/reason-library?stage='+stage,{method:'POST',body:{text:reason,stage}});
+      await loadReasons();
+      const undoId=created?.id;
+      if(!undoId){toast(T('已存为常用理由，可在「筛选设置 · 可复用排除理由」中管理'),'inc');return;}
+      undoToast(T('已存为常用理由：{0}',reason),()=>run(async()=>{
+        if(scoped.task!==scope())throw Error(T('The task changed. Reload the queue.'));
+        await api(taskApi()+'/reason-library/'+encodeURIComponent(undoId)+'?stage='+stage,{method:'DELETE'});
+        await loadReasons();
+        toast(T('已撤销保存该常用理由'),'info');
+      }));
+    });
+  }
+  /* toast 的可撤销版本：与主应用的 #toasts 容器同款样式，附加一个「撤销」按钮。 */
+  function undoToast(message,undo){
+    const host=document.getElementById('toasts');
+    if(!host){toast(message,'inc');return;}
+    const box=el('div',{class:'toast t-inc wf-undo-toast',role:'status'},el('span',{text:message}));
+    const action=el('button',{type:'button',class:'rf-link',text:T('撤销'),onclick:()=>{
+      action.disabled=true;box.remove();
+      try{Promise.resolve(undo()).catch(error=>W.error(error));}catch(error){W.error(error);}
+    }});
+    box.append(action);host.append(box);
+    setTimeout(()=>box.classList.add('hide'),6000);
+    setTimeout(()=>box.remove(),6360);
+  }
   W.decorateReasons=stage=>{
     const select=$(stage==='screen'?'#excReason':'#ftReason'),custom=$(stage==='screen'?'#excCustomReason':'#ftCustomReason');if(!select)return;
     const value=select.value;
     select.querySelectorAll('[data-library]').forEach(o=>o.remove());
     for(const entry of reasons[stage])if(![...select.options].some(o=>o.value===entry.text)){const option=el('option',{value:entry.text,text:entry.text,translate:'no','data-library':'true'});select.insertBefore(option,select.querySelector('[value="__custom__"]'));}
     if([...select.options].some(o=>o.value===value))select.value=value;
-    else if(value){select.value='__custom__';custom.value=value;custom.hidden=false;}
-    const id='wf-save-reason-'+stage;
-    if(!document.getElementById(id)&&settings?.can_manage){const b=button('Save as reusable reason',()=>mutateReason(stage,'POST',null,select.value==='__custom__'?custom.value:select.value));b.id=id;select.parentElement.append(b);}
-    if(custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
-      const save=document.getElementById(id);
-      if(save){
-        const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');
-        icon.setAttribute('viewBox','0 0 24 24');icon.setAttribute('class','wf-reason-save-icon');icon.setAttribute('aria-hidden','true');
-        const path=document.createElementNS(icon.namespaceURI,'path');path.setAttribute('d','M6 3h12v18l-6-4-6 4V3Zm6 4v6m-3-3h6');icon.append(path);
-        save.replaceChildren(icon,n('span','Save as reusable reason',{class:'wf-reason-save-label'}));
-        save.setAttribute('title',T('Save as reusable reason'));save.setAttribute('aria-label',T('Save as reusable reason'));
-        const row=n('div',null,{class:'wf-custom-reason-row'});select.parentElement.append(row);row.append(custom,save);
+    else if(value&&value!==SAVE_REASON_VALUE){select.value='__custom__';custom.value=value;custom.hidden=false;}
+    /* 特殊选项：位置固定在下拉末尾，重复调用不叠加。 */
+    let saveOption=select.querySelector('[data-wf-save-reason]');
+    if(settings?.can_manage){
+      if(!saveOption){saveOption=el('option',{value:SAVE_REASON_VALUE,'data-wf-save-reason':'','translate':'no',text:T('＋ 将此理由存为常用')});select.append(saveOption);}
+      else select.append(saveOption);
+      if(!select.dataset.wfSaveReasonBound){
+        select.dataset.wfSaveReasonBound='1';
+        let previous=select.value||'';
+        select.addEventListener('change',()=>{
+          if(select.value!==SAVE_REASON_VALUE){previous=select.value;return;}
+          /* 还原选择：保存理由不改变本次排除理由的取值。 */
+          select.value=previous;
+          const text=previous==='__custom__'?(custom?.value||'').trim():previous;
+          saveReasonToLibrary(stage,text);
+        });
       }
+    }else saveOption?.remove();
+    if(custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
+      /* 自定义理由仍包在 .wf-custom-reason-row 内：移动端 CSS 以该行整行排布，
+         审批单 F24 只移除行内的「存为常用」按钮，不改输入框的布局契约。 */
+      const row=n('div',null,{class:'wf-custom-reason-row'});select.parentElement.append(row);row.append(custom);
     }
   };
   function tools(stage) {
@@ -433,7 +574,7 @@
     if(!W.settingsDirty())policyEditor();
     await loadReasons(ticket); // Libraries can change without a policy version increment.
     if(current!==scope()||ticket!==refreshTicket)return;
-    $('#wf-current-task').replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue title-and-abstract screening',()=>go('screen')),button('Continue data extraction & coding',()=>go('bench')));
+    renderCurrentTask();
     window.WorkflowEvidence?.discovery(result.submission_evidence);
     window.WorkspaceUndo?.sync();
     if(S.page==='home'&&window.WorkflowImports)await WorkflowImports.notice();
@@ -502,9 +643,29 @@
         const fields=n('fieldset',null,{class:'wf-draft-fields'});fields.append(n('legend',sourceFields?'Imported sources':'Reusable exclusion reasons'));
         for(const field of pending){if(sourceFields){for(const control of field.wfControls){addEditor(control,fields);fields.lastElementChild.firstElementChild.textContent=T('Source type')+' · '+field.value;}}else addEditor(field,fields,true);}dialog.append(fields);
       }
+      /* F27 半步：把不可保存的「理由草稿」摆在模态正文里（题名＋所选理由），
+         并给一键「清空草稿」——此前草稿既不可见也无法就地放弃，用户只能靠
+         Discard 连其它改动一起丢掉。 */
+      const reasonDraft=W.reasonDraft(),reasonDraftOnly=W.reasonDraftOnly();
+      if(reasonDraft){
+        const fields=n('fieldset',null,{class:'wf-draft-fields wf-draft-reason'});
+        fields.append(n('legend','Unsaved screening reason'));
+        /* 注意：n() 只有 (tag,text,attrs) 三参，子节点必须用 el() 直接构造——
+           用 n('p',null,{...},child) 会把子节点丢掉，草稿就等于没显示。 */
+        fields.append(el('p',{class:'hf-reason-draft'},literal('strong',reasonDraft.title||''),el('br'),
+          el('span',{text:reasonDraft.reason?T('所选理由：{0}',reasonDraft.reason):T('尚未选择理由')})));
+        fields.append(n('p','A reason is saved together with Include, Maybe or Exclude. The decision buttons are disabled while this dialog is open.',{class:'hint'}));
+        const clearDraft=button('Clear draft',()=>{
+          W.clearReasonDraft(reasonDraft.stage);
+          finish(true);
+        });
+        clearDraft.dataset.wfClearReasonDraft='1';
+        fields.append(clearDraft);
+        dialog.append(fields);
+      }
       dialog.append(validationMessage);
       const finish=value=>{dialog.close();dialog.remove();dialogPromise=null;resolve(value);};
-      dialog.append(button('Save',()=>run(async()=>{
+      const saveButton=button('Save',()=>run(async()=>{
         if(!W.anyDirty()){finish(true);return;}
         for(const {input,validateReason} of editors){
           if(validateReason&&(!input.value.trim()||input.value.trim().length>2000))input.setCustomValidity(T('A reason must contain 1–2000 characters.'));
@@ -523,7 +684,15 @@
         if(window.WorkflowExtraction?.dirty()&&!await WorkflowExtraction.save())return;
         finish(true);
         }finally{controls.forEach(control=>control.disabled=false);}
-      })),button('Discard',()=>{settingsDirty=false;for(const field of dirtyFields)field.wfRestore?.();libraryDirty=false;dirtyFields.clear();if(alBaseline)for(const id of alIds)$('#'+id).value=alBaseline[id];alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);draftBaseline=null;policyEditor();W.clearRecovery();finish(true);}),button('Stay',()=>finish(false)));
+      }));
+      /* F27 半步：无物可存的理由草稿 → Save 置灰，title 说明该怎么做
+         （先按下 1/2/3 做决策，理由才会随决策保存；或「清空草稿」）。 */
+      if(reasonDraftOnly){
+        saveButton.disabled=true;
+        saveButton.title=T('理由需随「纳入 / 待定 / 排除」决策一起保存：请先做决策，或清空草稿');
+        saveButton.setAttribute('aria-disabled','true');
+      }
+      dialog.append(saveButton,button('Discard',()=>{settingsDirty=false;for(const field of dirtyFields)field.wfRestore?.();libraryDirty=false;dirtyFields.clear();if(alBaseline)for(const id of alIds)$('#'+id).value=alBaseline[id];alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);draftBaseline=null;policyEditor();W.clearRecovery();finish(true);}),button('Stay',()=>finish(false)));
       dialog.addEventListener('cancel',event=>{event.preventDefault();if(dialog.querySelector('button')?.disabled)return;finish(false);});document.body.append(dialog);dialog.showModal();
     });
     return dialogPromise;
@@ -547,6 +716,9 @@
     for(const id of ['barScreen','barFull','barCode']){const bar=document.getElementById(id);if(bar)bar.style.width='0%';}
     for(const id of ['btnInc','btnMay','btnExc','ftInc','ftMay','ftExc','cbSave']){const control=document.getElementById(id);if(control)control.disabled=true;}
     for(const stage of stages){const host=tools(stage);host.querySelector('select').replaceChildren();host.querySelector('select').disabled=true;host.querySelector('.wf-scope-progress').textContent=T('Loading scope…');host.querySelector('.wf-readonly').textContent='';}
+    /* F13：切到零任务上下文时不留在「Loading scope…」——占位只对有任务但尚未
+       载入完成的情形有意义。 */
+    W.renderCurrentTask?.();
     if(S.task&&S.user)run(()=>W.refresh('context',false));
   });
   document.addEventListener('reviewflow:workspace-changed',()=>run(()=>W.refresh('entry',false)));

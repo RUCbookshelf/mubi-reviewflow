@@ -1,0 +1,1371 @@
+{
+ "dataset": "BCG",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 46,
+ "counts": {
+  "PASS": 42,
+  "FAIL": 0,
+  "NOT-RUN": 4,
+  "INFO": 0
+ },
+ "checks": [
+  {
+   "id": "bcg-yi-01",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Aronson 1948]",
+   "observed": -0.8893113339202054,
+   "published": -0.88931133,
+   "published_decimals": 8,
+   "abs_diff": 3.920205493557205e-09,
+   "rel_diff": 4.408136230039041e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-01",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Aronson 1948]",
+   "observed": 0.3255847650039613,
+   "published": 0.325584765,
+   "published_decimals": 9,
+   "abs_diff": 3.9612757518625585e-12,
+   "rel_diff": 1.2166649603099698e-11,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-02",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Ferguson & Simes 1949]",
+   "observed": -1.5853886572014306,
+   "published": -1.58538866,
+   "published_decimals": 8,
+   "abs_diff": 2.798569376238902e-09,
+   "rel_diff": 1.7652260589771733e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-02",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Ferguson & Simes 1949]",
+   "observed": 0.19458112139814382,
+   "published": 0.194581121,
+   "published_decimals": 9,
+   "abs_diff": 3.98143823465702e-10,
+   "rel_diff": 2.0461585451843603e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-03",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Rosenthal et al 1960]",
+   "observed": -1.348073148299693,
+   "published": -1.34807315,
+   "published_decimals": 8,
+   "abs_diff": 1.700307006302637e-09,
+   "rel_diff": 1.261286901458305e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-03",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Rosenthal et al 1960]",
+   "observed": 0.4153679653679654,
+   "published": 0.415367965,
+   "published_decimals": 9,
+   "abs_diff": 3.67965380387858e-10,
+   "rel_diff": 8.858780921823327e-10,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-04",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Hart & Sutherland 1977]",
+   "observed": -1.4415511900213054,
+   "published": -1.44155119,
+   "published_decimals": 8,
+   "abs_diff": 2.130540188716168e-11,
+   "rel_diff": 1.4779497276931025e-11,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-04",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Hart & Sutherland 1977]",
+   "observed": 0.020010031902247573,
+   "published": 0.020010032,
+   "published_decimals": 9,
+   "abs_diff": 9.775242768017556e-11,
+   "rel_diff": 4.885170982244084e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-05",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Frimodt-Moller et al 1973]",
+   "observed": -0.2175473222112957,
+   "published": -0.21754732,
+   "published_decimals": 8,
+   "abs_diff": 2.211295702103655e-09,
+   "rel_diff": 1.0164665333977247e-08,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-05",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Frimodt-Moller et al 1973]",
+   "observed": 0.05121017216963086,
+   "published": 0.051210172,
+   "published_decimals": 9,
+   "abs_diff": 1.696308649101752e-10,
+   "rel_diff": 3.312444740669397e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-06",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Stein & Aronson 1953]",
+   "observed": -0.786115585818864,
+   "published": -0.78611559,
+   "published_decimals": 8,
+   "abs_diff": 4.18113599298664e-09,
+   "rel_diff": 5.318729263449208e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-06",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Stein & Aronson 1953]",
+   "observed": 0.006905618455908758,
+   "published": 0.006905618,
+   "published_decimals": 9,
+   "abs_diff": 4.5590875866197145e-10,
+   "rel_diff": 6.601997948076066e-08,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-07",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Vandiviere et al 1973]",
+   "observed": -1.6208982235983924,
+   "published": -1.62089822,
+   "published_decimals": 8,
+   "abs_diff": 3.5983924728810734e-09,
+   "rel_diff": 2.2199990279963868e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-07",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Vandiviere et al 1973]",
+   "observed": 0.22301724757231517,
+   "published": 0.223017248,
+   "published_decimals": 9,
+   "abs_diff": 4.2768483199395746e-10,
+   "rel_diff": 1.917720875086565e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-08",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [TPT Madras 1980]",
+   "observed": 0.011952333523841173,
+   "published": 0.01195233,
+   "published_decimals": 8,
+   "abs_diff": 3.5238411719845653e-09,
+   "rel_diff": 2.948246218088494e-07,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-08",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [TPT Madras 1980]",
+   "observed": 0.0039615792978177295,
+   "published": 0.003961579,
+   "published_decimals": 9,
+   "abs_diff": 2.978177296789064e-10,
+   "rel_diff": 7.517652170483194e-08,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-09",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Coetzee & Berjak 1968]",
+   "observed": -0.4694176487381487,
+   "published": -0.46941765,
+   "published_decimals": 8,
+   "abs_diff": 1.2618513456352787e-09,
+   "rel_diff": 2.688120793147166e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-09",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Coetzee & Berjak 1968]",
+   "observed": 0.056434210463248966,
+   "published": 0.05643421,
+   "published_decimals": 9,
+   "abs_diff": 4.632489669642581e-10,
+   "rel_diff": 8.208655121853538e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-10",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Rosenthal et al 1961]",
+   "observed": -1.3713448034727846,
+   "published": -1.3713448,
+   "published_decimals": 8,
+   "abs_diff": 3.4727847264548473e-09,
+   "rel_diff": 2.5323935500793437e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-10",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Rosenthal et al 1961]",
+   "observed": 0.07302479361302892,
+   "published": 0.073024794,
+   "published_decimals": 9,
+   "abs_diff": 3.869710801795989e-10,
+   "rel_diff": 5.299173869351811e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-11",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Comstock et al 1974]",
+   "observed": -0.33935882833839015,
+   "published": -0.33935883,
+   "published_decimals": 8,
+   "abs_diff": 1.6616098497124199e-09,
+   "rel_diff": 4.896321247077673e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-11",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Comstock et al 1974]",
+   "observed": 0.01241221397155972,
+   "published": 0.012412214,
+   "published_decimals": 9,
+   "abs_diff": 2.844027964521434e-11,
+   "rel_diff": 2.291313994845266e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-12",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Comstock & Webster 1969]",
+   "observed": 0.4459134005713783,
+   "published": 0.4459134,
+   "published_decimals": 8,
+   "abs_diff": 5.713782780247811e-10,
+   "rel_diff": 1.281366018659186e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-12",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Comstock & Webster 1969]",
+   "observed": 0.5325058452001528,
+   "published": 0.532505845,
+   "published_decimals": 9,
+   "abs_diff": 2.0015278323626262e-10,
+   "rel_diff": 3.758696455928341e-10,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-yi-13",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "logRR yi [Comstock et al 1976]",
+   "observed": -0.017313948216879493,
+   "published": -0.01731395,
+   "published_decimals": 8,
+   "abs_diff": 1.7831205088858493e-09,
+   "rel_diff": 1.0298750480888815e-07,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-vi-13",
+   "dataset": "BCG",
+   "method": "binary_effect (escalc RR)",
+   "metric": "vi [Comstock et al 1976]",
+   "observed": 0.0714046596839863,
+   "published": 0.07140466,
+   "published_decimals": 9,
+   "abs_diff": 3.1601370131806306e-10,
+   "rel_diff": 4.425673356865828e-09,
+   "rel_tol_a1": 1e-06,
+   "eff_rel_tol": 1e-06,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "published vi given to 9 dp"
+  },
+  {
+   "id": "bcg-reml-pooled-log",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "pooled logRR",
+   "observed": -0.714532342502118,
+   "published": -0.7145,
+   "published_decimals": 4,
+   "abs_diff": 3.2342502117921335e-05,
+   "rel_diff": 4.526592318813343e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-ci-low",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "95% CI low (log)",
+   "observed": -1.0668976385866167,
+   "published": -1.0669,
+   "published_decimals": 4,
+   "abs_diff": 2.3614133832783324e-06,
+   "rel_diff": 2.2133408785062634e-06,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-ci-high",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "95% CI high (log)",
+   "observed": -0.3621670464176192,
+   "published": -0.3622,
+   "published_decimals": 4,
+   "abs_diff": 3.2953582380812474e-05,
+   "rel_diff": 9.098172937827849e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00013804527885146327,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-tau2",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "tau2",
+   "observed": 0.31324325697380945,
+   "published": 0.3132,
+   "published_decimals": 4,
+   "abs_diff": 4.3256973809469024e-05,
+   "rel_diff": 0.0001381129431975384,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00015964240102171138,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-rr",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "RR scale pooled",
+   "observed": 0.4894209396576799,
+   "published": 0.4894,
+   "published_decimals": 4,
+   "abs_diff": 2.093965767990813e-05,
+   "rel_diff": 4.278638675910938e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001021659174499387,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-rr-low",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "RR scale CI low",
+   "observed": 0.34407430618375817,
+   "published": 0.3441,
+   "published_decimals": 4,
+   "abs_diff": 2.569381624184519e-05,
+   "rel_diff": 7.46696199995501e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00014530659691950015,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-rr-high",
+   "dataset": "BCG",
+   "method": "IV REML random",
+   "metric": "RR scale CI high",
+   "observed": 0.6961660660807383,
+   "published": 0.6962,
+   "published_decimals": 4,
+   "abs_diff": 3.393391926176381e-05,
+   "rel_diff": 4.874162490916951e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-q",
+   "dataset": "BCG",
+   "method": "heterogeneity",
+   "metric": "Q",
+   "observed": 152.2330122024783,
+   "published": 152.233,
+   "published_decimals": 4,
+   "abs_diff": 1.2202478302469899e-05,
+   "rel_diff": 8.015659089993561e-08,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-qdf",
+   "dataset": "BCG",
+   "method": "heterogeneity",
+   "metric": "Q df",
+   "observed": 12,
+   "published": 12,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "bcg-i2",
+   "dataset": "BCG",
+   "method": "heterogeneity",
+   "metric": "I2 %",
+   "observed": 92.11734706790185,
+   "published": 92.12,
+   "published_decimals": 2,
+   "abs_diff": 0.0026529320981580895,
+   "rel_diff": 2.879865499520288e-05,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "A1 ⚠: page value 92.22% contradicts exact (Q-df)/Q from same page; recomputed used"
+  },
+  {
+   "id": "bcg-h2",
+   "dataset": "BCG",
+   "method": "heterogeneity",
+   "metric": "H2 = Q/df",
+   "observed": 12.686084350206526,
+   "published": 12.69,
+   "published_decimals": 2,
+   "abs_diff": 0.003915649793473364,
+   "rel_diff": 0.0003085618434573179,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-reml-direct-tau2",
+   "dataset": "BCG",
+   "method": "profile_reml_tau2 (direct)",
+   "metric": "tau2",
+   "observed": 0.31324325697380945,
+   "published": 0.3132,
+   "published_decimals": 4,
+   "abs_diff": 4.3256973809469024e-05,
+   "rel_diff": 0.0001381129431975384,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00015964240102171138,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-tf-missing",
+   "dataset": "BCG",
+   "method": "trim-and-fill (EE, right, L0)",
+   "metric": "n_missing",
+   "observed": 4,
+   "published": 4,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "bcg-tf-adjusted",
+   "dataset": "BCG",
+   "method": "trim-and-fill (EE, right, L0)",
+   "metric": "adjusted pooled logRR",
+   "observed": -0.29102599330113876,
+   "published": -0.291,
+   "published_decimals": 4,
+   "abs_diff": 2.599330113878251e-05,
+   "rel_diff": 8.932405889615983e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001718213058419244,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-tf-ci-low",
+   "dataset": "BCG",
+   "method": "trim-and-fill (EE, right, L0)",
+   "metric": "adjusted 95% CI low (log)",
+   "observed": -0.3660223214144361,
+   "published": -0.366,
+   "published_decimals": 4,
+   "abs_diff": 2.232141443608837e-05,
+   "rel_diff": 6.098747113685347e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001366120218579235,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-tf-ci-high",
+   "dataset": "BCG",
+   "method": "trim-and-fill (EE, right, L0)",
+   "metric": "adjusted 95% CI high (log)",
+   "observed": -0.21602966518784153,
+   "published": -0.216,
+   "published_decimals": 4,
+   "abs_diff": 2.966518784153216e-05,
+   "rel_diff": 0.00013733883259968592,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0002314814814814815,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": ""
+  },
+  {
+   "id": "bcg-tf-r0",
+   "dataset": "BCG",
+   "method": "trim-and-fill R0 estimator / R0 test",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "kernel implements L0 only (coscreen/trim_fill.py estimator='L0'); R0 count 4 (SE 3.1623) and R0 test p=0.0312 have no kernel entry"
+  },
+  {
+   "id": "bcg-tf-re",
+   "dataset": "BCG",
+   "method": "trim-and-fill RE model (missing=1, adjusted -0.6571) and augmented-RE rerun (-0.3422)",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "kernel trim_and_fill is fixed-effect only (pooling_method='FE', observed_tau2=0)"
+  },
+  {
+   "id": "bcg-eb",
+   "dataset": "BCG",
+   "method": "EB (empirical Bayes) pooling + EB meta-regression (A1 §1.5)",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "kernel has no EB tau2 estimator; A1 §1.5 also notes the Berkey smoothed-variance procedure was not transcribed, so inputs are unavailable anyway"
+  },
+  {
+   "id": "bcg-ee-dl-published",
+   "dataset": "BCG",
+   "method": "BCG-specific EE/DL published values",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §1.1 metadat::dat.bcg + Viechtbauer 2010 JSS (yi/vi); A1 §5 metafor trimfill reference page",
+   "note": "A1 §1.1: metafor publishes only REML/EB for BCG; EE/DL verified on Normand/D&K/Linde instead (EE/DL outputs stored in results JSON for reference)"
+  }
+ ],
+ "raw": {
+  "escalc_binary_effect": [
+   [
+    -0.8893113339202054,
+    0.3255847650039613
+   ],
+   [
+    -1.5853886572014306,
+    0.19458112139814382
+   ],
+   [
+    -1.348073148299693,
+    0.4153679653679654
+   ],
+   [
+    -1.4415511900213054,
+    0.020010031902247573
+   ],
+   [
+    -0.2175473222112957,
+    0.05121017216963086
+   ],
+   [
+    -0.786115585818864,
+    0.006905618455908758
+   ],
+   [
+    -1.6208982235983924,
+    0.22301724757231517
+   ],
+   [
+    0.011952333523841173,
+    0.0039615792978177295
+   ],
+   [
+    -0.4694176487381487,
+    0.056434210463248966
+   ],
+   [
+    -1.3713448034727846,
+    0.07302479361302892
+   ],
+   [
+    -0.33935882833839015,
+    0.01241221397155972
+   ],
+   [
+    0.4459134005713783,
+    0.5325058452001528
+   ],
+   [
+    -0.017313948216879493,
+    0.0714046596839863
+   ]
+  ],
+  "rows": [
+   {
+    "study_id": "Aronson 1948",
+    "estimate": 0.4109386564520579,
+    "se": 0.5706003548894796
+   },
+   {
+    "study_id": "Ferguson & Simes 1949",
+    "estimate": 0.20486815358487728,
+    "se": 0.4411135012669642
+   },
+   {
+    "study_id": "Rosenthal et al 1960",
+    "estimate": 0.2597402592986215,
+    "se": 0.644490469285621
+   },
+   {
+    "study_id": "Hart & Sutherland 1977",
+    "estimate": 0.23656052361145274,
+    "se": 0.14145682026682205
+   },
+   {
+    "study_id": "Frimodt-Moller et al 1973",
+    "estimate": 0.8044895355742909,
+    "se": 0.22629664602021834
+   },
+   {
+    "study_id": "Stein & Aronson 1953",
+    "estimate": 0.45561114293185356,
+    "se": 0.08310004813476343
+   },
+   {
+    "study_id": "Vandiviere et al 1973",
+    "estimate": 0.1977210223224798,
+    "se": 0.4722470201070622
+   },
+   {
+    "study_id": "TPT Madras 1980",
+    "estimate": 1.0120240445299804,
+    "se": 0.0629410756183909
+   },
+   {
+    "study_id": "Coetzee & Berjak 1968",
+    "estimate": 0.6253663443531959,
+    "se": 0.23755885586523606
+   },
+   {
+    "study_id": "Rosenthal et al 1961",
+    "estimate": 0.25376546618519963,
+    "se": 0.2702310011823218
+   },
+   {
+    "study_id": "Comstock et al 1974",
+    "estimate": 0.7122268348757519,
+    "se": 0.11141011623726096
+   },
+   {
+    "study_id": "Comstock & Webster 1969",
+    "estimate": 1.5619161987339225,
+    "se": 0.7297299808833402
+   },
+   {
+    "study_id": "Comstock et al 1976",
+    "estimate": 0.9828350751216317,
+    "se": 0.26721650398132224
+   }
+  ],
+  "ee": {
+   "n_studies": 13,
+   "study_ids": [
+    "Aronson 1948",
+    "Ferguson & Simes 1949",
+    "Rosenthal et al 1960",
+    "Hart & Sutherland 1977",
+    "Frimodt-Moller et al 1973",
+    "Stein & Aronson 1953",
+    "Vandiviere et al 1973",
+    "TPT Madras 1980",
+    "Coetzee & Berjak 1968",
+    "Rosenthal et al 1961",
+    "Comstock et al 1974",
+    "Comstock & Webster 1969",
+    "Comstock et al 1976"
+   ],
+   "measure": "RR",
+   "model": "fixed",
+   "method": "inverse variance",
+   "ci_method": "normal 95%",
+   "effect_scale": "log",
+   "pooled_analysis": -0.4302851575985392,
+   "ci_analysis_low": -0.5096627091168957,
+   "ci_analysis_high": -0.3509076060801827,
+   "prediction_interval_analysis_95": null,
+   "pooled": 0.6503236235575502,
+   "ci_low": 0.6006981546579162,
+   "ci_high": 0.7040488006790466,
+   "prediction_interval_95": null,
+   "q": 152.2330122024783,
+   "q_df": 12,
+   "q_p": 1.9967607439264053e-26,
+   "i2_percent": 92.11734706790185,
+   "tau2": null,
+   "warnings": [
+    "Effect direction is unconfirmed for: Aronson 1948, Ferguson & Simes 1949, Rosenthal et al 1960, Hart & Sutherland 1977, Frimodt-Moller et al 1973, Stein & Aronson 1953, Vandiviere et al 1973, TPT Madras 1980, Coetzee & Berjak 1968, Rosenthal et al 1961, Comstock et al 1974, Comstock & Webster 1969, Comstock et al 1976. Check each source against Comparison before interpreting this pool."
+   ],
+   "effects": [
+    {
+     "study_id": "Aronson 1948",
+     "estimate": 0.4109386564520579,
+     "se": 0.5706003548894796
+    },
+    {
+     "study_id": "Ferguson & Simes 1949",
+     "estimate": 0.20486815358487728,
+     "se": 0.4411135012669642
+    },
+    {
+     "study_id": "Rosenthal et al 1960",
+     "estimate": 0.2597402592986215,
+     "se": 0.644490469285621
+    },
+    {
+     "study_id": "Hart & Sutherland 1977",
+     "estimate": 0.23656052361145274,
+     "se": 0.14145682026682205
+    },
+    {
+     "study_id": "Frimodt-Moller et al 1973",
+     "estimate": 0.8044895355742909,
+     "se": 0.22629664602021834
+    },
+    {
+     "study_id": "Stein & Aronson 1953",
+     "estimate": 0.45561114293185356,
+     "se": 0.08310004813476343
+    },
+    {
+     "study_id": "Vandiviere et al 1973",
+     "estimate": 0.1977210223224798,
+     "se": 0.4722470201070622
+    },
+    {
+     "study_id": "TPT Madras 1980",
+     "estimate": 1.0120240445299804,
+     "se": 0.0629410756183909
+    },
+    {
+     "study_id": "Coetzee & Berjak 1968",
+     "estimate": 0.6253663443531959,
+     "se": 0.23755885586523606
+    },
+    {
+     "study_id": "Rosenthal et al 1961",
+     "estimate": 0.25376546618519963,
+     "se": 0.2702310011823218
+    },
+    {
+     "study_id": "Comstock et al 1974",
+     "estimate": 0.7122268348757519,
+     "se": 0.11141011623726096
+    },
+    {
+     "study_id": "Comstock & Webster 1969",
+     "estimate": 1.5619161987339225,
+     "se": 0.7297299808833402
+    },
+    {
+     "study_id": "Comstock et al 1976",
+     "estimate": 0.9828350751216317,
+     "se": 0.26721650398132224
+    }
+   ]
+  },
+  "reml": {
+   "n_studies": 13,
+   "study_ids": [
+    "Aronson 1948",
+    "Ferguson & Simes 1949",
+    "Rosenthal et al 1960",
+    "Hart & Sutherland 1977",
+    "Frimodt-Moller et al 1973",
+    "Stein & Aronson 1953",
+    "Vandiviere et al 1973",
+    "TPT Madras 1980",
+    "Coetzee & Berjak 1968",
+    "Rosenthal et al 1961",
+    "Comstock et al 1974",
+    "Comstock & Webster 1969",
+    "Comstock et al 1976"
+   ],
+   "measure": "RR",
+   "model": "random_reml",
+   "method": "restricted maximum likelihood inverse variance",
+   "ci_method": "normal 95%",
+   "effect_scale": "log",
+   "pooled_analysis": -0.714532342502118,
+   "ci_analysis_low": -1.0668976385866167,
+   "ci_analysis_high": -0.3621670464176192,
+   "prediction_interval_analysis_95": [
+    -2.0083759048949776,
+    0.5793112198907415
+   ],
+   "pooled": 0.4894209396576799,
+   "ci_low": 0.34407430618375817,
+   "ci_high": 0.6961660660807383,
+   "prediction_interval_95": [
+    0.1342064618251191,
+    1.7848086665717726
+   ],
+   "q": 152.2330122024783,
+   "q_df": 12,
+   "q_p": 1.9967607439264053e-26,
+   "i2_percent": 92.11734706790185,
+   "tau2": 0.31324325697380945,
+   "warnings": [
+    "Effect direction is unconfirmed for: Aronson 1948, Ferguson & Simes 1949, Rosenthal et al 1960, Hart & Sutherland 1977, Frimodt-Moller et al 1973, Stein & Aronson 1953, Vandiviere et al 1973, TPT Madras 1980, Coetzee & Berjak 1968, Rosenthal et al 1961, Comstock et al 1974, Comstock & Webster 1969, Comstock et al 1976. Check each source against Comparison before interpreting this pool."
+   ],
+   "effects": [
+    {
+     "study_id": "Aronson 1948",
+     "estimate": 0.4109386564520579,
+     "se": 0.5706003548894796
+    },
+    {
+     "study_id": "Ferguson & Simes 1949",
+     "estimate": 0.20486815358487728,
+     "se": 0.4411135012669642
+    },
+    {
+     "study_id": "Rosenthal et al 1960",
+     "estimate": 0.2597402592986215,
+     "se": 0.644490469285621
+    },
+    {
+     "study_id": "Hart & Sutherland 1977",
+     "estimate": 0.23656052361145274,
+     "se": 0.14145682026682205
+    },
+    {
+     "study_id": "Frimodt-Moller et al 1973",
+     "estimate": 0.8044895355742909,
+     "se": 0.22629664602021834
+    },
+    {
+     "study_id": "Stein & Aronson 1953",
+     "estimate": 0.45561114293185356,
+     "se": 0.08310004813476343
+    },
+    {
+     "study_id": "Vandiviere et al 1973",
+     "estimate": 0.1977210223224798,
+     "se": 0.4722470201070622
+    },
+    {
+     "study_id": "TPT Madras 1980",
+     "estimate": 1.0120240445299804,
+     "se": 0.0629410756183909
+    },
+    {
+     "study_id": "Coetzee & Berjak 1968",
+     "estimate": 0.6253663443531959,
+     "se": 0.23755885586523606
+    },
+    {
+     "study_id": "Rosenthal et al 1961",
+     "estimate": 0.25376546618519963,
+     "se": 0.2702310011823218
+    },
+    {
+     "study_id": "Comstock et al 1974",
+     "estimate": 0.7122268348757519,
+     "se": 0.11141011623726096
+    },
+    {
+     "study_id": "Comstock & Webster 1969",
+     "estimate": 1.5619161987339225,
+     "se": 0.7297299808833402
+    },
+    {
+     "study_id": "Comstock et al 1976",
+     "estimate": 0.9828350751216317,
+     "se": 0.26721650398132224
+    }
+   ]
+  },
+  "dl": {
+   "n_studies": 13,
+   "study_ids": [
+    "Aronson 1948",
+    "Ferguson & Simes 1949",
+    "Rosenthal et al 1960",
+    "Hart & Sutherland 1977",
+    "Frimodt-Moller et al 1973",
+    "Stein & Aronson 1953",
+    "Vandiviere et al 1973",
+    "TPT Madras 1980",
+    "Coetzee & Berjak 1968",
+    "Rosenthal et al 1961",
+    "Comstock et al 1974",
+    "Comstock & Webster 1969",
+    "Comstock et al 1976"
+   ],
+   "measure": "RR",
+   "model": "random",
+   "method": "DerSimonian-Laird inverse variance",
+   "ci_method": "normal 95%",
+   "effect_scale": "log",
+   "pooled_analysis": -0.7141172224059493,
+   "ci_analysis_low": -1.06445171727631,
+   "ci_analysis_high": -0.3637827275355886,
+   "prediction_interval_analysis_95": [
+    -1.9988384934848717,
+    0.5706040486729731
+   ],
+   "pooled": 0.4896241503007102,
+   "ci_low": 0.344916914918835,
+   "ci_high": 0.695042191868455,
+   "prediction_interval_95": [
+    0.13549256737541207,
+    1.7693354934626233
+   ],
+   "q": 152.2330122024783,
+   "q_df": 12,
+   "q_p": 1.9967607439264053e-26,
+   "i2_percent": 92.11734706790185,
+   "tau2": 0.30876026159625364,
+   "warnings": [
+    "Effect direction is unconfirmed for: Aronson 1948, Ferguson & Simes 1949, Rosenthal et al 1960, Hart & Sutherland 1977, Frimodt-Moller et al 1973, Stein & Aronson 1953, Vandiviere et al 1973, TPT Madras 1980, Coetzee & Berjak 1968, Rosenthal et al 1961, Comstock et al 1974, Comstock & Webster 1969, Comstock et al 1976. Check each source against Comparison before interpreting this pool."
+   ],
+   "effects": [
+    {
+     "study_id": "Aronson 1948",
+     "estimate": 0.4109386564520579,
+     "se": 0.5706003548894796
+    },
+    {
+     "study_id": "Ferguson & Simes 1949",
+     "estimate": 0.20486815358487728,
+     "se": 0.4411135012669642
+    },
+    {
+     "study_id": "Rosenthal et al 1960",
+     "estimate": 0.2597402592986215,
+     "se": 0.644490469285621
+    },
+    {
+     "study_id": "Hart & Sutherland 1977",
+     "estimate": 0.23656052361145274,
+     "se": 0.14145682026682205
+    },
+    {
+     "study_id": "Frimodt-Moller et al 1973",
+     "estimate": 0.8044895355742909,
+     "se": 0.22629664602021834
+    },
+    {
+     "study_id": "Stein & Aronson 1953",
+     "estimate": 0.45561114293185356,
+     "se": 0.08310004813476343
+    },
+    {
+     "study_id": "Vandiviere et al 1973",
+     "estimate": 0.1977210223224798,
+     "se": 0.4722470201070622
+    },
+    {
+     "study_id": "TPT Madras 1980",
+     "estimate": 1.0120240445299804,
+     "se": 0.0629410756183909
+    },
+    {
+     "study_id": "Coetzee & Berjak 1968",
+     "estimate": 0.6253663443531959,
+     "se": 0.23755885586523606
+    },
+    {
+     "study_id": "Rosenthal et al 1961",
+     "estimate": 0.25376546618519963,
+     "se": 0.2702310011823218
+    },
+    {
+     "study_id": "Comstock et al 1974",
+     "estimate": 0.7122268348757519,
+     "se": 0.11141011623726096
+    },
+    {
+     "study_id": "Comstock & Webster 1969",
+     "estimate": 1.5619161987339225,
+     "se": 0.7297299808833402
+    },
+    {
+     "study_id": "Comstock et al 1976",
+     "estimate": 0.9828350751216317,
+     "se": 0.26721650398132224
+    }
+   ]
+  },
+  "i2_page_value_warn": {
+   "page_printed": 92.22,
+   "observed": 92.11734706790185,
+   "note": "A1 §1.1 ⚠ mismatch between page-extracted I2 and exact derivation from published Q"
+  },
+  "profile_reml_tau2_direct": {
+   "tau2": 0.31324325697380945,
+   "objective": 4.915167353775638
+  },
+  "trim_fill": {
+   "method": "Duval–Tweedie trim-and-fill",
+   "measure": "RR",
+   "side": "right",
+   "estimator": "L0",
+   "pooling_method": "FE",
+   "observed_tau2": 0.0,
+   "adjusted_tau2": 0.0,
+   "n_studies": 13,
+   "n_missing": 4,
+   "confidence_level": 0.95,
+   "estimate_scale": "ratio",
+   "analysis_scale": "log",
+   "se_scale": "log",
+   "observed": {
+    "pooled": 0.6503236235575502,
+    "se": 0.04049875077467171,
+    "ci_low": 0.6006990308255522,
+    "ci_high": 0.7040477737674957
+   },
+   "adjusted": {
+    "pooled": 0.7474962478704943,
+    "se": 0.03826413582334105,
+    "ci_low": 0.6934873214190834,
+    "ci_high": 0.8057113999389285
+   },
+   "imputed_studies": [
+    {
+     "study_id": "filled_1",
+     "source_study_id": "Rosenthal et al 1961",
+     "measure": "RR",
+     "estimate": 2.201838764667402,
+     "se": 0.2702310011823218
+    },
+    {
+     "study_id": "filled_2",
+     "source_study_id": "Hart & Sutherland 1977",
+     "measure": "RR",
+     "estimate": 2.3619775271473746,
+     "se": 0.14145682026682205
+    },
+    {
+     "study_id": "filled_3",
+     "source_study_id": "Ferguson & Simes 1949",
+     "measure": "RR",
+     "estimate": 2.7273669958126305,
+     "se": 0.4411135012669642
+    },
+    {
+     "study_id": "filled_4",
+     "source_study_id": "Vandiviere et al 1973",
+     "measure": "RR",
+     "estimate": 2.825954640620632,
+     "se": 0.4722470201070622
+    }
+   ],
+   "iterations": 3,
+   "assumptions": [
+    "Each row is one independent study estimate for a common outcome and comparison.",
+    "A fixed-effect inverse-variance model assumes all studies share one true effect; SEs are on the analysis scale.",
+    "Missingness is one-sided on the requested funnel-plot side; L0 estimates the number from signed ranks of centered effects.",
+    "Imputed effects mirror the most extreme opposite-side studies around the final trimmed pool and reuse their SEs."
+   ],
+   "warnings": [
+    "Funnel asymmetry does not prove publication bias; heterogeneity, chance, and other mechanisms can also create asymmetry.",
+    "The adjusted estimate is a sensitivity analysis and is not guaranteed to be unbiased."
+   ]
+  }
+ }
+}
