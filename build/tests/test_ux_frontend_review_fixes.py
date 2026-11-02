@@ -408,7 +408,14 @@ check('gc readyCount()=后端 ready=0(已无可启用)',gc.readyCount()===counts
 const legacyLoaded=legacy.map(g=>({...g,legacy:true}));
 const lg=factory([],legacyLoaded,[],{review_counts:{}},M,deferred);
 const lgGroup=legacyLoaded.filter(g=>['duplicate','not_duplicate'].includes(g.status))[0];
-check('legacy 已决组进入 items()',lg.items().some(x=>x.members&&x.review_id===lgGroup.review_id));
+// r10-U2（导入12项 #6-A）：任务级 legacy 组移出批次分类列表，由独立分区
+// （legacySection，.legacy-queue）承载。旧钉「进入 items()」随行为变更同批
+// 改为**双侧显式**新语义：items() 不含它，且分区承载它。校验强度不减
+// （可见/可点的分区断言见 test_r10_u2_legacy_scope.py 的浏览器钉子）。
+check('legacy 已决组不进入批次 items()（#6-A：批次页只呈现批次范围）',!lg.items().some(x=>x.members&&x.review_id===lgGroup.review_id));
+check('legacy 组由独立分区承载（legacySection 源码存在且以 .legacy-queue 渲染）',
+  src.includes('function legacySection()')&&src.includes("'legacy-queue'")&&src.includes('data-legacy-scope'));
+check('batch-only items() 仍含批次记录',lg.items().length===0);
 check('legacy category=completed',lg.category(lgGroup)==='completed');
 check('legacy badge=已核验(无启用环节，不得虚构待启用/已启用)',lg.completionBadge(lgGroup)==='已核验');
 process.exit(fail?1:0);
@@ -418,7 +425,14 @@ process.exit(fail?1:0);
     def test_queue_items_carry_same_badge(self):
         source = _read(FRONTEND / "unified_import_workspace.js")
         self.assertIn("category(item)==='completed'", source, "队列项应仅在已完成分类渲染徽标")
-        self.assertLess(source.find("category(item)==='completed'"), source.find("qtitle"),
+        # r10-U2（#6-A）：任务级分区 legacySection() 也含 ".qtitle"，全文件
+        # 顺序比较会误命中它；只在批次队列循环段内比较（校验强度不变：
+        # 仍是「队列循环里徽标代码先于题名」）。
+        start = source.index("for(const item of visible.slice(page*20,page*20+20))")
+        end = source.index("if(visible.length>20)", start)
+        loop = source[start:end]
+        self.assertIn("category(item)==='completed'", loop, "队列循环必须渲染状态徽标")
+        self.assertLess(loop.find("category(item)==='completed'"), loop.find("qtitle"),
                         "队列徽标应在题名前渲染")
 
 

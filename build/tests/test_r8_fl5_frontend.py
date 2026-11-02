@@ -858,16 +858,23 @@ class TestPi132KnownMessageGuards(unittest.TestCase):
 class TestVersionTokenBump(unittest.TestCase):
     """改动资产的缓存令牌必须随本组修复 bump（防旧缓存延续缺陷）。"""
 
-    ASSETS = [
-        "analysis_grade.js", "protocol_designer.js", "evidence_mapper.js",
-        "import_export_workspace.js", "analysis_network_pscores.js",
-        "analysis_network_ranks.js", "analysis_subgroup_random.js",
-    ]
+    # r10-U2（导入 12 项 #6-A）按同批行为改动重写了 import_export_workspace.js，
+    # 内容变更后令牌已 bump 到 20261101-r10u2（U2 登记，该泳道 170 passed 佐证），
+    # 故这条令牌钉随行为同批更新；其余 FL5 资产仍钉 r8fl5，不受影响。
+    ASSETS = {
+        "analysis_grade.js": "20261030-r8fl5",
+        "protocol_designer.js": "20261030-r8fl5",
+        "evidence_mapper.js": "20261030-r8fl5",
+        "import_export_workspace.js": "20261101-r10u2",
+        "analysis_network_pscores.js": "20261030-r8fl5",
+        "analysis_network_ranks.js": "20261030-r8fl5",
+        "analysis_subgroup_random.js": "20261030-r8fl5",
+    }
 
     def test_all_touched_assets_bumped(self):
         html = INDEX.read_text(encoding="utf-8")
-        for asset in self.ASSETS:
-            self.assertIn('./%s?v=20261030-r8fl5' % asset, html,
+        for asset, token in self.ASSETS.items():
+            self.assertIn('./%s?v=%s' % (asset, token), html,
                           "%s 的 ?v= 令牌未随 r8-fl5 修复 bump" % asset)
 
 

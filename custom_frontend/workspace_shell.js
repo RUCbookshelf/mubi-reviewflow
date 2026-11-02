@@ -43,6 +43,24 @@
     control.append(el('span',{'data-rf-nav-label':control.dataset.nav}));
   }
   const homeHeading=el('h2',{class:'rf-page-title','data-rf-page-title':'home'});main.querySelector('section[data-p="home"]').prepend(homeHeading);
+  /* F19（随版缓解，只做挂链入口）：帮助页此前全应用无任何页面链入。初筛/编码两页
+     页首各挂一个「查看帮助」；分析页的同类入口由 analysis_navigation.js 挂进页头
+     工具区，两者共用 data-rf-help-entry 标记，文字由 syncVocabulary 重新翻译。
+     帮助页新增「工作流程」主题的内容编写归结构包，本条不写内容。 */
+  function helpEntry(id){
+    const link=el('a',{class:'rf-help-entry','data-rf-help-entry':id,href:registry.href({page:'help'}),
+      style:'display:inline-block;flex:none;margin:0 0 8px;font:12px/1.5 var(--font-body);color:var(--primary);text-decoration:underline;text-underline-offset:3px'});
+    link.append(el('span',{'data-rf-help-entry-label':''}));
+    link.addEventListener('click',event=>{
+      if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+      event.preventDefault();navigate({page:'help'},{focus:event.detail===0});
+    });
+    return link;
+  }
+  const screenHeading=main.querySelector('section.page[data-p="screen"]>h2');
+  if(screenHeading)screenHeading.after(helpEntry('screen'));
+  const benchCap=main.querySelector('section.page[data-p="bench"]>.page-cap');
+  if(benchCap)benchCap.after(helpEntry('bench'));
   function icon(){
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 16 16');svg.setAttribute('aria-hidden','true');
     const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d','m4 6 4 4 4-4');path.setAttribute('fill','none');path.setAttribute('stroke','currentColor');path.setAttribute('stroke-width','1.5');path.setAttribute('stroke-linecap','round');path.setAttribute('stroke-linejoin','round');svg.append(path);return svg;
@@ -81,6 +99,9 @@
     for(const entry of items){
       const link=el('a',{href:registry.href(entry.route),text:T(entry.label)});
       if(entry.current)link.setAttribute('aria-current','page');
+      /* F20（随版缓解）：阶段菜单只显示阶段名，实际去向取决于 stageLast 记忆。
+         菜单项的 title 直接写出真实目的地，不改菜单结构（两级标签归导航改版）。 */
+      if(entry.title)link.setAttribute('title',entry.title);
       list.append(el('li',{},link));
     }
     item.append(menu);trail.append(item);
@@ -108,6 +129,8 @@
       const button=shell.querySelector('[data-nav="'+page.id+'"]');button?.setAttribute('title',T(page.label));
     }
     for(const group of stageGroups){const stage=registry.stage(group.dataset.rfStage);if(stage){group.textContent=T(stage.label);group.nextElementSibling?.setAttribute('aria-label',T(stage.label));}}
+    /* F19：帮助入口文字（本文件与分析页各挂一处）随语言重译。 */
+    for(const node of document.querySelectorAll('[data-rf-help-entry-label]'))node.textContent=T('查看帮助');
     homeNav.setAttribute('aria-label',T('首页与设置'));
   }
   function refresh(){
@@ -115,12 +138,19 @@
     taskLabel.textContent=T('当前任务');taskName.textContent=name;taskContext.title=T('在侧栏切换任务')+' · '+name;taskContext.setAttribute('aria-label',taskContext.title);
     crumb.setAttribute('aria-label',T('当前位置'));document.getElementById('rfCloseNavigation')?.setAttribute('aria-label',T('关闭导航'));
     if(S.page)document.title=T(page.label)+' · ReviewFlow';
-    const key=JSON.stringify([route,RFLang.get()]);
+    /* F20：菜单标题还依赖 stageLast（「上次停在该阶段的哪一页」）。navigate() 里
+       go() 先派发 workspace-changed 触发一次 refresh，之后才写 stageLast，只按
+       [route, lang] 记忆会让这次 refresh 提前返回、标题停在旧目的地，直到再换一次页
+       才追上。把 stageLast 快照并入渲染键，阶段记忆一变就重画。 */
+    const key=JSON.stringify([route,RFLang.get(),stageLast]);
     if(key===lastRenderKey)return;
     lastRenderKey=key;close();syncVocabulary();trail.replaceChildren();
     if(page.stage){
       const stage=registry.stage(page.stage);
-      makeLevel({id:'stage',label:stage.label,stage:true,menuLabel:'切换阶段',items:registry.stages.map(item=>({label:item.label,route:{page:stageLast[item.id]||item.defaultPage},current:item.id===stage.id}))});
+      makeLevel({id:'stage',label:stage.label,stage:true,menuLabel:'切换阶段',items:registry.stages.map(item=>{
+        const target=registry.page(stageLast[item.id]||item.defaultPage);
+        return {label:item.label,route:{page:target.id},current:item.id===stage.id,title:T('将前往：{0}',T(target.label))};
+      })});
     }
     const siblings=page.stage?registry.siblings(page.id):[];
     makeLevel({id:'page',label:page.label,route:{page:page.id},current:!route.group,menuLabel:'切换同级页面',items:siblings.length>1?siblings.map(item=>({label:item.label,route:{page:item.id},current:item.id===page.id})):null});

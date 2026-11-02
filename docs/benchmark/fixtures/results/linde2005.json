@@ -1,0 +1,697 @@
+{
+ "dataset": "Linde2005",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 18,
+ "counts": {
+  "PASS": 15,
+  "FAIL": 2,
+  "NOT-RUN": 1,
+  "INFO": 0
+ },
+ "checks": [
+  {
+   "id": "linde-ee-pooled",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "pooled logOR",
+   "observed": 0.32482626876966225,
+   "published": 0.33,
+   "published_decimals": 2,
+   "abs_diff": 0.005173731230337764,
+   "rel_diff": 0.01567797342526595,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.015151515151515152,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": "published at 2 dp only (A1 §1.4 tolerance note); computed 0.3248 rounds to 0.32, not 0.33 — independent recomputation in raw agrees with the kernel"
+  },
+  {
+   "id": "linde-ee-se",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "SE(pooled logOR)",
+   "observed": 0.04791828740234798,
+   "published": 0.05,
+   "published_decimals": 2,
+   "abs_diff": 0.0020817125976520245,
+   "rel_diff": 0.04163425195304049,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.09999999999999999,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-ee-ci-low",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "95% CI low",
+   "observed": 0.23090642546106022,
+   "published": 0.23,
+   "published_decimals": 2,
+   "abs_diff": 0.0009064254610602063,
+   "rel_diff": 0.003940980265479158,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.021739130434782608,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-ee-ci-high",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "95% CI high",
+   "observed": 0.4187461120782643,
+   "published": 0.42,
+   "published_decimals": 2,
+   "abs_diff": 0.0012538879217356969,
+   "rel_diff": 0.00298544743270404,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.011904761904761906,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-ee-q",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "Q",
+   "observed": 51.57066369493462,
+   "published": 51.55,
+   "published_decimals": 2,
+   "abs_diff": 0.020663694934626164,
+   "rel_diff": 0.0004008476223981797,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "FAIL",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": "marginal: gap 0.021 is 4-dp-input-rounding sized (independent recomputation in raw)"
+  },
+  {
+   "id": "linde-ee-qdf",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "Q df",
+   "observed": 16,
+   "published": 16,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "linde-ee-i2",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "I2 %",
+   "observed": 68.97460910209004,
+   "published": 68.96,
+   "published_decimals": 2,
+   "abs_diff": 0.014609102090048509,
+   "rel_diff": 0.00021184892821996099,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-ee-h2",
+   "dataset": "Linde2005",
+   "method": "IV fixed (EE)",
+   "metric": "H2 = Q/df",
+   "observed": 3.223166480933414,
+   "published": 3.22,
+   "published_decimals": 2,
+   "abs_diff": 0.0031664809334137622,
+   "rel_diff": 0.000983379171867628,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0015527950310559005,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-tau2",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "tau2",
+   "observed": 0.0902741357460403,
+   "published": 0.09,
+   "published_decimals": 2,
+   "abs_diff": 0.00027413574604030766,
+   "rel_diff": 0.003045952733781196,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.05555555555555556,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": "published at 2 dp only"
+  },
+  {
+   "id": "linde-dl-tau",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "tau",
+   "observed": 0.3004565455203802,
+   "published": 0.3,
+   "published_decimals": 2,
+   "abs_diff": 0.0004565455203802138,
+   "rel_diff": 0.0015218184012673794,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.016666666666666666,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-pooled",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "pooled logOR",
+   "observed": 0.45245884059266595,
+   "published": 0.45,
+   "published_decimals": 2,
+   "abs_diff": 0.002458840592665934,
+   "rel_diff": 0.005464090205924298,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.011111111111111112,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-se",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "SE(pooled logOR)",
+   "observed": 0.09295764453316989,
+   "published": 0.09,
+   "published_decimals": 2,
+   "abs_diff": 0.0029576445331698925,
+   "rel_diff": 0.03286271703522103,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.05555555555555556,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-ci-low",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "95% CI low",
+   "observed": 0.27026185730765295,
+   "published": 0.27,
+   "published_decimals": 2,
+   "abs_diff": 0.00026185730765293513,
+   "rel_diff": 0.000969841880196056,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.018518518518518517,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-ci-high",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "95% CI high",
+   "observed": 0.6346558238776789,
+   "published": 0.63,
+   "published_decimals": 2,
+   "abs_diff": 0.004655823877678933,
+   "rel_diff": 0.007390196631236402,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.007936507936507936,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-or",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "OR scale pooled",
+   "observed": 1.5721731599689581,
+   "published": 1.57,
+   "published_decimals": 2,
+   "abs_diff": 0.0021731599689580605,
+   "rel_diff": 0.0013841783241771086,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.003184713375796178,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-or-low",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "OR scale CI low",
+   "observed": 1.3103075194129976,
+   "published": 1.31,
+   "published_decimals": 2,
+   "abs_diff": 0.0003075194129975589,
+   "rel_diff": 0.00023474764350958695,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.003816793893129771,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-dl-or-high",
+   "dataset": "Linde2005",
+   "method": "IV DL random",
+   "metric": "OR scale CI high",
+   "observed": 1.886372785248218,
+   "published": 1.89,
+   "published_decimals": 2,
+   "abs_diff": 0.0036272147517819597,
+   "rel_diff": 0.0019191612443290793,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.002645502645502646,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": ""
+  },
+  {
+   "id": "linde-metareg",
+   "dataset": "Linde2005",
+   "method": "DL meta-regression (dosage x baseline)",
+   "metric": "residual tau2=0.0475, R2=47.38%, QE(13)=27.9903, QM(3)=10.1280, intrcpt 0.4763(0.0876), dosage -0.0058(0.0100), baseline -0.0672(0.0352), interaction -0.0016(0.0034)",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §1.4 metafor analyses:viechtbauer2007b (EE/DL same page; meta-regression = Viechtbauer 2007 Table 2 p.113)",
+   "note": "A1 §1.4 published the meta-regression but did not transcribe the per-study dosage/baseline covariates; inputs unavailable (fixture must not invent data). Kernel entry exists (coscreen/meta_regression_model.py fit_meta_regression, needs >=10 studies) but cannot run."
+  }
+ ],
+ "raw": {
+  "rows": [
+   {
+    "study_id": "S1",
+    "estimate": 1.818114545325271,
+    "se": 0.24677925358506134
+   },
+   {
+    "study_id": "S2",
+    "estimate": 1.5555046084002613,
+    "se": 0.2872281323269014
+   },
+   {
+    "study_id": "S3",
+    "estimate": 1.9999056411060796,
+    "se": 0.8185352771872451
+   },
+   {
+    "study_id": "S4",
+    "estimate": 3.4373471618604747,
+    "se": 0.3938273733503043
+   },
+   {
+    "study_id": "S5",
+    "estimate": 2.3693129059195623,
+    "se": 0.2729468812791236
+   },
+   {
+    "study_id": "S6",
+    "estimate": 1.3883277981278175,
+    "se": 0.16792855623746664
+   },
+   {
+    "study_id": "S7",
+    "estimate": 2.971598430117465,
+    "se": 0.2729468812791236
+   },
+   {
+    "study_id": "S8",
+    "estimate": 1.500052338750847,
+    "se": 0.25179356624028343
+   },
+   {
+    "study_id": "S9",
+    "estimate": 3.703209958899821,
+    "se": 0.2835489375751565
+   },
+   {
+    "study_id": "S10",
+    "estimate": 1.350398859102138,
+    "se": 0.17233687939614087
+   },
+   {
+    "study_id": "S11",
+    "estimate": 1.96658787916587,
+    "se": 0.23366642891095846
+   },
+   {
+    "study_id": "S12",
+    "estimate": 1.3529670559488374,
+    "se": 0.15033296378372907
+   },
+   {
+    "study_id": "S13",
+    "estimate": 0.9727773999494099,
+    "se": 0.1396424004376894
+   },
+   {
+    "study_id": "S14",
+    "estimate": 1.4504879252479526,
+    "se": 0.23345235059857505
+   },
+   {
+    "study_id": "S15",
+    "estimate": 1.424327824031517,
+    "se": 0.26664583251946766
+   },
+   {
+    "study_id": "S16",
+    "estimate": 0.8432430896286134,
+    "se": 0.14866068747318506
+   },
+   {
+    "study_id": "S17",
+    "estimate": 1.2447067997838113,
+    "se": 0.10954451150103323
+   }
+  ],
+  "ee": {
+   "n_studies": 17,
+   "study_ids": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "S6",
+    "S7",
+    "S8",
+    "S9",
+    "S10",
+    "S11",
+    "S12",
+    "S13",
+    "S14",
+    "S15",
+    "S16",
+    "S17"
+   ],
+   "measure": "OR",
+   "model": "fixed",
+   "method": "inverse variance",
+   "ci_method": "normal 95%",
+   "effect_scale": "log",
+   "pooled_analysis": 0.32482626876966225,
+   "ci_analysis_low": 0.23090642546106022,
+   "ci_analysis_high": 0.4187461120782643,
+   "prediction_interval_analysis_95": null,
+   "pooled": 1.383790217519371,
+   "ci_low": 1.259741354217385,
+   "ci_high": 1.5200543823473394,
+   "prediction_interval_95": null,
+   "q": 51.57066369493462,
+   "q_df": 16,
+   "q_p": 1.2846137101853835e-05,
+   "i2_percent": 68.97460910209004,
+   "tau2": null,
+   "warnings": [
+    "Effect direction is unconfirmed for: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14, S15, S16, S17. Check each source against Comparison before interpreting this pool."
+   ],
+   "effects": [
+    {
+     "study_id": "S1",
+     "estimate": 1.818114545325271,
+     "se": 0.24677925358506134
+    },
+    {
+     "study_id": "S2",
+     "estimate": 1.5555046084002613,
+     "se": 0.2872281323269014
+    },
+    {
+     "study_id": "S3",
+     "estimate": 1.9999056411060796,
+     "se": 0.8185352771872451
+    },
+    {
+     "study_id": "S4",
+     "estimate": 3.4373471618604747,
+     "se": 0.3938273733503043
+    },
+    {
+     "study_id": "S5",
+     "estimate": 2.3693129059195623,
+     "se": 0.2729468812791236
+    },
+    {
+     "study_id": "S6",
+     "estimate": 1.3883277981278175,
+     "se": 0.16792855623746664
+    },
+    {
+     "study_id": "S7",
+     "estimate": 2.971598430117465,
+     "se": 0.2729468812791236
+    },
+    {
+     "study_id": "S8",
+     "estimate": 1.500052338750847,
+     "se": 0.25179356624028343
+    },
+    {
+     "study_id": "S9",
+     "estimate": 3.703209958899821,
+     "se": 0.2835489375751565
+    },
+    {
+     "study_id": "S10",
+     "estimate": 1.350398859102138,
+     "se": 0.17233687939614087
+    },
+    {
+     "study_id": "S11",
+     "estimate": 1.96658787916587,
+     "se": 0.23366642891095846
+    },
+    {
+     "study_id": "S12",
+     "estimate": 1.3529670559488374,
+     "se": 0.15033296378372907
+    },
+    {
+     "study_id": "S13",
+     "estimate": 0.9727773999494099,
+     "se": 0.1396424004376894
+    },
+    {
+     "study_id": "S14",
+     "estimate": 1.4504879252479526,
+     "se": 0.23345235059857505
+    },
+    {
+     "study_id": "S15",
+     "estimate": 1.424327824031517,
+     "se": 0.26664583251946766
+    },
+    {
+     "study_id": "S16",
+     "estimate": 0.8432430896286134,
+     "se": 0.14866068747318506
+    },
+    {
+     "study_id": "S17",
+     "estimate": 1.2447067997838113,
+     "se": 0.10954451150103323
+    }
+   ]
+  },
+  "dl": {
+   "n_studies": 17,
+   "study_ids": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "S6",
+    "S7",
+    "S8",
+    "S9",
+    "S10",
+    "S11",
+    "S12",
+    "S13",
+    "S14",
+    "S15",
+    "S16",
+    "S17"
+   ],
+   "measure": "OR",
+   "model": "random",
+   "method": "DerSimonian-Laird inverse variance",
+   "ci_method": "normal 95%",
+   "effect_scale": "log",
+   "pooled_analysis": 0.45245884059266595,
+   "ci_analysis_low": 0.27026185730765295,
+   "ci_analysis_high": 0.6346558238776789,
+   "prediction_interval_analysis_95": [
+    -0.2178990163628397,
+    1.1228166975481715
+   ],
+   "pooled": 1.5721731599689581,
+   "ci_low": 1.3103075194129976,
+   "ci_high": 1.886372785248218,
+   "prediction_interval_95": [
+    0.8042066492786433,
+    3.073499139983322
+   ],
+   "q": 51.57066369493462,
+   "q_df": 16,
+   "q_p": 1.2846137101853835e-05,
+   "i2_percent": 68.97460910209004,
+   "tau2": 0.0902741357460403,
+   "warnings": [
+    "Effect direction is unconfirmed for: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14, S15, S16, S17. Check each source against Comparison before interpreting this pool."
+   ],
+   "effects": [
+    {
+     "study_id": "S1",
+     "estimate": 1.818114545325271,
+     "se": 0.24677925358506134
+    },
+    {
+     "study_id": "S2",
+     "estimate": 1.5555046084002613,
+     "se": 0.2872281323269014
+    },
+    {
+     "study_id": "S3",
+     "estimate": 1.9999056411060796,
+     "se": 0.8185352771872451
+    },
+    {
+     "study_id": "S4",
+     "estimate": 3.4373471618604747,
+     "se": 0.3938273733503043
+    },
+    {
+     "study_id": "S5",
+     "estimate": 2.3693129059195623,
+     "se": 0.2729468812791236
+    },
+    {
+     "study_id": "S6",
+     "estimate": 1.3883277981278175,
+     "se": 0.16792855623746664
+    },
+    {
+     "study_id": "S7",
+     "estimate": 2.971598430117465,
+     "se": 0.2729468812791236
+    },
+    {
+     "study_id": "S8",
+     "estimate": 1.500052338750847,
+     "se": 0.25179356624028343
+    },
+    {
+     "study_id": "S9",
+     "estimate": 3.703209958899821,
+     "se": 0.2835489375751565
+    },
+    {
+     "study_id": "S10",
+     "estimate": 1.350398859102138,
+     "se": 0.17233687939614087
+    },
+    {
+     "study_id": "S11",
+     "estimate": 1.96658787916587,
+     "se": 0.23366642891095846
+    },
+    {
+     "study_id": "S12",
+     "estimate": 1.3529670559488374,
+     "se": 0.15033296378372907
+    },
+    {
+     "study_id": "S13",
+     "estimate": 0.9727773999494099,
+     "se": 0.1396424004376894
+    },
+    {
+     "study_id": "S14",
+     "estimate": 1.4504879252479526,
+     "se": 0.23345235059857505
+    },
+    {
+     "study_id": "S15",
+     "estimate": 1.424327824031517,
+     "se": 0.26664583251946766
+    },
+    {
+     "study_id": "S16",
+     "estimate": 0.8432430896286134,
+     "se": 0.14866068747318506
+    },
+    {
+     "study_id": "S17",
+     "estimate": 1.2447067997838113,
+     "se": 0.10954451150103323
+    }
+   ]
+  },
+  "independent_iv": {
+   "ee_pooled": 0.32482626876966225,
+   "q": 51.57066369493462,
+   "note": "matches kernel exactly; published 2-dp values differ beyond input-rounding size on the EE point estimate (0.3248 computed vs 0.33 printed) — reference-side question for attribution"
+  }
+ }
+}

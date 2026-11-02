@@ -343,7 +343,11 @@ EXPECTED_WINNERS = {
 # 措辞类冲突白名单：同一概念的不同英文措辞/大小写/单复数（胜者=script 顺序，语义均成立）。
 # 白名单必须与回放结果精确相等：新冲突即红（要求修复或登记），条目失效也红（防白名单腐烂）。
 # 措辞类保留计数登记值（收敛后须同步下调并移除条目）：147 - 11 概念级 = 136
-EXPECTED_WORDING_CONFLICT_COUNT = 136
+# r10-U2（批准单 §五 F46）：同一 zh 键「启用已核验记录」曾分别注册为
+#   'Activate reviewed records'（import_export_locale）与 'Activate resolved records'
+#   （import_review_refined_locale）。F46 修复后该键只剩一条注册（并改名为
+#   「加入任务 / Add to task」），冲突消除 → 计数 136 → 135，白名单同步移除该条目。
+EXPECTED_WORDING_CONFLICT_COUNT = 135
 WORDING_ALLOWLIST = frozenset((
     "Begg 检验的常规渐近 p 值可能校准不佳。漏斗图不对称或失效安全数不能证明发表偏倚，也不能解释研究缺失原因。",
     "CER 是从输入效应值以外取得的假设；更换 CER 会改变换算后的 NNT。",
@@ -396,7 +400,6 @@ WORDING_ALLOWLIST = frozenset((
     "合并效应 ML 轮廓似然区间",
     "合并结果",
     "同一结局与时间点下，每项独立研究只取一个效应值；模型未处理研究内协方差。",
-    "启用已核验记录",
     "固定效应模型将 τ² 设为 0，因此该预测区间只反映同质性假设下新研究的抽样误差；报告时应使用随机效应预测区间。",
     "固定效应逆方差",
     "固定效应逆方差模型",

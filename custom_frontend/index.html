@@ -90,6 +90,13 @@ main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 #rf-power-dialog{max-width:440px;width:calc(100% - 40px);padding:26px;border:1px solid var(--border);border-radius:16px;background:var(--surface);color:var(--ink);box-shadow:0 12px 48px var(--shadow)}
 #rf-power-dialog::backdrop{background:rgba(0,0,0,.4);backdrop-filter:blur(2px)}
 #rf-power-dialog .rf-power-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:24px}
+/* F52（r10-u5）：应用内确认对话框。原生 confirm 的按钮文字随浏览器/OS 语言，
+   与应用十语言无关，也无法纳入危险色规范；本样式只服务 RFConfirm（危险动作
+   主按钮用既有 .b-exc 红色）。F24/F33 复用同一形态。 */
+#rf-confirm-dialog{max-width:460px;width:calc(100% - 40px);padding:24px;border:1px solid var(--border);border-radius:16px;background:var(--surface);color:var(--ink);box-shadow:0 12px 48px var(--shadow)}
+#rf-confirm-dialog::backdrop{background:rgba(0,0,0,.4);backdrop-filter:blur(2px)}
+#rf-confirm-dialog .rf-confirm-message{margin:10px 0 0;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+#rf-confirm-dialog .rf-confirm-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:22px}
 #rf-restart-overlay .rf-restart-card{max-width:420px;width:100%;padding:26px;border:1px solid var(--border);border-radius:16px;background:var(--surface);box-shadow:0 12px 48px var(--shadow);color:var(--ink);text-align:center}
 #rf-restart-overlay .rf-restart-spinner{width:30px;height:30px;margin:0 auto 14px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:rf-restart-spin .8s linear infinite}
 @keyframes rf-restart-spin{to{transform:rotate(360deg)}}
@@ -529,6 +536,17 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 .pr-field .pr-restore:hover{color:var(--primary-dark)}
 .pr-field .pr-warn{display:none;font-size:.66rem;color:#765C2C;white-space:nowrap}
 [data-theme=dark] .pr-field .pr-warn{color:var(--accent)}
+/* F07：自动填充后被改写的字段短暂高亮，区分「刚刚由系统填入」与用户手填值。 */
+.pr-field input.pr-filled{animation:prFilled 1.6s ease-out}
+@keyframes prFilled{0%{box-shadow:0 0 0 3px rgba(74,122,106,.45);background:rgba(74,122,106,.12)}100%{box-shadow:0 0 0 0 rgba(74,122,106,0)}}
+@media (prefers-reduced-motion:reduce){.pr-field input.pr-filled{animation:none;outline:2px solid var(--primary);outline-offset:1px}}
+
+/* F07：校验缺失项清单面板（一次性列出全部缺项，替代逐项 toast 拦截）。 */
+#prMissing{margin:10px 0 4px;padding:10px 14px;border-radius:10px;font-size:.8rem;line-height:1.7;background:rgba(176,86,63,.08);border:1px solid rgba(176,86,63,.25);color:var(--danger)}
+#prMissing b{display:block;margin-bottom:4px}
+#prMissing ul{margin:0 0 6px 4px;list-style:none}
+#prMissing li{padding:2px 0}
+#prMissing:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 
 /* ---------- PRISMA：用户友好校验文案 ---------- */
 #prIssues ul{margin:4px 0 8px 4px;list-style:none}
@@ -728,7 +746,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./research_trace.css?v=20261011-trace-topbar2">
 <link rel="stylesheet" href="./update_check.css?v=20261005-update1">
 <link rel="stylesheet" href="./import_guide.css?v=20261011-pearl1">
-<link rel="stylesheet" href="./screen_reader.css?v=20261012-rounds1">
+<link rel="stylesheet" href="./screen_reader.css?v=20261101-r10u1b">
 <link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
 <link rel="stylesheet" href="./workspace_layouts.css?v=20261012-rounds1">
 <link rel="stylesheet" href="./report_evidence.css?v=2.1.3">
@@ -813,14 +831,14 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <label class="lbl" for="authUser">用户名</label>
         <div class="input-wrap">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20v-1.5a6.5 6.5 0 0 1 13 0V20"/></svg>
-          <input class="input" id="authUser" name="username" type="text" autocomplete="username" placeholder="3–64 个字符" required aria-describedby="authErr demoNotice">
+          <input class="input" id="authUser" name="username" type="text" autocomplete="username" placeholder="3–64 位，可用字母、数字、. _ @ - 与汉字" required aria-describedby="authErr demoNotice">
         </div>
       </div>
       <div class="field">
         <label class="lbl" for="authPass">密码</label>
         <div class="input-wrap pw-wrap">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
-          <input class="input" id="authPass" name="password" type="password" autocomplete="current-password" placeholder="至少 8 个字符" required aria-describedby="authErr demoNotice">
+          <input class="input" id="authPass" name="password" type="password" autocomplete="current-password" placeholder="8–128 位" required aria-describedby="authErr demoNotice">
           <button class="eye-btn" id="pwEye" type="button" aria-label="显示密码" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path id="eyeSlash" d="m4 4 16 16" hidden/></svg></button>
         </div>
       </div>
@@ -933,7 +951,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <li>所有人应从同一份文献目录开始，以便文献键一致。</li>
         <li>导出每位筛选员的初筛或复筛 CSV。</li>
         <li>在合并仲裁页上传 2–9 份同阶段文件。</li>
-        <li>逐条选择仲裁结论并保存</li>
+        <li>逐条选择仲裁结论并保存。</li>
         <li>原始个人决策不会改变。</li>
       </ol>
       <div class="help-actions"><button class="btn b-out" type="button" data-nav="export">打开导出结果</button><button class="btn b-out" type="button" data-nav="merge">打开合并仲裁</button></div>
@@ -988,7 +1006,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <div class="team-list" id="teamList" aria-live="polite"></div>
     <div class="row" id="teamInvite" hidden style="margin-top:14px">
       <input class="input" id="teamInviteName" placeholder="已注册用户的用户名" aria-label="已注册用户的用户名" style="max-width:220px">
-      <select class="input" id="teamInviteRole" aria-label="协作权限" style="width:230px;max-width:100%"><option value="coder">Coder</option><option value="reconciler">Adjudicator</option></select>
+      <select class="input" id="teamInviteRole" aria-label="协作权限" style="width:230px;max-width:100%"><option value="coder">筛选与编码员（Coder）</option><option value="reconciler">裁决员（Adjudicator）</option></select>
       <button class="btn b-out" id="teamInviteBtn" type="button">添加成员</button>
     </div>
     <p class="hint" id="teamMessage" role="status"></p>
@@ -1027,17 +1045,19 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div class="card">
     <div class="row al-settings-grid">
       <div><label class="lbl" for="alStrategy">排序策略</label>
-        <select class="input" id="alStrategy">
+        <select class="input" id="alStrategy" title="决定下一篇读哪条：相关度优先＝先看模型最可能纳入的；混合探索＝在已排序的基础上留出随机抽样；不确定性优先＝先看模型最没把握的">
           <option value="max">相关度优先 (max)</option>
           <option value="mixed">混合探索 (mixed)</option>
           <option value="uncertainty">不确定性优先 (uncertainty)</option>
         </select></div>
       <div><label class="lbl" for="alStopThreshold">停止建议阈值（连续排除次数；0 关闭建议）</label>
-        <input class="input" id="alStopThreshold" type="number" min="0" max="10000" step="1" required value="10"></div>
+        <input class="input" id="alStopThreshold" type="number" min="0" max="10000" step="1" required value="10" title="连续排除这么多篇后提示你暂停复查，避免机械式连点漏掉该纳入的文献；填 0 关闭该提示">
+      </div>
       <div><label class="lbl" for="alSeed">随机种子（seed）</label>
-        <input class="input" id="alSeed" type="number" min="-2147483648" max="2147483647" step="1" required value="42"></div>
+        <input class="input" id="alSeed" type="number" min="-2147483648" max="2147483647" step="1" required value="42" title="混合探索模式下的随机起点。同一个种子得到同一套抽样顺序，便于复现；一般不需要改动">
+      </div>
       <div><label class="lbl" for="alReorderInterval">排序更新间隔（条）</label>
-        <input class="input" id="alReorderInterval" type="number" min="1" max="1000" step="1" required value="20" aria-describedby="alReorderHelp">
+        <input class="input" id="alReorderInterval" type="number" min="1" max="1000" step="1" required value="20" aria-describedby="alReorderHelp" title="每做多少条决策后重新计算一次排序。越小越贴合最新判断，但每次重排都要等一会儿">
         <p class="hint" id="alReorderHelp" style="margin:4px 0 0">默认每 20 条决定更新排序；设为 1 则每条更新。</p></div>
     </div>
     <div class="row" style="margin-bottom:0">
@@ -1209,12 +1229,12 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 
 <!-- ============ 合并仲裁 ============ -->
 <section class="page" data-p="merge">
-  <h2>合并仲裁</h2><p class="hint">上传 2~9 位筛选员的决策 CSV（文件名即筛选员名）→ 合并 + 两两 Cohen's κ + Light's κ → 冲突逐条仲裁</p>
+  <h2>合并仲裁</h2><p class="hint">上传 2–9 位筛选员的决策 CSV（文件名即筛选员名）→ 合并 + 两两 Cohen's κ + Light's κ → 冲突逐条仲裁</p>
   <div class="card">
     <div class="row" style="margin:0">
       <label class="hint" for="mergeStage">筛选阶段</label>
       <select class="input" id="mergeStage" style="width:240px;max-width:100%"><option value="stage1">文献初筛</option><option value="stage2">文献复筛</option></select>
-      <button class="btn b-inc" id="mergePick">⇧ 选择 2~9 份决策 CSV</button>
+      <button class="btn b-inc" id="mergePick">⇧ 选择 2–9 份决策 CSV</button>
       <button class="btn b-out" id="mergeLatest" type="button">最近的仲裁记录</button>
       <button class="btn b-out" id="mergeDownload" type="button" hidden>导出仲裁记录</button>
       <span class="hint" style="margin:0" id="mergeFilesHint">未选择文件</span>
@@ -1311,6 +1331,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <button class="btn b-out" id="prDotDl" style="display:none"><svg class="bic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0-3.5-3.5M12 14l3.5-3.5M5 18h14"/></svg>下载 .dot（高级）</button>
       <button class="btn b-out" id="prJsonDl" style="display:none"><svg class="bic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0-3.5-3.5M12 14l3.5-3.5M5 18h14"/></svg>下载 .json</button>
     </div>
+    <div id="prMissing" role="alert" aria-live="assertive" tabindex="-1" hidden></div>
     <div id="prIssues"></div>
     <div class="prisma-view" id="prView" hidden></div>
   </div>
@@ -2725,27 +2746,27 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     "Лозинка"
   , "비밀번호"],
   [
-    "3–64 个字符",
-    "3–64 characters",
-    "3 à 64 caractères",
-    "От 3 до 64 символов",
-    "Entre 3 y 64 caracteres",
-    "3～64文字",
-    "De 3 a 64 caracteres",
-    "3–64 Zeichen",
-    "Од 3 до 64 знака"
-  , "3–64자"],
+    "3–64 位，可用字母、数字、. _ @ - 与汉字",
+    "3–64 characters: letters, digits, . _ @ - and Chinese characters",
+    "3 à 64 caractères : lettres, chiffres, . _ @ - et caractères chinois",
+    "От 3 до 64 символов: буквы, цифры, . _ @ - и китайские иероглифы",
+    "De 3 a 64 caracteres: letras, dígitos, . _ @ - y caracteres chinos",
+    "3～64文字：英数字、. _ @ - 、漢字が使えます",
+    "De 3 a 64 caracteres: letras, dígitos, . _ @ - e caracteres chineses",
+    "3–64 Zeichen: Buchstaben, Ziffern, . _ @ - und chinesische Zeichen",
+    "Од 3 до 64 знака: слова, цифре, . _ @ - и кинески знакови"
+  , "3–64자: 영문자, 숫자, . _ @ - 및 한자"],
   [
-    "至少 8 个字符",
-    "At least 8 characters",
-    "Au moins 8 caractères",
-    "Не менее 8 символов",
-    "Al menos 8 caracteres",
-    "8文字以上",
-    "Pelo menos 8 caracteres",
-    "Mindestens 8 Zeichen",
-    "Најмање 8 знакова"
-  , "8자 이상"],
+    "8–128 位",
+    "8–128 characters",
+    "8 à 128 caractères",
+    "От 8 до 128 символов",
+    "De 8 a 128 caracteres",
+    "8～128文字",
+    "De 8 a 128 caracteres",
+    "8–128 Zeichen",
+    "Од 8 до 128 знакова"
+  , "8–128자"],
   [
     "显示密码",
     "Show password",
@@ -2866,7 +2887,37 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     "Alterar idioma",
     "Sprache wechseln",
     "Промени језик"
-  , "언어 변경"]
+  , "언어 변경"],
+  /* ===== r10-u6（UX 批准单 §六/§七）=====
+     F07 PRISMA 自动填充反馈与缺失项清单面板、F68 高频 422 校验模板、F63 复筛轮次
+     409 文案、F64 保存 503 文案。十槽全部显式给出（不做英文回退）；{0}/{1} 占位
+     与英文槽一致。zh 与 en 两列都被 register() 注册为查找键，因此后端英文原串
+     （F63 三条）与中文原串（F64）经 errOf 的 detail→T() 都能命中本语言译文。 */
+  ["已填充 {0} 个字段（标记「自动」的字段会随上游数字自动更新）", "{0} field(s) filled (fields marked “auto” update with upstream numbers)", "{0} champ(s) rempli(s) (les champs « auto » suivent les chiffres amont)", "Заполнено полей: {0} (поля «авто» обновляются вместе с данными предыдущих этапов)", "{0} campo(s) rellenado(s) (los campos «auto» se actualizan con las cifras aguas arriba)", "{0} 件の項目を入力しました（「自動」項目は上流の数値に応じて更新されます）", "{0} campo(s) preenchido(s) (campos “auto” atualizam com os números a montante)", "{0} Feld(er) gefüllt („Auto“-Felder folgen den Zahlen der vorherigen Schritte)", "Попуњено поља: {0} (поља „ауто“ се ажурирају са бројевима из претходних фаза)", "{0}개 항목을 입력했습니다(‘자동’ 항목은 이전 단계 수치에 따라 갱신됩니다)"],
+  ["没有可填充的字段：请先在上游填写识别来源与数量。", "Nothing to fill: enter identification sources and counts upstream first.", "Aucun champ à remplir : saisissez d’abord les sources et les nombres d’identification en amont.", "Нечего заполнять: сначала укажите источники и количество выявленных записей.", "Nada que rellenar: introduzca primero las fuentes y los recuentos de identificación.", "入力できる項目がありません。先に上流の同定ソースと件数を入力してください。", "Nada a preencher: informe primeiro as fontes e as contagens de identificação.", "Nichts zu füllen: Tragen Sie zuerst Quellen und Zahlen der Identifikation ein.", "Нема шта да се попуни: прво унесите изворе и бројеве идентификације.", "채울 항목이 없습니다. 먼저 이전 단계의 확인 출처와 건수를 입력하세요."],
+  ["识别来源（至少一行，含来源名称）", "Identification source (at least one row with a source name)", "Source d’identification (au moins une ligne avec un nom de source)", "Источник выявления (минимум одна строка с названием источника)", "Fuente de identificación (al menos una fila con nombre de fuente)", "同定ソース（少なくとも1行、ソース名を含む）", "Fonte de identificação (pelo menos uma linha com nome da fonte)", "Identifikationsquelle (mindestens eine Zeile mit Quellenname)", "Извор идентификације (најмање један ред са називом извора)", "확인 출처(최소 한 행, 출처 이름 포함)"],
+  ["其他方法的识别来源（至少一行）", "Identification sources via other methods (at least one row)", "Sources d’identification par d’autres méthodes (au moins une ligne)", "Источники выявления другими методами (минимум одна строка)", "Fuentes de identificación por otros métodos (al menos una fila)", "その他の方法による同定ソース（少なくとも1行）", "Fontes de identificação por outros métodos (pelo menos uma linha)", "Identifikationsquellen über andere Methoden (mindestens eine Zeile)", "Извори идентификације другим методама (најмање један ред)", "기타 방법의 확인 출처(최소 한 행)"],
+  ["请先补齐以下内容（{0} 项）", "Complete the following first ({0} item(s))", "Complétez d’abord les éléments suivants ({0})", "Сначала заполните следующее (пунктов: {0})", "Complete primero lo siguiente ({0} elemento(s))", "先に次の項目を入力してください（{0} 件）", "Complete primeiro os itens a seguir ({0})", "Füllen Sie zuerst Folgendes aus ({0} Angabe(n))", "Прво допуните следеће (ставки: {0})", "먼저 다음 항목을 채우세요({0}개)"],
+  ["未填写", "Not filled in", "Non renseigné", "Не заполнено", "Sin rellenar", "未入力", "Não preenchido", "Nicht ausgefüllt", "Није попуњено", "미입력"],
+  ["格式不正确", "Invalid format", "Format incorrect", "Неверный формат", "Formato incorrecto", "形式が正しくありません", "Formato inválido", "Ungültiges Format", "Неисправан формат", "형식이 올바르지 않음"],
+  ["填写后再点「校验并生成流程图」。", "Then select “Validate and generate flow diagram”.", "Cliquez ensuite sur « Vérifier et générer le diagramme ».", "Затем нажмите «Проверить и построить схему».", "Después pulse «Validar y generar el diagrama».", "入力後に「検証してフローチャートを生成」を押してください。", "Depois clique em “Validar e gerar o fluxograma”.", "Wählen Sie danach „Prüfen und Flussdiagramm erzeugen“.", "Затим изаберите „Провери и генериши дијаграм тока“.", "입력 후 ‘검증 및 흐름도 생성’을 누르세요."],
+  ["{0} 太短：至少 {1} 个字符", "{0} is too short: at least {1} characters", "{0} est trop court : au moins {1} caractères", "{0}: слишком коротко, минимум {1} символов", "{0} es demasiado corto: al menos {1} caracteres", "{0} が短すぎます：{1} 文字以上にしてください", "{0} é curto demais: pelo menos {1} caracteres", "{0} ist zu kurz: mindestens {1} Zeichen", "{0} је прекратко: најмање {1} знакова", "{0}이(가) 너무 짧습니다: 최소 {1}자"],
+  ["{0} 太长：最多 {1} 个字符", "{0} is too long: at most {1} characters", "{0} est trop long : au plus {1} caractères", "{0}: слишком длинно, максимум {1} символов", "{0} es demasiado largo: como máximo {1} caracteres", "{0} が長すぎます：{1} 文字以内にしてください", "{0} é longo demais: no máximo {1} caracteres", "{0} ist zu lang: höchstens {1} Zeichen", "{0} је предугачко: највише {1} знакова", "{0}이(가) 너무 깁니다: 최대 {1}자"],
+  ["{0} 至少需要 {1} 项", "{0} needs at least {1} item(s)", "{0} exige au moins {1} élément(s)", "{0}: требуется минимум элементов — {1}", "{0} requiere al menos {1} elemento(s)", "{0} は少なくとも {1} 件必要です", "{0} exige pelo menos {1} item(ns)", "{0} erfordert mindestens {1} Eintrag/Einträge", "{0} захтева најмање {1} ставки", "{0}에는 최소 {1}개 항목이 필요합니다"],
+  ["{0} 最多允许 {1} 项", "{0} allows at most {1} item(s)", "{0} autorise au plus {1} élément(s)", "{0}: допускается не более {1} элементов", "{0} admite como máximo {1} elemento(s)", "{0} は最大 {1} 件までです", "{0} permite no máximo {1} item(ns)", "{0} erlaubt höchstens {1} Eintrag/Einträge", "{0} дозвољава највише {1} ставки", "{0}에는 최대 {1}개 항목까지 허용됩니다"],
+  ["{0} 需要是整数", "{0} must be an integer", "{0} doit être un entier", "{0}: требуется целое число", "{0} debe ser un número entero", "{0} は整数である必要があります", "{0} deve ser um número inteiro", "{0} muss eine ganze Zahl sein", "{0} мора бити цео број", "{0}은(는) 정수여야 합니다"],
+  ["{0} 需要是数字", "{0} must be a number", "{0} doit être un nombre", "{0}: требуется число", "{0} debe ser un número", "{0} は数値である必要があります", "{0} deve ser um número", "{0} muss eine Zahl sein", "{0} мора бити број", "{0}은(는) 숫자여야 합니다"],
+  ["{0} 需要是 true 或 false", "{0} must be true or false", "{0} doit valoir true ou false", "{0}: требуется true или false", "{0} debe ser true o false", "{0} は true または false である必要があります", "{0} deve ser true ou false", "{0} muss true oder false sein", "{0} мора бити true или false", "{0}은(는) true 또는 false여야 합니다"],
+  ["{0} 需要是文本", "{0} must be text", "{0} doit être un texte", "{0}: требуется текст", "{0} debe ser texto", "{0} はテキストである必要があります", "{0} deve ser texto", "{0} muss Text sein", "{0} мора бити текст", "{0}은(는) 텍스트여야 합니다"],
+  ["{0} 必须大于 {1}", "{0} must be greater than {1}", "{0} doit être supérieur à {1}", "{0} должен быть больше {1}", "{0} debe ser mayor que {1}", "{0} は {1} より大きい必要があります", "{0} deve ser maior que {1}", "{0} muss größer als {1} sein", "{0} мора бити веће од {1}", "{0}은(는) {1}보다 커야 합니다"],
+  ["{0} 必须小于 {1}", "{0} must be less than {1}", "{0} doit être inférieur à {1}", "{0} должен быть меньше {1}", "{0} debe ser menor que {1}", "{0} は {1} より小さい必要があります", "{0} deve ser menor que {1}", "{0} muss kleiner als {1} sein", "{0} мора бити мање од {1}", "{0}은(는) {1}보다 작아야 합니다"],
+  ["请先完成当前轮次，或进入全文筛选。", "Finish the current round or proceed to full-text screening first.", "Terminez d’abord la série en cours ou passez à la sélection sur texte intégral.", "Сначала завершите текущий раунд или перейдите к отбору по полному тексту.", "Termine primero la ronda actual o pase al cribado de texto completo.", "先に現在のラウンドを終えるか、全文スクリーニングへ進んでください。", "Conclua primeiro a rodada atual ou avance para a triagem de texto completo.", "Schließen Sie zuerst die aktuelle Runde ab oder wechseln Sie zur Volltextsichtung.", "Прво завршите текућу рунду или пређите на преглед пуног текста.", "먼저 현재 라운드를 끝내거나 전문 선별로 넘어가세요."],
+  ["请先完成当前题录初筛队列。", "Complete the current title-and-abstract queue first.", "Terminez d’abord la file en cours de sélection sur titres et résumés.", "Сначала завершите текущую очередь отбора по названиям и аннотациям.", "Complete primero la cola actual de cribado de títulos y resúmenes.", "先に現在のタイトル・抄録スクリーニングのキューを完了してください。", "Conclua primeiro a fila atual de triagem de títulos e resumos.", "Schließen Sie zuerst die aktuelle Titel-/Abstract-Warteschlange ab.", "Прво завршите тренутни ред за одабир наслова и сажетака.", "먼저 현재 제목·초록 선별 대기열을 완료하세요."],
+  /* F23（r10-u5）：旧词「待定」在本行残留——它是后端 409「No unresolved articles
+     are available for another round.」的中文源串，round 控件直接经词典命中。
+     规范词改为「暂不确定」；旧串由 team_prisma_locale.js 的别名表保留一轮。 */
+  ["没有可用于新一轮的暂不确定文献。", "No unresolved articles are available for another round.", "Aucun article en attente n’est disponible pour une nouvelle série.", "Нет нерешённых статей для нового раунда.", "No hay artículos pendientes disponibles para otra ronda.", "次のラウンドに使える保留中の文献がありません。", "Não há artigos pendentes disponíveis para outra rodada.", "Es sind keine offenen Artikel für eine weitere Runde verfügbar.", "Нема нерешених чланака за нову рунду.", "다음 라운드에 사용할 보류 문헌이 없습니다."],
+  ["本次修改尚未保存。轨迹记录不可用，请重试或暂停记录后重新保存。", "This change has not been saved. Trace recording is unavailable; retry, or pause recording and save again.", "Cette modification n’a pas été enregistrée. L’enregistrement du parcours est indisponible ; réessayez ou suspendez-le puis enregistrez de nouveau.", "Изменение не сохранено. Запись истории недоступна; повторите попытку или приостановите запись и сохраните снова.", "Este cambio no se ha guardado. El registro de la trayectoria no está disponible; reintente o pause el registro y vuelva a guardar.", "この変更は保存されていません。履歴記録を利用できないため、再試行するか記録を一時停止して保存し直してください。", "Esta alteração não foi salva. O registro da trajetória está indisponível; tente novamente ou pause o registro e salve de novo.", "Diese Änderung wurde nicht gespeichert. Die Verlaufsaufzeichnung ist nicht verfügbar; versuchen Sie es erneut oder pausieren Sie die Aufzeichnung und speichern Sie erneut.", "Ова измена није сачувана. Бележење трага није доступно; покушајте поново или паузирајте бележење и поново сачувајте.", "이 변경 사항은 저장되지 않았습니다. 기록을 사용할 수 없습니다. 다시 시도하거나 기록을 일시 중지한 뒤 다시 저장하세요."]
 ];
   /* ---------------- 应用界面字典（键 = 中文原文；值序 = 上方 languages） ----------------
      模板占位 {0}{1}… 仅由 RFLang.t() 使用（动态合成句）；纯静态文本由观察器整段命中。 */
@@ -4076,7 +4127,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["已重命名","Renamed","Renommé","Переименовано","Renombrada","名前を変更しました","Renomeada","Umbenannt","Преименовано", "이름 변경됨"],
   ["已归档（可在“显示已归档”中查看）","Archived (visible via “Show archived”)","Archivée (visible via « Afficher les archivées »)","В архиве (видно через «Показать архивные»)","Archivada (visible en “Mostrar archivadas”)","アーカイブしました（「アーカイブを表示」で確認できます）","Arquivada (visível em “Mostrar arquivadas”)","Archiviert (über „Archivierte anzeigen“ sichtbar)","Архивирано (видно преко „Прикажи архивиране“)", "보관됨 (‘보관된 작업 표시’에서 확인 가능)"],
   ["已归档（可在“显示已归档任务”中查看）","Archived (visible via “Show archived tasks”)","Archivée (visible via « Afficher les tâches archivées »)","В архиве (видно через «Показать архивные задачи»)","Archivada (visible en “Mostrar tareas archivadas”)","アーカイブしました（「アーカイブ済みタスクを表示」で確認できます）","Arquivada (visível em “Mostrar tarefas arquivadas”)","Archiviert (über „Archivierte Aufgaben anzeigen“ sichtbar)","Архивирано (видно преко „Прикажи архивиране задатке“)", "보관됨 ('보관된 작업 표시'에서 확인 가능)"],
-  ["已删除（移入 .trash）","Deleted (moved to .trash)","Supprimée (déplacée vers .trash)","Удалено (перемещено в .trash)","Eliminada (movida a .trash)","削除しました（.trash へ移動）","Excluída (movida para .trash)","Gelöscht (nach .trash verschoben)","Обрисано (премештено у .trash)", "삭제됨(.trash로 이동)"],
+  ["已删除（移入隔离区）","Deleted (moved to the quarantine area)","Supprimée (déplacée vers la zone de quarantaine)","Удалено (перемещено в карантинную область)","Eliminada (movida a la zona de cuarentena)","削除しました（隔離領域へ移動）","Excluída (movida para a área de quarentena)","Gelöscht (in den Quarantänebereich verschoben)","Обрисано (премештено у карантинску област)", "삭제됨(격리 영역으로 이동)"],
   ["已创建任务《{0}》，你已登记为筛选员","Task “{0}” created; you are registered as a screener","Tâche « {0} » créée ; vous êtes inscrit comme évaluateur.","Задача «{0}» создана; вы зарегистрированы как отборщик","Tarea “{0}” creada; usted figura como revisor.","タスク「{0}」を作成しました。あなたはスクリーナーとして登録されています","Tarefa “{0}” criada; você está registrado como revisor.","Aufgabe „{0}“ erstellt; Sie sind als Screener registriert","Задатак „{0}“ је направљен; заведени сте као члан тима за одабир", "«{0}» 작업이 생성되었으며 선별자로 등록되었습니다"],
   ["任务名不能为空","Task name cannot be empty","Le nom de la tâche ne peut pas être vide","Название задачи не может быть пустым","El nombre de la tarea no puede estar vacío","タスク名は空にできません","O nome da tarefa não pode ficar vazio","Aufgabenname darf nicht leer sein","Назив задатка не сме бити празан", "작업 이름 필수"],
   ["（已归档）"," (archived)"," (archivée)"," (в архиве)"," (archivada)","（アーカイブ済み）"," (arquivada)"," (archiviert)"," (архивиран)", "(보관됨)"],
@@ -4135,7 +4186,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["高亮文本不能为空","Highlighted text cannot be empty","Le texte surligné ne peut pas être vide","Выделенный текст не может быть пустым","El texto resaltado no puede estar vacío","ハイライト文は空にできません","O texto do realce não pode ficar vazio","Markierter Text darf nicht leer sein","Маркирани текст не сме бити празан", "강조 텍스트 필수"],
   ["已保存{0}高亮（第 {1} 页）","Saved {0} highlight (page {1})","Surlignage {0} enregistré (page {1})","Выделение {0} сохранено (стр. {1})","Resaltado {0} guardado (página {1})","{0} のハイライトを保存（{1} ページ）","Realce {0} salvo (página {1})","Hervorhebung {0} gespeichert (Seite {1})","Маркирање {0} је сачувано (страна {1})", "{0} 강조 표시 저장됨 ({1}페이지)"],
   ["✓ 复筛纳入《{0}》","✓ Included at full-text “{0}”","✓ Inclus au plein texte « {0} »","✓ Включено на полном тексте «{0}»","✓ Incluido en texto completo “{0}”","✓ 全文で採用「{0}」","✓ Incluído no texto completo “{0}”","✓ Im Volltext eingeschlossen „{0}“","✓ Укључено у пуном тексту „{0}“", "✓ 전문 선별: «{0}» 포함"],
-  ["◐ 复筛待定《{0}》", "◐ Maybe at full-text “{0}”", "◐ À décider au plein texte « {0} »", "◐ Возможно на полном тексте «{0}»", "◐ Pendiente en texto completo “{0}”", "◐ 全文で保留「{0}」", "◐ Talvez no texto completo “{0}”", "◐ Im Volltext vielleicht „{0}“", "◐ Можда у пуном тексту „{0}“", "◐ 전문 선별: «{0}» 보류"],
+  /* F23（r10-u5）：全文化筛选的「待定」toast 原为旧词；规范词「暂不确定」。
+     旧串在 team_prisma_locale.js 的别名表保留一轮，缓存控件仍可命中。 */
+  ["◐ 复筛暂不确定《{0}》", "◐ Not Sure Now at full-text “{0}”", "◐ Incertain au plein texte « {0} »", "◐ Пока не уверен на полном тексте «{0}»", "◐ Aún no estoy seguro en texto completo “{0}”", "◐ 全文で今は判断できない「{0}」", "◐ Ainda não tenho certeza no texto completo “{0}”", "◐ Im Volltext noch unsicher „{0}“", "◐ Тренутно нисам сигуран у пуном тексту „{0}“", "◐ 전문 선별: «{0}» 아직 확신 없음"],
   ["✗ 复筛排除《{0}》 · 理由：{1}","✗ Excluded at full-text “{0}” · reason: {1}","✗ Exclu au plein texte « {0} » · motif : {1}","✗ Исключено на полном тексте «{0}» · причина: {1}","✗ Excluido en texto completo “{0}” · motivo: {1}","✗ 全文で除外「{0}」· 理由：{1}","✗ Excluído no texto completo “{0}” · motivo: {1}","✗ Im Volltext ausgeschlossen „{0}“ · Grund: {1}","✗ Искључено у пуном тексту „{0}“ · разлог: {1}", "✗ 전문 선별: «{0}» 제외 · 사유: {1}"],
   ["🎉 复筛队列全部完成","All reports in this queue have a saved decision","🎉 File plein texte entièrement traitée","🎉 Очередь полных текстов полностью завершена","🎉 Cola de texto completo totalmente completada","🎉 全文キューがすべて完了しました","🎉 Fila de texto completo totalmente concluída","🎉 Volltext-Warteschlange vollständig abgearbeitet","🎉 Ред пуног текста је потпуно завршен", "🎉 전문 선별 대기열 모두 완료"],
   ["载入复筛队列失败：","Failed to load the full-text queue: ","Échec du chargement de la file plein texte : ","Не удалось загрузить очередь полных текстов: ","Error al cargar la cola de texto completo: ","全文キューの読み込みに失敗：","Falha ao carregar a fila de texto completo: ","Volltext-Warteschlange konnte nicht geladen werden: ","Не успело учитавање реда пуног текста: ", "전문 선별 대기열 불러오기 실패:"],
@@ -4170,8 +4223,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["决策 CSV 与初筛进度实时一致；纳入 RIS 只包含已纳入文献；文件由服务端从数据库生成后下载。","The decisions CSV always matches current screening progress; the included RIS contains only included references; files are generated server-side from the database.","Le CSV de décisions reflète en direct la progression ; le RIS d'inclusion ne contient que les références incluses ; les fichiers sont générés côté serveur depuis la base.","CSV решений всегда совпадает с текущим прогрессом; RIS включённых содержит только включённые публикации; файлы формируются на сервере из базы.","El CSV de decisiones coincide siempre con el progreso del cribado; el RIS de incluidas solo contiene referencias incluidas; los archivos los genera el servidor desde la base.","判定 CSV は初篩の進捗と常に一致。採用 RIS は採用文献のみ。ファイルはサーバー側で DB から生成後にダウンロードされます。","O CSV de decisões acompanha o progresso da triagem; o RIS de incluídos contém apenas referências incluídas; os arquivos são gerados no servidor a partir do banco.","Die Entscheidungs-CSV entspricht immer dem Screening-Fortschritt; die RIS enthält nur eingeschlossene Referenzen; Dateien werden serverseitig aus der DB erzeugt.","CSV одлука увек одговара напредку одабира; RIS укључених садржи само укључене референце; датотеке генерише сервер из базе.", "CSV는 현재 선별 진행과 일치하며 RIS는 포함 문헌만 담습니다. 서버 DB에서 파일 생성."],
   ["✓ 已下载：","✓ Downloaded: ","✓ Téléchargé : ","✓ Скачано: ","✓ Descargado: ","✓ ダウンロード済み：","✓ Baixado: ","✓ Heruntergeladen: ","✓ Преузето: ", "✓ 다운로드 완료:"],
   ["导出失败：","Export failed: ","Échec de l'export : ","Ошибка экспорта: ","Error al exportar: ","エクスポートに失敗：","Falha na exportação: ","Export fehlgeschlagen: ","Извоз није успео: ", "내보내기 실패:"],
-  ["上传 2~9 位筛选员的决策 CSV（文件名即筛选员名）→ 合并 + 两两 Cohen's κ + Light's κ → 冲突逐条仲裁","Upload 2–9 screeners' decision CSVs (filename = screener name) → merge + pairwise Cohen's κ + Light's κ → resolve conflicts one by one","Importez les fichiers CSV de décision de 2 à 9 évaluateurs (nom du fichier = nom de l’évaluateur) → fusion + κ de Cohen par paire + κ de Light → arbitrage des conflits un à un.","Загрузите CSV решений 2–9 отборщиков (имя файла = имя) → объединение + попарные κ Коэна + κ Light → разрешение разногласий по каждому случаю","Suba los CSV de decisiones de 2 a 9 revisores (el nombre del archivo es el del revisor) → combinación + κ de Cohen por pares + κ de Light → arbitraje de los conflictos uno por uno.","2〜9 名のスクリーナーの判定 CSV をアップロード（ファイル名＝スクリーナー名）→ 統合＋ペアごとの Cohen's κ＋Light's κ→衝突を1件ずつ仲裁","Envie os CSV de decisões de 2–9 revisores (o nome do arquivo corresponde ao do revisor) → consolidação + κ de Cohen por pares + κ de Light → arbitragem dos conflitos item por item.","Entscheidungs-CSVs von 2–9 Screenern hochladen (Dateiname = Name) → Zusammenführen + paarweises Cohen's κ + Light's κ → Konflikte einzeln klären","Отпремите CSV датотеке са одлукама 2–9 чланова тима за одабир (назив датотеке = име члана) → спајање + Cohen's κ за сваки пар + Light's κ → појединачно решавање неслагања", "검토자 2~9명 CSV(파일명=검토자) → 병합+쌍별 Cohen κ+Light κ → 불일치 조정"],
-  ["⇧ 选择 2~9 份决策 CSV","⇧ Choose 2–9 decision CSVs","⇧ Choisir 2 à 9 CSV de décisions","⇧ Выберите 2–9 CSV решений","⇧ Elegir de 2 a 9 CSV de decisiones","⇧ 2〜9 件の判定 CSV を選択","⇧ Escolher 2–9 CSVs de decisões","⇧ 2–9 Entscheidungs-CSVs wählen","⇧ Изаберите 2–9 CSV одлука", "⇧ 결정 CSV 2~9개 선택"],
+  ["上传 2–9 位筛选员的决策 CSV（文件名即筛选员名）→ 合并 + 两两 Cohen's κ + Light's κ → 冲突逐条仲裁","Upload 2–9 screeners' decision CSVs (filename = screener name) → merge + pairwise Cohen's κ + Light's κ → resolve conflicts one by one","Importez les fichiers CSV de décision de 2 à 9 évaluateurs (nom du fichier = nom de l’évaluateur) → fusion + κ de Cohen par paire + κ de Light → arbitrage des conflits un à un.","Загрузите CSV решений 2–9 отборщиков (имя файла = имя) → объединение + попарные κ Коэна + κ Light → разрешение разногласий по каждому случаю","Suba los CSV de decisiones de 2 a 9 revisores (el nombre del archivo es el del revisor) → combinación + κ de Cohen por pares + κ de Light → arbitraje de los conflictos uno por uno.","2〜9 名のスクリーナーの判定 CSV をアップロード（ファイル名＝スクリーナー名）→ 統合＋ペアごとの Cohen's κ＋Light's κ→衝突を1件ずつ仲裁","Envie os CSV de decisões de 2–9 revisores (o nome do arquivo corresponde ao do revisor) → consolidação + κ de Cohen por pares + κ de Light → arbitragem dos conflitos item por item.","Entscheidungs-CSVs von 2–9 Screenern hochladen (Dateiname = Name) → Zusammenführen + paarweises Cohen's κ + Light's κ → Konflikte einzeln klären","Отпремите CSV датотеке са одлукама 2–9 чланова тима за одабир (назив датотеке = име члана) → спајање + Cohen's κ за сваки пар + Light's κ → појединачно решавање неслагања", "검토자 2–9명 CSV(파일명=검토자) → 병합+쌍별 Cohen κ+Light κ → 불일치 조정"],
+  ["⇧ 选择 2–9 份决策 CSV","⇧ Choose 2–9 decision CSVs","⇧ Choisir 2 à 9 CSV de décisions","⇧ Выберите 2–9 CSV решений","⇧ Elegir de 2 a 9 CSV de decisiones","⇧ 2〜9 件の判定 CSV を選択","⇧ Escolher 2–9 CSVs de decisões","⇧ 2–9 Entscheidungs-CSVs wählen","⇧ Изаберите 2–9 CSV одлука", "⇧ 결정 CSV 2–9개 선택"],
   ["未选择文件","No files selected","Aucun fichier choisi","Файлы не выбраны","Ningún archivo seleccionado","ファイルが未選択です","Nenhum arquivo selecionado","Keine Dateien ausgewählt","Датотеке нису изабране", "선택한 파일 없음"],
   ["逐条冲突表","Item-by-item conflict table","Tableau des conflits entrée par entrée","Постатейная таблица конфликтов","Tabla de conflictos elemento a elemento","衝突明細表","Tabela de conflitos item a item","Konflikttabelle Eintrag für Eintrag","Табела сукоба ставку по ставку", "문헌별 불일치 표"],
   ["只看冲突","Conflicts only","Conflits uniquement","Только конфликты","Solo conflictos","衝突のみ表示","Somente conflitos","Nur Konflikte","Само сукоби", "불일치만 표시"],
@@ -5117,8 +5170,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
-<script src="./help_locale.js?v=2.1.2.2"></script>
-<script src="./navigation_locale.js?v=20261002-language-wrap-final1"></script>
+<script src="./help_locale.js?v=20261101-r10u5a"></script>
+<script src="./navigation_locale.js?v=20261101-r10u4"></script>
 <script src="./navigation_registry.js?v=2.1.2.2"></script>
 
 <script>
@@ -5256,10 +5309,38 @@ async function apiRequest(path, opts = {}) {
           username: '用户名须为 3~64 个字符，且只含字母、数字、汉字与 . _ - @。',
           password: '密码长度须为 8~128 个字符。'
         } : null;
+        /* F68（UX 批准单 §七）：422 此前只在 /api/auth/ 的账号密码长度上做了
+           中文映射，其余一律 `loc + '：' + 英文 msg`——中文界面里冒出
+           「String should have at least 1 character」这类 Pydantic 技术原串。
+           这里按 **type**（而非每个字段各写一条）给出高频校验类型的中文模板，
+           字段名沿用 loc；模板与 type 的对应关系收编进十语言词典
+           （interface_locale.js 的「高频 422 模板」块），不做字段级独立映射表
+           （那会与 message_key 机制重复维护）。ctx 里的约束值（min_length 等）
+           代入 {1}，其余保持 Pydantic 原文由 prMsg 类调用方决定是否展示。 */
+        const VALIDATION_TEMPLATES = {
+          missing: ['{0} 为必填项。', null],
+          string_too_short: ['{0} 太短：至少 {1} 个字符', 'min_length'],
+          string_too_long: ['{0} 太长：最多 {1} 个字符', 'max_length'],
+          too_short: ['{0} 至少需要 {1} 项', 'min_length'],
+          too_long: ['{0} 最多允许 {1} 项', 'max_length'],
+          int_parsing: ['{0} 需要是整数', null],
+          float_parsing: ['{0} 需要是数字', null],
+          bool_parsing: ['{0} 需要是 true 或 false', null],
+          string_type: ['{0} 需要是文本', null],
+          greater_than_equal: ['{0} 不能小于 {1}。', 'ge'],
+          less_than_equal: ['{0} 不能大于 {1}。', 'le'],
+          greater_than: ['{0} 必须大于 {1}', 'gt'],
+          less_than: ['{0} 必须小于 {1}', 'lt']
+        };
         detail = payload.map(d => {
           const field = d.loc ? d.loc.filter(x => x !== 'body').join('.') : '';
           if (lengthRules && lengthRules[field] && (d.type === 'string_too_short' || d.type === 'string_too_long'))
             return T(lengthRules[field]);
+          const rule = VALIDATION_TEMPLATES[d.type];
+          if (rule) {
+            const limit = rule[1] ? d.ctx?.[rule[1]] : null;
+            return limit == null ? T(rule[0], field || '—') : T(rule[0], field || '—', limit);
+          }
           return (d.loc ? field + '：' : '') + (d.msg || '');
         }).join('；');
       } else if (typeof payload === 'object' && payload.message) {
@@ -5349,6 +5430,13 @@ const S = {
     streak: 0, suggestStop: false, dismissStreak: -1
   }
 };
+/* F23（r10-u5）：DEC_LABEL 的值是**源串**；原先轨迹/决策表与仲裁下拉把它直接
+   拼进 DOM，中文界面因此漏出旧词「待定」。三个渲染点现在统一经 T() 命中词条，
+   旧源串由 team_prisma_locale.js 的别名表映射到规范词条「暂不确定」（批准单
+   要求旧词 alias 保留一轮兼容缓存控件，故别名不删）。
+   这里不改成「暂不确定」字面量的原因：report_evidence_locale.js 用同一中文串
+   注册报告关系类型（英文 Uncertain），且加载在后会赢下该键——决策 chip 的英文
+   会从 Not Sure Now 漂成 Uncertain，与同屏「2 Not Sure Now」按钮不一致。 */
 const DEC_LABEL = { include: '纳入', exclude: '排除', maybe: '待定' };
 const DEC_KEY = { include: 'inc', exclude: 'exc', maybe: 'may' };
 const HL_LABEL = { jade: '玉青', amber: '花芽黄', terra: '陶红' };
@@ -5378,6 +5466,61 @@ function refreshToasts() {
     item.el.textContent = RFLang.render(item.source);
   }
 }
+
+/* ---------- 应用内确认对话框（F52，r10-u5） ----------
+   原生 confirm() 的按钮文字随浏览器/OS 语言，与应用十语言无关，也无法纳入危险色
+   规范。RFConfirm 只依赖既有 el()/T()/toast 层：返回 Promise<boolean>，危险动作用
+   红色主按钮（.b-exc），初始焦点落在「取消」（安全默认），Tab 在对话框内循环，
+   Esc 取消，关闭后焦点回到打开它的控件。F24/F33 以后按同一形态复用。 */
+const RF_CONFIRM_FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function RFConfirm(options) {
+  const opts = typeof options === 'string' ? { message: options } : (options || {});
+  return new Promise(resolve => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = el('dialog', { id: 'rf-confirm-dialog', 'aria-labelledby': 'rf-confirm-title', 'aria-describedby': 'rf-confirm-message' });
+    const title = el('h2', { id: 'rf-confirm-title', text: T(opts.title || '请确认'), style: 'margin:0;font-size:1.05rem' });
+    const message = el('p', { id: 'rf-confirm-message', class: 'rf-confirm-message', text: opts.message || '' });
+    const actions = el('div', { class: 'rf-confirm-actions' });
+    let settled = false;
+    /* F52：收尾必须同步完成。dialog.close() 的 close 事件是异步排队的——若只在
+       close 监听里 remove()，调用方 await 返回时对话框节点仍在 DOM，紧接着再打开
+       一个就会出现两个 #rf-confirm-dialog（重复 id，两个 Tab 陷阱各管一半）。
+       因此这里关闭 + 移除 + 归还焦点一次做完，close 监听只作原生路径的兜底。 */
+    const restoreFocus = () => {
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+    };
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      restoreFocus();
+      resolve(value);
+    };
+    const cancel = el('button', { type: 'button', class: 'btn b-out', text: T(opts.cancelLabel || '取消'), onclick: () => finish(false) });
+    const confirm = el('button', { type: 'button', class: 'btn ' + (opts.danger === false ? 'b-inc' : 'b-exc'), text: T(opts.confirmLabel || '确定'), onclick: () => finish(true) });
+    actions.append(cancel, confirm);
+    dialog.append(title, message, actions);
+    document.body.append(dialog);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
+    dialog.addEventListener('keydown', event => {
+      if (event.key !== 'Tab') return;
+      const items = [...dialog.querySelectorAll(RF_CONFIRM_FOCUSABLE)];
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+    });
+    dialog.addEventListener('close', () => {
+      /* 兜底：仅在未经 finish() 的关闭（原生 close 路径）上收尾。 */
+      dialog.remove();
+      if (!settled) { settled = true; restoreFocus(); resolve(false); }
+    });
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+window.RFConfirm = RFConfirm;
 
 /* ---------- 明暗主题（CSS variables 切换 + 双版本 logo 换源） ---------- */
 const THEME_MOON = '<path d="M20.5 14.3A8.5 8.5 0 0 1 9.7 3.5a8.5 8.5 0 1 0 10.8 10.8Z"/>';
@@ -5534,7 +5677,7 @@ function teamMemberActions(taskId, member, grants, isOwner) {
       text:T('更改角色'), 'aria-expanded':'false', 'aria-controls':menuId + '-roles'});
     const choices = el('div', {id:menuId + '-roles', class:'team-role-options', role:'group', 'aria-label':T('更改角色')});
     choices.hidden = true;
-    for (const [role, label] of [['coder','Coder'], ['reconciler','Adjudicator']]) {
+    for (const [role, label] of [['coder','筛选与编码员（Coder）'], ['reconciler','裁决员（Adjudicator）']]) {
       const selected = roles.length === 1 && roles[0] === role;
       const choice = el('button', {type:'button', role:'menuitemradio', 'data-role':role,
         'aria-checked':String(selected), text:T(label)});
@@ -5685,7 +5828,7 @@ async function removeTeamMember(taskId, member, grants) {
   if (teamMutationTaskId || S.task?.task_id !== taskId) return;
   const roles = [...new Set(grants.filter(grant => grant.user_id === member.user_id).map(grant => grant.role))];
   if (!roles.length) { $('#teamMessage').textContent = T('此成员没有可移除的协作权限。'); return; }
-  if (!confirm(T('确定将 {0} 从此任务中移除吗？对方将不再看到此任务。', member.username))) return;
+  if (!await RFConfirm({ message: T('确定将 {0} 从此任务中移除吗？对方将不再看到此任务。', member.username) })) return;
   await mutateTeamMember(taskId, async () => {
     const data = await api('/api/tasks/' + encodeURIComponent(taskId) + '/team-progress');
     const currentRoles = data.grants.filter(grant => grant.user_id === member.user_id).map(grant => grant.role);
@@ -5707,7 +5850,7 @@ async function changeTeamMemberRole(taskId, member, role) {
     for (const oldRole of roles.filter(value => value !== role)) {
       await api(path + '/collaboration/roles/' + encodeURIComponent(member.user_id) + '/' + oldRole, {method:'DELETE'});
     }
-  }, T('已将 {0} 的角色更改为 {1}', member.username, T(role === 'coder' ? 'Coder' : 'Adjudicator')));
+  }, T('已将 {0} 的角色更改为 {1}', member.username, T(role === 'coder' ? '筛选与编码员（Coder）' : '裁决员（Adjudicator）')));
 }
 async function mutateTeamMember(taskId, action, successMessage) {
   if (teamMutationTaskId || S.task?.task_id !== taskId) return;
@@ -5753,6 +5896,10 @@ async function loadTasks() {
   const d = await api('/api/tasks?include_archived=true');
   if (AUTH_TOKEN !== token || !S.user || ticket !== taskListVersion) return;
   S.tasks = d.tasks;
+  /* F13/F14：任务列表到货即通知工作流控制台重算「当前任务」卡与第一步引导卡。
+     零任务新用户此前永远停在「正在载入范围…」占位——因为空列表不会触发
+     task-context-changed 之外的填充点。 */
+  document.dispatchEvent(new CustomEvent('reviewflow:task-list-changed'));
   const sel = $('#taskSel');
   sel.textContent = '';
   for (const t of S.tasks) {
@@ -5853,8 +6000,8 @@ function renderHub() {
         } }),
         el('button', { class: 'btn b-exc', text: T('删除'), onclick: async () => {
           if (S.task?.task_id === t.task_id && window.WorkflowControls && !await WorkflowControls.guard()) return;
-          if (!confirm(T('删除任务《{0}》？任务将移入隔离区，之后可手动恢复。', t.name))) return;
-          try { await api(taskPath(t), { method: 'DELETE' }); await loadTasks(); await refreshProgress(); toast(T('已删除（移入 .trash）'), 'exc'); } catch (e) { toast(e.message, 'warn'); }
+          if (!await RFConfirm({ message: T('删除任务《{0}》？任务将移入隔离区，之后可手动恢复。', t.name) })) return;
+          try { await api(taskPath(t), { method: 'DELETE' }); await loadTasks(); await refreshProgress(); toast(T('已删除（移入隔离区）'), 'exc'); } catch (e) { toast(e.message, 'warn'); }
         } })
       )
     );
@@ -5923,7 +6070,17 @@ function importBusyTick() {
   const node = $('#importBusyElapsed');
   if (node) node.textContent = T('已等待 {0} 秒', Math.floor((performance.now() - importBusyStarted) / 1000));
 }
-function setImportBusy(active, phase = 'parse', percent = 1) {
+/* r10-U2（批准单 §六 F55，随版缓解半步）：停滞检测状态。轮询返回的
+   (phase, percent) 超过 10 秒没有变化即切「不确定态」——文案如实说进度暂
+   不可知并给出已用时长，避免用户把「永不前进的 1%」当成卡死。后端进度写
+   失败升 warning 并带 degraded 标志属结构包，不在本泳道。 */
+let importProgressKey = '', importProgressChangedAt = 0;
+function noteImportProgress(phase, percent) {
+  const key = String(phase) + ':' + String(percent);
+  if (key !== importProgressKey) { importProgressKey = key; importProgressChangedAt = performance.now(); }
+  return performance.now() - importProgressChangedAt > 10000;
+}
+function setImportBusy(active, phase = 'parse', percent = 1, stalled = false) {
   const overlay = $('#importBusyOverlay');
   if (!overlay) return;
   if (active) {
@@ -5936,22 +6093,31 @@ function setImportBusy(active, phase = 'parse', percent = 1) {
       }
       overlay.hidden = false;
       overlay.focus();
-      importBusyStarted = performance.now();
+      importBusyStarted = performance.now(); importProgressKey = ''; importProgressChangedAt = performance.now();
       clearInterval(importBusyTimer);
       importBusyTimer = setInterval(importBusyTick, 1000);
       importBusyTick();
     }
-    const message = phase === 'exact' ? T('正在进行精确去重…')
-      : phase === 'fuzzy' ? T('精确匹配已完成，正在分段查找标题和作者相似候选…')
-        : phase === 'save' ? T('匹配已完成，正在保存导入结果…')
-          : T('正在解析文件并准备去重…');
-    $('#importBusyMessage').textContent = message;
+    /* r10-U2（批准单 §六 F54）：服务端进度文件在请求体收完之后才出现，此前
+       GET 返回 phase='starting'/1%。原实现把未识别 phase 一律落进「正在解析
+       文件并准备去重…」，大文件慢网下就是长时间「1% 解析中」。上传窗口单独
+       给文案，且此阶段不谎报百分比（进度条转为不确定态的既有 indeterminate）。 */
+    const message = phase === 'starting' ? T('正在上传文件…')
+      : phase === 'exact' ? T('正在进行精确去重…')
+        : phase === 'fuzzy' ? T('精确匹配已完成，正在分段查找标题和作者相似候选…')
+          : phase === 'save' ? T('匹配已完成，正在保存导入结果…')
+            : T('正在解析文件并准备去重…');
+    const elapsed = Math.max(0, Math.floor((performance.now() - importBusyStarted) / 1000));
+    $('#importBusyMessage').textContent = stalled
+      ? T('进度暂不可知（已用 {0} 分 {1} 秒）；导入仍在进行，可稍候或取消等待。', Math.floor(elapsed / 60), elapsed % 60)
+      : message;
     $('#importBusyTitle').textContent = T('正在导入文献');
     $('#importBusyTrack').setAttribute('aria-label', T('导入与去重进度'));
     const value = Math.max(1, Math.min(99, Number(percent) || 1));
     $('#importBusyFill').style.width = value + '%';
-    $('#importBusyPct').textContent = value + '%';
-    $('#importBusyTrack').setAttribute('aria-valuenow', String(value));
+    $('#importBusyPct').textContent = stalled ? '—' : value + '%';
+    if (stalled) $('#importBusyTrack').removeAttribute('aria-valuenow');
+    else $('#importBusyTrack').setAttribute('aria-valuenow', String(value));
   } else if (!overlay.hidden) {
     clearInterval(importBusyTimer); importBusyTimer = null;
     const elapsed = $('#importBusyElapsed');
@@ -6073,6 +6239,13 @@ async function realImport(files) {
   const taskId = S.task.task_id, screener = S.screener, ticket = ++importVersion;
   files = [...files].filter(Boolean);
   if (!files.length) return;
+  /* r10-U2（F61 二次守卫）：队列已按 file.size 预检并禁用按钮，这里再挡一次
+     ——拖放/脚本路径绕过按钮时也不把超限文件送上网。 */
+  const tooLarge = files.filter(file => window.ImportExportWorkspace?.oversize?.(file));
+  if (tooLarge.length) {
+    toast(T('这些文件超过单文件上限 100 MB，未上传：') + tooLarge.map(file => file.name).join('、'), 'warn');
+    return;
+  }
   let sourceIds;
   try { sourceIds = await window.WorkflowImports?.assign(files); }
   catch (error) { WorkflowControls.error(error); return; }
@@ -6106,7 +6279,8 @@ async function realImport(files) {
            realImport 会停在本 await 上；主请求取消后轮询 fetch 必须立即
            拒绝，循环才能走到 catch/finally 恢复遮罩交互（F53 场景）。 */
         const p = await api(taskApi() + '/import-progress/' + encodeURIComponent(jobId) + scrQ(), {signal: abort.signal});
-        setImportBusy(true, p.phase, p.percent);
+        /* F55：停滞判定覆盖 starting 阶段（上传窗口本身也可能长时间无变化）。 */
+        setImportBusy(true, p.phase, p.percent, noteImportProgress(p.phase, p.percent));
       } catch (_) { /* The import request remains authoritative if polling briefly fails. */ }
     }
     const d = await request;
@@ -6183,9 +6357,14 @@ async function refreshALRank() {
   const ticket = ++alRankVersion, taskId = S.task.task_id, screener = S.screener;
   const screenTicket = screenRequestVersion;
   const decisionsAtRequest = new Map(Object.entries(S.decisions).map(([key,value])=>[key,value.decision]));
+  /* F59（随版缓解）：重排期间在卡片区给出轻量指示（「排序更新中…」），
+     消除「卡死还是重排」的歧义；重排落定（成功/失败/失票）即静默恢复。
+     只动呈现层——排序策略与「先旧序渲染后应用」的时序重构不在本期范围。 */
+  const rankPending = window.RFScreenReason?.ranking(true);
   let d;
   try { d = await api(taskApi() + '/al/rank' + scrQ()); }
   catch (e) {
+    if (typeof rankPending === 'function') rankPending();
     if (ticket !== alRankVersion || screenTicket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return false;
     if (e.status !== 401) toast(T('机器学习排序获取失败：') + e.message, 'warn');
     // Preserve the previous usable order when a refresh fails.
@@ -6193,7 +6372,7 @@ async function refreshALRank() {
     renderALChrome();
     return false;
   }
-  if (ticket !== alRankVersion || screenTicket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return false;
+  if (ticket !== alRankVersion || screenTicket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || (window.WorkflowControls && !WorkflowControls.renderAllowed())) { if (typeof rankPending === 'function') rankPending(); return false; }
   S.al.available = !!d.available;
   S.al.reorderInterval = d.reorder_interval || 20;
   S.al.rankedDecisions = decisionsAtRequest;
@@ -6218,6 +6397,7 @@ async function refreshALRank() {
   }
   renderALChrome();
   if (S.al.mode === 'ai') await applyAIOrder();
+  if (typeof rankPending === 'function') rankPending();
   return true;
 }
 function recordALDecision(key, decision) {
@@ -6276,13 +6456,30 @@ function renderALChrome() {
   } else side.style.display = 'none';
 }
 async function setALMode(mode) {
-  if (window.WorkflowControls) return WorkflowControls.setOrder(mode);
+  if (window.WorkflowControls) {
+    /* F25：实时路径经 WorkflowControls.setOrder → loadScreen（此前该路径不发任何
+       toast，而旧的非委托路径一律宣称「已开启」）。排队成功后在两种实况里各说
+       实话：模型就绪才说按间隔更新；标签不足则明说暂按导入顺序——与卡片上方
+       常驻状态行（screen_reader.js 的 rf-screen-ml-status）同源同事实。 */
+    await WorkflowControls.setOrder(mode);
+    if (mode === 'ai' && S.task) {
+      toast(T(S.al.available
+        ? '机器学习排序已开启：按设定间隔更新排序'
+        : '已选择机器学习排序，当前标签不足，暂按导入顺序'), 'inc');
+    }
+    return;
+  }
   if (S.al.mode === mode) return;
   S.al.mode = mode;
   S.al.dismissStreak = -1;
   if (!S.task) { renderALChrome(); return; }
   if (mode === 'ai') {
-    toast(T('机器学习排序已开启：按设定间隔更新排序'), 'inc');
+    /* F25：toast 必须先说清「当前能不能真的按模型排」——标签不足时队列仍是
+       导入顺序，此前 toast 一律宣称已开启，页面却毫无变化。失败分支由
+       refreshALRank 自己的告警覆盖，这里只按模型是否就绪分两种文案。 */
+    toast(T(S.al.available || S.al.currentLabels >= S.al.minLabeled
+      ? '机器学习排序已开启：按设定间隔更新排序'
+      : '已选择机器学习排序，当前标签不足，暂按导入顺序'), 'inc');
     await refreshALRank();
   } else {
     S.articles = S.articlesBase ? S.articlesBase.slice() : S.articles;
@@ -6389,7 +6586,9 @@ function renderScreenHist() {
   visible.forEach(item => {
     box.append(item
       ? el('button', {type:'button',class:'chip c-' + DEC_KEY[item.d.decision], title:item.a.title || '', text:'#' + (item.i + 1),onclick:async()=>{if(!await WorkflowControls.guard())return;S.screenEditingKey=item.a.zotero_key;S.scrIdx=item.i;await renderScreen();}})
-      : el('span', {text:'…'}));
+      /* F28（随版缓解）：被省略的「…」不再是不可点的文本——改成按钮，打开
+         完整已决列表浮层（只读展示；多步撤销需后端能力，未在本期范围）。 */
+      : el('button', {type:'button',class:'chip rf-hist-more',text:'…','aria-haspopup':'dialog','aria-label':T('查看全部已决文献'),title:T('查看全部已决文献'),onclick:()=>window.RFScreenHistory?.open()}));
   });
   $('#scrHistCounts').textContent = T('(纳入：{0} | 待定：{1} | 排除：{2})', counts.include, counts.maybe, counts.exclude);
 }
@@ -6470,9 +6669,10 @@ async function renderScreen() {
       r.year != null && r.year !== '' ? el('span', { class: 'chip scr-year', title:String(r.year), text: String(r.year) }) : null,
       el('span', { class: 'chip scr-type', title:nz(r.item_type), text: nz(r.item_type) || '—' }),
       nz(r.doi) ? el('span', { class: 'chip scr-doi', title:T('DOI {0}', nz(r.doi)), text: T('DOI {0}', nz(r.doi)) }) : null),
-    typeof score === 'number' ? el('div', { class: 'al-score', title: '机器学习相关度 = 模型预测的纳入概率 P(include ∈ [0,1])，基于你已做的筛选决策训练' },
+    typeof score === 'number' ? el('div', { class: 'al-score', title: T('预测纳入概率 = 模型对该文献给出“纳入”的概率估计 P(include)，基于已完成的筛选决策训练；它不是相关度评分，也不代替你的判断') },
       el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round(score * 100) + '%' })),
-      el('span', { class: 'num', text: T('机器学习相关度 {0}%', (score * 100).toFixed(1)) })) : null,
+      el('span', { class: 'num', text: T('预测纳入概率 {0}%', (score * 100).toFixed(1)) }),
+      el('span', { class: 'al-score-basis', text: T('基于 {0} 条已标注', S.al.nLabeled || 0) })) : null,
     /* W4 预置分类器：研究设计徽标（随机对照试验/系统综述/…/未识别），
        插在 AL 分数条旁（无分数条时也显示）；模块未加载时为 null（被下方
        filter 剔除），模块加载但分类不可用时自行移除节点。 */
@@ -6487,6 +6687,11 @@ async function renderScreen() {
   WorkflowControls.decorateStage('screen');
   const saved = WorkflowControls.activeItem('screen')?.saved;
   if (saved && S.screenEditingKey === r.zotero_key) window.WorkspaceUndo?.restoreReason(reason, customReason, saved.exclusion_reason || saved.reason || '');
+  /* F22（r10-u1）：理由下拉的「沿用上次」默认值、最近使用分组与 >8 条时的
+     过滤输入。必须在回填已保存理由之后、StudyDesignBadge 预填与
+     markDecisionClean 之前——默认值因此进入「干净」基线，不会把卡片判成
+     未保存草稿（F27 的另一半）。 */
+  window.RFScreenReason?.decorate(reason, customReason);
   /* W4 预填不代存：判为非 RCT 的已识别设计 → 仅预选「研究设计不符」排除理由
      （复用 ai_suggest 采纳＝填控件模式），必须在 markDecisionClean 之前执行，
      预填后的值进入「干净」基线；数据晚到时由模块补填并重置基线。 */
@@ -6543,9 +6748,18 @@ async function screenDecide(decision) {
   const rsn = $('#excReason');
   let reason = '';
   if (decision === 'exclude') {
-    reason = rsn?.value === '__custom__' ? ($('#excCustomReason')?.value || '').trim() : (rsn?.value || '');
+    /* F24：下拉末尾的「＋ 将此理由存为常用」是动作项，不是理由取值（选它时
+       WorkflowControls 会立刻还原到先前选项）；这里再兜底一次，绝不把动作值
+       当作排除理由提交。 */
+    const picked = rsn?.value === '__save_reason__' ? '' : (rsn?.value || '');
+    reason = picked === '__custom__' ? ($('#excCustomReason')?.value || '').trim() : picked;
     if (!reason) {
-      toast(T(rsn?.value === '__custom__' ? '请输入自定义排除理由' : '排除必选理由 —— 请先在下拉框中选择理由'), 'warn');
+      /* F08：拦截时在理由控件上方渲染一行文字说明（此前只有绿色焦点框，
+         页面上没有任何“哪里出错、该做什么”的文字）。焦点仍留在原因控件，
+         键盘流不被打断；2 秒后自动清除，下次决策也会清除。 */
+      const kind = rsn?.value === '__custom__' ? 'custom' : 'select';
+      if (window.RFScreenReason) RFScreenReason.missing(kind);
+      else toast(T(kind === 'custom' ? '请输入自定义排除理由' : '请先选择排除理由'), 'warn');
       const target = rsn?.value === '__custom__' ? $('#excCustomReason') : rsn;
       if (target) { target.classList.add('shake'); setTimeout(() => target.classList.remove('shake'), 400); target.focus(); }
       return;
@@ -6565,6 +6779,10 @@ async function screenDecide(decision) {
       return;
     }
     S.decisions[r.zotero_key] = { ...savedDecision, decision, reason };
+    /* F22：记住本次所用理由（会话内），下一篇排除时作为「沿用上次」默认值；
+       F08：已成功决策，清掉上一轮的拦截微文案。 */
+    if (decision === 'exclude' && reason) window.RFScreenReason?.remember(reason);
+    window.RFScreenReason?.clearMessage();
     if (S.al.mode === 'ai') recordALDecision(r.zotero_key, decision);
     refreshALStatus(); // Lightweight progress read, never awaited by next-item navigation.
     ScreeningRounds.saved(r.zotero_key);
@@ -7057,10 +7275,13 @@ async function fullDecide(decision) {
   if (!cur) { toast(T('复筛队列为空'), 'info'); return; }
   let reason = '';
   if (decision === 'exclude') {
-    const selected = $('#ftReason').value;
+    /* F24：同初筛——下拉末尾的「＋ 将此理由存为常用」是动作项，不是理由取值。 */
+    const pickedFt = $('#ftReason').value;
+    const selected = pickedFt === '__save_reason__' ? '' : pickedFt;
     reason = selected === '__custom__' ? $('#ftCustomReason').value.trim() : selected;
     if (!reason) {
-      toast(T(selected === '__custom__' ? '请输入自定义排除理由' : '排除必选理由 —— 请先选择理由'), 'warn');
+      if (window.RFScreenReason) RFScreenReason.missing(selected === '__custom__' ? 'custom' : 'select');
+      else toast(T(selected === '__custom__' ? '请输入自定义排除理由' : '请先选择排除理由'), 'warn');
       (selected === '__custom__' ? $('#ftCustomReason') : $('#ftReason')).focus();
       return;
     }
@@ -7081,7 +7302,7 @@ async function fullDecide(decision) {
     /* 保存反馈（F03）：复筛与初筛对齐——toast 标明题名片段（排除时附理由），
        并延长停留时间，使“保存了哪条”在连续筛选时可被感知。 */
     const name = (cur.title || '').slice(0, 22) + '…';
-    toast({ include: T('✓ 复筛纳入《{0}》', name), maybe: T('◐ 复筛待定《{0}》', name), exclude: T('✗ 复筛排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
+    toast({ include: T('✓ 复筛纳入《{0}》', name), maybe: T('◐ 复筛暂不确定《{0}》', name), exclude: T('✗ 复筛排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
     const nxt = S.ftQueue.findIndex(x => !S.ftDec[x.zotero_key]);
     if (nxt >= 0) { S.ftIdx = nxt; renderFtDoc(); openFtPdf(); }
     else { renderFtDoc(); toast(T('🎉 复筛队列全部完成'), 'inc'); }
@@ -7163,7 +7384,32 @@ function saveJson(name, obj) {
 }
 
 /* ---------- 合并仲裁（真实上传） ---------- */
-$('#mergePick').addEventListener('click', () => $('#mergeFiles').click());
+/* r10-U2（批准单 §六 F57）：合并 2~9 份决策 CSV 原本全程无忙碌反馈——界面
+   完全静止、上传区与按钮未禁用，等待中可重复触发。这里复用导出既有的
+   「已等待 {0} 秒」模式：上传后立即禁用上传区与其内控件、按钮进入禁用态，
+   状态行按秒显示已用时长；结束时（成功或失败）恢复原状。 */
+let mergeBusy = false, mergeTimer = 0, mergeStarted = 0, mergeCount = 0, mergePriorDisabled = new Map();
+function setMergeBusy(active) {
+  mergeBusy = !!active;
+  const zone = $('#mergeFiles').closest('.card') || document.body;
+  const controls = [...zone.querySelectorAll('button, input, select'), $('#mergeStage'), $('#mergePick'), $('#mergeFiles'), $('#mergeLatest'), $('#mergeDownload'), $('#mergePrev'), $('#mergeNext')].filter(Boolean);
+  clearInterval(mergeTimer); mergeTimer = 0;
+  if (active) {
+    /* 先快照原禁用态，结束时原样恢复——不得把本就禁用的控件顺手启用。 */
+    mergePriorDisabled = new Map();
+    for (const control of controls) { mergePriorDisabled.set(control, control.disabled); control.disabled = true; }
+    mergeStarted = performance.now();
+    mergeCount = (S.mergeFiles || []).length;
+    $('#mergeFilesHint').setAttribute('aria-busy', 'true');
+    const tick = () => { const node = $('#mergeSaveStatus'); if (node && mergeBusy) node.textContent = T('正在合并 {0} 份决策 CSV…已等待 {1} 秒', mergeCount, ((performance.now() - mergeStarted) / 1000).toFixed(0)); };
+    tick(); mergeTimer = setInterval(tick, 500);
+  } else {
+    for (const [control, wasDisabled] of mergePriorDisabled) if (control.isConnected) control.disabled = wasDisabled;
+    mergePriorDisabled = new Map();
+    $('#mergeFilesHint').setAttribute('aria-busy', 'false');
+  }
+}
+$('#mergePick').addEventListener('click', () => { if (!mergeBusy) $('#mergeFiles').click(); });
 $('#mergeFiles').addEventListener('change', async e => {
   const files = Array.from(e.target.files || []);
   e.target.value = '';
@@ -7180,16 +7426,21 @@ $('#mergeFiles').addEventListener('change', async e => {
   $('#mergeFilesHint').textContent = files.map(f => f.name).join(' · ');
   const fd = new FormData();
   for (const f of files) { fd.append('files', f, f.name); wrap.append(el('div', { class: 'slot ok' }, el('b', { text: f.name.replace(/\.csv$/i, '') }), el('span', { class: 'st', text: T('✓ 已选择（{0} 字节）', f.size) }))); }
+  setMergeBusy(true);
   try {
     const d = await api('/api/merge/decisions', { method: 'POST', form: fd });
     S.merge = d;
     renderMergeResult(d);
+    $('#mergeSaveStatus').textContent = T('已合并 {0} 份决策 CSV。', files.length);
   } catch (err) {
     S.merge = null;
     S.mergeFiles = null;
     $('#mergeMetrics').textContent = '';
     $('#mergeCard').style.display = 'none';
+    $('#mergeSaveStatus').textContent = T('合并失败：') + err.message;
     toast(T('合并失败：') + err.message, 'warn');
+  } finally {
+    setMergeBusy(false);
   }
 });
 function renderMergeResult(d) {
@@ -7227,7 +7478,7 @@ function renderConf() {
   for (const r of rows.slice(S.mergePage * pageSize, (S.mergePage + 1) * pageSize)) {
     const tr = el('tr');
     tr.append(el('td', { text: r.zotero_key }));
-    for (const n of names) tr.append(el('td', { text: DEC_LABEL[r['decision_' + n]] || r['decision_' + n] || '—' }));
+    for (const n of names) tr.append(el('td', { text: DEC_LABEL[r['decision_' + n]] ? T(DEC_LABEL[r['decision_' + n]]) : (r['decision_' + n] || '—') }));
     const stCell = el('td');
     if (r.status === 'agree') stCell.append(el('span', { class: 'chip c-inc', text: '一致' }));
     else if (r.status === 'conflict') stCell.append(el('span', { class: 'chip c-exc', text: '冲突' }));
@@ -7238,7 +7489,7 @@ function renderConf() {
       const selected = S.mergeChoices?.[r.zotero_key] || {};
       const decision = el('select', {class:'input', 'aria-label':`仲裁决定 ${r.zotero_key}`},
         el('option', {value:'', text:T('待仲裁')}),
-        ...['include','maybe','exclude'].map(value => el('option', {value, text:DEC_LABEL[value]})));
+        ...['include','maybe','exclude'].map(value => el('option', {value, text:T(DEC_LABEL[value])})));
       decision.value = selected.decision || '';
       const reason = el('input', {class:'input', placeholder:T('仲裁说明（可选）'),
         'aria-label':`仲裁说明 ${r.zotero_key}`});
@@ -7416,11 +7667,78 @@ function prInitChain() {
   $('#prReasonsFull').addEventListener('input', () => prAutoCalc());
   $('#prReasonsScreen').addEventListener('input', () => prAutoCalc());   /* Σ理由 → 初筛排除总数 */
 }
+/* F07（UX 批准单 §六）：自动填充必须给出可核对的反馈——旧实现无论是否真的
+   填了东西都只弹一句「已自动填充可推导字段」，上游识别数为 0 时字段仍是 0，
+   用户看不出「按钮没生效」还是「没有可填的值」。现在统计实际被改写的字段数、
+   短暂高亮这些输入框，并在无可填值时说明原因。 */
+function prAutoInputs(){return Array.from(document.querySelectorAll('.page[data-p="prisma"] input.prn, .page[data-p="prisma"] .pr-field input'));}
 $('#prAutoFill').addEventListener('click', () => {
   PR_AUTO.manual.clear();
+  const before = new Map(prAutoInputs().map(input => [input, input.value]));
   prAutoCalc();
-  toast(T('已自动填充可推导字段（标记「自动」的字段会随上游数字自动更新）'), 'inc');
+  let filled = 0;
+  for (const [input, value] of before) {
+    if (!input.isConnected || input.value === value) continue;
+    filled += 1;
+    input.classList.remove('pr-filled');
+    void input.offsetWidth;                       /* 重启动画（连续点击也能看见） */
+    input.classList.add('pr-filled');
+    setTimeout(() => input.classList.remove('pr-filled'), 1700);
+  }
+  prClearMissing();
+  toast(filled
+    ? T('已填充 {0} 个字段（标记「自动」的字段会随上游数字自动更新）', filled)
+    : T('没有可填充的字段：请先在上游填写识别来源与数量。'), filled ? 'inc' : 'warn');
 });
+
+/* F07：缺失项清单面板。旧实现由 PrismaTaskUI.completeForm 逐项 toast 拦截
+   （只报第一处「请填写已确认的研究数」），用户不知道还差哪些数字。现在在
+   调用任何校验/请求之前一次性列出全部缺项，并聚焦面板供屏幕阅读器播报。 */
+const PR_REQUIRED = { new: ['prIncluded'], dta: ['prIncluded'], updated: ['prPreviousStudies', 'prPreviousReports', 'prNewStudies'] };
+function prMissingItems() {
+  const ids = PR_REQUIRED[$('#prMode').value] || PR_REQUIRED.new;
+  const items = [];
+  for (const id of ids) {
+    const input = $('#' + id);
+    const label = (input.parentElement?.querySelector('label')?.textContent || id).trim();
+    const raw = String(input.value ?? '').trim();
+    items.push({ id, label, empty: raw === '', invalid: raw !== '' && !input.checkValidity() });
+  }
+  /* 识别来源与数量：后端 R1 要求至少一行有名称的来源（数量为 0 只给 warning），
+     前端按同一门槛列出，避免用户填完纳入数才被后端拦一次。 */
+  const rows = Array.from($('#prRowsDb').children).map(row => row._collect && row._collect()).filter(Boolean);
+  if (!rows.some(row => row.name)) {
+    items.push({ id: 'prRowsDb', label: T('识别来源（至少一行，含来源名称）'), empty: true, invalid: false });
+  }
+  if ($('#prScope').value === 'db_reg_other') {
+    const otherRows = Array.from($('#prRowsOther').children).map(row => row._collect && row._collect()).filter(Boolean);
+    if (!otherRows.some(row => row.name)) items.push({ id: 'prRowsOther', label: T('其他方法的识别来源（至少一行）'), empty: true, invalid: false });
+  }
+  return items;
+}
+function prClearMissing() {
+  const host = $('#prMissing');
+  if (!host || host.hidden) return;
+  host.hidden = true;
+  host.replaceChildren();
+}
+function prShowMissing(items) {
+  const host = $('#prMissing');
+  if (!host) return;
+  host.replaceChildren();
+  host.append(el('b', { text: T('请先补齐以下内容（{0} 项）', items.length) }));
+  const list = el('ul');
+  for (const item of items) {
+    const li = el('li', { translate: 'no' });
+    li.textContent = item.label + ' · ' + T(item.invalid ? '格式不正确' : '未填写');
+    list.append(li);
+  }
+  host.append(list, el('p', { text: T('填写后再点「校验并生成流程图」。') }));
+  host.hidden = false;
+  host.focus();
+}
+document.querySelector('.page[data-p="prisma"]')?.addEventListener('input', prClearMissing, true);
+document.querySelector('.page[data-p="prisma"]')?.addEventListener('change', prClearMissing, true);
 
 /* ---------- PRISMA：用户友好校验文案（中文） ----------
    后端返回「R2: 公式… / English…」式的技术文案；中文模式下按规则号 + 页面当前
@@ -7578,6 +7896,11 @@ $('#prGenerate').addEventListener('click', async () => {
     reports_of_included_studies: num('prIncludedReports')
   };
   if ($('#prMode').value === 'dta') form.studies_included_meta_analysis = num('prMetaN');
+  /* F07：先一次性列出全部缺失项（不打扰地聚焦面板），全部就位后才进入
+     PrismaTaskUI.completeForm 与后端校验——后者仍保留为最后一道“单项拦截”。 */
+  const missing = prMissingItems();
+  if (missing.length) { prShowMissing(missing); return; }
+  prClearMissing();
   if (window.PrismaTaskUI && !PrismaTaskUI.completeForm(form)) return;
   try {
     const d = await api('/api/prisma/generate', { method: 'POST', body: { form } });
@@ -8228,7 +8551,7 @@ async function loadDims() {
       el('td', { text: T(d.multi_select ? '多选' : typeLabel[d.dtype] || d.dtype) + (d.unit ? '（' + d.unit + '）' : '') }),
       el('td', {}, d.options && d.options.length ? d.options.map(o => el('span', { class: 'chip', text: o })) : el('span', { class: 'hint', text: '—' })),
       el('td', {}, el('button', { class: 'btn b-out sm', text: T('删除'), onclick: async () => {
-        if (!confirm(T('删除维度「{0}」？其编码值与备注将一并删除。', d.name))) return;
+        if (!await RFConfirm({ message: T('删除维度「{0}」？其编码值与备注将一并删除。', d.name) })) return;
         try { await api(taskApi() + '/coding/dimensions/' + d.id + scrQ(), { method: 'DELETE' }); toast(T('已删除维度「{0}」', d.name), 'exc'); loadDims(); } catch (e) { toast(e.message, 'warn'); }
       } }))
     ));
@@ -8358,12 +8681,37 @@ $('#cbNext').addEventListener('click', async () => { if (!await WorkflowControls
 $('#cbSave').addEventListener('click', () => WorkflowEvidence.save());
 
 /* ---------- 全局键盘快捷键 ---------- */
+/* F21（报告⑥.5，本泳道先用 Playwright 键盘事件复现后修）：
+   复现结论（r10-u1 探针，焦点在 #excReason 时）——
+   · 按 1 → 直接 POST 决策、当前文献被存为「纳入」；按 2 → 存为「待定」；
+   · 焦点在自定义理由输入框时按 3 无任何反应（tag==='input' 早退），
+     按 Enter 亦无反应——两条键盘路径行为不一致。
+   修复口径（批准单 F21「控件层」方案）：
+   · select 聚焦时只放行「3=排除」；1/2 需 Ctrl/⌘/Alt 修饰键确认（避免下拉内
+     误按即把文献误存为纳入/待定并污染 ML 训练标签）；
+   · 自定义理由输入框补 Enter=排除提交（有理由时），数字键按普通文本输入；
+   · 其余输入控件内仍不触发决策（原有行为不变）。 */
 document.addEventListener('keydown', e => {
+  if (e.isComposing) return;
   const tag = (e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
-  if (tag === 'select' && e.target.id !== 'excReason' && e.target.id !== 'ftReason') return;
+  const id = e.target.id || '';
+  const reasonSelect = tag === 'select' && (id === 'excReason' || id === 'ftReason');
+  const customReason = tag === 'input' && (id === 'excCustomReason' || id === 'ftCustomReason');
   if (e.key === 'Escape') return;
   if ($('#appMain').style.display === 'none') return;
+  if (customReason) {
+    /* 自定义理由框内 Enter 提交排除；其余按键（数字等）保持文本输入语义。 */
+    if (e.key === 'Enter' && !e.altKey) {
+      e.preventDefault();
+      if (S.page === 'screen') screenDecide('exclude');
+      else if (S.page === 'fulltext') fullDecide('exclude');
+    }
+    return;
+  }
+  if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+  if (tag === 'select' && !reasonSelect) return;
+  /* 下拉聚焦时 1/2 需修饰键确认；3 照常放行（批准单指定的唯一放行键）。 */
+  if (reasonSelect && e.key !== '3' && !(e.ctrlKey || e.metaKey || e.altKey)) return;
   if (S.page === 'screen') {
     if (e.key === '1') screenDecide('include');
     else if (e.key === '2') screenDecide('maybe');
@@ -8412,6 +8760,10 @@ $('#authForm').addEventListener('submit', async e => {
     saveToken(d.token);
     await enterApp();
     toast(T('欢迎，{0}', d.user.username), 'inc');
+    /* F11（修复）：新注册用户不知道「我是谁／下一步干嘛」——注册成功再补一句
+       角色与去向（独立用户可新建任务，或等任务属主邀请）。注册与登录共用同一
+       submit 分支，只在 authMode==='register' 时提示；文案已注册十语言。 */
+    if (authMode === 'register') toast(T('你已注册为独立用户：可新建任务，或等任务属主邀请加入。'), 'info', 9000);
     /* R6-C1（复审）：消费登录响应 warnings（保留名撞库账号的改名指引）——
        此前响应里有 warnings 但前端只取 token/username，用户得不到任何提示 */
     if (Array.isArray(d.warnings)) d.warnings.forEach(w => toast(String(w), 'warn', 9000));
@@ -9093,13 +9445,19 @@ async function enterApp() {
   await refreshTeam();
   // Resolve only known local destinations after authentication and task loading.
   let initialPage = 'home';
+  /* F18（修复）：坏深链此前静默落首页——用户分不清「链接失效」与「产品就这样」。
+     只有「URL 里确有一段片段、但没有任何已知目标接受它」才算坏链；空片段是正常
+     的默认入口，不提示，避免每次登录都误报。 */
+  let unrecognizedLink = false;
   try {
     const fragment = decodeURIComponent(location.hash.slice(1));
     const route = window.RFNavigation?.parse(location.hash)?.page || (fragment.startsWith('workspace/') ? fragment.slice(10) : null);
     if (route && Array.from(document.querySelectorAll('#appMain section.page[data-p]')).some(node => node.dataset.p === route)) initialPage = route;
     else if (fragment.startsWith('an') && document.getElementById(fragment)?.closest('.page[data-p="analysis"]')) initialPage = 'analysis';
-  } catch (_) { /* Malformed fragments safely open Home. */ }
+    else if (fragment) unrecognizedLink = true;
+  } catch (_) { unrecognizedLink = location.hash.length > 1; /* 解码失败同样是坏链，但仍安全回首页 */ }
   go(initialPage);
+  if (unrecognizedLink) toast('未识别的链接，已返回首页。', 'warn', 5000);
   const initialRoute = window.RFNavigation?.parse(location.hash);
   if (initialRoute?.page === 'analysis') window.RFAnalysisWorkspace?.applyRoute(initialRoute, {history:false});
   window.RFWorkspaceShell?.refresh();
@@ -9240,12 +9598,12 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_dta_likelihood_ratios.js?v=20260929-ui3"></script>
 <script src="./analysis_dta_exploratory_lr.js?v=20261030-r8fl4"></script>
 <script src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
-<script src="./analysis_navigation.js?v=2.1.4-r4"></script>
-<script src="./workspace_shell.js?v=20261012-workflow6"></script>
-<script src="./sidebar_sheet.js?v=20261013-mobile2"></script>
+<script src="./analysis_navigation.js?v=20261101-r10u4"></script>
+<script src="./workspace_shell.js?v=20261101-r10u4"></script>
+<script src="./sidebar_sheet.js?v=20261101-r10u4"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261101-r9l4b1"></script>
-<script src="./research_trace.js?v=20261028-r7-frontsec1"></script>
+<script src="./workflow_locale.js?v=20261101-r10u5b"></script>
+<script src="./research_trace.js?v=20261101-r10u6-trace1"></script>
 <script src="./import_review_locale.js?v=20261030-r8fl4"></script>
 <script src="./import_review_model.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_guide.js?v=2.1.2.2"></script>
@@ -9257,34 +9615,34 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./al_profile_selector.js?v=20261101-r9l4b1"></script>
 <script src="./al_stop_panel.js?v=20261029-lastfix"></script>
 <script src="./al_blind_mode.js?v=20261012-home-wording1"></script>
-<script src="./screen_reader.js?v=20261012-order-label1"></script>
+<script src="./screen_reader.js?v=20261101-r10u1b"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261030-r8fl5"></script>
 <script src="./extraction_workbench.js?v=20261029-lastfix"></script>
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
-<script src="./screening_rounds.js?v=20261012-rounds1"></script>
-<script src="./workflow_controls.js?v=20261030-r8b-fl6-reason2"></script>
+<script src="./screening_rounds.js?v=20261101-r10u6-rounds1"></script>
+<script src="./workflow_controls.js?v=20261101-r10u1"></script>
 <script src="./workflow_evidence.js?v=20261101-r9l31"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
-<script src="./import_export_locale.js?v=20261030-r8fl4"></script>
+<script src="./import_export_locale.js?v=20261101-r10u2"></script>
 <script src="./import_export_help_locale.js?v=20261028-r7-frontsec1"></script>
-<script src="./import_export_workspace.js?v=20261030-r8fl5"></script>
+<script src="./import_export_workspace.js?v=20261101-r10u2"></script>
 <script src="./import_review_loading.js?v=2.1.4-r4"></script>
-<script src="./import_review_refined_locale.js?v=20261028-r7-frontsec1"></script>
-<script src="./import_review_updates.js?v=2.1.3"></script>
-<script src="./unified_import_workspace.js?v=2.1.4-r8"></script>
-<script src="./team_prisma_locale.js?v=20261028-r7-frontsec1"></script>
+<script src="./import_review_refined_locale.js?v=20261101-r10u2"></script>
+<script src="./import_review_updates.js?v=20261101-r10u2"></script>
+<script src="./unified_import_workspace.js?v=20261101-r10u2"></script>
+<script src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
-<script src="./workspace_undo.js?v=20261013-keyguard1"></script>
+<script src="./workspace_undo.js?v=20261101-r10u1b"></script>
 <script src="./analysis_grade.js?v=20261030-r8fl5"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
 <script src="./living_review.js?v=20261030-r8-w3-2"></script>
 <script src="./evidence_mapper.js?v=20261030-r8fl5"></script>
-<link rel="stylesheet" href="./mobile_concept.css?v=20261013-disclosure5">
-<script src="./mobile_concept_locale.js?v=20261013-motion13"></script>
-<script src="./mobile_concept.js?v=2.1.2.2"></script>
+<link rel="stylesheet" href="./mobile_concept.css?v=20261101-r10u3">
+<script src="./mobile_concept_locale.js?v=20261101-r10u3"></script>
+<script src="./mobile_concept.js?v=20261101-r10u3b"></script>
 <link rel="stylesheet" href="./mobile_motion.css?v=20261013-motion13">
 <link rel="stylesheet" href="./disclosure_controls.css?v=20261013-svg2">
 <script src="./mobile_motion.js?v=2.1.2.2"></script>

@@ -445,12 +445,37 @@ def check_size(data: bytes) -> None:
         )
 
 
+#: 上传类型/编码被拒时给用户的文案（r10-U2 / F67）。
+#:
+#: 铁律「用户可见文本必须十语言词典同步」要求清单一律经 T() 精确命中词典，
+#: 而 T() 只做整串精确查找（index.html 的 RFLang.t），带插值的句子永远命中
+#: 不了。因此这三条改成**不含任何变量**的英文整句，并在
+#: custom_frontend/import_export_locale.js 里以同一英文串为 en 槽登记十语言；
+#: errOf 对字符串 detail 走 T() 后即按界面语言渲染，中文界面得到中文整句
+#: （含顿号分隔的类型清单），其它九种语言同理。代价是不再回显「被拒的具体
+#: 扩展名」——可接受：队列里仍列出所选文件名，用户真正需要的是「允许什么」。
+#: 允许类型清单与 TEXT_EXTENSIONS 的一致性由
+#: build/tests/test_r10_u2_import_lane.py 的 test_upload_rejection_copy 钉住
+#: （漏登记新扩展名 → 红）。
+UPLOAD_EXTENSION_MESSAGE = (
+    "Unsupported file extension. Allowed file types: CSV (.csv), RIS (.ris), "
+    "plain text (.txt), tab-separated text (.tsv)."
+)
+UPLOAD_BINARY_MESSAGE = (
+    "This file contains binary content and is not a valid CSV/RIS text file. "
+    "Confirm that you exported a text format, not an Excel workbook, an EndNote "
+    "library, or an archive."
+)
+UPLOAD_UTF8_MESSAGE = (
+    "This file is not valid UTF-8 text. Save it as UTF-8 encoding and retry; "
+    "NoteExpress and EndNote let you choose the encoding when exporting."
+)
+
+
 def check_extension(filename: str, allowed: set[str]) -> None:
     ext = Path(clean_upload_name(filename)).suffix.lower()
     if ext not in allowed:
-        raise UploadRejected(
-            f"不支持的文件扩展名：{ext or '(无)'}，仅允许 {sorted(allowed)}。", status=415
-        )
+        raise UploadRejected(UPLOAD_EXTENSION_MESSAGE, status=415)
 
 
 def check_pdf_bytes(data: bytes) -> None:
@@ -464,11 +489,13 @@ def check_text_bytes(data: bytes) -> None:
     """CSV/RIS 上传校验：大小 + 可解码为文本 + 无 NUL 字节（拒绝二进制伪装）。"""
     check_size(data)
     if b"\x00" in data:  # 全量扫描（C 级 memchr）；此前仅扫前 64KB，NUL 可藏在其后
-        raise UploadRejected("文件包含二进制内容，不是有效的 CSV/RIS 文本。", status=415)
+        raise UploadRejected(UPLOAD_BINARY_MESSAGE, status=415)
     try:
         data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise UploadRejected("文件不是有效的 UTF-8 文本。", status=415) from exc
+        # r10-U2（F67）：非 UTF-8 是中文文献环境的高频坑（GBK/UTF-16 导出），
+        # 只报"不是 UTF-8"用户不知道下一步。文案见 UPLOAD_UTF8_MESSAGE。
+        raise UploadRejected(UPLOAD_UTF8_MESSAGE, status=415) from exc
 
 
 class UploadRejected(Exception):

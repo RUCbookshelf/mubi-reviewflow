@@ -820,7 +820,15 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                 raise HTTPException(403, 'Task is read-only.')
             policy = store.settings(ctx.owner_db)
             if body.expected_policy_version != policy['version']:
-                raise HTTPException(409, 'Workflow policy changed. Refresh and retry.')
+                # F63（UX 批准单 §七）：同类「策略版本冲突」此前两套口径——
+                # write_guard 回 {code:'workflow_version_conflict', version,
+                # workflow_settings}，前端 W.error 据此自动刷新并保留草稿；
+                # screening-rounds 只回一句纯英文串、前端既不刷新也不更新版本，
+                # 重试必然再 409（死循环）。此处对齐 write_guard 的载荷形状，
+                # W.error→W.refresh('conflict') 生效后重试即通过。
+                raise HTTPException(409, {"code": "workflow_version_conflict",
+                                          "version": policy['version'],
+                                          "workflow_settings": runtime.settings(ctx)})
             runtime.sync_catalog(ctx)
             rows, saved = runtime.eligible(ctx, 'screen')
             source_id = body.source_id or None
@@ -831,6 +839,9 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
             elif action == 'start':
                 active = screening_rounds.current(ctx.actor_db, saved)
                 if active and active['pending_keys']:
+                    # 余下三条 409 保持纯字符串 error 形状（前端不按 code 做动作），
+                    # 但文案改由 RFLang 双键词典命中（screening_rounds.js 注册十语言），
+                    # errOf 的 detail -> T() 即输出当前界面语言。
                     raise HTTPException(409, 'Finish the current round or proceed to full-text screening first.')
                 if any(not saved.get(row['zotero_key']) for row in rows):
                     raise HTTPException(409, 'Complete the current title-and-abstract queue first.')

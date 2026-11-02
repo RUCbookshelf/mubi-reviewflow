@@ -16,9 +16,14 @@ PRISMA 2020 distinguishes a **record** (a database entry identifying a report), 
 
 The full-text queue position uses **Full-text report x / y**. This is an item position within the current queue, not a count of unique studies or proof that a PDF has been retrieved. These wording changes do not alter PRISMA calculations, study grouping, permissions or saved decisions.
 
+## Role names in controls (UX approval list F47)
+
+The role vocabulary is the pair **Coder** (筛选与编码员) and **Adjudicator** (裁决员). Controls show the translated name with the English term in parentheses — 「筛选与编码员（Coder）」/「裁决员（Adjudicator）」 — and the label is a dictionary entry (`team_prisma_locale.js`), never a hardcoded English `<option>` or literal. The English slot is the bare term, so English-language screens read Coder / Adjudicator exactly as before. **Reconciler** stays the internal grant identifier only (API role value `reconciler`); it is not shown to users. The help page uses the same translated names, so a Chinese owner who reads the help finds the same two labels in the invite and role menus.
+
 ## Decisions and completion
 
 - **Maybe** is an explicitly saved uncertainty decision. Decision-history counts use Maybe rather than Pending.
+- In Chinese the canon label is 「暂不确定」 (UX approval list F23); the older 「待定」 is kept only as a dictionary alias so cached controls still translate. Every place that renders the decision label goes through `T()` — including the trace/decision table and the adjudication dropdown, which used to concatenate the raw label.
 - **Undecided** means no screening decision has been saved for that item.
 - **Pending** remains appropriate for work awaiting action, such as duplicate review or adjudication. It must not stand in for a saved Maybe decision in a decision breakdown.
 - A message that every queue item has a saved decision does not imply all uncertainty is resolved, every report is included, or coding is complete.
@@ -44,3 +49,21 @@ Interface strings and placeholders are checked structurally across languages. Th
 
 - **Hide Machine Learning scores** describes a display preference. It hides scores and badges while retaining the selected ranking order; it does not promise a double-blind study design.
 - Model presets use neutral configuration names and descriptions. Benchmark performance is not presented as a universal guarantee. The four profile identifiers and their parameters remain unchanged.
+
+## Queue eligibility messages (UX approval list F49)
+
+Title-and-abstract and full-text queue eligibility notices name the screened unit **Record** in English ("This record is not eligible for this stage.", "This record is outside the permitted sources.", "This record is in a repeat screening round. …", "This record is not in the current queue; reload screening and try again.", "This saved record is outside the selected queue. Return to the queue to continue."), so one screen uses one noun. The previous "This article …" sentences are retained as dictionary aliases: the reason codes emitted by `workflow_controls.js` and any cached control that still carries the old English sentence keep resolving. This is a wording-only change; eligibility checks, reason codes and saved decisions are untouched.
+
+Scope limit of this pass: sentences that legitimately say *article* outside the screening queue (for example the Machine-Learning score explanation "… estimate for this article") are unchanged, and no non-screening module was swept. This is the approval-list "随版缓解" half; a full terminology sweep is a separate item.
+
+## Deleted tasks (UX approval list F50)
+
+Deleting a task moves its directory into the quarantine area. The user-facing destination is 「隔离区」 everywhere: the confirmation, the success notice and the help page. The internal folder name `.trash` (`coscreen/tasks.py` `TRASH_DIRNAME`) is not shown in the interface. Range notation in the UI uses an en dash (2–9 decision CSVs).
+
+## Confirmation dialogs (UX approval list F52)
+
+Destructive confirmations use the in-app `RFConfirm` dialog instead of the native `confirm()`: the destructive action is the red primary button, the safe action (取消/Cancel) takes initial focus, Tab cycles inside the dialog, Escape cancels, and focus returns to the control that opened it. The message text is the existing `T()` string, unchanged, so the dialog follows the selected interface language. `RFConfirm` is the shared shape for later confirmations (F24, F33). Its title and both button labels are dictionary entries (`请确认` / `取消` / `确定`), not browser-localised strings; `finish()` closes and removes the dialog synchronously so a second confirmation cannot stack a duplicate `#rf-confirm-dialog`.
+
+## Login and registration constraints (UX approval list F51)
+
+The username and password placeholders state the constraint *before* the user submits: 「3–64 位，可用字母、数字、. _ @ - 与汉字」 and 「8–128 位」. They restate `custom_backend/auth.py` (`_USERNAME_RE` = `^[0-9A-Za-z._@\-\u4e00-\u9fff]{3,64}$`, `_MIN_PASSWORD_LEN = 8`, `_MAX_PASSWORD_LEN = 128`); changing that regex or those bounds requires updating the placeholder copy and its ten dictionary slots. The separate 72-byte bcrypt ceiling stays an error-path message, not a placeholder.

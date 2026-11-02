@@ -1,0 +1,2075 @@
+{
+ "dataset": "Senn2013",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 20,
+ "counts": {
+  "PASS": 15,
+  "FAIL": 0,
+  "NOT-RUN": 2,
+  "INFO": 3
+ },
+ "checks": [
+  {
+   "id": "senn-fe-qe",
+   "dataset": "Senn2013",
+   "method": "NMA fixed-effect GLS (QE statistic)",
+   "metric": "QE",
+   "observed": 96.98406506550127,
+   "published": 96.98,
+   "published_decimals": 2,
+   "abs_diff": 0.004065065501265508,
+   "rel_diff": 4.191653435002586e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-fe-qe-df",
+   "dataset": "Senn2013",
+   "method": "NMA fixed-effect GLS (QE statistic)",
+   "metric": "QE df",
+   "observed": 18,
+   "published": 18,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "senn-fe-estimates",
+   "dataset": "Senn2013",
+   "method": "NMA fixed-effect GLS estimates",
+   "metric": "MD vs placebo x9",
+   "observed": null,
+   "published": null,
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "INFO",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "executed; A1 §7.1 publishes no FE vs-placebo estimates (random-effects only), so no verdict assignable; FE estimates stored in raw for attribution"
+  },
+  {
+   "id": "senn-re-rosiglitazone",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD rosiglitazone vs placebo",
+   "observed": -1.2337387089338507,
+   "published": -1.2337,
+   "published_decimals": 4,
+   "abs_diff": 3.8708933850717386e-05,
+   "rel_diff": 3.137629395373056e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-metformin",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD metformin vs placebo",
+   "observed": -1.128403819633101,
+   "published": -1.1284,
+   "published_decimals": 4,
+   "abs_diff": 3.819633100921038e-06,
+   "rel_diff": 3.3849992032267265e-06,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-pioglitazone",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD pioglitazone vs placebo",
+   "observed": -1.1294045979993785,
+   "published": -1.1294,
+   "published_decimals": 4,
+   "abs_diff": 4.5979993785749684e-06,
+   "rel_diff": 4.071187691318371e-06,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-miglitol",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD miglitol vs placebo",
+   "observed": -0.9498845190285029,
+   "published": -0.9499,
+   "published_decimals": 4,
+   "abs_diff": 1.5480971497061624e-05,
+   "rel_diff": 1.6297474994274792e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-acarbose",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD acarbose vs placebo",
+   "observed": -0.8413642535083636,
+   "published": -0.8414,
+   "published_decimals": 4,
+   "abs_diff": 3.574649163640142e-05,
+   "rel_diff": 4.248453962015857e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-benfluorex",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD benfluorex vs placebo",
+   "observed": -0.7369003139220389,
+   "published": -0.7369,
+   "published_decimals": 4,
+   "abs_diff": 3.139220389192232e-07,
+   "rel_diff": 4.260035811090015e-07,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-vildagliptin",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD vildagliptin vs placebo",
+   "observed": -0.7,
+   "published": -0.7,
+   "published_decimals": 4,
+   "abs_diff": 0.0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-sitagliptin",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD sitagliptin vs placebo",
+   "observed": -0.5700000000000001,
+   "published": -0.57,
+   "published_decimals": 4,
+   "abs_diff": 1.1102230246251565e-16,
+   "rel_diff": 1.9477596923248362e-16,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-sulfonylurea",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "MD sulfonylurea vs placebo",
+   "observed": -0.4175277298163112,
+   "published": -0.4175,
+   "published_decimals": 4,
+   "abs_diff": 2.772981631121718e-05,
+   "rel_diff": 6.641872170351421e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00011976047904191618,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-tau2",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "tau2",
+   "observed": 0.09991454851161115,
+   "published": 0.0999,
+   "published_decimals": 4,
+   "abs_diff": 1.4548511611145454e-05,
+   "rel_diff": 0.00014563074685831285,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0005005005005005005,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-re-nstudies",
+   "dataset": "Senn2013",
+   "method": "NMA random (common tau2 REML)",
+   "metric": "n_studies",
+   "observed": 26,
+   "published": 26,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "senn-re-residual-q",
+   "dataset": "Senn2013",
+   "method": "NMA random residual_q (RE-weighted diagnostic)",
+   "metric": "",
+   "observed": null,
+   "published": null,
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "INFO",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "executed; observed 17.438145 (df 18) — this RE-weighted diagnostic is a different statistic from metafor's model-independent QE=96.98 (checked above on the FE GLS path), so no verdict is assigned here"
+  },
+  {
+   "id": "senn-pscore-rosiglitazone",
+   "dataset": "Senn2013",
+   "method": "P-score (lower=better)",
+   "metric": "P-score rosiglitazone",
+   "observed": 0.8977804388920172,
+   "published": 0.898,
+   "published_decimals": 3,
+   "abs_diff": 0.00021956110798282413,
+   "rel_diff": 0.00024450012024813375,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-pscore-placebo",
+   "dataset": "Senn2013",
+   "method": "P-score (lower=better)",
+   "metric": "P-score placebo",
+   "observed": 0.012002121537484726,
+   "published": 0.012,
+   "published_decimals": 3,
+   "abs_diff": 2.121537484725891e-06,
+   "rel_diff": 0.00017679479039382426,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.041666666666666664,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": ""
+  },
+  {
+   "id": "senn-db-wls",
+   "dataset": "Senn2013",
+   "method": "NMA DB WLS (network_analysis.synthesize)",
+   "metric": "",
+   "observed": null,
+   "published": null,
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "INFO",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "executed with the A2 §1.4 DB fixture recipe; multi-arm studies are rejected by this entry, so Willms 1999 was split into two pseudo-studies (placebo arm double-counted, within-study covariance ignored) — a documented approximation, no verdict assignable; outputs stored in raw"
+  },
+  {
+   "id": "senn-bayes",
+   "dataset": "Senn2013",
+   "method": "Bayesian NMA (gemtc thrombolytics, A1 §7.2)",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "A1 §7.2: arm-level data only obtainable via the gemtc R package; no R runtime on this machine and no network access; MCMC posteriors only sanity-level tolerance anyway"
+  },
+  {
+   "id": "senn-netmeta",
+   "dataset": "Senn2013",
+   "method": "netmeta graph-theoretic NMA (A1 §7.3)",
+   "metric": "",
+   "observed": null,
+   "published": "",
+   "published_decimals": null,
+   "abs_diff": null,
+   "rel_diff": null,
+   "rel_tol_a1": null,
+   "eff_rel_tol": null,
+   "eff_abs_tol": null,
+   "verdict": "NOT-RUN",
+   "derived": false,
+   "source": "A1 §7.1 metadat::dat.senn2013 (published values = page's random-effects NMA vs placebo)",
+   "note": "A1 §7.3: contrast-level TE/seTE table and versus-placebo printout not obtained (vignette PDF unparseable in A1 environment); only fragments I2=84%, p=0.0021"
+  }
+ ],
+ "raw": {
+  "studies": [
+   {
+    "study_id": "De Fronzo (1995)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "metformin",
+      "comparator": "placebo",
+      "estimate": -1.9
+     }
+    ],
+    "covariance": [
+     [
+      0.019998190286856708
+     ]
+    ]
+   },
+   {
+    "study_id": "Lewin (2007)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "metformin",
+      "comparator": "placebo",
+      "estimate": -0.82
+     }
+    ],
+    "covariance": [
+     [
+      0.009838245681876773
+     ]
+    ]
+   },
+   {
+    "study_id": "Willms (1999)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "metformin",
+      "comparator": "placebo",
+      "estimate": -1.2
+     },
+     {
+      "treatment": "acarbose",
+      "comparator": "placebo",
+      "estimate": -0.9999999999999998
+     }
+    ],
+    "covariance": [
+     [
+      0.14122775862068965,
+      0.11560555172413792
+     ],
+     [
+      0.11560555172413792,
+      0.21804180978865406
+     ]
+    ]
+   },
+   {
+    "study_id": "Davidson (2007)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "placebo",
+      "estimate": -1.3399999999999999
+     }
+    ],
+    "covariance": [
+     [
+      0.020584245284409074
+     ]
+    ]
+   },
+   {
+    "study_id": "Wolffenbuttel (1999)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "placebo",
+      "estimate": -1.1
+     }
+    ],
+    "covariance": [
+     [
+      0.0130292093579235
+     ]
+    ]
+   },
+   {
+    "study_id": "Kipnes (2001)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "pioglitazone",
+      "comparator": "placebo",
+      "estimate": -1.3
+     }
+    ],
+    "covariance": [
+     [
+      0.016090825481148686
+     ]
+    ]
+   },
+   {
+    "study_id": "Kerenyi (2004)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "placebo",
+      "estimate": -0.77
+     }
+    ],
+    "covariance": [
+     [
+      0.011621728896103897
+     ]
+    ]
+   },
+   {
+    "study_id": "Hanefeld (2004)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "pioglitazone",
+      "comparator": "metformin",
+      "estimate": 0.16000000000000014
+     }
+    ],
+    "covariance": [
+     [
+      0.007200360805250784
+     ]
+    ]
+   },
+   {
+    "study_id": "Derosa (2004)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "pioglitazone",
+      "comparator": "rosiglitazone",
+      "estimate": 0.09999999999999964
+     }
+    ],
+    "covariance": [
+     [
+      0.033507936507936514
+     ]
+    ]
+   },
+   {
+    "study_id": "Baksi (2004)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "placebo",
+      "estimate": -1.3
+     }
+    ],
+    "covariance": [
+     [
+      0.010278640784344609
+     ]
+    ]
+   },
+   {
+    "study_id": "Rosenstock (2008)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "placebo",
+      "estimate": -1.0899999999999999
+     }
+    ],
+    "covariance": [
+     [
+      0.05120181772227178
+     ]
+    ]
+   },
+   {
+    "study_id": "Zhu (2003)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "placebo",
+      "estimate": -1.5
+     }
+    ],
+    "covariance": [
+     [
+      0.026385238095238094
+     ]
+    ]
+   },
+   {
+    "study_id": "Yang (2003)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "metformin",
+      "estimate": -0.14000000000000012
+     }
+    ],
+    "covariance": [
+     [
+      0.05012867647058823
+     ]
+    ]
+   },
+   {
+    "study_id": "Vongthavaravat (2002)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "sulfonylurea",
+      "estimate": -1.2000000000000002
+     }
+    ],
+    "covariance": [
+     [
+      0.020608617862266858
+     ]
+    ]
+   },
+   {
+    "study_id": "Oyama (2008)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "acarbose",
+      "comparator": "sulfonylurea",
+      "estimate": -0.39999999999999997
+     }
+    ],
+    "covariance": [
+     [
+      0.023981849120816794
+     ]
+    ]
+   },
+   {
+    "study_id": "Costa (1997)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "acarbose",
+      "comparator": "placebo",
+      "estimate": -0.8
+     }
+    ],
+    "covariance": [
+     [
+      0.02049655172413793
+     ]
+    ]
+   },
+   {
+    "study_id": "Hermansen (2007)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "sitagliptin",
+      "comparator": "placebo",
+      "estimate": -0.5700000000000001
+     }
+    ],
+    "covariance": [
+     [
+      0.016671698113207546
+     ]
+    ]
+   },
+   {
+    "study_id": "Garber (2008)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "vildagliptin",
+      "comparator": "placebo",
+      "estimate": -0.7
+     }
+    ],
+    "covariance": [
+     [
+      0.016199666666666668
+     ]
+    ]
+   },
+   {
+    "study_id": "Alex (1998)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "metformin",
+      "comparator": "sulfonylurea",
+      "estimate": -0.37
+     }
+    ],
+    "covariance": [
+     [
+      0.014015838487972507
+     ]
+    ]
+   },
+   {
+    "study_id": "Johnston (1994)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "miglitol",
+      "comparator": "placebo",
+      "estimate": -0.74
+     }
+    ],
+    "covariance": [
+     [
+      0.03380490756302522
+     ]
+    ]
+   },
+   {
+    "study_id": "Johnston (1998a)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "miglitol",
+      "comparator": "placebo",
+      "estimate": -1.41
+     }
+    ],
+    "covariance": [
+     [
+      0.04997153053922821
+     ]
+    ]
+   },
+   {
+    "study_id": "Kim (2007)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "rosiglitazone",
+      "comparator": "metformin",
+      "estimate": 0.0
+     }
+    ],
+    "covariance": [
+     [
+      0.05471523590225564
+     ]
+    ]
+   },
+   {
+    "study_id": "Johnston (1998b)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "miglitol",
+      "comparator": "placebo",
+      "estimate": -0.68
+     }
+    ],
+    "covariance": [
+     [
+      0.07998694117647057
+     ]
+    ]
+   },
+   {
+    "study_id": "Gonzalez-Ortiz (2004)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "metformin",
+      "comparator": "placebo",
+      "estimate": -0.4
+     }
+    ],
+    "covariance": [
+     [
+      0.18972208505564386
+     ]
+    ]
+   },
+   {
+    "study_id": "Stucci (1996)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "benfluorex",
+      "comparator": "placebo",
+      "estimate": -0.23000000000000043
+     }
+    ],
+    "covariance": [
+     [
+      0.12018214285714288
+     ]
+    ]
+   },
+   {
+    "study_id": "Moulin (2006)",
+    "covariance_scale": "natural",
+    "contrasts": [
+     {
+      "treatment": "benfluorex",
+      "comparator": "placebo",
+      "estimate": -1.01
+     }
+    ],
+    "covariance": [
+     [
+      0.018665645007166748
+     ]
+    ]
+   }
+  ],
+  "n_contrasts": 27,
+  "fe": {
+   "residual_q": 96.98406506550127,
+   "residual_df": 18,
+   "estimates": [
+    {
+     "treatment": "acarbose",
+     "comparator": "benfluorex",
+     "estimate": 0.07782458836627004,
+     "se": 0.16711696692990485,
+     "se_scale": "natural",
+     "ci_low": -0.24972466681634348,
+     "ci_high": 0.40537384354888356
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "metformin",
+     "estimate": 0.2867118330888051,
+     "se": 0.11454450370585921,
+     "se_scale": "natural",
+     "ci_low": 0.06220460582532106,
+     "ci_high": 0.5112190603522891
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "miglitol",
+     "estimate": 0.11652315940649038,
+     "se": 0.16696129993372996,
+     "se_scale": "natural",
+     "ci_low": -0.21072098846362036,
+     "ci_high": 0.44376730727660113
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "pioglitazone",
+     "estimate": 0.23895066461806824,
+     "se": 0.12675968562844653,
+     "se_scale": "natural",
+     "ci_low": -0.009498319213686934,
+     "ci_high": 0.4873996484498234
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "placebo",
+     "estimate": -0.8273181191299547,
+     "se": 0.10849748188417735,
+     "se_scale": "natural",
+     "ci_low": -1.0399731836229422,
+     "ci_high": -0.6146630546369671
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "rosiglitazone",
+     "estimate": 0.3745428342157545,
+     "se": 0.11419243911684983,
+     "se_scale": "natural",
+     "ci_low": 0.15072565354672884,
+     "ci_high": 0.5983600148847802
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "sitagliptin",
+     "estimate": -0.2573181191299546,
+     "se": 0.16865171712263988,
+     "se_scale": "natural",
+     "ci_low": -0.5878754846903287,
+     "ci_high": 0.07323924643041951
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "sulfonylurea",
+     "estimate": -0.3879179772705518,
+     "se": 0.1130765559059819,
+     "se_scale": "natural",
+     "ci_low": -0.6095480268462763,
+     "ci_high": -0.16628792769482725
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "vildagliptin",
+     "estimate": -0.12731811912995472,
+     "se": 0.16724643566268926,
+     "se_scale": "natural",
+     "ci_low": -0.4551211330288257,
+     "ci_high": 0.20048489476891623
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "metformin",
+     "estimate": 0.20888724472253506,
+     "se": 0.14039054777943735,
+     "se_scale": "natural",
+     "ci_low": -0.06627822892516216,
+     "ci_high": 0.4840527183702323
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "miglitol",
+     "estimate": 0.03869857104022034,
+     "se": 0.17961277560629438,
+     "se_scale": "natural",
+     "ci_low": -0.31334246914811664,
+     "ci_high": 0.3907396112285573
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "pioglitazone",
+     "estimate": 0.1611260762517982,
+     "se": 0.14801509649028274,
+     "se_scale": "natural",
+     "ci_low": -0.128983512869156,
+     "ci_high": 0.4512356653727524
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "placebo",
+     "estimate": -0.9051427074962247,
+     "se": 0.1271077380045901,
+     "se_scale": "natural",
+     "ci_low": -1.1542738739852214,
+     "ci_high": -0.6560115410072281
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "rosiglitazone",
+     "estimate": 0.2967182458494845,
+     "se": 0.1357502736387672,
+     "se_scale": "natural",
+     "ci_low": 0.030647709517500732,
+     "ci_high": 0.5627887821814682
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "sitagliptin",
+     "estimate": -0.33514270749622466,
+     "se": 0.18118519579107745,
+     "se_scale": "natural",
+     "ci_low": -0.6902656912467364,
+     "ci_high": 0.01998027625428711
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "sulfonylurea",
+     "estimate": -0.4657425656368218,
+     "se": 0.15659485644913715,
+     "se_scale": "natural",
+     "ci_low": -0.7726684842771306,
+     "ci_high": -0.158816646996513
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "vildagliptin",
+     "estimate": -0.20514270749622476,
+     "se": 0.1798778578016488,
+     "se_scale": "natural",
+     "ci_low": -0.5577033087874564,
+     "ci_high": 0.14741789379500692
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "miglitol",
+     "estimate": -0.17018867368231472,
+     "se": 0.14020521012259318,
+     "se_scale": "natural",
+     "ci_low": -0.44499088552259736,
+     "ci_high": 0.10461353815796792
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "pioglitazone",
+     "estimate": -0.04776116847073686,
+     "se": 0.06977967191632968,
+     "se_scale": "natural",
+     "ci_low": -0.18452932542674302,
+     "ci_high": 0.0890069884852693
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "placebo",
+     "estimate": -1.1140299522187598,
+     "se": 0.059608127341554386,
+     "se_scale": "natural",
+     "ci_low": -1.2308618818082064,
+     "ci_high": -0.9971980226293132
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "rosiglitazone",
+     "estimate": 0.08783100112694942,
+     "se": 0.06765758548339527,
+     "se_scale": "natural",
+     "ci_low": -0.044777866420505325,
+     "ci_high": 0.22043986867440415
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "sitagliptin",
+     "estimate": -0.5440299522187597,
+     "se": 0.14221401815002102,
+     "se_scale": "natural",
+     "ci_low": -0.8227694277928009,
+     "ci_high": -0.2652904766447185
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "sulfonylurea",
+     "estimate": -0.6746298103593569,
+     "se": 0.08852745071436562,
+     "se_scale": "natural",
+     "ci_low": -0.8481436137595135,
+     "ci_high": -0.5011160069592002
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "vildagliptin",
+     "estimate": -0.4140299522187598,
+     "se": 0.14054463885838417,
+     "se_scale": "natural",
+     "ci_low": -0.6894974443811928,
+     "ci_high": -0.13856246005632683
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "pioglitazone",
+     "estimate": 0.12242750521157786,
+     "se": 0.14783931760102834,
+     "se_scale": "natural",
+     "ci_low": -0.16733755728643768,
+     "ci_high": 0.4121925677095934
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "placebo",
+     "estimate": -0.9438412785364451,
+     "se": 0.1269030027239448,
+     "se_scale": "natural",
+     "ci_low": -1.1925711638753769,
+     "ci_high": -0.6951113931975132
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "rosiglitazone",
+     "estimate": 0.25801967480926413,
+     "se": 0.13555859188081806,
+     "se_scale": "natural",
+     "ci_low": -0.00767516527713924,
+     "ci_high": 0.5237145148956674
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "sitagliptin",
+     "estimate": -0.373841278536445,
+     "se": 0.18104162563775517,
+     "se_scale": "natural",
+     "ci_low": -0.7286828647864452,
+     "ci_high": -0.01899969228644488
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "sulfonylurea",
+     "estimate": -0.5044411366770422,
+     "se": 0.156428718929856,
+     "se_scale": "natural",
+     "ci_low": -0.81104142577956,
+     "ci_high": -0.19784084757452441
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "vildagliptin",
+     "estimate": -0.2438412785364451,
+     "se": 0.1797332433553131,
+     "se_scale": "natural",
+     "ci_low": -0.5961184355128588,
+     "ci_high": 0.10843587843996855
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "placebo",
+     "estimate": -1.066268783748023,
+     "se": 0.07584254563491517,
+     "se_scale": "natural",
+     "ci_low": -1.2149201731924566,
+     "ci_high": -0.9176173943035892
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "rosiglitazone",
+     "estimate": 0.13559216959768627,
+     "se": 0.08176916348054496,
+     "se_scale": "natural",
+     "ci_low": -0.024675390824181825,
+     "ci_high": 0.29585973001955435
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "sitagliptin",
+     "estimate": -0.49626878374802286,
+     "se": 0.14974575066288773,
+     "se_scale": "natural",
+     "ci_low": -0.7897704550472828,
+     "ci_high": -0.20276711244876294
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "sulfonylurea",
+     "estimate": -0.62686864188862,
+     "se": 0.10668322041516623,
+     "se_scale": "natural",
+     "ci_low": -0.8359677539023458,
+     "ci_high": -0.41776952987489424
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "vildagliptin",
+     "estimate": -0.36626878374802296,
+     "se": 0.14816125807730865,
+     "se_scale": "natural",
+     "ci_low": -0.656664849579548,
+     "ci_high": -0.07587271791649802
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "rosiglitazone",
+     "estimate": 1.2018609533457092,
+     "se": 0.047662980733024406,
+     "se_scale": "natural",
+     "ci_low": 1.1084415111089814,
+     "ci_high": 1.295280395582437
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "sitagliptin",
+     "estimate": 0.5700000000000001,
+     "se": 0.12911893011176767,
+     "se_scale": "natural",
+     "ci_low": 0.31692689698093546,
+     "ci_high": 0.8230731030190647
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "sulfonylurea",
+     "estimate": 0.4394001418594029,
+     "se": 0.09146350094809592,
+     "se_scale": "natural",
+     "ci_low": 0.2601316800011349,
+     "ci_high": 0.618668603717671
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "vildagliptin",
+     "estimate": 0.7,
+     "se": 0.1272779111498404,
+     "se_scale": "natural",
+     "ci_low": 0.45053529414631277,
+     "ci_high": 0.9494647058536871
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "sitagliptin",
+     "estimate": -0.6318609533457091,
+     "se": 0.13763523475318448,
+     "se_scale": "natural",
+     "ci_low": -0.9016260134619507,
+     "ci_high": -0.36209589322946756
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "sulfonylurea",
+     "estimate": -0.7624608114863063,
+     "se": 0.09199447624987578,
+     "se_scale": "natural",
+     "ci_low": -0.9427699849360628,
+     "ci_high": -0.5821516380365498
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "vildagliptin",
+     "estimate": -0.5018609533457092,
+     "se": 0.13590962585123734,
+     "se_scale": "natural",
+     "ci_low": -0.7682438200141344,
+     "ci_high": -0.23547808667728404
+    },
+    {
+     "treatment": "sitagliptin",
+     "comparator": "sulfonylurea",
+     "estimate": -0.13059985814059716,
+     "se": 0.15823169757949856,
+     "se_scale": "natural",
+     "ci_low": -0.44073398539641434,
+     "ci_high": 0.17953426911522002
+    },
+    {
+     "treatment": "sitagliptin",
+     "comparator": "vildagliptin",
+     "estimate": 0.1299999999999999,
+     "se": 0.18130461874942463,
+     "se_scale": "natural",
+     "ci_low": -0.2253570527488724,
+     "ci_high": 0.4853570527488722
+    },
+    {
+     "treatment": "sulfonylurea",
+     "comparator": "vildagliptin",
+     "estimate": 0.26059985814059705,
+     "se": 0.15673301717362878,
+     "se_scale": "natural",
+     "ci_low": -0.046596855519715374,
+     "ci_high": 0.5677965718009095
+    }
+   ]
+  },
+  "re": {
+   "tau2": 0.09991454851161115,
+   "residual_q": 17.43814464189083,
+   "residual_df": 18,
+   "n_studies": 26,
+   "n_contrasts": 27,
+   "estimates": [
+    {
+     "treatment": "acarbose",
+     "comparator": "benfluorex",
+     "estimate": -0.10446393958632472,
+     "se": 0.365935970158882,
+     "se_scale": "natural",
+     "ci_low": -0.8216984410977335,
+     "ci_high": 0.6127705619250841
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "metformin",
+     "estimate": 0.28703956612473736,
+     "se": 0.250394672336357,
+     "se_scale": "natural",
+     "ci_low": -0.20373399165452233,
+     "ci_high": 0.777813123903997
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "miglitol",
+     "estimate": 0.10852026552013927,
+     "se": 0.3280034182000866,
+     "se_scale": "natural",
+     "ci_low": -0.5343664341520304,
+     "ci_high": 0.751406965192309
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "pioglitazone",
+     "estimate": 0.2880403444910149,
+     "se": 0.30539995321456304,
+     "se_scale": "natural",
+     "ci_low": -0.31054356380952863,
+     "ci_high": 0.8866242527915584
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "placebo",
+     "estimate": -0.8413642535083636,
+     "se": 0.23842643170074945,
+     "se_scale": "natural",
+     "ci_low": -1.3086800596418326,
+     "ci_high": -0.37404844737489473
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "rosiglitazone",
+     "estimate": 0.3923744554254871,
+     "se": 0.25255645928290144,
+     "se_scale": "natural",
+     "ci_low": -0.1026362047689997,
+     "ci_high": 0.8873851156199739
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "sitagliptin",
+     "estimate": -0.2713642535083636,
+     "se": 0.41645337068916954,
+     "se_scale": "natural",
+     "ci_low": -1.087612860059136,
+     "ci_high": 0.5448843530424087
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "sulfonylurea",
+     "estimate": -0.42383652369205244,
+     "se": 0.25684971943026186,
+     "se_scale": "natural",
+     "ci_low": -0.9272619737753656,
+     "ci_high": 0.07958892639126075
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "vildagliptin",
+     "estimate": -0.14136425350836368,
+     "se": 0.4158862566998698,
+     "se_scale": "natural",
+     "ci_low": -0.9565013166401084,
+     "ci_high": 0.673772809623381
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "metformin",
+     "estimate": 0.39150350571106207,
+     "se": 0.3152504605026482,
+     "se_scale": "natural",
+     "ci_low": -0.22638739687412845,
+     "ci_high": 1.0093944082962527
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "miglitol",
+     "estimate": 0.212984205106464,
+     "se": 0.35749272711477476,
+     "se_scale": "natural",
+     "ci_low": -0.48770154003849453,
+     "ci_high": 0.9136699502514225
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "pioglitazone",
+     "estimate": 0.3925042840773396,
+     "se": 0.34924339738447974,
+     "se_scale": "natural",
+     "ci_low": -0.29201277479624066,
+     "ci_high": 1.07702134295092
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "placebo",
+     "estimate": -0.7369003139220389,
+     "se": 0.27760037990350456,
+     "se_scale": "natural",
+     "ci_low": -1.2809970585329078,
+     "ci_high": -0.19280356931117004
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "rosiglitazone",
+     "estimate": 0.4968383950118118,
+     "se": 0.30381495930638375,
+     "se_scale": "natural",
+     "ci_low": -0.09863892522870032,
+     "ci_high": 1.092315715252324
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "sitagliptin",
+     "estimate": -0.16690031392203886,
+     "se": 0.44005478925627967,
+     "se_scale": "natural",
+     "ci_low": -1.029407700864347,
+     "ci_high": 0.6956070730202693
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "sulfonylurea",
+     "estimate": -0.3193725841057277,
+     "se": 0.3621730391530742,
+     "se_scale": "natural",
+     "ci_low": -1.0292317408457532,
+     "ci_high": 0.3904865726342977
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "vildagliptin",
+     "estimate": -0.03690031392203896,
+     "se": 0.4395181294336422,
+     "se_scale": "natural",
+     "ci_low": -0.8983558476119777,
+     "ci_high": 0.8245552197678998
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "miglitol",
+     "estimate": -0.17851930060459809,
+     "se": 0.2702960616471326,
+     "se_scale": "natural",
+     "ci_low": -0.708299581432978,
+     "ci_high": 0.3512609802237818
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "pioglitazone",
+     "estimate": 0.0010007783662775438,
+     "se": 0.21755540136440385,
+     "se_scale": "natural",
+     "ci_low": -0.425407808307954,
+     "ci_high": 0.4274093650405091
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "placebo",
+     "estimate": -1.128403819633101,
+     "se": 0.14940174672527004,
+     "se_scale": "natural",
+     "ci_low": -1.4212312432146303,
+     "ci_high": -0.8355763960515716
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "rosiglitazone",
+     "estimate": 0.10533488930074975,
+     "se": 0.15998339778482662,
+     "se_scale": "natural",
+     "ci_low": -0.20823257035751042,
+     "ci_high": 0.4189023489590099
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "sitagliptin",
+     "estimate": -0.5584038196331009,
+     "se": 0.37270246651904576,
+     "se_scale": "natural",
+     "ci_low": -1.2889006540104306,
+     "ci_high": 0.17209301474422878
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "sulfonylurea",
+     "estimate": -0.7108760898167898,
+     "se": 0.22717848537360266,
+     "se_scale": "natural",
+     "ci_low": -1.156145921149051,
+     "ci_high": -0.2656062584845286
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "vildagliptin",
+     "estimate": -0.42840381963310104,
+     "se": 0.3720686725630627,
+     "se_scale": "natural",
+     "ci_low": -1.157658417856704,
+     "ci_high": 0.3008507785905018
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "pioglitazone",
+     "estimate": 0.17952007897087563,
+     "se": 0.3092702034006386,
+     "se_scale": "natural",
+     "ci_low": -0.42664951969437603,
+     "ci_high": 0.7856896776361273
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "placebo",
+     "estimate": -0.9498845190285029,
+     "se": 0.22525336627315642,
+     "se_scale": "natural",
+     "ci_low": -1.3913811169238894,
+     "ci_high": -0.5083879211331164
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "rosiglitazone",
+     "estimate": 0.28385418990534783,
+     "se": 0.2568669647758511,
+     "se_scale": "natural",
+     "ci_low": -0.2196050610553203,
+     "ci_high": 0.787313440866016
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "sitagliptin",
+     "estimate": -0.37988451902850284,
+     "se": 0.40905418423750106,
+     "se_scale": "natural",
+     "ci_low": -1.181630720134005,
+     "ci_high": 0.42186168207699926
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "sulfonylurea",
+     "estimate": -0.5323567892121917,
+     "se": 0.32379996662166743,
+     "se_scale": "natural",
+     "ci_low": -1.1670047237906598,
+     "ci_high": 0.10229114536627648
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "vildagliptin",
+     "estimate": -0.24988451902850295,
+     "se": 0.4084767976221741,
+     "se_scale": "natural",
+     "ci_low": -1.050499042367964,
+     "ci_high": 0.5507300043109583
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "placebo",
+     "estimate": -1.1294045979993785,
+     "se": 0.21191738884311404,
+     "se_scale": "natural",
+     "ci_low": -1.5447626801318821,
+     "ci_high": -0.714046515866875
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "rosiglitazone",
+     "estimate": 0.1043341109344722,
+     "se": 0.21629551326260743,
+     "se_scale": "natural",
+     "ci_low": -0.3196050950602384,
+     "ci_high": 0.5282733169291828
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "sitagliptin",
+     "estimate": -0.5594045979993785,
+     "se": 0.40186468657858243,
+     "se_scale": "natural",
+     "ci_low": -1.3470593836934,
+     "ci_high": 0.22825018769464311
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "sulfonylurea",
+     "estimate": -0.7118768681830674,
+     "se": 0.29143703673745525,
+     "se_scale": "natural",
+     "ci_low": -1.2830934601884798,
+     "ci_high": -0.14066027617765509
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "vildagliptin",
+     "estimate": -0.4294045979993786,
+     "se": 0.4012769553218343,
+     "se_scale": "natural",
+     "ci_low": -1.2159074304301738,
+     "ci_high": 0.35709823443141664
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "rosiglitazone",
+     "estimate": 1.2337387089338507,
+     "se": 0.12345670729356732,
+     "se_scale": "natural",
+     "ci_low": 0.9917635626384588,
+     "ci_high": 1.4757138552292426
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "sitagliptin",
+     "estimate": 0.5700000000000001,
+     "se": 0.34144728235090505,
+     "se_scale": "natural",
+     "ci_low": -0.09923667340777387,
+     "ci_high": 1.239236673407774
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "sulfonylurea",
+     "estimate": 0.4175277298163112,
+     "se": 0.23260984365844062,
+     "se_scale": "natural",
+     "ci_low": -0.03838756375423241,
+     "ci_high": 0.8734430233868549
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "vildagliptin",
+     "estimate": 0.7,
+     "se": 0.3407553597205447,
+     "se_scale": "natural",
+     "ci_low": 0.03211949494773236,
+     "ci_high": 1.3678805050522675
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "sitagliptin",
+     "estimate": -0.6637387089338507,
+     "se": 0.3630809898639534,
+     "se_scale": "natural",
+     "ci_low": -1.3753774490671993,
+     "ci_high": 0.04790003119949793
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "sulfonylurea",
+     "estimate": -0.8162109791175396,
+     "se": 0.2290147572195092,
+     "se_scale": "natural",
+     "ci_low": -1.2650799032677775,
+     "ci_high": -0.36734205496730155
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "vildagliptin",
+     "estimate": -0.5337387089338508,
+     "se": 0.362430370904602,
+     "se_scale": "natural",
+     "ci_low": -1.2441022359068707,
+     "ci_high": 0.17662481803916918
+    },
+    {
+     "treatment": "sitagliptin",
+     "comparator": "sulfonylurea",
+     "estimate": -0.15247227018368886,
+     "se": 0.41315080296620854,
+     "se_scale": "natural",
+     "ci_low": -0.9622478439974576,
+     "ci_high": 0.6573033036300799
+    },
+    {
+     "treatment": "sitagliptin",
+     "comparator": "vildagliptin",
+     "estimate": 0.1299999999999999,
+     "se": 0.4823903624691278,
+     "se_scale": "natural",
+     "ci_low": -0.8154851104394906,
+     "ci_high": 1.0754851104394905
+    },
+    {
+     "treatment": "sulfonylurea",
+     "comparator": "vildagliptin",
+     "estimate": 0.28247227018368876,
+     "se": 0.412579149430848,
+     "se_scale": "natural",
+     "ci_low": -0.5261828627007734,
+     "ci_high": 1.0911274030681508
+    }
+   ]
+  },
+  "variant_pooled_sd_ho": {
+   "note": "contrast variances sp2*(1/n1+1/n2) instead of escalc-MD default; kept for attribution — published values match the unpooled variant above",
+   "fe_qe": 96.90959833886095,
+   "re_tau2": 0.10070885342226381,
+   "re_estimates_vs_placebo": {
+    "acarbose": -0.8409082800691451,
+    "placebo": 0.7,
+    "benfluorex": -0.7369098918121255,
+    "metformin": -1.1283774889442908,
+    "miglitol": -0.9630277486151111,
+    "pioglitazone": -1.1292990125973574,
+    "rosiglitazone": -1.2333302793214311,
+    "sitagliptin": -0.5700000000000001,
+    "sulfonylurea": -0.4168802508566868,
+    "vildagliptin": -0.7
+   }
+  },
+  "pscores": {
+   "method": "frequentist P-score",
+   "source_model": "random_reml_common_tau",
+   "measure": "MD",
+   "scale": "natural",
+   "benefit": "lower",
+   "ranking": [
+    {
+     "rank": 1,
+     "treatment": "rosiglitazone",
+     "p_score": 0.8977804388920172
+    },
+    {
+     "rank": 2,
+     "treatment": "metformin",
+     "p_score": 0.7859071742017911
+    },
+    {
+     "rank": 3,
+     "treatment": "pioglitazone",
+     "p_score": 0.7778817809851578
+    },
+    {
+     "rank": 4,
+     "treatment": "miglitol",
+     "p_score": 0.6140929265087949
+    },
+    {
+     "rank": 5,
+     "treatment": "acarbose",
+     "p_score": 0.518616166831186
+    },
+    {
+     "rank": 6,
+     "treatment": "benfluorex",
+     "p_score": 0.43780820222221123
+    },
+    {
+     "rank": 7,
+     "treatment": "vildagliptin",
+     "p_score": 0.4200907672335211
+    },
+    {
+     "rank": 8,
+     "treatment": "sitagliptin",
+     "p_score": 0.3287847321789407
+    },
+    {
+     "rank": 9,
+     "treatment": "sulfonylurea",
+     "p_score": 0.207035689408895
+    },
+    {
+     "rank": 10,
+     "treatment": "placebo",
+     "p_score": 0.012002121537484726
+    }
+   ],
+   "warnings": [
+    "P-scores summarize pairwise normal-model certainty; they are not probabilities of being best and do not establish transitivity, clinical superiority, or clinical importance."
+   ]
+  },
+  "db_wls": {
+   "residual_q": 97.03438679350114,
+   "residual_df": 18,
+   "n_studies": 27,
+   "estimates": [
+    {
+     "treatment": "acarbose",
+     "comparator": "benfluorex",
+     "estimate": 0.07768061957600214,
+     "se": 0.16816147043966728,
+     "ci_low": -0.2519158624857457,
+     "ci_high": 0.40727710163775
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "metformin",
+     "estimate": 0.2889641009369819,
+     "se": 0.11812183913849567,
+     "ci_low": 0.05744529622553038,
+     "ci_high": 0.5204829056484334
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "miglitol",
+     "estimate": 0.1163791906162226,
+     "se": 0.16800677123301047,
+     "ci_low": -0.21291408100047793,
+     "ci_high": 0.4456724622329231
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "pioglitazone",
+     "estimate": 0.24030043533626722,
+     "se": 0.12926407590285413,
+     "ci_low": -0.013057153433326862,
+     "ci_high": 0.4936580241058613
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "placebo",
+     "estimate": -0.8274620879202226,
+     "se": 0.11009951443938147,
+     "ci_low": -1.0432571362214103,
+     "ci_high": -0.6116670396190349
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "rosiglitazone",
+     "estimate": 0.37480330241868187,
+     "se": 0.11595876413308474,
+     "ci_low": 0.14752412471783577,
+     "ci_high": 0.6020824801195279
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "sitagliptin",
+     "estimate": -0.2574620879202225,
+     "se": 0.1696867737715439,
+     "ci_low": -0.5900481645124486,
+     "ci_high": 0.07512398867200354
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "sulfonylurea",
+     "estimate": -0.38684516751707443,
+     "se": 0.11465523659956786,
+     "ci_low": -0.6115694312522274,
+     "ci_high": -0.16212090378192143
+    },
+    {
+     "treatment": "acarbose",
+     "comparator": "vildagliptin",
+     "estimate": -0.12746208792022273,
+     "se": 0.1682901356183845,
+     "ci_low": -0.4573107537322563,
+     "ci_high": 0.20238657789181086
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "metformin",
+     "estimate": 0.21128348136097974,
+     "se": 0.14048193620035443,
+     "ci_low": -0.06406111359171496,
+     "ci_high": 0.48662807631367444
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "miglitol",
+     "estimate": 0.03869857104022045,
+     "se": 0.1796127756062944,
+     "ci_low": -0.3133424691481166,
+     "ci_high": 0.3907396112285575
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "pioglitazone",
+     "estimate": 0.16261981576026507,
+     "se": 0.14804542891848502,
+     "ci_low": -0.12754922491996556,
+     "ci_high": 0.4527888564404957
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "placebo",
+     "estimate": -0.9051427074962247,
+     "se": 0.12710773800459013,
+     "ci_low": -1.1542738739852214,
+     "ci_high": -0.656011541007228
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "rosiglitazone",
+     "estimate": 0.29712268284267973,
+     "se": 0.13574627313710022,
+     "ci_low": 0.031059987493963326,
+     "ci_high": 0.5631853781913961
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "sitagliptin",
+     "estimate": -0.33514270749622466,
+     "se": 0.18118519579107745,
+     "ci_low": -0.6902656912467364,
+     "ci_high": 0.01998027625428711
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "sulfonylurea",
+     "estimate": -0.46452578709307657,
+     "se": 0.15650308765540946,
+     "ci_low": -0.7712718388976791,
+     "ci_high": -0.15777973528847405
+    },
+    {
+     "treatment": "benfluorex",
+     "comparator": "vildagliptin",
+     "estimate": -0.20514270749622487,
+     "se": 0.17987785780164883,
+     "ci_low": -0.5577033087874566,
+     "ci_high": 0.1474178937950068
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "miglitol",
+     "estimate": -0.1725849103207593,
+     "se": 0.14029671927137308,
+     "ci_low": -0.4475664800926505,
+     "ci_high": 0.10239665945113191
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "pioglitazone",
+     "estimate": -0.04866366560071467,
+     "se": 0.06981011241359134,
+     "ci_low": -0.18549148593135367,
+     "ci_high": 0.08816415472992434
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "placebo",
+     "estimate": -1.1164261888572045,
+     "se": 0.05982305022277724,
+     "ci_low": -1.2336793672938478,
+     "ci_high": -0.9991730104205611
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "rosiglitazone",
+     "estimate": 0.08583920148169999,
+     "se": 0.0678665041293477,
+     "ci_low": -0.04717914661182149,
+     "ci_high": 0.21885754957522147
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "sitagliptin",
+     "estimate": -0.5464261888572044,
+     "se": 0.1423042355348725,
+     "ci_low": -0.8253424905055545,
+     "ci_high": -0.26750988720885427
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "sulfonylurea",
+     "estimate": -0.6758092684540563,
+     "se": 0.08905222912529717,
+     "ci_low": -0.8503516375396387,
+     "ci_high": -0.5012668993684739
+    },
+    {
+     "treatment": "metformin",
+     "comparator": "vildagliptin",
+     "estimate": -0.4164261888572046,
+     "se": 0.14063592714745263,
+     "ci_low": -0.6920726060662117,
+     "ci_high": -0.1407797716481975
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "pioglitazone",
+     "estimate": 0.12392124472004462,
+     "se": 0.14786968608666287,
+     "ci_low": -0.1659033400098146,
+     "ci_high": 0.41374582944990385
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "placebo",
+     "estimate": -0.9438412785364452,
+     "se": 0.1269030027239448,
+     "ci_low": -1.1925711638753769,
+     "ci_high": -0.6951113931975134
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "rosiglitazone",
+     "estimate": 0.2584241118024593,
+     "se": 0.13555458572221832,
+     "ci_low": -0.0072628762130886315,
+     "ci_high": 0.5241110998180072
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "sitagliptin",
+     "estimate": -0.3738412785364451,
+     "se": 0.18104162563775514,
+     "ci_low": -0.7286828647864452,
+     "ci_high": -0.018999692286445047
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "sulfonylurea",
+     "estimate": -0.503224358133297,
+     "se": 0.1563368526144325,
+     "ci_low": -0.8096445892575848,
+     "ci_high": -0.19680412700900934
+    },
+    {
+     "treatment": "miglitol",
+     "comparator": "vildagliptin",
+     "estimate": -0.24384127853644533,
+     "se": 0.17973324335531313,
+     "ci_low": -0.596118435512859,
+     "ci_high": 0.10843587843996838
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "placebo",
+     "estimate": -1.0677625232564898,
+     "se": 0.07590172569194115,
+     "ci_low": -1.2165299056126944,
+     "ci_high": -0.9189951409002851
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "rosiglitazone",
+     "estimate": 0.13450286708241466,
+     "se": 0.08183285083414808,
+     "ci_low": -0.025889520552515588,
+     "ci_high": 0.2948952547173449
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "sitagliptin",
+     "estimate": -0.49776252325648973,
+     "se": 0.14977573260118685,
+     "ci_low": -0.7913229591548159,
+     "ci_high": -0.20420208735816353
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "sulfonylurea",
+     "estimate": -0.6271456028533416,
+     "se": 0.10687222024594281,
+     "ci_low": -0.8366151545353895,
+     "ci_high": -0.41767605117129375
+    },
+    {
+     "treatment": "pioglitazone",
+     "comparator": "vildagliptin",
+     "estimate": -0.36776252325648995,
+     "se": 0.14819156058858868,
+     "ci_low": -0.6582179820101237,
+     "ci_high": -0.07730706450285613
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "rosiglitazone",
+     "estimate": 1.2022653903389044,
+     "se": 0.04765158559763458,
+     "ci_low": 1.1088682825675407,
+     "ci_high": 1.2956624981102682
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "sitagliptin",
+     "estimate": 0.5700000000000001,
+     "se": 0.12911893011176767,
+     "ci_low": 0.31692689698093546,
+     "ci_high": 0.8230731030190647
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "sulfonylurea",
+     "estimate": 0.44061692040314815,
+     "se": 0.09130629433414354,
+     "ci_low": 0.26165658350822685,
+     "ci_high": 0.6195772572980695
+    },
+    {
+     "treatment": "placebo",
+     "comparator": "vildagliptin",
+     "estimate": 0.6999999999999998,
+     "se": 0.1272779111498404,
+     "ci_low": 0.45053529414631266,
+     "ci_high": 0.949464705853687
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "sitagliptin",
+     "estimate": -0.6322653903389044,
+     "se": 0.13763128904132316,
+     "ci_low": -0.9020227168598978,
+     "ci_high": -0.362508063817911
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "sulfonylurea",
+     "estimate": -0.7616484699357563,
+     "se": 0.09192541019680821,
+     "ci_low": -0.9418222739215004,
+     "ci_high": -0.5814746659500122
+    },
+    {
+     "treatment": "rosiglitazone",
+     "comparator": "vildagliptin",
+     "estimate": -0.5022653903389046,
+     "se": 0.13590563004024286,
+     "ci_low": -0.7686404252177805,
+     "ci_high": -0.23589035546002862
+    },
+    {
+     "treatment": "sitagliptin",
+     "comparator": "sulfonylurea",
+     "estimate": -0.1293830795968519,
+     "se": 0.1581408786438244,
+     "ci_low": -0.43933920173874774,
+     "ci_high": 0.18057304254504392
+    },
+    {
+     "treatment": "sitagliptin",
+     "comparator": "vildagliptin",
+     "estimate": 0.12999999999999978,
+     "se": 0.18130461874942463,
+     "ci_low": -0.22535705274887252,
+     "ci_high": 0.4853570527488721
+    },
+    {
+     "treatment": "sulfonylurea",
+     "comparator": "vildagliptin",
+     "estimate": 0.2593830795968517,
+     "se": 0.15664132932179783,
+     "ci_low": -0.04763392587387205,
+     "ci_high": 0.5664000850675754
+    }
+   ]
+  }
+ }
+}

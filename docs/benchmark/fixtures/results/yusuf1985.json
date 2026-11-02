@@ -1,0 +1,639 @@
+{
+ "dataset": "Yusuf1985",
+ "code_under_test": "E:/rf214-ai",
+ "n_checks": 10,
+ "counts": {
+  "PASS": 10,
+  "FAIL": 0,
+  "NOT-RUN": 0,
+  "INFO": 0
+ },
+ "checks": [
+  {
+   "id": "yusuf-k",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR",
+   "metric": "k (included studies)",
+   "observed": 18,
+   "published": 18,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "double-zero studies excluded (escalc add=0 convention, A1 §3.2)"
+  },
+  {
+   "id": "yusuf-logor",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR",
+   "metric": "pooled logOR",
+   "observed": -0.06916763223649616,
+   "published": -0.0692,
+   "published_decimals": 4,
+   "abs_diff": 3.236776350383497e-05,
+   "rel_diff": 0.0004677422471652452,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0007225433526011561,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "kernel value exactly reproduced by the fixture-side independent Peto computation on the same inputs (see raw.independent_peto)"
+  },
+  {
+   "id": "yusuf-or",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR",
+   "metric": "OR",
+   "observed": 0.9331702375522105,
+   "published": 0.93,
+   "published_decimals": 2,
+   "abs_diff": 0.003170237552210464,
+   "rel_diff": 0.0034088575830220043,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.005376344086021505,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "kernel value exactly reproduced by the fixture-side independent Peto computation on the same inputs (see raw.independent_peto)"
+  },
+  {
+   "id": "yusuf-se",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR",
+   "metric": "SE(logOR)",
+   "observed": 0.11938080585426816,
+   "published": 0.1194,
+   "published_decimals": 4,
+   "abs_diff": 1.9194145731843415e-05,
+   "rel_diff": 0.00016075498937892307,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0004187604690117253,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "kernel value exactly reproduced by the fixture-side independent Peto computation on the same inputs (see raw.independent_peto)"
+  },
+  {
+   "id": "yusuf-ci-low",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR",
+   "metric": "95% CI low (log)",
+   "observed": -0.3031497121562301,
+   "published": -0.3031,
+   "published_decimals": 4,
+   "abs_diff": 4.9712156230119486e-05,
+   "rel_diff": 0.00016401239270907124,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.00016496205872649293,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "kernel value exactly reproduced by the fixture-side independent Peto computation on the same inputs (see raw.independent_peto)"
+  },
+  {
+   "id": "yusuf-ci-high",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR",
+   "metric": "95% CI high (log)",
+   "observed": 0.16481444768323783,
+   "published": 0.1648,
+   "published_decimals": 4,
+   "abs_diff": 1.444768323782819e-05,
+   "rel_diff": 8.766798081206426e-05,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0003033980582524272,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "kernel value exactly reproduced by the fixture-side independent Peto computation on the same inputs (see raw.independent_peto)"
+  },
+  {
+   "id": "yusuf-q",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR (Q via derived IV rows)",
+   "metric": "Q",
+   "observed": 10.82748467937425,
+   "published": 10.8275,
+   "published_decimals": 4,
+   "abs_diff": 1.5320625751158445e-05,
+   "rel_diff": 1.4149735166158803e-06,
+   "rel_tol_a1": 0.0001,
+   "eff_rel_tol": 0.0001,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "kernel value exactly reproduced by the fixture-side independent Peto computation on the same inputs (see raw.independent_peto); observed Q dominated by Wilcox 1 (yi=-2.4896, V=1.7434)"
+  },
+  {
+   "id": "yusuf-qdf",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR (Q via derived IV rows)",
+   "metric": "Q df",
+   "observed": 17,
+   "published": 17,
+   "published_decimals": 0,
+   "abs_diff": 0,
+   "rel_diff": 0.0,
+   "rel_tol_a1": 0.0,
+   "eff_rel_tol": 0.0,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": false,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "integer equality required (A1 §9)"
+  },
+  {
+   "id": "yusuf-i2",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR (Q via derived IV rows)",
+   "metric": "I2 %",
+   "observed": 0.0,
+   "published": 0.0,
+   "published_decimals": 2,
+   "abs_diff": 0.0,
+   "rel_diff": null,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": null,
+   "eff_abs_tol": 0.005,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": "published I2=0.00% (boundary); absolute tolerance published value is zero; absolute tolerance used"
+  },
+  {
+   "id": "yusuf-h2",
+   "dataset": "Yusuf1985",
+   "method": "Peto OR (Q via derived IV rows)",
+   "metric": "H2 = Q/df",
+   "observed": 0.636910863492603,
+   "published": 0.64,
+   "published_decimals": 2,
+   "abs_diff": 0.003089136507397061,
+   "rel_diff": 0.004826775792807908,
+   "rel_tol_a1": 0.001,
+   "eff_rel_tol": 0.0078125,
+   "eff_abs_tol": null,
+   "verdict": "PASS",
+   "derived": true,
+   "source": "A1 §3.2 metafor analyses:yusuf1985 (consistent with Yusuf 1985 Table 6 p.343)",
+   "note": ""
+  }
+ ],
+ "raw": {
+  "studies": [
+   {
+    "study_id": "Balcon",
+    "events_t": 14,
+    "total_t": 56,
+    "events_c": 15,
+    "total_c": 58
+   },
+   {
+    "study_id": "Clausen",
+    "events_t": 18,
+    "total_t": 66,
+    "events_c": 19,
+    "total_c": 64
+   },
+   {
+    "study_id": "Multicentre",
+    "events_t": 15,
+    "total_t": 100,
+    "events_c": 12,
+    "total_c": 95
+   },
+   {
+    "study_id": "Barber",
+    "events_t": 10,
+    "total_t": 52,
+    "events_c": 12,
+    "total_c": 47
+   },
+   {
+    "study_id": "Norris",
+    "events_t": 21,
+    "total_t": 226,
+    "events_c": 24,
+    "total_c": 228
+   },
+   {
+    "study_id": "Kahler",
+    "events_t": 3,
+    "total_t": 38,
+    "events_c": 6,
+    "total_c": 31
+   },
+   {
+    "study_id": "Ledwich",
+    "events_t": 2,
+    "total_t": 20,
+    "events_c": 3,
+    "total_c": 20
+   },
+   {
+    "study_id": "Snow 2",
+    "events_t": 19,
+    "total_t": 76,
+    "events_c": 15,
+    "total_c": 67
+   },
+   {
+    "study_id": "Fuccella",
+    "events_t": 15,
+    "total_t": 106,
+    "events_c": 9,
+    "total_c": 114
+   },
+   {
+    "study_id": "Briant",
+    "events_t": 5,
+    "total_t": 62,
+    "events_c": 4,
+    "total_c": 57
+   },
+   {
+    "study_id": "Pitt",
+    "events_t": 0,
+    "total_t": 9,
+    "events_c": 0,
+    "total_c": 8
+   },
+   {
+    "study_id": "Lombardo",
+    "events_t": 8,
+    "total_t": 133,
+    "events_c": 11,
+    "total_c": 127
+   },
+   {
+    "study_id": "Thompson",
+    "events_t": 3,
+    "total_t": 48,
+    "events_c": 3,
+    "total_c": 49
+   },
+   {
+    "study_id": "Hutton",
+    "events_t": 0,
+    "total_t": 16,
+    "events_c": 0,
+    "total_c": 13
+   },
+   {
+    "study_id": "Tonkin",
+    "events_t": 1,
+    "total_t": 42,
+    "events_c": 1,
+    "total_c": 46
+   },
+   {
+    "study_id": "Gupta",
+    "events_t": 0,
+    "total_t": 25,
+    "events_c": 3,
+    "total_c": 25
+   },
+   {
+    "study_id": "Barber 2",
+    "events_t": 14,
+    "total_t": 221,
+    "events_c": 15,
+    "total_c": 228
+   },
+   {
+    "study_id": "Yusuf",
+    "events_t": 0,
+    "total_t": 11,
+    "events_c": 0,
+    "total_c": 11
+   },
+   {
+    "study_id": "Wilcox 1",
+    "events_t": 8,
+    "total_t": 259,
+    "events_c": 7,
+    "total_c": 129
+   },
+   {
+    "study_id": "Wilcox 2",
+    "events_t": 6,
+    "total_t": 157,
+    "events_c": 4,
+    "total_c": 158
+   },
+   {
+    "study_id": "CPRG",
+    "events_t": 3,
+    "total_t": 177,
+    "events_c": 2,
+    "total_c": 136
+   }
+  ],
+  "peto": {
+   "pooled": 0.9331702375522105,
+   "ci_low": 0.7384885273841425,
+   "ci_high": 1.179174299887638,
+   "se": 0.11938080585426816,
+   "measure": "OR",
+   "n_studies": 18,
+   "included_studies": [
+    {
+     "study_id": "Balcon",
+     "observed_minus_expected": -0.24561403508771917,
+     "variance": 5.45186129428524
+    },
+    {
+     "study_id": "Clausen",
+     "observed_minus_expected": -0.7846153846153854,
+     "variance": 6.667026283198019
+    },
+    {
+     "study_id": "Multicentre",
+     "observed_minus_expected": 1.1538461538461533,
+     "variance": 5.841517720978467
+    },
+    {
+     "study_id": "Barber",
+     "observed_minus_expected": -1.5555555555555554,
+     "variance": 4.310405643738977
+    },
+    {
+     "study_id": "Norris",
+     "observed_minus_expected": -1.4008810572687231,
+     "variance": 10.15708765037986
+    },
+    {
+     "study_id": "Kahler",
+     "observed_minus_expected": -1.9565217391304346,
+     "variance": 1.9648615589903258
+    },
+    {
+     "study_id": "Ledwich",
+     "observed_minus_expected": -0.5,
+     "variance": 1.1217948717948718
+    },
+    {
+     "study_id": "Snow 2",
+     "observed_minus_expected": 0.93006993006993,
+     "variance": 6.498803274928558
+    },
+    {
+     "study_id": "Fuccella",
+     "observed_minus_expected": 3.4363636363636356,
+     "variance": 5.36276236839126
+    },
+    {
+     "study_id": "Briant",
+     "observed_minus_expected": 0.31092436974789894,
+     "variance": 2.093754750155296
+    },
+    {
+     "study_id": "Lombardo",
+     "observed_minus_expected": -1.7192307692307693,
+     "variance": 4.4175303854150005
+    },
+    {
+     "study_id": "Thompson",
+     "observed_minus_expected": 0.030927835051546282,
+     "variance": 1.4217238813901583
+    },
+    {
+     "study_id": "Tonkin",
+     "observed_minus_expected": 0.045454545454545414,
+     "variance": 0.4932316899401539
+    },
+    {
+     "study_id": "Gupta",
+     "observed_minus_expected": -1.5,
+     "variance": 0.7193877551020408
+    },
+    {
+     "study_id": "Barber 2",
+     "observed_minus_expected": -0.27394209354120314,
+     "variance": 6.795222989965327
+    },
+    {
+     "study_id": "Wilcox 1",
+     "observed_minus_expected": -2.012886597938145,
+     "variance": 3.208596822191519
+    },
+    {
+     "study_id": "Wilcox 2",
+     "observed_minus_expected": 1.0158730158730158,
+     "variance": 2.4283194759385234
+    },
+    {
+     "study_id": "CPRG",
+     "observed_minus_expected": 0.17252396166134165,
+     "variance": 1.2128012236209726
+    }
+   ],
+   "excluded_studies": [
+    {
+     "study_id": "Pitt",
+     "reason": "zero variance (no events in either arm)",
+     "observed_minus_expected": 0.0,
+     "variance": 0.0
+    },
+    {
+     "study_id": "Hutton",
+     "reason": "zero variance (no events in either arm)",
+     "observed_minus_expected": 0.0,
+     "variance": 0.0
+    },
+    {
+     "study_id": "Yusuf",
+     "reason": "zero variance (no events in either arm)",
+     "observed_minus_expected": 0.0,
+     "variance": 0.0
+    }
+   ],
+   "study_statistics": [
+    {
+     "study_id": "Balcon",
+     "observed_minus_expected": -0.24561403508771917,
+     "variance": 5.45186129428524,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Clausen",
+     "observed_minus_expected": -0.7846153846153854,
+     "variance": 6.667026283198019,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Multicentre",
+     "observed_minus_expected": 1.1538461538461533,
+     "variance": 5.841517720978467,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Barber",
+     "observed_minus_expected": -1.5555555555555554,
+     "variance": 4.310405643738977,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Norris",
+     "observed_minus_expected": -1.4008810572687231,
+     "variance": 10.15708765037986,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Kahler",
+     "observed_minus_expected": -1.9565217391304346,
+     "variance": 1.9648615589903258,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Ledwich",
+     "observed_minus_expected": -0.5,
+     "variance": 1.1217948717948718,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Snow 2",
+     "observed_minus_expected": 0.93006993006993,
+     "variance": 6.498803274928558,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Fuccella",
+     "observed_minus_expected": 3.4363636363636356,
+     "variance": 5.36276236839126,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Briant",
+     "observed_minus_expected": 0.31092436974789894,
+     "variance": 2.093754750155296,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Pitt",
+     "observed_minus_expected": 0.0,
+     "variance": 0.0,
+     "included": false,
+     "exclusion_reason": "zero variance (no events in either arm)"
+    },
+    {
+     "study_id": "Lombardo",
+     "observed_minus_expected": -1.7192307692307693,
+     "variance": 4.4175303854150005,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Thompson",
+     "observed_minus_expected": 0.030927835051546282,
+     "variance": 1.4217238813901583,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Hutton",
+     "observed_minus_expected": 0.0,
+     "variance": 0.0,
+     "included": false,
+     "exclusion_reason": "zero variance (no events in either arm)"
+    },
+    {
+     "study_id": "Tonkin",
+     "observed_minus_expected": 0.045454545454545414,
+     "variance": 0.4932316899401539,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Gupta",
+     "observed_minus_expected": -1.5,
+     "variance": 0.7193877551020408,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Barber 2",
+     "observed_minus_expected": -0.27394209354120314,
+     "variance": 6.795222989965327,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Yusuf",
+     "observed_minus_expected": 0.0,
+     "variance": 0.0,
+     "included": false,
+     "exclusion_reason": "zero variance (no events in either arm)"
+    },
+    {
+     "study_id": "Wilcox 1",
+     "observed_minus_expected": -2.012886597938145,
+     "variance": 3.208596822191519,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "Wilcox 2",
+     "observed_minus_expected": 1.0158730158730158,
+     "variance": 2.4283194759385234,
+     "included": true,
+     "exclusion_reason": null
+    },
+    {
+     "study_id": "CPRG",
+     "observed_minus_expected": 0.17252396166134165,
+     "variance": 1.2128012236209726,
+     "included": true,
+     "exclusion_reason": null
+    }
+   ],
+   "method": "Peto fixed-effect odds ratio",
+   "warnings": [
+    "Peto estimates odds ratios only.",
+    "Peto can be biased with large treatment effects or substantial arm-size imbalance; interpret cautiously."
+   ]
+  },
+  "independent_peto": {
+   "sum_oe": -4.853263784299869,
+   "sum_v": 70.16668964040456,
+   "logOR": -0.06916763223649618,
+   "se": 0.11938080585426816,
+   "published_implies": {
+    "se_from_pub": 0.1194,
+    "sum_v_implied": 70.14413216276805,
+    "sum_oe_implied": -4.853973945663549
+   },
+   "note": "kernel matches this independent recomputation exactly; the published logOR/SE/Q (from metafor analyses:yusuf1985) imply a different sum(O-E) and sum(V) than the A1 §3.2 table produces — input-table vs reference divergence, for attribution"
+  },
+  "derived_iv_from_peto_stats": {
+   "pooled_analysis": -0.06916763223649613,
+   "ci_analysis_low": -0.3031540117108617,
+   "ci_analysis_high": 0.16481874723786943,
+   "q": 10.82748467937425,
+   "q_df": 17,
+   "q_p": 0.8653902592907433,
+   "i2_percent": 0.0
+  }
+ }
+}
