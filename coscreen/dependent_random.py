@@ -457,11 +457,25 @@ def _blockwise_information_eigenvalues(
 
     F3-51: the historical formulation built the full marginal covariance and its
     three derivative matrices, i.e. ``4 * n_effects**2 * 8`` bytes (128 MiB at
-    2000 effects, 12.8 GiB at 20000). Both are block diagonal by study, so the
-    same trace is accumulated over per-study blocks of at most a handful of
-    rows: memory is bounded by the largest study, and the arithmetic per block
-    is the identical ``trace(P L P R)`` with the same operation order, so the
-    eigenvalues (and hence the reported condition number) are unchanged.
+    2000 effects, 12.8 GiB at 20000). The marginal covariance is block diagonal
+    by study, so the trace is accumulated over per-study blocks of at most a
+    handful of rows and memory is bounded by the largest study.
+
+    stats-b-0: the projection itself is *not* block diagonal,
+    ``P = W - W X (X'WX)^-1 X'W``, so its off-diagonal blocks
+    ``-W_b X_b F X_c' W_c`` contribute to ``trace(P D_i P D_j)``. The previous
+    version kept only ``P``'s block-diagonal part (``W_b - W_b X_b F X_b' W_b``),
+    which is a different matrix: on heterogeneous study blocks the eigenvalues
+    differed from the dense path by ~1e-3 relative, so the docstring claim
+    "eigenvalues unchanged" was false. The exact trace is assembled with the
+    low-rank expansion (all corrections are p x p, p = 2, per block):
+        trace(P D_i P D_j) = trace(W D_i W D_j)
+                             - trace(F (C_ij + C_ji)) + trace(F G_j F G_i),
+        G_k = X' W D_k W X,   C_ij = X' W D_j W D_i W X.
+    Only count x count per-study blocks and 2 x 2 / 3 x 3 accumulators are
+    built, so the memory advantage is kept and the result is the same quantity
+    as the dense path (agrees to ~1e-15 relative; pinned by
+    build/tests/test_r13_stats_blockwise_information.py).
     """
     block_terms = []
     fixed_information = np.zeros((2, 2), dtype=float)
@@ -483,18 +497,38 @@ def _blockwise_information_eigenvalues(
             elif count == 2:
                 derivative[0, 1] = derivative[1, 0] = 1.0
             derivatives.append(derivative)
-        block_terms.append((weight, weighted_design, derivatives))
+        weighted_derivatives = [weight @ derivative for derivative in derivatives]
+        weighted_derivative_designs = [weighted @ weighted_design
+                                       for weighted in weighted_derivatives]
+        block_terms.append((design, weighted_design, derivatives, weighted_derivatives,
+                            weighted_derivative_designs))
     fixed_covariance = np.linalg.inv(fixed_information)
+    diagonal_trace = np.zeros((3, 3), dtype=float)
+    weighted_information = np.zeros((3, 2, 2), dtype=float)
+    cross_information = np.zeros((3, 3, 2, 2), dtype=float)
+    for (design, weighted_design, derivatives, weighted_derivatives,
+         weighted_designs) in block_terms:
+        for left_index in range(3):
+            weighted_information[left_index] += (
+                design.T @ weighted_derivatives[left_index] @ weighted_design)
+            for right_index in range(3):
+                diagonal_trace[left_index, right_index] += float(np.trace(
+                    weighted_derivatives[left_index] @ weighted_derivatives[right_index]))
+                cross_information[left_index, right_index] += (
+                    weighted_designs[right_index].T
+                    @ derivatives[left_index] @ weighted_design)
     fisher = np.zeros((3, 3), dtype=float)
     for left_index in range(3):
         for right_index in range(3):
-            total_trace = 0.0
-            for weight, weighted_design, derivatives in block_terms:
-                projection = weight - weighted_design @ fixed_covariance @ weighted_design.T
-                projected_left = projection @ derivatives[left_index]
-                projected_right = projection @ derivatives[right_index]
-                total_trace += float(np.trace(projected_left @ projected_right))
-            fisher[left_index, right_index] = 0.5 * total_trace
+            correction = float(np.trace(fixed_covariance @ (
+                cross_information[left_index, right_index]
+                + cross_information[right_index, left_index])))
+            quadratic = float(np.trace(
+                fixed_covariance @ weighted_information[right_index]
+                @ fixed_covariance @ weighted_information[left_index]))
+            fisher[left_index, right_index] = 0.5 * (
+                diagonal_trace[left_index, right_index] - correction + quadratic)
+    fisher = 0.5 * (fisher + fisher.T)
     fisher_scale = np.sqrt(np.diag(fisher))
     if (not np.isfinite(fisher).all() or np.any(fisher_scale <= 0)
             or not np.isfinite(fisher_scale).all()):

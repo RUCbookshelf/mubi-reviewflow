@@ -458,8 +458,23 @@ def main(process_lock=None) -> int:
         if p and p not in sys.path:
             sys.path.insert(0, p)
 
+    # r13 tailpiece ①: a caller that asked for the team server mode must not be
+    # silently downgraded to the desktop app. The old code popped the caller's
+    # explicit COBOOKSHELF_DATA_DIR, rewrote REVIEWFLOW_MODE and started on the
+    # desktop default directory with no warning at all - the team UI was gone
+    # and the data "looked lost". Refuse instead, before any data-directory
+    # resolution, and point at the supported server entry point.
     if os.environ.get("REVIEWFLOW_MODE") == "server":
-        os.environ.pop("COBOOKSHELF_DATA_DIR", None)
+        # windows_start.py takes the single-instance lock before calling main()
+        # and hands it over, so an early return has to release it here.
+        if process_lock is not None:
+            release_process_lock(process_lock)
+        _notify_error(
+            "REVIEWFLOW_MODE=server 是团队服务模式：桌面启动器不会以团队模式运行，"
+            "也不会改动你的数据目录。请按 docs/deployment/UBUNTU_SERVER.md 用 "
+            "uvicorn 启动团队服务；如需启动桌面版，请先取消环境变量 "
+            "REVIEWFLOW_MODE=server。")
+        return 2
     os.environ["REVIEWFLOW_MODE"] = "desktop"
     child_mode = "--restart-child" in sys.argv[1:]
 
