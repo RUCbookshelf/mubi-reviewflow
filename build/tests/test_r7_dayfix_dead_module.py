@@ -17,31 +17,34 @@ deletion (index.html never loaded the module) and must stay green.
 """
 from __future__ import annotations
 
-import os
 import re
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEAD_BASENAME = "workflow_" + "imports"
 DEAD_FILENAME = DEAD_BASENAME + ".js"
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".pytest_cache", "out",
-             ".zcode", ".v2c", ".video_agent", "dist", "staging", "work-linux",
-             "work-macos"}
 MAX_FILE_BYTES = 2_000_000
 
 
 def _repo_text_files() -> list[Path]:
+    # 口径修正（2026-11-08 封版门禁实测）：只扫 git 跟踪的文件（= 发布树）。
+    # 此前 os.walk 连未跟踪的本机工具状态目录一起扫，安全钩子的 .mimosa/
+    # 会话日志里出现旧模块名即误红（SKIP_DIRS 追目录是打地鼠）；跟踪文件
+    # 集不受任何未跟踪目录影响，守卫语义（发布树零残留引用）不变。
+    listed = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout
     files: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(REPO):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for name in filenames:
-            path = Path(dirpath) / name
-            try:
-                if path.stat().st_size > MAX_FILE_BYTES:
-                    continue
-                files.append(path)
-            except OSError:
+    for line in listed.splitlines():
+        path = REPO / line
+        try:
+            if path.stat().st_size > MAX_FILE_BYTES:
                 continue
+            files.append(path)
+        except OSError:
+            continue
     return files
 
 
