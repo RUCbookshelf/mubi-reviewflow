@@ -126,6 +126,10 @@
      此操作」，再拼英文原串只会制造混排。结构化原因与指引（缺哪个角色、找谁授权）
      需前后端契约协同，属结构包，本单不做。 */
   W.errorText = error => {
+    /* R2：带 message_key 的契约错误直接渲染对应引导文案（十语言），
+       不再拼 403 通用句 + 后端原文。 */
+    const keyed = error.messageKey ? window.RFServerMessage?.(error.messageKey) : null;
+    if (keyed) return keyed;
     if (error.code && reasonLabels[error.code]) return W.reason(error.code);
     if (!error.status) return T(error.message);
     const base = T(error.status === 403

@@ -56,7 +56,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from starlette.concurrency import run_in_threadpool
 
 from coscreen import coding as coding_mod
@@ -1143,6 +1143,10 @@ class CollaborationRoleIn(BaseModel):
     role: Literal["coder", "reconciler"]
 
 
+class CollaborationMemberScreeningIn(BaseModel):
+    screening_enabled: StrictBool
+
+
 class CollaborationInviteIn(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     role: Literal["coder", "reconciler"] = "coder"
@@ -2032,6 +2036,32 @@ def _collaboration_store(info: tasks_mod.TaskInfo) -> Path:
     return path
 
 
+def _screening_allowed(info: tasks_mod.TaskInfo, user: dict) -> bool:
+    """该成员当前是否可写初筛/复筛（裁决员「参与筛选」开关）。
+
+    属主、coder、legacy（无协作库）恒为 True；异常口径对齐协作模块契约：
+    永久损坏交全局处理器（desktop 409 修复指引 / server 503）、锁超时/读失败
+    映射 503——绝不折叠成 403 或静默放行。
+    """
+    try:
+        return collaboration_mod.screening_allowed(
+            _collaboration_store(info), user["user_id"], task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "筛选参与权状态暂时无法确认，请稍后重试。") from exc
+
+
+def _screening_allowed_for_read(info: tasks_mod.TaskInfo, user: dict) -> bool:
+    """只读端点（progress）的软判定：无法确认时按「不限制」降级，绝不阻断读取。"""
+    try:
+        return _screening_allowed(info, user)
+    except HTTPException:
+        return True
+    except collaboration_mod.OwnerUnavailableError:
+        return True
+
+
 def _collaboration_owner_store(task_id: str, user: dict) -> tuple[tasks_mod.TaskInfo, Path]:
     """协作管理入口的属主闸门；返回 (规范任务信息, 协作库路径)。
 
@@ -2254,6 +2284,24 @@ COLLABORATION_RESERVED_NAME_MESSAGE = (
     "请对方更换用户名后再试。")
 
 
+#: 裁决员「参与筛选」开关关闭时的 403 引导文案（team.screening_not_enabled）。
+#: 形状对齐 coding.collaborator_not_found 先例；十语言词条已注册
+#: interface_locale.js，前端 errOf 按 message_key 渲染。
+SCREENING_NOT_ENABLED_MESSAGE = (
+    "你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。")
+
+
+def _screening_disabled_error() -> HTTPException:
+    """结构化 403（error_code + message_key），与 coding.collaborator_not_found 同形。"""
+    return HTTPException(403, {
+        "error_code": "screening_not_enabled",
+        "message_key": "team.screening_not_enabled",
+        "params": {},
+        "details": "Screening participation is not enabled for this member",
+        "message": SCREENING_NOT_ENABLED_MESSAGE,
+    })
+
+
 def _reject_reserved_screener_collision(target: dict) -> None:
     """邀请/授权目标账号的保留名校验（存量账号同口径，U4-P2 复审 #29/#34）。"""
     if auth.reserved_screener_collision(target["username"]):
@@ -2311,8 +2359,22 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     can_manage = owner["owner_user_id"] == user["user_id"]
     members = list_team_progress(info.task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
     grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=info.task_id)
+    # R2：属主读取前完成一次性回填（升级前 reconciler -> 开），再批量取开关；
+    # 非 reconciler（含属主）恒为 True，不受该开关约束。回填只在属主请求时
+    # 触发，成员侧 team-progress 维持纯读（未迁移库按「升级前默认开」判定）。
+    if can_manage:
+        try:
+            collaboration_mod.ensure_screening_backfill(store, task_id=info.task_id)
+        except ValueError:
+            pass  # 属主已在上方确认存在；绑定不匹配等确定性否定无回填对象
+        except collaboration_mod.OwnerUnavailableError:
+            # 回填写锁忙/暂时失败：本次读降级为「未迁移默认开」，绝不把
+            # team-progress 读变成 503（标记写入可在下次属主请求重试）。
+            logger.warning("Screening backfill deferred for task %s (store busy)", info.task_id)
+    screening_flags = collaboration_mod.list_screening_flags(store, task_id=info.task_id)
     return {"members": [{**member, "user_id": user_ids[member["username"]],
-                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member["username"]]})}
+                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member["username"]]}),
+                         "screening_enabled": screening_flags.get(user_ids[member["username"]], True)}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
             "grants": grants if can_manage else []}
@@ -2337,6 +2399,36 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
         app.state.review_workflow.latch_team(info.task_id, user)
     notify_tasks_changed(body.user_id, "invited", info.display_name)
     return {"grant": {**grant, "username": target["username"]}}
+
+
+@app.put("/api/tasks/{task_id}/collaboration/members/{target_user_id}/screening")
+def collaboration_set_member_screening(
+    task_id: str, target_user_id: int, body: CollaborationMemberScreeningIn,
+    user: dict = Depends(require_user),
+) -> dict:
+    """负责人按成员开关裁决员的初筛/复筛参与权（R2）。
+
+    仅属主可写（`_collaboration_owner_store`：非属主 403、desktop 404、
+    legacy 409）；目标无 reconciler 授权 -> 400。写操作留痕（updated_by/
+    updated_at）。异常口径对齐协作模块：锁/读失败 503、永久损坏交全局处理器。
+    """
+    info, path = _collaboration_owner_store(task_id, user)
+    target = auth.get_user_by_id(target_user_id)
+    if target is None:
+        raise HTTPException(400, {"error_code": "collaborator_not_found",
+                                  "message_key": "coding.collaborator_not_found", "params": {},
+                                  "details": "Account ID does not exist",
+                                  "message": "Account ID does not exist"})
+    try:
+        settings = collaboration_mod.set_member_screening(
+            path, actor_user_id=user["user_id"], user_id=target_user_id,
+            enabled=body.screening_enabled, task_id=info.task_id)
+    except PermissionError as exc:
+        raise HTTPException(403, "Only the task owner can manage collaborators.") from exc
+    except ValueError as exc:
+        raise _bad(str(exc), 400) from exc
+    return {"member": {**settings, "username": target["username"]}}
+
 
 
 def _quarantine_member_db(info: tasks_mod.TaskInfo, username: str) -> None:
@@ -2982,6 +3074,8 @@ def progress(task_id: str, screener: str | None = None, user: dict = Depends(req
         "stage1": db_mod.get_progress(db),
         "stage2": get_stage2_progress(db),
         "coding": coding_mod.coding_progress(db, owner_db=_coding_owner_db(info) or db),
+        # 只读软判定：被关成员的筛选页据此渲染引导文案；读取永不因该开关被拦。
+        "screening_enabled": _screening_allowed_for_read(info, user),
     }
 
 
@@ -3038,6 +3132,8 @@ def list_decisions(task_id: str, screener: str | None = None, user: dict = Depen
 def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                   user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
+    if not _screening_allowed(info, user):
+        raise _screening_disabled_error()
     db = _screener_db(info, screener or user["username"])
     with app.state.review_workflow.write_guard(task_id, user, "screen", body.zotero_key,
                                                body.expected_policy_version) as workflow:
@@ -3063,6 +3159,8 @@ def list_stage2(task_id: str, screener: str | None = None, user: dict = Depends(
 def save_stage2_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                          user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
+    if not _screening_allowed(info, user):
+        raise _screening_disabled_error()
     db = _screener_db(info, screener or user["username"])
     with app.state.review_workflow.write_guard(task_id, user, "fulltext", body.zotero_key,
                                                body.expected_policy_version) as workflow:
@@ -3374,31 +3472,19 @@ async def _read_name_frame(upload: UploadFile, *, matrix: bool = False) -> tuple
     return stem_of(name), frame
 
 
-@app.post("/api/merge/decisions")
-async def merge_decisions_ep(
-    files: list[UploadFile] = File(...), user: dict = Depends(require_user)
-) -> dict:
-    """上传 2~9 位筛选员的决策 CSV -> 合并 + 一致率 + 两两 kappa + Light's kappa。"""
-    if not (2 <= len(files) <= 9):
-        raise _bad("请同时上传 2~9 份决策 CSV 文件。")
-    named: dict[str, pd.DataFrame] = {}
-    for i, upload in enumerate(files, start=1):
-        stem, frame = await _read_name_frame(upload)
-        key = stem or f"筛选员{i}"
-        if key in named:
-            raise _bad(f"存在重名的筛选员文件：{key}（请用不同文件名区分）。")
-        named[key] = frame
-    try:
-        from coscreen.screening_arbitration import merge_decision_packages
-        merged = merge_decision_packages(named)
-        summary = summarize_multi(merged)
-        named_labels = {n: merged[f"decision_{n}"].tolist() for n in named}
-        pair_results = pairwise_kappa(named_labels)
-        light = light_kappa(named_labels)
-        reasons = exclusion_reason_distribution_multi(merged)
-    except ValueError as exc:
-        raise _bad(str(exc)) from exc
+def _multi_merge_payload(merged: pd.DataFrame) -> dict:
+    """多人合并表 -> /api/merge/decisions 的响应体。
 
+    CSV 上传与服务器端「全员决策」加载必须返回完全同形的 JSON（前端零改
+    渲染），因此两条路径共用本函数。
+    """
+    summary = summarize_multi(merged)
+    names = [column[len("decision_"):] for column in merged.columns
+             if column.startswith("decision_")]
+    named_labels = {name: merged[f"decision_{name}"].tolist() for name in names}
+    pair_results = pairwise_kappa(named_labels)
+    light = light_kappa(named_labels)
+    reasons = exclusion_reason_distribution_multi(merged)
     pairs = [
         {
             "a": a,
@@ -3430,6 +3516,28 @@ async def merge_decisions_ep(
     }
 
 
+@app.post("/api/merge/decisions")
+async def merge_decisions_ep(
+    files: list[UploadFile] = File(...), user: dict = Depends(require_user)
+) -> dict:
+    """上传 2~9 位筛选员的决策 CSV -> 合并 + 一致率 + 两两 kappa + Light's kappa。"""
+    if not (2 <= len(files) <= 9):
+        raise _bad("请同时上传 2~9 份决策 CSV 文件。")
+    named: dict[str, pd.DataFrame] = {}
+    for i, upload in enumerate(files, start=1):
+        stem, frame = await _read_name_frame(upload)
+        key = stem or f"筛选员{i}"
+        if key in named:
+            raise _bad(f"存在重名的筛选员文件：{key}（请用不同文件名区分）。")
+        named[key] = frame
+    try:
+        from coscreen.screening_arbitration import merge_decision_packages
+        merged = merge_decision_packages(named)
+        return _multi_merge_payload(merged)
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
+
+
 def _arbitration_store(task_id: str, user: dict) -> Path:
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
@@ -3444,6 +3552,63 @@ def _arbitration_store(task_id: str, user: dict) -> Path:
     return store
 
 
+def _arbitration_double_blind_guard(task_id: str, user: dict) -> None:
+    """团队任务独立筛选未全部暂停时，禁止读取/落盘全员合并快照。
+
+    与 /al/shared-ranking（main.py 的共享排序守卫）同口径：team 任务且任一
+    stage mode != "paused" -> 409。加载与服务器来源保存共用本守卫，避免
+    保存路径绕过双盲；异常只含引导文案，不携带任何成员判定。
+    """
+    ctx = app.state.review_workflow.context(task_id, user)
+    if ctx.task_kind == "team" and any(
+            value["mode"] != "paused"
+            for value in app.state.review_workflow.settings(ctx)["stages"].values()):
+        raise _bad(
+            "独立筛选尚未全部暂停，无法加载全员决策。"
+            "请先暂停所有筛选阶段，或等待独立筛选完成后再进入合并仲裁。",
+            409,
+        )
+
+
+async def _save_server_sourced_arbitration(
+    task_id: str, store: Path, request: Request, user: dict,
+) -> dict:
+    """服务器来源的仲裁保存：不重传文件，由后端现取任务目录内的合并表。
+
+    前端只提交 ``{stage, resolutions, server_source: true}``；合并表完全由
+    服务端从各筛选员个人库只读重建（与 GET server-merge 同一函数），
+    防止客户端伪造/替换合并输入。缺标记或形状不符一律 400。
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:  # JSON 解析失败 / 空体 / 非 UTF-8
+        raise _bad("仲裁数据不是有效 JSON。") from exc
+    if not isinstance(payload, dict):
+        raise _bad("仲裁数据必须为 JSON 对象。")
+    if payload.get("server_source") is not True:
+        raise _bad("缺少服务器来源标记；请先从服务器加载全员决策再保存。")
+    stage = payload.get("stage")
+    if stage not in {"stage1", "stage2"}:
+        raise _bad("stage 必须为 stage1 或 stage2。")
+    choices = payload.get("resolutions")
+    if not isinstance(choices, list):
+        raise _bad("resolutions 必须为数组。")
+    info = _task_or_404(task_id)
+    from coscreen.screening_arbitration import (
+        append_decision_arbitration, load_screener_decision_packages,
+        merge_decision_packages,
+    )
+    try:
+        named = load_screener_decision_packages(info.db_files, stage=stage)
+        merged = merge_decision_packages(named)
+        return append_decision_arbitration(
+            store, stage=stage, merged=merged, resolutions=choices,
+            arbitrator_id=user["user_id"],
+        )
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
+
+
 @app.post("/api/tasks/{task_id}/screening-arbitrations", status_code=201)
 async def save_screening_arbitration(
     task_id: str,
@@ -3452,6 +3617,11 @@ async def save_screening_arbitration(
     resolutions: str = Form(...),
     user: dict = Depends(require_user),
 ) -> dict:
+    """上传 2-9 份决策 CSV 保存仲裁记录（离线流程，行为原样保留）。
+
+    服务器来源的保存走 ``POST .../screening-arbitrations/server-save``：
+    不重传文件，由后端从任务目录现取合并表。
+    """
     store = _arbitration_store(task_id, user)
     if not 2 <= len(files) <= 9:
         raise _bad("请上传 2 到 9 份决策 CSV。")
@@ -3479,6 +3649,25 @@ async def save_screening_arbitration(
     return saved
 
 
+@app.post("/api/tasks/{task_id}/screening-arbitrations/server-save", status_code=201)
+async def save_server_sourced_screening_arbitration(
+    task_id: str,
+    request: Request,
+    user: dict = Depends(require_user),
+) -> dict:
+    """服务器来源的仲裁保存（R1）：只接受 JSON，合表由后端现取。
+
+    请求体 ``{stage, resolutions, server_source: true}``；缺少服务器来源标记
+    或形状不符一律 400。合表从任务目录内的个人库只读重建，客户端无法替换
+    合并输入（防伪造）。
+    """
+    if not _server_mode():
+        raise _bad("团队协作仅在服务器模式下开放。", 404)
+    store = _arbitration_store(task_id, user)
+    _arbitration_double_blind_guard(task_id, user)
+    return await _save_server_sourced_arbitration(task_id, store, request, user)
+
+
 @app.get("/api/tasks/{task_id}/screening-arbitrations/latest")
 def latest_screening_arbitration(
     task_id: str, stage: Literal["stage1", "stage2"] = "stage1",
@@ -3490,6 +3679,36 @@ def latest_screening_arbitration(
     if record is None:
         raise _bad("尚无仲裁记录。", 404)
     return record
+
+
+@app.get("/api/tasks/{task_id}/screening-arbitrations/server-merge")
+def server_merge_screening_arbitration(
+    task_id: str,
+    stage: Literal["stage1", "stage2"] = "stage1",
+    user: dict = Depends(require_user),
+) -> dict:
+    """联网团队模式：一键读取任务目录内全部筛选员的决策，直接进入 κ+冲突仲裁。
+
+    - 权限与保存端点同口径（属主或 consensus:write 裁决员；legacy 409）。
+    - 双盲守卫：team 任务且任一阶段未暂停 -> 409；响应只有引导文案，绝不含
+      任何成员判定内容。
+    - 返回体与 POST /api/merge/decisions 完全同形（前端复用同一渲染）。
+    - 仅服务器模式开放（desktop/离线团队协作入口 404，CSV 上传流程保留）。
+    """
+    if not _server_mode():
+        raise _bad("团队协作仅在服务器模式下开放。", 404)
+    _arbitration_store(task_id, user)  # 权限闸门（403/409 与保存端点一致）
+    _arbitration_double_blind_guard(task_id, user)
+    info = _task_or_404(task_id)
+    from coscreen.screening_arbitration import (
+        load_screener_decision_packages, merge_decision_packages,
+    )
+    try:
+        named = load_screener_decision_packages(info.db_files, stage=stage)
+        merged = merge_decision_packages(named)
+        return _multi_merge_payload(merged)
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
 
 
 @app.get("/api/tasks/{task_id}/screening-arbitrations/{record_id}")
@@ -5932,7 +6151,9 @@ register_review_import_routes(app, require_user, parse_upload=_parse_upload_to_a
     touch=lambda info: tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0))
 
 
-register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
+register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR,
+                               screening_allowed=_screening_allowed,
+                               screening_disabled_error=_screening_disabled_error)
 
 # AI 抽取建议（BYOK，B4 §2–§4）：钥匙只存 {DATA_DIR}/.ai_keys/ 保险柜（custom_backend/ai_keys.py），
 # 出站仅 stdlib urllib；未配置钥匙时全部端点优雅降级（B4 §0 修订 R1，无 Key 零影响）。

@@ -1146,6 +1146,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     <button class="btn b-out" id="ftSideToggle" title="显示 / 隐藏高亮批注面板">✎ 批注</button>
     <button class="btn b-out" id="ftNextDoc" style="margin-left:auto">›</button>
   </div>
+  <div class="hint" id="ftScreeningNotice" role="status" hidden></div>
   <div class="ft-layout">
     <div class="pdfstage" id="pdfStage">
       <div class="pdfwrap" id="pdfWrap" hidden>
@@ -1235,9 +1236,11 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <label class="hint" for="mergeStage">筛选阶段</label>
       <select class="input" id="mergeStage" style="width:240px;max-width:100%"><option value="stage1">文献初筛</option><option value="stage2">文献复筛</option></select>
       <button class="btn b-inc" id="mergePick">⇧ 选择 2–9 份决策 CSV</button>
+      <button class="btn b-out" id="mergeServerLoad" type="button">⇣ 从服务器加载全员决策</button>
       <button class="btn b-out" id="mergeLatest" type="button">最近的仲裁记录</button>
       <button class="btn b-out" id="mergeDownload" type="button" hidden>导出仲裁记录</button>
       <span class="hint" style="margin:0" id="mergeFilesHint">未选择文件</span>
+      <span class="hint" style="margin:0" id="mergeServerHint" hidden></span>
       <input type="file" id="mergeFiles" accept=".csv,.ris,.txt" multiple hidden>
     </div>
     <div class="slotgrid" id="slotWrap"></div>
@@ -5163,7 +5166,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261031-r81fl4"></script>
-<script src="./interface_locale.js?v=20261101-r9merge1"></script>
+<script src="./interface_locale.js?v=20261107-r12arb3"></script>
 <script src="./research_trace_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_history_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./title_duplicate_locale.js?v=20261031-r81fl4"></script>
@@ -5190,6 +5193,16 @@ const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
    带数字/变量插值的合成句在这里用 T(模板, ...参数) 输出（语言切换时由
    RFRefreshAll 重新渲染这些区域）。 */
 function T(tpl, ...args) { return (window.RFLang ? RFLang.t(tpl, ...args) : tpl); }
+
+/* 结构化后端错误的 message_key -> 规范中文源串（十语言词典按源串注册）。
+   前端只按 key 渲染文案，绝不把后端 error_code 当展示串。 */
+const SERVER_MESSAGE_SOURCES = Object.freeze({
+  'team.screening_not_enabled': '你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。'
+});
+window.RFServerMessage = key => {
+  const source = SERVER_MESSAGE_SOURCES[key];
+  return source ? T(source) : null;
+};
 
 /* ---------- XSS 安全的 DOM 构造器 ---------- */
 function el(tag, attrs, ...children) {
@@ -5347,10 +5360,14 @@ async function apiRequest(path, opts = {}) {
         /* 高2（评审修正）：结构化错误（如池兼容 PoolCompatibilityError）的主消息
            同样过 T()——命中词典即已是当前界面语言并置 rfLocalized，不再以英文
            技术串进入分析页“暂无译文”外壳；reasons 明细逐条过 T()，未注册的
-           技术补救指引保持原文随主消息直读展示。 */
+           技术补救指引保持原文随主消息直读展示。
+           R2：带 message_key 的结构化错误优先按 key 渲染（十语言词典），
+           保证被关成员看到的是引导文案而非后端技术串。 */
         const translatedMessage = T(payload.message);
-        if (translatedMessage !== payload.message) translatedHit = true;
-        detail = [translatedMessage, ...(payload.reasons || []).map(reason => reason && reason.detail ? T(reason.detail) : reason?.detail)].filter(Boolean).join('\n');
+        const keyed = payload.message_key ? window.RFServerMessage?.(payload.message_key) : null;
+        const finalMessage = keyed || translatedMessage;
+        if (finalMessage !== payload.message) translatedHit = true;
+        detail = [finalMessage, ...(payload.reasons || []).map(reason => reason && reason.detail ? T(reason.detail) : reason?.detail)].filter(Boolean).join('\n');
       } else {
         /* 后端纯字符串错误消息统一在此过 T()（双键注册机制的中央接线点）：
            已注册的五类高频消息（登录失败/注册校验/登录限流/会话过期/撤销边界，
@@ -5369,6 +5386,7 @@ async function apiRequest(path, opts = {}) {
     if (translatedHit) error.rfLocalized = true;
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
       error.code = payload.code; error.workflowSettings = payload.workflow_settings; error.reasons = payload.reasons || [];
+      error.errorCode = payload.error_code; error.messageKey = payload.message_key;
       error.fields = Array.isArray(payload.fields) ? payload.fields : [];  /* B9 F19：ai_field_not_allowed 等字段清单 */
     }
     return error;
@@ -5421,6 +5439,7 @@ const S = {
   ftQueue: [], ftIdx: 0, pdfUrl: null,        /* 复筛 */
   dims: [], cbQueue: [], cbIdx: 0, cbHl: [],   /* 编码（cbHl = 当前篇已入库高亮，切篇即重拉） */
   prLast: null,                               /* PRISMA 最近一次生成结果 */
+  screeningEnabled: true,                     /* R2：裁决员筛选参与权（progress 软判定） */
   al: {                                       /* 主动学习（机器学习排序） */
     mode: 'import',        /* 'import' 导入顺序 | 'ai' 相关度优先 */
     available: false, nLabeled: 0, currentLabels: 0, minLabeled: 5,
@@ -5594,6 +5613,7 @@ async function go(p, opts = {}) {
   if (p === 'import' && window.TitleDuplicateReview) TitleDuplicateReview.load();
   if (p === 'fulltext' && !opts.skipLoad) loading = loadFulltext();
   if (p === 'export') refreshExportButtons();
+  if (p === 'merge') syncMergeServerLoad();
   if (p === 'scheme') loadDims();
   if (p === 'bench' && !opts.skipLoad) loading = loadBench();
   if (p === 'analysis') loadAnalysis();
@@ -5616,6 +5636,7 @@ function refreshAllText() {
   try { refreshProgress(); } catch (e) {}
   try { if (runtimeMode === 'server') refreshTeam(); } catch (e) {}
   try { if (S.merge) renderConf(); } catch (e) {}
+  try { syncMergeServerLoad(); } catch (e) {}
   try { if (!window.WorkflowControls?.decisionDirty() && S.page === 'screen' && Array.isArray(S.articles) && S.articles.length) renderScreen(); } catch (e) {}
   try { if (!window.WorkflowControls?.decisionDirty() && S.page === 'fulltext' && Array.isArray(S.ftQueue) && S.ftQueue.length) renderFtDoc(); } catch (e) {}
   try { if (S.page === 'bench' && Array.isArray(S.cbQueue)) { const cur = S.cbQueue[S.cbIdx]; $('#cbLabel').textContent = T('第 {0} / {1} 篇', S.cbQueue.length ? S.cbIdx + 1 : 0, S.cbQueue.length); if (cur) $('#cbTitle').textContent = cur.title || cur.zotero_key; } } catch (e) {}
@@ -5692,6 +5713,20 @@ function teamMemberActions(taskId, member, grants, isOwner) {
       change.setAttribute('aria-expanded', String(!choices.hidden));
       if (!choices.hidden) choices.querySelector('button').focus();
     });
+    /* R2：裁决员成员卡加「允许参与筛选」开关（仅属主/can_manage 可见可用）。
+       开关状态来自 team-progress 的 screening_enabled；变更走 mutateTeamMember
+       既有并发防护（同一时刻只允许一个成员变更在途）。 */
+    if (roles.includes('reconciler') && !roles.includes('coder')) {
+      const enabled = member.screening_enabled !== false;
+      const toggle = el('button', {type:'button', role:'menuitemcheckbox',
+        class:'team-screening-toggle', 'aria-checked':String(enabled),
+        text:T(enabled ? '允许参与筛选（已开启）' : '允许参与筛选（已关闭）')});
+      toggle.addEventListener('click', () => {
+        closeTeamMemberMenus();
+        setMemberScreening(taskId, member, !enabled);
+      });
+      menu.append(toggle);
+    }
     const remove = el('button', {type:'button', role:'menuitem', class:'team-remove', text:T('移除')});
     remove.addEventListener('click', () => {
       closeTeamMemberMenus(); removeTeamMember(taskId, member, grants);
@@ -5852,6 +5887,19 @@ async function changeTeamMemberRole(taskId, member, role) {
     }
   }, T('已将 {0} 的角色更改为 {1}', member.username, T(role === 'coder' ? '筛选与编码员（Coder）' : '裁决员（Adjudicator）')));
 }
+async function setMemberScreening(taskId, member, enabled) {
+  /* R2：属主按成员开关裁决员的初筛/复筛参与权；与角色变更共用
+     mutateTeamMember（单飞锁 + 成功后 loadTasks/refreshTeam + 失败回显）。 */
+  if (teamMutationTaskId || S.task?.task_id !== taskId || typeof enabled !== 'boolean') return;
+  const roles = member.roles || [];
+  // 双角色（coder+reconciler）按 coder 口径不受开关约束，不提供无效果的操作。
+  if (!roles.includes('reconciler') || roles.includes('coder')) return;
+  await mutateTeamMember(taskId, async () => {
+    await api('/api/tasks/' + encodeURIComponent(taskId) + '/collaboration/members/' +
+      encodeURIComponent(member.user_id) + '/screening',
+      {method:'PUT', body:{screening_enabled: enabled}});
+  }, T('已更新 {0} 的筛选参与权', member.username));
+}
 async function mutateTeamMember(taskId, action, successMessage) {
   if (teamMutationTaskId || S.task?.task_id !== taskId) return;
   teamMutationTaskId = taskId; teamVersion++;
@@ -5927,7 +5975,9 @@ async function pickTask(taskId, opts = {}) {
   if (previousTaskId !== S.task?.task_id) {
     S.taskVersion++;
     S.savedArbitration = null;
+    S.merge = null; S.mergeFiles = null; S.mergeChoices = {}; S.mergeServerSource = false;
     $('#mergeDownload').hidden = true;
+    $('#mergeCard').style.display = 'none';
     $('#newTaskNext').hidden = true;
     S.articles = []; S.articlesBase = []; S.decisions = {}; S.screenLoadedTask = null;
     S.ftQueue = []; S.cbQueue = [];
@@ -5936,6 +5986,7 @@ async function pickTask(taskId, opts = {}) {
     document.dispatchEvent(new Event('reviewflow:analysis-task-changed'));
     if (S.page) go(S.page);
   }
+  syncMergeServerLoad();
   return true;
 }
 function renderScreenerSel() {
@@ -6039,6 +6090,8 @@ async function refreshProgress() {
   try { d = await api(taskApi() + '/progress' + scrQ()); }
   catch (e) { return; }
   if (ticket !== progressVersion || S.task?.task_id !== taskId || S.screener !== screener) return;
+  S.screeningEnabled = d.screening_enabled !== false;
+  syncScreeningNoticeElement('ftScreeningNotice');
   const s1 = d.stage1, s2 = d.stage2, c = d.coding;
   $('#barScreen').style.width = (s1.total ? s1.screened / s1.total * 100 : 0).toFixed(1) + '%';
   $('#capScreen').textContent = T('初筛进度 {0} / {1} · 纳入 {2}', s1.screened, s1.total, s1.include);
@@ -6607,6 +6660,24 @@ function screenTitle(article, score) {
   text.addEventListener('keydown', event => { if (event.key === 'Escape') tip.hidden = true; });
   return wrap;
 }
+function screeningParticipationNotice() {
+  /* R2：裁决员被负责人关闭筛选参与权时，筛选页常驻引导（非仅点保存才报错）。 */
+  if (S.screeningEnabled !== false) return null;
+  return el('div', {class: 'hint', role: 'status',
+    text: window.RFServerMessage?.('team.screening_not_enabled') ||
+      T('你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。')});
+}
+function syncScreeningNoticeElement(nodeId) {
+  /* R2：复筛页的常驻引导（与初筛动态节点同文案，均由 message_key 渲染）。 */
+  const node = $('#' + nodeId);
+  if (!node) return;
+  const blocked = S.screeningEnabled === false;
+  node.hidden = !blocked;
+  node.textContent = blocked
+    ? (window.RFServerMessage?.('team.screening_not_enabled') ||
+       T('你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。'))
+    : '';
+}
 async function renderScreen() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   renderScreenHist();
@@ -6617,6 +6688,8 @@ async function renderScreen() {
   $('#scrPos').textContent = '#' + (i < 0 ? S.articles.length : i + 1) + ' / ' + S.articles.length;
   const body = $('#scrBody');
   body.textContent = '';
+  const screeningNotice = screeningParticipationNotice();
+  if (screeningNotice) body.append(screeningNotice);
   if (i < 0) {
     WorkflowControls.markDecisionClean('screen');
     $('#scrCard').classList.remove('ai-active');
@@ -6647,6 +6720,7 @@ async function renderScreen() {
     r = {...r, ...item.article}; S.articles[i] = r;
     if (item.saved) S.decisions[itemKey] = {...item.saved, reason:item.saved.exclusion_reason || item.saved.reason || ''};
     body.replaceChildren();
+    if (screeningNotice) body.append(screeningNotice);
   } catch (error) { if(renderTask !== S.taskVersion || renderScreener !== S.screener || !WorkflowControls.renderAllowed())return; body.replaceChildren(el('p', {text:error.message}), el('button', {class:'btn b-out',text:T('Retry / refresh'),onclick:()=>renderScreen()})); return; }
   const aiOn = S.al.mode === 'ai' && S.al.available;
   const score = aiOn ? S.al.scores[r.zotero_key] : null;
@@ -6844,6 +6918,7 @@ S.ftDec = {};
 function curFt() { return S.ftQueue[S.ftIdx] || null; }
 async function renderFtDoc() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
+  syncScreeningNoticeElement('ftScreeningNotice');
   const cur = curFt();
   const taskVersion = S.taskVersion, screener = S.screener;
   for (const id of ['ftInc','ftMay','ftExc']) $('#'+id).disabled = true;
@@ -7388,7 +7463,7 @@ function saveJson(name, obj) {
    完全静止、上传区与按钮未禁用，等待中可重复触发。这里复用导出既有的
    「已等待 {0} 秒」模式：上传后立即禁用上传区与其内控件、按钮进入禁用态，
    状态行按秒显示已用时长；结束时（成功或失败）恢复原状。 */
-let mergeBusy = false, mergeTimer = 0, mergeStarted = 0, mergeCount = 0, mergePriorDisabled = new Map();
+let mergeBusy = false, mergeTimer = 0, mergeStarted = 0, mergeCount = 0, mergePriorDisabled = new Map(), mergeServerBusy = false;
 function setMergeBusy(active) {
   mergeBusy = !!active;
   const zone = $('#mergeFiles').closest('.card') || document.body;
@@ -7401,7 +7476,10 @@ function setMergeBusy(active) {
     mergeStarted = performance.now();
     mergeCount = (S.mergeFiles || []).length;
     $('#mergeFilesHint').setAttribute('aria-busy', 'true');
-    const tick = () => { const node = $('#mergeSaveStatus'); if (node && mergeBusy) node.textContent = T('正在合并 {0} 份决策 CSV…已等待 {1} 秒', mergeCount, ((performance.now() - mergeStarted) / 1000).toFixed(0)); };
+    const tick = () => { const node = $('#mergeSaveStatus'); if (!node || !mergeBusy) return;
+      node.textContent = mergeServerBusy
+        ? T('正在从服务器加载全员决策…已等待 {0} 秒', ((performance.now() - mergeStarted) / 1000).toFixed(0))
+        : T('正在合并 {0} 份决策 CSV…已等待 {1} 秒', mergeCount, ((performance.now() - mergeStarted) / 1000).toFixed(0)); };
     tick(); mergeTimer = setInterval(tick, 500);
   } else {
     for (const [control, wasDisabled] of mergePriorDisabled) if (control.isConnected) control.disabled = wasDisabled;
@@ -7409,12 +7487,77 @@ function setMergeBusy(active) {
     $('#mergeFilesHint').setAttribute('aria-busy', 'false');
   }
 }
+/* R1：服务器全员决策入口仅在联网团队模式可用；未选任务时禁用并给出说明。 */
+function syncMergeServerLoad() {
+  const button = $('#mergeServerLoad'), hint = $('#mergeServerHint');
+  if (!button || !hint) return;
+  const unavailable = runtimeMode !== 'server';
+  button.hidden = unavailable;
+  hint.hidden = !unavailable;
+  if (unavailable) {
+    button.disabled = true;
+    button.title = '';
+    hint.textContent = T('服务器全员决策仅在联网团队模式下可用；单机/离线请继续使用 CSV 上传合并。');
+    return;
+  }
+  button.disabled = !S.task || mergeBusy;
+  button.title = S.task ? '' : T('请先选择任务');
+}
 $('#mergePick').addEventListener('click', () => { if (!mergeBusy) $('#mergeFiles').click(); });
+$('#mergeServerLoad').addEventListener('click', async () => {
+  if (mergeBusy) return;
+  if (runtimeMode !== 'server') {
+    toast(T('服务器全员决策仅在联网团队模式下可用；单机/离线请继续使用 CSV 上传合并。'), 'warn');
+    return;
+  }
+  if (!S.task) { toast(T('请先选择任务'), 'warn'); return; }
+  const stage = $('#mergeStage').value;
+  S.mergeServerSource = true;
+  S.mergeFiles = null;
+  S.mergeChoices = {};
+  S.mergePage = 0;
+  S.mergeStage = stage;
+  S.mergeTaskId = S.task.task_id;
+  $('#slotWrap').textContent = '';
+  $('#mergeFilesHint').textContent = '';
+  $('#mergeSaveStatus').textContent = '';
+  $('#mergeCard').style.display = 'none';
+  mergeServerBusy = true;
+  setMergeBusy(true);
+  try {
+    const d = await api(taskApi() + '/screening-arbitrations/server-merge?stage=' + encodeURIComponent(stage));
+    S.merge = d;
+    renderMergeResult(d);
+    const count = Object.keys(d.summary.participation || {}).length;
+    $('#mergeSaveStatus').textContent = T('已从服务器加载 {0} 位筛选员的决策。', count);
+  } catch (err) {
+    S.merge = null;
+    S.mergeServerSource = false;
+    $('#mergeMetrics').textContent = '';
+    $('#mergeCard').style.display = 'none';
+    const message = err.status === 409
+      ? T('双盲保护：独立筛选未全部暂停，暂不能加载全员决策。请先在团队设置暂停所有筛选阶段，或等待独立筛选完成。')
+      : err.status === 403
+        ? T('无权加载全员决策：仅任务属主或具有裁决权限的成员可以操作。')
+        : err.status === 400
+          ? T('无法加载全员决策：{0}', err.message)
+          : err.status === 404
+            ? T('服务器全员决策仅在联网团队模式下可用；单机/离线请继续使用 CSV 上传合并。')
+            : T('从服务器加载失败：{0}', err.message);
+    $('#mergeSaveStatus').textContent = message;
+    toast(message, 'warn');
+  } finally {
+    mergeServerBusy = false;
+    setMergeBusy(false);
+    syncMergeServerLoad();
+  }
+});
 $('#mergeFiles').addEventListener('change', async e => {
   const files = Array.from(e.target.files || []);
   e.target.value = '';
   if (files.length < 2) { toast('请选择至少 2 份决策 CSV', 'warn'); return; }
   if (files.length > 9) { toast('一次最多 9 份', 'warn'); return; }
+  S.mergeServerSource = false;
   S.mergeFiles = files;
   S.mergeChoices = {};
   S.mergePage = 0;
@@ -7513,25 +7656,44 @@ $('#mergeNext').addEventListener('click', () => { S.mergePage++; renderConf(); }
 $('#mergeStage').addEventListener('change', () => {
   S.merge = null;
   S.mergeFiles = null;
+  S.mergeChoices = {};
+  S.mergeServerSource = false;
   S.savedArbitration = null;
   $('#mergeDownload').hidden = true;
   $('#mergeCard').style.display = 'none';
   $('#mergeFilesHint').textContent = T('请重新选择这一阶段的决策 CSV');
+  syncMergeServerLoad();
 });
 $('#mergeSave').addEventListener('click', async () => {
-  if (!S.task || S.task.task_id !== S.mergeTaskId || !S.mergeFiles?.length) {
+  if (!S.task || S.task.task_id !== S.mergeTaskId) {
+    $('#mergeSaveStatus').textContent = T(S.mergeServerSource
+      ? '任务已切换，请重新从服务器加载全员决策。'
+      : '请先选择任务，并重新上传该任务的决策 CSV。');
+    return;
+  }
+  if (!S.mergeServerSource && !S.mergeFiles?.length) {
     $('#mergeSaveStatus').textContent = T('请先选择任务，并重新上传该任务的决策 CSV。');
     return;
   }
   const button = $('#mergeSave');
   button.disabled = true;
   try {
-    const form = new FormData();
-    for (const file of S.mergeFiles) form.append('files', file, file.name);
-    form.append('stage', S.mergeStage);
-    form.append('resolutions', JSON.stringify(Object.entries(S.mergeChoices).map(
-      ([zotero_key, value]) => ({zotero_key, ...value}))));
-    const saved = await api(taskApi() + '/screening-arbitrations', {method:'POST', form});
+    const resolutions = Object.entries(S.mergeChoices || {}).map(
+      ([zotero_key, value]) => ({zotero_key, ...value}));
+    let saved;
+    if (S.mergeServerSource) {
+      /* R1：服务器来源保存不重传文件，后端按 stage 现取合并表。 */
+      saved = await api(taskApi() + '/screening-arbitrations/server-save', {
+        method: 'POST',
+        body: {stage: S.mergeStage, resolutions, server_source: true}
+      });
+    } else {
+      const form = new FormData();
+      for (const file of S.mergeFiles) form.append('files', file, file.name);
+      form.append('stage', S.mergeStage);
+      form.append('resolutions', JSON.stringify(resolutions));
+      saved = await api(taskApi() + '/screening-arbitrations', {method:'POST', form});
+    }
     S.savedArbitration = saved;
     $('#mergeDownload').hidden = false;
     const remaining = saved.records.filter(row => row.arbitration_status === 'unresolved').length;
@@ -9622,7 +9784,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
 <script src="./screening_rounds.js?v=20261101-r10u6-rounds1"></script>
-<script src="./workflow_controls.js?v=20261101-r10u1"></script>
+<script src="./workflow_controls.js?v=20261107-r12arb3"></script>
 <script src="./workflow_evidence.js?v=20261101-r9l31"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
 <script src="./import_export_locale.js?v=20261101-r10u2"></script>

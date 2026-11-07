@@ -321,8 +321,12 @@ class StaticGuardTests(unittest.TestCase):
         # r9 收尾批（C3 合并功能批之后）：C3 features 侧更新了 interface_locale.js
         # 内容（含 r9 各泳道新增词条）但未同步本令牌钉对，令牌仍是 20261031-r6merge1
         # 而内容已漂移到 49d27dbc…。按本测试既定约定重新 bump 令牌并与当前内容钉对。
-        pinned_token = '20261101-r9merge1'
-        pinned_sha256 = '49d27dbc6dcb1c7de35456d3eab78d80b2d8a8a01f7e512b468fd17b001086fe'
+        # r12-arb（R1 服务器全员决策）：合并仲裁页新增入口与引导文案、以及
+        # server-merge/server-save 后端消息词条，词典内容再次变更；按既有约定
+        # 上调 index.html 的 ?v= 令牌并重新钉对（令牌, 内容）元组。
+        # R2（裁决员筛选参与权）：新增开关/引导/状态文案六条，令牌再上调。
+        pinned_token = '20261107-r12arb3'
+        pinned_sha256 = '053b39cbcea33cafb901c7056126726d6a9cb76ab8ea52ffbe38ce284a5b17f1'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')
