@@ -25,6 +25,43 @@ StrPath = str | Path
 SCREENER_READ_TIMEOUT = 15
 
 
+#: 仲裁裁决只允许二选一：用户裁定仲裁不得保存为「暂不确定」（maybe）。
+#: 只约束 *仲裁结论*；筛选员个人投票仍可用 maybe（读取/合并不受影响）。
+ARBITRATION_DECISIONS = ("include", "exclude")
+
+
+class ArbitrationDecisionRejected(ValueError):
+    """仲裁结论不满足「二选一 + 排除须附理由」契约。
+
+    可结构化映射为 400 的载体：``code`` / ``message_key`` 由 HTTP 层原样输出，
+    ``message`` 是中文源串（前端十语言词典按此注册），``params`` 携带出错的
+    文献键供界面定位。
+    """
+
+    code = "arbitration_decision_invalid"
+    message_key = "team.arbitration_decision_invalid"
+
+    def __init__(self, message: str, *, zotero_key: str | None = None) -> None:
+        super().__init__(message)
+        self.zotero_key = zotero_key
+        self.params = {"zotero_key": zotero_key} if zotero_key else {}
+        self.details = message
+
+
+class ArbitrationDecisionInvalid(ArbitrationDecisionRejected):
+    """裁决值不是 include/exclude（含 maybe、空值与任意其它值）。"""
+
+    code = "arbitration_decision_invalid"
+    message_key = "team.arbitration_decision_invalid"
+
+
+class ArbitrationReasonRequired(ArbitrationDecisionRejected):
+    """裁决为 exclude 但未附非空理由。"""
+
+    code = "arbitration_reason_required"
+    message_key = "team.arbitration_reason_required"
+
+
 class ScreenerLibraryUnavailableError(RuntimeError):
     """筛选员个人库**暂时**不可读（锁忙超时/IO 故障）。
 
@@ -277,7 +314,13 @@ def resolve_decision_conflicts(
     merged: pd.DataFrame,
     resolutions: list[dict[str, Any]],
 ) -> pd.DataFrame:
-    """Add final decisions while retaining every original screener vote."""
+    """Add final decisions while retaining every original screener vote.
+
+    r18 用户裁定：仲裁必须做出选择，「暂不确定」不能作为仲裁结论保存；
+    裁决为 exclude 时必须附非空理由。两条闸只作用于 ``resolutions``（仲裁
+    结论），已保存的历史仲裁记录读取/导出路径与筛选员原始投票（含 maybe）
+    均不受影响。
+    """
     if not isinstance(resolutions, list):
         raise ValueError("resolutions 必须为数组")
     out, names = _validated_merge(merged)
@@ -297,10 +340,20 @@ def resolve_decision_conflicts(
             raise ValueError(f"仅可仲裁 conflict 行: {key}")
         if key in by_key:
             raise ValueError(f"仲裁键重复: {key}")
-        if not isinstance(decision, str) or decision.strip().lower() not in DECISIONS:
-            raise ValueError(f"{key} 含非法仲裁决定，必须为 include、exclude 或 maybe")
+        if not isinstance(decision, str) or decision.strip().lower() not in ARBITRATION_DECISIONS:
+            raise ArbitrationDecisionInvalid(
+                "仲裁决定必须为「纳入」或「排除」，不能保存为「暂不确定」或其他值。",
+                zotero_key=key,
+            )
+        if rationale is None:
+            rationale = ""
         if not isinstance(rationale, str) or len(rationale) > 4000:
             raise ValueError(f"{key} 的仲裁说明最多 4000 个字符")
+        if decision.strip().lower() == "exclude" and not rationale.strip():
+            raise ArbitrationReasonRequired(
+                "仲裁决定为「排除」时必须填写仲裁理由后再保存。",
+                zotero_key=key,
+            )
         by_key[key] = (decision.strip().lower(), rationale)
 
     finals: list[str] = []

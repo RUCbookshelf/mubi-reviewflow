@@ -3545,6 +3545,26 @@ async def merge_decisions_ep(
         raise _bad(str(exc)) from exc
 
 
+def _arbitration_resolution_error(exc: ValueError) -> HTTPException:
+    """仲裁结论契约错误的结构化 400（CSV 上传与 server-save 同口径）。
+
+    r18：裁决值只接受 include/exclude、exclude 必须附理由。两类拒绝携带稳定
+    ``error_code`` + ``message_key``（十语言源串在 ``message``），前端 errOf
+    经 RFServerMessage 按键渲染引导文案；其余校验错误沿用既有纯字符串 400。
+    """
+    from coscreen.screening_arbitration import ArbitrationDecisionRejected
+
+    if isinstance(exc, ArbitrationDecisionRejected):
+        return HTTPException(400, {
+            "error_code": exc.code,
+            "message_key": exc.message_key,
+            "params": exc.params,
+            "details": exc.details,
+            "message": str(exc),
+        })
+    return _bad(str(exc))
+
+
 def _arbitration_store(task_id: str, user: dict) -> Path:
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
@@ -3616,7 +3636,7 @@ async def _save_server_sourced_arbitration(
         # 暂时不可读（锁忙/IO）：503 稍后重试，绝不落盘缺员合并表。
         raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
     except ValueError as exc:
-        raise _bad(str(exc)) from exc
+        raise _arbitration_resolution_error(exc) from exc
 
 
 @app.post("/api/tasks/{task_id}/screening-arbitrations", status_code=201)
@@ -3655,7 +3675,7 @@ async def save_screening_arbitration(
             arbitrator_id=user["user_id"],
         )
     except ValueError as exc:
-        raise _bad(str(exc)) from exc
+        raise _arbitration_resolution_error(exc) from exc
     return saved
 
 
