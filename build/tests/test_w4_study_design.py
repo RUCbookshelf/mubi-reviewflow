@@ -37,9 +37,20 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+_ENV_KEYS = ("REVIEWFLOW_MODE", "COBOOKSHELF_DATA_DIR")
+_ORIGINAL_ENV = {key: os.environ.get(key) for key in _ENV_KEYS}
 _fixture = tempfile.TemporaryDirectory(prefix="rf_w4_study_design_")
 os.environ["COBOOKSHELF_DATA_DIR"] = _fixture.name
 os.environ.setdefault("REVIEWFLOW_MODE", "server")
+
+
+def tearDownModule():
+    """恢复导入期环境（r13 测试卫生，与 W2 同款）：不泄漏临时目录/运行模式。"""
+    for key, value in _ORIGINAL_ENV.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -421,6 +432,10 @@ class StudyDesignEndpointNails(unittest.TestCase):
         cls._saved_env = {key: os.environ.get(key)
                           for key in ("REVIEWFLOW_MODE", "COBOOKSHELF_DATA_DIR")}
         os.environ["REVIEWFLOW_MODE"] = "server"
+        # auth.create_user 运行期现读 COBOOKSHELF_DATA_DIR，必须与导入期冻结的
+        # main.DATA_DIR 同根（r13 测试卫生：模块级环境会被 W2 的 tearDownModule
+        # 还原，若这里不重钉，用户库会落到仓库 data/ 与历史账号撞名）。
+        os.environ["COBOOKSHELF_DATA_DIR"] = str(main_mod.DATA_DIR)
         # main.DATA_DIR 在导入期冻结（custom_backend/main.py:168），可能指向先前
         # 模块的临时目录且已被其 cleanup 删除（test_ai_suggest 的 tearDownClass
         # 就会删掉自己那枚）。本类不依赖「别人还没删」这一前提：用之前保证它存在。
@@ -450,10 +465,9 @@ class StudyDesignEndpointNails(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
-        # 不 cleanup 数据目录（r8-r3 评审 medium 的 W3 口径，本行原先违反）：
-        # custom_backend.main.DATA_DIR 在导入期冻结，指向的是**共享**目录；
-        # 删掉它会让同进程后续模块建任务/建用户直接 401/500。临时目录交给
-        # TemporaryDirectory 的进程退出/GC 回收，同一进程内保持可用。
+        # 不 cleanup 数据目录（W2/W4 已统一口径，r13 测试卫生）：main.DATA_DIR
+        # 在导入期冻结，指向的是**共享**目录；删掉它会让同进程后续模块建任务/
+        # 建用户直接 401/500。临时目录交给进程退出/GC 回收，同一进程内保持可用。
         for key, value in cls._saved_env.items():
             if value is None:
                 os.environ.pop(key, None)

@@ -132,40 +132,63 @@ class F3_51IdentifiabilityMemoryTests(unittest.TestCase):
     """F3-51：块对角结构下按块累加，内存随最大研究块而非总效应数增长。"""
 
     def test_blockwise_matches_dense_eigenvalues(self):
-        rows_by_block, matrices = _two_outcome_blocks(studies=12)
+        """同构块与异质块都必须与稠密路径一致。
+
+        r13 终扫 stats-b-0：全同构块（所有研究方差相同）会让被丢弃的跨块项
+        精确相消，掩盖分块路径只累加块对角项的缺陷；这里同时比较异质块夹具
+        （方差/缺失结局随研究变化，相对差 ≤1e-10）。完整回归钉见
+        build/tests/test_r13_stats_blockwise_information.py。
+        """
         rng = np.random.default_rng(11)
         tau = np.array([[0.02, 0.004], [0.004, 0.03]])
-        outcomes = [[0, 1]] * len(rows_by_block)
-        scaled = [matrix / 10.0 for matrix in matrices]
-        blockwise = dependent_random._blockwise_information_eigenvalues(
-            outcomes, scaled, tau)
-        self.assertEqual(blockwise.shape, (3,))
-        self.assertTrue(np.isfinite(blockwise).all())
-        # 与历史稠密实现对比（同一数量级、同一符号）
-        total = 2 * len(rows_by_block)
-        design = np.zeros((total, 2))
-        marginal = np.zeros((total, total))
-        derivatives = [np.zeros((total, total)) for _ in range(3)]
-        offset = 0
-        for outcomes_local, sampling in zip(outcomes, scaled):
-            rows = np.arange(offset, offset + 2)
-            design[rows, outcomes_local] = 1.0
-            marginal[np.ix_(rows, rows)] = sampling + tau
-            for local, outcome in enumerate(outcomes_local):
-                derivatives[outcome][offset + local, offset + local] = 1.0
-            derivatives[2][offset, offset + 1] = derivatives[2][offset + 1, offset] = 1.0
-            offset += 2
-        weight = np.linalg.inv(marginal)
-        fixed_information = design.T @ weight @ design
-        weighted_design = weight @ design
-        projection = weight - weighted_design @ np.linalg.solve(
-            fixed_information, weighted_design.T)
-        fisher = np.asarray([[0.5 * np.trace(projection @ left @ projection @ right)
-                              for right in derivatives] for left in derivatives])
-        scale = np.sqrt(np.diag(fisher))
-        dense = np.linalg.eigvalsh(fisher / np.outer(scale, scale))
-        np.testing.assert_allclose(blockwise, dense, rtol=1e-10, atol=1e-12)
-        del rng
+        rows_by_block, matrices = _two_outcome_blocks(studies=12)
+        homogeneous = ([[0, 1]] * len(rows_by_block),
+                       [matrix / 10.0 for matrix in matrices])
+        heterogeneous_outcomes, heterogeneous_scaled = [], []
+        for index in range(12):
+            outcomes_local = [0, 1] if index % 4 else [index % 2]
+            size = len(outcomes_local)
+            base = rng.random((size, size)) * 0.02 + np.eye(size) * 0.01
+            heterogeneous_outcomes.append(outcomes_local)
+            heterogeneous_scaled.append(base @ base.T + np.eye(size) * 0.001)
+        for label, (outcomes, scaled) in (
+            ("homogeneous", homogeneous),
+            ("heterogeneous", (heterogeneous_outcomes, heterogeneous_scaled)),
+        ):
+            with self.subTest(fixture=label):
+                blockwise = dependent_random._blockwise_information_eigenvalues(
+                    outcomes, scaled, tau)
+                self.assertEqual(blockwise.shape, (3,))
+                self.assertTrue(np.isfinite(blockwise).all())
+                # 与历史稠密实现对比（同一数量级、同一符号）
+                total = sum(len(outcomes_local) for outcomes_local in outcomes)
+                design = np.zeros((total, 2))
+                marginal = np.zeros((total, total))
+                derivatives = [np.zeros((total, total)) for _ in range(3)]
+                offset = 0
+                for outcomes_local, sampling in zip(outcomes, scaled):
+                    count = len(outcomes_local)
+                    rows = np.arange(offset, offset + count)
+                    design[rows, outcomes_local] = 1.0
+                    marginal[np.ix_(rows, rows)] = (
+                        sampling + tau[np.ix_(outcomes_local, outcomes_local)])
+                    for local, outcome in enumerate(outcomes_local):
+                        derivatives[outcome][offset + local, offset + local] = 1.0
+                    if count == 2:
+                        derivatives[2][offset, offset + 1] = 1.0
+                        derivatives[2][offset + 1, offset] = 1.0
+                    offset += count
+                weight = np.linalg.inv(marginal)
+                fixed_information = design.T @ weight @ design
+                weighted_design = weight @ design
+                projection = weight - weighted_design @ np.linalg.solve(
+                    fixed_information, weighted_design.T)
+                fisher = np.asarray([[0.5 * np.trace(projection @ left @ projection @ right)
+                                      for right in derivatives] for left in derivatives])
+                scale = np.sqrt(np.diag(fisher))
+                dense = np.linalg.eigvalsh(fisher / np.outer(scale, scale))
+                np.testing.assert_allclose(blockwise, dense, rtol=1e-10, atol=1e-12,
+                                           err_msg=label)
 
     def test_large_input_never_allocates_dense_matrices(self):
         """2400 效应走上块累加分支，堆峰值远低于 4n²×8=184 MB。"""

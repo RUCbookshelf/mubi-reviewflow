@@ -32,7 +32,10 @@
   base③Unpaywall 响应给出的开放 PDF URL；③ 另做**公网地址白名单**——字面
   回环/私网/链路本地地址、``localhost``/``.local``/``.internal`` 名称，以及
   解析结果落在上述范围的域名一律拒绝（``pdf_fetch_unsafe_url``），防止被配置
-  上游通过响应把服务端当作内网探针；
+  上游通过响应把服务端当作内网探针；③ 的解析**只做一次**并**钉住已校验 IP**
+  发起连接（自定义连接类连钉扎地址，Host 头与 HTTPS 的 SNI/证书主机名仍是
+  原主机名），连接建立后再核对 peer 地址仍属公网——堵住「校验时答公网、
+  连接时答 127.0.0.1」的 DNS 重绑定（be-outbound-0）；
 - **官方端点不可绕过**：官方 Unpaywall 判定按规范化 (scheme, hostname 去尾点
   小写, 端口) 比较，``https://API.unpaywall.org`` / ``:443`` / 尾点 /
   ``/.`` 等变体一律视同官方；官方端点**强制 https**且**必须**带合规 email
@@ -162,6 +165,70 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _PinnedConnectionMixin:
+    """把 TCP 连接钉在**已校验**的 IP 上，其余语义（Host 头/证书校验）不变。
+
+    ``http.client`` 在 ``connect()`` 里通过实例属性 ``_create_connection``
+    （默认 = ``socket.create_connection``）建立连接；这里把它替换成钉扎版本：
+    TCP 目标用 ``_pinned_address``，``self.host``（Host 头、HTTPS 的
+    ``server_hostname``）保持原主机名。连接建立后再核对 peer 仍属公网，
+    作为「钉扎后仍被中间设备/NAT 改写」的第二道防线。
+    """
+
+    _pinned_address: str | None = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if type(self)._pinned_address:
+            self._create_connection = self._connect_pinned
+
+    def _connect_pinned(self, address, timeout, source_address):
+        sock = socket.create_connection(
+            (self._pinned_address, address[1]), timeout, source_address)
+        try:
+            peer = str(sock.getpeername()[0])
+        except OSError:
+            sock.close()
+            raise
+        if _is_private_address(peer):
+            sock.close()
+            raise OSError("钉住的连接 peer 不属于公网地址。")
+        return sock
+
+
+class _PinnedHTTPConnection(_PinnedConnectionMixin, http.client.HTTPConnection):
+    """明文 HTTP：钉住 IP 连接，Host 头仍是原主机名。"""
+
+
+class _PinnedHTTPSConnection(_PinnedConnectionMixin, http.client.HTTPSConnection):
+    """HTTPS：钉住 IP 连接，TLS 的 SNI/证书主机名校验仍用原主机名。"""
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """按请求的 ``pinned_address`` 选择钉扎连接类（无钉扎时退回默认行为）。"""
+
+    def http_open(self, req):
+        pinned = getattr(req, "pinned_address", None)
+        if not pinned:
+            return super().http_open(req)
+        conn_class = type("_BoundPinnedHTTPConnection",
+                          (_PinnedHTTPConnection,), {"_pinned_address": pinned})
+        return self.do_open(conn_class, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS 版钉扎 handler；``context``/``check_hostname`` 原样透传。"""
+
+    def https_open(self, req):
+        pinned = getattr(req, "pinned_address", None)
+        if not pinned:
+            return super().https_open(req)
+        conn_class = type("_BoundPinnedHTTPSConnection",
+                          (_PinnedHTTPSConnection,), {"_pinned_address": pinned})
+        return self.do_open(conn_class, req, context=self._context,
+                            check_hostname=self._check_hostname)
+
+
 #: 拒绝跟随 3xx（_NoRedirectHandler）+ **显式空 ProxyHandler**：urllib 默认读
 #: http_proxy/HTTP_PROXY/https_proxy 环境变量，企业/校园网普遍预设，会把请求
 #: 整包发往代理主机——DOI 与联系 email 随之落到第三方，『只访问①②③』的隐私
@@ -175,7 +242,8 @@ def _build_opener():
     受控桩，直接读它拿不到真实 handler 列表。
     """
     return urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), _NoRedirectHandler)
+        urllib.request.ProxyHandler({}), _NoRedirectHandler,
+        _PinnedHTTPHandler(), _PinnedHTTPSHandler())
 
 
 _OPENER = _build_opener()
@@ -278,38 +346,52 @@ def _is_private_address(value: str) -> bool:
     return not ip.is_global
 
 
-def _public_host_reason(hostname: str) -> str | None:
-    """公网地址校验：返回拒绝原因；None = 可访问。
+def _validate_and_pin(hostname: str, port: int) -> tuple[list[str] | None, str | None]:
+    """字面规则 + **单次** DNS 解析 + 公网校验：``(已校验地址列表, 拒绝原因)``。
 
     两道关：① 字面名称（localhost / *.localhost / *.local / *.internal /
     *.home.arpa）与字面 IP 直接判；② DNS 解析结果任一落在回环/私网/链路本地/
     保留段即拒绝（防「域名解析到 127.0.0.1」与 DNS rebinding 常见形态）。
     解析失败同样拒绝（fail closed）——宁可提示无法获取，也不做内网探针。
+
+    返回的地址列表就是本次**唯一一次**解析的结果；调用方必须钉住其中一个
+    发起连接（见 ``_PinnedConnectionMixin``），连接阶段不得再次解析。
     """
     host = _host_identity(hostname)
     if not host:
-        return "invalid_host"
+        return None, "invalid_host"
     if host == "localhost" or host.endswith(_BLOCKED_HOST_SUFFIXES):
-        return "private_host"
+        return None, "private_host"
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
-        return "private_host" if _is_private_address(host) else None
+        return (None, "private_host") if _is_private_address(host) else ([host], None)
     try:
-        addresses = _resolve_host(host)
+        addresses = _resolve_host(host, port)
     except (OSError, ValueError):
-        return "unresolvable_host"
+        return None, "unresolvable_host"
     if not addresses:
-        return "unresolvable_host"
+        return None, "unresolvable_host"
     if any(_is_private_address(address) for address in addresses):
-        return "private_host"
-    return None
+        return None, "private_host"
+    return addresses, None
 
 
-def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
-    """开放 PDF 候选 URL 分类：返回 ``(url, None)`` 或 ``(None, 拒绝原因)``。"""
+def _public_host_reason(hostname: str) -> str | None:
+    """公网地址校验门面（2 元组旧缝）：返回拒绝原因；None = 可访问。"""
+    _addresses, reason = _validate_and_pin(hostname, 443)
+    return reason
+
+
+def _classify_fetchable_target(url: Any) -> tuple[dict | None, str | None]:
+    """开放 PDF 候选 URL 分类 + 单次解析钉扎。
+
+    返回 ``({"url","host","port","address"}, None)`` 或 ``(None, 拒绝原因)``。
+    ``address`` 来自本 URL **唯一一次** DNS 解析且已通过公网校验；下载阶段
+    必须用它连接（``_get_bytes(..., pinned_address=...)``），不得再解析。
+    """
     if not isinstance(url, str) or not url.strip():
         return None, "invalid_url"
     candidate = url.strip()
@@ -320,15 +402,40 @@ def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
         return None, "invalid_url"
     if parts.username or parts.password:
         return None, "invalid_url"
-    reason = _public_host_reason(parts.hostname)
-    return (None, reason) if reason else (candidate, None)
+    port = _effective_port(parts)
+    if port == -1:                      # 畸形端口（'https://x:abc'）
+        return None, "invalid_url"
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    addresses, reason = _validate_and_pin(parts.hostname, port)
+    if reason:
+        return None, reason
+    return {"url": candidate, "host": _host_identity(parts.hostname),
+            "port": port, "address": addresses[0]}, None
 
 
-def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str) -> bytes:
-    """GET 指定 URL：显式 UA + 短超时 + 读取上限 + 拒绝重定向（30x=HTTPError）。"""
+def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
+    """开放 PDF 候选 URL 分类（2 元组旧缝）：返回 ``(url, None)`` 或 ``(None, 原因)``。"""
+    target, reason = _classify_fetchable_target(url)
+    return (None, reason) if target is None else (target["url"], None)
+
+
+def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
+               pinned_address: str | None = None) -> bytes:
+    """GET 指定 URL：显式 UA + 短超时 + 读取上限 + 拒绝重定向（30x=HTTPError）。
+
+    ``pinned_address`` 给定（PDF 候选下载）时，连接钉住该已校验 IP——分类
+    阶段已解析过一次，连接阶段不再解析，堵住 DNS 重绑定（be-outbound-0）。
+    未给定时（配置的 Unpaywall/Crossref 端点，允许自托管回环）保持原行为。
+    """
     request = urllib.request.Request(  # noqa: S310  URL 经上方白名单校验
         url, method="GET",
         headers={"User-Agent": USER_AGENT, "Accept": accept})
+    if pinned_address:
+        # 防御纵深：只接受公网 IP（正常调用方传的是分类阶段已校验的地址）。
+        if _is_private_address(str(pinned_address)):
+            raise OutboundError("private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
+        request.pinned_address = pinned_address
     try:
         with _open(request, timeout) as response:  # noqa: S310
             data = response.read(max_bytes + 1)
@@ -508,11 +615,12 @@ def _email_error(value: str, official: bool) -> HTTPException | None:
 # Unpaywall / Crossref 查询
 # ---------------------------------------------------------------------------
 
-def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[str], list[str]]:
-    """Unpaywall v2 API → ``(可用 PDF 候选, 被拒原因列表)``。
+def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[dict], list[str]]:
+    """Unpaywall v2 API → ``(可用 PDF 目标, 被拒原因列表)``。
 
     仅取 ``url_for_pdf``；只接受 http/https 公网地址（回环/私网/无法解析一律
-    拒绝并记录原因，供上层区分「无 OA」与「链接不安全」）。
+    拒绝并记录原因，供上层区分「无 OA」与「链接不安全」）。每个目标的
+    ``address`` 是本 URL 唯一一次 DNS 解析且已校验的公网 IP，下载必须钉住它。
     """
     base = settings["unpaywall_base_url"]
     email = settings["email"]
@@ -534,12 +642,12 @@ def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[str], list
                 candidate = str(location.get("url_for_pdf"))
                 if candidate not in raw_urls:
                     raw_urls.append(candidate)
-    candidates: list[str] = []
+    candidates: list[dict] = []
     rejected: list[str] = []
     for raw in raw_urls:
-        url_pdf, reason = _classify_fetchable_url(raw)
-        if url_pdf:
-            candidates.append(url_pdf)
+        target, reason = _classify_fetchable_target(raw)
+        if target is not None:
+            candidates.append(target)
         elif reason:
             rejected.append(reason)
     return candidates[:MAX_OA_CANDIDATES], rejected
@@ -561,7 +669,12 @@ def _crossref_message(article: dict, settings: dict) -> tuple[dict | None, str]:
         return None, ""
     payload = _get_json(
         f"{base}/works?query.bibliographic={quote(title, safe='')}&rows=3")
-    items = payload.get("message", {}).get("items") if isinstance(payload, dict) else None
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if not isinstance(message, dict):
+        # 上游偶发 {"message": null} / {"message": []}。与 DOI 路径同口径：
+        # 非 dict 视为「无建议」，绝不让 .get 抛 AttributeError→500。
+        return None, ""
+    items = message.get("items")
     if not isinstance(items, list):
         raise OutboundError("bad_response", "Crossref 响应形状异常。")
     for item in items:
@@ -649,9 +762,11 @@ def _fetch_one(db: Path, key: str, article: dict, *, settings: dict,
     invalid = 0
     last_invalid = "下载内容不是可解析的 PDF。"
     context = _key_trace_context(trace_context, key)
-    for url_pdf in candidates:
+    for candidate in candidates:
+        url_pdf = candidate["url"]
         data = _get_bytes(url_pdf, timeout=PDF_TIMEOUT_SECONDS,
-                          max_bytes=MAX_PDF_BYTES, accept="application/pdf,*/*")
+                          max_bytes=MAX_PDF_BYTES, accept="application/pdf,*/*",
+                          pinned_address=candidate.get("address"))
         try:
             check_pdf_bytes(data)                 # security.py:411 同一道上传校验
         except UploadRejected as exc:

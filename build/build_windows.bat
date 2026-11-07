@@ -6,7 +6,8 @@ rem  Usage: double-click this file.
 rem  Output: build\Output\ReviewFlow-Setup-x64.exe
 rem
 rem  Requires:
-rem    1) Internet access (embedded Python 3.12 + get-pip are downloaded)
+rem    1) Internet access (embedded Python 3.12 + the pinned pip wheels are
+rem       downloaded)
 rem    2) Inno Setup 6/7 or NSIS 3
 rem
 rem  Note: cmd.exe cannot use a network/UNC path (for example
@@ -47,16 +48,38 @@ if not defined LOGOK set "LOG=%TEMP%\ReviewFlow-build.log"
 set "PYEMBED_VER=3.12.10"
 set "PYEMBED_ZIP=python-%PYEMBED_VER%-embed-amd64.zip"
 set "PYEMBED_URL=https://www.python.org/ftp/python/%PYEMBED_VER%/%PYEMBED_ZIP%"
-set "GETPIP_URL=https://bootstrap.pypa.io/get-pip.py"
-rem MM9-13: both bootstrap downloads are verified with certutil against these
-rem pinned digests before anything executes them (the Linux build already did
-rem this for appimagetool). python.org serves an immutable per-version file;
-rem bootstrap.pypa.io/get-pip.py is a rolling file that changes whenever pip
-rem releases, so a mismatch after an upstream rotation is a deliberate hard
-rem stop: verify the new file and update GETPIP_SHA256 in the same change -
-rem never delete the check.
+rem r13 build-1: pip is bootstrapped from FIXED-VERSION wheels on
+rem files.pythonhosted.org (a published release asset is immutable). The old
+rem pin was the PyPA get-pip bootstrap endpoint, a ROLLING file that upstream
+rem rewrites whenever pip releases: by 2026-11-07 the live file hashed
+rem 356e0d0d... while GETPIP_SHA256 still held f4448a01..., so every machine
+rem without the old cached copy hard-stopped at [1/6] and was told to "check
+rem the network". A wheel is a zip, so the embedded runtime bootstraps pip from
+rem it directly (see [2/6]) - no rolling file in the build path.
+rem GETPIP_* keeps its name (it is still "the pip bootstrapper"); setuptools,
+rem wheel and packaging replace the `get-pip.py pip setuptools wheel` install
+rem that used to run (wheel needs packaging at run time).
+set "PIP_WHEEL_VER=26.3"
+set "GETPIP_FILE=pip-%PIP_WHEEL_VER%-py3-none-any.whl"
+set "GETPIP_URL=https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl"
+set "SETUPTOOLS_FILE=setuptools-84.2.1-py3-none-any.whl"
+set "SETUPTOOLS_URL=https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl"
+set "WHEEL_FILE=wheel-0.48.0-py3-none-any.whl"
+set "WHEEL_URL=https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl"
+set "PACKAGING_FILE=packaging-26.3-py3-none-any.whl"
+set "PACKAGING_URL=https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl"
+rem MM9-13: every bootstrap download is verified with certutil against these
+rem pinned digests BEFORE anything executes it - including a file already
+rem sitting in the downloads cache. A fresh download that arrives but does not
+rem match is reported separately from a download that never arrived
+rem (:fetch_verified returns 2 vs 1), so the message names the right fix.
+rem Never delete the check: update a pin in the same change as the version,
+rem after verifying the new digest.
 set "PYEMBED_SHA256=4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
-set "GETPIP_SHA256=f4448a01e3ab2914c65f4ca59d4cacba6b2dbde19a483fbac46587f8bbaff424"
+set "GETPIP_SHA256=f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13"
+set "SETUPTOOLS_SHA256=ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2"
+set "WHEEL_SHA256=3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab"
+set "PACKAGING_SHA256=d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
 set "DOWNLOADS=%SRCDIR%\downloads"
 set "STAGING=%SRCDIR%\staging\ReviewFlow"
 set "INSTALLER=%SRCDIR%\Output\ReviewFlow-Setup-x64.exe"
@@ -104,7 +127,14 @@ rem only adds and overwrites, so after a rename/delete upstream the relocated
 rem tree kept the old file and :copyapp packed it into the installer. The
 rem /XD and /XF exclusions are still honoured for deletion, so build outputs
 rem (staging, Output, downloads) are never purged from under the build.
-robocopy "%SRCDIR%" "%BUILDROOT%\build" /E /PURGE /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache staging appdir Output downloads /XF *.AppImage *.tar.gz *.log >>"%LOG%" 2>&1
+rem r13 build-0: .build-windows.lock MUST be excluded too. It is created in
+rem the destination (%BUILDROOT%\build) before this line and never exists in
+rem the source, so /PURGE used to delete it - and with it the pid file - taking
+rem the F1-3 mutex with it for the rest of the wrapper and inner build (probe:
+rem E:/rf214tmp/dwave/build/probe_a_robocopy_purge_lock.bat -> LOCK_DELETED /
+rem PIDFILE_GONE). The exclusion also stops a stale lock left in the SOURCE
+rem tree by an earlier local build from overwriting the live lock's pid.
+robocopy "%SRCDIR%" "%BUILDROOT%\build" /E /PURGE /NFL /NDL /NJH /NJS /XD __pycache__ .pytest_cache staging appdir Output downloads .build-windows.lock /XF *.AppImage *.tar.gz *.log >>"%LOG%" 2>&1
 if errorlevel 8 goto :fail_copy
 set "SRCPARENT=%SRCDIR%\.."
 set "COPYFAIL="
@@ -215,9 +245,23 @@ rem MM9-13: every artifact is hash-checked BEFORE it runs - including files
 rem already sitting in the downloads cache from an earlier run, so a tampered
 rem or truncated cache can no longer be replayed silently. A cached file whose
 rem digest mismatches is deleted and fetched once more; a second mismatch
-rem aborts the build.
-call :fetch_verified "%PYEMBED_URL%" "%DOWNLOADS%\%PYEMBED_ZIP%" "%PYEMBED_SHA256%" || goto :fail_dlpy
-call :fetch_verified "%GETPIP_URL%" "%DOWNLOADS%\get-pip.py" "%GETPIP_SHA256%" || goto :fail_dlgetpip
+rem aborts the build. :fetch_verified separates "the download failed" (1) from
+rem "the bytes do not match the pin" (2) so the failure message can say which.
+call :fetch_verified "%PYEMBED_URL%" "%DOWNLOADS%\%PYEMBED_ZIP%" "%PYEMBED_SHA256%"
+if errorlevel 2 goto :fail_dlpy_sha
+if errorlevel 1 goto :fail_dlpy
+call :fetch_verified "%GETPIP_URL%" "%DOWNLOADS%\%GETPIP_FILE%" "%GETPIP_SHA256%"
+if errorlevel 2 goto :fail_dlgetpip_sha
+if errorlevel 1 goto :fail_dlgetpip
+call :fetch_verified "%SETUPTOOLS_URL%" "%DOWNLOADS%\%SETUPTOOLS_FILE%" "%SETUPTOOLS_SHA256%"
+if errorlevel 2 goto :fail_dlgetpip_sha
+if errorlevel 1 goto :fail_dlgetpip
+call :fetch_verified "%WHEEL_URL%" "%DOWNLOADS%\%WHEEL_FILE%" "%WHEEL_SHA256%"
+if errorlevel 2 goto :fail_dlgetpip_sha
+if errorlevel 1 goto :fail_dlgetpip
+call :fetch_verified "%PACKAGING_URL%" "%DOWNLOADS%\%PACKAGING_FILE%" "%PACKAGING_SHA256%"
+if errorlevel 2 goto :fail_dlgetpip_sha
+if errorlevel 1 goto :fail_dlgetpip
 
 call :log "[2/6] unpacking runtime and installing pip"
 echo [2/6] unpacking runtime and installing pip ...
@@ -255,8 +299,24 @@ rem the embedded distribution disables site-packages by default
 >>"%STAGING%\runtime\python312._pth" echo Lib\site-packages
 >>"%STAGING%\runtime\python312._pth" echo import site
 if not exist "%STAGING%\runtime\python.exe" goto :fail_expand
-"%STAGING%\runtime\python.exe" "%DOWNLOADS%\get-pip.py" pip setuptools wheel --no-warn-script-location >>"%LOG%" 2>&1
-if errorlevel 1 goto :fail_getpip
+rem r13 build-1: bootstrap pip from the VERIFIED wheel, no get-pip script. A
+rem wheel is a zip, so `python <wheel>\pip ...` would run pip's CLI - but pip's
+rem Windows guard (pip/_internal/utils/misc.py:
+rem protect_pip_from_modification_on_windows) refuses to modify pip whenever
+rem argv[0]'s basename is literally "pip", which is exactly what that path
+rem produces (measured on pip 26.3). A tiny driver file keeps argv[0] an
+rem ordinary script path and puts the wheel on sys.path instead. Nothing below
+rem reaches the network: every wheel was fetched and digest-checked above and
+rem --no-index forbids resolving anything else.
+set "RF_PIPBOOT=%DOWNLOADS%\rf_pip_bootstrap.py"
+> "%RF_PIPBOOT%" echo import sys
+>>"%RF_PIPBOOT%" echo sys.path.insert(0, sys.argv[1])
+>>"%RF_PIPBOOT%" echo from pip._internal.cli.main import main
+>>"%RF_PIPBOOT%" echo raise SystemExit(main(sys.argv[2:]))
+"%STAGING%\runtime\python.exe" "%RF_PIPBOOT%" "%DOWNLOADS%\%GETPIP_FILE%" install --no-index --no-warn-script-location --disable-pip-version-check "%DOWNLOADS%\%GETPIP_FILE%" "%DOWNLOADS%\%SETUPTOOLS_FILE%" "%DOWNLOADS%\%WHEEL_FILE%" "%DOWNLOADS%\%PACKAGING_FILE%" >>"%LOG%" 2>&1
+set "PIPBOOT_RC=%ERRORLEVEL%"
+del "%RF_PIPBOOT%" >nul 2>nul
+if not "%PIPBOOT_RC%"=="0" goto :fail_getpip
 
 call :log "[3/6] installing runtime dependencies"
 echo [3/6] installing runtime dependencies (a few minutes, please wait) ...
@@ -426,10 +486,16 @@ goto :end_fail
 call :err "No installer compiler found. Install Inno Setup 6/7 or NSIS 3, or add ISCC.exe/makensis.exe to PATH."
 goto :end_fail
 :fail_dlpy
-call :err "downloading the embedded Python failed - check the network or proxy"
+call :err "downloading the embedded Python runtime failed - check the network or proxy"
+goto :end_fail
+:fail_dlpy_sha
+call :err "the embedded Python runtime does not match its pinned SHA-256 - the download was corrupted or tampered with. Delete %DOWNLOADS%\%PYEMBED_ZIP% and retry; update PYEMBED_SHA256 only together with a new, independently verified file"
 goto :end_fail
 :fail_dlgetpip
-call :err "downloading get-pip.py failed - check the network or proxy"
+call :err "downloading the pip bootstrap wheels from PyPI failed - check the network or proxy"
+goto :end_fail
+:fail_dlgetpip_sha
+call :err "a downloaded pip bootstrap wheel does not match its pinned SHA-256 - nothing was executed; the download was corrupted or tampered with. Delete the files in %DOWNLOADS% and retry; update a pin only together with a new, independently verified wheel"
 goto :end_fail
 :fail_staging
 call :err "cannot create the staging folder: %STAGING%"
@@ -639,13 +705,20 @@ goto :eof
 :fetch_verified
 rem MM9-13: %1=URL %2=cache path %3=pinned sha256. A cached file is
 rem re-verified on every run; a mismatch deletes it and re-downloads once.
+rem The two failure modes stay distinct because their fixes differ:
+rem   exit 0 = the cached/downloaded file matches the pin
+rem   exit 1 = the download itself failed (network, proxy, HTTP error)
+rem   exit 2 = the bytes arrived but their digest does not match the pin
 call :sha256_matches "%~2" "%~3"
 if not errorlevel 1 exit /b 0
 if exist "%~2" del /q "%~2" >nul 2>nul
 "%CURL_EXE%" -L --fail --retry 2 -o "%~2" "%~1" >>"%LOG%" 2>&1
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+  if exist "%~2" del /q "%~2" >nul 2>nul
+  exit /b 1
+)
 call :sha256_matches "%~2" "%~3"
-if errorlevel 1 exit /b 1
+if errorlevel 1 exit /b 2
 exit /b 0
 
 :sha256_matches

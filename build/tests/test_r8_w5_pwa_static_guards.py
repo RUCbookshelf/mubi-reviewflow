@@ -424,3 +424,30 @@ def test_login_controls_are_clickable_while_banner_is_up_real_dom():
     assert proc.returncode == 0, out[-4000:]
     assert "PASS W5 offline banner never occludes login controls" in proc.stdout, out[-4000:]
 
+
+@pytest.mark.skipif(
+    not (os.environ.get("REVIEWFLOW_PLAYWRIGHT") and os.environ.get("PLAYWRIGHT_BROWSERS_PATH")),
+    reason="playwright runtime not configured (set REVIEWFLOW_PLAYWRIGHT and PLAYWRIGHT_BROWSERS_PATH)",
+)
+@pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+def test_offline_shell_service_worker_end_to_end_real_browser():
+    """尾巴③：W5 离线壳缺「真浏览器 SW」层——本钉子补上。
+
+    此前的三层是 Node vm 策略桩（w5_pwa_sw.test.cjs）、Python 源码静态守卫、
+    以及刻意 404 `/sw.js` 的 banner DOM 用例（w5_pwa_banner_browser.cjs）。
+    本用例真实注册 sw.js，断言：运行时缓存名/条目（带 ?v=）、shell 缓存键
+    === registration.scope、`setOffline` 后 reload 仍出应用壳且提示条经真实
+    SW postMessage 出现、`/api/` 永不进缓存也不顶掉壳快照，并在 `/reviewflow/`
+    子路径下同构再跑一遍。
+
+    skipif 与 banner 用例（MM7-03）同款：CI 的 Provision playwright 步骤提供
+    这两个变量，本地未配置时跳过——不伪造通过。"""
+    proc = subprocess.run(
+        [NODE, "build/tests/w5_pwa_sw_browser.cjs"],
+        cwd=str(REPO), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out[-5000:]
+    assert "PASS W5 offline shell service worker end-to-end" in proc.stdout, out[-5000:]
+

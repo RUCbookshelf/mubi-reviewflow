@@ -202,12 +202,21 @@ def ensure_analysis_storage(conn: sqlite3.Connection) -> None:
     """Upgrade a database copy or task database without rewriting legacy rows."""
     conn.executescript(_SCHEMA)
     fields = ",".join(_EFFECT_FIELDS)
-    conn.execute(
-        "INSERT INTO review_effect_versions (" + fields + ",revision,changed_at) "
-        "SELECT " + ",".join("e." + field for field in _EFFECT_FIELDS) +
-        ",1,datetime('now') FROM review_effects e WHERE NOT EXISTS ("
-        "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id)"
-    )
+    # 只读预检（L6d1）：稳态库没有缺 version 的 effect 时跳过下面的
+    # INSERT…SELECT，避免每次冷 _connect 都为「确认无需回填」抢写锁——
+    # 长写事务期间该写语句曾把冷连接阻塞到 5 秒 busy 超时后 500。
+    pending = conn.execute(
+        "SELECT 1 FROM review_effects e WHERE NOT EXISTS ("
+        "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id) "
+        "LIMIT 1"
+    ).fetchone()
+    if pending is not None:
+        conn.execute(
+            "INSERT INTO review_effect_versions (" + fields + ",revision,changed_at) "
+            "SELECT " + ",".join("e." + field for field in _EFFECT_FIELDS) +
+            ",1,datetime('now') FROM review_effects e WHERE NOT EXISTS ("
+            "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id)"
+        )
     new_values = ",".join("NEW." + field for field in _EFFECT_FIELDS)
     changed = " OR ".join("OLD." + field + " IS NOT NEW." + field for field in _EFFECT_FIELDS[1:])
     conn.executescript(f"""

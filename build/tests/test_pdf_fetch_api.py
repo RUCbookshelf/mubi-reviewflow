@@ -45,6 +45,12 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+# r13 测试卫生：导入期需要临时数据目录来绑定导入期冻结的 main.DATA_DIR，但
+# **必须保存原值**并在模块结束时恢复（tearDownModule）——不得把
+# COBOOKSHELF_DATA_DIR / REVIEWFLOW_MODE 泄漏给同进程后续测试模块。
+_ENV_KEYS = ("REVIEWFLOW_MODE", "COBOOKSHELF_DATA_DIR")
+_ORIGINAL_ENV = {key: os.environ.get(key) for key in _ENV_KEYS}
 fixture = tempfile.TemporaryDirectory(prefix="rf_pdf_fetch_test_")
 os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
 os.environ["REVIEWFLOW_MODE"] = "server"
@@ -59,6 +65,16 @@ from coscreen.models import Article
 
 #: 与 main.DATA_DIR 同一绑定（全套 pytest 下其它模块会在收集期改写环境变量）。
 DATA_ROOT = Path(main_mod.DATA_DIR)
+
+
+def tearDownModule():
+    """恢复导入期环境（r13 测试卫生）：不把临时目录/运行模式泄漏出去。"""
+    for key, value in _ORIGINAL_ENV.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
 
 UNPAYWALL = "https://api.unpaywall.org"
 CROSSREF = "https://api.crossref.org"
@@ -155,6 +171,17 @@ class PdfFetchFixture:
 
     @classmethod
     def setUpClass(cls):
+        # r13 测试卫生：类运行期保存环境并在收尾原样恢复（与 W4 同款）。别的
+        # 模块可能在运行期改写 REVIEWFLOW_MODE（launcher 会改成 desktop），
+        # 本类必须自己钉住 server 语义，且不把自己的覆盖泄漏给下一个类。
+        cls._saved_env = {key: os.environ.get(key) for key in _ENV_KEYS}
+        # 运行期把环境钉到**导入期冻结的共享根**（而不是本模块的临时目录）：
+        # auth.create_user 每次现读 COBOOKSHELF_DATA_DIR，必须与 main.DATA_DIR
+        # 指向同一处，否则用户库与任务库分叉。
+        os.environ["COBOOKSHELF_DATA_DIR"] = str(main_mod.DATA_DIR)
+        os.environ["REVIEWFLOW_MODE"] = "server"
+        # main.DATA_DIR 导入期冻结，可能指向别人已删的临时目录：用前保证存在。
+        Path(main_mod.DATA_DIR).mkdir(parents=True, exist_ok=True)
         cls.client = TestClient(app)
         cls.client.__enter__()
         cls.users = []
@@ -171,7 +198,14 @@ class PdfFetchFixture:
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
-        fixture.cleanup()
+        # 不 cleanup 数据目录（r13 测试卫生，与 W4 统一口径）：main.DATA_DIR 在
+        # 导入期冻结且可能是**共享**目录，删掉会让同进程后续模块建任务/建用户
+        # 直接 401/500。临时目录交给进程退出/GC 回收，同进程内保持可用。
+        for key, value in cls._saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def auth(self, i=0):
         return {"Authorization": "Bearer " + self.users[i]["token"]}
@@ -660,6 +694,26 @@ class PdfFetchFixture:
         self.assertEqual(body["suggestions"].get("doi"), "10.9999/found")
         self.assertEqual(db.get_article(self.owner_db, "NODOI").doi, "",
                          "建议绝不回写 articles.doi")
+
+    def test_metadata_suggestions_null_or_list_message_is_200(self):
+        """r13 终扫低危 be-outbound-1：Crossref ``message`` 为 null/list 时不得 500。
+
+        DOI 路径早有 isinstance 守卫，标题检索路径旧写法 ``payload.get("message", {})``
+        在键存在但值为 None/list 时拿到 None/list 再 ``.get`` → AttributeError →
+        路由只捕 OutboundError → 500。这里要求 200 + 空建议（优雅降级）。
+        """
+        self.enable_now()
+        for payload in ({"message": None}, {"message": []}):
+            with self.subTest(payload=payload):
+                self.set_routes(crossref_json(payload))
+                resp = self.client.get(
+                    f"/api/tasks/{self.task}/fulltext/NODOI/metadata-suggestions",
+                    headers=self.auth(0))
+                self.assertEqual(resp.status_code, 200, resp.text)
+                body = resp.json()
+                self.assertEqual(body["suggestions"], {})
+                self.assertEqual(body["matched_by"], "none")
+                self.assertTrue(body["read_only"])
 
     # -- 批量：混合 outcome + 熔断 + 幂等键 -----------------------------------
 

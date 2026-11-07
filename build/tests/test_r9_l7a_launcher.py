@@ -76,6 +76,18 @@ sys.path.insert(0, str(BUILD))
 sys.path.insert(0, str(REPO))
 
 
+@pytest.fixture(autouse=True)
+def _desktop_mode(monkeypatch):
+    """r13 tailpiece ①: ``launcher.main()`` now REFUSES ``REVIEWFLOW_MODE=server``
+    instead of silently switching to desktop. Several other test modules set
+    that variable at import time (``os.environ.setdefault("REVIEWFLOW_MODE",
+    "server")``), and pytest imports them into the same process, so the mode
+    leaks here. These nails are all about the desktop entry point: pin the mode
+    they exercise instead of inheriting whatever another module left behind.
+    """
+    monkeypatch.delenv("REVIEWFLOW_MODE", raising=False)
+
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #

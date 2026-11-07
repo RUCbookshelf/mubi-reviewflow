@@ -397,19 +397,33 @@ _MIGRATED_SCHEMAS: dict[Path, int] = {}
 def _add_column_if_missing(
     conn: sqlite3.Connection, table: str, column: str, ddl_sql: str
 ) -> None:
-    """跨进程安全的补列原语：BEGIN IMMEDIATE → 事务内复查 → ALTER → commit。
+    """跨进程安全的补列原语：只读探测 → 缺列才 BEGIN IMMEDIATE → 复查 → ALTER。
 
-    缺列检查与 ALTER 必须同处一个写事务：PRAGMA table_info 不加锁，「先查
-    后改」的两个并发连接会同时看到缺列、随后双双 ALTER，后到者抛
-    duplicate column name。BEGIN IMMEDIATE 先取写锁再复查，事务内的检查
+    稳态快路径（列已存在）只做一次 ``pragma_table_info`` 只读查询就直接
+    返回，不取任何写锁：读路径不再为「确认无迁移可做」付出写锁代价
+    （L6d1：长导入期间读端点曾在此等 5 秒 busy 超时后 500）。
+
+    只有真的缺列才进入写事务，事务内**保留**复查再 ALTER：PRAGMA table_info
+    不加锁，「先查后改」的两个并发连接会同时看到缺列、随后双双 ALTER，后到
+    者抛 duplicate column name。BEGIN IMMEDIATE 先取写锁再复查，事务内的检查
     结果不会被其他进程已提交的迁移作废。撞上其他进程（旧版本代码）刚提交
     的同名列时按幂等成功处理。table/column 仅接受调用方的固定字面量，不
     接受外部输入。表不存在时不动（建表归各自的 schema 自愈步骤）。
     """
+    # 稳态快路径：列已存在时只做一次 pragma_table_info 只读查询即返回，
+    # 不取写锁（WAL 下 PRAGMA/SELECT 不会被长写事务阻塞）。L6d1：读路径
+    # 曾因无条件 BEGIN IMMEDIATE 在长导入期间等 5 秒 busy 超时后 500。
+    rows = conn.execute(
+        "SELECT name FROM pragma_table_info(?)", (table,)
+    ).fetchall()
+    if rows and column in {row[0] for row in rows}:
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        if rows and column not in {r[1] for r in rows}:
+        rows = conn.execute(
+            "SELECT name FROM pragma_table_info(?)", (table,)
+        ).fetchall()
+        if rows and column not in {row[0] for row in rows}:
             conn.execute(ddl_sql)
         conn.commit()
     except sqlite3.OperationalError as exc:

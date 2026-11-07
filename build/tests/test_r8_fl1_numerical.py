@@ -25,7 +25,8 @@ B08-N4、MM10-08*、MM10-09*、MM10-10*、MM10-11*、MM10-12*、MM10-13*。
   （ZeroDivisionError 分母预检）；
 - 其余：F-02（isclose abs_tol=0）、F-07（max(0,·)）、MM10-04（噪声底行搜索
   回退 + 文案）、B08-N4（bool 计数拒绝）、MM10-08*（CR0/CR1 反保守性量化
-  warning）、MM10-09*（reml_log_likelihood 补回 0.5·logdet(X'X)）、
+  warning）、MM10-09*（reml_log_likelihood 口径；r13 终扫 stats-a-0 更正参考式
+  后重钉，旧钉→新钉见该测试注释）、
   MM10-12*（反向重复对比 warning——不用 ValueError：反向串+取反估计是合法
   输入，拒绝即违反 R2，见 test 内说明）。
 """
@@ -664,12 +665,20 @@ class MM1008CrAntiConservatismWarningTests(unittest.TestCase):
                          msg="k=60 时不得沿用 k=8 的倍数")
 
 
-# 修前实测（*项独立复现）：单对比研究夹具（tau2=0.019999999778362258）下
-# reported − 独立 REML 对数似然 = 0.5493061443340647 = 0.5·logdet(X'X)
-# （一致性 1e-14；独立算式 −.5(df·log2π + log|V| + log|X'V⁻¹X| + Q)，
-# V_i = v_i + tau2·(0.5·incidence·incidence')，单对比研究该项 = tau2）。
+# r13 终扫 stats-a-0 重钉（旧钉→新钉对照）：
+# 旧钉（本类原参考式，漏 -log|X'X|）：
+#   reml_ll_old = -.5(df·log2π + log|V| + log|X'V⁻¹X| + Q) = -0.725791352645
+#   它把"平坦先验边际似然"当成真值，促成了 1db6d5e 的多减；
+#   模块当时上报值 = reml_ll_old，与本参考式恒差 0（旧钉绿）。
+# 新钉（误差对照密度 / Harville 含项式）：
+#   reml_ll_new = reml_ll_old + .5·log|X'X| = -0.176485208311
+#   （logdet(X'X)=log 3，0.5·log3 = 0.549306144334）。
+# 旧钉目标比新钉目标低 0.5·logdet(X'X)=0.5493061443340548；1db6d5e 之后、
+# stats-a-0 修复之前的上报值等于旧钉目标（比标准值低恰该量）。
+# 独立交叉验证（QR 补空间误差对照密度）见
+# build/tests/test_r13_stats_reml_loglik.py。
 class MM1009RemlLogLikelihoodTests(unittest.TestCase):
-    """MM10-09*：network_random 的 reml_log_likelihood 补回 0.5·logdet(X'X)。"""
+    """MM10-09*：network_random 的 reml_log_likelihood 必须是含 -log|X'X| 的标准 REML。"""
 
     STUDIES = [
         {"study_id": "T1", "covariance_scale": "natural",
@@ -697,9 +706,15 @@ class MM1009RemlLogLikelihoodTests(unittest.TestCase):
         beta = np.linalg.solve(XtVinvX, design.T @ Vinv @ values)
         Q = float((values - design @ beta) @ Vinv @ (values - design @ beta))
         reml_ll = -0.5 * (math.log(2 * math.pi) + math.log(np.linalg.det(V))
-                          + math.log(np.linalg.det(XtVinvX)) + Q)
+                          + math.log(np.linalg.det(XtVinvX))
+                          - math.log(np.linalg.det(design.T @ design)) + Q)
+        # 旧钉目标（漏 -log|X'X|，1db6d5e 后的上报值）比新钉低 0.5·logdet。
+        reml_ll_old = reml_ll - 0.5 * math.log(3.0)
+        self.assertEqual(round(reml_ll_old, 9), -0.725791353)
+        self.assertEqual(round(reml_ll, 9), -0.176485208)
         self.assertLess(abs(reported - reml_ll), 1e-9,
-                        msg=f"修前恒差 0.5·logdet(X'X)={0.5 * math.log(3.0):.6f}（设计依赖偏移）")
+                        msg=f"上报值必须含 -log|X'X|；旧钉目标 {reml_ll_old!r}，"
+                            f"新钉目标 {reml_ll!r}，实测 {reported!r}")
 
     def test_estimates_and_tau2_bit_identical(self):
         """常规对照（基线绿，修复后必须仍绿）：合并估计/tau2 不因诊断字段修正而变。"""

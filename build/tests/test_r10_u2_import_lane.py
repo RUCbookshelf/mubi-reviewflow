@@ -161,15 +161,33 @@ class ImportReviewBehaviourSourceTests(unittest.TestCase):
                       "#12：批量弹窗必须说明整批可撤销")
 
     def test_batch_card_counts_carry_units(self):
-        """#7-A：批次卡片每个数字都带单位（前四项记录、末项候选【组】）。"""
+        """#7-A：批次卡片每个数字都带单位（前四项记录、末项候选【组】）。
+
+        r13「批次统计显示」重钉：统计行的五个参数必须是「原始数字 + 已译单位」
+        字符串。index.html 的 ``RFLang.t`` 对每个 ``{n}`` 参数做 ``String()``，
+        此前传 ``U.literal`` 的 ``<span>`` 元素会让五个数字显示成
+        ``[object HTMLSpanElement]``（十语言同坏）；本钉同时禁止该行再出现
+        元素构造实参（旧形态），强度不小于旧钉。
+        """
         self.assertIn("+' '+T('records')", self.src, "#7-A：记录数必须带「条记录」单位")
         self.assertIn("+' '+T('groups')", self.src, "#7-A：候选组数必须带「组」单位")
-        card = re.search(r"counts\.textContent=T\('Source records: \{0\}[^\n]*?\n?[^\n]*?T\('groups'\)\)\);", self.src)
+        card = re.search(r"counts\.textContent=T\('Source records: \{0\}.*?T\('groups'\)\);", self.src)
         self.assertIsNotNone(card, "#7-A：批次卡片计数行必须逐项带单位")
-        self.assertEqual(card.group(0).count("T('records')"), 4,
+        line = card.group(0)
+        self.assertEqual(line.count("T('records')"), 4,
                          "#7-A：前四项（来源/已激活/暂存/书目建议）都是记录数")
-        self.assertEqual(card.group(0).count("T('groups')"), 1,
+        self.assertEqual(line.count("T('groups')"), 1,
                          "#7-A：末项待核验候选是组数，不得与记录数混加")
+        # r13：参数形态必须是 String(原始值)+' '+单位，而不是元素实参。
+        self.assertEqual(line.count(")+' '+T('records')"), 4,
+                         "#7-A：四个记录数参数都必须写成 String(...)+' '+T('records')")
+        self.assertEqual(line.count(")+' '+T('groups')"), 1,
+                         "#7-A：候选组参数必须写成 String(...)+' '+T('groups')")
+        self.assertEqual(line.count("String(item."), 5,
+                         "#7-A：五个参数各自携带原始数值（不得改传元素/对象）")
+        for element_form in ("U.literal(", "l('span'", 'l("span"', "n('span'", 'n("span"'):
+            self.assertNotIn(element_form, line,
+                             "#7-A：统计行参数不得是元素实参（String() 会显示 [object …]）")
 
     def test_later_tab_grouped_by_source(self):
         """#10-A：稍后处理栏分「我暂缓的 / 等待关联记录」，先我能处理的。"""
