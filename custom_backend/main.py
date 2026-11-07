@@ -2291,6 +2291,12 @@ SCREENING_NOT_ENABLED_MESSAGE = (
     "你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。")
 
 
+#: 补扫修复：某个筛选员个人库被外部进程持锁/暂时不可读时的 503 文案。
+#: 十语言词条已注册 interface_locale.js（前端把 HTTPException.detail 交 T() 渲染）。
+SCREENER_LIBRARY_UNAVAILABLE_MESSAGE = (
+    "筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。")
+
+
 def _screening_disabled_error() -> HTTPException:
     """结构化 403（error_code + message_key），与 coding.collaborator_not_found 同形。"""
     return HTTPException(403, {
@@ -3595,8 +3601,8 @@ async def _save_server_sourced_arbitration(
         raise _bad("resolutions 必须为数组。")
     info = _task_or_404(task_id)
     from coscreen.screening_arbitration import (
-        append_decision_arbitration, load_screener_decision_packages,
-        merge_decision_packages,
+        ScreenerLibraryUnavailableError, append_decision_arbitration,
+        load_screener_decision_packages, merge_decision_packages,
     )
     try:
         named = load_screener_decision_packages(info.db_files, stage=stage)
@@ -3605,6 +3611,9 @@ async def _save_server_sourced_arbitration(
             store, stage=stage, merged=merged, resolutions=choices,
             arbitrator_id=user["user_id"],
         )
+    except ScreenerLibraryUnavailableError as exc:
+        # 暂时不可读（锁忙/IO）：503 稍后重试，绝不落盘缺员合并表。
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
     except ValueError as exc:
         raise _bad(str(exc)) from exc
 
@@ -3701,12 +3710,16 @@ def server_merge_screening_arbitration(
     _arbitration_double_blind_guard(task_id, user)
     info = _task_or_404(task_id)
     from coscreen.screening_arbitration import (
-        load_screener_decision_packages, merge_decision_packages,
+        ScreenerLibraryUnavailableError, load_screener_decision_packages,
+        merge_decision_packages,
     )
     try:
         named = load_screener_decision_packages(info.db_files, stage=stage)
         merged = merge_decision_packages(named)
         return _multi_merge_payload(merged)
+    except ScreenerLibraryUnavailableError as exc:
+        # 成员库被持锁/暂时不可读：503 重试语义，绝不返回缺员合并表。
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
     except ValueError as exc:
         raise _bad(str(exc)) from exc
 

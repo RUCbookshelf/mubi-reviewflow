@@ -81,7 +81,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, HTTPException
@@ -119,6 +119,10 @@ MAX_BATCH_KEYS = 50                   # 批量端点单次上限
 MAX_SUGGESTION_CHARS = 8_000          # Crossref 摘要建议截断预算
 TITLE_MATCH_MIN_RATIO = 0.9           # 无 DOI 检索的标题保守匹配下限
 CONSECUTIVE_FAILURES_TO_ABORT = 2     # 批量连续出站失败熔断阈值
+
+#: 钉扎多地址回退：只有连接级失败才换同一解析结果的下一地址；HTTP 状态/协议
+#: 形态错误说明上游已应答，换址只会把同一错误重放一遍。
+_PINNED_FALLBACK_REASONS = ("unreachable", "timeout")
 
 #: 阶段门禁里真正拦「写」的三种状态（不含纯筛查资格判定，见模块注释）。
 WRITE_BLOCKING_REASONS = ("task_read_only", "stage_paused", "article_outside_screen_scope",
@@ -388,9 +392,12 @@ def _public_host_reason(hostname: str) -> str | None:
 def _classify_fetchable_target(url: Any) -> tuple[dict | None, str | None]:
     """开放 PDF 候选 URL 分类 + 单次解析钉扎。
 
-    返回 ``({"url","host","port","address"}, None)`` 或 ``(None, 拒绝原因)``。
-    ``address`` 来自本 URL **唯一一次** DNS 解析且已通过公网校验；下载阶段
-    必须用它连接（``_get_bytes(..., pinned_address=...)``），不得再解析。
+    返回 ``({"url","host","port","address","addresses"}, None)`` 或
+    ``(None, 拒绝原因)``。``addresses`` 是本 URL **唯一一次** DNS 解析得到的
+    **全部**已校验公网地址（``address`` 保留为字典序首个，兼容旧调用方）；
+    下载阶段必须钉住这些地址逐个尝试（``_get_bytes(..., pinned_address=...)``），
+    不得重新解析。补扫修复：此前只保留 ``addresses[0]``，双栈/多 A 记录站点
+    的字典序首个地址不可达时整次下载直接失败（1d23f22 的逐地址回退被移除）。
     """
     if not isinstance(url, str) or not url.strip():
         return None, "invalid_url"
@@ -411,7 +418,8 @@ def _classify_fetchable_target(url: Any) -> tuple[dict | None, str | None]:
     if reason:
         return None, reason
     return {"url": candidate, "host": _host_identity(parts.hostname),
-            "port": port, "address": addresses[0]}, None
+            "port": port, "address": addresses[0],
+            "addresses": list(addresses)}, None
 
 
 def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
@@ -421,46 +429,71 @@ def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
 
 
 def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
-               pinned_address: str | None = None) -> bytes:
+               pinned_address: str | Iterable[str] | None = None) -> bytes:
     """GET 指定 URL：显式 UA + 短超时 + 读取上限 + 拒绝重定向（30x=HTTPError）。
 
-    ``pinned_address`` 给定（PDF 候选下载）时，连接钉住该已校验 IP——分类
-    阶段已解析过一次，连接阶段不再解析，堵住 DNS 重绑定（be-outbound-0）。
-    未给定时（配置的 Unpaywall/Crossref 端点，允许自托管回环）保持原行为。
+    ``pinned_address`` 给定（PDF 候选下载）时，连接钉住**分类阶段一次解析**
+    得到的已校验 IP——连接阶段不再解析，堵住 DNS 重绑定（be-outbound-0）。
+    补扫修复：可传整份已校验地址表，按顺序逐个钉住尝试；``unreachable`` /
+    ``timeout`` 这类连接级失败且还有下一地址时换下一个（与 stdlib
+    ``socket.create_connection`` 的逐地址回退同语义，但**不重新解析**、且每个
+    地址都已在分类阶段核验为公网）。未给定时（配置的 Unpaywall/Crossref
+    端点，允许自托管回环）保持原行为。
     """
     request = urllib.request.Request(  # noqa: S310  URL 经上方白名单校验
         url, method="GET",
         headers={"User-Agent": USER_AGENT, "Accept": accept})
+    addresses: list[str] = []
     if pinned_address:
+        raw = [pinned_address] if isinstance(pinned_address, str) else list(pinned_address)
+        addresses = [str(item) for item in raw if str(item)]
+        if not addresses:
+            raise OutboundError("unreachable", "没有可用的钉扎地址。")
         # 防御纵深：只接受公网 IP（正常调用方传的是分类阶段已校验的地址）。
-        if _is_private_address(str(pinned_address)):
-            raise OutboundError("private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
-        request.pinned_address = pinned_address
-    try:
-        with _open(request, timeout) as response:  # noqa: S310
-            data = response.read(max_bytes + 1)
-    except urllib.error.HTTPError as exc:
-        # _NoRedirectHandler 把 30x 也变成 HTTPError——不跟随，按上游状态报降级。
-        raise OutboundError("upstream_status", f"上游返回 HTTP {exc.code}。") from None
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        raise OutboundError("unreachable", f"无法连接上游（{type(reason).__name__}）。") from None
-    except TimeoutError:
-        raise OutboundError("timeout", "上游响应超时。") from None
-    except http.client.HTTPException as exc:
-        # 半开连接 / 反代垃圾状态行 / chunked 截断：BadStatusLine、IncompleteRead、
-        # RemoteDisconnected 等既非 OSError 也非 ValueError，不接住就会 500。
-        raise OutboundError("bad_response",
-                            f"上游响应不完整或不是有效 HTTP（{type(exc).__name__}）。") from None
-    except (OSError, ValueError) as exc:
-        raise OutboundError("unreachable", f"出站请求失败（{type(exc).__name__}）。") from None
-    except AssertionError:
-        # r3 复审⑭：AssertionError 一律是程序/测试缺陷，不是上游形态。兜底
-        # except Exception 会把它吞成 502 bad_response，使测试桩的「未声明端点
-        # 即破坏即红」在生产代码里被降级成可容忍响应——自掩蔽。这里显式放行。
-        raise
-    except Exception as exc:  # noqa: BLE001  红线：绝不因上游异常形态 500
-        raise OutboundError("bad_response", f"出站请求异常（{type(exc).__name__}）。") from None
+        for address in addresses:
+            if _is_private_address(address):
+                raise OutboundError(
+                    "private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
+    attempts: list[str | None] = list(addresses) or [None]
+    error: OutboundError | None = None
+    for index, address in enumerate(attempts):
+        if address is not None:
+            request.pinned_address = address
+        try:
+            with _open(request, timeout) as response:  # noqa: S310
+                data = response.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            # _NoRedirectHandler 把 30x 也变成 HTTPError——不跟随，按上游状态报降级。
+            raise OutboundError("upstream_status", f"上游返回 HTTP {exc.code}。") from None
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            error = OutboundError(
+                "unreachable", f"无法连接上游（{type(reason).__name__}）。")
+        except TimeoutError:
+            error = OutboundError("timeout", "上游响应超时。")
+        except http.client.HTTPException as exc:
+            # 半开连接 / 反代垃圾状态行 / chunked 截断：BadStatusLine、IncompleteRead、
+            # RemoteDisconnected 等既非 OSError 也非 ValueError，不接住就会 500。
+            error = OutboundError(
+                "bad_response",
+                f"上游响应不完整或不是有效 HTTP（{type(exc).__name__}）。")
+        except (OSError, ValueError) as exc:
+            error = OutboundError(
+                "unreachable", f"出站请求失败（{type(exc).__name__}）。")
+        except AssertionError:
+            # r3 复审⑭：AssertionError 一律是程序/测试缺陷，不是上游形态。兜底
+            # except Exception 会把它吞成 502 bad_response，使测试桩的「未声明端点
+            # 即破坏即红」在生产代码里被降级成可容忍响应——自掩蔽。这里显式放行。
+            raise
+        except Exception as exc:  # noqa: BLE001  红线：绝不因上游异常形态 500
+            error = OutboundError(
+                "bad_response", f"出站请求异常（{type(exc).__name__}）。")
+        else:
+            break
+        # 连接级失败：还有已校验地址就换下一个；HTTP/协议层错误不换址。
+        if index + 1 < len(attempts) and error.reason in _PINNED_FALLBACK_REASONS:
+            continue
+        raise error from None
     if len(data) > max_bytes:
         raise OutboundError("too_large", f"上游响应超过 {max_bytes // (1024 * 1024)} MiB 读取上限。")
     return data
@@ -620,7 +653,8 @@ def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[dict], lis
 
     仅取 ``url_for_pdf``；只接受 http/https 公网地址（回环/私网/无法解析一律
     拒绝并记录原因，供上层区分「无 OA」与「链接不安全」）。每个目标的
-    ``address`` 是本 URL 唯一一次 DNS 解析且已校验的公网 IP，下载必须钉住它。
+    ``addresses`` 是本 URL 唯一一次 DNS 解析且已校验的公网地址表，下载必须
+    逐个钉住（``address`` 保留字典序首个，兼容旧调用方）。
     """
     base = settings["unpaywall_base_url"]
     email = settings["email"]
@@ -766,7 +800,8 @@ def _fetch_one(db: Path, key: str, article: dict, *, settings: dict,
         url_pdf = candidate["url"]
         data = _get_bytes(url_pdf, timeout=PDF_TIMEOUT_SECONDS,
                           max_bytes=MAX_PDF_BYTES, accept="application/pdf,*/*",
-                          pinned_address=candidate.get("address"))
+                          pinned_address=candidate.get("addresses")
+                          or candidate.get("address"))
         try:
             check_pdf_bytes(data)                 # security.py:411 同一道上传校验
         except UploadRejected as exc:

@@ -325,8 +325,12 @@ class StaticGuardTests(unittest.TestCase):
         # server-merge/server-save 后端消息词条，词典内容再次变更；按既有约定
         # 上调 index.html 的 ?v= 令牌并重新钉对（令牌, 内容）元组。
         # R2（裁决员筛选参与权）：新增开关/引导/状态文案六条，令牌再上调。
-        pinned_token = '20261107-r12arb3'
-        pinned_sha256 = '053b39cbcea33cafb901c7056126726d6a9cb76ab8ea52ffbe38ce284a5b17f1'
+        # r14-FL4（尾巴④）：补一条属主重新登记 toast 的十语言词条；按既有约定
+        # 令牌上调到 20261107-r14 并重新钉对（令牌, 内容）。
+        # r14 补扫：再补一条「筛选员决策库暂时无法读取…」503 文案（十语言），
+        # 令牌仍为 20261107-r14，重新钉对内容。
+        pinned_token = '20261107-r14'
+        pinned_sha256 = 'd0828dd7aa8a87b3380dbc1ebb298fc77525f05b95b60f6624f2baec7ca34f8c'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')

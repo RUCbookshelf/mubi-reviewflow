@@ -10,7 +10,9 @@
  *   - 每张批次卡片的统计行含各自的真实数字（两张卡片数值不同，防「只对第一张」）；
  *   - 统计行不含 "[object"；
  *   - 每项保留单位（前四项 records / 末项 groups），且单位随语言本地化；
- *   - 至少两种非中文语言（en/es）与中文模板各自渲染正确。
+ *   - 至少两种非中文语言（en/es）与中文模板各自渲染正确；
+ *   - r14：停在「全部批次」列表切语言（reviewflow:language-changed）后，
+ *     单位词随语言同步变化且**不重新请求 /import-batches**（用缓存数据重渲染）。
  *
  * 运行（Git Bash 内联前缀）：
  *   REVIEWFLOW_PLAYWRIGHT=E:/rf214-playwright/node_modules/playwright \
@@ -162,6 +164,42 @@ const BATCHES = [
     assert.ok(!/\b19\b/.test(b.counts), 'B 卡片不得出现 A 的 19：' + b.counts);
     assert.ok(!/\b25\b/.test(b.counts), 'B 卡片不得出现 A 的 25：' + b.counts);
     assert.ok(!/\b7\b/.test(a.counts), 'A 卡片不得出现 B 的 7：' + a.counts);
+  });
+
+  /* —— r14：列表视图切语言（语言切换事件）必须重渲染，单位词同步，且不发请求 ——
+   * 缺陷：批次统计行的单位词是渲染时译好再拼进 T() 参数的；旧监听器只在
+   * batch 存在（详情视图）时 render()，「全部批次」列表停留时切语言→句子变、
+   * records/groups 仍是旧语言。修复后用缓存数据重渲染，不多发 /import-batches。 */
+  await check('r14: 列表视图切语言后单位词同步且不重新请求', async () => {
+    /* 先在英文下渲染列表，再把 api 包成计数器（此后任何请求都会 +1）。 */
+    const before = await renderList(1);
+    assert.match(before.find(c => c.file.includes('Alpha.ris')).counts, /25\s+records/,
+      '切语言前应为英文单位：' + JSON.stringify(before));
+    await page.evaluate(() => {
+      window.__r14ApiCalls = 0;
+      const original = window.api;
+      window.api = (...args) => { window.__r14ApiCalls += 1; return original(...args); };
+    });
+    /* 只切换语言并派发事件——不调用 I.list()，模拟用户停在列表点语言菜单。 */
+    await page.evaluate(() => {
+      window.localeIndex = 4;  // es
+      document.dispatchEvent(new CustomEvent('reviewflow:language-changed', { detail: 'es' }));
+    });
+    await page.waitForFunction(() => {
+      const card = document.querySelector('#wf-import-review .history-batch p');
+      return card && /Registros de origen/.test(card.textContent);
+    }, null, { timeout: 5000 });
+    const after = await cardTexts();
+    assert.equal(after.length, 2, '切语言后仍应有两张批次卡片：' + JSON.stringify(after));
+    const a = after.find(c => c.file.includes('Alpha.ris')), b = after.find(c => c.file.includes('Beta.ris'));
+    assert.ok(a && b, '两张卡片都应按文件名出现：' + JSON.stringify(after));
+    assert.match(a.counts, /Registros de origen:\s*25\s+registros/, '切语言后 A 单位应为西语：' + a.counts);
+    assert.match(a.counts, /Candidatos pendientes:\s*3\s+grupos/, '切语言后 A 候选组单位应为西语：' + a.counts);
+    assert.match(b.counts, /Registros de origen:\s*7\s+registros/, '切语言后 B 单位应为西语：' + b.counts);
+    assert.ok(!/\brecords\b/.test(a.counts), '切语言后不得残留旧语言单位 records：' + a.counts);
+    assert.ok(!/\bgroups\b/.test(a.counts), '切语言后不得残留旧语言单位 groups：' + a.counts);
+    const calls = await page.evaluate(() => window.__r14ApiCalls);
+    assert.equal(calls, 0, '语言切换重渲染不得重新请求 /import-batches，实际请求 ' + calls + ' 次');
   });
 
   assert.deepEqual(errors, [], '页面不得有脚本错误：' + errors.join(' | '));

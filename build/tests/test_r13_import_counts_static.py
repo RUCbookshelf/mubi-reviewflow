@@ -6,7 +6,8 @@
 ``RFLang.t`` 对每个 ``{n}`` 参数做 ``String()`` → 批次卡片五个统计数显示为
 ``[object HTMLSpanElement]``，十语言同坏；2.1.3（a080fde）传纯数字，属回归。
 行为面由 ``build/tests/test_r13_import_counts_browser.cjs`` 用真实 Chromium 钉住
-（数字可见、无 ``[object``、en/es/zh 三种语言模板与单位）。本文件钉住静态面：
+（数字可见、无 ``[object``、en/es/zh 三种语言模板与单位、以及 r14 列表视图
+切语言后单位词同步且不重新请求）。本文件钉住静态面：
 
 1. **全库同型坏模式归零**：``custom_frontend/*.js`` 与 ``index.html`` 内联脚本里，
    凡 ``T(...)`` / ``RFLang.t(...)`` 的非模板参数，都不得是元素构造调用。
@@ -21,12 +22,22 @@
 """
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "custom_frontend"
 LANE_FILE = FRONTEND / "unified_import_workspace.js"
+NODE = (
+    os.environ.get("RF_NODE")
+    or shutil.which("node")
+    or r"C:\Users\16073\AppData\Local\hermes\node\node.exe"
+)
 COUNTS_TEMPLATE = (
     "Source records: {0} · Activated: {1} · Staged: {2} · "
     "Metadata proposals: {3} · Pending candidates: {4}"
@@ -268,3 +279,47 @@ def test_batch_counts_template_unchanged():
     row = next((line for line in locale.splitlines() if COUNTS_TEMPLATE in line), "")
     assert row, "统计行模板在 workflow_locale.js 中找不到对应词典行"
     assert row.count('"') >= 20, f"词典行应为十语言：{row[:120]}"
+
+
+# ---------------------------------------------------------------- 接线（补扫）
+
+def test_browser_nail_is_wired_into_a_pytest_runner():
+    """补扫（测试完整性）：真浏览器钉必须由 pytest 运行器实际接线。
+
+    缺陷：``test_r13_import_counts_browser.cjs`` 只在本文件文档句与自身
+    「手动运行」注释里被提到，pytest/CI（``python -m pytest build/tests``）
+    从不执行它——渲染层回归时静态钉不红、CI 仍全绿。本钉要求 build/tests 下
+    至少有一个 .py 通过 ``subprocess.run`` 调用该 .cjs；没有接线即红。
+    """
+    runners = []
+    for path in sorted((REPO / "build" / "tests").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"subprocess\.run\(", text):
+            window = text[match.start():match.start() + 1500]
+            if "test_r13_import_counts_browser.cjs" in window:
+                runners.append(path.name)
+    assert runners, (
+        "test_r13_import_counts_browser.cjs 没有任何 pytest/subprocess 运行器接线——"
+        "真浏览器行为钉实际强度为零；请在 pytest 中加 skipif 门控的 subprocess 包装")
+
+
+@pytest.mark.skipif(
+    not (os.environ.get("REVIEWFLOW_PLAYWRIGHT")
+         and os.environ.get("PLAYWRIGHT_BROWSERS_PATH")),
+    reason="playwright runtime not configured (set REVIEWFLOW_PLAYWRIGHT and PLAYWRIGHT_BROWSERS_PATH)",
+)
+@pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+def test_batch_counts_real_browser_behavior():
+    """r13 批次统计显示的真浏览器行为钉（接线到 pytest/CI）。
+
+    skipif 与 W5 的两个浏览器钉同款：CI 的 Provision playwright 步骤提供
+    这两个变量，本地未配置时跳过——不伪造通过。"""
+    proc = subprocess.run(
+        [NODE, "build/tests/test_r13_import_counts_browser.cjs"],
+        cwd=str(REPO), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=600,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out[-5000:]
+    assert "R13 import counts browser nail: PASS" in proc.stdout, out[-5000:]
+

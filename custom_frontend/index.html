@@ -962,8 +962,11 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <ol>
         <li>每位成员先在同一服务器注册账号。</li>
         <li>任务属主按用户名添加成员，授予 筛选与编码员 或 裁决员 权限。</li>
+        <li>裁决员默认不参与筛选；任务负责人可在成员卡上按成员开启「允许参与筛选」（仲裁权始终保留）。</li>
         <li>属主导入文献，成员打开文献列表时会取得同一文献目录。</li>
         <li>团队进度只显示完成数量，个人决策由本人账号保存。</li>
+        <li>联网团队模式下，合并仲裁页可直接从服务器加载全部筛选员决策；也可继续上传 2–9 份决策 CSV。</li>
+        <li>服务器合并时，某个筛选员库暂时被占用会提示稍后重试，不会显示缺员的合并表。</li>
         <li>可从最近的仲裁记录导出 JSON。</li>
       </ol>
       <div class="help-actions"><button class="btn b-out" type="button" data-nav="home">打开任务首页</button></div>
@@ -5166,14 +5169,14 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261031-r81fl4"></script>
-<script src="./interface_locale.js?v=20261107-r12arb3"></script>
+<script src="./interface_locale.js?v=20261107-r14"></script>
 <script src="./research_trace_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_history_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./title_duplicate_locale.js?v=20261031-r81fl4"></script>
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
-<script src="./help_locale.js?v=20261101-r10u5a"></script>
+<script src="./help_locale.js?v=20261107-r14"></script>
 <script src="./navigation_locale.js?v=20261101-r10u4"></script>
 <script src="./navigation_registry.js?v=2.1.2.2"></script>
 
@@ -5976,6 +5979,14 @@ async function pickTask(taskId, opts = {}) {
     S.taskVersion++;
     S.savedArbitration = null;
     S.merge = null; S.mergeFiles = null; S.mergeChoices = {}; S.mergeServerSource = false;
+    /* 补扫：切任务即作废在途 server-merge——推进代次并 abort，旧任务的响应
+       不得渲染/报成功到新任务页面；screeningEnabled 同时复位为「未知 → 乐观
+       允许」，真实参与权由 refreshProgress / 服务端 403 校正。 */
+    S.mergeTaskId = null;
+    mergeLoadSeq++;
+    if (mergeAbort) { try { mergeAbort.abort(); } catch (_) {} mergeAbort = null; }
+    if (mergeBusy) { mergeServerBusy = false; setMergeBusy(false); }
+    S.screeningEnabled = true;
     $('#mergeDownload').hidden = true;
     $('#mergeCard').style.display = 'none';
     $('#newTaskNext').hidden = true;
@@ -6678,6 +6689,18 @@ function syncScreeningNoticeElement(nodeId) {
        T('你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。'))
     : '';
 }
+/* R2 修复：筛选参与权是属主可随时改动的动态开关。此前只有 enterApp/pickTask
+   会取 /progress，进入筛选/复筛页不再重取——裁决员在开关被打开后仍看到旧的
+   「无权限」引导（关闭后则相反，页面不提示却写不进去）。进入两个筛选页时
+   重取一次；读取失败保持上一次状态，绝不阻断页面。 */
+async function refreshScreeningState() {
+  if (!S.task) return;
+  try {
+    const d = await api(taskApi() + '/progress' + scrQ());
+    S.screeningEnabled = d.screening_enabled !== false;
+  } catch (_) { return; }
+  syncScreeningNoticeElement('ftScreeningNotice');
+}
 async function renderScreen() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   renderScreenHist();
@@ -6783,6 +6806,8 @@ async function loadScreen() {
   body.textContent = '';
   if (!S.task) { body.append(el('div', { class: 'hint', text: T('请先在首页选择或创建任务。') })); return; }
   body.append(el('div', { class: 'hint', text: T('正在载入文献队列…') }));
+  await refreshScreeningState();
+  if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
   try {
     S.al.mode = WorkflowControls.order() === 'ai' ? 'ai' : 'import';
     const d = await WorkflowControls.queue('screen');
@@ -6906,6 +6931,8 @@ async function loadFulltext() {
     S.fulltextLoadedTask = S.task.task_id;
     window.WorkspaceUndo?.sync();
     S.ftIdx = 0;
+    await refreshScreeningState();
+    if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion || !WorkflowControls.renderAllowed()) return;
     if (!S.ftQueue.length) {
       $('#ftDocTitle').textContent = T('Initial Include or Maybe decisions enter full-text screening. No eligible records in this scope.');
       renderFtDoc(); return;
@@ -7464,10 +7491,21 @@ function saveJson(name, obj) {
    「已等待 {0} 秒」模式：上传后立即禁用上传区与其内控件、按钮进入禁用态，
    状态行按秒显示已用时长；结束时（成功或失败）恢复原状。 */
 let mergeBusy = false, mergeTimer = 0, mergeStarted = 0, mergeCount = 0, mergePriorDisabled = new Map(), mergeServerBusy = false;
+/* 补扫（在途 server-merge × 任务切换）：mergeLoadSeq 每次加载/任务切换自增，
+   响应落地时与发起时的 taskId 一起复查；mergeAbort 供切任务时中断在途请求。 */
+let mergeLoadSeq = 0, mergeAbort = null;
 function setMergeBusy(active) {
   mergeBusy = !!active;
   const zone = $('#mergeFiles').closest('.card') || document.body;
-  const controls = [...zone.querySelectorAll('button, input, select'), $('#mergeStage'), $('#mergePick'), $('#mergeFiles'), $('#mergeLatest'), $('#mergeDownload'), $('#mergePrev'), $('#mergeNext')].filter(Boolean);
+  /* 去重：zone.querySelectorAll 已包含 mergeStage/mergePick/mergeFiles/mergeLatest/
+     mergeDownload，再次显式列出会让同一控件在快照里出现两次——第二次读到的是
+     「已被本函数置为 disabled」的值，恢复时把它们永久留在禁用态（服务器加载一次
+     后「最近的仲裁记录」、阶段选择与 CSV 选择全部不可用）。 */
+  const controls = [...new Set([
+    ...zone.querySelectorAll('button, input, select'),
+    $('#mergeStage'), $('#mergePick'), $('#mergeFiles'), $('#mergeLatest'), $('#mergeDownload'),
+    $('#mergePrev'), $('#mergeNext')
+  ].filter(Boolean))];
   clearInterval(mergeTimer); mergeTimer = 0;
   if (active) {
     /* 先快照原禁用态，结束时原样恢复——不得把本就禁用的控件顺手启用。 */
@@ -7512,12 +7550,16 @@ $('#mergeServerLoad').addEventListener('click', async () => {
   }
   if (!S.task) { toast(T('请先选择任务'), 'warn'); return; }
   const stage = $('#mergeStage').value;
+  /* 补扫：记录发起任务与代次；切任务时 pickTask 会推进代次并 abort。 */
+  const taskId = S.task.task_id;
+  const seq = ++mergeLoadSeq;
+  mergeAbort = typeof AbortController === 'function' ? new AbortController() : null;
   S.mergeServerSource = true;
   S.mergeFiles = null;
   S.mergeChoices = {};
   S.mergePage = 0;
   S.mergeStage = stage;
-  S.mergeTaskId = S.task.task_id;
+  S.mergeTaskId = taskId;
   $('#slotWrap').textContent = '';
   $('#mergeFilesHint').textContent = '';
   $('#mergeSaveStatus').textContent = '';
@@ -7525,12 +7567,18 @@ $('#mergeServerLoad').addEventListener('click', async () => {
   mergeServerBusy = true;
   setMergeBusy(true);
   try {
-    const d = await api(taskApi() + '/screening-arbitrations/server-merge?stage=' + encodeURIComponent(stage));
+    const d = await api(taskApi() + '/screening-arbitrations/server-merge?stage=' + encodeURIComponent(stage),
+      mergeAbort ? { signal: mergeAbort.signal } : {});
+    /* 补扫：响应只属于「发起时的任务 + 本次加载」。任务已切换/又发起了新的
+       加载时直接丢弃——绝不把旧任务的全员决策表/成功文案渲染到新任务页面。 */
+    if (seq !== mergeLoadSeq || S.task?.task_id !== taskId) return;
     S.merge = d;
+    S.mergeServerSource = true;
     renderMergeResult(d);
     const count = Object.keys(d.summary.participation || {}).length;
     $('#mergeSaveStatus').textContent = T('已从服务器加载 {0} 位筛选员的决策。', count);
   } catch (err) {
+    if (seq !== mergeLoadSeq || S.task?.task_id !== taskId) return;
     S.merge = null;
     S.mergeServerSource = false;
     $('#mergeMetrics').textContent = '';
@@ -7547,9 +7595,13 @@ $('#mergeServerLoad').addEventListener('click', async () => {
     $('#mergeSaveStatus').textContent = message;
     toast(message, 'warn');
   } finally {
-    mergeServerBusy = false;
-    setMergeBusy(false);
-    syncMergeServerLoad();
+    /* 过期请求（任务已切换）不得清掉新任务刚进入的 busy 态。 */
+    if (seq === mergeLoadSeq) {
+      mergeServerBusy = false;
+      mergeAbort = null;
+      setMergeBusy(false);
+      syncMergeServerLoad();
+    }
   }
 });
 $('#mergeFiles').addEventListener('change', async e => {
@@ -7666,7 +7718,9 @@ $('#mergeStage').addEventListener('change', () => {
 });
 $('#mergeSave').addEventListener('click', async () => {
   if (!S.task || S.task.task_id !== S.mergeTaskId) {
-    $('#mergeSaveStatus').textContent = T(S.mergeServerSource
+    /* 补扫：任务切换会清 mergeServerSource；服务器模式下应引导「重新从服务器
+       加载」，而不是让用户以为只能重传 CSV（旧任务的在途响应其上已被丢弃）。 */
+    $('#mergeSaveStatus').textContent = T(S.mergeServerSource || runtimeMode === 'server'
       ? '任务已切换，请重新从服务器加载全员决策。'
       : '请先选择任务，并重新上传该任务的决策 CSV。');
     return;
@@ -9793,7 +9847,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./import_review_loading.js?v=2.1.4-r4"></script>
 <script src="./import_review_refined_locale.js?v=20261101-r10u2"></script>
 <script src="./import_review_updates.js?v=20261101-r10u2"></script>
-<script src="./unified_import_workspace.js?v=20261107-r13"></script>
+<script src="./unified_import_workspace.js?v=20261107-r14"></script>
 <script src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261101-r10u1b"></script>

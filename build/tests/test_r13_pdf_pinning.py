@@ -33,6 +33,8 @@ from custom_backend import pdf_fetch_api  # noqa: E402
 HOST = "rebind-r13.example"
 #: 公网测试地址（RFC 5737 测试段之外仅作「假解析器第一答」，测试里不会真连）。
 PUBLIC_IP = "93.184.216.34"
+#: 同一主机的第二个 A 记录（补扫：字典序第一地址不可达时必须换它）。
+ALT_IP = "93.184.216.35"
 LOOPBACK = "127.0.0.1"
 
 
@@ -136,9 +138,10 @@ class PinningTests(unittest.TestCase):
         self.assertNotIn(LOOPBACK, self.attempts, "绝不允许连接回环地址")
 
     def test_download_path_passes_pinned_address(self):
-        """``_fetch_one`` 必须把候选目标的已校验地址交给 ``_get_bytes``。"""
+        """``_fetch_one`` 必须把候选目标的全部已校验地址交给 ``_get_bytes``。"""
         target = {"url": "http://oa.example/p.pdf", "host": "oa.example",
-                  "port": 80, "address": PUBLIC_IP}
+                  "port": 80, "address": PUBLIC_IP,
+                  "addresses": [PUBLIC_IP, ALT_IP]}
         captured: dict = {}
 
         def fake_get_bytes(url, *, timeout, max_bytes, accept, pinned_address=None):
@@ -156,8 +159,74 @@ class PinningTests(unittest.TestCase):
                     settings={}, pdfs_dir=Path("unused"), trace_context=None)
 
         self.assertEqual(captured["url"], target["url"])
-        self.assertEqual(captured["pinned_address"], PUBLIC_IP,
-                         "下载路径必须钉住分类阶段已校验的 IP")
+        self.assertEqual(captured["pinned_address"], [PUBLIC_IP, ALT_IP],
+                         "下载路径必须保留分类阶段已校验的**全部**地址（首个不可达时换址）")
+
+    # -- 补扫：多 A 记录/双栈站点的逐地址回退 ------------------------------
+
+    def test_classify_keeps_all_validated_addresses(self):
+        """分类阶段应带上整份已校验地址表，而不是只留字典序第一项。"""
+        def resolver(host, port=0, *args, **kwargs):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (PUBLIC_IP, port)),
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ALT_IP, port)),
+            ]
+        with mock.patch.object(socket, "getaddrinfo", resolver):
+            target, reason = pdf_fetch_api._classify_fetchable_target(
+                f"http://{HOST}/paper.pdf")
+        self.assertIsNone(reason)
+        self.assertEqual(target["addresses"], [PUBLIC_IP, ALT_IP],
+                         "已校验地址表不得被截成单地址")
+        self.assertEqual(target["address"], PUBLIC_IP)
+
+    def test_pinned_download_falls_back_to_next_validated_address(self):
+        """首个已校验地址不可达时，必须换同一解析结果的其余地址（不重新解析）。"""
+        attempts: list[str] = []
+
+        class FakeResponse:
+            def __init__(self, body: bytes):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, limit: int) -> bytes:
+                return self.body[:limit]
+
+        def fake_open(request, timeout):
+            address = request.pinned_address
+            attempts.append(address)
+            if address == PUBLIC_IP:
+                raise ConnectionRefusedError(10061, "simulated unreachable first A record")
+            return FakeResponse(b"%PDF-1.4 fallback")
+
+        with mock.patch.object(pdf_fetch_api, "_open", fake_open):
+            data = pdf_fetch_api._get_bytes(
+                "http://oa.example/p.pdf", timeout=1.0, max_bytes=1024,
+                accept="application/pdf", pinned_address=[PUBLIC_IP, ALT_IP])
+        self.assertEqual(data, b"%PDF-1.4 fallback")
+        self.assertEqual(attempts, [PUBLIC_IP, ALT_IP],
+                         "同一解析结果的其余已校验地址都必须被尝试")
+
+    def test_pinned_download_reports_failure_only_after_all_addresses(self):
+        """全部地址都不可达时仍报 unreachable，且每个地址都试过。"""
+        attempts: list[str] = []
+
+        def fake_open(request, timeout):
+            attempts.append(request.pinned_address)
+            raise ConnectionRefusedError(10061, "simulated down")
+
+        with mock.patch.object(pdf_fetch_api, "_open", fake_open):
+            with self.assertRaises(pdf_fetch_api.OutboundError) as caught:
+                pdf_fetch_api._get_bytes(
+                    "http://oa.example/p.pdf", timeout=1.0, max_bytes=1024,
+                    accept="application/pdf", pinned_address=[PUBLIC_IP, ALT_IP])
+        self.assertEqual(caught.exception.reason, "unreachable")
+        self.assertEqual(attempts, [PUBLIC_IP, ALT_IP])
+
 
     # -- Host 头 / SNI / 证书主机名保持原始主机名 ----------------------------
 

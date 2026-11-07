@@ -147,6 +147,15 @@ On 2026-10-12, refined only the initial-screening decision area:
 - Removed the unused decision column when Needs review is disabled; narrow layouts stack the reason input and save action.
 - Updated the two affected asset references to avoid stale browser caches.
 
+## Follow-up: adjudicator rights and server-loaded arbitration (2.1.4 r12)
+
+r12 adds two member-setting behaviours without changing the adjudication rule itself:
+
+- The **Adjudicator** role always retains the adjudication right (it cannot be switched off). Screening participation is now a per-member owner switch, stored in `collaboration_settings` / `collaboration_member_settings` with a one-off backfill: existing adjudicators keep their screening right, new grants default to off. Without the right, a screening save answers a structured 403 (`error_code=screening_not_enabled`, `message_key=team.screening_not_enabled`) and the queue shows guidance text rather than a bare error; the switch is recorded in the audit trail and rendered in ten languages.
+- In networked team mode the merge-arbitration page can load every screener database under the task directory from the server (`GET …/screening-arbitrations/server-merge`, saved through `POST …/screening-arbitrations/server-save`). Loading is refused while a double-blind stage is running, requires at least two members with decisions (the same rule as 2–9 CSVs), and feeds the existing κ and conflict-arbitration flow. The offline CSV upload flow is unchanged and remains a fallback in server mode. A screener database that is temporarily locked or unreadable answers 503 with a retry message instead of producing a merge table that is silently missing a member.
+
+Adjudication snapshots, reviewer-vote matching and the adjudication rules described above are unchanged.
+
 Changed product files: `screen_reader.css`, `workflow_controls.js` (four presentation-only lines), and `index.html` (two cache references). Backend logic, full-text screening and saved decisions were not changed.
 
 Validation: JavaScript/inline-script/language-pack syntax checks and diff review passed. Actual browser checks covered custom and built-in reasons, light/dark themes and a 390 px layout without horizontal page overflow. The desktop decision area measured 178.7 px before and 108.7 px after, approximately 39% shorter. No screening decisions or reason-library writes were submitted. The original tab's unsaved custom-reason draft was retained; verification used a separate disposable preview tab.

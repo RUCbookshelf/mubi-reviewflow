@@ -21,6 +21,19 @@ from coscreen.stats.merge import merge_decisions_multi
 
 StrPath = str | Path
 
+#: 个人库只读打开的 busy 超时（秒）。测试可 patch 缩短以确定性复现「锁忙」。
+SCREENER_READ_TIMEOUT = 15
+
+
+class ScreenerLibraryUnavailableError(RuntimeError):
+    """筛选员个人库**暂时**不可读（锁忙超时/IO 故障）。
+
+    与「确无决策」「永久损坏」严格区分：后两者沿用既有口径从合并集剔除，
+    而暂时不可读必须让调用方可见（HTTP 层映射 503 稍后重试）——否则缺员的
+    κ/一致率/冲突集会照常计算，并可能被 server-save 落成 append-only 记录。
+    """
+
+
 _ARBITRATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS screening_arbitrations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,11 +111,16 @@ def _decision_rows_read_only(path: Path, stage: str) -> list[dict[str, str]]:
 
     SQL 全部为模块内固定字面量 + ``?`` 参数绑定；``mode=ro`` 保证不执行任何
     写入（含自愈 DDL）。stage 已由调用方校验为固定两值，不参与 SQL 拼装。
+
+    故障口径（补扫修复）：**锁忙超时**与 **IO 失败**是暂时不可读，抛
+    :class:`ScreenerLibraryUnavailableError`（调用方按 503 重试语义处理）；
+    只有「确无决策 / 永久损坏（无法解析的库）」才降级为 ``[]``。
     """
     columns_no_tags = tuple(c for c in _SCREENER_DECISION_COLUMNS if c != "tags")
     try:
         with closing(sqlite3.connect(
-                f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=15)) as conn:
+                f"{path.resolve().as_uri()}?mode=ro", uri=True,
+                timeout=SCREENER_READ_TIMEOUT)) as conn:
             if stage == "stage2":
                 try:
                     rows = conn.execute(
@@ -132,8 +150,18 @@ def _decision_rows_read_only(path: Path, stage: str) -> list[dict[str, str]]:
                     ("",),
                 ).fetchall()
                 return [{**dict(zip(columns_no_tags, row)), "tags": ""} for row in rows]
-    # 读不到 = 该库没有可用决策（损坏库跳过，不阻塞其余成员）。
-    except (sqlite3.DatabaseError, OSError):
+    # 锁忙 / 读写冲突：暂时不可读，绝不等同于「该成员没有决策」。
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            raise ScreenerLibraryUnavailableError(
+                f"screener library is temporarily locked: {path.name}") from exc
+        return []
+    except OSError as exc:
+        # IO 故障（磁盘/权限/网络盘抖动）同样是暂时不可读。
+        raise ScreenerLibraryUnavailableError(
+            f"screener library is temporarily unreadable: {path.name}") from exc
+    # 永久损坏/无法解析：沿用既有口径跳过该成员（不阻塞其余筛选员）。
+    except sqlite3.DatabaseError:
         return []
 
 
@@ -158,13 +186,16 @@ def load_screener_decision_packages(
       ``(文件名 casefold, 完整路径)`` 排序，先剔除无决策/损坏库，再保留
       排序首个**可读出决策**的同名库（不静默混入第二份决策）。文件系统
       同目录下不可能出现同主干，此规则只对跨目录输入/手工拼接列表生效。
-    - 无决策行（空库/无表/损坏/不可读）的库剔除，不阻塞其余筛选员。
+    - 无决策行（空库/无表/永久损坏）的库剔除，不阻塞其余筛选员；**暂时不可读**
+      （锁忙超时/IO 故障）抛 :class:`ScreenerLibraryUnavailableError`，绝不把
+      「读不到」当成「没有决策」而产出缺员合并表。
     - 有效筛选员 <2 或 >9 抛 ``ValueError``，文案与 CSV 2-9 份上传同口径。
 
     铁律
     ----
     本函数以 SQLite ``mode=ro`` 打开个人库，**绝不写入任何筛选员个人库**，
-    也不执行自愈 DDL；读取失败只降级为「该库无决策」。
+    也不执行自愈 DDL；永久损坏只降级为「该库无决策」，暂时不可读则抛
+    :class:`ScreenerLibraryUnavailableError`。
     """
     if stage not in {"stage1", "stage2"}:
         raise ValueError("stage 必须为 stage1 或 stage2")

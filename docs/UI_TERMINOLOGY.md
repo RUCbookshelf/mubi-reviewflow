@@ -20,6 +20,8 @@ The full-text queue position uses **Full-text report x / y**. This is an item po
 
 The role vocabulary is the pair **Coder** (筛选与编码员) and **Adjudicator** (裁决员). Controls show the translated name with the English term in parentheses — 「筛选与编码员（Coder）」/「裁决员（Adjudicator）」 — and the label is a dictionary entry (`team_prisma_locale.js`), never a hardcoded English `<option>` or literal. The English slot is the bare term, so English-language screens read Coder / Adjudicator exactly as before. **Reconciler** stays the internal grant identifier only (API role value `reconciler`); it is not shown to users. The help page uses the same translated names, so a Chinese owner who reads the help finds the same two labels in the invite and role menus.
 
+Since 2.1.4 (r12), the **Adjudicator** role always carries the adjudication right, but it does **not** include screening participation by default. The task owner turns on 「允许参与筛选」 per member on the member card; existing adjudicators keep their screening right (it is never silently withdrawn), while newly granted adjudicators start with screening off. Adjudicators without screening rights see guidance text in the screening queue instead of a bare 403, and every change is recorded in the audit trail. In networked team mode the merge-arbitration page can additionally load all screeners' decisions from the server; the 2–9 CSV upload flow remains available offline and as a server-mode fallback. These controls change who may screen, not how adjudication or κ results are computed.
+
 ## Decisions and completion
 
 - **Maybe** is an explicitly saved uncertainty decision. Decision-history counts use Maybe rather than Pending.

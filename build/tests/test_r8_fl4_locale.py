@@ -21,6 +21,9 @@ LUNA4-04 / LUNA4-05 / FS-01 / MM9-06 前端侧）。
 - LUNA4-05 sr 槽回退到"Учитање"名词化 → test_luna4_05_sr_grammar 红；
 - FS-01 新文案行被删/占位符丢失/旧死键复活 → test_fs_01_stop_certificate_copy 红；
 - MM10-07/MM11-12 的 T() 包裹被撤 → test_mm10_07_call_sites_wrapped_in_T 红。
+- FL4（尾巴④）三处日语列任一处退回「可信性」→
+  FL4ReportEvidenceJapaneseTermsTests 红；属主重新登记 toast 词条漏槽/
+  占位符漂移 → FL4OwnershipRebindLocaleTests 红。
 """
 
 import json
@@ -328,6 +331,12 @@ def _cached_replay():
                 "证书通过 ✅ 以 ≥95% 置信度，总召回 ≥95%（剩余相关 ≤ {0} 条）",
                 "此任务为升级前创建（无负责人）。该任务的历史参与者可在服务器模式下重新登记负责人以恢复管理；协作库损坏时先执行协作库修复。也可在桌面版打开同一数据目录重建任务协作。",
                 "Fisher z 尺度", "logit 尺度",
+                # FL4（尾巴④）：report_evidence_locale.js 三处日语列（ja 槽下标 5）。
+                "JBI 发现可信度",
+                "可信度（Credibility）",
+                "沿用当前产品的发现→类别→综合发现流程，核对可信度及共同出处。",
+                # FL4（尾巴④）：属主重新登记 toast（index.html:5827 的 T() 调用）。
+                "任务“{0}”的负责人已重新登记为 {1}，请确认任务管理权归属",
             ),
             tuple(NEW_DICTIONARY_KEYS) + tuple(NEW_ENGLISH_KEYS) + MM9_06_SYNTHESIS_KEYS,
         )
@@ -365,6 +374,55 @@ class MM9_18FallbackEliminationTests(unittest.TestCase):
         short = [k for k in MM9_18_FALLBACK_KEYS
                  if any(not slot for slot in result["keys"][k])]
         self.assertEqual(short, [], "MM9-18 键存在空槽：%r" % short)
+
+
+class FL4ReportEvidenceJapaneseTermsTests(unittest.TestCase):
+    """FL4（尾巴④）：report_evidence_locale.js 三处日语列统一为「信頼性」。
+
+    本批评估时三处内容已正确，但此前 build/tests 里没有任何「信頼性」断言
+    ——未来把任一处 ja 槽改回「可信性」时既有套件仍全绿。本组把三处
+    （ja 槽下标 5）钉成「含 信頼性、不含 可信性」。
+    """
+
+    KEYS = (
+        "JBI 发现可信度",                                        # report_evidence_locale.js:34
+        "可信度（Credibility）",                                 # :99
+        "沿用当前产品的发现→类别→综合发现流程，核对可信度及共同出处。",  # :233
+    )
+
+    def test_ja_columns_use_shinraisei_not_kashinsei(self):
+        result = _cached_replay()
+        for key in self.KEYS:
+            row = result["keys"].get(key)
+            self.assertIsNotNone(row, "FL4：词典回放未命中日语列键：%r" % key)
+            with self.subTest(key=key):
+                self.assertIn("信頼性", row[5],
+                              "FL4：%r 的 ja 槽应为「信頼性」：%r" % (key, row[5]))
+                self.assertNotIn("可信性", row[5],
+                                 "FL4：%r 的 ja 槽退回简体「可信性」：%r" % (key, row[5]))
+
+
+class FL4OwnershipRebindLocaleTests(unittest.TestCase):
+    """FL4（尾巴④）：属主重新登记 toast（index.html:5827 T()）已登记十语言。
+
+    只补 en 会增加"英文回退"，与 FL4 的英文回退归零口径冲突；本组钉十槽
+    非空 + {0}/{1} 占位符在十槽间一致（回退/漏槽/占位符漂移即红）。
+    """
+
+    KEY = "任务“{0}”的负责人已重新登记为 {1}，请确认任务管理权归属"
+
+    def test_rebind_toast_has_ten_slots_and_same_placeholders(self):
+        result = _cached_replay()
+        row = result["keys"].get(self.KEY)
+        self.assertIsNotNone(row, "FL4：属主重新登记 toast 未进词典：%r" % self.KEY)
+        self.assertEqual(len(row), 10, "FL4：属主重新登记 toast 不是 10 槽：%r" % (row,))
+        self.assertTrue(all(isinstance(slot, str) and slot for slot in row),
+                        "FL4：属主重新登记 toast 存在空槽：%r" % (row,))
+        stamps = [_placeholders(slot) for slot in row]
+        self.assertEqual(stamps, [stamps[0]] * 10,
+                         "FL4：属主重新登记 toast 占位符在 10 槽间不一致：%r" % (stamps,))
+        self.assertEqual(stamps[0], ["{0}", "{1}"],
+                         "FL4：属主重新登记 toast 应恰含 {0} 与 {1}：%r" % (stamps[0],))
 
 
 class NewEntryIntegrityTests(unittest.TestCase):

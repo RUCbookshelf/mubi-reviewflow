@@ -40,7 +40,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 
 ### 4. 以服务器模式启动（团队协作必需）
 
-**不要用 `build/launcher.py` 启动团队服务器。** 该启动入口会将运行模式设为桌面模式，不提供团队邀请和共享进度 API。服务器应直接通过 `build_app()` 启动完整的 API 和前端服务：
+**不要用 `build/launcher.py` 启动团队服务器。** 该启动入口不会以团队模式运行（设置 `REVIEWFLOW_MODE=server` 时会直接报错退出、返回码 2，且不读取也不改动你的数据目录），也不提供团队邀请和共享进度 API。服务器应直接通过 `build_app()` 启动完整的 API 和前端服务：
 
 ```bash
 cd /home/ubuntu/mubi-reviewflow
@@ -247,7 +247,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 - 找不到 `requirements.txt`：请使用 `build/requirements-app.txt`。
 - 页面可以打开但功能异常：检查子路径部署是否同时代理 `/api/`。
-- 无法邀请成员或看不到团队功能：确认进程由 `REVIEWFLOW_MODE=server` 启动，而不是桌面启动入口。
+- 无法邀请成员或看不到团队功能：确认进程由 `REVIEWFLOW_MODE=server` 启动，而不是桌面启动入口。桌面启动器现在会直接报错退出（返回码 2），不会切到桌面模式，也不会读取或改动你的数据目录。
 - 服务器重启后服务没有运行：`nohup` 不会自启；生产环境请配置 systemd。
 - 备份：保存整个数据目录（包括数据库、PDF、协作状态）；只备份表格不能完整恢复任务。
 
@@ -289,7 +289,7 @@ Server mode requires an absolute `COBOOKSHELF_DATA_DIR`. Accounts, task database
 
 ### 4. Start in server mode (required for team collaboration)
 
-**Do not start the team server with `build/launcher.py`.** That entry point forces desktop mode, which does not provide team invitations or shared-progress APIs. Start the complete API and frontend service directly through `build_app()`:
+**Do not start the team server with `build/launcher.py`.** With `REVIEWFLOW_MODE=server` that entry point refuses to start (exit code 2) and tells you to use the server entry point; it does not read or modify your data directory, and it does not provide team invitations or shared-progress APIs. Start the complete API and frontend service directly through `build_app()`:
 
 ```bash
 cd /home/ubuntu/mubi-reviewflow
@@ -459,7 +459,7 @@ Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. O
 
 - Missing `requirements.txt`: use `build/requirements-app.txt`.
 - Page loads but features fail: for path deployment, verify the `/api/` proxy.
-- Cannot invite members or see team features: confirm `REVIEWFLOW_MODE=server`; the desktop launcher forces desktop mode.
+- Cannot invite members or see team features: confirm the process was started with `REVIEWFLOW_MODE=server` rather than the desktop launcher. The desktop launcher now refuses to start (exit code 2) instead of forcing desktop mode, and it neither reads nor modifies your data directory.
 - Service is down after reboot: `nohup` does not enable startup; configure systemd for production.
 - Backups: copy the entire data directory, including database, PDFs, and collaboration state. A spreadsheet-only backup cannot restore a complete task.
 
