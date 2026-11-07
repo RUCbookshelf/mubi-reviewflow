@@ -177,11 +177,22 @@ def available(conn, batch: str, actor: str) -> dict:
     与「快照已变」同级的不安全判定：降级 ``available: False``，并带上
     ``reason`` 供写路径给出同样的说明（不新增对合法输入的拒绝，也不吞掉写路径
     的 409）。
+
+    r11c（MM-04 姊妹，读路径口径补齐）：撤销窗口按「批次 + 操作人」归属——
+    写路径（``remember``/``activate`` 的 UPDATE）已按该口径收口，但此处原先
+    还要求**全局** ``workflow_state.version`` 与条目的 ``policy_version``
+    相等；而 ``review_imports_api.mutate`` 在**任何批次**的 changed 核验后都
+    会把全局版本 +1，于是他批次的核验会把本批次仍然完好的撤销入口静默关掉
+    （外部形式化复审 probe：journal 两行均 available、版本 4→5、入口 False）。
+    读路径的失效判定改由三道与条目作用域一致的守卫承担：行状态 available、
+    subject 快照逐位一致（subject 自身未被后续改动）、无已激活记录；全局版本
+    漂移不再单独终结撤销。写时的并发安全仍由 mutate 的
+    write_guard(expected_version) 把关，与策略变更后仍可撤销「自己批次的上一
+    步」的语义一致（策略影响的是后续行为，不使已发生操作的逆操作失效）。
     """
     row = latest(conn, batch, actor)
     if not row:
         return {'available': False}
-    version = conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
     after = json.loads(row['after_json'])
     try:
         current = snapshot(conn, row['kind'], row['subject_id'])
@@ -190,7 +201,7 @@ def available(conn, batch: str, actor: str) -> dict:
         # 由用户在正常库里重做（不在此处改写数据）。
         return {'available': False, 'entry_id': None, 'kind': row['kind'],
                 'subject_id': row['subject_id'], 'reason': str(exc)}
-    safe = (version == row['policy_version'] and current == after
+    safe = (current == after
             and not any(r['state'] == 'active' for r in after['records']))
     return {'available': safe, 'entry_id': row['id'] if safe else None,
             'kind': row['kind'], 'subject_id': row['subject_id']}
