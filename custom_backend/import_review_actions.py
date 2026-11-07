@@ -6,7 +6,7 @@ import re
 import unicodedata
 
 from coscreen import review_imports as store
-from coscreen.dedup import _norm_doi
+from coscreen.dedup import _identity_doi
 from custom_backend.import_review_presentation import review_projection, present_record, present_candidates
 
 
@@ -65,7 +65,10 @@ def eligible_duplicate(candidate: dict) -> bool:
     members = candidate['members']
     if len(members) < 2 or sum(m['ref_type'] == 'active' for m in members) > 1:
         return False
-    dois = [_norm_doi((m.get('article') or (m.get('record') or {}).get('article') or {}).get('doi') or '') for m in members]
+    # 期刊样式 DOI（"(issn)" 整刊标识）不参与「同 DOI 即同一文献」的批量
+    # 确认判据（r17）：视同缺 DOI 落入标题/姓氏/年份强一致判据，避免同刊
+    # 不同文献被一键确认成重复。
+    dois = [_identity_doi((m.get('article') or (m.get('record') or {}).get('article') or {}).get('doi') or '') for m in members]
     if all(dois):
         return len(set(dois)) == 1
     if any(dois):
