@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS rankings (
 CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON rankings(created_at);
 """
 
-_SCHEMA = _SCHEMA + _RANKINGS_SCHEMA
+_SCHEMA += _RANKINGS_SCHEMA
 
 _TITLE_DUPLICATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS title_duplicate_reviews (
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS stage2_decisions (
 );
 """
 
-_SCHEMA = _SCHEMA + _STAGE2_SCHEMA
+_SCHEMA += _STAGE2_SCHEMA
 
 # 编码（数据提取阶段，SPEC §15.1）四表：
 # coding_dimensions 维度定义（dtype 'choice'|'text'|'numeric'，options 以 JSON 数组存
@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS coding_note_images (
   ocr_status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL);
 """
 
-_SCHEMA = _SCHEMA + _CODING_SCHEMA
+_SCHEMA += _CODING_SCHEMA
 
 # measure CHECK 清单（P9 指标注册表）：由 measure_registry.MEASURE_CODES 生成，
 # 保持既有 SQL 字面量风格（',' 连接、无空格）。既有 11 个代码的历史顺序作为
@@ -200,7 +200,9 @@ CREATE TABLE IF NOT EXISTS review_effects (
   result_id INTEGER PRIMARY KEY AUTOINCREMENT,
   study_id TEXT NOT NULL REFERENCES review_studies(id),
   comparison TEXT NOT NULL, outcome TEXT NOT NULL, timepoint TEXT NOT NULL,
-""" + _MEASURE_CHECK_SQL + """,
+"""
+_ANALYSIS_SCHEMA += _MEASURE_CHECK_SQL
+_ANALYSIS_SCHEMA += """,
   estimate REAL NOT NULL, se REAL NOT NULL CHECK(se > 0),
   source_key TEXT NOT NULL REFERENCES articles(zotero_key),
   input_json TEXT NOT NULL DEFAULT '{}', entry_method TEXT NOT NULL DEFAULT 'manual',
@@ -308,9 +310,13 @@ _ARTICLE_COLUMNS = (
     "doi", "abstract", "url", "source_format", "raw_json", "content_hash",
 )
 
+# 固定 SQL 形状（columns / VALUES 占位符数由上面的模块常量在构造期固化）。
+# 2.1.5 waveA：SQL 文本改为普通字符串字面量（与原 f-string 输出逐字节一致），
+# 不再在 execute 处用 f-string/拼接组装；数据值一律走 ? 绑定。
 _INSERT_ARTICLE = (
-    f"INSERT INTO articles ({', '.join(_ARTICLE_COLUMNS)}, is_duplicate_of, import_order) "
-    f"VALUES ({', '.join(['?'] * (len(_ARTICLE_COLUMNS) + 2))})"
+    "INSERT INTO articles (zotero_key, item_type, title, authors, journal, year, "
+    "doi, abstract, url, source_format, raw_json, content_hash, is_duplicate_of, "
+    "import_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _DECISION_COLUMNS = (
@@ -500,18 +506,6 @@ def _ensure_coding_tables(conn: sqlite3.Connection) -> None:
             conn.execute("PRAGMA foreign_keys=ON")
 
 
-_EFFECT_COLUMNS_SQL = (
-    "result_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "study_id TEXT NOT NULL REFERENCES review_studies(id),"
-    "comparison TEXT NOT NULL, outcome TEXT NOT NULL, timepoint TEXT NOT NULL,"
-    + _MEASURE_CHECK_SQL + " ,"
-    "estimate REAL NOT NULL, se REAL NOT NULL CHECK(se > 0),"
-    "source_key TEXT NOT NULL REFERENCES articles(zotero_key),"
-    "input_json TEXT NOT NULL DEFAULT '{}', entry_method TEXT NOT NULL DEFAULT 'manual',"
-    "selected INTEGER NOT NULL CHECK(selected IN (0,1)), source_locator TEXT NOT NULL DEFAULT ''"
-)
-
-
 def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
     """Migrate any legacy effect layout once to the result-variant schema.
 
@@ -553,11 +547,29 @@ def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
                 "COALESCE(selected,1)" if "selected" in columns else "1",
                 "COALESCE(source_locator,'')" if "source_locator" in columns else "''",
             ]
-            conn.execute(f"CREATE TABLE review_effects_new ({_EFFECT_COLUMNS_SQL})")
+            # 2.1.5 waveA：固定字面量 + 内部只读列表达式；数据值不参与，
+            # 文本与原构造逐字节一致。
             conn.execute(
-                "INSERT INTO review_effects_new (result_id,study_id,comparison,outcome,timepoint,measure,estimate,se,"
-                "source_key,input_json,entry_method,selected,source_locator) SELECT "
-                + ",".join(expressions) + " FROM review_effects ORDER BY rowid"
+                "CREATE TABLE review_effects_new ("
+                "result_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "study_id TEXT NOT NULL REFERENCES review_studies(id),"
+                "comparison TEXT NOT NULL, outcome TEXT NOT NULL, timepoint TEXT NOT NULL,"
+                "measure TEXT NOT NULL CHECK(measure IN ("
+                "'RR','OR','RD','MD','SMD','HR','RATE_RATIO','FISHER_Z','MEAN','LOGIT_PROP',"
+                "'LOG_RATE','PAIRED_OR','PAIRED_RD','SMCR','SMCC','LOG_ROM','PHI',"
+                "'R_EQUIV_APPROX','IRR','PROP','RATE','NNT')) ,"
+                "estimate REAL NOT NULL, se REAL NOT NULL CHECK(se > 0),"
+                "source_key TEXT NOT NULL REFERENCES articles(zotero_key),"
+                "input_json TEXT NOT NULL DEFAULT '{}', entry_method TEXT NOT NULL DEFAULT 'manual',"
+                "selected INTEGER NOT NULL CHECK(selected IN (0,1)), source_locator TEXT NOT NULL DEFAULT '')"
+            )
+            conn.execute(
+                "".join((
+                    "INSERT INTO review_effects_new (result_id,study_id,comparison,outcome,timepoint,measure,estimate,se,"
+                    "source_key,input_json,entry_method,selected,source_locator) SELECT ",
+                    ",".join(expressions),
+                    " FROM review_effects ORDER BY rowid",
+                ))
             )
             conn.execute("DROP TABLE review_effects")
             conn.execute("ALTER TABLE review_effects_new RENAME TO review_effects")
@@ -730,6 +742,9 @@ def _article_key_reference_columns(conn: sqlite3.Connection) -> list[tuple[str, 
     tables = [row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     ).fetchall()]
+    # 2.1.5 waveA 白名单（scan_dynamic_sql.whitelist，见下方 PRAGMA 行）：
+    # PRAGMA 的表名是 SQLite 标识符，不能参数绑定；其值取自本库 sqlite_master
+    # （库内元数据，非外部输入），语句文本保留原样。
     for table in tables:
         names = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
         if table == "articles":
@@ -827,6 +842,10 @@ _IMPORT_UNDO_SNAPSHOT_COLUMNS: frozenset[tuple[str, str]] = frozenset({
     ("workflow_import_undo", "before_json"),
     ("workflow_import_undo", "after_json"),
 })
+
+#: 2.1.5 waveA：JSON 键引用列的读写 SQL 在下面循环里以**逐条字符串字面量**
+#: 按 (表, 列) 选择（表名/列名是 SQLite 标识符，不能参数绑定；其来源是上面的
+#: 模块内固定枚举，不把任何外部输入放进标识符位）。
 
 
 def _sync_import_undo_snapshot_text(
@@ -1004,6 +1023,89 @@ def _rewrite_key_tokens(text: str, renames: list[tuple[str, str]]) -> str:
     return text
 
 
+def _json_key_reference_rows(conn: sqlite3.Connection, table: str, column: str) -> list:
+    """按模块内固定枚举选择只读 SQL（逐条字面量，标识符不拼接）。"""
+    if (table, column) == ("title_duplicate_reviews", "members_json"):
+        return conn.execute(
+            'SELECT rowid, "members_json" FROM "title_duplicate_reviews"'
+        ).fetchall()
+    if (table, column) == ("title_duplicate_undo", "before_json"):
+        return conn.execute(
+            'SELECT rowid, "before_json" FROM "title_duplicate_undo"'
+        ).fetchall()
+    if (table, column) == ("title_duplicate_undo", "after_json"):
+        return conn.execute(
+            'SELECT rowid, "after_json" FROM "title_duplicate_undo"'
+        ).fetchall()
+    if (table, column) == ("workflow_import_undo", "before_json"):
+        return conn.execute(
+            'SELECT rowid, "before_json" FROM "workflow_import_undo"'
+        ).fetchall()
+    if (table, column) == ("workflow_import_undo", "after_json"):
+        return conn.execute(
+            'SELECT rowid, "after_json" FROM "workflow_import_undo"'
+        ).fetchall()
+    if (table, column) == ("workflow_screen_rounds", "snapshot_json"):
+        return conn.execute(
+            'SELECT rowid, "snapshot_json" FROM "workflow_screen_rounds"'
+        ).fetchall()
+    if (table, column) == ("workflow_import_metadata", "before_json"):
+        return conn.execute(
+            'SELECT rowid, "before_json" FROM "workflow_import_metadata"'
+        ).fetchall()
+    if (table, column) == ("workflow_source_records", "article_json"):
+        return conn.execute(
+            'SELECT rowid, "article_json" FROM "workflow_source_records"'
+        ).fetchall()
+    if (table, column) == ("workflow_import_metadata", "incoming_json"):
+        return conn.execute(
+            'SELECT rowid, "incoming_json" FROM "workflow_import_metadata"'
+        ).fetchall()
+    return []
+
+
+def _update_json_key_reference(
+    conn: sqlite3.Connection, table: str, column: str, new_text: str, rowid: int
+) -> None:
+    """按模块内固定枚举选择改写 SQL（逐条字面量，标识符不拼接）。"""
+    if (table, column) == ("title_duplicate_reviews", "members_json"):
+        conn.execute(
+            'UPDATE "title_duplicate_reviews" SET "members_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("title_duplicate_undo", "before_json"):
+        conn.execute(
+            'UPDATE "title_duplicate_undo" SET "before_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("title_duplicate_undo", "after_json"):
+        conn.execute(
+            'UPDATE "title_duplicate_undo" SET "after_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("workflow_import_undo", "before_json"):
+        conn.execute(
+            'UPDATE "workflow_import_undo" SET "before_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("workflow_import_undo", "after_json"):
+        conn.execute(
+            'UPDATE "workflow_import_undo" SET "after_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("workflow_screen_rounds", "snapshot_json"):
+        conn.execute(
+            'UPDATE "workflow_screen_rounds" SET "snapshot_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("workflow_import_metadata", "before_json"):
+        conn.execute(
+            'UPDATE "workflow_import_metadata" SET "before_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("workflow_source_records", "article_json"):
+        conn.execute(
+            'UPDATE "workflow_source_records" SET "article_json"=? WHERE rowid=?',
+            (new_text, rowid))
+    elif (table, column) == ("workflow_import_metadata", "incoming_json"):
+        conn.execute(
+            'UPDATE "workflow_import_metadata" SET "incoming_json"=? WHERE rowid=?',
+            (new_text, rowid))
+
+
 def _sync_json_key_references(
     conn: sqlite3.Connection, renames: list[tuple[str, str]],
     references: list[tuple[str, str, str]] | None = None,
@@ -1033,7 +1135,7 @@ def _sync_json_key_references(
             continue
         structured = (table, column) in _IMPORT_UNDO_SNAPSHOT_COLUMNS
         payload = (table, column) in _JSON_KEY_PAYLOAD_COLUMNS
-        rows = conn.execute(f'SELECT rowid, "{column}" FROM "{table}"').fetchall()
+        rows = _json_key_reference_rows(conn, table, column)
         for rowid, text in rows:
             if not isinstance(text, str):
                 continue
@@ -1046,9 +1148,7 @@ def _sync_json_key_references(
             else:
                 new_text = _rewrite_key_tokens(text, renames)
             if new_text != text:
-                conn.execute(
-                    f'UPDATE "{table}" SET "{column}"=? WHERE rowid=?',
-                    (new_text, rowid))
+                _update_json_key_reference(conn, table, column, new_text, rowid)
                 updated += 1
     return updated
 
@@ -1236,6 +1336,9 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
                 conn.execute(
                     "UPDATE articles SET zotero_key=? WHERE zotero_key=?",
                     (new, old))
+            # 2.1.5 waveA 白名单（scan_dynamic_sql.whitelist）：待改写的表/列
+            # 来自本次迁移从 sqlite_master 发现的实际库结构（内部元数据，
+            # 非外部输入），标识符不能参数绑定；数据值全部走 ? 绑定。
             for table, column, condition in references:
                 for old, new in renames:
                     conn.execute(
@@ -1460,7 +1563,10 @@ def list_articles(db_path: StrPath, include_duplicates: bool = False) -> list[Ar
     的声明字段里（不参与相等/序列化，R1 结构不变），供 dedup 的身份索引
     区分「筛选可见行」与「已标重复行」（r9 夜扫 b04·F3-36）。
     """
-    sql = f"SELECT {', '.join(_ARTICLE_COLUMNS)}, is_duplicate_of FROM articles"
+    sql = (
+        "SELECT zotero_key, item_type, title, authors, journal, year, doi, abstract, "
+        "url, source_format, raw_json, content_hash, is_duplicate_of FROM articles"
+    )
     if not include_duplicates:
         sql += (
             " WHERE is_duplicate_of IS NULL AND NOT EXISTS ("
@@ -1495,22 +1601,30 @@ def list_title_duplicate_reviews(
             ).fetchall()
         else:
             if status in {"pending", "undecided"}:
-                where = "status IN ('pending','undecided')"
                 count_params = ()
                 params = (limit, offset)
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM title_duplicate_reviews "
+                    "WHERE status IN ('pending','undecided')", count_params
+                ).fetchone()[0]
+                rows = conn.execute(
+                    "SELECT review_id,normalized_title,status,members_json,keeper_key,decision_by,updated_at "
+                    "FROM title_duplicate_reviews WHERE status IN ('pending','undecided') "
+                    "ORDER BY created_at,review_id LIMIT ? OFFSET ?",
+                    params,
+                ).fetchall()
             else:
-                where = "status=?"
                 count_params = (status,)
                 params = (status, limit, offset)
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM title_duplicate_reviews WHERE {where}", count_params
-            ).fetchone()[0]
-            rows = conn.execute(
-                "SELECT review_id,normalized_title,status,members_json,keeper_key,decision_by,updated_at "
-                f"FROM title_duplicate_reviews WHERE {where} "
-                "ORDER BY created_at,review_id LIMIT ? OFFSET ?",
-                params,
-            ).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM title_duplicate_reviews WHERE status=?", count_params
+                ).fetchone()[0]
+                rows = conn.execute(
+                    "SELECT review_id,normalized_title,status,members_json,keeper_key,decision_by,updated_at "
+                    "FROM title_duplicate_reviews WHERE status=? "
+                    "ORDER BY created_at,review_id LIMIT ? OFFSET ?",
+                    params,
+                ).fetchall()
     return ([{"review_id": r[0], "normalized_title": r[1], "status": r[2],
               "members": json.loads(r[3]), "keeper_key": r[4],
               "decision_by": r[5], "updated_at": r[6]} for r in rows], total)
@@ -1723,7 +1837,8 @@ def has_pending_title_duplicate_review(db_path: StrPath, zotero_key: str) -> boo
 def get_article(db_path: StrPath, zotero_key: str) -> Article | None:
     with closing(_connect(db_path)) as conn:
         row = conn.execute(
-            f"SELECT {', '.join(_ARTICLE_COLUMNS)} FROM articles WHERE zotero_key = ?",
+            "SELECT zotero_key, item_type, title, authors, journal, year, doi, abstract, "
+            "url, source_format, raw_json, content_hash FROM articles WHERE zotero_key = ?",
             (zotero_key,),
         ).fetchone()
     return _row_to_article(row) if row else None
@@ -1977,7 +2092,8 @@ def restore_decisions(
 def get_decision(db_path: StrPath, zotero_key: str) -> dict | None:
     with closing(_connect(db_path)) as conn:
         row = conn.execute(
-            f"SELECT {', '.join(_DECISION_COLUMNS)} FROM decisions WHERE zotero_key = ?",
+            "SELECT zotero_key, decision, exclusion_reason, notes, tags, screened_at, "
+            "updated_at FROM decisions WHERE zotero_key = ?",
             (zotero_key,),
         ).fetchone()
     if row is None:
@@ -2013,8 +2129,8 @@ def list_decisions_chrono(db_path: StrPath) -> list[dict]:
             "screened_at", "updated_at")
     with closing(_connect(db_path)) as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(cols)} FROM decisions "
-            "ORDER BY updated_at, zotero_key"
+            "SELECT zotero_key, decision, exclusion_reason, notes, screened_at, updated_at "
+            "FROM decisions ORDER BY updated_at, zotero_key"
         ).fetchall()
     return [dict(zip(cols, r)) for r in rows]
 

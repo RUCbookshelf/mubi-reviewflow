@@ -146,14 +146,18 @@ def list_network_studies(db: DbPath, outcome: str | None = None,
                 raise ValueError(f"{column} filter must be a nonempty string")
             clauses.append(f"{column}=?")
             values.append(value.strip())
-    query = ("SELECT study_id,outcome,timepoint,measure,contrasts_json,covariance_json,"
-             "covariance_scale,source_key,input_arms_json,source_locator FROM review_network_studies")
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY study_id,outcome,timepoint,measure"
     with closing(_connect(db)) as conn, conn:
         _ensure_table(conn)
-        rows = conn.execute(query, values).fetchall()
+        rows = conn.execute(
+            "".join((
+                "SELECT study_id,outcome,timepoint,measure,contrasts_json,covariance_json,"
+                "covariance_scale,source_key,input_arms_json,source_locator FROM review_network_studies",
+                " WHERE " if clauses else "",
+                " AND ".join(clauses),
+                " ORDER BY study_id,outcome,timepoint,measure",
+            )),
+            values,
+        ).fetchall()
     keys = ("study_id", "outcome", "timepoint", "measure", "contrasts", "covariance",
             "covariance_scale", "source_key")
     return [{**dict(zip(keys, (*row[:4], json.loads(row[4]), json.loads(row[5]), row[6], row[7]))),

@@ -151,6 +151,9 @@ def migrate(db: str | Path) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
     with closing(conn), conn:
         # Account reason stores have no catalogue; task catalogues already exist.
+        # 2.1.5 waveA 白名单（scan_dynamic_sql.whitelist）：脚本由模块内固定
+        # _SCHEMA 常量与会话前缀拼接；executescript 不支持参数绑定，脚本内容
+        # 不含任何外部输入。语句文本保留原样。
         schema = _SCHEMA if has_table(conn, "articles") else _SCHEMA.split("CREATE TRIGGER")[0]
         conn.executescript("BEGIN IMMEDIATE;\n" + schema)
         conn.execute("INSERT OR IGNORE INTO workflow_state(singleton,stages_json) VALUES(1,?)", (json.dumps(defaults()),))

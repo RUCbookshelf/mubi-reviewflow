@@ -64,9 +64,11 @@ def _read_owner_articles(path: Path) -> list[tuple]:
         missing = set(_ARTICLE_COLUMNS) - columns
         if missing:
             raise ValueError("owner articles table is missing required columns")
-        names = ", ".join(_ARTICLE_COLUMNS)
+        # 列清单是本模块固定枚举 _ARTICLE_COLUMNS（上方已校验齐全），语句整体写成字面量。
         return conn.execute(
-            f"SELECT {names} FROM articles ORDER BY import_order, zotero_key"
+            "SELECT zotero_key, item_type, title, authors, journal, year, doi, abstract, url, source_format, "
+            "raw_json, content_hash, is_duplicate_of, import_order FROM articles ORDER BY import_order, "
+            "zotero_key"
         ).fetchall()
 
 
@@ -109,19 +111,8 @@ def sync_shared_articles(
         if workflow_store.has_table(owner_conn, "workflow_metadata_acceptances"):
             accepted = [dict(row) for row in owner_conn.execute("SELECT * FROM workflow_metadata_acceptances")]
 
-    names = ", ".join(_ARTICLE_COLUMNS)
-    placeholders = ", ".join("?" for _ in _ARTICLE_COLUMNS)
-    updates = ", ".join(
-        (f"{column}=excluded.{column}" if column in {"is_duplicate_of", "import_order"} else
-         f"{column}=CASE WHEN articles.{column} IS NULL OR articles.{column}='' "
-         f"THEN excluded.{column} ELSE articles.{column} END")
-        for column in _ARTICLE_COLUMNS
-        if column != "zotero_key"
-    )
-    upsert_sql = (
-        f"INSERT INTO articles ({names}) VALUES ({placeholders}) "
-        f"ON CONFLICT(zotero_key) DO UPDATE SET {updates}"
-    )
+    # 目录 upsert 的列清单同样来自固定枚举 _ARTICLE_COLUMNS；语句直接写成字面量，
+    # 行值仍经 executemany 参数绑定（避免在 SQL 文本里拼表名/列名）。
 
     with closing(sqlite3.connect(member_db, timeout=15)) as conn:
         conn.execute("PRAGMA busy_timeout=15000")
@@ -134,15 +125,37 @@ def sync_shared_articles(
             columns = {row[1] for row in conn.execute("PRAGMA table_info(articles)")}
             if set(_ARTICLE_COLUMNS) - columns:
                 raise ValueError("member articles table is missing required columns")
-            conn.executemany(upsert_sql, rows)
+            conn.executemany(
+                "INSERT INTO articles (zotero_key, item_type, title, authors, journal, year, doi, abstract, url, "
+                "source_format, raw_json, content_hash, is_duplicate_of, import_order) VALUES (?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(zotero_key) DO UPDATE SET item_type=CASE WHEN "
+                "articles.item_type IS NULL OR articles.item_type='' THEN excluded.item_type ELSE "
+                "articles.item_type END, title=CASE WHEN articles.title IS NULL OR articles.title='' THEN "
+                "excluded.title ELSE articles.title END, authors=CASE WHEN articles.authors IS NULL OR "
+                "articles.authors='' THEN excluded.authors ELSE articles.authors END, journal=CASE WHEN "
+                "articles.journal IS NULL OR articles.journal='' THEN excluded.journal ELSE articles.journal END, "
+                "year=CASE WHEN articles.year IS NULL OR articles.year='' THEN excluded.year ELSE articles.year "
+                "END, doi=CASE WHEN articles.doi IS NULL OR articles.doi='' THEN excluded.doi ELSE articles.doi "
+                "END, abstract=CASE WHEN articles.abstract IS NULL OR articles.abstract='' THEN excluded.abstract "
+                "ELSE articles.abstract END, url=CASE WHEN articles.url IS NULL OR articles.url='' THEN "
+                "excluded.url ELSE articles.url END, source_format=CASE WHEN articles.source_format IS NULL OR "
+                "articles.source_format='' THEN excluded.source_format ELSE articles.source_format END, "
+                "raw_json=CASE WHEN articles.raw_json IS NULL OR articles.raw_json='' THEN excluded.raw_json ELSE "
+                "articles.raw_json END, content_hash=CASE WHEN articles.content_hash IS NULL OR "
+                "articles.content_hash='' THEN excluded.content_hash ELSE articles.content_hash END, "
+                "is_duplicate_of=excluded.is_duplicate_of, import_order=excluded.import_order",
+                rows)
             for approval in accepted:
                 applied = conn.execute("SELECT revision FROM workflow_metadata_applied WHERE owner_identity=? AND zotero_key=?",
                                        (owner_identity, approval["zotero_key"])).fetchone()
                 if applied and applied[0] >= approval["revision"]:
                     continue
                 values = json.loads(approval["metadata_json"])
-                conn.execute("UPDATE articles SET " + ",".join(f"{field}=?" for field in import_store.METADATA_FIELDS) + " WHERE zotero_key=?",
-                             [values.get(field) for field in import_store.METADATA_FIELDS] + [approval["zotero_key"]])
+                # 列清单来自 import_store.METADATA_FIELDS（内部固定常量），语句写成字面量。
+                conn.execute(
+                    "UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,abstract=?,url=? WHERE "
+                    "zotero_key=?",
+                    [values.get(field) for field in import_store.METADATA_FIELDS] + [approval["zotero_key"]])
                 conn.execute("INSERT INTO workflow_metadata_applied VALUES(?,?,?) ON CONFLICT(owner_identity,zotero_key) DO UPDATE SET revision=excluded.revision",
                              (owner_identity, approval["zotero_key"], approval["revision"]))
             if catalog_revision is not None:

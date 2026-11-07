@@ -21,7 +21,13 @@ def decisions(path: Path, table: str) -> dict:
     with closing(workflow.connect(path, read_only=True)) as conn:
         if not workflow.has_table(conn, table):
             return {}
-        return {r['zotero_key']: dict(r) for r in conn.execute(f'SELECT * FROM {table}')}
+        # table 只来自本模块固定枚举（outcomes() 传入 decisions / stage2_decisions），
+        # 两个分支各写一条字面量 SQL，不再把表名拼进语句。
+        if table == 'stage2_decisions':
+            rows = conn.execute('SELECT * FROM stage2_decisions')
+        else:
+            rows = conn.execute('SELECT * FROM decisions')
+        return {r['zotero_key']: dict(r) for r in rows}
 
 
 def outcomes(ctx, stage: str, mode: str) -> tuple[dict, int]:

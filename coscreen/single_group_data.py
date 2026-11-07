@@ -112,7 +112,8 @@ def save_single_group_count(
 def list_single_group_counts(db: DbPath) -> list[dict]:
     with closing(_connect(db)) as conn:
         rows = conn.execute(
-            "SELECT " + ",".join(_COLUMNS) + " FROM review_single_group_counts "
+            "SELECT result_id,study_id,comparison,outcome,timepoint,kind,events,total,person_time,"
+            "time_unit,source_key,source_locator,selected FROM review_single_group_counts "
             "ORDER BY study_id,comparison,outcome,timepoint,kind,result_id"
         ).fetchall()
     return [dict(zip(_COLUMNS, row)) for row in rows]
@@ -163,7 +164,8 @@ def selected_single_group_counts(
             if n_selected != 1:
                 raise ValueError(f"study {study_id} has multiple selected counts in this stratum")
         rows = conn.execute(
-            "SELECT " + ",".join(_COLUMNS) + " FROM review_single_group_counts "
+            "SELECT result_id,study_id,comparison,outcome,timepoint,kind,events,total,person_time,"
+            "time_unit,source_key,source_locator,selected FROM review_single_group_counts "
             "WHERE comparison=? AND outcome=? AND timepoint=? AND kind=? AND selected=1 "
             "ORDER BY study_id",
             stratum,

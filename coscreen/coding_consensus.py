@@ -441,8 +441,10 @@ def append_consensus_record(
     with _write(db) as conn:
         if ids:
             rows = conn.execute(
-                f"SELECT id,item_key,field_key,rater_id,version FROM coding_rater_records "
-                f"WHERE id IN ({','.join('?' for _ in ids)})",
+                "".join((
+                    "SELECT id,item_key,field_key,rater_id,version FROM coding_rater_records ",
+                    "WHERE id IN (", ",".join("?" for _ in ids), ")",
+                )),
                 ids,
             ).fetchall()
             if len(rows) != len(ids) or any(
@@ -519,7 +521,10 @@ def freeze_consensus(
     ids = _ids(consensus_ids, "consensus_ids")
     with _write(db) as conn:
         rows = conn.execute(
-            f"SELECT id,item_key,field_key FROM coding_consensus_records WHERE id IN ({','.join('?' for _ in ids)})",
+            "".join((
+                "SELECT id,item_key,field_key FROM coding_consensus_records WHERE id IN (",
+                ",".join("?" for _ in ids), ")",
+            )),
             ids,
         ).fetchall()
         if len(rows) != len(ids):

@@ -214,8 +214,9 @@ def _table_exists(c, name):
 
 
 def _fold_marker_present(c):
+    # 表名 _FOLD_META_TABLE 为本模块固定常量，查询语句写成字面量（无可绑定外部输入）。
     return (_table_exists(c, _FOLD_META_TABLE)
-            and c.execute(f"SELECT 1 FROM {_FOLD_META_TABLE} WHERE singleton=1").fetchone() is not None)
+            and c.execute("SELECT 1 FROM report_evidence_fold_meta WHERE singleton=1").fetchone() is not None)
 
 
 def _classify_legacy_side(payload):
@@ -459,7 +460,7 @@ def compact_legacy_trace_events(c):
             return
         if _fold_marker_present(c):
             return
-        needs_fold = c.execute(_LEGACY_SCAN_SQL + " LIMIT 1").fetchone() is not None
+        needs_fold = c.execute("SELECT sequence,task_id,actor_id,stage,action,subject_id,before_json,after_json,origin_event_id FROM trace_events WHERE action IN ('report_evidence_changed','imported_report_evidence_changed') AND (before_json LIKE '%\"workspace\"%' OR after_json LIKE '%\"workspace\"%') ORDER BY sequence LIMIT 1").fetchone() is not None
         backup_ok = _backup_before_fold(c) if needs_fold else True
         # 备份在取写锁之前完成：backup API 不能在持有 BEGIN IMMEDIATE 事务的
         # 连接上执行（会自锁）；备份失败则本次不折叠、不置标记，下次连接重试。
@@ -467,7 +468,8 @@ def compact_legacy_trace_events(c):
         if own:
             c.execute("BEGIN IMMEDIATE")
         try:
-            c.execute(f"CREATE TABLE IF NOT EXISTS {_FOLD_META_TABLE} "
+            # 表名 _FOLD_META_TABLE 为本模块固定常量：语句整体写成字面量。
+            c.execute("CREATE TABLE IF NOT EXISTS report_evidence_fold_meta "
                       "(singleton INTEGER PRIMARY KEY CHECK(singleton=1), folded_at TEXT NOT NULL, "
                       "folded_runs INTEGER NOT NULL, deleted_rows INTEGER NOT NULL, skipped_events INTEGER NOT NULL)")
             if _fold_marker_present(c):  # 拿到写锁后复核，防并发重复折叠
@@ -484,7 +486,7 @@ def compact_legacy_trace_events(c):
                 folded_runs, deleted_rows, skipped = _fold_legacy_runs(c)
                 if skipped:
                     _insert_fold_marker_events(c, skipped)
-            c.execute(f"INSERT INTO {_FOLD_META_TABLE} VALUES(1, ?, ?, ?, ?)",
+            c.execute("INSERT INTO report_evidence_fold_meta VALUES(1, ?, ?, ?, ?)",
                       (datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                        folded_runs, deleted_rows, sum(skipped.values())))
             if own:

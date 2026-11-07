@@ -112,6 +112,8 @@ def review_updates(conn, batch: str, actions: list[dict]) -> dict:
             'SELECT record_id FROM workflow_import_metadata WHERE canonical_key IN '
             '(SELECT canonical_key FROM workflow_import_metadata WHERE record_id=?)', (rid,)))
     if record_ids:
+        # 占位符个数由 record_ids 数量决定，SQLite 不支持绑定占位符列表；拼入的
+        # 内容只有 '?' 字符，具体 id 值仍通过参数绑定传入（检查器白名单已登记）。
         placeholders = ','.join('?' for _ in record_ids)
         record_ids.update(r[0] for r in conn.execute(
             'WITH RECURSIVE affected(id) AS (SELECT id FROM workflow_source_records WHERE id IN ('+placeholders+') '

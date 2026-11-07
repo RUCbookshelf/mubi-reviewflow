@@ -426,10 +426,19 @@ def _rebase_db_paths(path: Path, source: Path, destination: Path, copied_root: P
         for table in ("fulltexts", "coding_note_images", "workflow_evidence_uploads"):
             if table not in tables:
                 continue
-            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            # 表名来自模块内固定枚举 → 逐条字面量选择（标识符不拼接）。
+            if table == "fulltexts":
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(fulltexts)")}
+                select_sql = "SELECT rowid,path FROM fulltexts"
+            elif table == "coding_note_images":
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(coding_note_images)")}
+                select_sql = "SELECT rowid,path FROM coding_note_images"
+            else:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_evidence_uploads)")}
+                select_sql = "SELECT rowid,path FROM workflow_evidence_uploads"
             if "path" not in columns:
                 continue
-            for rowid, raw in conn.execute(f"SELECT rowid,path FROM {table}"):
+            for rowid, raw in conn.execute(select_sql):
                 candidate = Path(str(raw))
                 if not candidate.is_absolute():
                     continue
@@ -463,7 +472,15 @@ def _rebase_db_paths(path: Path, source: Path, destination: Path, copied_root: P
         if updates or journal_updates:
             with conn:
                 for table, rowid, rebased in updates:
-                    conn.execute(f"UPDATE {table} SET path=? WHERE rowid=?", (rebased, rowid))
+                    if table == "fulltexts":
+                        conn.execute("UPDATE fulltexts SET path=? WHERE rowid=?", (rebased, rowid))
+                    elif table == "coding_note_images":
+                        conn.execute(
+                            "UPDATE coding_note_images SET path=? WHERE rowid=?", (rebased, rowid))
+                    else:
+                        conn.execute(
+                            "UPDATE workflow_evidence_uploads SET path=? WHERE rowid=?",
+                            (rebased, rowid))
                 for before, after, rowid in journal_updates:
                     conn.execute("UPDATE workspace_undo SET before_json=?, after_json=? WHERE rowid=?",
                                  (before, after, rowid))

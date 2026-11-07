@@ -178,10 +178,14 @@ def _rewrite_legacy_guard_digests(conn: sqlite3.Connection) -> None:
     columns = {r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
     if not {'stage', 'zotero_key', 'after_json', 'undone'} <= columns:
         return
-    superseded = 'AND superseded=0 ' if 'superseded' in columns else ''
-    rows = conn.execute(
-        f"SELECT id,zotero_key,after_json FROM workspace_undo WHERE stage IN ('screen','fulltext') "
-        f"AND undone=0 {superseded}").fetchall()
+    if 'superseded' in columns:
+        rows = conn.execute(
+            "SELECT id,zotero_key,after_json FROM workspace_undo WHERE stage IN ('screen','fulltext') "
+            "AND undone=0 AND superseded=0 ").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id,zotero_key,after_json FROM workspace_undo WHERE stage IN ('screen','fulltext') "
+            "AND undone=0 ").fetchall()
     for entry_id, key, after_json in rows:
         try:
             after = json.loads(after_json)
@@ -235,7 +239,9 @@ def field_rows(db: str | Path) -> list[dict]:
         fields = {r['dimension_id']: dict(r) for r in conn.execute('SELECT * FROM workflow_coding_fields')} \
             if workflow.has_table(conn, 'workflow_coding_fields') else {}
         return [{**coding._row_to_dimension(row), **({'field_id': fields[row[0]]['field_id']} if row[0] in fields else {})}
-                for row in conn.execute(f"SELECT {','.join(coding._DIM_COLUMNS)} FROM coding_dimensions ORDER BY section,position,id")]
+                for row in conn.execute(
+                        "SELECT id,name,dtype,options_json,multi_select,unit,description,section,"
+                        "position,created_at FROM coding_dimensions ORDER BY section,position,id")]
 
 
 def current_owner_db(db: str | Path) -> Path:
@@ -259,7 +265,9 @@ def ensure_fields(db: str | Path) -> None:
     with closing(workflow.connect(db, read_only=True)) as probe:
         known = {r[0]: r[1] for r in probe.execute('SELECT dimension_id,definition_json FROM workflow_coding_fields')}
         pending = False
-        for row in probe.execute(f"SELECT {','.join(coding._DIM_COLUMNS)} FROM coding_dimensions").fetchall():
+        for row in probe.execute(
+                "SELECT id,name,dtype,options_json,multi_select,unit,description,section,"
+                "position,created_at FROM coding_dimensions").fetchall():
             dim = coding._row_to_dimension(row)
             if dim['id'] not in known or known[dim['id']] != definition(dim):
                 pending = True
@@ -276,7 +284,9 @@ def ensure_fields(db: str | Path) -> None:
         # 行），INSERT OR IGNORE 作为兜底让并发写入永不冒裸 IntegrityError。
         conn.execute('BEGIN IMMEDIATE')
         known = {r[0]: r[1] for r in conn.execute('SELECT dimension_id,definition_json FROM workflow_coding_fields')}
-        for row in conn.execute(f"SELECT {','.join(coding._DIM_COLUMNS)} FROM coding_dimensions").fetchall():
+        for row in conn.execute(
+                "SELECT id,name,dtype,options_json,multi_select,unit,description,section,"
+                "position,created_at FROM coding_dimensions").fetchall():
             dim = coding._row_to_dimension(row)
             signature = definition(dim)
             if dim['id'] not in known:
@@ -368,9 +378,14 @@ def complete_keys(db: str | Path, owner_db: str | Path, keys: list[str]) -> set[
         for dim, key in conn.execute("SELECT dimension_id,zotero_key FROM coding_values WHERE TRIM(COALESCE(value,''))<>''"):
             filled.setdefault(key, set()).add(dim)
         if required_dims and workflow.has_table(conn, 'coding_notes'):
-            image_support = ('EXISTS(SELECT 1 FROM coding_note_images i WHERE i.note_id=n.id)'
-                             if workflow.has_table(conn, 'coding_note_images') else '0')
-            rows = conn.execute('SELECT n.dimension_id,n.zotero_key,n.text,' + image_support + ' FROM coding_notes n')
+            if workflow.has_table(conn, 'coding_note_images'):
+                rows = conn.execute(
+                    'SELECT n.dimension_id,n.zotero_key,n.text,'
+                    'EXISTS(SELECT 1 FROM coding_note_images i WHERE i.note_id=n.id) '
+                    'FROM coding_notes n')
+            else:
+                rows = conn.execute(
+                    'SELECT n.dimension_id,n.zotero_key,n.text,0 FROM coding_notes n')
             for dim, key, text, has_image in rows:
                 if has_note_text(text) or has_image:
                     supported.setdefault(key, set()).add(dim)

@@ -141,11 +141,18 @@ def list_binary_arms(db: DbPath) -> list[dict]:
             return []
         has_locator = "source_locator" in {row[1] for row in conn.execute(
             "PRAGMA table_info(review_binary_arms)")}
-        locator = "source_locator" if has_locator else "''"
-        rows = conn.execute(
-            "SELECT study_id,comparison,outcome,timepoint,source_key," + locator + ",events_t,total_t,events_c,total_c "
-            "FROM review_binary_arms ORDER BY study_id,comparison,outcome,timepoint"
-        ).fetchall()
+        if has_locator:
+            rows = conn.execute(
+                "SELECT study_id,comparison,outcome,timepoint,source_key,source_locator,"
+                "events_t,total_t,events_c,total_c FROM review_binary_arms "
+                "ORDER BY study_id,comparison,outcome,timepoint"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT study_id,comparison,outcome,timepoint,source_key,'',"
+                "events_t,total_t,events_c,total_c FROM review_binary_arms "
+                "ORDER BY study_id,comparison,outcome,timepoint"
+            ).fetchall()
     return [{"study_id": row[0], "comparison": row[1], "outcome": row[2], "timepoint": row[3],
              "source_key": row[4], "source_locator": row[5],
              "arms": dict(zip(_FIELDS, row[6:]))} for row in rows]

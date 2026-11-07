@@ -204,24 +204,62 @@ class ImportRuntime:
 
     @staticmethod
     def copy_prepared(snapshot, conn, bid, new_ids):
-        def copy(table, where, params):
-            rows = snapshot.execute(f'SELECT * FROM {table} WHERE {where}', params).fetchall()
-            for row in rows:
-                conn.execute(f'INSERT OR IGNORE INTO {table} VALUES({",".join("?" for _ in row)})', tuple(row))
-        copy('workflow_sources', '1=1', ())
-        copy('workflow_source_details', '1=1', ())
-        copy('workflow_import_batches', 'id=?', (bid,))
-        copy('workflow_import_files', 'batch_id=?', (bid,))
+        # 表名只来自本函数内的固定枚举：每个分支各写一条字面量 SELECT/INSERT，
+        # INSERT 的占位符个数等于该表当前 workflow schema 的列数；行值仍走参数绑定。
+        def copy(table, params):
+            if table == 'workflow_sources':
+                rows = snapshot.execute('SELECT * FROM workflow_sources WHERE 1=1', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_sources VALUES(?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_source_details':
+                rows = snapshot.execute('SELECT * FROM workflow_source_details WHERE 1=1', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_source_details VALUES(?,?,?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_import_batches':
+                rows = snapshot.execute('SELECT * FROM workflow_import_batches WHERE id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_import_files':
+                rows = snapshot.execute('SELECT * FROM workflow_import_files WHERE batch_id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_import_files VALUES(?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_source_records':
+                rows = snapshot.execute('SELECT * FROM workflow_source_records WHERE id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_source_records '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_import_metadata':
+                rows = snapshot.execute('SELECT * FROM workflow_import_metadata WHERE record_id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_import_metadata VALUES(?,?,?,?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_import_members':
+                rows = snapshot.execute('SELECT * FROM workflow_import_members WHERE batch_id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_import_members VALUES(?,?,?)', tuple(row))
+            elif table == 'workflow_import_candidates':
+                rows = snapshot.execute('SELECT * FROM workflow_import_candidates WHERE id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_import_candidates VALUES(?,?,?,?,?,?,?,?,?)', tuple(row))
+            elif table == 'workflow_import_candidate_members':
+                rows = snapshot.execute('SELECT * FROM workflow_import_candidate_members WHERE candidate_id=?', params).fetchall()
+                for row in rows:
+                    conn.execute('INSERT OR IGNORE INTO workflow_import_candidate_members VALUES(?,?,?)', tuple(row))
+            else:
+                raise ValueError('unknown import table')
+        copy('workflow_sources', ())
+        copy('workflow_source_details', ())
+        copy('workflow_import_batches', (bid,))
+        copy('workflow_import_files', (bid,))
         # New rows appear in parse order; target records always precede links.
         for rid in new_ids:
-            copy('workflow_source_records', 'id=?', (rid,))
-            copy('workflow_import_metadata', 'record_id=?', (rid,))
-        copy('workflow_import_members', 'batch_id=?', (bid,))
+            copy('workflow_source_records', (rid,))
+            copy('workflow_import_metadata', (rid,))
+        copy('workflow_import_members', (bid,))
         for row in snapshot.execute('''SELECT DISTINCT c.id FROM workflow_import_candidates c
                 JOIN workflow_import_candidate_members cm ON cm.candidate_id=c.id
                 JOIN workflow_import_members m ON m.record_id=cm.ref_id AND cm.ref_type='record' WHERE m.batch_id=?''', (bid,)):
-            copy('workflow_import_candidates', 'id=?', (row[0],))
-            copy('workflow_import_candidate_members', 'candidate_id=?', (row[0],))
+            copy('workflow_import_candidates', (row[0],))
+            copy('workflow_import_candidate_members', (row[0],))
 
     def _legacy_progress(self, job_id, task_id, user_id):
         """F56：三次 legacy 匹配的 95→97 细分打点。

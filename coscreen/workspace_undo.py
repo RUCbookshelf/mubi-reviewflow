@@ -68,7 +68,15 @@ def begin_save(conn: sqlite3.Connection) -> None:
 
 
 def _row(conn: sqlite3.Connection, table: str, key: str) -> list | None:
-    row = conn.execute(f"SELECT {_DECISION_COLUMNS} FROM {table} WHERE zotero_key=?", (key,)).fetchone()
+    # 表名来自模块内固定枚举 _TABLES → 逐条字面量选择（标识符不拼接）。
+    if table == "decisions":
+        row = conn.execute(
+            "SELECT decision,exclusion_reason,notes,tags,screened_at,updated_at "
+            "FROM decisions WHERE zotero_key=?", (key,)).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT decision,exclusion_reason,notes,tags,screened_at,updated_at "
+            "FROM stage2_decisions WHERE zotero_key=?", (key,)).fetchone()
     return list(row) if row else None
 
 
@@ -107,12 +115,15 @@ def snapshot(conn: sqlite3.Connection, stage: str, key: str,
 
 def evidence_snapshot(conn: sqlite3.Connection, key: str, dimensions: list[int] | None = None,
                       *, guard: bool = False) -> dict:
-    from coscreen.coding import _NOTE_COLUMNS, _IMAGE_COLUMNS
     dims = dimensions if dimensions is not None else [r[0] for r in conn.execute('SELECT id FROM coding_dimensions')]
     result = {}
     for dim in sorted(set(dims)):
-        note = conn.execute(f"SELECT {','.join(_NOTE_COLUMNS)} FROM coding_notes WHERE zotero_key=? AND dimension_id=?", (key, dim)).fetchone()
-        images = [list(r) for r in conn.execute(f"SELECT {','.join(_IMAGE_COLUMNS)} FROM coding_note_images WHERE note_id=? ORDER BY id", (note[0],))] if note else []
+        note = conn.execute(
+            "SELECT id,dimension_id,zotero_key,text,created_at,updated_at FROM coding_notes "
+            "WHERE zotero_key=? AND dimension_id=?", (key, dim)).fetchone()
+        images = [list(r) for r in conn.execute(
+            "SELECT id,note_id,path,sha256,ocr_text,ocr_status,created_at FROM coding_note_images "
+            "WHERE note_id=? ORDER BY id", (note[0],))] if note else []
         state = {'note': list(note) if note else None, 'images': images}
         if guard:
             # screen/fulltext 守卫快照：跳过无数据维度，有数据维度只记摘要，
@@ -344,11 +355,20 @@ def _latest(conn: sqlite3.Connection, context: TraceContext, stage: str) -> dict
     # 走只读连接、不经过 begin_save 自愈：旧库缺列时按 PRAGMA 探测回退为不过滤
     # （旧库既有行均视为未 superseded，回退语义安全）。
     columns = {r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
-    superseded = 'AND superseded=0 ' if 'superseded' in columns else ''
-    row = conn.execute(
-        f"SELECT id,zotero_key,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? AND stage=? "
-        f"AND undone=0 {superseded}ORDER BY id DESC LIMIT 1", (context.task_id, str(context.actor_id), stage),
-    ).fetchone()
+    if 'superseded' in columns:
+        row = conn.execute(
+            "SELECT id,zotero_key,before_json,after_json FROM workspace_undo "
+            "WHERE task_id=? AND actor_id=? AND stage=? "
+            "AND undone=0 AND superseded=0 ORDER BY id DESC LIMIT 1",
+            (context.task_id, str(context.actor_id), stage),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id,zotero_key,before_json,after_json FROM workspace_undo "
+            "WHERE task_id=? AND actor_id=? AND stage=? "
+            "AND undone=0 ORDER BY id DESC LIMIT 1",
+            (context.task_id, str(context.actor_id), stage),
+        ).fetchone()
     if not row:
         return None
     canonical = stage == 'coding' and is_submission_evidence(json.loads(row[2]), json.loads(row[3]))
@@ -444,10 +464,14 @@ def _release_request_summaries(conn: sqlite3.Connection, context: TraceContext, 
     覆盖编码表单（workflow_form_requests）与初筛/复筛决策（trace_write_operations）
     两套请求摘要；撤销已使对应业务状态回退，重放旧结果会谎报"保存成功"。"""
     from coscreen.review_workflow import has_table
-    for table in ('workflow_form_requests', 'trace_write_operations'):
-        if has_table(conn, table):
-            conn.execute(f"DELETE FROM {table} WHERE task_id=? AND actor_id=? AND request_id=?",
-                         (context.task_id, str(context.actor_id), request_id))
+    if has_table(conn, 'workflow_form_requests'):
+        conn.execute(
+            "DELETE FROM workflow_form_requests WHERE task_id=? AND actor_id=? AND request_id=?",
+            (context.task_id, str(context.actor_id), request_id))
+    if has_table(conn, 'trace_write_operations'):
+        conn.execute(
+            "DELETE FROM trace_write_operations WHERE task_id=? AND actor_id=? AND request_id=?",
+            (context.task_id, str(context.actor_id), request_id))
 
 
 def _sweep_orphan_request_summaries(conn: sqlite3.Connection, context: TraceContext) -> None:
@@ -545,11 +569,21 @@ def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> di
                 _require_restorable_evidence(db, before['evidence'])
             begin_capture_transaction(conn, context, stage)
             if stage in _TABLES:
-                table = _TABLES[stage]
-                conn.execute(f"DELETE FROM {table} WHERE zotero_key=?", (key,))
-                if before["record"] is not None:
-                    conn.execute(f"INSERT INTO {table}(zotero_key,{_DECISION_COLUMNS}) VALUES(?,?,?,?,?,?,?)",
-                                 (key, *before["record"]))
+                # 表名来自模块内固定枚举 _TABLES → 逐条字面量选择。
+                if stage == 'screen':
+                    conn.execute("DELETE FROM decisions WHERE zotero_key=?", (key,))
+                    if before["record"] is not None:
+                        conn.execute(
+                            "INSERT INTO decisions(zotero_key,decision,exclusion_reason,notes,tags,"
+                            "screened_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                            (key, *before["record"]))
+                else:
+                    conn.execute("DELETE FROM stage2_decisions WHERE zotero_key=?", (key,))
+                    if before["record"] is not None:
+                        conn.execute(
+                            "INSERT INTO stage2_decisions(zotero_key,decision,exclusion_reason,notes,"
+                            "tags,screened_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                            (key, *before["record"]))
                 names = _DECISION_COLUMNS.split(",")
                 capture_event(conn, context, stage=stage, action="decision_undone", subject_id=key,
                               before=dict(zip(names, after["record"])) if after["record"] else None,
@@ -570,16 +604,19 @@ def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> di
                                       after={"value": value[0] if value else ""},
                                       field=_trace_dimension(conn, context, _require_dimension(conn, int(dim))))
                 if 'evidence' in before:
-                    from coscreen.coding import _NOTE_COLUMNS, _IMAGE_COLUMNS
                     for dim, state in before['evidence'].items():
                         note = conn.execute('SELECT id FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (int(dim), key)).fetchone()
                         if note:
                             conn.execute('DELETE FROM coding_note_images WHERE note_id=?', (note[0],))
                             conn.execute('DELETE FROM coding_notes WHERE id=?', (note[0],))
                         if state['note']:
-                            conn.execute(f"INSERT INTO coding_notes({','.join(_NOTE_COLUMNS)}) VALUES(?,?,?,?,?,?)", state['note'])
+                            conn.execute(
+                                "INSERT INTO coding_notes(id,dimension_id,zotero_key,text,created_at,"
+                                "updated_at) VALUES(?,?,?,?,?,?)", state['note'])
                             for image in state['images']:
-                                conn.execute(f"INSERT INTO coding_note_images({','.join(_IMAGE_COLUMNS)}) VALUES(?,?,?,?,?,?,?)", image)
+                                conn.execute(
+                                    "INSERT INTO coding_note_images(id,note_id,path,sha256,ocr_text,"
+                                    "ocr_status,created_at) VALUES(?,?,?,?,?,?,?)", image)
                         # Trace evidence has content hashes, never filesystem paths.
                         def public(value):
                             return {'text': value['note'][3] if value['note'] else '',

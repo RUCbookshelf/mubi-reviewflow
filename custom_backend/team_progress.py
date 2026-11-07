@@ -59,19 +59,44 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 def _screen_progress(conn: sqlite3.Connection, table: str) -> dict[str, object]:
     if not _has_table(conn, "articles"):
         return {"completed": 0, "total": 0, "updated_at": None}
-    scope = (" AND EXISTS(SELECT 1 FROM decisions initial WHERE initial.zotero_key=a.zotero_key "
-             "AND initial.decision IN ('include','maybe'))") if table == 'stage2_decisions' and _has_table(conn, 'decisions') else ''
-    total = int(conn.execute(
-        "SELECT COUNT(*) FROM articles a WHERE is_duplicate_of IS NULL" + scope
-    ).fetchone()[0])
+    # table 只来自固定枚举（decisions / stage2_decisions）；scope 片段是否会追加
+    # 也由固定条件决定，因此各分支各写一条字面量 SQL，不做字符串拼接。
+    scoped = table == 'stage2_decisions' and _has_table(conn, 'decisions')
+    if scoped:
+        total = int(conn.execute(
+            "SELECT COUNT(*) FROM articles a WHERE is_duplicate_of IS NULL "
+            "AND EXISTS(SELECT 1 FROM decisions initial WHERE initial.zotero_key=a.zotero_key "
+            "AND initial.decision IN ('include','maybe'))"
+        ).fetchone()[0])
+    else:
+        total = int(conn.execute(
+            "SELECT COUNT(*) FROM articles a WHERE is_duplicate_of IS NULL"
+        ).fetchone()[0])
     if not _has_table(conn, table):
         return {"completed": 0, "total": total, "updated_at": None}
-    completed, updated_at = conn.execute(
-        f"SELECT COUNT(*), MAX(d.updated_at) FROM {table} d "
-        "JOIN articles a ON a.zotero_key=d.zotero_key "
-        "WHERE a.is_duplicate_of IS NULL AND d.decision IN (?, ?, ?)" + scope,
-        tuple(config.DECISIONS),
-    ).fetchone()
+    if scoped:
+        completed, updated_at = conn.execute(
+            "SELECT COUNT(*), MAX(d.updated_at) FROM stage2_decisions d "
+            "JOIN articles a ON a.zotero_key=d.zotero_key "
+            "WHERE a.is_duplicate_of IS NULL AND d.decision IN (?, ?, ?) "
+            "AND EXISTS(SELECT 1 FROM decisions initial WHERE initial.zotero_key=a.zotero_key "
+            "AND initial.decision IN ('include','maybe'))",
+            tuple(config.DECISIONS),
+        ).fetchone()
+    elif table == 'stage2_decisions':
+        completed, updated_at = conn.execute(
+            "SELECT COUNT(*), MAX(d.updated_at) FROM stage2_decisions d "
+            "JOIN articles a ON a.zotero_key=d.zotero_key "
+            "WHERE a.is_duplicate_of IS NULL AND d.decision IN (?, ?, ?)",
+            tuple(config.DECISIONS),
+        ).fetchone()
+    else:
+        completed, updated_at = conn.execute(
+            "SELECT COUNT(*), MAX(d.updated_at) FROM decisions d "
+            "JOIN articles a ON a.zotero_key=d.zotero_key "
+            "WHERE a.is_duplicate_of IS NULL AND d.decision IN (?, ?, ?)",
+            tuple(config.DECISIONS),
+        ).fetchone()
     return {"completed": int(completed), "total": total, "updated_at": updated_at}
 
 

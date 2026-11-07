@@ -570,9 +570,17 @@ def _snapshot_stage(conn: sqlite3.Connection, context: TraceContext, stage: str)
     data_tables = {"screen": "decisions", "fulltext": "stage2_decisions"}
     table = data_tables.get(stage)
     if table and _table_exists(conn, table):
-        for row in conn.execute(
-            f"SELECT zotero_key,decision,exclusion_reason,notes,tags,screened_at FROM {table} ORDER BY zotero_key"
-        ):
+        if stage == "screen":
+            snapshot_rows = conn.execute(
+                "SELECT zotero_key,decision,exclusion_reason,notes,tags,screened_at "
+                "FROM decisions ORDER BY zotero_key"
+            )
+        else:
+            snapshot_rows = conn.execute(
+                "SELECT zotero_key,decision,exclusion_reason,notes,tags,screened_at "
+                "FROM stage2_decisions ORDER BY zotero_key"
+            )
+        for row in snapshot_rows:
             _insert_event(
                 conn, task_id=context.task_id, actor_id=str(context.actor_id), stage=stage,
                 action="baseline_decision", subject_id=str(row[0]), before=None,
@@ -724,8 +732,7 @@ def update_settings(
     own_transaction = not conn.in_transaction
     if own_transaction:
         conn.execute("BEGIN IMMEDIATE")
-    savepoint = "trace_settings_change"
-    conn.execute(f"SAVEPOINT {savepoint}")
+    conn.execute("SAVEPOINT trace_settings_change")
     try:
         prior_op = conn.execute(
             "SELECT payload_sha256,result_json FROM trace_operations WHERE task_id=? AND actor_id=? AND operation_id=?",
@@ -735,7 +742,7 @@ def update_settings(
             if prior_op[0] != payload_sha:
                 raise TraceConflict("operation ID was already used with different settings")
             result = json.loads(prior_op[1])
-            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            conn.execute("RELEASE SAVEPOINT trace_settings_change")
             if own_transaction:
                 conn.commit()
             return result
@@ -786,13 +793,13 @@ def update_settings(
             "VALUES(?,?,?,?,?)",
             (context.task_id, str(context.actor_id), operation_id, payload_sha, _json(next_settings)),
         )
-        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        conn.execute("RELEASE SAVEPOINT trace_settings_change")
         if own_transaction:
             conn.commit()
         return next_settings
     except Exception:
-        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        conn.execute("ROLLBACK TO SAVEPOINT trace_settings_change")
+        conn.execute("RELEASE SAVEPOINT trace_settings_change")
         if own_transaction:
             conn.rollback()
         raise
@@ -821,8 +828,7 @@ def clear_history(
     if own_transaction:
         conn.execute("BEGIN IMMEDIATE")
     payload_sha = hashlib.sha256(_json({"expected_version": expected_version}).encode()).hexdigest()
-    savepoint = "trace_history_clear"
-    conn.execute(f"SAVEPOINT {savepoint}")
+    conn.execute("SAVEPOINT trace_history_clear")
     try:
         old_op = conn.execute(
             "SELECT payload_sha256,result_json FROM trace_clear_operations "
@@ -833,7 +839,7 @@ def clear_history(
             if old_op[0] != payload_sha:
                 raise TraceConflict("clear operation ID was already used with different settings")
             result = json.loads(old_op[1])
-            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            conn.execute("RELEASE SAVEPOINT trace_history_clear")
             if own_transaction:
                 conn.commit()
             return result
@@ -851,11 +857,22 @@ def clear_history(
         # Request receipts may contain the first successful response and a body
         # digest. They are trace data too, so a history clear removes them along
         # with field snapshots and prior settings/clear operation receipts.
-        for table in ("trace_operations", "trace_write_operations", "trace_field_lifecycles", "trace_clear_operations"):
-            conn.execute(
-                f"DELETE FROM {table} WHERE task_id=? AND actor_id=?",
-                (context.task_id, str(context.actor_id)),
-            )
+        conn.execute(
+            "DELETE FROM trace_operations WHERE task_id=? AND actor_id=?",
+            (context.task_id, str(context.actor_id)),
+        )
+        conn.execute(
+            "DELETE FROM trace_write_operations WHERE task_id=? AND actor_id=?",
+            (context.task_id, str(context.actor_id)),
+        )
+        conn.execute(
+            "DELETE FROM trace_field_lifecycles WHERE task_id=? AND actor_id=?",
+            (context.task_id, str(context.actor_id)),
+        )
+        conn.execute(
+            "DELETE FROM trace_clear_operations WHERE task_id=? AND actor_id=?",
+            (context.task_id, str(context.actor_id)),
+        )
         now = _now()
         version = previous["version"] + 1
         conn.execute(
@@ -892,13 +909,13 @@ def clear_history(
             "VALUES(?,?,?,?,?)",
             (context.task_id, str(context.actor_id), operation_id, payload_sha, _json(result)),
         )
-        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        conn.execute("RELEASE SAVEPOINT trace_history_clear")
         if own_transaction:
             conn.commit()
         return result
     except Exception:
-        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        conn.execute("ROLLBACK TO SAVEPOINT trace_history_clear")
+        conn.execute("RELEASE SAVEPOINT trace_history_clear")
         if own_transaction:
             conn.rollback()
         raise
@@ -1024,13 +1041,17 @@ def list_events(
     if until is not None:
         clauses.append("recorded_at<=?")
         args.append(until)
-    query = (
-        "SELECT sequence,event_id,store_id,task_id,actor_id,stage,action,subject_id,before_json,after_json,field_json,"
-        "source,source_record_id,source_revision_id,batch_id,request_id,recorded_at,schema_version,app_version,origin_store_id,"
-        "origin_event_id,origin_sequence,origin_actor_id,imported_at,origin_alias,origin_json,origin_sha256 "
-        "FROM trace_events WHERE " + " AND ".join(clauses) + " ORDER BY sequence LIMIT ?"
+    cur = conn.execute(
+        "".join((
+            "SELECT sequence,event_id,store_id,task_id,actor_id,stage,action,subject_id,before_json,after_json,field_json,",
+            "source,source_record_id,source_revision_id,batch_id,request_id,recorded_at,schema_version,app_version,origin_store_id,",
+            "origin_event_id,origin_sequence,origin_actor_id,imported_at,origin_alias,origin_json,origin_sha256 ",
+            "FROM trace_events WHERE ",
+            " AND ".join(clauses),
+            " ORDER BY sequence LIMIT ?",
+        )),
+        (*args, limit + 1),
     )
-    cur = conn.execute(query, (*args, limit + 1))
     rows = cur.fetchall()
     more = len(rows) > limit
     rows = rows[:limit]
@@ -1068,10 +1089,14 @@ def recent_events(
         clauses.append("stage=?")
         args.append(stage)
     cur = conn.execute(
-        "SELECT sequence,event_id,store_id,task_id,actor_id,stage,action,subject_id,before_json,after_json,field_json,"
-        "source,source_record_id,source_revision_id,batch_id,request_id,recorded_at,schema_version,app_version,origin_store_id,"
-        "origin_event_id,origin_sequence,origin_actor_id,imported_at,origin_alias,origin_json,origin_sha256 "
-        "FROM trace_events WHERE " + " AND ".join(clauses) + " ORDER BY sequence DESC LIMIT ?",
+        "".join((
+            "SELECT sequence,event_id,store_id,task_id,actor_id,stage,action,subject_id,before_json,after_json,field_json,",
+            "source,source_record_id,source_revision_id,batch_id,request_id,recorded_at,schema_version,app_version,origin_store_id,",
+            "origin_event_id,origin_sequence,origin_actor_id,imported_at,origin_alias,origin_json,origin_sha256 ",
+            "FROM trace_events WHERE ",
+            " AND ".join(clauses),
+            " ORDER BY sequence DESC LIMIT ?",
+        )),
         (*args, limit),
     )
     return [_event_from_row(cur, row) for row in cur.fetchall()]
@@ -1137,17 +1162,29 @@ def subject_ids(
         raise ValueError("kind must be touched or modified")
     task, actor = _text(task_id, "task_id", 200), _text(str(actor_id), "actor_id", 200)
     cutoff = snapshot_cutoff(conn, task, actor) if snapshot_sequence is None else snapshot_sequence
-    action_filter = _RESEARCH_ACTION_SQL
     if kind == "modified":
-        action_filter = (
-            f"({_MODIFIED_ACTION_SQL} OR action LIKE 'imported_%_changed' "
-            "OR action LIKE 'imported_%_cleared' OR action LIKE 'imported_%_removed')"
+        rows = conn.execute(
+            "SELECT DISTINCT subject_id FROM trace_events WHERE task_id=? AND actor_id=? "
+            "AND stage IN ('screen','fulltext','coding') AND sequence<=? AND "
+            "((action LIKE '%_changed' OR action LIKE '%_cleared' OR action LIKE '%_removed') "
+            "OR action LIKE 'imported_%_changed' OR action LIKE 'imported_%_cleared' "
+            "OR action LIKE 'imported_%_removed') ORDER BY subject_id",
+            (task, actor, cutoff),
         )
-    rows = conn.execute(
-        "SELECT DISTINCT subject_id FROM trace_events WHERE task_id=? AND actor_id=? "
-        "AND stage IN ('screen','fulltext','coding') AND sequence<=? AND " + action_filter +
-        " ORDER BY subject_id", (task, actor, cutoff),
-    )
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT subject_id FROM trace_events WHERE task_id=? AND actor_id=? "
+            "AND stage IN ('screen','fulltext','coding') AND sequence<=? AND "
+            "(action LIKE 'decision_%' OR action LIKE 'coding_value_%' "
+            "OR action LIKE 'coding_note_%' OR action LIKE 'coding_image_%' "
+            "OR action LIKE 'coding_note_image_%' OR action LIKE 'rater_record_%' "
+            "OR action LIKE 'fulltext_%' OR action LIKE 'report_evidence_%' "
+            "OR action LIKE 'imported_decision_%' OR action LIKE 'imported_fulltext_%' "
+            "OR action LIKE 'imported_coding_value_%' OR action LIKE 'imported_coding_note_%' "
+            "OR action LIKE 'imported_coding_image_%' OR action LIKE 'imported_coding_note_image_%' "
+            "OR action LIKE 'imported_rater_record_%') ORDER BY subject_id",
+            (task, actor, cutoff),
+        )
     return [str(row[0]) for row in rows]
 
 
@@ -1178,8 +1215,11 @@ def summary(
             f"COUNT(DISTINCT CASE WHEN stage='{stage}' AND {_RESEARCH_ACTION_SQL} THEN subject_id END)",
         ))
     row = conn.execute(
-        "SELECT " + ",".join(aggregates) +
-        " FROM trace_events WHERE task_id=? AND actor_id=? AND sequence<=?",
+        "".join((
+            "SELECT ",
+            ",".join(aggregates),
+            " FROM trace_events WHERE task_id=? AND actor_id=? AND sequence<=?",
+        )),
         (task, actor, cutoff),
     ).fetchone()
     touched_count, modified_count, field_change_count = int(row[5] or 0), int(row[6] or 0), int(row[7] or 0)
@@ -1191,10 +1231,14 @@ def summary(
         change_count += event_count
     daily_map: dict[str, dict[str, Any]] = {}
     for day, stage, count, distinct in conn.execute(
-        "SELECT substr(recorded_at,1,10),stage,COUNT(*),COUNT(DISTINCT subject_id) "
-        "FROM trace_events WHERE task_id=? AND actor_id=? AND stage IN ('screen','fulltext','coding') "
-        "AND sequence<=? AND " + _RESEARCH_ACTION_SQL + " GROUP BY substr(recorded_at,1,10),stage "
-        "ORDER BY substr(recorded_at,1,10),stage", (task, actor, cutoff),
+        "".join((
+            "SELECT substr(recorded_at,1,10),stage,COUNT(*),COUNT(DISTINCT subject_id) ",
+            "FROM trace_events WHERE task_id=? AND actor_id=? AND stage IN ('screen','fulltext','coding') ",
+            "AND sequence<=? AND ",
+            _RESEARCH_ACTION_SQL,
+            " GROUP BY substr(recorded_at,1,10),stage ",
+            "ORDER BY substr(recorded_at,1,10),stage",
+        )), (task, actor, cutoff),
     ):
         daily = daily_map.setdefault(day, {"date": day, "event_count": 0, "unique_subject_count": 0, "by_stage": {}})
         daily["event_count"] += int(count)
@@ -1204,9 +1248,13 @@ def summary(
     # document may change in several stages on one day. This keeps Python memory
     # bounded even when the event log reaches a million rows.
     for day, distinct in conn.execute(
-        "SELECT substr(recorded_at,1,10),COUNT(DISTINCT subject_id) FROM trace_events "
-        "WHERE task_id=? AND actor_id=? AND stage IN ('screen','fulltext','coding') "
-        "AND sequence<=? AND " + _RESEARCH_ACTION_SQL + " GROUP BY substr(recorded_at,1,10)",
+        "".join((
+            "SELECT substr(recorded_at,1,10),COUNT(DISTINCT subject_id) FROM trace_events ",
+            "WHERE task_id=? AND actor_id=? AND stage IN ('screen','fulltext','coding') ",
+            "AND sequence<=? AND ",
+            _RESEARCH_ACTION_SQL,
+            " GROUP BY substr(recorded_at,1,10)",
+        )),
         (task, actor, cutoff),
     ):
         if day in daily_map:

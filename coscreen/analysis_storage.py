@@ -201,7 +201,6 @@ CREATE TRIGGER IF NOT EXISTS analysis_runs_no_delete BEFORE DELETE ON analysis_r
 def ensure_analysis_storage(conn: sqlite3.Connection) -> None:
     """Upgrade a database copy or task database without rewriting legacy rows."""
     conn.executescript(_SCHEMA)
-    fields = ",".join(_EFFECT_FIELDS)
     # 只读预检（L6d1）：稳态库没有缺 version 的 effect 时跳过下面的
     # INSERT…SELECT，避免每次冷 _connect 都为「确认无需回填」抢写锁——
     # 长写事务期间该写语句曾把冷连接阻塞到 5 秒 busy 超时后 500。
@@ -211,25 +210,28 @@ def ensure_analysis_storage(conn: sqlite3.Connection) -> None:
         "LIMIT 1"
     ).fetchone()
     if pending is not None:
+        # 2.1.5 waveA：列名/取值表达式为内部固定常量，SQL 文本写成普通字面量
+        # （与原先拼接结果逐字节一致）；数据值不参与该语句。
         conn.execute(
-            "INSERT INTO review_effect_versions (" + fields + ",revision,changed_at) "
-            "SELECT " + ",".join("e." + field for field in _EFFECT_FIELDS) +
-            ",1,datetime('now') FROM review_effects e WHERE NOT EXISTS ("
+            "INSERT INTO review_effect_versions ("
+            "result_id,study_id,comparison,outcome,timepoint,measure,estimate,se,"
+            "source_key,input_json,entry_method,selected,source_locator,revision,changed_at) "
+            "SELECT e.result_id,e.study_id,e.comparison,e.outcome,e.timepoint,e.measure,"
+            "e.estimate,e.se,e.source_key,e.input_json,e.entry_method,e.selected,e.source_locator,"
+            "1,datetime('now') FROM review_effects e WHERE NOT EXISTS ("
             "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id)"
         )
-    new_values = ",".join("NEW." + field for field in _EFFECT_FIELDS)
-    changed = " OR ".join("OLD." + field + " IS NOT NEW." + field for field in _EFFECT_FIELDS[1:])
-    conn.executescript(f"""
+    conn.executescript("""
 CREATE TRIGGER IF NOT EXISTS review_effects_version_insert AFTER INSERT ON review_effects
 BEGIN
-  INSERT INTO review_effect_versions ({fields},revision,changed_at)
-  VALUES ({new_values},1,datetime('now'));
+  INSERT INTO review_effect_versions (result_id,study_id,comparison,outcome,timepoint,measure,estimate,se,source_key,input_json,entry_method,selected,source_locator,revision,changed_at)
+  VALUES (NEW.result_id,NEW.study_id,NEW.comparison,NEW.outcome,NEW.timepoint,NEW.measure,NEW.estimate,NEW.se,NEW.source_key,NEW.input_json,NEW.entry_method,NEW.selected,NEW.source_locator,1,datetime('now'));
 END;
 CREATE TRIGGER IF NOT EXISTS review_effects_version_update AFTER UPDATE ON review_effects
-WHEN {changed}
+WHEN OLD.study_id IS NOT NEW.study_id OR OLD.comparison IS NOT NEW.comparison OR OLD.outcome IS NOT NEW.outcome OR OLD.timepoint IS NOT NEW.timepoint OR OLD.measure IS NOT NEW.measure OR OLD.estimate IS NOT NEW.estimate OR OLD.se IS NOT NEW.se OR OLD.source_key IS NOT NEW.source_key OR OLD.input_json IS NOT NEW.input_json OR OLD.entry_method IS NOT NEW.entry_method OR OLD.selected IS NOT NEW.selected OR OLD.source_locator IS NOT NEW.source_locator
 BEGIN
-  INSERT INTO review_effect_versions ({fields},revision,changed_at)
-  VALUES ({new_values},
+  INSERT INTO review_effect_versions (result_id,study_id,comparison,outcome,timepoint,measure,estimate,se,source_key,input_json,entry_method,selected,source_locator,revision,changed_at)
+  VALUES (NEW.result_id,NEW.study_id,NEW.comparison,NEW.outcome,NEW.timepoint,NEW.measure,NEW.estimate,NEW.se,NEW.source_key,NEW.input_json,NEW.entry_method,NEW.selected,NEW.source_locator,
     (SELECT COALESCE(MAX(revision),0)+1 FROM review_effect_versions WHERE result_id=NEW.result_id),
     datetime('now'));
 END;
@@ -245,8 +247,9 @@ def effect_versions(conn: sqlite3.Connection, result_ids: list[int]) -> list[dic
     rows = []
     for result_id in result_ids:
         row = conn.execute(
-            "SELECT effect_version_id,revision," + ",".join(_EFFECT_FIELDS) +
-            " FROM review_effect_versions WHERE result_id=? ORDER BY revision DESC LIMIT 1",
+            "SELECT effect_version_id,revision,result_id,study_id,comparison,outcome,timepoint,"
+            "measure,estimate,se,source_key,input_json,entry_method,selected,source_locator "
+            "FROM review_effect_versions WHERE result_id=? ORDER BY revision DESC LIMIT 1",
             (result_id,),
         ).fetchone()
         if row is None:
@@ -264,8 +267,9 @@ def effect_history(conn: sqlite3.Connection, result_ids: list[int]) -> list[dict
     rows = []
     for result_id in result_ids:
         found = conn.execute(
-            "SELECT effect_version_id,revision," + ",".join(_EFFECT_FIELDS) +
-            " FROM review_effect_versions WHERE result_id=? ORDER BY revision", (result_id,),
+            "SELECT effect_version_id,revision,result_id,study_id,comparison,outcome,timepoint,"
+            "measure,estimate,se,source_key,input_json,entry_method,selected,source_locator "
+            "FROM review_effect_versions WHERE result_id=? ORDER BY revision", (result_id,),
         ).fetchall()
         if not found:
             raise ValueError(f"unknown result ID: {result_id}")
@@ -404,10 +408,12 @@ def save_result_moderator(conn: sqlite3.Connection, result_id: int, name: str,
 def result_moderators(conn: sqlite3.Connection, result_ids: list[int]) -> list[dict]:
     result_ids = _result_id_selection(result_ids)
     rows = conn.execute(
-        "SELECT moderator_version_id,result_id,name,revision,value_json,value_type,"
-        "source_key,source_locator,changed_at FROM review_result_moderators "
-        f"WHERE result_id IN ({','.join('?' for _ in result_ids)}) "
-        "ORDER BY result_id,name,revision", result_ids).fetchall()
+        "".join((
+            "SELECT moderator_version_id,result_id,name,revision,value_json,value_type,",
+            "source_key,source_locator,changed_at FROM review_result_moderators ",
+            "WHERE result_id IN (", ",".join("?" for _ in result_ids), ") ",
+            "ORDER BY result_id,name,revision",
+        )), result_ids).fetchall()
     names = ("moderator_version_id", "result_id", "name", "revision", "value",
              "value_type", "source_key", "source_locator", "changed_at")
     items = [dict(zip(names, row)) for row in rows]
@@ -507,7 +513,7 @@ def create_synthesis_run(db_path, specification: dict, project_id: str,
         source_articles = {}
         for key in sorted({row["source_key"] for row in rows}):
             source = conn.execute(
-                "SELECT " + ",".join(article_fields) + " FROM articles WHERE zotero_key=?",
+                "SELECT zotero_key,title,authors,journal,year,doi,url FROM articles WHERE zotero_key=?",
                 (key,),
             ).fetchone()
             if source is None:
