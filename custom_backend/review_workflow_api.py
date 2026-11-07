@@ -514,10 +514,25 @@ class WorkflowRuntime:
                                               "workflow_settings": self.settings(ctx)})
             yield ctx
 
-    def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str) -> None:
-        if decision == "maybe" and not store.settings(ctx.owner_db)["stages"][stage].get("show_maybe", True):
-            raise HTTPException(409, {"code": "maybe_disabled", "version": store.settings(ctx.owner_db)["version"],
+    def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str,
+                    key: str | None = None, *, db: Path | None = None) -> None:
+        """任务级 show_maybe 与「暂不确定只在初筛第一轮」的写闸门。
+
+        ``key``/``db`` 是本次实际写入的文献与筛选员库：只要该文献进过该筛选员
+        任一复筛轮次快照（active/closed/released），初筛的 maybe 一律 409。
+        复筛（fulltext）不传 key，行为完全不变；撤销/回导不是本闸门路径。
+        """
+        if decision != "maybe":
+            return
+        state = store.settings(ctx.owner_db)
+        if not state["stages"][stage].get("show_maybe", True):
+            raise HTTPException(409, {"code": "maybe_disabled", "version": state["version"],
                                       "workflow_settings": self.settings(ctx)})
+        if stage == "screen" and key is not None:
+            if key in screening_rounds.snapshot_keys(db or ctx.actor_db):
+                raise HTTPException(409, {"code": "maybe_first_round_only",
+                                          "version": state["version"],
+                                          "workflow_settings": self.settings(ctx)})
 
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
         """Current owner requirements apply to every actor's current saved evidence."""
@@ -627,10 +642,15 @@ class WorkflowRuntime:
                                               'required': mapped.get(dim['id']) in required,
                                               'writable': dim['id'] in mapped and reason is None}
                                              for dim in coding_evidence.field_rows(ctx.actor_db)]}
+            # 初筛：「暂不确定」只在第一轮（该文献从未进过本人任一复筛轮次快照）。
+            # 全文保持不变，恒为 True。
+            maybe_allowed = (stage != 'screen'
+                             or key not in screening_rounds.snapshot_keys(ctx.actor_db))
             return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
                     **(self.evidence_state(ctx, key) if stage == 'coding' else {}),
                     **submission,
                     "writable": reason is None, "reason": reason,
+                    "maybe_allowed": maybe_allowed,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 
     @staticmethod

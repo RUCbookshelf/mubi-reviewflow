@@ -58,29 +58,57 @@ settings=call('GET',base+'/workflow-settings')
 assert {s['name'] for s in settings['sources']}=={'01-Wiley.ris'},settings
 call('POST',base+'/import',files={'file':('01-Wiley.ris',first.encode(),'application/x-research-info-systems')})
 assert len(call('GET',base+'/workflow-settings')['sources'])==1
+# 第 2～5 轮各用一条「只在当轮才变成暂不确定」的文献推进轮次（从未进过
+# 轮次快照 → 仍算第一轮，可存 maybe）。每条用独立来源文件：同一来源的
+# 后续导入会因元数据核验暂存而不进入筛选队列。
+fresh_titles={2:'Ocean acidification trial',3:'Urban transit cohort',4:'Vaccine hesitancy survey',5:'Soil carbon experiment'}
+fresh_sources={2:'02-fresh2.ris',3:'03-fresh3.ris',4:'04-fresh4.ris',5:'05-fresh5.ris'}
+for n in (2,3,4,5):
+    call('POST',base+'/import',files={'file':(fresh_sources[n],ris(f'fresh{n}',fresh_titles[n],'',f'10.1234/fresh{n}').encode(),'application/x-research-info-systems')})
+assert {s['name'] for s in call('GET',base+'/workflow-settings')['sources']}=={'01-Wiley.ris',*fresh_sources.values()}
 for key in ('one','two'):call('POST',base+'/decisions',json={'zotero_key':key,'decision':'maybe'})
 assert len(call('GET',base+'/work-queue/fulltext')['queue'])==2
+assert call('GET',base+'/work-items/screen/one')['maybe_allowed'] is True
 version=call('GET',base+'/workflow-settings')['version']
+# 第 1 轮可存 maybe；把 two 与后续轮次候选先定为 include，使每个复筛轮次
+# 恰好从「原 maybe 文献 one + 当轮候选」开始；候选在进入轮次前从未出现在
+# 任何快照里，因此仍可存 maybe（第一轮语义）。
+call('POST',base+'/decisions',json={'zotero_key':'two','decision':'include'})
+for n in (2,3,4,5):
+    call('POST',base+'/decisions',json={'zotero_key':f'fresh{n}','decision':'include'})
 for number in (2,3,4,5):
+    fresh=f'fresh{number}'
+    call('POST',base+'/decisions',json={'zotero_key':fresh,'decision':'maybe'})
     round=call('POST',base+'/screening-rounds',json={'action':'start','expected_policy_version':version})
     assert round['screening_round']['number']==number,round
-    assert set(round['screening_round']['pending_keys'])=={'one','two'}
-    assert not call('GET',base+'/work-queue/fulltext')['queue']
+    assert set(round['screening_round']['pending_keys'])=={'one',fresh},round
+    held={row['zotero_key'] for row in call('GET',base+'/work-queue/fulltext')['queue']}
+    assert 'one' not in held and fresh not in held,held
+    assert call('GET',base+'/work-items/screen/'+fresh)['maybe_allowed'] is False
+    # 新裁定：第 2～5 轮 maybe 被 409 拒绝，决定保持原样（旧钉：可重存 maybe）。
+    refused=client.post(base+'/decisions',json={'zotero_key':'one','decision':'maybe'})
+    assert refused.status_code==409,refused.text
+    detail=refused.json()['detail']
+    assert detail['code']=='maybe_first_round_only',detail
+    assert detail['version']==version,detail
+    assert detail['workflow_settings']['version']==version,detail
+    assert {r['zotero_key']:r['decision'] for r in call('GET',base+'/decisions')['decisions']}['one']=='maybe'
+    # 轮次把 maybe 文献扣留在全文筛选之外（后端直写同样被拒）。
     refused=client.post(base+'/stage2/decisions',json={'zotero_key':'one','decision':'include'})
     assert refused.status_code==409,refused.text
-    # Round progress is a fingerprint diff and updated_at has second granularity
-    # (coscreen/screening_rounds.py:28): an identical re-decision in the same
-    # wall-clock second as the round-start snapshot does not count as progress.
-    # Space the re-decision like a real screener would.
+    # 轮次进度仍用 include/exclude 推进（不再是重存 maybe）。
+    # 指纹更新有秒粒度：与轮次开始同一秒的重复决定不算进度，按真实用户节奏留间隔。
     time.sleep(1.1)
-    for key in ('one','two'):call('POST',base+'/decisions',json={'zotero_key':key,'decision':'maybe'})
+    call('POST',base+'/decisions',json={'zotero_key':fresh,'decision':'include' if number%2==0 else 'exclude'})
     queue=call('GET',base+'/work-queue/screen?order=random')
-    assert queue['screening_round']['pending_keys']==[],queue
-    assert queue['scope_progress']['completed']==2
-call('POST',base+'/screening-rounds',json={'action':'finish','expected_policy_version':version})
-assert len(call('GET',base+'/work-queue/fulltext')['queue'])==2
-saved=call('GET',base+'/decisions')['decisions']
-assert all(row['decision']=='maybe' for row in saved)
+    assert queue['screening_round']['pending_keys']==['one'],queue
+    assert queue['scope_progress']=={'total':2,'completed':1,'pending':1},queue['scope_progress']
+    call('POST',base+'/screening-rounds',json={'action':'finish','expected_policy_version':version})
+    # finish 后原 maybe 决定未被改写，仍可进入全文筛选。
+    assert 'one' in {row['zotero_key'] for row in call('GET',base+'/work-queue/fulltext')['queue']}
+saved={row['zotero_key']:row['decision'] for row in call('GET',base+'/decisions')['decisions']}
+assert saved['one']=='maybe',saved
+assert saved['two']=='include',saved
 assert client.post(base+'/screening-rounds',json={'action':'start','expected_policy_version':version-1}).status_code==409
 
 # Undo restores the round's pending item, rather than treating it as reviewed.
@@ -96,12 +124,18 @@ call('POST',base+'/screening-rounds',json={'action':'finish','expected_policy_ve
 member=call('POST','/api/auth/register',json={'username':'preview.member','password':'DisposableValidation2026!'})
 call('POST',base+'/collaboration/invite',json={'username':'preview.member','role':'coder'})
 client.headers['Authorization']='Bearer '+member['token']
+# 成员库经共享目录同步也包含后续导入的文献：先把非 maybe 的行定完，
+# 使成员自己的轮次只快照 one/two。
+for key in ('fresh2','fresh3','fresh4','fresh5'):
+    call('POST',base+'/decisions',json={'zotero_key':key,'decision':'include'})
 for key in ('one','two'):call('POST',base+'/decisions',json={'zotero_key':key,'decision':'maybe'})
+assert call('GET',base+'/work-items/screen/one')['maybe_allowed'] is True
 mversion=call('GET',base+'/workflow-settings')['version']
 call('POST',base+'/screening-rounds',json={'action':'start','expected_policy_version':mversion})
-assert not call('GET',base+'/work-queue/fulltext')['queue']
+assert call('GET',base+'/work-items/screen/one')['maybe_allowed'] is False
+assert not ({'one','two'} & {row['zotero_key'] for row in call('GET',base+'/work-queue/fulltext')['queue']})
 client.headers['Authorization']='Bearer '+owner['token']
-assert len(call('GET',base+'/work-queue/fulltext')['queue'])==2
+assert {'one','two'} <= {row['zotero_key'] for row in call('GET',base+'/work-queue/fulltext')['queue']}
 assert call('GET',base+'/work-queue/screen')['screening_round'] is None
 client.headers['Authorization']='Bearer '+member['token']
 call('POST',base+'/screening-rounds',json={'action':'finish','expected_policy_version':mversion})
@@ -124,7 +158,8 @@ import_sources.migrate(db)
 with closing(wf.connect(db)) as conn:
     assert before==[tuple(r) for r in conn.execute('SELECT * FROM decisions ORDER BY zotero_key')]
     names=[r[0] for r in conn.execute("SELECT name FROM workflow_sources WHERE id IN (SELECT source_id FROM workflow_source_records)")]
-    assert names==['01-Wiley.ris'],names
+    # 文件名来源：旧元数据名不得回潮，且不存在 Unassigned/元数据推断名。
+    assert set(names)=={'01-Wiley.ris',*fresh_sources.values()},names
     new=conn.execute("SELECT id,active FROM workflow_sources WHERE name='01-Wiley.ris'").fetchone()
     assert new['active']==0
 with closing(wf.connect(db)) as conn,conn:
