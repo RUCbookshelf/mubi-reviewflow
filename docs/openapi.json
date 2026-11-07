@@ -933,6 +933,19 @@
         "title": "CollaborationInviteIn",
         "type": "object"
       },
+      "CollaborationMemberScreeningIn": {
+        "properties": {
+          "screening_enabled": {
+            "title": "Screening Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "screening_enabled"
+        ],
+        "title": "CollaborationMemberScreeningIn",
+        "type": "object"
+      },
       "CollaborationRebindIn": {
         "properties": {
           "confirm": {
@@ -20904,6 +20917,83 @@
         "summary": "Collaboration Invite"
       }
     },
+    "/api/tasks/{task_id}/collaboration/members/{target_user_id}/screening": {
+      "put": {
+        "description": "负责人按成员开关裁决员的初筛/复筛参与权（R2）。\n\n仅属主可写（`_collaboration_owner_store`：非属主 403、desktop 404、\nlegacy 409）；目标无 reconciler 授权 -> 400。写操作留痕（updated_by/\nupdated_at）。异常口径对齐协作模块：锁/读失败 503、永久损坏交全局处理器。",
+        "operationId": "collaboration_set_member_screening_api_tasks__task_id__collaboration_members__target_user_id__screening_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "target_user_id",
+            "required": true,
+            "schema": {
+              "title": "Target User Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollaborationMemberScreeningIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Collaboration Set Member Screening Api Tasks  Task Id  Collaboration Members  Target User Id  Screening Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Collaboration Set Member Screening"
+      }
+    },
     "/api/tasks/{task_id}/collaboration/rebind": {
       "post": {
         "description": "属主修复入口（R6-C2/#31）：legacy（无属主记录）任务由历史参与者重新\n登记协作属主，恢复 server 模式下的管理权（改名/归档/删除/协作管理）。\n\n授权口径：协作库无属主记录时无法核验历史属主，以参与证据代替\n（_probable_task_participant）；能在服务器上通过该闸门的即该任务的历史\n参与者（创建者恒在 task.json screeners 登记内）。desktop 模式 legacy 任务\n本就可管理，不开放（404，与协作管理端点同口径）。已有属主/重复认领 409；\n撞保留名的账号不得成为属主（其个人库路径与协作库同文件，#29 同根）。",
@@ -25613,6 +25703,7 @@
     },
     "/api/tasks/{task_id}/screening-arbitrations": {
       "post": {
+        "description": "上传 2-9 份决策 CSV 保存仲裁记录（离线流程，行为原样保留）。\n\n服务器来源的保存走 ``POST .../screening-arbitrations/server-save``：\n不重传文件，由后端从任务目录现取合并表。",
         "operationId": "save_screening_arbitration_api_tasks__task_id__screening_arbitrations_post",
         "parameters": [
           {
@@ -25747,6 +25838,136 @@
           }
         },
         "summary": "Latest Screening Arbitration"
+      }
+    },
+    "/api/tasks/{task_id}/screening-arbitrations/server-merge": {
+      "get": {
+        "description": "联网团队模式：一键读取任务目录内全部筛选员的决策，直接进入 κ+冲突仲裁。\n\n- 权限与保存端点同口径（属主或 consensus:write 裁决员；legacy 409）。\n- 双盲守卫：team 任务且任一阶段未暂停 -> 409；响应只有引导文案，绝不含\n  任何成员判定内容。\n- 返回体与 POST /api/merge/decisions 完全同形（前端复用同一渲染）。\n- 仅服务器模式开放（desktop/离线团队协作入口 404，CSV 上传流程保留）。",
+        "operationId": "server_merge_screening_arbitration_api_tasks__task_id__screening_arbitrations_server_merge_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "default": "stage1",
+              "enum": [
+                "stage1",
+                "stage2"
+              ],
+              "title": "Stage",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Server Merge Screening Arbitration Api Tasks  Task Id  Screening Arbitrations Server Merge Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Server Merge Screening Arbitration"
+      }
+    },
+    "/api/tasks/{task_id}/screening-arbitrations/server-save": {
+      "post": {
+        "description": "服务器来源的仲裁保存（R1）：只接受 JSON，合表由后端现取。\n\n请求体 ``{stage, resolutions, server_source: true}``；缺少服务器来源标记\n或形状不符一律 400。合表从任务目录内的个人库只读重建，客户端无法替换\n合并输入（防伪造）。",
+        "operationId": "save_server_sourced_screening_arbitration_api_tasks__task_id__screening_arbitrations_server_save_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Save Server Sourced Screening Arbitration Api Tasks  Task Id  Screening Arbitrations Server Save Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Server Sourced Screening Arbitration"
       }
     },
     "/api/tasks/{task_id}/screening-arbitrations/{record_id}": {

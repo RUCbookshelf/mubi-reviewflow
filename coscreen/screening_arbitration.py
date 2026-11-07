@@ -12,7 +12,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -85,6 +85,115 @@ def merge_decision_packages(named_frames: dict[str, pd.DataFrame]) -> pd.DataFra
         fingerprints[fingerprint] = label
         normalized[label] = frame
     return merge_decisions_multi(normalized)
+
+
+#: 决策 CSV 的列形状（与 ``list_decisions`` / ``list_stage2_decisions`` 对齐）。
+_SCREENER_DECISION_COLUMNS = (
+    "zotero_key", "decision", "exclusion_reason", "notes", "tags", "screened_at",
+)
+
+
+def _decision_rows_read_only(path: Path, stage: str) -> list[dict[str, str]]:
+    """只读读取单个筛选员库的决策行；库损坏/缺表/无 tags 列一律降级。
+
+    SQL 全部为模块内固定字面量 + ``?`` 参数绑定；``mode=ro`` 保证不执行任何
+    写入（含自愈 DDL）。stage 已由调用方校验为固定两值，不参与 SQL 拼装。
+    """
+    columns_no_tags = tuple(c for c in _SCREENER_DECISION_COLUMNS if c != "tags")
+    try:
+        with closing(sqlite3.connect(
+                f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=15)) as conn:
+            if stage == "stage2":
+                try:
+                    rows = conn.execute(
+                        "SELECT zotero_key, decision, exclusion_reason, notes, tags, screened_at FROM stage2_decisions WHERE zotero_key <> ? ORDER BY zotero_key",
+                        ("",),
+                    ).fetchall()
+                    return [dict(zip(_SCREENER_DECISION_COLUMNS, row)) for row in rows]
+                except sqlite3.OperationalError as exc:
+                    if "no such column: tags" not in str(exc).lower():
+                        raise
+                    rows = conn.execute(
+                        "SELECT zotero_key, decision, exclusion_reason, notes, screened_at FROM stage2_decisions WHERE zotero_key <> ? ORDER BY zotero_key",
+                        ("",),
+                    ).fetchall()
+                    return [{**dict(zip(columns_no_tags, row)), "tags": ""} for row in rows]
+            try:
+                rows = conn.execute(
+                    "SELECT zotero_key, decision, exclusion_reason, notes, tags, screened_at FROM decisions WHERE zotero_key <> ? ORDER BY zotero_key",
+                    ("",),
+                ).fetchall()
+                return [dict(zip(_SCREENER_DECISION_COLUMNS, row)) for row in rows]
+            except sqlite3.OperationalError as exc:
+                if "no such column: tags" not in str(exc).lower():
+                    raise
+                rows = conn.execute(
+                    "SELECT zotero_key, decision, exclusion_reason, notes, screened_at FROM decisions WHERE zotero_key <> ? ORDER BY zotero_key",
+                    ("",),
+                ).fetchall()
+                return [{**dict(zip(columns_no_tags, row)), "tags": ""} for row in rows]
+    # 读不到 = 该库没有可用决策（损坏库跳过，不阻塞其余成员）。
+    except (sqlite3.DatabaseError, OSError):
+        return []
+
+
+def load_screener_decision_packages(
+    db_files: Iterable[StrPath], *, stage: str = "stage1",
+) -> dict[str, pd.DataFrame]:
+    """读取任务目录下全部筛选员个人库的决策，产出可交给
+    :func:`merge_decision_packages` 的 ``{筛选员名: DataFrame}``。
+
+    参数
+    ----
+    db_files:
+        任务目录内的库文件列表（通常为 ``TaskInfo.db_files``）。仅接受
+        ``*.db``；``collaboration.db`` 即使混入也会被跳过。
+    stage:
+        ``stage1`` 读 ``decisions``，``stage2`` 读 ``stage2_decisions``。
+
+    规则（确定性，供复现）
+    ----------------------
+    - 筛选员名取 ``{slug}.db`` 的文件名主干（与 CSV 上传以文件名主干命名一致）。
+    - 同一物理路径重复出现只读一次；**不同路径但同主干**时按
+      ``(文件名 casefold, 完整路径)`` 排序，先剔除无决策/损坏库，再保留
+      排序首个**可读出决策**的同名库（不静默混入第二份决策）。文件系统
+      同目录下不可能出现同主干，此规则只对跨目录输入/手工拼接列表生效。
+    - 无决策行（空库/无表/损坏/不可读）的库剔除，不阻塞其余筛选员。
+    - 有效筛选员 <2 或 >9 抛 ``ValueError``，文案与 CSV 2-9 份上传同口径。
+
+    铁律
+    ----
+    本函数以 SQLite ``mode=ro`` 打开个人库，**绝不写入任何筛选员个人库**，
+    也不执行自愈 DDL；读取失败只降级为「该库无决策」。
+    """
+    if stage not in {"stage1", "stage2"}:
+        raise ValueError("stage 必须为 stage1 或 stage2")
+    packages: dict[str, pd.DataFrame] = {}
+    seen_paths: set[str] = set()
+    ordered = sorted(
+        (Path(raw) for raw in db_files),
+        key=lambda path: (path.name.casefold(), str(path)),
+    )
+    for path in ordered:
+        if path.suffix.casefold() != ".db" or path.name.casefold() == "collaboration.db":
+            continue
+        try:
+            identity = str(path.resolve())
+        except OSError:
+            continue
+        if identity in seen_paths:
+            continue
+        seen_paths.add(identity)
+        label = path.stem
+        if label in packages:
+            continue  # 同名规则：排序后首个「有决策」的库胜出，见 docstring。
+        rows = _decision_rows_read_only(path, stage)
+        if not rows:
+            continue
+        packages[label] = pd.DataFrame(rows, columns=list(_SCREENER_DECISION_COLUMNS))
+    if not 2 <= len(packages) <= 9:
+        raise ValueError("请提供 2 到 9 份筛选员决策包")
+    return packages
 
 
 def _validated_merge(merged: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:

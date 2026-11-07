@@ -79,7 +79,8 @@ class SubmissionEvidenceIn(BaseModel):
 SAVE_NOT_SAVED_503 = "本次修改尚未保存。轨迹记录不可用，请重试或暂停记录后重新保存。"
 
 
-def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, trace_context, data_dir) -> None:
+def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, trace_context, data_dir,
+                                   screening_allowed=None, screening_disabled_error=None) -> None:
     async def upload_evidence(task_id: str, zotero_key: str, dim_id: int, file: UploadFile,
                               user: dict, *, canonical_only: bool = False,
                               expected_version: int | None = None) -> dict:
@@ -224,6 +225,12 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
     def restore(task_id: str, stage: Stage, body: UndoIn, screener: str | None = None,
                 user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
+        # R2：撤销也是初筛/复筛写入面——被负责人关闭参与权的裁决员不得借
+        # undo 绕过 decision 写闸门；coding 撤销不受该开关影响。
+        if (stage in ("screen", "fulltext") and screening_allowed is not None
+                and screening_disabled_error is not None):
+            if not screening_allowed(info, user):
+                raise screening_disabled_error()
         # R6-C3/#22：预读 journal、任务锁、写守卫与 trace 一律用规范 task_id——
         # 尾点别名与规范 id 是同一物理任务，journal/锁/守卫必须同键（修复前
         # 别名预读 None -> 永久 409 "There is no saved operation to undo"）。

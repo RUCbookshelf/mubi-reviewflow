@@ -70,7 +70,24 @@ CREATE TABLE IF NOT EXISTS collaboration_role_grants (
   granted_at TEXT NOT NULL,
   PRIMARY KEY(user_id, role)
 );
+CREATE TABLE IF NOT EXISTS collaboration_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collaboration_member_settings (
+  user_id INTEGER PRIMARY KEY CHECK(user_id > 0),
+  screening_enabled INTEGER NOT NULL CHECK(screening_enabled IN (0, 1)),
+  updated_by INTEGER NOT NULL CHECK(updated_by > 0),
+  updated_at TEXT NOT NULL
+);
 """
+
+#: 筛选参与权一次性回填的完成时刻（collaboration_settings 行）。标记存在 =
+#: 该库已按「升级后」口径运行：此后的新 reconciler 授权默认关；标记不存在 =
+#: 升级前库，回填时点已存在的 reconciler 授权一律默认开。语义只看标记与行，
+#: 绝不按 grant 时间戳「读时猜新旧」。
+SCREENING_BACKFILL_KEY = "screening_enabled_backfill_completed_at"
+
 
 
 def shared_store_path(task_dir: str | Path) -> Path:
@@ -110,6 +127,28 @@ def _role(value: object) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _migrate_member_settings(conn: sqlite3.Connection) -> bool:
+    """幂等一次性回填：存量 reconciler 授权 -> 筛选参与权「开」。
+
+    返回是否在本调用中完成了回填。确定性规则：
+    - ``collaboration_settings`` 中无 ``SCREENING_BACKFILL_KEY`` 行 = 升级前库
+      → 把此刻已存在的全部 reconciler grant 写成 enabled=1，再标记完成时刻；
+    - 标记已存在 → 不再回填（此后的新授权由 grant_role 显式写默认关）。
+
+    调用方必须持有写事务（``_write`` / 初始化路径）。全部 SQL 为固定字面量
+    + ``?`` 参数绑定。
+    """
+    conn.execute("CREATE TABLE IF NOT EXISTS collaboration_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("CREATE TABLE IF NOT EXISTS collaboration_member_settings (user_id INTEGER PRIMARY KEY CHECK(user_id > 0), screening_enabled INTEGER NOT NULL CHECK(screening_enabled IN (0, 1)), updated_by INTEGER NOT NULL CHECK(updated_by > 0), updated_at TEXT NOT NULL)")
+    completed = conn.execute("SELECT 1 FROM collaboration_settings WHERE key = ?", (SCREENING_BACKFILL_KEY,)).fetchone()
+    if completed is not None:
+        return False
+    now = _now()
+    conn.execute("INSERT INTO collaboration_settings(key, value) VALUES(?, ?)", (SCREENING_BACKFILL_KEY, now))
+    conn.execute("INSERT OR IGNORE INTO collaboration_member_settings(user_id, screening_enabled, updated_by, updated_at) SELECT user_id, 1, granted_by, ? FROM collaboration_role_grants WHERE role = ?", (now, "reconciler"))
+    return True
 
 
 def _connect(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
@@ -158,6 +197,9 @@ def initialize_task_store(
         conn.executescript(_SCHEMA)
         conn.execute("BEGIN IMMEDIATE")
         try:
+            # 新建库即写入回填完成标记：此后 grant_role 的新 reconciler 授权
+            # 一律显式默认关（语义见 _migrate_member_settings）。
+            _migrate_member_settings(conn)
             row = conn.execute(
                 "SELECT task_id, owner_user_id, owner_username, created_at "
                 "FROM collaboration_task WHERE singleton=1"
@@ -331,10 +373,20 @@ def grant_role(
         owner = _owner(conn, task_id)
         if int(owner["owner_user_id"]) != actor_user_id:
             raise PermissionError("only the task owner may grant collaboration roles")
-        conn.execute(
+        # 先完成存量回填（升级前库），再写入本次授权——保证「新授权默认关」
+        # 与「存量授权默认开」互不污染。
+        _migrate_member_settings(conn)
+        cursor = conn.execute(
             "INSERT OR IGNORE INTO collaboration_role_grants(user_id,role,granted_by,granted_at) VALUES(?,?,?,?)",
             (user_id, role, actor_user_id, _now()),
         )
+        # 升级后新授权的 reconciler 默认关闭筛选参与权；重复授权（已有 grant）
+        # 不重置负责人此后手动调整过的开关。
+        if role == "reconciler" and cursor.rowcount == 1:
+            conn.execute(
+                "INSERT INTO collaboration_member_settings(user_id,screening_enabled,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET screening_enabled=0, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                (user_id, 0, actor_user_id, _now()),
+            )
         row = conn.execute(
             "SELECT user_id,role,granted_by,granted_at FROM collaboration_role_grants WHERE user_id=? AND role=?",
             (user_id, role),
@@ -345,6 +397,228 @@ def grant_role(
             "granted_by": int(row["granted_by"]),
             "granted_at": row["granted_at"],
         }
+
+
+def ensure_screening_backfill(store: str | Path, *, task_id: str | None = None) -> bool:
+    """属主侧读取前的幂等回填（team-progress 调用）。
+
+    标记已存在 -> 无操作；升级前库 -> 一次性把存量 reconciler 授权写为「开」。
+    异常口径与模块其它写函数一致：确定性否定（库不存在/无属主/绑定不匹配）
+    抛 ValueError，锁超时/读失败抛 OwnerUnavailableError，永久损坏抛
+    CollaborationStoreCorruptError（HTTP 层 409/503，不折叠成 403）。
+    """
+    if task_id is None:
+        raise ValueError("task_id is required for ensure_screening_backfill")
+    # 先只读探测标记：已迁移的库绝不获取写锁（修前每次 team-progress 都走
+    # BEGIN IMMEDIATE，任何并发写都会把属主的读变成 503）。
+    try:
+        with closing(_connect(Path(store), read_only=True)) as conn:
+            _owner(conn, task_id)
+            try:
+                completed = conn.execute(
+                    "SELECT 1 FROM collaboration_settings WHERE key=?",
+                    (SCREENING_BACKFILL_KEY,),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc).lower():
+                    raise
+                completed = None
+            if completed is not None:
+                return False
+    except FileNotFoundError as exc:
+        raise ValueError("task collaboration store is not initialized") from exc
+    except (PermissionError, ValueError):
+        raise
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"screening backfill failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"screening backfill failed: {exc}") from exc
+    try:
+        with _write(Path(store)) as conn:
+            _owner(conn, task_id)
+            return _migrate_member_settings(conn)
+    except (PermissionError, ValueError):
+        raise
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"screening backfill failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"screening backfill failed: {exc}") from exc
+
+
+def _screening_allowed_in_conn(
+    conn: sqlite3.Connection, user_id: int, task_id: str,
+) -> bool:
+    """连接内的筛选参与权判定（调用方负责异常映射）。"""
+    owner = _owner(conn, task_id)
+    if int(owner["owner_user_id"]) == user_id:
+        return True  # 属主永不受该开关影响
+    coder = conn.execute(
+        "SELECT 1 FROM collaboration_role_grants WHERE user_id=? AND role=?",
+        (user_id, "coder"),
+    ).fetchone()
+    if coder is not None:
+        # coder 不受筛选开关影响；同时持 coder+reconciler 的双角色成员按
+        # coder 口径放行（授权 API/主键允许双角色，不能被 reconciler 开关误伤）。
+        return True
+    grant = conn.execute(
+        "SELECT 1 FROM collaboration_role_grants WHERE user_id=? AND role=?",
+        (user_id, "reconciler"),
+    ).fetchone()
+    if grant is None:
+        return True  # 非角色成员不受该开关约束
+    try:
+        row = conn.execute(
+            "SELECT screening_enabled FROM collaboration_member_settings WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        if row is not None:
+            return bool(row[0])
+        completed = conn.execute(
+            "SELECT 1 FROM collaboration_settings WHERE key=?",
+            (SCREENING_BACKFILL_KEY,),
+        ).fetchone()
+        # 标记不存在 = 升级前库：回填时点已存在的授权一律「开」；
+        # 标记存在但无该行 = 升级后新授权应显式写行，缺失按默认「关」。
+        return completed is None
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return True  # 旧库尚未建新表：等价于升级前 -> 开
+        raise
+
+
+def screening_allowed(
+    store: str | Path, user_id: int, *, task_id: str | None = None
+) -> bool:
+    """该成员当前是否可写初筛/复筛（只读；不创建/不迁移任何表）。
+
+    - 属主、coder（含 coder+reconciler 双角色）、非角色成员恒为 True；
+    - 纯 reconciler：读 collaboration_member_settings；无表/无标记（升级前）-> True；
+    - 确定性否定（无协作库/无属主）-> True（legacy 零回归）；
+    - 锁超时/读失败 -> OwnerUnavailableError；永久损坏 ->
+      CollaborationStoreCorruptError（绝不折叠成 False/403）。
+    """
+    user_id = _user_id(user_id)
+    if task_id is None:
+        raise ValueError("task_id is required for screening_allowed")
+    try:
+        with closing(_connect(Path(store), read_only=True)) as conn:
+            return _screening_allowed_in_conn(conn, user_id, task_id)
+    except FileNotFoundError:
+        return True  # 无协作库 = legacy，无筛选参与权限制
+    except ValueError:
+        return True  # 无属主行/绑定不匹配/库未初始化 = legacy
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"screening permission lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"screening permission lookup failed: {exc}") from exc
+
+
+def list_screening_flags(
+    store: str | Path, *, task_id: str | None = None
+) -> dict[int, bool]:
+    """全部 reconciler 成员的筛选参与权（team-progress 批量读取）。
+
+    legacy/无库返回空映射（调用方按 True 处理）；不确定故障按模块契约抛出。
+    """
+    if task_id is None:
+        raise ValueError("task_id is required for list_screening_flags")
+    try:
+        with closing(_connect(Path(store), read_only=True)) as conn:
+            _owner(conn, task_id)
+            reconcilers = [int(row[0]) for row in conn.execute(
+                "SELECT user_id FROM collaboration_role_grants WHERE role=? AND user_id NOT IN (SELECT user_id FROM collaboration_role_grants WHERE role=?) ORDER BY user_id",
+                ("reconciler", "coder"),
+            )]
+            try:
+                stored = {int(row[0]): bool(row[1]) for row in conn.execute(
+                    "SELECT user_id, screening_enabled FROM collaboration_member_settings")}
+                completed = conn.execute(
+                    "SELECT 1 FROM collaboration_settings WHERE key=?",
+                    (SCREENING_BACKFILL_KEY,),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    return {user_id: True for user_id in reconcilers}
+                raise
+            default = completed is None
+            return {user_id: stored.get(user_id, default) for user_id in reconcilers}
+    except (FileNotFoundError, ValueError):
+        return {}
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"screening permission lookup failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"screening permission lookup failed: {exc}") from exc
+
+
+def set_member_screening(
+    store: str | Path,
+    *,
+    actor_user_id: int,
+    user_id: int,
+    enabled: bool,
+    task_id: str | None = None,
+) -> dict[str, object]:
+    """设置 reconciler 成员的筛选参与权；仅属主可写，写操作留痕。
+
+    与 grant_role 同口径（属主校验、task_id 必传、异常契约）：属主校验失败抛
+    PermissionError（HTTP 403）；目标无 reconciler 授权抛 ValueError（HTTP 400）；
+    锁超时/读失败 -> OwnerUnavailableError（503）；永久损坏 ->
+    CollaborationStoreCorruptError（409/503）。
+    """
+    actor_user_id = _user_id(actor_user_id, "actor_user_id")
+    user_id = _user_id(user_id)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean")
+    if task_id is None:
+        raise ValueError("task_id is required for set_member_screening")
+    try:
+        with _write(Path(store)) as conn:
+            owner = _owner(conn, task_id)
+            if int(owner["owner_user_id"]) != actor_user_id:
+                raise PermissionError("only the task owner may manage screening participation")
+            _migrate_member_settings(conn)
+            grant = conn.execute(
+                "SELECT 1 FROM collaboration_role_grants WHERE user_id=? AND role=?",
+                (user_id, "reconciler"),
+            ).fetchone()
+            if grant is None:
+                raise ValueError("target user has no reconciler role")
+            now = _now()
+            conn.execute(
+                "INSERT INTO collaboration_member_settings(user_id,screening_enabled,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET screening_enabled=excluded.screening_enabled, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                (user_id, 1 if enabled else 0, actor_user_id, now),
+            )
+            row = conn.execute(
+                "SELECT screening_enabled, updated_by, updated_at FROM collaboration_member_settings WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            return {
+                "user_id": user_id,
+                "screening_enabled": bool(row["screening_enabled"]),
+                "updated_by": int(row["updated_by"]),
+                "updated_at": row["updated_at"],
+            }
+    except (PermissionError, ValueError):
+        raise
+    except sqlite3.OperationalError as exc:
+        raise OwnerUnavailableError(f"screening setting write failed: {exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise CollaborationStoreCorruptError(
+            f"task collaboration store is unreadable: {exc}") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise OwnerUnavailableError(f"screening setting write failed: {exc}") from exc
 
 
 def revoke_role(
@@ -373,6 +647,13 @@ def revoke_role(
             "DELETE FROM collaboration_role_grants WHERE user_id=? AND role=?",
             (user_id, role),
         )
+        if role == "reconciler":
+            # 撤销即清掉开关行：再次授权按「新授权默认关」重新落 0，不继承旧值。
+            _migrate_member_settings(conn)
+            conn.execute(
+                "DELETE FROM collaboration_member_settings WHERE user_id=?",
+                (user_id,),
+            )
         return cursor.rowcount == 1
 
 
