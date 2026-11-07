@@ -2,7 +2,9 @@
 
 第 1 层 精确（自动合并仅保留可机器核验的证据，U1-P1/U1-P3，与 Web 导入的
     受保护核验/人工候选哲学对齐）：
-    a) 规范化 DOI 非空且相等；或
+    a) 规范化 DOI 非空且相等，且该 DOI 不是期刊样式 DOI（含 "(issn)" 的
+       整刊标识，见 :func:`is_journal_pattern_doi`；r17：ERIC 等来源给整期
+       每篇文献填同一 DOI，不能作为文章身份）；或
     b) zotero_key 相等且 DOI/标题/年份不冲突（双方 DOI 均非空时以 DOI
        裁决；否则要求标题规范化后**完全相等**、首作者兼容且年份兼容
        （r8 #8/#15），R6-D1——一词之差如 women/men、phase2/phase3 不再凭
@@ -150,6 +152,38 @@ def _norm_doi(doi: str) -> str:
     return normalize_doi(doi or "")
 
 
+#: 期刊样式 DOI 的标志片段（ERIC 等来源给整刊/整期写的 DOI，如
+#: ``10.1002/(issn)1545-7249``）。normalize_doi 已转小写，见下。
+_PATTERN_DOI_MARKER = "(issn)"
+
+
+def is_journal_pattern_doi(doi: str) -> bool:
+    """DOI 是否为「期刊样式」而非单篇文章 DOI（r17，纯函数、可复用）。
+
+    某些来源（实测 ERIC 导出的 TESOL Quarterly 记录）给同一期的**每一篇**
+    不同文献都填同一个出版社/期刊级 DOI，形如 ``10.1002/(issn)1545-7249``。
+    它是期刊标识而非文章标识，不能承担「同一文献」的身份判定——否则同刊
+    不同文献会被静默合并或误报「信息差异」。
+
+    判定口径：先走 :func:`_norm_doi`（NFKC 折叠全角括号、删不可见字符、
+    小写化），再看规范化结果是否含 ``"(issn)"`` 片段。小写化使判定对
+    ``"(ISSN)"``/``"(Issn)"`` 等大小写变体不敏感；``（ISSN）`` 经 NFKC
+    折叠为半角后同样命中。空 DOI 返回 False（空值本就不参与身份判定）。
+    """
+    return _PATTERN_DOI_MARKER in _norm_doi(doi)
+
+
+def _identity_doi(doi: str) -> str:
+    """DOI 身份比较键：期刊样式 DOI 一律返回 ""（视同缺 DOI）。
+
+    样式 DOI 仍原样保留在文献记录、导出与展示中，只是不再作为身份键参与
+    exact_doi 配对、键合并裁决、库内 DOI 归属与元数据补全提示。集中在此
+    一处判定，避免各消费点口径分叉。
+    """
+    normalized = _norm_doi(doi)
+    return "" if _PATTERN_DOI_MARKER in normalized else normalized
+
+
 def _first_author_token(authors: str) -> str:
     """第一作者比较形式：委托 normalize.first_author_surname（U1-P2/U1-P11）。
 
@@ -225,7 +259,10 @@ def _first_authors_compatible(a: Article, b: Article) -> bool:
 def _key_merge_confirmed(a: Article, b: Article) -> bool:
     """键相等时是否允许自动合并（U1-P3，R6-D1 收紧；r8 #8/#15 年份门）。
 
-    - 双方规范化 DOI 均非空时以 DOI 裁决（相等才合并）；
+    - 双方规范化 DOI 均非空时以 DOI 裁决（相等才合并）。期刊样式 DOI
+      （见 :func:`is_journal_pattern_doi`）不承担身份裁决，视同缺 DOI
+      落入标题/作者/年份门——同刊不同文献的同键记录不再因整刊 DOI 相等
+      被静默合并；
     - 否则要求**标题规范化后完全相等**、**首作者兼容**且**年份兼容**
       （双侧均明确且不同 -> 不合并，r8 #8/#15：同键同题同作者异年
       静默覆盖 year 并继承既有筛选决策的路径收口）才允许自动合并。
@@ -236,7 +273,7 @@ def _key_merge_confirmed(a: Article, b: Article) -> bool:
     - 与 Web 导入路径（review_imports）对 identity_conflict 的判定共用本
       谓词，两处口径不分叉。
     """
-    doi_a, doi_b = _norm_doi(a.doi), _norm_doi(b.doi)
+    doi_a, doi_b = _identity_doi(a.doi), _identity_doi(b.doi)
     if doi_a and doi_b:
         return doi_a == doi_b
     title_a, title_b = _norm_title(a.title), _norm_title(b.title)
@@ -293,8 +330,9 @@ def find_duplicates(
 ) -> tuple[list[Article], DedupReport]:
     """返回 (去重后保留的 Article 列表, 报告)。不修改输入。
 
-    - 自动合并仅凭两类可机器核验的证据：规范化 DOI 非空且相等；zotero_key
-      相等且 DOI/标题不冲突。生成的 auto-* 内部键不视为来源标识。
+    - 自动合并仅凭两类可机器核验的证据：规范化 DOI 非空且相等（期刊样式
+      DOI 除外，见 :func:`is_journal_pattern_doi`）；zotero_key 相等且
+      DOI/标题不冲突。生成的 auto-* 内部键不视为来源标识。
     - 模糊层证据只进 fuzzy_pairs 候选，不自动合并（U1-P1/U1-P10）；键冲突
       进 key_conflict_pairs 候选（U1-P3）。二者均需人工确认。
     - 保留条目按输入顺序排列；每组重复只保留输入顺序靠前的首条。
@@ -310,10 +348,12 @@ def find_duplicates(
     fuzzy_events: list[tuple[int, int, str]] = []
 
     # ---- 第 1 层：精确去重（规范化 DOI 非空相等，或键相等且不冲突）----
+    # 期刊样式 DOI（"(issn)" 整刊标识）不是文章身份键：不建立 exact_doi
+    # 配对，否则同刊不同文献会被并成一条（r17，实测 ERIC 整期同 DOI）。
     doi_first: dict[str, int] = {}
     key_first: dict[str, int] = {}
     for i, art in enumerate(articles):
-        doi = _norm_doi(art.doi)
+        doi = _identity_doi(art.doi)
         if doi:
             leader = doi_first.get(doi)
             if leader is None:
@@ -791,7 +831,10 @@ def stabilize_conflicting_keys(
     fallback_index: dict[str, str] = {}   # raw["_fallback_id"] -> 库内键
     record_id_index: dict[str, str] = {}  # raw["_record_id"] -> 库内键（U2-P5）
     hash_index: dict[str, str] = {}       # content_hash -> 库内键
-    doi_index: dict[str, str] = {}        # 规范化 DOI -> 库内键（r8 #2 归属检查）
+    doi_index: dict[str, str] = {}        # 规范化身份 DOI -> 库内键（r8 #2 归属检查）
+    # 期刊样式 DOI 不进归属索引：它不是文章身份，库内多行持有同一整刊 DOI
+    # 是来源元数据形态，不能据此把记录改挂到「另一条库内行」或触发
+    # _metadata_replacement_note 的同一 DOI 改写提示（r17）。
     # 内容键 -> 库内键全集（r8 #3：首个候选 DOI 冲突时试同键其他行）
     content_index: dict[tuple[str, str, str, object], list[str]] = {}
     # b04·F3-36：身份索引优先登记**未标记重复**的库内行。标题重复复审把后
@@ -818,7 +861,7 @@ def stabilize_conflicting_keys(
             fallback_index.setdefault(fallback_id, key_text)
         if art.content_hash:
             hash_index.setdefault(art.content_hash, key_text)
-        doi_text = _norm_doi(art.doi)
+        doi_text = _identity_doi(art.doi)
         if doi_text:
             doi_index.setdefault(doi_text, key_text)
         match_key = _content_match_key(art)
@@ -873,7 +916,7 @@ def stabilize_conflicting_keys(
                 )
             else:
                 return key_text
-        doi_new = _norm_doi(art.doi)
+        doi_new = _identity_doi(art.doi)
         match_key = _content_match_key(art)
         for key_text in content_index.get(match_key, ()) if match_key[0] else ():
             # r8 #3：同内容键的全部库内行按序尝试——首个候选因 DOI 冲突或
@@ -881,7 +924,7 @@ def stabilize_conflicting_keys(
             # 本可兼容沿用，曾被静默跳过导致新增第 3 行）。
             # b04·F3-35：键下可能有多行，逐行判定（不再只看首行）。
             for db_art in _known_rows(known_by_key, key_text):
-                doi_known = _norm_doi(db_art.doi)
+                doi_known = _identity_doi(db_art.doi)
                 if doi_known and doi_new and doi_known != doi_new:
                     continue  # DOI 冲突：该库内行是另一文献，试同键其他行
                 if (_first_authors_compatible(art, db_art)
@@ -904,7 +947,7 @@ def stabilize_conflicting_keys(
         完全绕过检查，库内 K1 无 DOI、K2 持 10.1/x 时仍把 DOI 写进 K1 →
         两行同 DOI 且零警告（评审 R2）。返回归属键或 None。
         """
-        doi_new = _norm_doi(art.doi)
+        doi_new = _identity_doi(art.doi)
         if not doi_new:
             return None
         owner = doi_index.get(doi_new)
@@ -939,7 +982,7 @@ def stabilize_conflicting_keys(
         target = _canonical_known_key(known_by_key, target)
         db_art = _known_row(known_by_key, target)
         if db_art is not None:
-            doi_known, doi_new = _norm_doi(db_art.doi), _norm_doi(art.doi)
+            doi_known, doi_new = _identity_doi(db_art.doi), _identity_doi(art.doi)
             if doi_known and doi_new and doi_known != doi_new:
                 continue  # DOI 冲突：不同文献，不沿用库内键
             owner = _doi_owned_elsewhere(art, target)
@@ -1085,7 +1128,7 @@ def stabilize_conflicting_keys(
     final_doi_owner: dict[str, str] = {}
     for key_text, rows in known_by_key.items():
         for db_art in rows:
-            doi_known = _norm_doi(db_art.doi)
+            doi_known = _identity_doi(db_art.doi)
             if doi_known and id(db_art) in known_ids:
                 final_doi_owner.setdefault(doi_known, key_text)
     # 已由精确证据打成重复的行（dup_key -> kept_key）：DOI 重复是正常结构
@@ -1097,7 +1140,7 @@ def stabilize_conflicting_keys(
     for i, art in enumerate(articles):
         if id(art) in known_ids:
             continue
-        doi_new = _norm_doi(art.doi)
+        doi_new = _identity_doi(art.doi)
         if not doi_new:
             continue
         owner = final_doi_owner.get(doi_new)

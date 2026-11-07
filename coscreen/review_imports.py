@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from coscreen import db as articles_db, review_workflow as workflow
-from coscreen.dedup import _key_merge_confirmed, _norm_doi, find_duplicates
+from coscreen.dedup import (
+    _key_merge_confirmed, _norm_doi, find_duplicates, is_journal_pattern_doi,
+)
 from coscreen.models import Article
 
 MIGRATION_VERSION = 2
@@ -162,14 +164,17 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
     by_doi = {}
     for row in rows:
         doi = _norm_doi(row['doi'])
-        if doi:
+        # 期刊样式 DOI（如 ERIC 的 10.1002/(issn)…）是整刊标识，不能把
+        # 不同文献链到同一活动行（r17：否则同刊不同文献被配成 exact_doi，
+        # 再以「信息差异」要求人工核验）。
+        if doi and not is_journal_pattern_doi(doi):
             by_doi.setdefault(doi, canonical(conn, row['zotero_key']))
     pending = [dict(r) for r in conn.execute("SELECT * FROM workflow_source_records ORDER BY created_at,id")]
     pending_keys, pending_dois = {}, {}
     for r in pending:
         pending_keys.setdefault(r['incoming_key'], []).append(r)
         doi = _norm_doi(json.loads(r['article_json']).get('doi'))
-        if doi:
+        if doi and not is_journal_pattern_doi(doi):
             pending_dois.setdefault(doi, r)
     new_ids, conflicts, incoming_articles = [], [], []
     used = set(by_key) | {r['staged_key'] for r in pending}
@@ -189,6 +194,8 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
             rid = uuid.uuid4().hex
             data = art.to_dict()
             key, doi = art.zotero_key, _norm_doi(art.doi)
+            # DOI 身份键：期刊样式 DOI 视同缺 DOI（r17）。
+            doi_identity = '' if is_journal_pattern_doi(doi) else doi
             match_key, target, outcome = None, None, 'new'
             key_row = by_key.get(key)
             key_priors = pending_keys.get(key, [])
@@ -209,10 +216,10 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
                     Article.from_dict(json.loads(prior_row['article_json'])), art)
                 prior_key, prior_root = record_target(conn, prior_row['id'])
                 key_refs.add(('active', prior_key) if prior_key else ('record', prior_root))
-            prior = pending_dois.get(doi) if doi else None
+            prior = pending_dois.get(doi_identity) if doi_identity else None
             doi_ref = None
-            if doi and doi in by_doi:
-                doi_ref = ('active', by_doi[doi])
+            if doi_identity and doi_identity in by_doi:
+                doi_ref = ('active', by_doi[doi_identity])
             elif prior:
                 prior_key, prior_root = record_target(conn, prior['id'])
                 doi_ref = ('active', prior_key) if prior_key else ('record', prior_root)
@@ -249,8 +256,8 @@ def prepare(conn: sqlite3.Connection, files: list[dict], *, batch_id: str, histo
             # source key and a conflicting DOI still needs identity review.
             r = {'id': rid, 'incoming_key': key, 'article_json': dumps(data), 'staged_key': staged_key}
             pending_keys.setdefault(key, []).append(r)
-            if doi:
-                pending_dois.setdefault(doi, r)
+            if doi_identity:
+                pending_dois.setdefault(doi_identity, r)
     for refs, kind in conflicts:
         add_candidate(conn, refs, kind)
     # Only canonical active records and independent staged representatives take
