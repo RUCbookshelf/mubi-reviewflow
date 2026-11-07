@@ -110,6 +110,12 @@
       for (const group of d.groups || []) {
         const members = group.members || [];
         const hasFuzzyMatch = members.some(member => member.match_kind === 'fuzzy');
+        /* 混合候选组（模糊 + 来源键冲突）与纯键冲突组用专门文案标出，
+           人工复核能看出该组含键冲突来源（living_review 复审）。 */
+        const hasKeyConflict = members.some(member => member.match_kind === 'key_conflict');
+        const groupCaption = hasFuzzyMatch
+          ? (hasKeyConflict ? '标题相似且来源键冲突的候选组 · {0} 条记录' : '标题和作者相似候选组 · {0} 条记录')
+          : (hasKeyConflict ? '来源键冲突候选组 · {0} 条记录' : '标题相同候选组 · {0} 条记录');
         const chooser = el('select', { class: 'input', style: 'max-width:100%;margin:8px 0' });
         members.forEach((member, index) => chooser.append(el('option', {
           value: member.zotero_key,
@@ -119,7 +125,7 @@
         })));
         const block = el('div', { class: 'card', style: 'padding:12px;margin:10px 0' },
           el('div', { class: 'hint', text: T(
-            hasFuzzyMatch ? '标题和作者相似候选组 · {0} 条记录' : '标题相同候选组 · {0} 条记录',
+            groupCaption,
             members.length), style: 'margin:0 0 5px' }),
           el('h4', { text: members[0]?.title || T('（无标题）'), style: 'margin:4px 0 8px' }),
           chooser,

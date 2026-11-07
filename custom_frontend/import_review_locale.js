@@ -162,7 +162,7 @@
     "Non renseigné",
     "Не указано",
     "No proporcionado",
-    "未提供",
+    "提供されていません",
     "Não informado",
     "Nicht angegeben",
     "Није наведено",
@@ -326,18 +326,6 @@
     "메타데이터 검토 필요"
   ],
   [
-    "可激活",
-    "Ready to activate",
-    "Prêt à activer",
-    "Готово к активации",
-    "Listo para activar",
-    "有効化可能",
-    "Pronto para ativar",
-    "Zur Aktivierung bereit",
-    "Спремно за активирање",
-    "활성화 가능"
-  ],
-  [
     "已完成，无需操作",
     "Completed — no action needed",
     "Terminé — aucune action requise",
@@ -348,6 +336,42 @@
     "Abgeschlossen — keine Aktion erforderlich",
     "Завршено — није потребна радња",
     "완료 — 조치 불필요"
+  ],
+  [
+    "已启用",
+    "Already active",
+    "Déjà activées",
+    "Уже активны",
+    "Ya activos",
+    "有効化済み",
+    "Já ativos",
+    "Bereits aktiv",
+    "Већ активни",
+    "이미 활성화됨"
+  ],
+  [
+    "已核验待启用",
+    "Reviewed, pending activation",
+    "Vérifiées, en attente d’activation",
+    "Проверены, ожидают активации",
+    "Revisados, pendientes de activación",
+    "確認済み・有効化待ち",
+    "Revisados, aguardando ativação",
+    "Geprüft, Aktivierung ausstehend",
+    "Проверено, чека активирање",
+    "검토 완료, 활성화 대기 중"
+  ],
+  [
+    "本次将启用 {0} 条已核验记录。",
+    "This activation will enable {0} reviewed record(s).",
+    "Cette activation activera {0} notice(s) vérifiée(s).",
+    "Эта активация задействует {0} проверенных записей.",
+    "Esta activación habilitará {0} registro(s) revisado(s).",
+    "今回の有効化で {0} 件の確認済みレコードを有効化します。",
+    "Esta ativação habilitará {0} registro(s) revisado(s).",
+    "Diese Aktivierung aktiviert {0} geprüfte Datensätze.",
+    "Ова активација ће омогућити {0} проверених записа.",
+    "이번 활성화로 {0}개의 검토 완료 기록이 활성화됩니다."
   ]
 ]);RFLang.register([
   [
@@ -796,4 +820,4 @@
     "Проверите извештај о увозу и поново отпремите изворну датотеку.",
     "가져오기 보고서를 확인하고 원본 파일을 다시 업로드하세요."
   ]
-]);RFLang.register([["打开关联导入", "Open linked import", "Ouvrir l’import lié", "Открыть связанный импорт", "Abrir importación vinculada", "関連する取り込みを開く", "Abrir importação vinculada", "Verknüpften Import öffnen", "Отвори повезани увоз", "연결된 가져오기 열기"]]);RFLang.register([["标题", "Title", "Titre", "Заглавие", "Título", "タイトル", "Título", "Titel", "Наслов", "제목"], ["摘要", "Abstract", "Résumé", "Аннотация", "Resumen", "要旨", "Resumo", "Zusammenfassung", "Сажетак", "초록"], ["文献类型", "Record type", "Type de notice", "Тип записи", "Tipo de registro", "レコード種別", "Tipo de registro", "Datensatztyp", "Врста записа", "기록 유형"]]);RFLang.register([["标题核验：已解决 {0}/{1} 组", "Title checks: {0}/{1} groups resolved", "Titres : {0}/{1} groupes résolus", "Проверка заглавий: разрешено {0}/{1} групп", "Títulos: {0}/{1} grupos resueltos", "タイトル確認：{0}/{1} 組解決済み", "Títulos: {0}/{1} grupos resolvidos", "Titelprüfung: {0}/{1} Gruppen geklärt", "Провера наслова: решено {0}/{1} група", "제목 검토: {0}/{1}개 그룹 해결"]]);})();
+]);RFLang.register([["打开关联导入", "Open linked import", "Ouvrir l’import lié", "Открыть связанный импорт", "Abrir importación vinculada", "関連する取り込みを開く", "Abrir importação vinculada", "Verknüpften Import öffnen", "Отвори повезани увоз", "연결된 가져오기 열기"]]);RFLang.register([["标题", "Title", "Titre", "Заглавие", "Título", "タイトル", "Título", "Titel", "Наслов", "제목"], ["摘要", "Abstract", "Résumé", "Аннотация", "Resumen", "要旨", "Resumo", "Zusammenfassung", "Сажетак", "초록"], ["记录类型", "Record type", "Type de notice", "Тип записи", "Tipo de registro", "レコード種別", "Tipo de registro", "Datensatztyp", "Врста записа", "기록 유형"]]);RFLang.register([["标题核验：已解决 {0}/{1} 组", "Title checks: {0}/{1} groups resolved", "Titres : {0}/{1} groupes résolus", "Проверка заглавий: разрешено {0}/{1} групп", "Títulos: {0}/{1} grupos resueltos", "タイトル確認：{0}/{1} 組解決済み", "Títulos: {0}/{1} grupos resolvidos", "Titelprüfung: {0}/{1} Gruppen geklärt", "Провера наслова: решено {0}/{1} група", "제목 검토: {0}/{1}개 그룹 해결"]]);})();

@@ -11,6 +11,14 @@ from scipy.optimize import linprog
 from scipy.special import expit, log_expit
 from scipy.stats import norm
 
+# F4-105: the design is rows x (studies + 4) and the coefficient covariance is
+# (studies + 4)^2, so both memory and the separation LP grow with the study
+# count. 33,333 studies meant ~99 GiB of Python lists for the intercept block
+# (the review's static estimate). 500 studies is far beyond any real IPD
+# meta-analysis; the measured worst case at the cap (100,000 rows with 1,000
+# studies) finished in 34.6 s, so 500 stays well inside a single request.
+_MAX_STUDIES = 500
+
 
 def _number(value: object, label: str) -> float:
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
@@ -22,6 +30,19 @@ def _number(value: object, label: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{label} must be a finite number")
     return result
+
+
+def _finite_fsum(terms, message: str) -> float:  # noqa: ANN001
+    """``math.fsum`` 的溢出家族统一入口：中间溢出转 ValueError（4xx 契约）。
+
+    F4-106：study 均值聚合的 fsum 在全部输入都通过 ``_number`` 有限性校验时
+    仍可抛 ``OverflowError``（各项有限、精确和超 float 范围），端点只捕
+    ValueError，于是溢出变成 500。常规输入仍走同一条 fsum，结果逐位不变。
+    """
+    try:
+        return math.fsum(terms)
+    except OverflowError as exc:
+        raise ValueError(message) from exc
 
 
 def _separated(design: np.ndarray, outcome: np.ndarray) -> bool:
@@ -47,11 +68,17 @@ def _separated(design: np.ndarray, outcome: np.ndarray) -> bool:
 
 
 def _exp_or_none(value: float) -> float | None:
+    """exp() as a reportable ratio: None only when the exponent overflows.
+
+    F4-107: ``result or None`` also folded a correctly rounded underflow (0.0)
+    into None, so an audit table showed a real near-zero bound as a missing
+    value. Keep every finite result, including 0.0.
+    """
     try:
         result = math.exp(value)
     except OverflowError:
         return None
-    return result or None
+    return result if math.isfinite(result) else None
 
 
 def fit_ipd_interaction(
@@ -98,6 +125,13 @@ def fit_ipd_interaction(
     study_ids = list(by_study)
     if len(study_ids) < 2:
         raise ValueError("at least two studies are required")
+    # F4-105: the intercept block is rows x studies and the covariance is
+    # (studies + 4)^2, so an unbounded study count is an unbounded allocation.
+    if len(study_ids) > _MAX_STUDIES:
+        raise ValueError(
+            f"at most {_MAX_STUDIES} studies can enter one interaction model; "
+            f"got {len(study_ids)}"
+        )
     if set(study_sources) != set(study_ids) or any(
         not isinstance(source, str) or not source.strip() for source in study_sources.values()
     ):
@@ -117,7 +151,11 @@ def fit_ipd_interaction(
         overlap_high = min(max(arms[0]), max(arms[1]))
         if overlap_low >= overlap_high:
             raise ValueError(f"study {study_id} has insufficient within-study covariate overlap")
-        means[study_id] = math.fsum(x / len(observations) for _, _, x in observations)
+        # F4-106: all values passed _number, yet their divided sum can still
+        # exceed the float range; the family guard turns that into a 400.
+        means[study_id] = _finite_fsum(
+            (x / len(observations) for _, _, x in observations),
+            f"covariate values for study {study_id} are outside the representable numeric range")
 
     study_index = {study_id: index for index, study_id in enumerate(study_ids)}
     y = np.asarray([outcome for _, _, outcome, _ in parsed], dtype=float)

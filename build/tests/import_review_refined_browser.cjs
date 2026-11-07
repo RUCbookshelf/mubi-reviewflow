@@ -43,12 +43,17 @@ const root=path.resolve(__dirname,'../..');
  for(const file of ['import_review_model.js','import_review_updates.js','import_review_loading.js','unified_import_workspace.js'])await page.addScriptTag({path:path.join(root,'custom_frontend',file)});
  await page.evaluate(()=>WorkflowImports.open('b'));
  await page.waitForSelector('[id="wf-queue-candidate%3Ag0"]');
- const start=Date.now();await page.locator('.card-actions button').first().click();await page.waitForFunction(()=>document.querySelector('.card-head h3')?.textContent==='Literature 1'&&!document.querySelector('.card-actions button').disabled);
+ // MM8-01: since 501e1f3 grouped candidate cards render the fixed question
+ // ("Are these records the same article?") in .card-head h3 - only member-less
+ // record cards show the record title there. The record title for the selected
+ // queue entry lives in .queue-item.active .qtitle; both waits below assert it
+ // there instead of a .card-head h3 that can never hold it.
+ const start=Date.now();await page.locator('.card-actions button').first().click();await page.waitForFunction(()=>document.querySelector('.queue-item.active .qtitle')?.textContent==='Literature 1'&&!document.querySelector('.card-actions button').disabled);
  const nextMs=Date.now()-start;assert.ok(nextMs<1000,'Next enabled too late: '+nextMs);console.log('Next record enabled ms (2 s auxiliary requests still pending):',nextMs);
  assert.equal(await page.evaluate(()=>calls.filter(x=>x.method==='GET'&&x.url.includes('offset=0')&&!x.url.includes('import-history')).length),3,'Save must not reload initial pages');
  await page.waitForFunction(()=>document.querySelector('.load-state')?.dataset.phase==='complete');
  assert.equal(await page.locator('[id="wf-queue-candidate%3Ag0"]').count(),0,'Background data must not restore saved item');
- await page.getByRole('button',{name:'Undo last review',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.card-head h3')?.textContent==='Literature 0');
+ await page.getByRole('button',{name:'Undo last review',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.queue-item.active .qtitle')?.textContent==='Literature 0');
  await page.evaluate(()=>failure=true);await page.locator('.card-body input[type=radio]').last().check();await page.locator('.card-body details').first().evaluate(x=>x.open=true);
  const kept=await page.locator('.card-body input:checked').inputValue();await page.locator('.card-actions button').first().click();await page.waitForFunction(()=>document.querySelector('.status-message')?.textContent.includes('save failed'));
  assert.equal(await page.locator('.card-body input:checked').inputValue(),kept);assert.equal(await page.locator('.card-body details').first().evaluate(x=>x.open),true);

@@ -4,15 +4,19 @@
 - JWT：HS256 + 24h 过期，载荷含 sub(user_id) / username / iat / exp / jti；
 - 签名密钥：优先环境变量 ``COBOOKSHELF_JWT_SECRET``，否则持久化到
   ``{data_dir}/.jwt_secret``（0600 权限创建），重启后令牌不失效；
-- 密码策略：8~128 字节；用户名：3~64 字符，白名单字符（字母数字 . _ - @ 与 CJK）。
+- 密码策略：8~128 个字符，且 UTF-8 编码后 ≤72 字节（bcrypt 底层上限，
+  一个汉字占 3 字节）；用户名：3~64 字符，白名单字符（字母数字 . _ - @ 与 CJK）。
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import secrets
 import sqlite3
+import threading
+import time
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -21,6 +25,9 @@ from pathlib import Path
 import bcrypt
 import jwt
 from coscreen.security import sanitize_component
+from coscreen.task_collaboration import DB_FILENAME as _COLLABORATION_DB_FILENAME
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AuthError",
@@ -30,6 +37,7 @@ __all__ = [
     "decode_access_token",
     "get_user",
     "get_user_by_id",
+    "reserved_screener_collision",
     "verify_password",
 ]
 
@@ -41,6 +49,14 @@ JWT_ISSUER = "cobookshelf"
 _USERNAME_RE = re.compile(r"^[0-9A-Za-z._@\-\u4e00-\u9fff]{3,64}$")
 _MIN_PASSWORD_LEN = 8
 _MAX_PASSWORD_LEN = 128
+#: G-01：bcrypt 底层只接受 ≤72 字节的口令，超限 ``hashpw``/``checkpw`` 直接
+#: 抛 ``ValueError``。字节数按 UTF-8 编码计（一个汉字占 3 字节），据此在
+#: ``validate_password`` 显式设限，避免裸 ``ValueError`` 穿透注册端点的
+#: ``except AuthError``（曾 → 500 且限流占位不退）。
+_MAX_PASSWORD_BYTES = 72
+_PASSWORD_TOO_LONG_MSG = (
+    "密码过长：UTF-8 编码后不得超过 72 字节（一个汉字占 3 字节），请缩短密码。"
+)
 _BCRYPT_ROUNDS = 12
 
 _USERS_SCHEMA = """
@@ -84,8 +100,15 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 def hash_password(password: str) -> str:
-    """bcrypt 哈希（rounds=12）；返回 ASCII 可存储的哈希串。"""
-    digest = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS))
+    """bcrypt 哈希（rounds=12）；返回 ASCII 可存储的哈希串。
+
+    G-01 兜底：>72 字节的口令 ``bcrypt.hashpw`` 抛 ``ValueError``——收敛为
+    ``AuthError``，保证任何调用路径都走统一的 400+限流退款语义而非裸 500。
+    """
+    try:
+        digest = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS))
+    except ValueError as exc:
+        raise AuthError(_PASSWORD_TOO_LONG_MSG) from exc
     return digest.decode("ascii")
 
 
@@ -101,6 +124,20 @@ def verify_password(password: str, password_hash: str) -> bool:
 # 用户 CRUD
 # ---------------------------------------------------------------------------
 
+#: 任务目录内保留的筛选员库文件名（大小写不敏感比对，Windows 文件系统
+#: 不区分大小写）。用户名 slug 化后与之相撞的账号，其个人库会覆盖任务
+#: 协作权限库 collaboration.db，注册时直接拒绝（U4-P2）。
+_RESERVED_SCREENER_DB_NAMES = frozenset({_COLLABORATION_DB_FILENAME.casefold()})
+
+
+def reserved_screener_collision(username: str) -> bool:
+    """用户名 slug 化后是否与任务目录保留库名（collaboration.db）冲突。"""
+    from coscreen import tasks as _tasks
+
+    slug = _tasks.slugify_screener(username or "")
+    return f"{slug}.db".casefold() in _RESERVED_SCREENER_DB_NAMES
+
+
 def validate_username(username: str) -> str:
     clean = (username or "").strip()
     if not _USERNAME_RE.match(clean):
@@ -113,17 +150,38 @@ def validate_username(username: str) -> str:
 def validate_password(password: str) -> str:
     if not isinstance(password, str) or not (_MIN_PASSWORD_LEN <= len(password) <= _MAX_PASSWORD_LEN):
         raise AuthError(f"密码长度须为 {_MIN_PASSWORD_LEN}~{_MAX_PASSWORD_LEN} 个字符。")
+    if len(password.encode("utf-8")) > _MAX_PASSWORD_BYTES:
+        # G-01：25 个汉字（75 字节）这类「字符数合法、字节数超限」的口令曾
+        # 在 hash_password 抛裸 ValueError → 注册 500 且限流占位不退。
+        raise AuthError(_PASSWORD_TOO_LONG_MSG)
     return password
 
 
 def create_user(username: str, password: str) -> dict:
-    """注册新用户；重名抛 AuthError。返回 ``{id, username}``。"""
+    """注册新用户；重名抛 AuthError。返回 ``{id, username}``。
+
+    r6 #39/#45：重名检查前移到 ``hash_password`` **之前**——此前哈希先于
+    查重，每次重名注册都烧一轮 rounds=12 bcrypt（r6 实测 12 连重名 2.17s
+    CPU ≈ 0.18s/次），而注册端点对失败尝试 refund 不占限流额，未认证者
+    可用重名/保留名无限轰炸 CPU。前移后失败注册只剩一次只读查询，「重名
+    重试不占额」的宽容语义保留且不再有 bcrypt 消耗；事务内的最终查重
+    保留，并发注册同一用户名仍由 BEGIN IMMEDIATE 临界区兜底。
+    """
     clean = validate_username(username)
+    if reserved_screener_collision(clean):
+        # U4-P2：slug 撞上任务目录保留文件名 collaboration.db 的用户名
+        # 会把个人筛选库写进任务协作权限库，注册即拒绝。
+        raise AuthError("该用户名与任务协作数据库保留文件名冲突，请换一个用户名。")
     validate_password(password)
+    key = sanitize_component(clean, "_").casefold()
+    # r6 #45：查重前移（hash 前）——见 docstring；此处只读预检。
+    with closing(_connect()) as conn:
+        if any(sanitize_component(row[0], "_").casefold() == key
+               for row in conn.execute("SELECT username FROM users")):
+            raise AuthError("用户名与已有账号的筛选员数据路径冲突，请换一个用户名。")
     password_hash = hash_password(password)
     with closing(_connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
-        key = sanitize_component(clean, "_").casefold()
         if any(sanitize_component(row[0], "_").casefold() == key
                for row in conn.execute("SELECT username FROM users")):
             raise AuthError("用户名与已有账号的筛选员数据路径冲突，请换一个用户名。")
@@ -184,30 +242,312 @@ def authenticate(username: str, password: str) -> dict | None:
 # JWT
 # ---------------------------------------------------------------------------
 
+#: MM-03/r7 复审：.jwt_secret 写回失败（只读介质/权限）时的进程内应急密钥。
+#: ``_secret()`` 无进程缓存、每次读盘——若无此应急值，写失败会退化为
+#: 「每次调用重生成内存钥」：create_access_token 成功而 decode_access_token
+#: 恒 None（同一进程内静默 401 自锁）。应急钥使进程内签发/校验自洽；数据
+#: 目录恢复可写后，下一次调用即写回自愈（届时换钥，已发令牌需重新登录）。
+_EMERGENCY_SECRET: str | None = None
+_EMERGENCY_WRITE_LOGGED = False
+_secret_lock = threading.Lock()
+
+#: R3-02：并发首初始化的收敛等待窗口。只在**确证存在竞争者**时进入（见
+#: ``_atomic_write_secret`` 的 reason 口径）。窗口取 120ms：真实创建者的
+#: 首写 + fsync + replace 实测上限约 16ms（本机 20 次采样），留约 7 倍余量。
+_SECRET_CONVERGE_TIMEOUT_SECONDS = 0.12
+_SECRET_CONVERGE_STEP_SECONDS = 0.02
+#: ``_REPLACE_BLOCKED`` 的进程内负缓存：同一路径在窗口内等不到收敛，说明
+#: 「替换被永久挡住」（Windows 上被杀软/索引/备份以 share-deny-delete 打开
+#: 是常态），此时本进程在冷却期内**不再做收敛等待**（读取照旧、写入仍每次
+#: 重试），避免每个鉴权请求反复付窗口代价。
+#: 该判断只在「目标文件与安装缓存时形态相同」的前提下成立——写入成功、读到
+#: 有效持久钥（文件已恢复/并发创建者已写完），或目标文件指纹（stat）改变时，
+#: 缓存立即清除（见 :func:`_clear_blocked_cooldown` 与
+#: :func:`_target_fingerprint`），不会把真实并发创建者静默跳过收敛。
+_SECRET_BLOCKED_COOLDOWN_SECONDS = 30.0
+#: 持久密钥的可采用形态：64 位十六进制（``token_hex(32)`` 的产物）。大小写
+#: 均接受——产品写入恒为小写，但校验只用于排除「对方尚未写完的截断钥」，
+#: 不应因大小写差异把合法的完整密钥判为半截。重读值须匹配才采用。
+_SECRET_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+#: ``_atomic_write_secret`` 的失败归因（写入 reason 列表首项）。
+_REPLACE_BLOCKED = "replace_blocked"  # 临时文件已写好，仅替换被并发持有者挡住
+_UNWRITABLE = "unwritable"            # 目录/文件不可写（只读介质、权限、占位）
+
+#: 路径 -> ``(冷却截止 monotonic 时刻, 目标文件指纹)``（_REPLACE_BLOCKED
+#: 负缓存）。指纹见 :func:`_target_fingerprint`。
+_replace_blocked_until: dict[str, tuple[float, tuple[int, int] | None]] = {}
+
+
+def _target_fingerprint(path: Path) -> tuple[int, int] | None:
+    """``.jwt_secret`` 的轻量指纹 ``(st_mtime_ns, st_size)``；取不到为 None。
+
+    只用于判断「负缓存安装后目标文件是否变过」。Windows 上 ``share-deny-
+    delete`` 打开不影响 ``stat``，因此该调用通常不会因独占而失败。取不到
+    （返回 None）时由调用方比较：两次都取不到视为「形态未变」，一次取不到
+    一次取到视为「形态变了」。无论哪种情况，冷却期内的零等待重读仍在，文件
+    真正恢复（可读且形态合法）时会被读到并清除缓存，故 stat 不可用不会让
+    并发创建者被静默跳过。
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _clear_blocked_cooldown(path: Path) -> None:
+    """清除该路径的 ``_REPLACE_BLOCKED`` 负缓存。
+
+    负缓存只编码「替换被**永久**挡住」这一判断；一旦写入成功（临时文件已
+    落位、replace 成功）或读到有效的持久钥（文件已恢复/并发创建者已写完），
+    该判断即失效，必须立即清除，否则冷却期内的真实并发创建者会被静默跳过
+    收敛：本进程返回应急钥而磁盘是对方的钥，同一部署内签发/校验不同钥。
+    该操作在每次成功路径上都是 O(1) 的 dict pop，不构成稳态开销。
+    """
+    _replace_blocked_until.pop(str(path), None)
+
+
+def _atomic_write_secret(path: Path, secret: str, *, reason: list | None = None) -> bool:
+    """同目录临时文件 + os.replace 原子写回密钥（写后 fsync，0600）。
+
+    覆盖目标已存在（含空文件）的场景；掉电/崩溃不会留下半截或空密钥文件。
+    返回是否写回成功——失败由调用方走进程内应急口径并负责诊断日志。
+    ``reason``（可选，调用方传入的列表）收到失败归因：``_UNWRITABLE`` 表示
+    存储层不可写；``_REPLACE_BLOCKED`` 表示临时文件已成功落盘、只有最终替换
+    被挡住（典型为另一进程仍持有首建文件句柄）——后者才值得短暂等待收敛。
+    """
+    tmp = path.with_name(f".jwt_secret.{os.getpid()}.tmp")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(secret)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        if reason is not None:
+            reason.append(_UNWRITABLE)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    try:
+        os.replace(str(tmp), str(path))
+    except OSError:
+        if reason is not None:
+            reason.append(_REPLACE_BLOCKED)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _secret_shape_ok(value: str) -> bool:
+    """持久密钥形态校验：64 位十六进制（大小写均接受）。
+
+    用于排除「并发创建者尚未写完的截断钥」（空串/半截同样不匹配）；产品
+    写入恒为小写 ``token_hex(32)``。只施加于并发窗口内读到的值，早退路径
+    不施加该限制（见 ``_secret`` docstring 的边界说明）。
+    """
+    return bool(_SECRET_HEX_RE.match(value or ""))
+
+
+def _await_concurrent_creator(path: Path) -> str | None:
+    """有界重读：并发创建者原子写入后采用其持久钥；否则 None。
+
+    只在调用方**确证**替换被并发持有者挡住（``_REPLACE_BLOCKED``）时调用，
+    因此这里的等待是「一次首初始化的竞态窗口」而非每个请求的固定开销。
+    读到的值须通过 :func:`_secret_shape_ok`，否则继续等/放弃（不采用半截钥）。
+    """
+    deadline = time.monotonic() + _SECRET_CONVERGE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(_SECRET_CONVERGE_STEP_SECONDS)
+        try:
+            winner = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            winner = ""
+        if _secret_shape_ok(winner):
+            return winner
+    return None
+
+
+def _emit_secret_via_emergency(secret: str) -> str:
+    """写回失败时的进程内应急口径：稳定同钥 ＋ 一次性 ERROR 诊断日志。"""
+    global _EMERGENCY_SECRET, _EMERGENCY_WRITE_LOGGED
+    if not _EMERGENCY_WRITE_LOGGED:
+        logger.error(
+            "auth: failed to persist .jwt_secret (read-only data dir or "
+            "permission error); using an in-process secret — login/auth keeps "
+            "working inside this process, but tokens will not survive a "
+            "restart until the data dir becomes writable")
+        _EMERGENCY_WRITE_LOGGED = True
+    if _EMERGENCY_SECRET is None:
+        _EMERGENCY_SECRET = secret
+    return _EMERGENCY_SECRET
+
+
 def _secret() -> str:
-    """签名密钥：环境变量优先，否则 ``{data_dir}/.jwt_secret``（0600 新建）。"""
+    """签名密钥：环境变量优先，否则 ``{data_dir}/.jwt_secret``（0600 新建）。
+
+    MM-03：空密钥文件（O_EXCL 创建与首写之间崩溃/掉电、备份截断）曾原样
+    返回 ``""``——PyJWT 对空 HMAC 钥抛 ``InvalidKeyError``（**非**
+    ``InvalidTokenError`` 子类），登录与全部鉴权请求永久 500 且不自愈。
+    现空/空白文件一律视为未初始化：重新生成并原子写回（可自愈），并留
+    warning 日志便于运维定位此前的空文件事件。写回失败（只读/权限）时退
+    回**进程内稳定**的应急密钥（见 ``_EMERGENCY_SECRET``）并留 ERROR
+    日志——绝不退回空串或每次换钥。
+    R3-03：应急口径同样覆盖**首次建库**失败——父目录不可创建（被普通
+    文件占位/无权限）与首开 ``O_EXCL`` 抛非 ``FileExistsError`` 的存储
+    ``OSError``（密钥路径被目录占用、只读数据目录）此前直接冒泡，login/
+    create_access_token 全线 500，与本 docstring 承诺的「只读/权限 → 应
+    急密钥」相反。非 ``OSError`` 的编程错误不在此被掩盖。
+    R3-02：并发首初始化收敛——O_EXCL 只保证唯一创建者，不保证各进程返回
+    同一密钥（创建者在首写前被并发原子替换时，其 fd 写入落在已脱离目录
+    的旧 inode 上）。首建者写后重读持久值、替换被并发持有者挡住的一方有界
+    等待重读，任一路径都以磁盘持久钥为返回基准，消除「一个 worker 的钥 ≠
+    持久钥」。
+    收敛等待的边界（有意为之，勿当成缺陷）：
+    - 等待窗口 120ms（真实创建者首写+fsync+replace 实测上限约 16ms）；
+    - 不可写介质（只读/权限/路径被占位）零等待直接降级；
+    - ``os.replace`` 被**永久**挡住时（Windows 上杀软/索引/备份以
+      share-deny-delete 打开 ``.jwt_secret`` 是常态），首个请求付一次窗口
+      代价后做 30s 进程内负缓存：期间**不再付窗口代价**（每次仍尝试原子写，
+      并做一次零等待重读，见下），数据目录恢复可写后下一次调用即自愈。即该
+      场景是「一次 120ms + 稳态零额外开销」，不是每请求付费。
+      负缓存**不是**单向的：它只编码「替换被永久挡住」这一判断，以下任一
+      情形立即失效（见 :func:`_clear_blocked_cooldown` /
+      :func:`_target_fingerprint`）——
+        * 任一成功写回（首建 O_EXCL 写完，或原子替换成功）；
+        * 读到有效的持久钥（早退、锁内双检、并发收敛等待成功，以及冷却期内
+          那一次零等待重读读到形态合法的值）；
+        * 目标文件指纹（``st_mtime_ns`` / ``st_size``）与安装缓存时不同，
+          即「文件先坏后好再坏」：旧判断已失效，重新付一次完整窗口去等真实
+          并发创建者。
+      因此冷却期内的真实并发创建者不会被静默跳过收敛（R3-02 语义不缩水），
+      同时稳态仍不为每个请求付 120ms。
+    - 形态校验（64 位 hex）只施加于**并发窗口内读到的值**（排除对方尚未
+      写完的截断钥）；早退路径直接采用文件/环境变量里已有的密钥，不施加
+      该限制，以免拒绝运维手工放置的非 token_hex 形态密钥。
+    """
     env = os.environ.get("COBOOKSHELF_JWT_SECRET", "").strip()
     if env:
         return env
     path = data_dir() / ".jwt_secret"
     try:
-        return path.read_text(encoding="utf-8").strip()
+        existing = path.read_text(encoding="utf-8").strip()
     except OSError:
-        pass
-    secret = secrets.token_hex(32)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        # 并发首登录竞态：另一请求已生成密钥——优先读它，保证全体请求签发/校验同钥
+        existing = ""
+    if existing:
+        # 文件已恢复/对方已写完：负缓存所编码的「永久挡住」判断失效。
+        _clear_blocked_cooldown(path)
+        return existing
+    global _EMERGENCY_SECRET
+    with _secret_lock:
+        # 双检：锁内可能已有并发线程写回成功（跨进程竞态仍由 O_EXCL 兜底）
         try:
-            existing = path.read_text(encoding="utf-8").strip()
+            winner = path.read_text(encoding="utf-8").strip()
         except OSError:
-            return secret
-        return existing or secret
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(secret)
-    return secret
+            winner = ""
+        if winner:
+            _clear_blocked_cooldown(path)
+            return winner
+        secret = secrets.token_hex(32)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # R3-03：父目录不可创建（被普通文件占位 → FileExistsError、无
+            # 权限 → PermissionError）——存储层失败，与空密钥写回失败同一
+            # 层的有界应急回退，不冒泡 500。
+            return _emit_secret_via_emergency(secret)
+        if path.exists() and not _EMERGENCY_WRITE_LOGGED:
+            # MM-03 主路径：文件存在但为空（首写前崩溃/掉电、备份截断）。
+            logger.warning(
+                "auth: empty .jwt_secret detected; regenerating and rewriting "
+                "atomically (previously this broke login/auth with 500s)")
+        try:
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # 并发首登录竞态（跨进程）或既有空文件：优先读已存在内容，保证
+            # 全体请求签发/校验同钥；仍为空则原子重写，失败走应急口径。
+            try:
+                winner = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return _emit_secret_via_emergency(secret)
+            if winner:
+                _clear_blocked_cooldown(path)
+                return winner
+            reason: list[str] = []
+            if _atomic_write_secret(path, secret, reason=reason):
+                _clear_blocked_cooldown(path)
+                _EMERGENCY_SECRET = None
+                return secret
+            # R3-02（Windows 镜像）：原子替换失败常因另一进程正持有首建 fd、
+            # 其首写尚未落盘——此刻并非「只读介质」。**只有**确证「临时文件
+            # 已落盘、仅替换被并发持有者挡住」才做有界等待重读（对方完成后
+            # 采用其持久钥）；不可写介质一律零等待直接落应急口径，不给每个
+            # 鉴权请求叠加阻塞。
+            if _REPLACE_BLOCKED in reason:
+                key = str(path)
+                now = time.monotonic()
+                cached = _replace_blocked_until.get(key)
+                if (cached is not None and cached[0] > now
+                        and cached[1] is not None
+                        and cached[1] == _target_fingerprint(path)):
+                    # 冷却期内且文件形态未变：不再付完整窗口代价，但仍做一次
+                    # **零等待重读**——真实并发创建者往往刚刚写完，这一步以
+                    # 一次 read（微秒级）把它接住，不静默跳过收敛。读到有效
+                    # 钥即采用并清除缓存。该分支只会在「本次调用开始时文件为
+                    # 空、现在非空」时命中，即一定是并发写入，故施加形态校验
+                    # （对方可能只写了一半），不以截断钥签发令牌。
+                    try:
+                        late = path.read_text(encoding="utf-8").strip()
+                    except OSError:
+                        late = ""
+                    if _secret_shape_ok(late):
+                        _clear_blocked_cooldown(path)
+                        _EMERGENCY_SECRET = None
+                        return late
+                else:
+                    # 无冷却项、冷却已过期，或目标文件指纹变了（先坏后好再坏
+                    # / 对方刚写完）：旧判断失效，重新付一次完整窗口。
+                    converged = _await_concurrent_creator(path)
+                    if converged:
+                        _clear_blocked_cooldown(path)
+                        _EMERGENCY_SECRET = None
+                        return converged
+                    _replace_blocked_until[key] = (
+                        now + _SECRET_BLOCKED_COOLDOWN_SECONDS,
+                        _target_fingerprint(path),
+                    )
+            return _emit_secret_via_emergency(secret)
+        except OSError:
+            # R3-03：首开失败但非「已存在」（密钥路径被目录占用、只读数据
+            # 目录等）——同为存储层失败，走应急口径；编程错误仍照常冒泡。
+            return _emit_secret_via_emergency(secret)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(secret)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            # 首建后写失败（极可能留下空文件，下次调用走原子重写自愈）
+            return _emit_secret_via_emergency(secret)
+        _EMERGENCY_SECRET = None
+        # 首建成功即写入成功：负缓存所编码的「替换被永久挡住」判断失效。
+        _clear_blocked_cooldown(path)
+        # R3-02：并发首初始化收敛——O_EXCL 创建与首写之间，另一进程可能已把
+        # 空文件原子替换为新钥（POSIX 下本 fd 指向已被替换的旧 inode，写入
+        # 落在已解除链接的副本上；Windows 下对方替换失败、走应急口径）。写后
+        # 重读持久值并以其为准，保证本进程返回的密钥与磁盘持久钥一致；只采用
+        # 形态合法的值（对方可能尚未写完），否则以本进程已落盘的 secret 为准。
+        try:
+            persisted = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            persisted = ""
+        return persisted if _secret_shape_ok(persisted) else secret
 
 
 def create_access_token(user_id: int, username: str) -> str:
@@ -225,7 +565,12 @@ def create_access_token(user_id: int, username: str) -> str:
 
 
 def decode_access_token(token: str) -> dict | None:
-    """校验并解码 JWT；任何失败（过期/签名/格式）返回 None，绝不抛异常。"""
+    """校验并解码 JWT；任何失败（过期/签名/格式）返回 None，绝不抛异常。
+
+    MM-03：空 HMAC 钥触发 PyJWT ``InvalidKeyError``——它**不是**
+    ``InvalidTokenError`` 子类（MRO 为 InvalidKeyError→PyJWTError→Exception），
+    曾未被兜住而冒泡 500。纳入 except 后降级 None（→401）。
+    """
     try:
         payload = jwt.decode(
             token,
@@ -234,7 +579,7 @@ def decode_access_token(token: str) -> dict | None:
             issuer=JWT_ISSUER,
             options={"require": ["exp", "iat", "sub"]},
         )
-    except (jwt.InvalidTokenError, KeyError):
+    except (jwt.InvalidTokenError, jwt.InvalidKeyError, KeyError):
         return None
     if not isinstance(payload.get("sub"), str) or not payload.get("username"):
         return None

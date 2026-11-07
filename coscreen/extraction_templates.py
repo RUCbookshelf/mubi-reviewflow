@@ -176,8 +176,18 @@ def calculate_dta_2x2(tp: int, fp: int, fn: int, tn: int) -> dict:
                 "input_data": dict(cells), "entry_method": "diagnostic_2x2"}
     if tp + fn <= 0 or tn + fp <= 0:  # 防御：四格均 >0 时不可达
         raise ValueError("患病组与非患病组都必须有受试者")
-    dor = (tp * tn) / (fp * fn)
-    se = math.sqrt(1 / tp + 1 / fp + 1 / fn + 1 / tn)
+    # b05·F4-40 / b06·F4-45：大整数先溢出在整数真除法上（OverflowError 非
+    # ValueError，越过端点 except ValueError 变 500），:181 的 isfinite 兜底
+    # 守卫到不了。数学上 DOR 只需 log 尺度可表示即可；正常计数仍走同一整数
+    # 除法（结果逐位不变），仅当除法本身溢出时按同一 400 口径拒绝。
+    try:
+        dor = (tp * tn) / (fp * fn)
+    except OverflowError as exc:
+        raise ValueError("诊断比值比超出可表示范围") from exc
+    try:
+        se = math.sqrt(1 / tp + 1 / fp + 1 / fn + 1 / tn)
+    except OverflowError as exc:  # 防御：四格 >0 时 1/x 不会溢出
+        raise ValueError("诊断比值比超出可表示范围") from exc
     if not math.isfinite(dor) or not math.isfinite(se) or se <= 0:
         raise ValueError("诊断比值比超出可表示范围")
     return {"measure": DTA_ROUTING_CODE, "estimate": dor, "se": se, "se_scale": "log",
@@ -254,9 +264,9 @@ TEMPLATES: dict[str, ExtractionTemplate] = {
             ExtractionField(key="ci_high", label="CI 上限", input_type="number",
                             required=True),
             ExtractionField(key="events_t", label="治疗组事件数", input_type="number",
-                            required=False),
+                            required=False, validation={"min": 0}),
             ExtractionField(key="events_c", label="对照组事件数", input_type="number",
-                            required=False),
+                            required=False, validation={"min": 0}),
         ],
         effect_measure="HR",
         effect_function="coscreen.extraction_templates.calculate_hr_with_ci",
@@ -272,19 +282,40 @@ def _blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+# 数值字段的计算预算（b06·F4-41/F4-44/F4-45 的溢出守卫前移）。
+# 下游计算器（review_analysis.continuous_effect / binary_effect、
+# effect_size_formats 的 log 变换）对报告值做平方、两两乘积与逆方差求逆：
+# |x| ≤ 1e150 时 x²、x·y、(n-1)·x² 都远低于 float64 上限 1.8e308，不会在
+# 计算器内部抛 OverflowError（那会越过端点 except ValueError 变 500）。
+# 真实报告里的效应量、SD、事件数、人时都远小于该量级，合法输入不受影响。
+_MAX_FIELD_MAGNITUDE = 1e150
+
+
 def _coerce_number(field: ExtractionField, value: Any) -> int | float:
-    """数字字段 → int/float；整数值的浮点输入转为 int（匹配臂级计算器的整数参数）。"""
+    """数字字段 → int/float；整数值的浮点输入转为 int（匹配臂级计算器的整数参数）。
+
+    溢出守卫前移（b06·F4-44）：超大整数在 ``float()`` 处抛 OverflowError，
+    原实现只把字符串路径包进 try，int/float 直传时异常越过端点的
+    ``except ValueError`` 变 500。两条路径统一转 ValueError。
+    """
     if isinstance(value, bool):
         raise ValueError(f"{field.label} 必须是数字")
-    if isinstance(value, (int, float)):
-        number = float(value)
-    else:
-        try:
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)
+        else:
             number = float(str(value).strip())
-        except ValueError as exc:
-            raise ValueError(f"{field.label} 必须是数字") from exc
+    except OverflowError as exc:
+        # 仅超大整数新增这条文案；非数字文本仍走下一行原口径（R1：不改既有格式）
+        raise ValueError(f"{field.label} 必须是可表示范围内的数字") from exc
+    except ValueError as exc:
+        raise ValueError(f"{field.label} 必须是数字") from exc
     if not math.isfinite(number):
         raise ValueError(f"{field.label} 必须是有限数字")
+    if abs(number) > _MAX_FIELD_MAGNITUDE:
+        # 幅值超预算时下游平方/乘积必溢出（OverflowError 非 ValueError →
+        # 500）；前移到数值校验阶段按 400 口径拒绝，而不是在计算器内部炸开。
+        raise ValueError(f"{field.label} 超出可计算的数值范围")
     return int(number) if number.is_integer() else number
 
 
@@ -384,8 +415,42 @@ def map_to_effect(template: ExtractionTemplate, values: dict[str, Any],
     result["source_key"] = source_key
     calculator_entry_method = result.get("entry_method")  # 计算器自报的格式名（如 hazard_ratio_ci）
     result["entry_method"] = "extraction:" + template.template_id
-    input_data = {"template_id": template.template_id, "values": dict(values)}
+    # MM5-12：落库 values 必须与计算实际使用的输入一致（checked 已做数值强制转换，
+    # 如 "3e1" -> 30）；原始提交另存 raw_values 供审计溯源，不再冒充计算输入。
+    # v15·F4-48：计算器签名里的附加参数（measure 覆盖、confidence_level 等，
+    # 即 allowed_extra）同样参与计算，必须一并落入 values——否则同一组模板
+    # 字段配合 confidence_level=0.90 算出的 se 无法仅凭 values 复现。
+    signature = inspect.signature(func)
+    extras_used: dict[str, Any] = {}
+    for param_name in sorted(allowed_extra):
+        if param_name not in signature.parameters:
+            continue  # "measure" 对不接受覆盖的模板不在签名内（已在上方拒绝覆盖）
+        if param_name in kwargs:
+            extras_used[param_name] = kwargs[param_name]
+            continue
+        default = signature.parameters[param_name].default
+        if default is not inspect.Parameter.empty:
+            extras_used[param_name] = default
+    input_data = {"template_id": template.template_id,
+                  "values": {**checked, **extras_used},
+                  "raw_values": dict(values)}
     if calculator_entry_method:
         input_data["calculator_entry_method"] = calculator_entry_method
+    if result.get("measure") == "SMD" and func is calculate_continuous_effect:
+        # MM5-04（两层，评审第 1 轮后补全）：
+        # 1) 新行：在已知计算器身份处（func is calculate_continuous_effect，与
+        #    臂级 entry_method="continuous arms" 调用同一个 continuous_effect，
+        #    pooled SD + 近似 J 校正）显式写入一致 estimator_metadata——修复后
+        #    新写入的行不依赖任何按 entry_method 的猜测；
+        # 2) 存量行：2.1.3 已入库行在 save_effect 中固化 unclassified_smd，
+        #    由 smd_contract._LEGACY_APPROXIMATE_SUMMARY_FORMATS 纳入
+        #    "extraction:rct_continuous"（按完整字面量，非 "extraction:*" 前缀
+        #    ——前缀会让未来任何产出 SMD 的模板被冒认 hedges_g）＋
+        #    pool_compatibility 对存量 unclassified 行按分类器现值读时升级，
+        #    旧行/新行/臂级行三者同池可合成，不重写存量数据。
+        # 动态导入：smd_contract 顶层依赖 scipy，本模块保持导入零副作用。
+        from coscreen.smd_contract import legacy_smd_metadata
+
+        input_data["estimator_metadata"] = legacy_smd_metadata("continuous arms")
     result["input_data"] = input_data
     return result

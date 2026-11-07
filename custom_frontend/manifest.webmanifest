@@ -1,0 +1,33 @@
+{
+  "name": "木笔 ReviewFlow · 协同文献筛选",
+  "short_name": "木笔ReviewFlow",
+  "description": "协同文献筛选与证据合成工作台（本地部署；离线时仅提供只读缓存快照，不支持离线编辑）",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F7FBF9",
+  "theme_color": "#2F6F6A",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

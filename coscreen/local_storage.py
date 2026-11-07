@@ -372,6 +372,40 @@ def _copytree(source: Path, target: Path, excludes: set[str]) -> None:
             shutil.copy2(path, dest_base / name)
 
 
+def _rebase_undo_journal_document(doc, source: Path, destination: Path) -> bool:
+    """改写撤销 journal 快照（before/after JSON）中证据图片的旧绝对路径。
+
+    迁移前已 detach 的图片没有 coding_note_images 行可被表级重写覆盖，其路径
+    只存在于 workspace_undo 快照里；不重写会使迁移后的撤销被守卫误判或恢复出
+    指向旧目录的悬空行。与表级重写不同，这里对源目录下已缺失的文件不报错：
+    悬空引用由撤销入口统一检测并明确拒绝（见 workspace_undo）。"""
+    changed = False
+    if not isinstance(doc, dict):
+        return False
+    for key in ("coding_evidence", "evidence"):
+        evidence = doc.get(key)
+        if not isinstance(evidence, dict):
+            continue
+        for state in evidence.values():
+            images = state.get("images") if isinstance(state, dict) else None
+            if not isinstance(images, list):
+                continue
+            for image in images:
+                if not isinstance(image, list) or len(image) < 3 or not isinstance(image[2], str):
+                    continue
+                candidate = Path(image[2])
+                if not candidate.is_absolute():
+                    continue
+                candidate = _absolute(candidate)
+                if not _inside(candidate, source):
+                    continue
+                rebased = destination / candidate.relative_to(source)
+                if str(rebased) != image[2]:
+                    image[2] = str(rebased)
+                    changed = True
+    return changed
+
+
 def _rebase_db_paths(path: Path, source: Path, destination: Path, copied_root: Path) -> None:
     uri = path.resolve().as_uri() + "?mode=rw"
     try:
@@ -387,7 +421,9 @@ def _rebase_db_paths(path: Path, source: Path, destination: Path, copied_root: P
         if integrity != "ok":
             raise ValueError(f"A copied database failed integrity verification: {path.name}")
         updates = []
-        for table in ("fulltexts", "coding_note_images"):
+        # workflow_evidence_uploads（暂存/已附加的证据上传）同样持有绝对路径：
+        # 不改写会使迁移后的预览 404、垃圾回收与 attached 复位判定错位。
+        for table in ("fulltexts", "coding_note_images", "workflow_evidence_uploads"):
             if table not in tables:
                 continue
             columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -404,10 +440,33 @@ def _rebase_db_paths(path: Path, source: Path, destination: Path, copied_root: P
                         raise ValueError(f"A copied attachment is missing: {relative}")
                     rebased = destination / relative
                     updates.append((table, int(rowid), str(rebased)))
-        if updates:
+        journal_updates = []
+        if "workspace_undo" in tables:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_undo)")}
+            if {"before_json", "after_json"} <= columns:
+                for rowid, before_json, after_json in conn.execute(
+                        "SELECT rowid,before_json,after_json FROM workspace_undo"):
+                    rebased, changed = [], False
+                    for raw in (before_json, after_json):
+                        try:
+                            doc = json.loads(raw)
+                        except ValueError:
+                            rebased.append(raw)
+                            continue
+                        if _rebase_undo_journal_document(doc, source, destination):
+                            changed = True
+                            rebased.append(json.dumps(doc, ensure_ascii=False))
+                        else:
+                            rebased.append(raw)
+                    if changed:
+                        journal_updates.append((rebased[0], rebased[1], int(rowid)))
+        if updates or journal_updates:
             with conn:
                 for table, rowid, rebased in updates:
                     conn.execute(f"UPDATE {table} SET path=? WHERE rowid=?", (rebased, rowid))
+                for before, after, rowid in journal_updates:
+                    conn.execute("UPDATE workspace_undo SET before_json=?, after_json=? WHERE rowid=?",
+                                 (before, after, rowid))
             if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError(f"A copied database failed integrity verification: {path.name}")
     finally:

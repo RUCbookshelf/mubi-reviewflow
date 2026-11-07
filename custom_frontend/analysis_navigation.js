@@ -42,6 +42,15 @@
   const directoryToggle = button('anDirectoryToggle','打开分析目录','btn an-quiet-button');
   directoryToggle.setAttribute('aria-controls','anDirectory'); directoryToggle.setAttribute('aria-expanded','false');
   nav.id = 'anDirectory'; headingTools.append(directoryToggle); pageHeader.append(headingTools);
+  /* F19（随版缓解，只做挂链入口）：分析页页首挂「查看帮助」，与初筛/编码页的
+     入口（workspace_shell.js）同一标记；帮助页「工作流程」主题内容归结构包。 */
+  const helpEntry=h('a',{class:'rf-help-entry','data-rf-help-entry':'analysis',href:registry.href({page:'help'})},
+    h('span',{'data-rf-help-entry-label':'','text':T('查看帮助')}));
+  helpEntry.addEventListener('click',event=>{
+    if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+    event.preventDefault();navigateRoute({page:'help'},{focus:event.detail===0});
+  });
+  headingTools.append(helpEntry);
   const top = document.querySelector('#appMain .top');
   // Global workspace_shell.js owns the shared, interactive breadcrumb.
   const pageNotes = [...page.querySelectorAll(':scope > p.hint:not(#anLoadStatus)')];
@@ -89,6 +98,22 @@
   const returnButton=button('anReturnToMethod','返回当前方法','btn an-quiet-button');returnButton.hidden=true;
   catalog.append(h('header',{class:'an-catalog-heading'},h('div',{},catalogTitle,catalogDescription),returnButton),
     h('div',{class:'an-catalog-search'},catalogSearch,clearSearch,catalogCount));
+  /* F06（随版缓解，仅目录页新手路径卡）：三个入口直接指向注册表里的三个模块
+     （数据准备 → 效应量计算 → 总体效应合并），不在这里挑具体方法——方法级取舍
+     需内容评审。组名与顺序都取自 RFNavigation，重排/改名注册表即同步；每步的
+     组名单独成节点（纯键），切语言时由引擎按词典重译。 */
+  const beginnerList=h('ul',{class:'an-catalog-methods'});
+  for(const [index,groupId] of ['data','effects','synthesis'].entries()){
+    const group=registry.group(groupId);if(!group)continue;
+    const step=h('li',{},h('a',{href:registry.href({page:'analysis',group:groupId})},
+      h('span',{class:'an-beginner-step-number','aria-hidden':'true',translate:'no',text:String(index+1)}),
+      document.createTextNode(' · '),h('span',{text:T(group.label)})));
+    beginnerList.append(step);
+  }
+  const beginnerPath=h('section',{id:'anBeginnerPath',class:'an-catalog-group an-beginner-path','data-beginner-path':'','aria-labelledby':'anBeginnerPathTitle'},
+    h('header',{},h('h4',{id:'anBeginnerPathTitle',text:T('新手路径')}),
+      h('p',{text:T('按三个步骤开始：先准备数据，再计算效应量，最后合并分析。')})),beginnerList);
+  catalog.append(beginnerPath);
   const catalogSections=[];
   for(const group of registry.groups){
     const heading=h('a',{href:registry.href({page:'analysis',group:group.id}),'data-catalog-group':group.id,text:T(group.label)});
@@ -104,6 +129,40 @@
   }
   const catalogEmpty=h('div',{class:'an-catalog-empty',hidden:true},h('h4',{text:T('未找到匹配的方法')}),h('p',{text:T('请选择一种方法继续；已有输入和结果会保留。')}));catalog.append(catalogEmpty);
   workspace.prepend(catalog);
+
+  /* F17（随版缓解）：fragment/entryMode 类工具的落地卡顶部常驻上下文条——当前
+     方法名 + 所属模块 + 返回目录，不再只靠被改写的卡标题重新定位。方法切换时由
+     renderTool 重挂到目标卡；其余入口保持原样（35 个入口全覆盖属结构包）。 */
+  const landingContext=h('div',{id:'anLandingContext',class:'an-landing-context hint',role:'note',hidden:true});
+  /* 落地卡的容器不一定以 view 为 id：entry／synthesis 共用 anJumpEffects，单研究区间
+     类共用 anIntervalsPanel 的几张卡。这里的取值与 renderTool 的选中判定同源，
+     否则 entryMode（零单元格等）根本找不到卡，上下文条永远不出现。 */
+  function landingCardFor(tool){
+    if(!tool)return null;
+    return cards.find(card=>card.id===tool.view
+      ||(card===effects&&(tool.view==='entry'||tool.view==='synthesis'))
+      ||(tool.view==='anIntervalsPanel'&&intervalCards.has(card.id)))||null;
+  }
+  function syncLandingContext(tool,card,heading){
+    landingContext.remove();landingContext.hidden=true;landingContext.replaceChildren();
+    if(!tool||!card||!(tool.fragment||tool.entryMode))return;
+    const group=registry.group(tool.group);if(!group)return;
+    const back=h('a',{href:registry.href({page:'analysis'}),class:'an-quiet-button','data-an-back-to-catalog':''},
+      h('span',{text:T('返回分析目录')}));
+    back.addEventListener('click',event=>{
+      if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+      event.preventDefault();navigateRoute({page:'analysis'},{focus:event.detail===0});
+    });
+    landingContext.append(h('span',{class:'an-landing-method',text:T('当前方法：{0}',T(tool.label))}),
+      document.createTextNode(' · '),h('span',{class:'an-landing-group',text:T('分析模块：{0}',T(group.label))}),
+      document.createTextNode(' · '),back);
+    landingContext.hidden=false;
+    if(heading)heading.after(landingContext);else card.prepend(landingContext);
+  }
+  function refreshLandingContext(){
+    const card=landingCardFor(state.tool);
+    syncLandingContext(state.catalog?null:state.tool,card,cardHeadings.get(card));
+  }
 
   // Shared scope: the study selector is an ENTRY control, not a synthesis filter.
   const scope=$id('anScope'), scopeRow=scope.querySelector('.row');
@@ -449,9 +508,10 @@
       if(tool.id==='zero-cells')hideFragment($id('anMeasure').closest('.an-scope-field'));
       const primary=$id(tool.entryMode);primary.classList.add('an-fragment-primary');fragmentNodes.push(primary);
     }
-    const card=cards.find(node=>node.id===tool.view);
+    const card=landingCardFor(tool);
     const heading=cardHeadings.get(card);
     if(heading)heading.textContent=T(tool.label);
+    syncLandingContext(tool,card,heading);
     const provenanceUse=!tool.fragment&&provenanceUses[tool.view];
     if(provenanceUse&&card){
       if(heading)heading.after(entryProvenance);else card.prepend(entryProvenance);
@@ -471,7 +531,7 @@
         // count type required by the Peters test); rows marked as shared stay reachable.
         const shared=child=>child.matches?.('[data-an-fragment-shared~="'+tool.fragment+'"]')
           || !!child.querySelector?.('[data-an-fragment-shared~="'+tool.fragment+'"]');
-        for(const child of card.children)if(child!==heading&&child!==fragment&&!child.contains(fragment)&&!shared(child))hideFragment(child);
+        for(const child of card.children)if(child!==heading&&child!==landingContext&&child!==fragment&&!child.contains(fragment)&&!shared(child))hideFragment(child);
         fragment.open=true;fragment.classList.add('an-fragment-primary');fragmentNodes.push(fragment);
       }
     }
@@ -493,6 +553,7 @@
     if(!state.catalog&&state.tool)state.catalogReturn={tool:state.tool.id,scroll:viewport.scrollTop,editing:state.editing,editor:state.editor};
     if(state.editing)closeEditor(false,false);
     resetFragments();state.catalog=true;state.catalogGroup=group;state.view='catalog';
+    syncLandingContext(null);
     cards.forEach(card=>card.classList.add('an-view-hidden'));
     for(const node of [entryStart,studyField])node.classList.add('an-view-hidden');
     catalog.hidden=false;
@@ -572,6 +633,7 @@
       section.hidden=!visible;
     }
     catalogCount.textContent=T(term?'找到 {0} 个方法':'共 {0} 个方法入口',count);catalogEmpty.hidden=count>0;
+    beginnerPath.hidden=!!state.catalogGroup||!!term;
     returnButton.hidden=!state.catalogReturn;returnButton.textContent=T('返回当前方法');
     if(state.catalogReturn)returnButton.title=T('返回：{0}',T(registry.tool(state.catalogReturn.tool).label));
   }
@@ -689,7 +751,7 @@
     queueMicrotask(()=>{if(state.snapshot)renderHeterogeneity(state.snapshot.result);});
   });
   document.addEventListener('reviewflow:analysis-synthesis-running',()=>{state.status='running';errorHost.hidden=true;updateResultUI();});
-  document.addEventListener('reviewflow:analysis-synthesis-failed',event=>{state.status='error';errorHost.replaceChildren(RFAnalysisLocale.message(event.detail));errorHost.hidden=false;updateResultUI();});
+  document.addEventListener('reviewflow:analysis-synthesis-failed',event=>{const payload=event.detail||{};const text=typeof payload==='string'?payload:payload.message;/* 高2（评审修正）：localized 从 detail 解包（CustomEvent init 的顶层自定义键会被浏览器丢弃，不能从 event 上读）。 */state.status='error';errorHost.replaceChildren(RFAnalysisLocale.message(text,{localized:payload.localized===true}));errorHost.hidden=false;updateResultUI();});
   document.addEventListener('reviewflow:analysis-synthesis-ready',event=>{
     const result=event.detail||anLastForestResult;if(!result)return;
     state.snapshot={taskId:S.task?.task_id,result:structuredClone({...result,effects:result.effects.map(effect=>({...anSourceFields(effect.source_key),...effect}))}),scope:readScope(),appearance:{color:anValue('anForestColor'),digits:Number(anValue('anForestDigits')),title:anValue('anForestCustomTitle'),prediction:$id('anForestShowPrediction').checked},svg:$id('anForest').querySelector('svg')?.cloneNode(true)};
@@ -705,6 +767,7 @@
   document.addEventListener('reviewflow:language-changed',()=>{
     updateConfig();updateResultUI();renderMethods(state.snapshot);refreshNavigation();
     if(state.tool&&!state.catalog){const card=cards.find(card=>card.id===state.tool.view);const heading=cardHeadings.get(card);if(heading)heading.textContent=T(state.tool.label);if(state.tool.view==='synthesis')title.textContent=T(state.tool.label);if(state.tool.view==='entry')originalChildren[0].textContent=T(state.tool.label);}
+    refreshLandingContext();
     if(state.status==='ready'&&state.snapshot){renderOverview(state.snapshot.result);renderHeterogeneity(state.snapshot.result);}
     refreshLayout();
   });

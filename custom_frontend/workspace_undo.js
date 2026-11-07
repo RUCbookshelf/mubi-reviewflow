@@ -19,10 +19,21 @@
   addButton('screen', focusStrip, focusStrip?.lastElementChild);
   addButton('fulltext', $('#ftPrevDoc')?.parentElement, $('#ftPrevDoc')?.nextSibling);
   addButton('coding', $('#cbSave')?.parentElement, $('#cbSave'));
+  /* F25（r10-u1）：批准单「Ctrl+Z 在撤销按钮旁给可见快捷键提示（现仅 title
+     悬停可见）」。快捷键此前只出现在 title 里——触屏与从不悬停的用户完全看不到。
+     提示作为按钮子节点，随按钮一起被移动端布局（mobile_concept.js 按
+     [data-undo-stage] 搬迁）带走，不会脱队；≤760px 与粗指针设备由
+     screen_reader.css 隐藏（那里没有物理键盘）。
+     注意 sync() 必须只重写文本节点，不能用 textContent 覆盖——那会把 <kbd> 冲掉。 */
+  const shortcut = mac ? '⌘Z' : 'Ctrl+Z';
+  function paint(b, label) {
+    b.replaceChildren(label, el('kbd', {class:'rf-undo-kbd', 'aria-hidden':'true', text:shortcut}));
+  }
   function sync() {
     for (const b of buttons) {
-      b.textContent = T(busy ? '正在撤销…' : '撤销上次保存');
-      b.title = T('恢复上次保存前的状态并返回该文献') + ' · ' + (mac ? 'Command+Z' : 'Ctrl+Z');
+      paint(b, T(busy ? '正在撤销…' : '撤销上次保存'));
+      b.title = T('恢复上次保存前的状态并返回该文献') + ' · ' + shortcut;
+      b.setAttribute('aria-keyshortcuts', mac ? 'Meta+Z' : 'Control+Z');
       b.disabled = !S.task || !S.user || !latest[b.dataset.undoStage] || busy || saving > 0 ||
         window.WorkflowControls?.settings()?.stages?.[b.dataset.undoStage]?.mode === 'paused' ||
         (b.dataset.undoStage === 'screen' && S.screenLoadedTask !== S.task?.task_id) ||
@@ -83,11 +94,17 @@
       toast(T('已恢复上次保存前的状态'), 'inc');
     } catch (error) {
       if (current === scope()) {
+        /* F62（r10-u1）：后端英文错误串此前被原样拼进中文界面（撤销边界等
+           十语言词条其实早已注册却没接上）。两处拼接点统一过 T()——词典以
+           中文源串与英文原串**双键**注册（见 interface_locale.js 的撤销错误
+           注册块），因此任一界面语言都能命中译文；未注册的技术串原样透传。
+           注意 error.message 在 errOf 已过一层 T()，重复过 T() 对已译文是
+           幂等（字典里没有以译文为键的行）。 */
         if (committed) {
           await refreshProgress();
-          toast(T('已恢复上次保存前的状态') + ' · ' + error.message, 'warn');
+          toast(T('已恢复上次保存前的状态') + ' · ' + T(error.message), 'warn');
         } else {
-          toast(T('撤销失败：') + error.message, 'warn');
+          toast(T('撤销失败：') + T(error.message), 'warn');
           if (error.status === 409) { WorkflowControls.error(error); await refresh(stage); }
         }
       }

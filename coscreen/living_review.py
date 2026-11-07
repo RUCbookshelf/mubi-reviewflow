@@ -28,6 +28,7 @@ null = 0（即展示尺度的 1）；MD/SMD/RD 等差值类指标本身在自然
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -35,7 +36,12 @@ from typing import Any, Mapping, Sequence
 
 from coscreen import db as db_mod
 from coscreen.al.ranker import ActiveLearningRanker
-from coscreen.dedup import find_duplicates
+from coscreen.dedup import (
+    DuplicatePair,
+    find_duplicates,
+    merged_group_roots,
+    stabilize_conflicting_keys,
+)
 from coscreen.models import Article
 from coscreen.parsers import parse_file
 from coscreen.review_analysis import save_effect, save_study, synthesize
@@ -99,6 +105,7 @@ class IncrementalResult:
     change_report: str = ""                             # 人可读的变更摘要
     al_available: bool = True                           # 扩展：AL 是否可用（标签不足为 False）
     al_note: str = ""                                   # 扩展：AL 不可用原因 / 模型说明
+    pending_candidates: int = 0                         # 扩展：待人工确认的模糊/键冲突候选组数
 
     def to_dict(self) -> dict:
         return {
@@ -114,6 +121,7 @@ class IncrementalResult:
             "change_report": self.change_report,
             "al_available": self.al_available,
             "al_note": self.al_note,
+            "pending_candidates": self.pending_candidates,
         }
 
 
@@ -219,6 +227,8 @@ def _build_change_report(
     meta_after: Mapping,
     conclusion_changed: bool,
     n_new_effects: int,
+    pending_candidates: int = 0,
+    stabilize_warnings: Sequence[str] = (),
 ) -> str:
     lines = [
         f"活体综述增量更新报告（{when}）",
@@ -228,6 +238,15 @@ def _build_change_report(
            if duplicates_against_db else "")
         + "）",
     ]
+    if pending_candidates:
+        lines.append(
+            f"- 待确认候选：{pending_candidates} 组（标题相似或键冲突，未自动合并，"
+            "已进入导入审阅候选清单）"
+        )
+    for message in stabilize_warnings:
+        # 键消歧层的显式警告（评审 R1 返修·FB2/FB5：元数据补全/多条记录
+        # 匹配同一库内行的后写覆盖前写）——R3：警告不改变行为。
+        lines.append(f"- ⚠ {message}")
     if al_available:
         head = "、".join(f"{key}（{score:.2f}）" for key, score in al_prioritized[:5])
         lines.append(f"- AL 热启动排序（{al_note}）：新增文献优先队列前 {min(5, len(al_prioritized))} 项：{head or '（无新增文献）'}")
@@ -325,6 +344,94 @@ def process_incremental_update(
     )
 
 
+def _candidate_review_groups(
+    candidate_pairs: Sequence[DuplicatePair],
+    combined: Sequence[Article],
+    incoming_keys: set[str],
+) -> list[dict]:
+    """把模糊/键冲突候选对汇聚为待人工确认的复核组（U1-P1/U1-P3）。
+
+    与 custom_backend.main._title_review_groups 同一成员形态，写入
+    db.upsert_articles 的 title_review_groups —— 即 Web 导入审阅所用的
+    title_duplicate_reviews 候选清单：模糊证据只进候选，不再自动合并。
+    仅保留含本批新文献的组；fuzzy 与键冲突分别以 "fuzzy:"/"key-conflict:"
+    前缀 + 成员键摘要作为 normalized_title，与按标题聚合的既有组区分。
+    """
+    articles_by_key: dict[str, Article] = {}
+    for article in combined:
+        articles_by_key.setdefault(article.zotero_key, article)
+    parent: dict[str, str] = {}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[max(root_left, root_right)] = min(root_left, root_right)
+
+    for pair in candidate_pairs:
+        for key in (pair.kept_key, pair.dup_key):
+            if key in articles_by_key:
+                parent.setdefault(key, key)
+    fuzzy_keys: set[str] = set()
+    conflict_keys: set[str] = set()
+    for pair in candidate_pairs:
+        if pair.kept_key in parent and pair.dup_key in parent:
+            union(pair.kept_key, pair.dup_key)
+            keys = {pair.kept_key, pair.dup_key}
+            if pair.method == "fuzzy":
+                fuzzy_keys |= keys
+            else:
+                # 键冲突边（exact_key_conflict）与模糊边分别记账，混合组
+                # 不再被整体吞进 "fuzzy" 标签（复审：人工复核界面无法区分
+                # 该组含键冲突）。
+                conflict_keys |= keys
+
+    components: dict[str, list[Article]] = {}
+    for key in parent:
+        components.setdefault(find(key), []).append(articles_by_key[key])
+
+    result: list[dict] = []
+    for group in components.values():
+        keys = sorted(a.zotero_key for a in group)
+        if len(group) < 2 or not any(key in incoming_keys for key in keys):
+            continue
+        is_fuzzy = any(key in fuzzy_keys for key in keys)
+        is_conflict = any(key in conflict_keys for key in keys)
+        members = []
+        for article in sorted(group, key=lambda a: a.zotero_key):
+            raw = article.raw if isinstance(article.raw, dict) else {}
+            members.append({
+                "zotero_key": article.zotero_key,
+                "title": article.title,
+                "authors": article.authors,
+                "year": article.year,
+                "journal": article.journal,
+                "doi": article.doi,
+                "imported_in_batch": article.zotero_key in incoming_keys,
+                # 成员级证据：同时挂在模糊边与冲突边上的桥接成员记 "fuzzy"
+                # （前端 fuzzy 检测命中）；纯键冲突成员记 "key_conflict"。
+                "match_kind": "fuzzy" if article.zotero_key in fuzzy_keys else "key_conflict",
+                "raw": {k: v for k, v in raw.items() if not str(k).startswith("_")},
+            })
+        digest = hashlib.sha256("\0".join(keys).encode("utf-8")).hexdigest()[:20]
+        if is_fuzzy and is_conflict:
+            prefix = "mixed"
+        elif is_fuzzy:
+            prefix = "fuzzy"
+        else:
+            prefix = "key-conflict"
+        result.append({
+            "normalized_title": f"{prefix}:{digest}",
+            "members": members,
+        })
+    return result
+
+
 def process_incremental_articles(
     existing_db_path: str,
     new_articles: Sequence[Article],
@@ -339,6 +446,14 @@ def process_incremental_articles(
 
     自动监控插件（check-now）拉回的文献没有中间文件，直接走本入口复用同一条
     管线；文件入口只是多一步解析。
+
+    去重语义（U1-P1/U1-P3，与 Web 导入人工候选哲学对齐）：自动合并仅凭
+    规范化 DOI 相等与"键相等且 DOI/标题不冲突"；标题相似的模糊配对与键
+    冲突不自动标记重复，而是进 title_duplicate_reviews 候选清单待人工确认，
+    冲突键经 stabilize_conflicting_keys 消歧后各自入库（库内主键不重写）。
+    ``duplicates_removed`` 只按本批实际写入的 is_duplicate_of 标记计数
+    （复审 #5：待审候选归 ``pending_candidates``，与 prisma_task_metrics
+    的 is_duplicate_of 口径统一；同键自然坍缩不产生标记故不计入）。
     """
     db_path = existing_db_path
 
@@ -352,28 +467,63 @@ def process_incremental_articles(
     if not incoming:
         raise ValueError("增量文件中没有任何文献记录")
 
-    _, report = find_duplicates(existing + incoming)
-    pairs = report.exact_pairs + report.fuzzy_pairs
-    # 与库重复（两类，均不算新增）：
-    #   a) 同键重导——zotero_key 已在库内（find_duplicates 产生 kept==dup 的
-    #      自指配对，dup_key 在 existing_keys 中，靠键判定而不是靠配对）；
-    #   b) 异键同 DOI/模糊——配对的保留条目在库内、重复条目来自新文件。
-    # 批内重复（配对双方都来自新文件）与库无关，单独计。
-    dup_against_db: set[str] = {
-        a.zotero_key for a in incoming if a.zotero_key in existing_keys
-    }
-    batch_dup_keys: set[str] = set()
-    for p in pairs:
-        if p.dup_key in existing_keys or p.dup_key in dup_against_db:
-            continue  # a) 已按键计入
-        if p.kept_key in existing_keys:
-            dup_against_db.add(p.dup_key)  # b)
-        else:
-            batch_dup_keys.add(p.dup_key)  # 批内
-    dup_keys = dup_against_db | batch_dup_keys
-    kept_new = [a for a in incoming if a.zotero_key not in dup_keys]
-    duplicates_removed = len(incoming) - len(kept_new)
-    duplicates_against_db = len(dup_against_db)
+    combined = existing + incoming
+    _, report = find_duplicates(combined)
+    # 键消歧（U1-P3/U1-P6；评审 R1 返修·FB1/FB3/FB7）：combined 中 existing
+    # 在前，合并组根总是库内条目或新批中输入靠前者；仅冲突键加确定性后缀，
+    # 库内主键不被重写；生成键按 _fallback_id → content_hash →（标题+姓氏+
+    # 年份）分层匹配沿用库内键（跨公式版本身份连续）。known=existing 不可
+    # 省：同键命中的可能是库内"已标记重复的组成员行"（其键不占任何组的
+    # 最终键），只有 known 判据能识别"库内同键是另一篇文献"并为新条目加
+    # 后缀，否则 upsert 会按主键覆盖该重复行的内容。
+    stabilize_warnings: list[str] = []
+    stabilize_conflicting_keys(
+        combined,
+        report.exact_pairs + report.fuzzy_pairs + report.key_conflict_pairs,
+        known=existing, warnings=stabilize_warnings,
+    )
+    exact_pairs = report.exact_pairs
+    # 与库重复的判定按合并组根（U1-P4 记录口径）：组根在库内 → 该组的
+    # 新文献行均算与库重复（同键重导与异键同 DOI 两类统一覆盖）；组根
+    # 是新文件条目 → 组根即该批新组代表进入新增，其余成员计批内移除。
+    # 重复计数只按 **is_duplicate_of 标记**（复审 #5，r6 口径统一）：
+    # - 同键自然坍缩的行（重导同键同 DOI）不产生标记，不计入——与
+    #   prisma_task_metrics 按 is_duplicate_of 根链统计的口径一致；
+    # - 待人工确认的模糊/键冲突候选不打标记，归 pending_candidates 字段，
+    #   不再被计入"已移除"。
+    roots = merged_group_roots(len(combined), exact_pairs)
+    # 自指配对（改名后双方归一到同一键）在调用方对 report 列表赋值处真正
+    # 剔除（评审 R1 返修·FB7：只改 stabilize 收到的临时拼接列表无效）。
+    # roots 已在过滤前按完整精确组建好，new/removed 计数不受影响。
+    report.exact_pairs = [p for p in report.exact_pairs if p.kept_key != p.dup_key]
+    report.fuzzy_pairs = [p for p in report.fuzzy_pairs if p.kept_key != p.dup_key]
+    report.key_conflict_pairs = [
+        p for p in report.key_conflict_pairs if p.kept_key != p.dup_key
+    ]
+    exact_pairs = report.exact_pairs
+    candidate_pairs = report.fuzzy_pairs + report.key_conflict_pairs
+    incoming_keys = {a.zotero_key for a in incoming}
+    marked_pairs = [
+        p for p in exact_pairs
+        if p.dup_key != p.kept_key and p.dup_key in incoming_keys
+    ]
+    duplicates_removed = len({p.dup_key for p in marked_pairs})
+    duplicates_against_db = len({
+        p.dup_key for p in marked_pairs if p.kept_key in existing_keys
+    })
+    kept_new: list[Article] = []
+    for idx, art in enumerate(incoming, start=len(existing)):
+        root = roots[idx]
+        if root == idx and art.zotero_key not in existing_keys:
+            # 组根本批且键不在库内：本批新增（生成键内容匹配沿用库内键的
+            # 行走更新路径，不算新增——重导幂等）。
+            kept_new.append(art)
+
+    # 模糊/键冲突候选 → title_duplicate_reviews 候选清单（人工确认）
+    review_groups = _candidate_review_groups(
+        candidate_pairs, combined, {a.zotero_key for a in incoming},
+    )
+    pending_candidates = len(review_groups)
 
     # ---- 5(预). 校验随行的新研究效应量（在写库之前失败：库零变更）----
     prepared_effects = _normalize_new_effects(
@@ -383,8 +533,9 @@ def process_incremental_articles(
     meta_before = _run_meta(db_path, comparison, outcome, timepoint, measure,
                             model=model, ci_method=ci_method)
 
-    # ---- 3. 导入新增文献（重复条目同样入库并打 is_duplicate_of 标记）----
-    db_mod.upsert_articles(db_path, incoming, pairs)
+    # ---- 3. 导入新增文献（精确重复打 is_duplicate_of；模糊/键冲突候选
+    #      不打标记，进候选清单待人工确认）----
+    db_mod.upsert_articles(db_path, incoming, exact_pairs, title_review_groups=review_groups)
 
     # ---- 5(前半). 登记随行的新研究效应量（先于 meta_after，后于 meta_before）----
     for row in prepared_effects:
@@ -440,6 +591,8 @@ def process_incremental_articles(
         al_available=al_available, al_note=al_note,
         al_prioritized=al_prioritized, meta_before=meta_before, meta_after=meta_after,
         conclusion_changed=conclusion_changed, n_new_effects=len(prepared_effects),
+        pending_candidates=pending_candidates,
+        stabilize_warnings=stabilize_warnings,
     )
 
     def _article_dict(art: Article) -> dict:
@@ -461,6 +614,7 @@ def process_incremental_articles(
         change_report=change_report,
         al_available=al_available,
         al_note=al_note,
+        pending_candidates=pending_candidates,
     )
 
 

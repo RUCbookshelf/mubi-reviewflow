@@ -1,31 +1,55 @@
 """HTTP 安全设施：安全响应头、登录限流、上传校验与路径防护。
 
-- 安全头由纯 ASGI 中间件注入（不经 BaseHTTPMiddleware，避免流式响应陷阱）；
-- 登录限流：内存滑动窗口，按客户端 IP 计数（5 次/分钟），超限 429 + Retry-After；
-- 上传安全：大小上限、扩展名白名单、文件名清洗（防路径穿越/控制字符）、
-  magic bytes 校验（PDF=%PDF-，CSV/RIS=可解码文本且无 NUL 字节）；
+- 安全头由纯 ASGI 中间件注入（不经 BaseHTTPMiddleware，避免流式响应陷阱），
+  加头逻辑同时以纯函数形式供各层早拒响应复用（R6-S5：最外层中间件在
+  SecurityHeaders 之前直接应答的 400/401/411/413 曾裸奔，无 nosniff/CSP/CORS）；
+- 登录限流：内存滑动窗口，按**直连对端 IP**计数（5 次/分钟），超限 429 +
+  Retry-After；X-Forwarded-For 完全不信任（见 :func:`rate_limit_key`）；
+- 上传安全：Content-Length 预检（解析前 413）+ boundary 解析对齐 Starlette
+  （缺失/不可解析 400）+ 大小上限 + 文件 part 数/字段 part 数/单字段大小
+  流式限制 + 扩展名白名单 + 文件名清洗（防路径穿越/控制字符/Windows 保留
+  设备名）、magic bytes 校验；
 - 路径防护：is_relative_to 判定解析后的真实路径不得逃出白名单根目录。
+
+注意：``%PDF-`` 等 magic bytes 校验只确认文件头形状，**不是内容安全边界**
+（U5-P9/P11：polyglot 可伪造文件头）；真正的缓解是同源回放 + nosniff +
+CSP，以及保存时用 pypdf 实际解析（0 页拒绝，见 coscreen.fulltext.save_pdf）。
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
+import json
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
 
+from fastapi import HTTPException
+
 __all__ = [
+    "AUTH_JSON_BODY_LIMIT_BYTES",
     "MAX_UPLOAD_BYTES",
+    "MAX_FIELD_PARTS",
+    "MAX_FIELD_PART_BYTES",
+    "AuthBodyLimitMiddleware",
+    "EventTicketStore",
+    "MultipartStructureRejected",
     "RateLimiter",
     "SecurityHeadersMiddleware",
+    "UploadSizeLimitMiddleware",
+    "apply_security_headers",
     "content_security_policy",
+    "cors_response_headers",
     "inline_script_hashes",
     "clean_upload_name",
     "check_pdf_bytes",
     "check_text_bytes",
     "is_within",
+    "rate_limit_key",
     "safe_path_under",
 ]
 
@@ -124,24 +148,60 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        csp = content_security_policy().encode("ascii")
-
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers") or [])
-                have = {k.lower() for k, _ in headers}
-                for name, value in self.HEADERS:
-                    if name not in have:
-                        headers.append((name, value))
-                if b"content-security-policy" not in have:
-                    headers.append((b"content-security-policy", csp))
+                headers = apply_security_headers(list(message.get("headers") or []))
                 ctype = next((v for k, v in headers if k.lower() == b"content-type"), b"")
-                if b"text/html" in ctype.lower() and b"cache-control" not in have:
+                if b"text/html" in ctype.lower() and not any(
+                        k.lower() == b"cache-control" for k, _ in headers):
                     headers.append((b"cache-control", b"no-store, max-age=0"))
                 message = {**message, "headers": headers}
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
+
+
+def apply_security_headers(headers: list) -> list:
+    """给响应头列表追加安全响应头（幂等：已有同名头不覆盖），R6-S5。
+
+    SecurityHeadersMiddleware 与各层中间件的**早拒响应**共用：最外层
+    中间件（UploadSizeLimit/TaskLock）在 SecurityHeaders 之前直接应答时，
+    响应同样必须带 nosniff/XFO/CSP 等，否则 401/413 早拒构成安全头回归。
+    """
+    have = {k.lower() for k, _ in headers}
+    out = list(headers)
+    for name, value in SecurityHeadersMiddleware.HEADERS:
+        if name not in have:
+            out.append((name, value))
+    if b"content-security-policy" not in have:
+        out.append((b"content-security-policy", content_security_policy().encode("ascii")))
+    return out
+
+
+def cors_response_headers(origin: str | None,
+                          allowed_origins) -> list:  # noqa: ANN001
+    """早拒响应的 CORS 简单响应头（R6-S5；origin 命中白名单才返回非空）。
+
+    与 CORSMiddleware 对非预检请求的行为对齐：``Access-Control-Allow-
+    Origin``（回显具体 origin，不用 *）+ ``Access-Control-Allow-
+    Credentials`` + ``Vary: Origin``；预检专用头（Allow-Methods/Headers/
+    Max-Age）不属于简单响应，不在此加。浏览器跨域读取上传 401/413 等
+    早拒错误（而不是被吞成网络错误）依赖这几个头。
+    """
+    if not origin:
+        return []
+    allowed = {str(o).rstrip("/") for o in (allowed_origins or ())}
+    if origin.rstrip("/") not in allowed:
+        return []
+    try:
+        encoded = origin.encode("ascii")
+    except UnicodeEncodeError:
+        return []
+    return [
+        (b"access-control-allow-origin", encoded),
+        (b"access-control-allow-credentials", b"true"),
+        (b"vary", b"Origin"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +254,52 @@ class RateLimiter:
             self._events[key] = bucket
             return True, 0
 
+    def peek(self, key: str, now: float | None = None) -> tuple[bool, int]:
+        """只判定是否放行，**不记录**本次尝试（R6-S1：成功登录不计数的
+        前置检查——bcrypt 校验前先挡掉已达阈值的对端，防口令猜解耗 CPU；
+        真实计数由 record() 在认证失败时补记）。
+        """
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            bucket = [t for t in self._events.get(key, []) if moment - t < self.window]
+            if len(bucket) >= self.max_events:
+                retry_after = max(1, int(self.window - (moment - bucket[0])) + 1)
+                self._events[key] = bucket
+                return False, retry_after
+            return True, 0
+
+    def refund(self, key: str, now: float | None = None) -> None:
+        """退还本次已占位的尝试（复审：成功登录/注册只退**自己这一次**
+        占位，不清空对端桶——整桶 reset 会把他人在同一对端上的失败记录
+        一并清零，构成「持号者循环重置限流」的旁路）。无可退时为空操作。"""
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            bucket = self._events.get(key)
+            if bucket:
+                # 移除不早于占位时刻的最近一条（即本次 check 写入的事件）
+                for idx in range(len(bucket) - 1, -1, -1):
+                    if bucket[idx] <= moment:
+                        bucket.pop(idx)
+                        break
+                if not bucket:
+                    self._events.pop(key, None)
+
+    def record(self, key: str, now: float | None = None) -> None:
+        """补记一次失败尝试（与 peek 配对；成功路径不调用即不计数）。"""
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if len(self._events) >= self.max_keys:
+                self._evict(moment)
+            bucket = [t for t in self._events.get(key, []) if moment - t < self.window]
+            bucket.append(moment)
+            self._events[key] = bucket
+
+    def reset(self, key: str) -> None:
+        """成功登录/注册清零该对端计数（handoff：成功即清零，合法用户
+        输错几次后登成功不遗留满桶）。"""
+        with self._lock:
+            self._events.pop(key, None)
+
     def _evict(self, moment: float) -> None:
         """达到 key 上限时收缩存储：先清全过期桶，仍满则逐出最久未活跃桶。"""
         self._events = {
@@ -211,21 +317,116 @@ class RateLimiter:
 login_limiter = RateLimiter(max_events=5, window_seconds=60.0)
 
 
+def _ipv6_prefix64_key(host: str) -> str | None:
+    """IPv6 地址归一到 /64 前缀桶 key（r6 #42）；非 IPv6/解析失败返回 None。
+
+    同一 /64 内轮换源地址曾各占一个限流桶（实测 ``2001:db8:0:1::1`` 与
+    ``::2`` 各放行 5 次、合计 10 次/窗口，第 6 次同地址才 429）——/64 是
+    IPv6 常见分配粒度，按前缀分桶与 IPv4 共享 NAT 出口的既有口径对齐。
+    IPv4-mapped 地址（``::ffff:a.b.c.d``）按 IPv4 处理不折叠（否则全部
+    v4-mapped 对端会塌缩进同一桶）；zone id（``fe80::1%eth0``）剥离后再
+    解析。带 ``/64`` 后缀保证与逐地址 key 的命名空间不重叠。
+    """
+    text = host.strip()
+    if ":" not in text:
+        return None
+    try:
+        addr = ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return None
+    if addr.version != 6 or addr.ipv4_mapped is not None:
+        return None
+    network = ipaddress.ip_network(f"{addr}/64", strict=False)
+    return f"{network.network_address}/64"
+
+
+def rate_limit_key(action: str, client_host: str | None,
+                   forwarded_for: str | None = None) -> str:
+    """限流桶 key：按**直连对端 IP**分桶，X-Forwarded-For 一律忽略（U5-P5/R6-S1）。
+
+    ``forwarded_for`` 参数仅为调用方兼容保留，**不参与分桶**：
+
+    - r5 曾改为「带 XFF 即并入全局 ``xff-untrusted`` 单桶」，但部署文档的
+      nginx 示例对每个请求都追加 X-Forwarded-For——反代部署下全站登录/
+      注册共享 5 次/分钟，未认证者 5 个请求即可把所有人锁在门外 60 秒
+      （R6-S1 复审实测的 DoS 放大），已回退到修复前语义；
+    - 直连部署（桌面 launcher 显式 ``proxy_headers=False``）：对端即真实
+      客户端 IP，客户端伪造/轮换 XFF 无法影响桶 key，无法绕过限流；
+    - 反向代理部署：应用层看到的所有对端都是反代机，应用层限流退化为
+      单一共享桶——**此时限流必须由反代层按真实客户端 IP 完成**
+      （limit_req 完整配置见 docs/deployment/UBUNTU_SERVER.md）；
+    - IPv6 对端按 /64 前缀归一分桶（r6 #42，见 :func:`_ipv6_prefix64_key`）：
+      同一 /64 内轮换源地址不再各占一个桶。
+
+    **risk-accepted 登记（r6 #40，2.1.4 轮）**：NAT/反向代理拓扑下所有客户端
+    共用 ``login:<反代对端>`` 单桶——攻击者 5 次失败即可让同出口的受害用户
+    正确密码登录也被 429（r6 实测）。产品接受该取舍：应用层不信任
+    X-Forwarded-For（伪造可绕过），限流按真实客户端 IP 由**反代层**承担
+    （UBUNTU_SERVER.md 的 ``limit_req_zone $binary_remote_addr`` 即此口径，
+    应用层桶只作为纵深第二层）。缓解/可选可信代理 opt-in 说明：
+
+    - 已署拓扑（默认）：TLS 反代 + ``--no-proxy-headers``，反代侧按
+      ``$binary_remote_addr`` 限流，应用层共享桶退化无害；
+    - opt-in 可信代理（如需应用层精确计数）：仅在反代**剥离并改写**
+      X-Forwarded-For 为真实客户端 IP、且应用以可信跳数/网段白名单校验
+      直连对端后再采信该头——应用默认不做（信任 XFF = 任何直连客户端
+      可伪造头自选桶键绕过限流）；落地时需同时调整本函数与部署文档，
+      属后续轮次的独立工程，不在本登记内。
+    """
+    host = (client_host or "?").strip() or "?"
+    prefix64 = _ipv6_prefix64_key(host)
+    if prefix64 is not None:
+        host = prefix64
+    return f"{action}:{host}"
+
+
 # ---------------------------------------------------------------------------
 # 上传校验
 # ---------------------------------------------------------------------------
 
+#: Windows 保留设备名（CON/NUL/COM1..9/LPT1..9 等，带任意扩展名同样保留）
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+#: 清洗后文件名总长上限（含扩展名）
+_MAX_NAME_LENGTH = 180
+
+#: 视为"扩展名"的最大长度（含点）；超过即按无扩展名整体截断（评审回归：
+#: 'a.'+'b'*300 这类"扩展名本身超长"的名字此前会突破 180 上限）
+_MAX_EXTENSION_LENGTH = 40
+
+
 def clean_upload_name(filename: str, fallback: str = "upload") -> str:
-    """清洗上传文件名：去目录成分、去控制字符、去 ".."、限制长度。
+    """清洗上传文件名：去目录成分、去控制字符、去 ".."、规避保留设备名、限长。
 
     只保留最终成分（``Path(...).name`` 语义 + 显式剥离分隔符），清洗后为空
-    回退 fallback。**返回值只用于展示/派生名称，落盘路径一律由服务端构造。**
-    """
+    回退 fallback。**返回值只用于展示/派生名称，落盘路径一律由服务端构造。"""
+
+    def _truncate(name: str) -> str:
+        # U5-P8：先取最后一个扩展名再截断主体，保证 ".csv" 等合法后缀
+        # 不会被截掉（截掉后 check_extension 会把超长文件名误判 415）；
+        # "扩展名"本身超长时按无扩展名整体截断，保证结果恒 ≤ 180。
+        if len(name) <= _MAX_NAME_LENGTH:
+            return name
+        stem, dot, ext = name.rpartition(".")
+        if not stem or len(dot) + len(ext) > _MAX_EXTENSION_LENGTH:
+            return name[:_MAX_NAME_LENGTH]
+        return stem[: _MAX_NAME_LENGTH - (len(dot) + len(ext))] + dot + ext
+
     name = (filename or "").replace("\\", "/").split("/")[-1]
     name = _UNSAFE_NAME_RE.sub("", name).strip().strip(".")
     if name in ("", ".", ".."):
         name = fallback
-    return name[:180]
+    # U5-P8：Windows 保留设备名（NUL 落盘静默丢数据、CON/COM1 可能重定向
+    # 设备）加下划线前缀规避。Win32 按第一个点之前的基名判定，因此
+    # "NUL.tar.gz"/"COM1.csv" 同样命中。
+    base = name.split(".", 1)[0].rstrip(". ")
+    if base.upper() in _WINDOWS_RESERVED_NAMES:
+        name = "_" + name
+    return _truncate(name)
 
 
 def stem_of(filename: str) -> str:
@@ -244,12 +445,37 @@ def check_size(data: bytes) -> None:
         )
 
 
+#: 上传类型/编码被拒时给用户的文案（r10-U2 / F67）。
+#:
+#: 铁律「用户可见文本必须十语言词典同步」要求清单一律经 T() 精确命中词典，
+#: 而 T() 只做整串精确查找（index.html 的 RFLang.t），带插值的句子永远命中
+#: 不了。因此这三条改成**不含任何变量**的英文整句，并在
+#: custom_frontend/import_export_locale.js 里以同一英文串为 en 槽登记十语言；
+#: errOf 对字符串 detail 走 T() 后即按界面语言渲染，中文界面得到中文整句
+#: （含顿号分隔的类型清单），其它九种语言同理。代价是不再回显「被拒的具体
+#: 扩展名」——可接受：队列里仍列出所选文件名，用户真正需要的是「允许什么」。
+#: 允许类型清单与 TEXT_EXTENSIONS 的一致性由
+#: build/tests/test_r10_u2_import_lane.py 的 test_upload_rejection_copy 钉住
+#: （漏登记新扩展名 → 红）。
+UPLOAD_EXTENSION_MESSAGE = (
+    "Unsupported file extension. Allowed file types: CSV (.csv), RIS (.ris), "
+    "plain text (.txt), tab-separated text (.tsv)."
+)
+UPLOAD_BINARY_MESSAGE = (
+    "This file contains binary content and is not a valid CSV/RIS text file. "
+    "Confirm that you exported a text format, not an Excel workbook, an EndNote "
+    "library, or an archive."
+)
+UPLOAD_UTF8_MESSAGE = (
+    "This file is not valid UTF-8 text. Save it as UTF-8 encoding and retry; "
+    "NoteExpress and EndNote let you choose the encoding when exporting."
+)
+
+
 def check_extension(filename: str, allowed: set[str]) -> None:
     ext = Path(clean_upload_name(filename)).suffix.lower()
     if ext not in allowed:
-        raise UploadRejected(
-            f"不支持的文件扩展名：{ext or '(无)'}，仅允许 {sorted(allowed)}。", status=415
-        )
+        raise UploadRejected(UPLOAD_EXTENSION_MESSAGE, status=415)
 
 
 def check_pdf_bytes(data: bytes) -> None:
@@ -263,18 +489,25 @@ def check_text_bytes(data: bytes) -> None:
     """CSV/RIS 上传校验：大小 + 可解码为文本 + 无 NUL 字节（拒绝二进制伪装）。"""
     check_size(data)
     if b"\x00" in data:  # 全量扫描（C 级 memchr）；此前仅扫前 64KB，NUL 可藏在其后
-        raise UploadRejected("文件包含二进制内容，不是有效的 CSV/RIS 文本。", status=415)
+        raise UploadRejected(UPLOAD_BINARY_MESSAGE, status=415)
     try:
         data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise UploadRejected("文件不是有效的 UTF-8 文本。", status=415) from exc
+        # r10-U2（F67）：非 UTF-8 是中文文献环境的高频坑（GBK/UTF-16 导出），
+        # 只报"不是 UTF-8"用户不知道下一步。文案见 UPLOAD_UTF8_MESSAGE。
+        raise UploadRejected(UPLOAD_UTF8_MESSAGE, status=415) from exc
 
 
 class UploadRejected(Exception):
     """上传校验失败（status 供 HTTP 映射：413 超限 / 415 类型不符）。"""
 
     def __init__(self, message: str, status: int = 415) -> None:
-        super().__init__(message)
+        # MM-01/r6 #44：显式锚定 Exception（不经 super 协作）。UploadRejected
+        # 被混入 MultipartStructureRejected(UploadRejected, HTTPException) 的
+        # 多继承 MRO 时，super() 会解析到 HTTPException 并把 message 当
+        # status_code 传入——starlette 对非整数 status_code 抛 ValueError，
+        # 防线类直接不可实例化（曾致 multipart 结构超限 400/500 而非 413）。
+        Exception.__init__(self, message)
         self.status = status
 
 
@@ -301,3 +534,595 @@ def safe_path_under(root: Path, *parts: str) -> Path:
     if not is_within(candidate, root):
         raise UploadRejected("非法路径。", status=400)
     return candidate
+
+
+# ---------------------------------------------------------------------------
+# 请求体 Content-Length / 结构预检（U5-P3 / R6-S3）
+# ---------------------------------------------------------------------------
+
+# boundary 解析与 Starlette 同源（starlette.formparsers 同样的导入链）：
+# python-multipart 的 parse_options_header——重复 boundary 参数取**最后一个**、
+# 引号内的值去引号、整体值 strip。r5 自写的 _extract_boundary 取第一个且
+# 不解引号，`boundary=abc; boundary=def`（body 用 def）/`boundary=";abc"` 时
+# 计数器装错 key 或干脆不装（fail-open，评审实测 21 个 part 全部落盘）。
+try:  # 与 starlette.formparsers 完全一致的两级回退
+    from python_multipart.multipart import parse_options_header as _parse_options_header
+except ModuleNotFoundError:  # pragma: no cover - starlette 同款回退
+    try:
+        from multipart.multipart import parse_options_header as _parse_options_header
+    except ModuleNotFoundError:  # pragma: no cover
+        _parse_options_header = None
+
+#: multipart 字段 part 预检上限（R6-S3 复审 #38）。
+#: 本产品全部上传端点的表单字段最多 4 个（trace 提交：preview_sha256/
+#: actor_aliases/subject_mappings/confirm_unmapped；导入类 2 个 job_id/
+#: source_id[s]），16 个是 4 倍余量。Starlette 自身只限 1000 字段 ×
+#: 1MB/字段——字段在端点校验前**整体进内存**，复审实测 50×1MiB ≈ 50MB，
+#: 按 1000×1MB 线性放大约 1GB。
+MAX_FIELD_PARTS = 16
+
+#: 单个字段 part 的大小预检上限：对齐 Starlette MultiPartParser 的
+#: max_part_size（1MB/字段）再加 64KB 余量——本中间件只会拒绝 Starlette
+#: 解析器自己也必拒的请求，不新增任何严格性。
+MAX_FIELD_PART_BYTES = 1024 * 1024 + 64 * 1024
+
+
+class _MultipartPartCounter:
+    """流式统计 multipart 请求里的**文件 part** 与**字段 part** 数。
+
+    只观察流经的字节、不修改不缓存整个请求；超限即抛
+    :class:`MultipartStructureRejected`——该 part 的内容不会再被转发给
+    解析器（r5 评审：21×1.1MiB 已认证 import-batch 曾在文件数校验前全部
+    spool；r6 复审 #38：50×1MiB 字段 part 曾在 422 前整体进内存）。
+
+    - part 头部块（到空行 ``\\r\\n\\r\\n`` 为止）含 ``filename`` → 文件
+      part：第 ``max_files + 1`` 个的头部出现即拒绝；
+    - 其余为字段 part：数量超 ``max_fields``、或单字段字节超
+      ``max_field_bytes``（字段 part 的 body 在端点校验前整体驻留内存，
+      必须有界）即拒绝；
+    - 头部块跨 chunk 累计超过 ``_MAX_HEADER_BYTES`` 仍未见空行：无法
+      分类，按「**可能是文件 part**」保守计 1 个文件 part 再重扫下一个
+      分隔符（r6 复审 #44：此前直接放弃分类，4.2KB 头部的文件 part 可
+      漏计落盘）。观察窗取 python-multipart 单行头上限（4096+128）的
+      两倍，正常客户端（浏览器/requests/curl）的 part 头远小于此。
+
+    判定依据与 Starlette 一致：formparsers.py 按头块里的 ``filename``
+    键区分文件/字段。已知边界：名字恰为 "filename" 的**表单字段**也会被
+    计入文件——本产品各端点的表单字段名均不含该词，误报只可能来自
+    攻击者自伤。
+
+    首边界的识别（评审二轮实测绕过）：RFC 7578 首边界**无前导 CRLF**，
+    且可能跨任意 chunk 拆分——此前只在首个 feed 块以完整 ``--boundary``
+    开头时识别，首块 ``'-'``、boundary 前缀或逐字节滴灌时第一个 part
+    完全不被计数（2 个文件 part、max=1 放行）。现改为：见到首个 part
+    之前持续查找 ``--boundary``（缓冲跨 chunk 拼接，lead 之前按
+    preamble 跳过，与 python-multipart 行为一致），之后的边界仍按
+    ``\\r\\n--boundary`` 匹配。
+    """
+
+    _SCAN = 0
+    _HEADERS = 1
+    _DONE = 2
+    #: part 头部块的最大观察长度（超过按「可能是文件 part」保守计数）
+    _MAX_HEADER_BYTES = 8192
+
+    def __init__(self, boundary: bytes, max_files: int,
+                 max_fields: int = MAX_FIELD_PARTS,
+                 max_field_bytes: int = MAX_FIELD_PART_BYTES) -> None:
+        self._delim = b"\r\n--" + boundary
+        self._lead = b"--" + boundary
+        self._max_files = max_files
+        self._max_fields = max_fields
+        self._max_field_bytes = max_field_bytes
+        self.files = 0
+        self.fields = 0
+        self._field_bytes = 0
+        self._state = self._SCAN
+        self._buf = b""        # 尚未判定的观察窗口（字节本身仍原样转发）
+        self._part_seen = False    # 是否已见到首个 part 的开始边界
+        self._in_file_part = False  # 当前 part 是否按文件 part 计数
+        self._part_active = False   # 是否已进入某个 part（preamble 不计数）
+
+    def _bump_file(self) -> None:
+        self.files += 1
+        self._in_file_part = True
+        self._part_active = True
+        self._field_bytes = 0
+        if self.files > self._max_files:
+            raise MultipartStructureRejected(
+                f"上传文件数超过该端点允许的上限（{_fmt_count(self._max_files)} 个）。"
+            )
+
+    def _bump_field(self) -> None:
+        self.fields += 1
+        self._in_file_part = False
+        self._part_active = True
+        self._field_bytes = 0
+        if self.fields > self._max_fields:
+            raise MultipartStructureRejected(
+                f"上传表单字段数超过上限（{_fmt_count(self._max_fields)} 个）。"
+            )
+
+    def _account_field_bytes(self, count: int) -> None:
+        """当前 part 是字段 part 时累计其 body 字节并检查上限。"""
+        if count <= 0 or not self._part_active or self._in_file_part:
+            return
+        self._field_bytes += count
+        if self._field_bytes > self._max_field_bytes:
+            raise MultipartStructureRejected(
+                "单个表单字段超过大小上限（1 MB），请改用文件上传。"
+            )
+
+    def feed(self, chunk: bytes) -> None:
+        data = self._buf + chunk
+        self._buf = b""
+        pos = 0
+        while self._state != self._DONE:
+            if not self._part_seen:
+                # 首个 part 开始前：查找无前导 CRLF 的首边界 --boundary
+                # （跨 chunk 拼接、前导 preamble 均可识别）。未找到则保留
+                # 尾部窗口等下一个 chunk 补全，其余按 preamble 丢弃。
+                idx = data.find(self._lead, pos)
+                if idx < 0:
+                    keep = len(self._lead) - 1
+                    if len(data) - pos > keep:
+                        self._buf = data[-keep:]
+                    else:
+                        self._buf = data[pos:]
+                    return
+                pos = idx + len(self._lead)
+                if data[pos:pos + 2] == b"--":  # 空 multipart：--boundary--
+                    self._state = self._DONE
+                    return
+                self._part_seen = True
+                self._state = self._HEADERS
+                continue
+            if self._state == self._SCAN:
+                idx = data.find(self._delim, pos)
+                if idx < 0:
+                    keep = len(self._delim) - 1  # 跨 chunk 的分隔符不漏判
+                    if len(data) - pos > keep:
+                        self._account_field_bytes(len(data) - pos - keep)
+                        self._buf = data[-keep:]
+                    else:
+                        self._buf = data[pos:]
+                    return
+                self._account_field_bytes(idx - pos)
+                after = idx + len(self._delim)
+                if data[after:after + 2] == b"--":  # 结束边界 --boundary--
+                    self._state = self._DONE
+                    return
+                pos = after
+                self._state = self._HEADERS
+                continue
+            # _HEADERS：累积 part 头到空行为止，判定文件/字段 part
+            end = data.find(b"\r\n\r\n", pos)
+            if end < 0:
+                tail = data[pos:]
+                if len(tail) > self._MAX_HEADER_BYTES:
+                    # 异常超长头：无法分类，按「可能是文件 part」保守计数，
+                    # 再从当前位置起重扫下一个分隔符（已观察字节不丢弃）。
+                    self._bump_file()
+                    self._state = self._SCAN
+                    continue
+                self._buf = tail  # 头部未完整，等下一个 chunk 补全
+                return
+            if b"filename" in data[pos:end].lower():
+                self._bump_file()
+            else:
+                self._bump_field()
+            pos = end + 4
+            self._state = self._SCAN
+
+
+#: 兼容别名（r5 测试引用名）：计数器已扩展为文件 + 字段双口径。
+_MultipartFilePartCounter = _MultipartPartCounter
+
+
+def _fmt_count(limit: int) -> str:
+    return "1" if limit == 1 else f"1–{limit}"
+
+
+class MultipartStructureRejected(UploadRejected, HTTPException):
+    """multipart 结构超限（文件/字段 part 数超端点上限），映射 413。
+
+    在解析器读取多余 part **内容之前**由 receive 层抛出。复审：FastAPI 的
+    body 解析兜底（fastapi/routing.py）会把普通异常吞成 400「There was an
+    error parsing the body」——本类**兼作 HTTPException(413)**：路由层对
+    HTTPException 原样重抛，客户端按 413 处理；receive 层的既有
+    assertRaises(MultipartStructureRejected) 测试不受影响（仍为本类实例）。
+    """
+
+    def __init__(self, message: str) -> None:
+        # 双基类显式初始化（MM-01：类体内曾残留第二个同名 __init__ 覆盖本
+        # 定义——super 协作版经 UploadRejected 的 MRO 把 message 传给
+        # HTTPException 的 status_code，实例化即 ValueError/状态污染，413
+        # 契约失效）。UploadRejected.__init__ 已显式锚定 Exception，故两次
+        # 显式初始化互不串扰：status=413（app 级 handler）＋
+        # status_code/detail=413/message（路由层 HTTPException 通道）。
+        UploadRejected.__init__(self, message, 413)
+        HTTPException.__init__(self, status_code=413, detail=message)
+
+
+class UploadSizeLimitMiddleware:
+    """multipart 上传的 ASGI 级预检：**解析请求体之前**拒绝异常请求。
+
+    背景：FastAPI/Starlette 在进入端点/依赖前已完整解析 multipart，>1MB 的
+    文件 part 会 spool 到系统临时目录——端点内的 ``check_size``/文件数校验
+    永远发生在落盘之后（G3/U5-P3 同一根因）。本中间件在解析发生前依次检查
+    （顺序：400 重复头 → 411 → 401 → 400 boundary 缺失 → 413 字节上限），
+    放行后仍在 receive 层流式限制文件 part 数与字段 part 数/大小：
+
+    0. **Content-Type / Content-Length 头重复 → 400**：同名头取值以先到者
+       为准（与 Starlette Headers.get 前值语义一致）。评审实测：双
+       Content-Type（前 multipart 后 json）可让本中间件按后值放行、而
+       Starlette 按前值照常解析，绕过下面全部预检——重复的这两个头只会
+       来自异常客户端，一律 400；
+    1. **无/非法 Content-Length 的 multipart → 411**：浏览器与 fetch 发送
+       multipart 表单必然携带 Content-Length；
+    2. **无有效 Bearer 凭据 → 401**（``token_validator`` 注入时启用）：全部
+       上传端点都要求登录，未认证请求不解析、不 spool、不触任务锁；
+    3. **boundary 缺失/不可解析 → 400**（R6-S3）：multipart 的 boundary
+       用与 Starlette **同源**的 ``parse_options_header`` 解析（python-
+       multipart，重复参数取最后一个、引号去引号、值 strip）。解析不出
+       boundary 的 multipart 本就会被 Starlette 以 400 拒绝（MultiPart
+       Exception "Missing boundary"），这里只是提前到落盘之前；同时修掉
+       r5 自写提取器取**第一个** boundary 与 Starlette 取**最后一个**的
+       分歧（`boundary=abc; boundary=def` 曾致计数器 fail-open）；
+    4. **Content-Length 超过路径上限 → 413**：``rules`` =
+       ``[(路径正则, 最大请求体字节数, 最大文件 part 数), ...]``，上限取
+       各端点**真实限制 + multipart 开销余量**；
+    5. **文件 part 数 / 字段 part 数 / 单字段大小超限 → 413**（receive 层
+       流式计数，见 :class:`_MultipartPartCounter`）：超限 part 的内容
+       不再转发给解析器，已认证请求的落盘量与字段内存同样有界。
+
+    只拦 ``multipart/form-data`` 的 POST/PUT（JSON 端点不受影响）。
+    早拒响应统一带安全响应头，Origin 命中 ``cors_origins`` 白名单时补
+    CORS 简单响应头（R6-S5：早拒发生在 SecurityHeaders/CORS 之外）。
+    """
+
+    def __init__(self, app, rules: list, token_validator=None,
+                 cors_origins=None):  # noqa: ANN001
+        self.app = app
+        self.rules = rules
+        self.token_validator = token_validator
+        self.cors_origins = list(cors_origins) if cors_origins else []
+
+    @staticmethod
+    def _bearer_token(scope) -> str | None:  # noqa: ANN001
+        """从 ASGI scope 提取 Bearer 令牌（首个 Authorization 头，同 Starlette）。"""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"authorization":
+                try:
+                    authorization = value.decode("latin-1")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+                if not authorization.lower().startswith("bearer "):
+                    return None
+                token = authorization[7:].strip()
+                return token or None
+        return None
+
+    @staticmethod
+    def _is_multipart(scope) -> bool:  # noqa: ANN001
+        """Content-Type 是否为 multipart/form-data（与 Starlette 同源解析）。"""
+        header = b""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"content-type":
+                header = value
+                break
+        if _parse_options_header is not None:
+            ctype, _params = _parse_options_header(header)
+            return ctype == b"multipart/form-data"
+        return header.lower().lstrip().startswith(b"multipart/form-data")  # pragma: no cover
+
+    @staticmethod
+    def _origin_of(scope) -> str | None:  # noqa: ANN001
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"origin":
+                try:
+                    return value.decode("ascii")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+        return None
+
+    @staticmethod
+    def _extract_boundary(content_type: bytes) -> bytes | None:
+        """降级用的 boundary 提取（python-multipart 不可用时；正常不走）。"""
+        for part in content_type.split(b";"):
+            key, _, value = part.partition(b"=")
+            if key.strip().lower() == b"boundary":
+                return value.strip().strip(b'"') or None
+        return None
+
+    async def _reject(self, scope, send, status: int, detail: str,
+                      extra_headers: list = None) -> None:  # noqa: ANN001
+        body = json.dumps({"detail": detail}, ensure_ascii=False).encode("utf-8")
+        headers = [(b"content-type", b"application/json"),
+                   (b"content-length", str(len(body)).encode("ascii")),
+                   (b"connection", b"close")]
+        headers.extend(extra_headers or [])
+        # R6-S5：早拒响应与正常响应同一套安全头；跨域客户端还要能读到错误
+        headers = apply_security_headers(headers)
+        headers.extend(cors_response_headers(self._origin_of(scope), self.cors_origins))
+        # 未读请求体即应答：要求关闭连接，避免服务端继续吸收数据。
+        await send({"type": "http.response.start", "status": status,
+                    "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "")
+        if method not in ("POST", "PUT"):
+            await self.app(scope, receive, send)
+            return
+        content_types: list[bytes] = []
+        content_lengths: list[bytes] = []
+        for key, value in scope.get("headers") or []:
+            lowered = key.lower()
+            if lowered == b"content-type":
+                content_types.append(value)  # 原值保留：boundary 大小写敏感
+            elif lowered == b"content-length":
+                content_lengths.append(value)
+        if len(content_types) > 1 or len(content_lengths) > 1:
+            # 双 Content-Type（前 multipart 后 json）可让预检按后值放行、
+            # Starlette 按前值照常解析（评审实测绕过）；重复头一律拒绝。
+            await self._reject(scope, send, 400,
+                               "请求头结构异常（Content-Type/Content-Length 重复）。")
+            return
+        content_type_header = content_types[0] if content_types else b""
+        # R6-S3：Content-Type 的解析与 Starlette 同源（python-multipart
+        # parse_options_header：值 strip/小写化、重复参数取最后一个、引号
+        # 去引号）——此前用原值 startswith 判定，前导空白的 Content-Type
+        # 在 ASGI 直调层可绕过预检（r6 复审 #43）。
+        path = scope.get("path", "")
+        rule = next(((pattern, limit, max_files) for pattern, limit, max_files in self.rules
+                     if pattern.match(path)), None)
+        if _parse_options_header is not None:
+            ctype, params = _parse_options_header(content_type_header)
+            if ctype != b"multipart/form-data":
+                if rule is None:
+                    await self.app(scope, receive, send)
+                    return
+                # 复审（urlencoded 表单洪水）：规则端点只接受 multipart——
+                # FastAPI 的 File/Form 端点会接受 application/x-www-form-
+                # urlencoded 并在端点校验之前**全量解析**表单（实测 50×
+                # ~1MiB 字段 47.7MB 被吃进后 422）。先过鉴权（401 语义与
+                # 其他早拒一致），已认证则在解析前按 415 拒绝。
+                if self.token_validator is not None:
+                    token = self._bearer_token(scope)
+                    if token is None or not self.token_validator(token):
+                        await self._reject(
+                            scope, send, 401, "未登录或缺少访问令牌。",
+                            extra_headers=[(b"www-authenticate", b"Bearer")])
+                        return
+                await self._reject(
+                    scope, send, 415, "该端点仅接受 multipart/form-data 上传。")
+                return
+            boundary = params.get(b"boundary") or None
+        else:  # pragma: no cover - python-multipart 缺失时的降级路径
+            if not content_type_header.lower().lstrip().startswith(b"multipart/form-data"):
+                await self.app(scope, receive, send)
+                return
+            ctype, boundary = b"multipart/form-data", self._extract_boundary(content_type_header)
+        raw_length = content_lengths[0] if content_lengths else None
+        try:
+            content_length = int(raw_length) if raw_length is not None else None
+        except ValueError:
+            content_length = None
+        if content_length is None:
+            await self._reject(scope, send, 411,
+                               "上传请求缺少有效的 Content-Length，无法预检大小。")
+            return
+        if self.token_validator is not None:
+            token = self._bearer_token(scope)
+            if token is None or not self.token_validator(token):
+                await self._reject(
+                    scope, send, 401, "未登录或缺少访问令牌。",
+                    extra_headers=[(b"www-authenticate", b"Bearer")])
+                return
+        if rule is not None:
+            _, limit, max_files = rule
+            if boundary is None:
+                # Starlette 对无 boundary 的 multipart 本就 400（Missing
+                # boundary），这里提前到解析/落盘之前（r6 复审 #37 的
+                # fail-open 缺口：解析器装不上计数器时请求曾原样放行）。
+                await self._reject(scope, send, 400,
+                                   "multipart 请求缺少有效的 boundary，无法解析。")
+                return
+            if content_length > limit:
+                await self._reject(scope, send, 413,
+                                   "上传请求体超过大小上限，请在压缩或减少文件数量后重试。")
+                return
+            if max_files >= 1:
+                counter = _MultipartPartCounter(boundary, max_files)
+
+                async def receive_wrapper():
+                    message = await receive()
+                    if message.get("type") == "http.request" and message.get("body"):
+                        counter.feed(message["body"])
+                    return message
+
+                await self.app(scope, receive_wrapper, send)
+                return
+        await self.app(scope, receive, send)
+
+
+#: 未认证 JSON 写端点（/api/auth/*）的请求体上限（MM2-02）。CredentialsIn
+#: 字段级 max_length（用户名 ≤64、口令 ≤128 字符）加 JSON 封装远小于 4KB；
+#: 此前 20MB 畸形体被整包读入、422 把超大 ``input`` 原样回显（放大反射），
+#: 且 handler 内的登录限流对校验失败请求不可达。
+AUTH_JSON_BODY_LIMIT_BYTES = 4 * 1024
+
+_AUTH_BODY_LIMIT_MESSAGE = "登录/注册请求体超过大小上限（4 KB）。"
+
+
+class AuthBodyLimitMiddleware:
+    """auth 端点（无鉴权 JSON 面）的 ASGI 级请求体上限（MM2-02）。
+
+    - **Content-Length 预检**：超限直接 413，不读请求体（与
+      :class:`UploadSizeLimitMiddleware` 的 413 预检同一层）；
+    - **缺头/非法头（chunked）**：有界读取（上限 +1 字节封顶，不做无界
+      读入）后精确判定，超限同样 413——与 report_evidence ``size_guard``
+      的「读后精确校验」同口径，杜绝缺头 fail-open；
+    - 非 auth 路径与非 POST 请求原样放行，不影响其他端点；超限小体请求
+      （如 r6s3 的 21 字节表单探针）不受影响，仍走原有 401/422 路径。
+
+    早拒响应统一带安全响应头（本中间件位于 SecurityHeaders 之外），
+    Origin 命中 ``cors_origins`` 白名单时补 CORS 简单响应头（同 R6-S5）。
+    """
+
+    def __init__(self, app, paths, limit: int = AUTH_JSON_BODY_LIMIT_BYTES,
+                 cors_origins=None):  # noqa: ANN001
+        self.app = app
+        self.paths = [re.compile(p) for p in paths]
+        self.limit = limit
+        self.cors_origins = list(cors_origins) if cors_origins else []
+
+    async def _reject(self, scope, send) -> None:  # noqa: ANN001
+        body = json.dumps({"detail": _AUTH_BODY_LIMIT_MESSAGE},
+                          ensure_ascii=False).encode("utf-8")
+        headers = [(b"content-type", b"application/json"),
+                   (b"content-length", str(len(body)).encode("ascii")),
+                   (b"connection", b"close")]
+        headers = apply_security_headers(headers)
+        headers.extend(cors_response_headers(
+            self._origin_of(scope), self.cors_origins))
+        # 未（完整）读请求体即应答：要求关闭连接，避免服务端继续吸收数据。
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    @staticmethod
+    def _origin_of(scope):  # noqa: ANN001
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"origin":
+                try:
+                    return value.decode("ascii")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+        return None
+
+    async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("method", "") != "POST" or not any(
+                pattern.match(scope.get("path", "")) for pattern in self.paths):
+            await self.app(scope, receive, send)
+            return
+        lengths = [value for key, value in scope.get("headers") or []
+                   if key.lower() == b"content-length"]
+        content_length = None
+        if len(lengths) == 1:  # 重复头交给内层 UploadSizeLimitMiddleware 400
+            try:
+                content_length = int(lengths[0])
+            except ValueError:
+                content_length = None
+        if content_length is not None:
+            if content_length > self.limit:
+                await self._reject(scope, send)
+                return
+            await self.app(scope, receive, send)
+            return
+        # 缺头/非法头（chunked）：有界读取后精确判定（读取量以 limit+1 封顶）
+        buffered = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            buffered.extend(message.get("body", b""))
+            if len(buffered) > self.limit:
+                await self._reject(scope, send)
+                return
+            if not message.get("more_body", False):
+                break
+        body = bytes(buffered)
+
+        # ASGI receive 契约是「返回 awaitable 的可调用对象」：``await receive()``
+        # 必须得到一条消息。r7 复审：这里曾误用 async 生成器（yield 使 replay
+        # 变成 async_generator 对象，不可调用），下游 await receive() 抛
+        # TypeError → FastAPI 兜成 400 parse error，≤上限的合法 chunked
+        # 登录被拒（拒绝了基线可用的输入，R2）。普通 async 函数返回消息即可；
+        # 耗尽后按服务端惯例持续返回空终止消息。
+        replay_messages = [{"type": "http.request", "body": body,
+                            "more_body": False}]
+
+        async def replay() -> dict:  # noqa: ANN202
+            if replay_messages:
+                return replay_messages.pop(0)
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
+# ---------------------------------------------------------------------------
+# SSE 事件流短期票据（U5-P10）
+# ---------------------------------------------------------------------------
+
+class EventTicketStore:
+    """``/api/events`` 的短期一次性票据（默认 60 秒，r6 #41 对齐 handoff）。
+
+    EventSource 无法设置 Authorization 头，旧方案把 24h JWT 放进 URL
+    查询参数——完整凭据进入反代/访问日志与浏览器历史。改由已认证客户端
+    ``POST /api/events/ticket``（凭 Bearer）换取短时效票据，再用票据连
+    接事件流：票据一次性（连接时消费）、过期即作废，泄露面从 24h 降到
+    60 秒且不可重放（handoff 要求「票据 60s 一次性」；此前为 300s）。
+
+    容量有界（``max_active``）：签发与消费时都清理过期票据，达到上限时
+    逐出最早过期者——反复签发不能无限撑大内存（评审低危残余的收口）。
+    """
+
+    def __init__(self, ttl_seconds: float = 60.0,
+                 max_active: int = 10_000) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        if max_active < 1:
+            raise ValueError("max_active must be positive")
+        self.ttl = ttl_seconds
+        self.max_active = max_active
+        self._tickets: dict[str, tuple[float, dict]] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, user_id: int, username: str,
+              now: float | None = None) -> tuple[str, int]:
+        """签发一张票据，返回 ``(ticket, expires_in_seconds)``。"""
+        moment = time.monotonic() if now is None else now
+        ticket = secrets.token_urlsafe(32)
+        with self._lock:
+            self._cleanup(moment)
+            if len(self._tickets) >= self.max_active:
+                oldest = min(self._tickets, key=lambda key: self._tickets[key][0])
+                del self._tickets[oldest]
+            self._tickets[ticket] = (
+                moment + self.ttl, {"user_id": int(user_id), "username": str(username)}
+            )
+        return ticket, int(self.ttl)
+
+    def consume(self, ticket: str,
+                now: float | None = None) -> dict | None:
+        """一次性消费票据；无效/已用/过期返回 None（顺带清理过期票据）。"""
+        moment = time.monotonic() if now is None else now
+        if not ticket:
+            return None
+        with self._lock:
+            self._cleanup(moment)
+            entry = self._tickets.pop(ticket, None)
+            if entry is None:
+                return None
+            expires_at, payload = entry
+            if expires_at <= moment:
+                return None
+            return dict(payload)
+
+    def _cleanup(self, moment: float) -> None:
+        if len(self._tickets) < 512:
+            return  # 小表不做全量扫描（消费路径也走这里）
+        self._tickets = {
+            key: entry for key, entry in self._tickets.items()
+            if entry[0] > moment
+        }

@@ -1,0 +1,9 @@
+# F1-10: only the packaging shell scripts are pinned to LF line endings, so a
+# Windows checkout moved to macOS/Linux through a non-git channel (zip file,
+# shared folder) stays runnable (`#!/usr/bin/env bash\r` is a bad interpreter).
+# This rule is deliberately scoped: a repo-wide `* text=auto` rule would
+# renormalize every working tree and shows up as format churn in every open
+# checkout (R1). All .sh blobs in this repository are already stored with LF
+# endings (git ls-files --eol: i/lf), so this attribute changes no tracked
+# content - it only fixes what fresh checkouts write to the worktree.
+*.sh text eol=lf

@@ -123,6 +123,13 @@ def summary(ctx, mode: str) -> dict:
     fields = {'identified_rows_db': db_rows, 'identified_rows_other': other_rows,
               'sources_scope': 'db_reg_other' if other_rows else 'db_reg',
               'duplicates_removed': duplicate_count,
+              # R6-F9（r8 复审回退 db-only）：records_screened/初筛排除按
+              # **数据库/注册库列键域**（db_keys）计——该字段的第二消费方
+              # 「任务指标导入表单」把这两个数填进 PRISMA 数据库列字段，
+              # R2/R3 按数据库列勾稽；并入 other-only 键曾使导入表单直接
+              # R2/R3 error（导出被阻断，实测 records_screened=2 vs
+              # identified_rows_db=1）。任务页与 CLI 的跨口径对齐（CLI 计
+              # 全部决策行）属产品仲裁项，见 r7 指示文档 F9 条目。
               'records_screened': len(db_keys & set(first)),
               'records_excluded_screening': sum(v['decision']=='exclude' for k,v in first.items() if k in db_keys),
               'reports_sought_db': len(sought & db_keys), 'reports_sought_other': len(sought & other_keys),
@@ -146,6 +153,8 @@ def register_prisma_task_metrics(app, require_user):
     @app.get('/api/tasks/{task_id}/prisma-metrics/records')
     def metric_records(task_id: str, mode: Literal['reviewer','team']='reviewer', user: dict=Depends(require_user)):
         runtime=app.state.review_workflow
+        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
+        task_id=runtime.task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx=runtime.context(task_id,user)
             first,_=outcomes(ctx,'stage1',mode)
@@ -171,6 +180,8 @@ def register_prisma_task_metrics(app, require_user):
     @app.get('/api/tasks/{task_id}/prisma-metrics')
     def task_metrics(task_id: str, mode: Literal['reviewer','team']='reviewer', user: dict=Depends(require_user)):
         runtime=app.state.review_workflow
+        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
+        task_id=runtime.task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx=runtime.context(task_id,user)
             return summary(ctx,mode)

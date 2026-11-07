@@ -662,6 +662,43 @@ def _snapshot_stage(conn: sqlite3.Connection, context: TraceContext, stage: str)
     return count
 
 
+def _snapshot_articles_and_protocol(conn: sqlite3.Connection, context: TraceContext) -> int:
+    """插入全局文献/协议基线事件（stage 标签固定为 ``screen``）；返回事件数。
+
+    R3-06（文档化契约，非门控）：``baseline_item``/``baseline_protocol`` 是
+    **跨阶段的全局基线**，不受 settings.stages 的阶段选择门控——导入预览
+    依赖 ``baseline_item`` 的 after.doi 做 subject↔DOI 候选匹配
+    （custom_backend/research_trace_api._import_metadata），用户只录制
+    fulltext/coding 时也必须存在，直接按选择集门控会破坏该消费方。stage
+    标签沿用 ``"screen"``（articles/protocol 属筛选阶段数据域），仅作归类
+    展示，不代表筛选阶段被纳入录制范围。
+    """
+    count = 0
+    if _table_exists(conn, "articles"):
+        for row in conn.execute(
+            "SELECT zotero_key,doi,item_type FROM articles ORDER BY import_order,zotero_key"
+        ):
+            _insert_event(
+                conn, task_id=context.task_id, actor_id=str(context.actor_id), stage="screen",
+                action="baseline_item", subject_id=str(row[0]), before=None,
+                after={"zotero_key": row[0], "doi": row[1] or "", "item_type": row[2] or ""},
+                source="baseline",
+            )
+            count += 1
+        if _table_exists(conn, "meta"):
+            version_row = conn.execute(
+                "SELECT value FROM meta WHERE key='protocol_version'"
+            ).fetchone()
+            _insert_event(
+                conn, task_id=context.task_id, actor_id=str(context.actor_id), stage="screen",
+                action="baseline_protocol", subject_id="protocol", before=None,
+                after={"protocol_version": version_row[0] if version_row else None},
+                source="baseline",
+            )
+            count += 1
+    return count
+
+
 def update_settings(
     conn: sqlite3.Connection,
     context: TraceContext,
@@ -737,26 +774,9 @@ def update_settings(
         newly_selected = set(stage_list) - set(previous["stages"])
         if status == "recording" and previous["status"] != "recording":
             newly_selected = set(stage_list)
-            if _table_exists(conn, "articles"):
-                for row in conn.execute(
-                    "SELECT zotero_key,doi,item_type FROM articles ORDER BY import_order,zotero_key"
-                ):
-                    _insert_event(
-                        conn, task_id=context.task_id, actor_id=str(context.actor_id), stage="screen",
-                        action="baseline_item", subject_id=str(row[0]), before=None,
-                        after={"zotero_key": row[0], "doi": row[1] or "", "item_type": row[2] or ""},
-                        source="baseline",
-                    )
-                if _table_exists(conn, "meta"):
-                    version_row = conn.execute(
-                        "SELECT value FROM meta WHERE key='protocol_version'"
-                    ).fetchone()
-                    _insert_event(
-                        conn, task_id=context.task_id, actor_id=str(context.actor_id), stage="screen",
-                        action="baseline_protocol", subject_id="protocol", before=None,
-                        after={"protocol_version": version_row[0] if version_row else None},
-                        source="baseline",
-                    )
+            # R3-06：全局基线（文献/协议）不受阶段选择门控——契约与理由见
+            # _snapshot_articles_and_protocol 的 docstring（导入预览依赖其 DOI）。
+            _snapshot_articles_and_protocol(conn, context)
         if status == "recording":
             for stage in STAGES:
                 if stage in newly_selected:
@@ -785,7 +805,13 @@ def clear_history(
     operation_id: str,
     expected_version: int,
 ) -> dict[str, Any]:
-    """Clear only one actor/task trace and start a fresh, explicitly bounded history."""
+    """Clear only one actor/task trace and start a fresh, explicitly bounded history.
+
+    B08-N3：清空后若仍处于 recording/paused，除各阶段决策/编码基线外，还按
+    录制启动时同款重建**全局文献/协议基线**（_snapshot_articles_and_protocol）
+    ——否则导出的 trace 包在导入预览中失去 DOI 匹配数据，直到用户关掉再开
+    录制才恢复。
+    """
     context = context.normalized()
     operation_id = _text(operation_id, "operation_id", 200)
     if type(expected_version) is not int or expected_version < 0:
@@ -851,6 +877,9 @@ def clear_history(
                    "stages": previous["stages"]}, source="control",
         )
         if previous["status"] != "off":
+            # B08-N3：与录制启动同款的全局基线重建（文献/协议），见本函数
+            # docstring；各阶段决策/编码基线维持既有重快照语义。
+            _snapshot_articles_and_protocol(conn, context)
             for stage in STAGES:
                 if stage in previous["stages"]:
                     _snapshot_stage(conn, context, stage)

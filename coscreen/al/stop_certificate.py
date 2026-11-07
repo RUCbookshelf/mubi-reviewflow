@@ -1,12 +1,16 @@
 """召回证书停止规则——S1 全量分析推荐的替代方案。
 
 原理: 从未筛池中随机抽样 m 条,全部人工判读。
-如果 m 条中发现的新的相关文献 ≤ k_t(阈值),则以 ≥95% 置信度
-声明"剩余相关文献 ≤ k_t × pool_size/m"。
+如果抽验量足且未发现新的相关文献,则声明"剩余相关文献 ≤ k_t";
+该声明的置信度按超几何上界 1 - P(抽验 0 新相关 | 剩余恰为 k_t+1)
+如实计算,随已发现相关数与抽验量变化(F-04-01:未筛池 100、抽验 30 时
+k_t=0 → 置信度仅 0.30,k_t≥8 即已发现 ≥152 条相关时才 ≥95%),
+不再虚标固定的 1−α。
 
 参数(来自 S1 全量优化):
   - R = 0.95  (召回目标: 总召回 ≥ 95%)
-  - α = 0.05  (显著性水平: 置信度 ≥ 95%)
+  - α = 0.05  (名义显著性水平;证书置信度由 certified_confidence 按
+    超几何上界如实计算,不直接使用 α,仅当 k_t 足够大时才 ≥ 1−α)
   - φ = 0.30  (抽样比例: 抽样量 = 30% × 未筛池大小)
   - look = [0.50, 0.70, 0.85, 0.95]  (在已筛进度达到这些百分比时检查)
 
@@ -46,6 +50,18 @@ class RecallCertificate:
         sampling_fraction: float = 0.30, # φ
         look_fractions: tuple[float, ...] = (0.50, 0.70, 0.85, 0.95),
     ):
+        # MM10-11: 构造器此前无域校验——recall_target=0 使 threshold() 除零、
+        # recall_target=1.5 发出"负的可容忍剩余数"证书、alpha=2 /
+        # sampling_fraction≤0 或 >1 也能照常签发。这里按参数各自的数学
+        # 定义域拒绝（默认参数不受影响）。
+        if not 0 < recall_target <= 1:
+            raise ValueError(f"recall_target 必须在 (0, 1] 内，得到 {recall_target!r}")
+        if not 0 < alpha < 1:
+            raise ValueError(f"alpha 必须在 (0, 1) 内，得到 {alpha!r}")
+        if not 0 < sampling_fraction <= 1:
+            raise ValueError(
+                f"sampling_fraction 必须在 (0, 1] 内，得到 {sampling_fraction!r}"
+            )
         self.recall_target = recall_target
         self.alpha = alpha
         self.sampling_fraction = sampling_fraction
@@ -68,8 +84,33 @@ class RecallCertificate:
 
         ``k_t`` 为签名兼容保留(抽样量只由池大小与抽样比例决定,
         不随阈值变化)。``pool_size <= 0`` 时返回 0(池空则无需抽样)。
+        MM10-11: 结果夹到非负——修前负池给出负抽样量,使
+        ``sample_size < required`` 守卫恒成立、证书被直接发放。
         """
-        return math.ceil(pool_size * self.sampling_fraction)
+        return max(0, math.ceil(pool_size * self.sampling_fraction))
+
+    def certified_confidence(self, pool_size: int, k_t: int, sample_size: int) -> float:
+        """证书通过时的真实置信度 = 1 − P(X=0 | K=k_t+1)(超几何上界)。
+
+        X ~ Hypergeometric(N=pool_size, K=k_t+1, n=sample_size):未筛池中
+        恰好还剩 ``k_t + 1`` 条相关(声明"剩余 ≤ k_t"的最小违例)时,
+        抽验 ``sample_size`` 条却发现 0 条新相关的概率。该违例最难被
+        抽验发现,故 P(错误发证) ≤ P(X=0 | K=k_t+1),置信度 = 1 − 该上界,
+        随已发现相关数(``k_t``)与实际抽验量变化——并非固定 1−α
+        (F-04-01 数值表:pool=100、m=30 时 k_t=0..8 的上界为
+        0.7000/0.4879/0.3385/0.2338/0.1608/0.1100/0.0749/0.0507/0.0342,
+        即 k_t≥8、已发现 ≥152 条相关时置信度才 ≥0.95)。
+
+        池非正、抽验覆盖全池、或违例在池中放不下(``k_t + 1 > 池 − 抽验``)
+        时,0 新相关不可能出自违例池,返回 1.0。
+        """
+        remaining = k_t + 1
+        if pool_size <= 0 or sample_size >= pool_size or remaining > pool_size - sample_size:
+            return 1.0
+        log_p = math.fsum(
+            math.log1p(-sample_size / (pool_size - j)) for j in range(remaining)
+        )
+        return 1.0 - math.exp(log_p)
 
     def should_stop(
         self,
@@ -100,7 +141,7 @@ class RecallCertificate:
         dict
             {
                 "stop": bool,
-                "confidence": float | None,   # 置信度(如 0.95)
+                "confidence": float | None,   # 置信度(超几何上界,随 k_t/抽验量变化;未通过时 None)
                 "k_t": int,                   # 允许的剩余相关数
                 "message": str,               # 给用户的信息
             }
@@ -108,7 +149,9 @@ class RecallCertificate:
         语义(S1 推导的三条路径,按序短路):
           1. 抽样量不足(``sample_size < m``)→ 不停止;
           2. 量足且 ``sample_new_relevant == 0`` → 证书通过
-             (以 ≥ 1−α 置信度,剩余相关 ≤ k_t,总召回 ≥ R);
+             (置信度 = ``certified_confidence`` 如实计算,剩余相关 ≤ k_t
+             时总召回 ≥ R;该置信度随 k_t 与抽验量变化,仅当 k_t 足够大
+             (如池 100、抽验 30 时 k_t≥8)时才 ≥ 1−α,不虚标);
           3. 否则(量足但抽验发现新相关)→ 不停止,继续筛选。
         """
         k_t = self.threshold(found_relevant)
@@ -119,13 +162,16 @@ class RecallCertificate:
             return {"stop": False, "confidence": None, "k_t": k_t,
                     "message": f"抽样量不足(需 {required},实际 {sample_size})"}
 
-        # 超几何上界: P(剩余相关 > k_t | 抽样中仅发现 sample_new_relevant)
-        # 如果 sample_new_relevant == 0 且 sample_size ≥ 阈值 → 证书通过
+        # 超几何上界: P(剩余相关 > k_t | 抽验仅发现 sample_new_relevant 条)
+        # ≤ P(X=0 | K=k_t+1)(最小违例最难被抽验发现),置信度 = 1 − 该上界。
         if sample_new_relevant == 0:
+            confidence = self.certified_confidence(pool_size, k_t, sample_size)
             return {"stop": True,
-                    "confidence": 1 - self.alpha,
+                    "confidence": confidence,
                     "k_t": k_t,
-                    "message": f"以 ≥{int((1-self.alpha)*100)}% 置信度,总召回 ≥{int(self.recall_target*100)}%(剩余相关 ≤ {k_t} 条)"}
+                    "message": (f"证书通过:抽验 {sample_size} 条未见新相关,"
+                                f"超几何置信度 {confidence:.1%},"
+                                f"总召回 ≥{int(self.recall_target*100)}%(剩余相关 ≤ {k_t} 条)")}
 
         return {"stop": False,
                 "confidence": None,

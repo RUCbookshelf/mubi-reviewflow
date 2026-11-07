@@ -260,3 +260,8 @@ Object.assign(window.RFMobileLabels,{"Search": {"zh-CN": "搜索", "en": "Search
 
 Object.assign(window.RFMobileLabels,{"Saved":{"zh-CN":"已保存","en":"Saved","fr":"Enregistré","ru":"Сохранено","es":"Guardado","ja":"保存済み","pt":"Salvo","de":"Gespeichert","sr":"Сачувано","ko":"저장됨"}});
 Object.assign(window.RFMobileLabels,{"Screening":{"en":"Screening","zh-CN":"筛选","fr":"Sélection","ru":"Отбор","es":"Cribado","ja":"スクリーニング","pt":"Triagem","de":"Screening","sr":"Скрининг","ko":"선별"},"Coding":{"en":"Coding","zh-CN":"编码","fr":"Codage","ru":"Кодирование","es":"Codificación","ja":"コーディング","pt":"Codificação","de":"Kodierung","sr":"Кодирање","ko":"코딩"},"Appearance":{"en":"Appearance","zh-CN":"外观","fr":"Apparence","ru":"Оформление","es":"Apariencia","ja":"表示設定","pt":"Aparência","de":"Darstellung","sr":"Изглед","ko":"화면 설정"}});
+// r10-U3：移动端决策条「停止」短标签（F43）与阶段切换条无障碍名（F41）。
+Object.assign(window.RFMobileLabels,{
+  "Stop": {"zh-CN":"停止","en":"Stop","fr":"Arrêter","ru":"Стоп","es":"Detener","ja":"停止","pt":"Parar","de":"Stopp","sr":"Заустави","ko":"중지"},
+  "Workflow stages": {"zh-CN":"工作流阶段","en":"Workflow stages","fr":"Étapes du flux de travail","ru":"Этапы рабочего процесса","es":"Etapas del flujo de trabajo","ja":"ワークフローの段階","pt":"Etapas do fluxo de trabalho","de":"Workflow-Phasen","sr":"Фазе радног тока","ko":"워크플로 단계"}
+});

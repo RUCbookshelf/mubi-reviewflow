@@ -6,16 +6,21 @@ from contextlib import closing
 from pathlib import Path
 from coscreen import review_workflow as store
 
+#: v6（复筛轮次快照）版本号；context() 热路径判齐用
+ROUNDS_VERSION = 6
+
 
 def migrate(db: Path) -> None:
     with closing(store.connect(db, read_only=True)) as conn:
-        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=6').fetchone():
+        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (ROUNDS_VERSION,)).fetchone():
             return
-        backup = db.with_name(db.name + '.pre-rounds-v6.bak')
-        if not backup.exists():
-            with closing(sqlite3.connect(backup)) as target:
-                conn.backup(target)
-    with closing(store.connect(db)) as conn, conn:
+        # 备份只保护既有库；本进程新建、尚在首建链中的库没有可备份的数据。
+        if not store.is_fresh_database(db):
+            backup = db.with_name(db.name + '.pre-rounds-v6.bak')
+            if not backup.exists():
+                with closing(sqlite3.connect(backup)) as target:
+                    conn.backup(target)
+    with closing(store.connect_for_initial_migration(db)) as conn, conn:
         conn.execute('CREATE TABLE IF NOT EXISTS workflow_screen_rounds(id INTEGER PRIMARY KEY,round_number INTEGER NOT NULL,source_id TEXT,status TEXT NOT NULL,snapshot_json TEXT NOT NULL,created_at TEXT NOT NULL)')
         conn.execute("INSERT OR IGNORE INTO workflow_migrations VALUES(6,datetime('now'))")
 
@@ -52,8 +57,37 @@ def finish(db: Path) -> None:
 
 
 def marker(db: Path) -> dict | None:
+    # 复审（legacy 500）：legacy/ghost 任务的筛选库尚未创建（context 的
+    # legacy 分支按设计不建库），只读连接打不开文件曾是 500——按"无轮次
+    # 标记"处理，与 settings() 对不存在库的既有口径一致。
+    if not Path(db).is_file():
+        return None
     with closing(store.connect(db, read_only=True)) as conn:
         if not store.has_table(conn,'workflow_screen_rounds'):
             return None
         row=conn.execute('SELECT id,status FROM workflow_screen_rounds ORDER BY id DESC LIMIT 1').fetchone()
         return dict(row) if row else None
+
+
+def snapshot_keys(db: Path) -> set[str]:
+    """该筛选员进过任一复筛轮次快照的文献键（只读）。
+
+    ``snapshot_json`` 的键就是轮次开始时纳入复核的文献；active/closed/released
+    三种状态都算（一次进入即永久适用「暂不确定只在第一轮」）。库或表不存在
+    （legacy/ghost 任务、升级前旧库）返回空集，不建库、不跑迁移。
+    """
+    if not Path(db).is_file():
+        return set()
+    with closing(store.connect(db, read_only=True)) as conn:
+        if not store.has_table(conn,'workflow_screen_rounds'):
+            return set()
+        keys: set[str] = set()
+        for row in conn.execute('SELECT snapshot_json FROM workflow_screen_rounds'):
+            try:
+                snapshot = json.loads(row[0])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(snapshot, dict):
+                keys.update(snapshot)
+        return keys
+

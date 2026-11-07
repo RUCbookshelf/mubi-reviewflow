@@ -311,6 +311,20 @@ def synthesize_network_random(studies: list[dict], measure: str, reference: str)
             "converged": True,
             "optimizer": "bounded_scalar_profile",
             "iterations": int(optimized.nfev),
+            # The profile objective carries a "- logdet(design)" term (see
+            # evaluate()), so "-objective - df*log(scale)" is exactly the
+            # REML log-likelihood in the error-contrast-density / Harville
+            # profile normalization (which itself contains -log|X'X|):
+            #   ll = -.5*(df*log(2pi) + log|V| + log|X'V^-1X| - log|X'X| + Q)
+            #     = -.5*(df*log(2pi) + log|B'VB| + u'(B'VB)^-1 u),  B'X=0.
+            # stats-a-0: r8 FL1 MM10-09 added an extra "- .5*logdet(design)"
+            # against a reference that *omitted* -log|X'X|, so it reported the
+            # flat-prior marginal likelihood instead: a design-dependent offset
+            # of -.5*log|X'X| from this value and from the four dependent-random
+            # sibling modules (all of which report -objective - df*log(scale)).
+            # Restored to the standard value; pinned by
+            # build/tests/test_r13_stats_reml_loglik.py (QR complement-space
+            # error-contrast density + closed-form Harville reference).
             "reml_log_likelihood": float(-objective - residual_df * math.log(scale)),
             "tau2": tau2,
             "boundary": boundary,

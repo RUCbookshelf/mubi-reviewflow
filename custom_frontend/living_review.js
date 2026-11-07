@@ -1,26 +1,32 @@
-/* ReviewFlow · 活体综述监控面板（衍生产品规格 2026-09-30 §5.5；API=W13 Batch 段）。
+/* ReviewFlow · 活体综述监控面板（衍生产品规格 2026-09-30 §5.5；API=W13 Batch 段；
+ * W3 检索订阅复活：check-now 真拉取 PubMed → 虚拟 RIS → 受保护导入待审）。
  *
  * 分析页追加「活体综述」面板（挂在 .an-workspace 内 #rfManuscriptPanel 之后，
  * 兜底 #anJumpQual，与 GRADE/撰写稿件面板同一追加式接入）：
  *   - 检索式管理：已保存检索式列表（数据库/检索式/上次日期/命中数），
  *     PubMed 记录给「一键打开 PubMed ↗」外链（仅 target=_blank 导航，
- *     本模块不发起任何网络请求）；表单保存/更新检索式（POST save-search，
- *     URL 由后端拼字符串生成）；
- *   - 增量导入与检查：保留入口，明确引导至受保护的 Import 核验；
- *     原始文件在 Import 页面指定来源、核验候选和元数据后激活，分析单独运行。
+ *     本模块自身不直连外网）；表单保存/更新检索式（POST save-search，
+ *     URL 由后端拼字符串生成）；PubMed 记录行内「检查更新」；
+ *   - 检查更新（W3）：「立即检查更新（PubMed）」POST check-now——由后端
+ *     （全仓唯一联网出口 living_review_plugin）访问 PubMed E-utilities，
+ *     增量合成虚拟 RIS 文件进入受保护导入待审；失败优雅降级为提示
+ *     （绝不让面板不可用），手动导出文件导入的离线路径保持可用；
  *   - 变更报告：上次更新时间、新增/去重移除/待新筛（AI 热启动队列）数、
  *     合并结果前后对比表（合并效应 / 95%CI / 研究数 / I²）、结论是否翻转
  *     徽章（CI 跨 null 状态变化）、人可读影响评估（change_report）；
  *     历次更新列表可点选回看（GET history，最新在前）；
  *   - 自动监控（可选插件，默认收起且关闭）：显式开关（POST enable-auto 只写
- *     task.json，不启动后台线程）+ 检查间隔天数；开启后才显示「立即检查」
- *     操作现引导到受保护导入；旧 check-now API 不拉取或写入。
+ *     task.json，后端不起后台线程）+ 检查间隔天数；开启后由**本页面会话内**
+ *     定时器自动触发检查（应用关闭即停；到期补检一次 + 按间隔轮询）。
  *
  * 事件接入（追加式）：reviewflow:analysis-loaded（刷新检索式与历史）、
  * reviewflow:analysis-core-loaded（结局层预填，用户改过则不打扰）、
- * reviewflow:analysis-task-changed（复位）、reviewflow:language-changed（重渲染）。
+ * reviewflow:analysis-task-changed（复位并停自动定时器）、
+ * reviewflow:language-changed（重渲染）。
  *
- * 单点故障：初始化与全部回调自行捕获异常；网络仅经全局 api() 访问本应用 API。
+ * 单点故障：初始化与全部回调自行捕获异常；网络仅经全局 api() 访问本应用 API
+ * （PubMed 出站全部由后端代发，页面不直连 NCBI）。
+ * 十语言词条自包含注册（RFLang.register，中文为源串）。
  */
 (function () {
   'use strict';
@@ -64,6 +70,24 @@
     const DB_LABELS = { pubmed: 'PubMed', embase: 'Embase', cochrane: 'Cochrane Library', manual: '手动 / 其他来源' };
     const SOURCE_LABELS = { manual: '手动导入', pubmed: 'PubMed 插件' };
 
+    /* ---- 十语言词条（模块自包含；列序 zh-CN/en/fr/ru/es/ja/pt/de/sr/ko） ---- */
+    if (typeof RFLang !== 'undefined' && typeof RFLang.register === 'function') {
+      RFLang.register([
+        ["立即检查更新（PubMed）", "Check now (PubMed)", "Vérifier maintenant (PubMed)", "Проверить сейчас (PubMed)", "Comprobar ahora (PubMed)", "今すぐ確認（PubMed）", "Verificar agora (PubMed)", "Jetzt prüfen (PubMed)", "Провери одмах (PubMed)", "지금 확인(PubMed)"],
+        ["自动检查中…", "Automatic check running…", "Vérification automatique en cours…", "Выполняется автоматическая проверка…", "Comprobación automática en curso…", "自動確認を実行中…", "Verificação automática em andamento…", "Automatische Prüfung läuft…", "Аутоматска провера у току…", "자동 확인 실행 중…"],
+        ["✓ 已拉取 {0} 条，进入导入核验待审。", "✓ Fetched {0} records; staged in import review.", "✓ {0} notices récupérées ; en attente dans la révision d’importation.", "✓ Получено записей: {0}; переданы в импорт-проверку.", "✓ {0} registros obtenidos; en espera en la revisión de importación.", "✓ {0} 件を取得し、インポート審査で待機中です。", "✓ {0} registros obtidos; pendentes na revisão de importação.", "✓ {0} Datensätze abgerufen; zur Importprüfung vorgemerkt.", "✓ Преузето {0} записа; чекају у прегледу увоза.", "✓ {0}건을 가져와 임포트 검토에서 대기 중입니다."],
+        ["✓ 自 {0} 起无新增。", "✓ No new records since {0}.", "✓ Aucune nouvelle notice depuis {0}.", "✓ Нет новых записей после {0}.", "✓ Sin registros nuevos desde {0}.", "✓ {0} 以降の新規はありません。", "✓ Nenhum registro novo desde {0}.", "✓ Keine neuen Datensätze seit {0}.", "✓ Нема нових записа од {0}.", "✓ {0} 이후 새 레코드가 없습니다."],
+        ["PubMed 检查失败：", "PubMed check failed: ", "Échec de la vérification PubMed : ", "Проверка PubMed не удалась: ", "Fallo al comprobar PubMed: ", "PubMedの確認に失敗：", "Falha na verificação do PubMed: ", "PubMed-Prüfung fehlgeschlagen: ", "Провера PubMed није успела: ", "PubMed 확인 실패: "],
+        ["网络不可达，请手动导出文件后导入。", "Network unreachable; export the file manually and import it.", "Réseau injoignable ; exportez le fichier manuellement puis importez-le.", "Сеть недоступна; экспортируйте файл вручную и импортируйте его.", "Red inaccesible; exporte el archivo manualmente e impórtelo.", "ネットワークに到達できません。手動でファイルをエクスポートしてインポートしてください。", "Rede inacessível; exporte o arquivo manualmente e importe-o.", "Netzwerk nicht erreichbar; exportieren Sie die Datei manuell und importieren Sie sie.", "Мрежа недоступна; извезите датотеку ручно и увезите је.", "네트워크에 접근할 수 없습니다. 파일을 수동으로 내보낸 뒤 가져오세요."],
+        ["已开启会话内自动检查（每 {0} 天）；关闭应用即停，服务器不会后台联网。", "In-session automatic checks enabled (every {0} days); stops when the app closes. The server never connects in the background.", "Vérifications automatiques de session activées (tous les {0} jours) ; elles s’arrêtent à la fermeture de l’application. Le serveur ne se connecte jamais en arrière-plan.", "Включена автопроверка в рамках сеанса (каждые {0} дн.); останавливается при закрытии приложения. Сервер не подключается в фоновом режиме.", "Comprobaciones automáticas de sesión activadas (cada {0} días); se detienen al cerrar la aplicación. El servidor nunca se conecta en segundo plano.", "セッション内の自動確認を有効にしました（{0} 日ごと）。アプリを閉じると停止し、サーバーがバックグラウンドで通信することはありません。", "Verificações automáticas na sessão ativadas (a cada {0} dias); param quando o aplicativo fecha. O servidor nunca se conecta em segundo plano.", "Automatische Prüfungen innerhalb der Sitzung aktiviert (alle {0} Tage); enden beim Schließen der App. Der Server verbindet sich nie im Hintergrund.", "Аутоматске провере у сесији укључене (сваких {0} дана); стају кад се апликација затвори. Сервер се никад не повезује у позадини.", "세션 내 자동 확인이 활성화되었습니다({0}일마다). 앱을 닫으면 중지되며 서버는 백그라운드에서 연결하지 않습니다."],
+        ["仅访问 PubMed 官方接口（eutils.ncbi.nlm.nih.gov），且仅在手动检查或会话内自动检查时发起。", "Contacts only the official PubMed API (eutils.ncbi.nlm.nih.gov), and only on a manual or in-session automatic check.", "Ne contacte que l’API officielle de PubMed (eutils.ncbi.nlm.nih.gov), et uniquement lors d’une vérification manuelle ou automatique en session.", "Обращается только к официальному API PubMed (eutils.ncbi.nlm.nih.gov) и только при ручной или автоматической проверке внутри сеанса.", "Solo contacta con la API oficial de PubMed (eutils.ncbi.nlm.nih.gov), y únicamente al comprobar manualmente o automáticamente en la sesión.", "PubMed公式API（eutils.ncbi.nlm.nih.gov）のみに、手動確認またはセッション内自動確認の時だけ接続します。", "Contata apenas a API oficial do PubMed (eutils.ncbi.nlm.nih.gov), e somente em verificações manuais ou automáticas na sessão.", "Kontaktiert nur die offizielle PubMed-API (eutils.ncbi.nlm.nih.gov), und nur bei einer manuellen oder automatischen Prüfung in der Sitzung.", "Контактира само званични PubMed API (eutils.ncbi.nlm.nih.gov), и само при ручној или аутоматској провери у сесији.", "공식 PubMed API(eutils.ncbi.nlm.nih.gov)에만, 수동 확인 또는 세션 내 자동 확인 시에만 접속합니다."],
+        ["请先保存检索式。", "Save a search strategy first.", "Enregistrez d’abord une équation de recherche.", "Сначала сохраните поисковый запрос.", "Guarde primero una estrategia de búsqueda.", "先に検索式を保存してください。", "Salve primeiro uma estratégia de busca.", "Speichern Sie zuerst eine Suchstrategie.", "Прво сачувајте претраживачки израз.", "먼저 검색식을 저장하세요."],
+        ["导入待审 {0} 篇", "{0} records staged for review", "{0} notices en attente de révision", "{0} записей ожидают проверки", "{0} registros en espera de revisión", "{0} 件が審査待ち", "{0} registros aguardando revisão", "{0} Datensätze zur Prüfung vorgemerkt", "{0} записа чека преглед", "{0}건 검토 대기 중"],
+        ["PubMed 拉回 {0} 篇", "{0} records retrieved from PubMed", "{0} notices récupérées de PubMed", "Из PubMed получено записей: {0}", "{0} registros recuperados de PubMed", "PubMed から {0} 件取得", "{0} registros obtidos do PubMed", "{0} Datensätze aus PubMed abgerufen", "Са PubMed-а преузето {0} записа", "PubMed에서 {0}건 가져옴"],
+        ["库内已存在 {0} 篇", "{0} already present in the library", "{0} déjà présentes dans la bibliothèque", "{0} уже есть в библиотеке", "{0} ya presentes en la biblioteca", "ライブラリに既存：{0} 件", "{0} já existentes na biblioteca", "{0} bereits in der Bibliothek vorhanden", "{0} већ постоји у библиотеци", "라이브러리에 이미 {0}건 존재"],
+      ]);
+    }
+
     function safe(fn) { return function () { try { fn.apply(this, arguments); } catch (e) { /* 单点故障 */ } }; }
     function fmtNum(v) {
       if (v === null || v === undefined || v === '') return '—';
@@ -77,6 +101,7 @@
     let records = [];             // 已保存检索式
     let history = [];             // 更新历史（最新在前）
     let viewEntry = null;         // 当前展示的变更报告条目
+    let checkBusy = false;        // 手动/自动检查互斥（防重叠拉取）
 
     /* ---- 面板骨架（静态文案节点集中持有，语言切换时重填） ---- */
     const heading = el('h3', { text: T('活体综述') });
@@ -138,21 +163,23 @@
     const histBox = el('div', { class: 'rf-lr-hist' });
     histDetails.lastElementChild.append(histBox);
 
-    /* 自动监控（可选，默认收起且关闭） */
+    /* 自动监控（可选，默认收起且关闭）+ 立即检查（真实拉取，W3） */
     const autoDetails = disclosure('rfLivingAutomation', '自动监控（可选，默认关闭）');
     const autoCheck = el('input', { type: 'checkbox' });
     const autoLabel = el('label', { style: 'display:flex;gap:6px;align-items:center;font-size:.8rem' },
       autoCheck, el('span', { text: T('开启自动监控（PubMed 插件，显式开启）') }));
     const intervalInput = el('input', { class: 'input', type: 'number', min: '1', max: '3650', value: '30',
       style: 'max-width:110px', 'aria-label': T('检查间隔（天）') });
-    const checkBtn = el('button', { class: 'btn b-out', type: 'button', text: T('Open import review'), hidden: '' });
-    const autoNote = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') });
+    const checkBtn = el('button', { class: 'btn b-out', type: 'button', text: T('立即检查更新（PubMed）') });
+    const autoNote = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('仅访问 PubMed 官方接口（eutils.ncbi.nlm.nih.gov），且仅在手动检查或会话内自动检查时发起。') });
+    const autoImportNote = el('p', { class: 'hint', style: 'margin:4px 0 0', text: T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') });
     autoDetails.lastElementChild.append(
       autoLabel,
       el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' },
         el('label', { style: 'font-size:.78rem' }, el('span', { text: T('检查间隔（天）') }), intervalInput),
         checkBtn),
-      autoNote);
+      autoNote,
+      autoImportNote);
 
     const statusLine = el('p', { class: 'rf-lr-status hint', role: 'status' });
     const panel = el('section', { class: 'card rf-living', id: 'rfLivingReviewPanel', 'aria-label': T('活体综述') },
@@ -185,6 +212,11 @@
         if (db === 'pubmed' && /^https:\/\//.test(url)) {
           head.append(el('a', { class: 'btn b-out', href: url, target: '_blank', rel: 'noopener noreferrer',
             text: T('一键打开 PubMed ↗'), style: 'padding:3px 10px;font-size:.75rem' }));
+        }
+        if (db === 'pubmed' && String(rec.query_string || '').trim()) {
+          head.append(el('button', { type: 'button', class: 'btn b-out', text: T('检查更新'),
+            style: 'padding:3px 10px;font-size:.75rem',
+            onclick: safe(() => { runCheck(rec, {}); }) }));
         }
         recBox.append(el('div', { class: 'rf-lr-record' }, head,
           el('pre', { translate: 'no', text: String(rec.query_string || '') })));
@@ -265,6 +297,10 @@
         label: entry.label || label || '',
         n_new: nNew == null ? 0 : nNew,
         n_screen: d.al_prioritized ? d.al_prioritized.length : null,
+        fetched: d.fetched != null ? d.fetched : (entry.fetched != null ? entry.fetched : null),
+        pending_new: (d.pending_new != null ? d.pending_new : entry.pending_new) || 0,
+        already_present: (d.already_present != null ? d.already_present
+          : (entry.duplicates_removed || 0)),
         duplicates_removed: d.duplicates_removed != null ? d.duplicates_removed : (entry.duplicates_removed || 0),
         al_available: d.al_available != null ? d.al_available : entry.al_available,
         al_note: d.al_note || '',
@@ -300,7 +336,12 @@
 
       const stats = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px' },
         el('span', { class: 'chip', text: T('新增 {0} 篇', String(e.n_new)) }),
-        el('span', { class: 'chip', text: T('去重移除 {0} 篇', String(e.duplicates_removed)) }));
+        el('span', { class: 'chip', text: T('去重移除 {0} 篇', String(e.duplicates_removed)) }),
+        // PubMed 拉取口径（r8 评审 medium）：拉回条数 / 待审条数 / 库内已存在条数
+        // 各自独立显示，不再把「已存在」算成「新增」。
+        e.pending_new ? el('span', { class: 'chip', text: T('导入待审 {0} 篇', String(e.pending_new)) }) : null,
+        e.fetched != null ? el('span', { class: 'chip', text: T('PubMed 拉回 {0} 篇', String(e.fetched)) }) : null,
+        e.already_present ? el('span', { class: 'chip', text: T('库内已存在 {0} 篇', String(e.already_present)) }) : null);
       if (e.n_screen != null) stats.append(el('span', { class: 'chip', text: T('待新筛 {0} 篇（机器学习热启动排序）', String(e.n_screen)) }));
       else if (e.al_available === false) stats.append(el('span', { class: 'chip', text: T('机器学习排序不可用') }));
       reportBox.append(stats);
@@ -377,7 +418,7 @@
         const auto = recRes?.living_review_auto || {enabled: false, interval_days: 30};
         autoCheck.checked = !!auto.enabled;
         intervalInput.value = String(auto.interval_days || 30);
-        checkBtn.hidden = !autoCheck.checked;
+        scheduleAutoCheck();   // 开关开启 → 本会话内自动检查（关闭即 clearAutoTimer）
         history = (histRes && histRes.history) || [];
         renderRecords();
         renderHistory();
@@ -388,7 +429,7 @@
       } catch (e) { /* 面板可选数据加载失败不阻塞；详情看状态行 */ }
     }
 
-    /* ---- 自动监控（显式开关；只写设置，不起线程） ---- */
+    /* ---- 自动监控（显式开关；后端只写设置；自动检查由本页会话内定时器实现） ---- */
     async function enableAuto(enabled) {
       let ticket;
       try {
@@ -398,7 +439,9 @@
         ticket = ++version;
         await api(taskApi() + '/living-review/enable-auto', { method: 'POST', body });
         if (ticket !== version) return null;
-        if (typeof toast === 'function') toast(enabled ? T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.') : T('自动监控已关闭'), 'inc');
+        if (typeof toast === 'function') toast(enabled
+          ? T('已开启会话内自动检查（每 {0} 天）；关闭应用即停，服务器不会后台联网。', String(body.interval_days))
+          : T('自动监控已关闭'), 'inc');
         return true;
       } catch (e) {
         if (ticket !== undefined && ticket !== version) return null;
@@ -412,15 +455,136 @@
       const ok = await enableAuto(enabled);
       if (ok === null) return;
       if (!ok) { autoCheck.checked = !enabled; return; }
-      checkBtn.hidden = !enabled;
+      if (enabled) scheduleAutoCheck(); else clearAutoTimer();
     }));
     intervalInput.addEventListener('change', safe(async () => {
-      if (autoCheck.checked) await enableAuto(true);   // 间隔变化即时写回设置
+      if (autoCheck.checked) {   // 间隔变化即时写回设置并重排会话内定时器
+        await enableAuto(true);
+        scheduleAutoCheck();
+      }
     }));
 
-    /* ---- Legacy check action routes to protected import review ---- */
-    checkBtn.addEventListener('click', safe(checkNow));
-    async function checkNow() { try { await protectedImportRoute(); } catch (error) { WorkflowControls.error(error); } }
+    /* ---- 检查更新（W3 真拉取：后端 PubMed 插件 → 虚拟 RIS → 受保护导入待审） ---- */
+    checkBtn.addEventListener('click', safe(() => { runCheck(null, {}); }));
+
+    function firstPubmedRecord() {
+      return records.find(rec => rec && typeof rec === 'object' && rec.database === 'pubmed'
+        && String(rec.query_string || '').trim()) || null;
+    }
+    function intervalDays() {
+      return Math.max(1, Math.min(3650, Number(intervalInput.value) || 30));
+    }
+    function computeSince(rec) {
+      const last = String((rec && rec.last_run_date) || '').trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(last)) return last;
+      const past = new Date(Date.now() - intervalDays() * 86400000);
+      return past.toISOString().slice(0, 10);
+    }
+
+    async function runCheck(record, opts) {
+      opts = opts || {};
+      try {
+        if (typeof api !== 'function' || typeof taskApi !== 'function') return;
+        if (!guardTask() || checkBusy) return;
+        const rec = record || firstPubmedRecord();
+        const query = String((rec && rec.query_string) || '').trim();
+        if (!query) {
+          statusLine.textContent = T('请先保存检索式。');
+          if (!opts.auto && typeof toast === 'function') toast(T('请先保存检索式。'), 'warn');
+          return;
+        }
+        const since = computeSince(rec);
+        const ticket = ++version;
+        checkBusy = true;
+        checkBtn.disabled = true;
+        try {
+          statusLine.textContent = T(opts.auto ? '自动检查中…' : '正在通过 PubMed 插件拉取增量…');
+          const d = await api(taskApi() + '/living-review/check-now',
+            { method: 'POST', body: { query_string: query, since_date: since } });
+          if (ticket !== version) return;
+          if (d && Array.isArray(d.search_records)) { records = d.search_records; renderRecords(); }
+          applyResult(d, 'pubmed', (d && d.virtual_file) || '');
+          statusLine.textContent = (d && d.fetched)
+            ? T('✓ 已拉取 {0} 条，进入导入核验待审。', String(d.fetched))
+            : T('✓ 自 {0} 起无新增。', since);
+          refreshLists();  // 同步服务端推进的检索式与历史（内部自带票据与兜错）
+        } finally {
+          checkBusy = false;
+          checkBtn.disabled = false;
+        }
+      } catch (e) {
+        // 优雅降级：检查失败只提示（含 409 pubmed_unavailable 的手动导入指引），
+        // 面板与离线手动导入路径不受影响，异常绝不冒泡。
+        const code = (e && e.code) || '';
+        const msg = String((e && e.message) || e || '');
+        statusLine.textContent = T('PubMed 检查失败：') + msg
+          + (code === 'pubmed_unavailable' ? ' ' + T('网络不可达，请手动导出文件后导入。') : '');
+        if (!opts.auto && typeof toast === 'function') toast(T('PubMed 检查失败：') + msg, 'warn');
+      }
+    }
+
+    /* ---- 会话内自动检查（纯前端定时器；应用关闭即停，后端不起任何服务） ----
+     * 溢出红线（r8 评审 blocking）：setTimeout/setInterval 的延迟在浏览器与
+     * Node 都按 32 位有符号整数处理（上限 MAX_TIMER_MS = 2^31-1）。
+     * days * 86400000 在 days >= 25 时即溢出（默认 30 天 = 2,592,000,000），
+     * 溢出后延迟被钳到 1ms；若直接 setInterval(…, intervalMs) 就变成**每秒
+     * 数百次联网**（Node 实测 300ms 内 5 次 tick、TimeoutOverflowWarning），
+     * 直接违背 NCBI「无并发轰炸」礼仪并污染导入核验队列。
+     * 因此改为「单次 setTimeout 分片推进」：每片 <= MAX_TIMER_MS 且 <= 剩余
+     * 时间，累计到目标时刻才真正检查一次；每次重新计算剩余时间，天然吸收
+     * 定时器漂移与休眠唤醒。 */
+    const MAX_TIMER_MS = 2147483647;   // 2^31-1：32 位定时器上限
+    let autoTimer = null;         // 当前分片 timer（interval/timeout 共用句柄）
+    let autoDueAt = 0;            // 下一次自动检查的目标时刻（epoch ms）
+    let autoCatchup = null;       // 到期补检的一次性定时器（与 autoTimer 同生共死）
+    function clearAutoTimer() {
+      if (autoTimer !== null) { clearTimeout(autoTimer); autoTimer = null; }
+      if (autoCatchup !== null) { clearTimeout(autoCatchup); autoCatchup = null; }
+      autoDueAt = 0;
+    }
+    /* 一片的延迟：既不超过 32 位上限，也不越过目标时刻 */
+    function nextTimerSlice() {
+      const remaining = autoDueAt - Date.now();
+      return Math.max(1, Math.min(MAX_TIMER_MS, remaining));
+    }
+    function armAutoSlice() {
+      if (autoTimer !== null) { clearTimeout(autoTimer); autoTimer = null; }
+      if (!autoCheck.checked) return;
+      const remaining = autoDueAt - Date.now();
+      if (remaining > MAX_TIMER_MS) {          // 还早：再睡一片
+        autoTimer = setTimeout(armAutoSlice, nextTimerSlice());
+        return;
+      }
+      autoTimer = setTimeout(() => {           // 到期：检查一次并排下一轮
+        autoTimer = null;
+        if (autoCheck.checked && !checkBusy) runCheck(null, { auto: true });
+        autoDueAt = Date.now() + autoIntervalMs();
+        armAutoSlice();
+      }, Math.max(0, remaining));
+    }
+    function autoIntervalMs() {
+      return Math.max(1, intervalDays()) * 86400000;
+    }
+    function scheduleAutoCheck() {
+      clearAutoTimer();
+      if (!autoCheck.checked || !firstPubmedRecord()) return;
+      const intervalMs = autoIntervalMs();
+      // 会话开始时已到期（上次检查距今 ≥ 间隔）→ 短延迟补检一次，随后按间隔排下一轮
+      const last = Date.parse(String((firstPubmedRecord() || {}).last_run_date || '')) || 0;
+      if (last && Date.now() - last >= intervalMs) {
+        autoDueAt = Date.now();
+        autoCatchup = setTimeout(() => {
+          autoCatchup = null;
+          if (!autoCheck.checked) return;
+          if (!checkBusy) runCheck(null, { auto: true });
+          autoDueAt = Date.now() + intervalMs;
+          armAutoSlice();
+        }, 5000);
+        return;
+      }
+      autoDueAt = (last || Date.now()) + intervalMs;
+      armAutoSlice();
+    }
 
     /* ---- 结局层预填：跟随分析页当前范围（用户改过则不打扰） ---- */
     function syncLayerFromAnalysis() {
@@ -462,8 +626,9 @@
         autoDetails.querySelector(':scope > button').textContent = T('自动监控（可选，默认关闭）');
         autoLabel.querySelector('span').textContent = T('开启自动监控（PubMed 插件，显式开启）');
         intervalInput.setAttribute('aria-label', T('检查间隔（天）'));
-        checkBtn.textContent = T('Open import review');
-        autoNote.textContent = T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.');
+        checkBtn.textContent = T('立即检查更新（PubMed）');
+        autoNote.textContent = T('仅访问 PubMed 官方接口（eutils.ncbi.nlm.nih.gov），且仅在手动检查或会话内自动检查时发起。');
+        autoImportNote.textContent = T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.');
         panel.setAttribute('aria-label', T('活体综述'));
         renderRecords();
         renderEntry();
@@ -476,13 +641,13 @@
     document.addEventListener('reviewflow:analysis-core-loaded', safe(syncLayerFromAnalysis));
     document.addEventListener('reviewflow:analysis-task-changed', safe(() => {
       version++;
+      clearAutoTimer();   // 换任务：停旧任务的会话内自动检查
       records = []; history = []; viewEntry = null;
       renderRecords(); renderHistory(); renderEntry();
       recEmpty.hidden = false;
       histDetails.hidden = true;
       autoCheck.checked = false;
       intervalInput.value = '30';
-      checkBtn.hidden = true;
       saveBtn.disabled = false;
       importBtn.disabled = false;
       checkBtn.disabled = false;

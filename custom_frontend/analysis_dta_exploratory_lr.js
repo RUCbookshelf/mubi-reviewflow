@@ -25,7 +25,7 @@
         rows.append(el('tr',{},...[label,fmt(result['lr_'+key]),item.ci_lr.map(fmt).join(' – '),`${fmt(h.q)} (${h.q_df})`,fmt(h.i2_percent),fmt(h.tau2)].map(text => el('td',{text}))));
       }
       host.replaceChildren(el('p',{text:T("{0}; {1}/{2} studies used. {3}. DL τ² is a diagnostic estimate even when fixed weights are selected.", RFAnalysisLocale.term(result.effect_model),result.n_used,result.n_studies,RFAnalysisLocale.term(result.zero_cell_policy))}),table,
-        el('p',{class:'hint',text:'I² = max(0, (Q − df) / Q) × 100% from fixed inverse-variance Q; I² = 0 when Q = 0.'}));
+        el('p',{class:'hint',text:T('I² = max(0, (Q − df) / Q) × 100% from fixed inverse-variance Q; I² = 0 when Q = 0.')}));
       for (const row of result.excluded_studies) host.append(el('p',{class:'hint',text:T("Excluded {0}: {1}", row.study_id,RFAnalysisLocale.term(row.reason))}));
       for (const text of [...result.warnings,...result.method_sources]) host.append(el('p',{class:'hint',text}));
       host.append(el('p',{class:'hint',text:T('Sources:')+' '+result.source_provenance.map(row => `${row.study_id} (${row.source_key}${row.source_locator ? ', '+row.source_locator : ''})`).join('; ')}));

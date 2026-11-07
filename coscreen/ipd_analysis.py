@@ -16,10 +16,24 @@ def import_study(db: str | Path, study_id: str, comparison: str, outcome: str,
         raise ValueError("IPD import needs 4–100000 participant rows")
     arms: dict[str, list[float]] = {"treatment": [], "control": []}
     for row in participants:
-        if set(row) != {"arm", "value"} or row["arm"] not in arms:
+        # F4-98: a JSON list/dict arm is unhashable, so `arm not in arms` raised
+        # TypeError (not ValueError) and escaped the endpoint's 400 contract.
+        if set(row) != {"arm", "value"} or not isinstance(row["arm"], str) \
+                or row["arm"] not in arms:
             raise ValueError("each IPD row needs arm (treatment/control) and value")
         value = row["value"]
-        if type(value) not in {int, float} or not math.isfinite(value):
+        if type(value) not in {int, float}:
+            raise ValueError("participant outcomes must be finite numbers")
+        # F4-96: math.isfinite() converts to float first and raises OverflowError
+        # for integers beyond the float range (e.g. a 401-digit JSON integer),
+        # which the endpoint does not translate. Keep the int value itself (mean
+        # and stdev are unchanged for representable integers) and reject only
+        # values that cannot be a finite double.
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            raise ValueError("participant outcomes must be finite numbers") from None
+        if not finite:
             raise ValueError("participant outcomes must be finite numbers")
         arms[row["arm"]].append(value)
     treatment, control = arms["treatment"], arms["control"]

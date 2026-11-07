@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from math import exp, fsum, isfinite, log, sqrt
 from numbers import Real
@@ -9,6 +10,95 @@ from numbers import Real
 import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy.stats import chi2, norm, t
+
+# F4-102: the design matrix is width x width (width = covariates + 1), so both
+# memory (width^2 floats per evaluation) and every per-row outer product grow
+# with the covariate count. 100,000 covariates meant a 74.5 GiB allocation in one
+# request (the review's static estimate). Legitimate IPD adjustment is single
+# digits; 50 leaves the whole practical domain while keeping the worst legitimate
+# request bounded: 100,000 rows x 17 columns measured 3.5 s per evaluation and
+# 100,000 x 65 measured 6.8 s, and the evaluation budget below caps the count.
+_MAX_COVARIATES = 50
+
+# F4-101: these names are consumed by _prepare_rows as the outcome and the time
+# scale. Accepting them as covariates silently aliased the reserved column into
+# the model (the review measured a "covariate" whose log-HR was the event
+# indicator itself). They are refused with an explanation instead of being
+# fitted, because the resulting estimate cannot be interpreted at all.
+_RESERVED_ROW_FIELDS = ("study_id", "duration", "event", "treatment")
+
+# F4-93/F4-104: one fit is bounded by a wall-clock budget -- the same guard
+# shape and 120 s ceiling ipd_adjusted_cox uses (_EvaluationBudget). Stage one
+# fits one study at a time, so the budget is shared by the whole request; the
+# worst legitimate fits measured here (100,000 rows, 50 covariates) take 44.6 s.
+_BUDGET_SECONDS = 120.0
+
+# F4-104: complete separation collapses the observed information relative to the
+# null model: separated per-study fits measured ~9e-10, while 716 random accepted
+# fits across three sweeps measured 0.03 to 1.3. Five orders of magnitude of
+# margin, and the same threshold as ipd_adjusted_cox (_MIN_INFORMATION_RATIO).
+_MIN_INFORMATION_RATIO = 1e-6
+
+
+class _BudgetExceeded(ValueError):
+    """Raised inside _evaluate() when the fit's wall-clock budget is spent."""
+
+
+class _EvaluationBudget:
+    """Wall-clock budget shared by the evaluations of one Cox fit (F4-93)."""
+
+    def __init__(self, seconds: float | None = None) -> None:
+        self.seconds = _BUDGET_SECONDS if seconds is None else seconds
+        self.started = time.monotonic()
+        self.exhausted = False
+
+    def expired(self) -> bool:
+        if not self.exhausted and time.monotonic() - self.started >= self.seconds:
+            self.exhausted = True
+        return self.exhausted
+
+    def check(self) -> None:
+        if self.expired():
+            raise _BudgetExceeded(
+                "Cox fit exceeded its computation budget before convergence; "
+                "reduce the number of participant rows or covariates per run"
+            )
+
+
+def _finite_fsum(terms, message: str) -> float:  # noqa: ANN001
+    """``math.fsum`` 的溢出家族统一入口：中间溢出转 ValueError（4xx 契约）。
+
+    fsum 对「各项都有限、部分和却超出 float 范围」的输入抛
+    ``OverflowError``（fsum 溢出族：F2-87/F4-106/F4-95 同型），端点只捕
+    ValueError，于是溢出变成 500。常规输入仍走同一条 fsum，结果逐位不变。
+    """
+    try:
+        return fsum(terms)
+    except OverflowError as exc:
+        raise ValueError(message) from exc
+
+
+def _information_collapse_ratio(evaluate, beta: np.ndarray) -> float | None:  # noqa: ANN001
+    """Smallest-eigenvalue ratio of observed information: fitted fit vs null model.
+
+    F4-104：完全分离时风险集权重被单个观测支配，拟合点的 observed information
+    相对 beta=0 的零模型坍缩数个数量级。返回 None 表示无法评估（零模型信息
+    非正/求值失败），此时调用方不得新增拒绝（R2）。
+    """
+    try:
+        null_information = evaluate(np.zeros_like(beta))[2]
+    except _BudgetExceeded:
+        raise
+    except ValueError:
+        return None
+    try:
+        null_smallest = float(np.linalg.eigvalsh(null_information)[0])
+        fitted_smallest = float(np.linalg.eigvalsh(evaluate(beta)[2])[0])
+    except np.linalg.LinAlgError:
+        return None
+    if not isfinite(null_smallest) or null_smallest <= 0:
+        return None
+    return fitted_smallest / null_smallest
 
 
 def _number(value: object, label: str) -> float:
@@ -24,11 +114,17 @@ def _number(value: object, label: str) -> float:
 
 
 def _exp_or_none(value: float) -> float | None:
+    """exp() as a reportable ratio: None only when the exponent overflows.
+
+    F4-107: ``result or None`` also folded a correctly rounded underflow (0.0)
+    into None, so an audit table showed a real near-zero bound as a missing
+    value. Keep every finite result, including 0.0.
+    """
     try:
         result = exp(value)
     except OverflowError:
         return None
-    return result or None
+    return result if isfinite(result) else None
 
 
 def _check_ties(ties: str) -> None:
@@ -62,6 +158,23 @@ def _covariate_spec(
     keys = set(covariate_centers)
     if not keys:
         raise ValueError("at least one covariate center and scale is required")
+    # F4-101: a covariate named after a reserved row field silently aliases the
+    # outcome/time column into the model (the review measured a "covariate"
+    # whose log-HR was the event indicator, fitted and returned as valid).
+    reserved = sorted(key for key in keys if isinstance(key, str)
+                      and key in _RESERVED_ROW_FIELDS)
+    if reserved:
+        raise ValueError(
+            "covariate names must not reuse the reserved row fields "
+            + ", ".join(_RESERVED_ROW_FIELDS) + ": got " + ", ".join(reserved)
+        )
+    # F4-102: every evaluation allocates width^2 floats and one outer product
+    # per row, so the covariate count needs a ceiling of its own.
+    if len(keys) > _MAX_COVARIATES:
+        raise ValueError(
+            f"at most {_MAX_COVARIATES} covariates can be adjusted in one IPD Cox model; "
+            f"got {len(keys)}"
+        )
     if set(covariate_scales) != keys:
         raise ValueError("covariate center and scale mappings must name the same covariates")
     if any(not isinstance(name, str) or not name.strip() for name in keys):
@@ -88,12 +201,18 @@ def _prepare_rows(
 
     The design vector x is ``[treatment, scaled covariates...]``. Rows are used
     in memory only and are never retained by or returned from the fit result.
+
+    A row must carry the core fields plus every named covariate; any further
+    columns are ignored (MM11-03: the same IPD batch may hold covariate columns
+    that only the multi-adjusted model consumes, so the two-stage unadjusted
+    fit must not reject rows for carrying them -- the same rows the
+    multi-adjusted entry point accepts).
     """
     fields = {"study_id", "duration", "event", "treatment", *covariate_names}
     rows_by_study: dict[str, list[tuple[float, int, np.ndarray]]] = {}
     event_counts = [0, 0]
     for row in participants:
-        if not isinstance(row, Mapping) or set(row) != fields:
+        if not isinstance(row, Mapping) or not fields <= set(row):
             raise ValueError(
                 "each row needs study_id, duration, event, treatment, and the named covariates "
                 + ", ".join(covariate_names)
@@ -148,8 +267,14 @@ def _evaluate(
     event_groups: Mapping[str, Mapping[float, list[tuple[float, int, np.ndarray]]]],
     ties: str,
     width: int,
+    budget: "_EvaluationBudget | None" = None,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """Return the partial log likelihood, score, and observed information."""
+    # F4-93: charge the shared budget on every full evaluation (Newton steps and
+    # each Armijo trial), so a runaway search ends in a 400 instead of holding
+    # the worker thread.
+    if budget is not None:
+        budget.check()
     likelihood = 0.0
     score = np.zeros(width)
     information = np.zeros((width, width))
@@ -162,10 +287,9 @@ def _evaluate(
         for event_time, tied_rows in event_groups[study_id].items():
             while cursor < len(rows) and rows[cursor][0] >= event_time:
                 x = rows[cursor][2]
-                try:
-                    eta = fsum(float(beta[index]) * x[index] for index in range(width))
-                except (OverflowError, ValueError):
-                    raise ValueError("linear predictor is outside numeric range") from None
+                eta = _finite_fsum(
+                    (float(beta[index]) * x[index] for index in range(width)),
+                    "linear predictor is outside numeric range")
                 if not isfinite(eta):
                     raise ValueError("linear predictor is outside numeric range")
                 if maximum is None:
@@ -191,10 +315,9 @@ def _evaluate(
             tied_weighted_xx = np.zeros((width, width))
             relative_event_eta = []
             for _, _, x in tied_rows:
-                try:
-                    eta = fsum(float(beta[index]) * x[index] for index in range(width))
-                except (OverflowError, ValueError):
-                    raise ValueError("linear predictor is outside numeric range") from None
+                eta = _finite_fsum(
+                    (float(beta[index]) * x[index] for index in range(width)),
+                    "linear predictor is outside numeric range")
                 if not isfinite(eta):
                     raise ValueError("linear predictor is outside numeric range")
                 weight = exp(eta - maximum)
@@ -206,7 +329,9 @@ def _evaluate(
                 relative_event_eta.append(eta - maximum)
 
             deaths = len(tied_rows)
-            likelihood += fsum(relative_event_eta)
+            # F4-95 同族：事件项求和此前是唯一没有族内守卫的 fsum。
+            likelihood += _finite_fsum(relative_event_eta,
+                                       "linear predictor is outside numeric range")
             score += tied_x
             tie_steps = range(deaths) if ties == "efron" else (0,)
             for tied_index in tie_steps:
@@ -232,12 +357,13 @@ def _fit_cox(
     event_total: int,
     ties: str,
     width: int,
+    budget: "_EvaluationBudget | None" = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Newton-fit the stratified partial likelihood; return beta and covariance."""
     event_groups = _event_groups(rows_by_study)
 
     def evaluate(beta: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
-        return _evaluate(beta, rows_by_study, event_groups, ties, width)
+        return _evaluate(beta, rows_by_study, event_groups, ties, width, budget)
 
     beta = np.zeros(width)
     tolerance = 1e-10 * max(1, event_total)
@@ -270,6 +396,8 @@ def _fit_cox(
             candidate = beta + fraction * step
             try:
                 candidate_likelihood, candidate_score, _ = evaluate(candidate)
+            except _BudgetExceeded:
+                raise
             except ValueError:
                 candidate_likelihood, candidate_score = float("-inf"), None
             if candidate_likelihood >= likelihood + 1e-4 * fraction * direction:
@@ -314,6 +442,15 @@ def _fit_cox(
         raise ValueError("treatment or covariate effect is not identifiable with a finite Hessian") from None
     if not np.isfinite(covariance).all() or not np.isfinite(score).all():
         raise ValueError("Cox Hessian does not yield finite estimates")
+    # F4-104: complete separation gives a flat likelihood, so the coefficients
+    # stop at a boundary while score ~ 0 and the Hessian still passes the
+    # magnitude/condition checks. Two-stage then pooled finite weights ~1/se^2
+    # and reported HR ~ 1 with tau2 = I2 = 0 -- the opposite of the truth.
+    collapse = _information_collapse_ratio(evaluate, beta)
+    if collapse is not None and collapse < _MIN_INFORMATION_RATIO:
+        raise ValueError("treatment effect is not identifiable: the data appear to "
+                         "separate the groups, so a finite maximum-likelihood estimate "
+                         "does not exist")
     standard_errors = np.sqrt(np.diag(covariance))
     if not np.isfinite(standard_errors).all() or np.any(standard_errors <= 0):
         raise ValueError("Cox Hessian does not yield finite standard errors")
@@ -348,7 +485,8 @@ def fit_adjusted_stratified_cox_multi(
 
     event_total = sum(event_counts)
     width = len(names) + 1
-    beta, covariance = _fit_cox(rows_by_study, event_total, ties, width)
+    beta, covariance = _fit_cox(rows_by_study, event_total, ties, width,
+                                _EvaluationBudget())
     standard_errors = np.sqrt(np.diag(covariance))
 
     critical = float(norm.ppf(0.975))
@@ -413,11 +551,14 @@ def fit_adjusted_stratified_cox_multi(
 def _dl_tau2(y: np.ndarray, variance: np.ndarray) -> float:
     """DerSimonian-Laird tau2, consistent with the review-analysis formulas."""
     weights = 1.0 / variance
-    total = float(fsum(weights.tolist()))
-    fixed = float(fsum((w * value for w, value in zip(weights.tolist(), y.tolist())))) / total
-    q = float(fsum((w * (value - fixed) ** 2 for w, value in zip(weights.tolist(), y.tolist()))))
+    message = "pooled log hazard ratios are outside the representable numeric range"
+    total = float(_finite_fsum(weights.tolist(), message))
+    fixed = float(_finite_fsum((w * value for w, value in zip(weights.tolist(), y.tolist())),
+                               message)) / total
+    q = float(_finite_fsum((w * (value - fixed) ** 2
+                            for w, value in zip(weights.tolist(), y.tolist())), message))
     df = len(y) - 1
-    c = total - float(fsum((w * w for w in weights.tolist()))) / total
+    c = total - float(_finite_fsum((w * w for w in weights.tolist()), message)) / total
     return max(0.0, (q - df) / c) if c > 0 else 0.0
 
 
@@ -499,6 +640,9 @@ def fit_two_stage_random_slopes(
     estimates = []
     events_total = 0
     rows_total = 0
+    # F4-93: one stage-one budget for the whole request, so k studies cannot
+    # multiply the per-fit ceiling.
+    budget = _EvaluationBudget()
     for study_id in study_ids:
         rows = rows_by_study[study_id]
         arm_events = [0, 0]
@@ -513,7 +657,7 @@ def fit_two_stage_random_slopes(
             raise ValueError(f"study {study_id} needs at least one event in both treatment arms")
         events = int(sum(event for _, event, _ in rows))
         try:
-            beta, covariance = _fit_cox({study_id: rows}, events, ties, 1)
+            beta, covariance = _fit_cox({study_id: rows}, events, ties, 1, budget)
         except ValueError as exc:
             raise ValueError(f"study {study_id}: {exc}") from None
         standard_error = float(sqrt(covariance[0, 0]))
@@ -536,19 +680,24 @@ def fit_two_stage_random_slopes(
         tau2 = _reml_tau2(y, variance)
 
     weights = 1.0 / (variance + tau2)
-    total_weight = float(fsum(weights.tolist()))
-    pooled = float(fsum((w * value for w, value in zip(weights.tolist(), y.tolist())))) / total_weight
+    # F4-95 同族：池化/异质性求和走族内统一守卫（权重在极端 se 下可上溢）。
+    message = "pooled log hazard ratios are outside the representable numeric range"
+    total_weight = float(_finite_fsum(weights.tolist(), message))
+    pooled = float(_finite_fsum((w * value for w, value in zip(weights.tolist(), y.tolist())),
+                                message)) / total_weight
     pooled_se = sqrt(1.0 / total_weight)
     # Heterogeneity Q and I2 use the fixed-effect weights, as in the review-analysis
     # formulas and metafor's QE statistic.
     fixed_weights = 1.0 / variance
-    fixed_total = float(fsum(fixed_weights.tolist()))
+    fixed_total = float(_finite_fsum(fixed_weights.tolist(), message))
     fixed_pooled = (
-        float(fsum((w * value for w, value in zip(fixed_weights.tolist(), y.tolist()))))
+        float(_finite_fsum((w * value for w, value in zip(fixed_weights.tolist(), y.tolist())),
+                           message))
         / fixed_total
     )
     q = float(
-        fsum((w * (value - fixed_pooled) ** 2 for w, value in zip(fixed_weights.tolist(), y.tolist())))
+        _finite_fsum((w * (value - fixed_pooled) ** 2
+                      for w, value in zip(fixed_weights.tolist(), y.tolist())), message)
     )
     df = len(y) - 1
     i2 = max(0.0, (q - df) / q) * 100.0 if q > 0 else 0.0

@@ -1,7 +1,19 @@
 # 木笔ReviewFlow 运行时依赖（Python 3.12）。
 # 仅包含 Path B（custom_backend + custom_frontend）打包所需的运行库；
 # 测试/开发依赖（streamlit、pytest 等）不进安装包。
-fastapi>=0.110
+# r6 #38 锁版本子项（二轮修正）：真正决定 413 契约的是 MultipartStructureRejected
+# 的双初始化形态（security.py，r7 已显式初始化两基类），不是版本号本身——
+# r6 的故障 env 是 fastapi 0.133.1/starlette 1.3.1，而本仓 venv 实测
+# 0.143.0/1.8.0 上同一套上传回归钉全绿。故上界取「已验证过的最高主版本」，
+# 只挡未验证的大版本跃迁；下界保留 0.110 兼容旧装机。
+# 未实测区间登记：0.110–0.133（含 r6 故障 env 0.133.1/1.3.1）未在现行代码上
+# 跑过——下限只保证可安装，不保证 413 契约在该区间行为一致（r6 的故障来自
+# 旧双 __init__ 形态，r7 已消除，但未实证）。升级上界或换大版本前，必须先跑
+# build/tests/test_upload_security_regression.py
+# 与 test_r7_authsec_regression.py（此前 starlette 完全未声明，随 fastapi
+# 传递安装，版本组合不受控——本行把 starlette 显式钉到已验证区间）。
+fastapi>=0.110,<0.144
+starlette>=0.36,<1.9
 uvicorn>=0.29
 python-multipart>=0.0.9
 PyJWT>=2.8

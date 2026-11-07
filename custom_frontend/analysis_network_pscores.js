@@ -46,7 +46,7 @@
         'reviewflow_network_pscores_audit',() => ticket === generation),
         ...(result.method_sources || []).map(text => el('p',{class:'hint',lang:'en',text})),
         el('p', { class:'hint', text:T('使用该方法撰写论文时，请展开本区参考文献并引用方法来源。') }));
-    } catch (error) { if (ticket === generation) { host.replaceChildren(el('span',{lang:'en',text:error.message})); toast(error.message, 'warn'); } }
+    } catch (error) { if (ticket === generation) { /* 批13-2：本模块自抛的是 T() 校验串，命中已知串不加 lang:'en'（与 inconsistency/node_split 同款守卫） */ const known = ['请选择上方的随机效应 REML 网络模型。','请选择有利方向。'].some(key=>T(key)===error.message); host.replaceChildren(el('span',{text:error.message,...(known?{}:{lang:'en'})})); toast(error.message, 'warn'); } }
     finally { if (ticket === generation) { clearInterval(timer); run.disabled = false; } }
   });
 })();

@@ -1,0 +1,16 @@
+config,dataset,N,K,streak_n,n_runs,P0_zero_miss,missed_mean,missed_max,p_miss_random_order_theory,emp_miss_rate,model_contribution_theo_minus_emp,P0_ge_095
+svm_balanced,Bos_2018,4878,10,10,5,0.0,7.4,9,1.0,1.0,0.0,no
+svm_balanced,Bos_2018,4878,10,25,5,0.0,4.8,6,1.0,1.0,0.0,no
+svm_balanced,Bos_2018,4878,10,50,5,0.0,1.0,1,1.0,1.0,-0.0,no
+svm_balanced,Appenzeller-Herzog_2019,2873,26,10,5,0.0,19.0,25,1.0,1.0,0.0,no
+svm_balanced,Appenzeller-Herzog_2019,2873,26,25,5,0.0,12.2,25,1.0,1.0,0.0,no
+svm_balanced,Appenzeller-Herzog_2019,2873,26,50,5,0.0,3.0,3,1.0,1.0,0.0,no
+svm_balanced,van_der_Waal_2022,1970,33,10,5,0.0,25.0,32,1.0,1.0,0.0,no
+svm_balanced,van_der_Waal_2022,1970,33,25,5,0.0,7.8,8,1.0,1.0,0.0,no
+svm_balanced,van_der_Waal_2022,1970,33,50,5,0.0,7.8,8,1.0,1.0,-0.0,no
+svm_balanced,Nelson_2002,366,80,10,5,0.0,19.2,29,0.999986,1.0,-0.0,no
+svm_balanced,Nelson_2002,366,80,25,5,0.0,4.0,5,0.127069,1.0,-0.8729,no
+svm_balanced,Nelson_2002,366,80,50,5,0.8,0.4,2,0.000124,0.2,-0.1999,no
+svm_balanced,MACRO(4集),,,10,20,0.0,17.65,32,0.999996,1.0,0.0,no
+svm_balanced,MACRO(4集),,,25,20,0.0,7.2,25,0.781767,1.0,-0.2182,no
+svm_balanced,MACRO(4集),,,50,20,0.2,3.05,8,0.750031,0.8,-0.05,no

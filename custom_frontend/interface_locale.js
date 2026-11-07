@@ -10,9 +10,46 @@
 ["该文献当前不在队列中，请重新载入页面。", "This article is not in the current queue. Please reload the page.", "Cet article ne figure pas dans la file actuelle. Rechargez la page.", "Этой статьи нет в текущей очереди. Перезагрузите страницу.", "Este artículo no está en la cola actual. Recargue la página.", "この文献は現在のキューにありません。ページを再読み込みしてください。", "Este artigo não está na fila atual. Recarregue a página.", "Dieser Artikel ist nicht in der aktuellen Warteschlange. Bitte laden Sie die Seite neu.", "Овај чланак није у тренутном реду. Поново учитајте страницу.", "이 문헌은 현재 대기열에 없습니다. 페이지를 새로고침하세요."],
 ["没有可撤销的保存操作。", "There is no saved operation to undo.", "Aucun enregistrement à annuler.", "Нет сохранённой операции для отмены.", "No hay ninguna operación guardada que deshacer.", "取り消せる保存操作はありません。", "Não há operação salva para desfazer.", "Es gibt keinen gespeicherten Vorgang zum Rückgängigmachen.", "Нема сачуване радње за поништавање.", "실행 취소할 저장 작업이 없습니다."],
 ["撤销历史已变化，请重新载入后再试。", "Undo history changed. Reload and try again.", "L’historique d’annulation a changé. Rechargez puis réessayez.", "История отмены изменилась. Перезагрузите страницу и повторите попытку.", "El historial de deshacer ha cambiado. Recargue y vuelva a intentarlo.", "取り消し履歴が変わりました。再読み込みして再試行してください。", "O histórico de desfazer mudou. Recarregue e tente novamente.", "Der Verlauf hat sich geändert. Laden Sie neu und versuchen Sie es erneut.", "Историја поништавања је промењена. Поново учитајте и покушајте.", "실행 취소 기록이 변경되었습니다. 새로고침 후 다시 시도하세요."],
+["图片文件已不在当前数据目录，无法完整撤销。", "The image file is no longer in the current data directory; the save cannot be fully undone.", "Le fichier image n’est plus dans le répertoire de données actuel ; l’enregistrement ne peut pas être entièrement annulé.", "Файл изображения больше не находится в текущем каталоге данных; полностью отменить сохранение невозможно.", "El archivo de imagen ya no está en el directorio de datos actual; no se puede deshacer por completo el guardado.", "画像ファイルが現在のデータディレクトリに存在しないため、保存を完全に取り消せません。", "O arquivo de imagem não está mais no diretório de dados atual; não é possível desfazer totalmente o salvamento.", "Die Bilddatei ist nicht mehr im aktuellen Datenverzeichnis; das Speichern kann nicht vollständig rückgängig gemacht werden.", "Датотека слике више није у тренутном директоријуму података; чување се не може у потпуности поништити.", "이미지 파일이 현재 데이터 디렉터리에 없어 저장을 완전히 실행 취소할 수 없습니다."],
 ["该文献已不可用，无法撤销。", "This article is no longer available for Undo.", "Cet article n’est plus disponible pour l’annulation.", "Эта статья больше недоступна для отмены.", "Este artículo ya no está disponible para deshacer.", "この文献は利用できないため、取り消せません。", "Este artigo não está mais disponível para desfazer.", "Dieser Artikel ist für Rückgängig nicht mehr verfügbar.", "Овај чланак више није доступан за поништавање.", "이 문헌은 더 이상 실행 취소할 수 없습니다."],
 ["保存结果或后续工作已变化，撤销不能覆盖较新的修改。", "The saved result or downstream work has changed. Undo cannot overwrite newer changes.", "Le résultat enregistré ou le travail ultérieur a changé. L’annulation ne peut pas écraser les modifications plus récentes.", "Сохранённый результат или последующая работа изменились. Отмена не может перезаписать более новые изменения.", "El resultado guardado o el trabajo posterior ha cambiado. Deshacer no puede sobrescribir cambios más recientes.", "保存結果または後続の作業が変更されています。取り消しで新しい変更を上書きできません。", "O resultado salvo ou o trabalho posterior mudou. Desfazer não pode sobrescrever alterações mais recentes.", "Das gespeicherte Ergebnis oder nachfolgende Arbeit wurde geändert. Rückgängig darf neuere Änderungen nicht überschreiben.", "Сачувани резултат или каснији рад је промењен. Поништавање не може да препише новије измене.", "저장 결과 또는 후속 작업이 변경되었습니다. 실행 취소로 더 최근의 변경 사항을 덮어쓸 수 없습니다."],
 ["撤销暂不可用，请重试。", "Undo is unavailable. Please try again.", "L’annulation est indisponible. Réessayez.", "Отмена недоступна. Повторите попытку.", "Deshacer no está disponible. Vuelva a intentarlo.", "取り消しを利用できません。再試行してください。", "Desfazer está indisponível. Tente novamente.", "Rückgängig ist nicht verfügbar. Bitte versuchen Sie es erneut.", "Поништавање није доступно. Покушајте поново.", "실행 취소를 사용할 수 없습니다. 다시 시도하세요."],
+/* ---- 后端错误消息双键注册（首批五类：登录失败/注册校验/登录限流/会话过期/撤销边界） ----
+ * 机制：后端错误消息原文作为词典源串注册——中文消息占第 0 列、英文消息占第 1 列；
+ * RFLang.register() 会把每一列都注册为查找键（见 index.html 的 register 实现），
+ * 因此中文界面可命中英文后端串（撤销边界），任一非中文界面也可命中中文后端串
+ * （auth.py / main.py 的登录注册限流路径）。接线点在 index.html api() 的 errOf()：
+ * 纯字符串 detail 统一包 T()，#authErr、toast 拼接（含 workspace_undo.js 的撤销
+ * 错误拼接）与 WorkflowControls.error 均经 error.message 取值即自动获得译文。
+ * 注册校验类的闭环口径（评审二轮核正）：
+ * - 用户名规则（auth.py 字符白名单）与数据路径冲突两条后端消息可达，直接注册；
+ * - 账号/密码长度先被 Pydantic 的 Field 约束拦成英文 422，auth.py 的中文长度
+ *   消息本体不可达；errOf 的 422 分支按 type+loc（仅 /api/auth/ 路径）映射回
+ *   本块的两条长度词条，用户侧以十语言文案闭环；
+ * - 「用户名已被注册。」词条已删除：同名注册恒被 auth.py 的筛选员数据路径冲突
+ *   检查先行命中（TestClient 实测），该场景由路径冲突词条覆盖；
+ * - 422 其余字段/类型与非 /api/auth/ 路径（如协作邀请的 username 字段）仍为
+ *   原文拼接，列后续工作。
+ * 约束：凡被前端按内容做正则/前缀判断的错误串（report_evidence.js 的 STALE 正则、
+ * analysis_paired_interval.js 的 “b = c = 0…” startsWith）不得注册进词典。
+ * 其余错误消息（分析/导入/协作等路径）的注册与接线为后续工作，不在本批范围。 */
+["用户名或密码错误。", "Incorrect username or password.", "Nom d’utilisateur ou mot de passe incorrect.", "Неверное имя пользователя или пароль.", "Nombre de usuario o contraseña incorrectos.", "ユーザー名またはパスワードが正しくありません。", "Nome de usuário ou senha incorretos.", "Falscher Benutzername oder falsches Passwort.", "Погрешно корисничко име или лозинка.", "사용자 이름 또는 비밀번호가 올바르지 않습니다."],
+["用户名须为 3~64 个字符，且只含字母、数字、汉字与 . _ - @。", "Usernames must be 3–64 characters and contain only letters, digits, Chinese characters and . _ - @.", "Le nom d’utilisateur doit compter 3 à 64 caractères et ne contenir que des lettres, des chiffres, des caractères chinois et . _ - @.", "Имя пользователя должно содержать 3–64 символа: только буквы, цифры, китайские иероглифы и . _ - @.", "El nombre de usuario debe tener de 3 a 64 caracteres y contener solo letras, dígitos, caracteres chinos y . _ - @.", "ユーザー名は3～64文字で、英数字・漢字・. _ - @ のみ使用できます。", "O nome de usuário deve ter de 3 a 64 caracteres e conter apenas letras, dígitos, caracteres chineses e . _ - @.", "Der Benutzername muss 3–64 Zeichen lang sein und darf nur Buchstaben, Ziffern, chinesische Zeichen sowie . _ - @ enthalten.", "Корисничко име мора имати 3–64 знака и садржати само слова, цифре, кинеске знакове и . _ - @.", "사용자 이름은 3~64자이어야 하며 문자, 숫자, 한자 및 . _ - @만 포함할 수 있습니다."],
+["密码长度须为 8~128 个字符。", "Passwords must be 8–128 characters long.", "Le mot de passe doit compter 8 à 128 caractères.", "Пароль должен содержать от 8 до 128 символов.", "La contraseña debe tener entre 8 y 128 caracteres.", "パスワードは8～128文字で入力してください。", "A senha deve ter de 8 a 128 caracteres.", "Das Passwort muss 8–128 Zeichen lang sein.", "Лозинка мора имати од 8 до 128 знакова.", "비밀번호는 8~128자여야 합니다."],
+["用户名与已有账号的筛选员数据路径冲突，请换一个用户名。", "This username collides with another account’s screener data path; please choose a different username.", "Ce nom d’utilisateur entre en conflit avec le chemin de données d’évaluateur d’un autre compte ; veuillez en choisir un autre.", "Это имя пользователя конфликтует с путём данных отборщика другого аккаунта; выберите другое имя.", "Este nombre de usuario entra en conflicto con la ruta de datos de revisor de otra cuenta; elija otro nombre de usuario.", "このユーザー名は既存アカウントのスクリーナーデータパスと競合します。別のユーザー名を選んでください。", "Este nome de usuário conflita com o caminho de dados de revisor de outra conta; escolha outro nome.", "Dieser Benutzername kollidiert mit dem Screener-Datenpfad eines anderen Kontos; bitte wählen Sie einen anderen Benutzernamen.", "Ово корисничко име се судара са путањом података члана тима за одабир другог налога; изаберите друго име.", "이 사용자 이름은 다른 계정의 선별자 데이터 경로와 충돌합니다. 다른 사용자 이름을 선택하세요."],
+["注册尝试过于频繁，请稍后再试。", "Registration attempts are too frequent; please try again later.", "Trop de tentatives d’inscription ; réessayez plus tard.", "Слишком частые попытки регистрации; повторите позже.", "Demasiados intentos de registro; inténtelo de nuevo más tarde.", "登録の試行が短時間に集中しています。しばらくしてからもう一度お試しください。", "Tentativas de registro excessivas; tente novamente mais tarde.", "Zu viele Registrierungsversuche; bitte später erneut versuchen.", "Превише покушаја регистрације; покушајте касније.", "등록 시도가 너무 잦습니다. 잠시 후 다시 시도하세요."],
+["登录尝试过于频繁，请 1 分钟后再试。", "Login attempts are too frequent; please try again in one minute.", "Trop de tentatives de connexion ; réessayez dans une minute.", "Слишком частые попытки входа; повторите через минуту.", "Demasiados intentos de inicio de sesión; inténtelo de nuevo en un minuto.", "ログインの試行が短時間に集中しています。1分後にもう一度お試しください。", "Tentativas de login excessivas; tente novamente em um minuto.", "Zu viele Anmeldeversuche; bitte in einer Minute erneut versuchen.", "Превише покушаја пријаве; покушајте за један минут.", "로그인 시도가 너무 잦습니다. 1분 후 다시 시도하세요."],
+["未登录或缺少访问令牌。", "Not signed in or the access token is missing.", "Non connecté ou jeton d’accès manquant.", "Вы не вошли в систему или отсутствует токен доступа.", "No ha iniciado sesión o falta el token de acceso.", "未ログイン、またはアクセストークンがありません。", "Não autenticado ou token de acesso ausente.", "Nicht angemeldet oder Zugriffstoken fehlt.", "Нисте пријављени или недостаје токен приступа.", "로그인되지 않았거나 액세스 토큰이 없습니다."],
+["访问令牌无效或已过期，请重新登录。", "The access token is invalid or expired; please log in again.", "Le jeton d’accès est invalide ou expiré ; reconnectez-vous.", "Токен доступа недействителен или истёк; войдите снова.", "El token de acceso no es válido o ha caducado; inicie sesión de nuevo.", "アクセストークンが無効か期限切れです。再度ログインしてください。", "O token de acesso é inválido ou expirou; entre novamente.", "Das Zugriffstoken ist ungültig oder abgelaufen; bitte erneut anmelden.", "Токен приступа је неважећи или је истекао; пријавите се поново.", "액세스 토큰이 유효하지 않거나 만료되었습니다. 다시 로그인하세요."],
+["登录已过期", "Session expired", "Session expirée", "Сессия истекла", "Sesión caducada", "セッションが期限切れです", "Sessão expirada", "Sitzung abgelaufen", "Сесија је истекла", "세션 만료"],
+["撤销仅限你自己的工作区。", "Undo is limited to your own workspace.", "L’annulation est limitée à votre propre espace de travail.", "Отмена доступна только в вашем собственном рабочем пространстве.", "Deshacer se limita a su propio espacio de trabajo.", "取り消しは自分のワークスペースに限られます。", "Desfazer é limitado ao seu próprio espaço de trabalho.", "Rückgängig ist auf Ihren eigenen Arbeitsbereich beschränkt.", "Поништавање је ограничено на ваш сопствени радни простор.", "실행 취소는 자신의 작업 공간으로 제한됩니다."],
+/* ---- r6 撤销/协作后端错误消息双键注册（workspace_undo.py 常量 + main.py 协作 409）----
+ * 约束同上：仅注册纯展示消息；以下四条均无前端按内容正则/前缀判断。 */
+["字段说明已变更，撤销不能覆盖较新的修改。", "The field description has changed. Undo cannot overwrite newer changes.", "La description du champ a changé. L’annulation ne peut pas écraser les modifications plus récentes.", "Описание поля изменилось. Отмена не может перезаписать более новые изменения.", "La descripción del campo ha cambiado. Deshacer no puede sobrescribir cambios más recientes.", "フィールドの説明が変更されました。取り消しで新しい変更を上書きできません。", "A descrição do campo foi alterada. Desfazer não pode sobrescrever alterações mais recentes.", "Die Feldbeschreibung wurde geändert. Rückgängig darf neuere Änderungen nicht überschreiben.", "Опис поља је промењен. Поништавање не може да препише новије измене.", "필드 설명이 변경되었습니다. 실행 취소로 더 최근 변경 사항을 덮어쓸 수 없습니다."],
+["该用户名与任务协作数据库保留文件名冲突，无法邀请其参与协作；请对方更换用户名后再试。", "This username collides with the reserved collaboration database filename and cannot be invited to collaborate; ask the user to choose a different username and try again.", "Ce nom d’utilisateur entre en conflit avec le nom de fichier réservé de la base de collaboration et ne peut pas être invité à collaborer ; demandez à l’utilisateur de choisir un autre nom puis réessayez.", "Это имя пользователя совпадает с зарезервированным именем файла базы совместной работы и не может быть приглашено к сотрудничеству; попросите пользователя выбрать другое имя и повторить попытку.", "Este nombre de usuario coincide con el nombre de archivo reservado de la base de datos de colaboración y no puede invitarse a colaborar; pida al usuario que elija otro nombre e inténtelo de nuevo.", "このユーザー名はコラボレーション用データベースの予約ファイル名と競合するため招待できません。別のユーザー名に変更してもらってください。", "Este nome de usuário conflita com o nome de arquivo reservado do banco de dados de colaboração e não pode ser convidado a colaborar; peça ao usuário para escolher outro nome e tentar novamente.", "Dieser Benutzername kollidiert mit dem reservierten Dateinamen der Kollaborationsdatenbank und kann nicht zur Zusammenarbeit eingeladen werden; bitten Sie den Benutzer, einen anderen Namen zu wählen, und versuchen Sie es erneut.", "Ово корисничко име се поклапа са резервисаним именом датотеке базе за сарадњу и не може бити позвано на сарадњу; замолите корисника да изабере друго име и покуша поново.", "이 사용자 이름은 협업 데이터베이스 예약 파일 이름과 충돌하여 협업에 초대할 수 없습니다. 다른 사용자 이름으로 변경한 뒤 다시 시도하세요."],
+["任务的协作权限库（collaboration.db）已损坏。请先备份任务数据，再删除或改名该文件后重启应用修复。", "The task’s collaboration store (collaboration.db) is corrupted. Back up the task data, then delete or rename the file and restart the app to repair it.", "Le magasin de collaboration de la tâche (collaboration.db) est corrompu. Sauvegardez les données de la tâche, puis supprimez ou renommez le fichier et redémarrez l’application pour réparer.", "Хранилище совместной работы задачи (collaboration.db) повреждено. Создайте резервную копию данных задачи, затем удалите или переименуйте файл и перезапустите приложение.", "El almacén de colaboración de la tarea (collaboration.db) está dañado. Haga una copia de seguridad de los datos de la tarea, elimine o renombre el archivo y reinicie la aplicación para repararlo.", "タスクのコラボレーション管理ライブラリ（collaboration.db）が破損しています。タスクデータをバックアップした後、このファイルを削除またはリネームしてアプリを再起動してください。", "O repositório de colaboração da tarefa (collaboration.db) está corrompido. Faça backup dos dados da tarefa, depois exclua ou renomeie o arquivo e reinicie o aplicativo para reparar.", "Der Kollaborationsspeicher der Aufgabe (collaboration.db) ist beschädigt. Sichern Sie die Aufgabendaten, löschen oder benennen Sie die Datei um und starten Sie die App zur Reparatur neu.", "Складиште сарадње задатка (collaboration.db) је оштећено. Направите резерву података задатка, затим избришите или преименујте датотеку и поново покрените апликацију.", "작업의 협업 저장소(collaboration.db)가 손상되었습니다. 작업 데이터를 백업한 후 해당 파일을 삭제하거나 이름을 바꾸고 앱을 다시 시작하세요."],
+["旧任务缺少协作属主记录，服务器模式下无法管理；该任务的历史参与者可通过协作属主重新登记恢复管理，也可在单机模式下打开同一数据目录完成删除或重建。", "This legacy task has no registered collaboration owner and cannot be managed in server mode; a past participant of the task can re-register the owner to restore management, or open the same data directory in desktop mode to delete or recreate the task.", "Cette tâche héritée n’a pas de propriétaire de collaboration enregistré et ne peut pas être gérée en mode serveur ; un ancien participant de la tâche peut réenregistrer le propriétaire pour rétablir la gestion, ou ouvrir le même répertoire de données en mode bureau pour supprimer ou recréer la tâche.", "У этой устаревшей задачи нет зарегистрированного владельца совместной работы, и ею нельзя управлять в серверном режиме; прежний участник задачи может заново зарегистрировать владельца, чтобы восстановить управление, или открыть тот же каталог данных в настольном режиме, чтобы удалить или пересоздать задачу.", "Esta tarea heredada no tiene propietario de colaboración registrado y no se puede gestionar en modo servidor; un participante anterior de la tarea puede volver a registrar el propietario para restaurar la gestión, o abrir el mismo directorio de datos en modo de escritorio para eliminar o recrear la tarea.", "このレガシータスクにはコラボレーション所有者の記録がなく、サーバーモードでは管理できません。このタスクの元参加者は所有者を再登録して管理権を回復するか、デスクトップモードで同じデータディレクトリを開いて削除または再作成してください。", "Esta tarefa legada não tem proprietário de colaboração registrado e não pode ser gerenciada no modo servidor; um participante anterior da tarefa pode registrar novamente o proprietário para restaurar a gestão, ou abrir o mesmo diretório de dados no modo desktop para excluir ou recriar a tarefa.", "Diese Legacy-Aufgabe hat keinen registrierten Kollaborationseigentümer und kann im Servermodus nicht verwaltet werden; ein früherer Teilnehmer der Aufgabe kann den Eigentümer neu registrieren, um die Verwaltung wiederherzustellen, oder dasselbe Datenverzeichnis im Desktopmodus öffnen, um die Aufgabe zu löschen oder neu zu erstellen.", "Овај застарели задатак нема регистрованог власника сарадње и не може се њиме управљати у серверском режиму; бивши учесник задатка може поново регистровати власника да обнови управљање, или отворити исти директоријум података у десктоп режиму да би задатак избрисао или поново створио.", "이 레거시 작업에는 등록된 협업 소유자가 없어 서버 모드에서 관리할 수 없습니다. 이 작업의 이전 참여자는 소유자를 다시 등록하여 관리 권한을 복구하거나, 데스크톱 모드에서 같은 데이터 디렉터리를 열어 작업을 삭제하거나 다시 만들 수 있습니다."],
+["您的用户名与任务协作数据库保留文件名（collaboration.db）冲突，团队协作功能不可用；请改用其他用户名注册新账号使用协作功能，本账号的历史数据保持不变。", "Your username collides with the reserved collaboration database filename (collaboration.db); team collaboration is unavailable for this account. Please register a new account with a different username to use collaboration. This account’s existing data is unchanged.", "Votre nom d’utilisateur entre en conflit avec le nom de fichier réservé de la base de collaboration (collaboration.db) ; la collaboration d’équipe est indisponible pour ce compte. Veuillez créer un nouveau compte avec un autre nom d’utilisateur pour utiliser la collaboration. Les données existantes de ce compte restent inchangées.", "Ваше имя пользователя совпадает с зарезервированным именем файла базы совместной работы (collaboration.db); командная работа для этого аккаунта недоступна. Зарегистрируйте новый аккаунт с другим именем пользователя, чтобы использовать совместную работу. Существующие данные этого аккаунта не изменятся.", "Su nombre de usuario coincide con el nombre de archivo reservado de la base de datos de colaboración (collaboration.db); la colaboración en equipo no está disponible para esta cuenta. Registre una nueva cuenta con otro nombre de usuario para usar la colaboración. Los datos existentes de esta cuenta se mantienen sin cambios.", "ユーザー名がコラボレーション用データベースの予約ファイル名（collaboration.db）と競合しているため、このアカウントではチームコラボレーションを利用できません。別のユーザー名で新規アカウントを登録してご利用ください。このアカウントの既存データはそのまま保持されます。", "Seu nome de usuário conflita com o nome de arquivo reservado do banco de dados de colaboração (collaboration.db); a colaboração em equipe não está disponível para esta conta. Registre uma nova conta com outro nome de usuário para usar a colaboração. Os dados existentes desta conta permanecem inalterados.", "Ihr Benutzername kollidiert mit dem reservierten Dateinamen der Kollaborationsdatenbank (collaboration.db); Teamzusammenarbeit ist für dieses Konto nicht verfügbar. Bitte registrieren Sie ein neues Konto mit einem anderen Benutzernamen, um die Zusammenarbeit zu nutzen. Die bestehenden Daten dieses Kontos bleiben unverändert.", "Ваше корисничко име се поклапа са резервисаним именом датотеке базе за сарадњу (collaboration.db); тимска сарадња није доступна за овај налог. Региструјте нови налог са другим корисничким именом да бисте користили сарадњу. Постојећи подаци овог налога остају неизмењени.", "사용자 이름이 협업 데이터베이스 예약 파일 이름(collaboration.db)과 충돌하여 이 계정에서는 팀 협업을 사용할 수 없습니다. 다른 사용자 이름으로 새 계정을 등록하여 협업을 이용하세요. 이 계정의 기존 데이터는 변경되지 않습니다."],
 ["综述设置", "Review setup", "Configuration de la revue", "Настройки обзора", "Configuración de la revisión", "レビュー設定", "Configuração da revisão", "Review-Einstellungen", "Подешавања прегледа", "고찰 설정"],
 ["流程图预览", "Diagram preview", "Aperçu du diagramme", "Предпросмотр диаграммы", "Vista previa del diagrama", "フロー図プレビュー", "Prévia do diagrama", "Diagrammvorschau", "Преглед дијаграма", "흐름도 미리보기"],
 ["校验并生成后显示流程图", "Validate and generate to display the diagram", "Validez et générez pour afficher le diagramme", "Проверьте и создайте диаграмму для просмотра", "Valide y genere para mostrar el diagrama", "検証して生成するとフロー図が表示されます", "Valide e gere para exibir o diagrama", "Validieren und generieren, um das Diagramm anzuzeigen", "Проверите и генеришите да прикажете дијаграм", "검증 후 생성하면 흐름도가 표시됩니다"],
@@ -37,6 +74,13 @@
 ["已将 {0} 的角色更改为 {1}", "Changed {0}'s role to {1}", "Le rôle de {0} a été changé en {1}", "Роль участника {0} изменена на {1}", "Se ha cambiado el rol de {0} a {1}", "{0} のロールを {1} に変更しました", "A função de {0} foi alterada para {1}", "Die Rolle von {0} wurde zu {1} geändert", "Улога члана {0} је промењена у {1}", "{0}의 역할을 {1}(으)로 변경했습니다"],
 ["任务属主", "Task owner", "Propriétaire de la tâche", "Владелец задачи", "Propietario de la tarea", "タスク所有者", "Proprietário da tarefa", "Aufgabeninhaber", "Власник задатка", "작업 소유자"],
 ["移除", "Remove", "Retirer", "Удалить", "Eliminar", "削除", "Remover", "Entfernen", "Уклони", "제거"],
+/* ---- R2 裁决员「参与筛选」开关（2026-11-07）---- */
+["允许参与筛选", "Allow screening participation", "Autoriser la participation au tri", "Разрешить участие в отборе", "Permitir la participación en la selección", "スクリーニングへの参加を許可", "Permitir a participação na triagem", "Teilnahme an der Screening-Auswahl erlauben", "Дозволи учешће у одабиру", "선별 참여 허용"],
+["允许参与筛选（已开启）", "Allow screening participation (on)", "Autoriser la participation au tri (activé)", "Разрешить участие в отборе (включено)", "Permitir la participación en la selección (activado)", "スクリーニングへの参加を許可（オン）", "Permitir a participação na triagem (ativado)", "Teilnahme an der Screening-Auswahl erlauben (an)", "Дозволи учешће у одабиру (укључено)", "선별 참여 허용(켜짐)"],
+["允许参与筛选（已关闭）", "Allow screening participation (off)", "Autoriser la participation au tri (désactivé)", "Разрешить участие в отборе (выключено)", "Permitir la participación en la selección (desactivado)", "スクリーニングへの参加を許可（オフ）", "Permitir a participação na triagem (desativado)", "Teilnahme an der Screening-Auswahl erlauben (aus)", "Дозволи учешће у одабиру (искључено)", "선별 참여 허용(꺼짐)"],
+["已更新 {0} 的筛选参与权", "Updated screening participation for {0}", "Participation au tri de {0} mise à jour", "Участие в отборе обновлено: {0}", "Se actualizó la participación en la selección de {0}", "{0} のスクリーニング参加権を更新しました", "Participação na triagem de {0} atualizada", "Screening-Teilnahme von {0} aktualisiert", "Учешће у одабиру је ажурирано: {0}", "{0}의 선별 참여 권한을 업데이트했습니다"],
+["你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。", "You do not have permission to screen this task yet. Ask the task owner to turn on “Allow screening participation” and try again.", "Vous n’avez pas encore l’autorisation de trier cette tâche. Demandez au propriétaire de la tâche d’activer « Autoriser la participation au tri », puis réessayez.", "У вас пока нет права отбирать литературу в этой задаче. Попросите владельца задачи включить «Разрешить участие в отборе» и повторите попытку.", "Aún no tiene permiso para seleccionar en esta tarea. Pida al propietario de la tarea que active «Permitir la participación en la selección» e inténtelo de nuevo.", "このタスクのスクリーニング権限がまだありません。タスク所有者に「スクリーニングへの参加を許可」をオンにしてもらってから再試行してください。", "Você ainda não tem permissão para triar esta tarefa. Peça ao proprietário da tarefa para ativar “Permitir a participação na triagem” e tente novamente.", "Sie haben noch keine Berechtigung, diese Aufgabe zu screenen. Bitten Sie den Aufgabeninhaber, „Teilnahme an der Screening-Auswahl erlauben“ zu aktivieren, und versuchen Sie es erneut.", "Још немате дозволу за одабир у овом задатку. Замолите власника задатка да укључи „Дозволи учешће у одабиру“ и покушајте поново.", "아직 이 작업의 선별 권한이 없습니다. 작업 소유자에게 '선별 참여 허용'을 켜 달라고 요청한 뒤 다시 시도하세요."],
+["筛选参与权状态暂时无法确认，请稍后重试。", "Screening participation status cannot be confirmed right now; please try again later.", "L’état de la participation au tri ne peut pas être confirmé pour le moment ; réessayez plus tard.", "Статус участия в отборе сейчас не удаётся подтвердить; повторите попытку позже.", "El estado de participación en la selección no se puede confirmar ahora; inténtelo de nuevo más tarde.", "スクリーニング参加権の状態を今は確認できません。しばらくしてから再試行してください。", "O status de participação na triagem não pode ser confirmado agora; tente novamente mais tarde.", "Der Status der Screening-Teilnahme kann derzeit nicht bestätigt werden; bitte später erneut versuchen.", "Статус учешћа у одабиру тренутно није могуће потврдити; покушајте касније.", "선별 참여 권한 상태를 지금 확인할 수 없습니다. 잠시 후 다시 시도하세요."],
 ["此成员没有可移除的协作权限。", "This member has no collaborative roles that can be removed.", "Ce membre ne possède aucun rôle de collaboration à retirer.", "У этого участника нет ролей совместной работы, которые можно удалить.", "Este miembro no tiene roles de colaboración que se puedan eliminar.", "このメンバーには削除できる共同作業のロールがありません。", "Este membro não tem funções de colaboração que possam ser removidas.", "Dieses Mitglied hat keine Zusammenarbeitsrollen, die entfernt werden können.", "Овај члан нема улоге за сарадњу које се могу уклонити.", "이 구성원에게는 제거할 수 있는 협업 역할이 없습니다."],
 ["确定将 {0} 从此任务中移除吗？对方将不再看到此任务。", "Are you sure you want to remove {0} from this task? The other party will no longer see this task.", "Voulez-vous vraiment retirer {0} de cette tâche ? Cette personne ne verra plus cette tâche.", "Вы уверены, что хотите удалить {0} из этой задачи? Этот участник больше не будет видеть задачу.", "¿Seguro que desea eliminar a {0} de esta tarea? Esa persona dejará de ver la tarea.", "このタスクから {0} を削除しますか？このメンバーにはタスクが表示されなくなります。", "Tem certeza de que deseja remover {0} desta tarefa? Essa pessoa não verá mais a tarefa.", "Möchten Sie {0} wirklich aus dieser Aufgabe entfernen? Diese Person wird die Aufgabe nicht mehr sehen.", "Да ли сте сигурни да желите да уклоните {0} из овог задатка? Та особа више неће видети задатак.", "이 작업에서 {0}을(를) 제거하시겠습니까? 해당 구성원은 더 이상 이 작업을 볼 수 없습니다."],
 ["已将 {0} 从任务中移除", "Removed {0} from task", "{0} a été retiré de la tâche", "{0} удалён из задачи", "Se ha eliminado a {0} de la tarea", "タスクから {0} を削除しました", "{0} foi removido da tarefa", "{0} wurde aus der Aufgabe entfernt", "{0} је уклоњен из задатка", "작업에서 {0}을(를) 제거했습니다"],
@@ -247,7 +291,15 @@
   ],
   [
     "例如：95",
-    "e.g. 95"
+    "e.g. 95",
+    "p. ex. 95",
+    "напр., 95",
+    "p. ej. 95",
+    "例：95",
+    "p. ex. 95",
+    "z. B. 95",
+    "нпр. 95",
+    "예: 95"
   ],
   [
     "例如：人年",
@@ -309,7 +361,15 @@
   ],
   [
     "来源页码、表格或图号",
-    "Source page, table or figure"
+    "Source page, table or figure",
+    "Page, tableau ou figure de la source",
+    "Страница, таблица или рисунок источника",
+    "Página, tabla o figura de la fuente",
+    "出典のページ・表・図番号",
+    "Página, tabela ou figura da fonte",
+    "Seite, Tabelle oder Abbildung der Quelle",
+    "Страна, табела или слика извора",
+    "출처 페이지, 표 또는 그림 번호"
   ],
   [
     "诊断研究的来源页码、表格或图号", "Diagnostic source page, table or figure", "Page, tableau ou figure source de l’étude diagnostique", "Страница, таблица или номер рисунка в источнике диагностического исследования", "Página, tabla o figura fuente del estudio diagnóstico", "診断研究の出典ページ、表、または図番号", "Página, tabela ou figura de origem do estudo diagnóstico", "Quellenseite, Tabelle oder Abbildungsnummer der Diagnosestudie", "Страница, табела или број слике у извору дијагностичке студије", "진단 연구의 출처 페이지, 표 또는 그림 번호"
@@ -774,35 +834,99 @@
   ],
   [
     "，第 4 章；Borenstein 等（2021），",
-    ", ch. 4; Borenstein et al. (2021),"
+    ", ch. 4; Borenstein et al. (2021),",
+    ", ch. 4 ; Borenstein et al. (2021),",
+    ", гл. 4; Borenstein et al. (2021),",
+    ", cap. 4; Borenstein et al. (2021),",
+    "、第4章；Borenstein et al. (2021),",
+    ", cap. 4; Borenstein et al. (2021),",
+    ", Kap. 4; Borenstein et al. (2021),",
+    ", погл. 4; Borenstein et al. (2021),",
+    ", 제4장; Borenstein et al. (2021),"
   ],
   [
     "，第 3–5 章；Borenstein 等（2021），",
-    ", ch. 3–5; Borenstein et al. (2021),"
+    ", ch. 3–5; Borenstein et al. (2021),",
+    ", ch. 3–5 ; Borenstein et al. (2021),",
+    ", гл. 3–5; Borenstein et al. (2021),",
+    ", caps. 3–5; Borenstein et al. (2021),",
+    "、第3–5章；Borenstein et al. (2021),",
+    ", caps. 3–5; Borenstein et al. (2021),",
+    ", Kap. 3–5; Borenstein et al. (2021),",
+    ", погл. 3–5; Borenstein et al. (2021),",
+    ", 제3–5장; Borenstein et al. (2021),"
   ],
   [
     "，第 5 章，第 121–133 页；",
-    ", ch. 5, pp. 121–133；"
+    ", ch. 5, pp. 121–133;",
+    ", ch. 5, p. 121–133 ;",
+    ", гл. 5, с. 121–133;",
+    ", cap. 5, pp. 121–133;",
+    "、第5章pp.121–133；",
+    ", cap. 5, pp. 121–133;",
+    ", Kap. 5, S. 121–133;",
+    ", погл. 5, стр. 121–133;",
+    ", 제5장 pp.121–133;"
   ],
   [
     "，第 6 章，第 183–184 页，公式 6.1–6.7。",
-    ", ch. 6, pp. 183–184, Eqs. 6.1–6.7."
+    ", ch. 6, pp. 183–184, Eqs. 6.1–6.7.",
+    ", ch. 6, p. 183–184, éq. 6.1–6.7.",
+    ", гл. 6, с. 183–184, ур. 6.1–6.7.",
+    ", cap. 6, pp. 183–184, ecs. 6.1–6.7.",
+    "、第6章pp.183–184、式 6.1–6.7。",
+    ", cap. 6, pp. 183–184, eqs. 6.1–6.7.",
+    ", Kap. 6, S. 183–184, Gl. 6.1–6.7.",
+    ", погл. 6, стр. 183–184, јед. 6.1–6.7.",
+    ", 제6장 pp.183–184, 식 6.1–6.7."
   ],
   [
     "，第 8 章，第 199–215 页；Borenstein 等（2021），",
-    ", ch. 8, pp. 199–215; Borenstein et al. (2021),"
+    ", ch. 8, pp. 199–215; Borenstein et al. (2021),",
+    ", ch. 8, p. 199–215 ; Borenstein et al. (2021),",
+    ", гл. 8, с. 199–215; Borenstein et al. (2021),",
+    ", cap. 8, pp. 199–215; Borenstein et al. (2021),",
+    "、第8章pp.199–215；Borenstein et al. (2021),",
+    ", cap. 8, pp. 199–215; Borenstein et al. (2021),",
+    ", Kap. 8, S. 199–215; Borenstein et al. (2021),",
+    ", погл. 8, стр. 199–215; Borenstein et al. (2021),",
+    ", 제8장 pp.199–215; Borenstein et al. (2021),"
   ],
   [
     "，第 11 章，第 271–275 页；Harrer 等（2022），",
-    ", ch. 11, pp. 271–275; Harrer et al. (2022),"
+    ", ch. 11, pp. 271–275; Harrer et al. (2022),",
+    ", ch. 11, p. 271–275 ; Harrer et al. (2022),",
+    ", гл. 11, с. 271–275; Harrer et al. (2022),",
+    ", cap. 11, pp. 271–275; Harrer et al. (2022),",
+    "、第11章pp.271–275；Harrer et al. (2022),",
+    ", cap. 11, pp. 271–275; Harrer et al. (2022),",
+    ", Kap. 11, S. 271–275; Harrer et al. (2022),",
+    ", погл. 11, стр. 271–275; Harrer et al. (2022),",
+    ", 제11장 pp.271–275; Harrer et al. (2022),"
   ],
   [
     "，第 12 章，第 12.2.2.2 节，第 340–342 页。",
-    ", Chapter 12, §12.2.2.2, pp. 340–342."
+    ", Chapter 12, §12.2.2.2, pp. 340–342.",
+    ", ch. 12, §12.2.2.2, p. 340–342.",
+    ", гл. 12, §12.2.2.2, с. 340–342.",
+    ", cap. 12, §12.2.2.2, pp. 340–342.",
+    "、第12章§12.2.2.2、pp.340–342。",
+    ", cap. 12, §12.2.2.2, pp. 340–342.",
+    ", Kap. 12, §12.2.2.2, S. 340–342.",
+    ", погл. 12, §12.2.2.2, стр. 340–342.",
+    ", 제12장 §12.2.2.2, pp.340–342."
   ],
   [
     "，第 2 版，第 39 章，第 351、354–355 页；",
-    ", 2nd ed., ch. 39, pp. 351, 354–355;"
+    ", 2nd ed., ch. 39, pp. 351, 354–355;",
+    ", 2e éd., ch. 39, p. 351, 354–355 ;",
+    ", 2-е изд., гл. 39, с. 351, 354–355;",
+    ", 2.ª ed., cap. 39, pp. 351, 354–355;",
+    "、第2版第39章pp.351、354–355；",
+    ", 2.ª ed., cap. 39, pp. 351, 354–355;",
+    ", 2. Aufl., Kap. 39, S. 351, 354–355;",
+    ", 2. изд., погл. 39, стр. 351, 354–355;",
+    ", 제2판 제39장 pp.351, 354–355;"
   ],
   [
     "独立组中，正关联表示治疗组事件比例更高。观测到的二分类关联可选择 PHI。潜在关联的元分析可使用 Bonett–Price 近似；该方法假设潜在连续变量服从二元正态分布，并按定义给每个单元格加 0.5。两种方法均使用自然尺度标准误且受边际分布影响，须彼此分开，并与连续结局的 Fisher z 分开分析。正态区间可能超出相关系数的取值范围。", "Independent groups: positive association means a higher event proportion in group t. Choose PHI for observed binary association. For a latent association meta-analysis, Bonett–Price is the recommended approximation; it assumes underlying bivariate-normal continuous variables and adds 0.5 to every cell by definition. Both use natural-scale SE, depend on marginal splits, and must be analyzed separately from each other and continuous-outcome Fisher z. Normal intervals may exceed correlation bounds.", "Dans des groupes indépendants, une association positive indique une proportion d’événements plus élevée dans le groupe traité. Choisissez le coefficient φ pour une association binaire observée. Pour une méta-analyse d’associations latentes, l’approximation de Bonett–Price peut être utilisée ; elle suppose des variables continues sous-jacentes suivant une loi normale bivariée et ajoute par définition 0,5 à chaque cellule. Les deux méthodes utilisent une erreur-type sur l’échelle naturelle, dépendent de la répartition marginale et doivent être analysées séparément l’une de l’autre et du z de Fisher pour les critères continus. Les intervalles normaux peuvent dépasser les limites possibles d’une corrélation.", "Независимые группы: положительная связь означает более высокую долю событий в группе лечения. Для наблюдаемой бинарной связи выберите PHI. Для метаанализа латентной связи можно использовать приближение Bonett–Price; оно предполагает, что лежащие в основе непрерывные переменные имеют совместное нормальное распределение, и по определению добавляет 0,5 к каждой ячейке. Оба метода используют SE на исходной шкале и зависят от маргинальных распределений; их следует анализировать отдельно друг от друга и отдельно от Fisher z для непрерывных исходов. Нормальные интервалы могут выходить за допустимые границы корреляции.", "En grupos independientes, una asociación positiva indica una proporción de eventos más alta en el grupo de tratamiento. Elija el coeficiente phi (φ) para una asociación binaria observada. Para un metanálisis de asociaciones latentes, puede usarse la aproximación de Bonett–Price, que supone variables continuas subyacentes con distribución normal bivariante y añade 0,5 a cada celda por definición. Ambos métodos usan un error estándar en la escala natural, dependen de la distribución marginal y deben analizarse por separado entre sí y del z de Fisher para desenlaces continuos. Los intervalos normales pueden exceder los límites posibles de una correlación.", "独立群では、正の関連は治療群のイベント割合が高いことを意味します。観測された二値の関連には PHI を選択できます。潜在的な関連のメタ解析には Bonett–Price の近似を使用できます。この方法は潜在連続変数が二変量正規分布に従うと仮定し、定義により各セルに 0.5 を加えます。いずれも自然尺度の標準誤差を用い、周辺割合に依存するため、相互に、また連続アウトカムの Fisher z とは分けて解析してください。正規区間は相関係数の範囲を超えることがあります。", "Em grupos independentes, uma associação positiva indica uma proporção de eventos maior no grupo de tratamento. Escolha o coeficiente phi (φ) para uma associação binária observada. Para uma metanálise de associações latentes, pode-se usar a aproximação de Bonett–Price, que pressupõe variáveis contínuas subjacentes com distribuição normal bivariada e acrescenta 0,5 a cada célula por definição. Ambos os métodos usam erro padrão na escala natural, dependem da distribuição marginal e devem ser analisados separadamente entre si e do z de Fisher para desfechos contínuos. Intervalos normais podem ultrapassar os limites possíveis de uma correlação.", "Unabhängige Gruppen: Eine positive Assoziation bedeutet einen höheren Ereignisanteil in der Behandlungsgruppe. Für eine beobachtete binäre Assoziation wählen Sie PHI. Für eine Metaanalyse latenter Assoziationen kann die Bonett–Price-Näherung verwendet werden; sie setzt zugrunde liegende bivariate normalverteilte kontinuierliche Variablen voraus und addiert definitionsgemäß 0,5 zu jeder Zelle. Beide Verfahren verwenden den SE auf der natürlichen Skala und hängen von den Randverteilungen ab. Analysieren Sie sie getrennt voneinander und getrennt von Fisher-z für kontinuierliche Endpunkte. Normale Intervalle können außerhalb des zulässigen Korrelationsbereichs liegen.", "Независне групе: позитивна повезаност значи већи удео догађаја у терапијској групи. За посматрану бинарну повезаност изаберите PHI. За метаанализу латентне повезаности може се користити Bonett–Price апроксимација; она претпоставља да основне континуалне варијабле имају биваријантну нормалну расподелу и по дефиницији додаје 0,5 свакој ћелији. Обе методе користе SE на природној скали и зависе од маргиналних расподела; анализирајте их одвојено једну од друге и од Fisher z за континуалне исходе. Нормални интервали могу прећи границе дозвољених вредности корелације.", "독립군에서 양의 연관은 치료군의 사건 비율이 더 높다는 뜻입니다. 관측된 이분형 연관에는 PHI를 선택할 수 있습니다. 잠재 연관의 메타분석에는 Bonett–Price 근사를 사용할 수 있습니다. 이 방법은 잠재 연속 변수가 이변량 정규분포를 따른다고 가정하며 정의상 모든 셀에 0.5를 더합니다. 두 방법 모두 원척도 표준오차를 사용하고 주변 비율에 영향을 받으므로 서로 간에, 그리고 연속 결과의 Fisher z와 별도로 분석해야 합니다. 정규 구간은 상관계수 범위를 벗어날 수 있습니다."
@@ -1485,6 +1609,14 @@
   ],
   [
     "{0} · {1}% {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1} % {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1} % {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1}% {2}",
+    "{0} · {1} % {2}",
+    "{0} · {1}% {2}",
     "{0} · {1}% {2}"
   ],
   [
@@ -1508,6 +1640,14 @@
   ],
   [
     "{0} {1}：{2}。{3}。",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1} : {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}：{2}。{3}。",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
+    "{0} {1}: {2}. {3}.",
     "{0} {1}: {2}. {3}."
   ],
   [
@@ -1540,7 +1680,15 @@
   ],
   [
     "／{0}",
-    " per {0}"
+    " per {0}",
+    " / {0}",
+    " на {0}",
+    " / {0}",
+    "／{0}",
+    " / {0}",
+    " / {0}",
+    " / {0}",
+    " / {0}"
   ],
   [
     "{0}：{1}（95% 置信区间 {2}）。", "{0}: {1} (95% CI {2}).", "{0} : {1} (IC à 95 % {2}).", "{0}: {1} (95%-й доверительный интервал {2}).", "{0}: {1} (IC del 95 % {2}).", "{0}：{1}（95%信頼区間 {2}）。", "{0}: {1} (IC de 95% {2}).", "{0}: {1} (95%-Konfidenzintervall {2}).", "{0}: {1} (95% интервал поверења {2}).", "{0}: {1}(95% 신뢰구간 {2})."
@@ -4526,16 +4674,16 @@
     "무작위 검증 권장: 남은 {0}건 중 무작위로 {1}건을 뽑아 선별하세요"
   ],
   [
-    "证书通过 ✅ 以 ≥95% 置信度，总召回 ≥95%（剩余相关 ≤ {0} 条）",
-    "Certificate passed ✅ With ≥95% confidence, total recall ≥95% (at most {0} relevant records left)",
-    "Certificat validé ✅ Avec une confiance ≥95 %, rappel total ≥95 % (au plus {0} références pertinentes restantes)",
-    "Сертификат пройден ✅ С уверенностью ≥95% суммарная полнота ≥95% (релевантных осталось ≤ {0})",
-    "Certificado superado ✅ Con una confianza ≥95 %, recuperación total ≥95 % (quedan ≤ {0} referencias pertinentes)",
-    "証明書合格 ✅ 信頼度 ≥95% で総合リコール ≥95%（残り関連文献 ≤ {0} 件）",
-    "Certificado aprovado ✅ Com confiança ≥95%, recall total ≥95% (restam ≤ {0} referências relevantes)",
-    "Zertifikat bestanden ✅ Mit ≥95 % Konfidenz gilt: Gesamt-Recall ≥95 % (höchstens {0} relevante Referenzen verbleiben)",
-    "Сертификат положен ✅ Са поузданошћу ≥95%, укупни одзив ≥95% (преостало релевантних ≤ {0})",
-    "증명서 통과 ✅ 신뢰도 ≥95%로 총 재현율 ≥95%(남은 관련 문헌 ≤ {0}건)"
+    "证书通过 ✅ 抽验未见新相关，总召回 ≥95%（剩余相关 ≤ {0} 条；置信度按超几何随已发现相关数与抽验量变化，并非固定 95%）",
+    "Certificate passed ✅ No new relevant records found in the sample; total recall ≥95% (at most {0} relevant records left; the confidence follows the hypergeometric distribution and varies with relevant records found and sample size — it is not a fixed 95%)",
+    "Certificat validé ✅ Aucune nouvelle référence pertinente trouvée dans l’échantillon ; rappel total ≥95 % (au plus {0} références pertinentes restantes ; la confiance suit la loi hypergéométrique et varie selon les références pertinentes trouvées et la taille de l’échantillon — elle n’est pas fixée à 95 %)",
+    "Сертификат пройден ✅ В выборке не найдено новых релевантных записей; суммарная полнота ≥95% (релевантных осталось ≤ {0}; уверенность следует гипергеометрическому распределению и меняется с числом найденных релевантных записей и объёмом выборки — это не фиксированные 95%)",
+    "Certificado superado ✅ No se hallaron nuevas referencias pertinentes en el muestreo; recuperación total ≥95 % (quedan ≤ {0} referencias pertinentes; la confianza sigue la distribución hipergeométrica y varía con las referencias pertinentes halladas y el tamaño muestral — no es un 95 % fijo)",
+    "証明書合格 ✅ 抽出検査で新たな関連文献は見つかりませんでした。総合リコール ≥95%（残り関連文献 ≤ {0} 件。信頼度は超幾何分布に従い、発見済み関連数と抽出数に応じて変動し、固定した 95% ではありません）",
+    "Certificado aprovado ✅ Nenhuma nova referência relevante encontrada na amostragem; recall total ≥95% (restam ≤ {0} referências relevantes; a confiança segue a distribuição hipergeométrica e varia com as referências relevantes encontradas e o tamanho da amostra — não é um 95% fixo)",
+    "Zertifikat bestanden ✅ Keine neuen relevanten Referenzen in der Stichprobe gefunden; Gesamt-Recall ≥95 % (höchstens {0} relevante Referenzen verbleiben; das Konfidenzniveau folgt der hypergeometrischen Verteilung und variiert mit der Anzahl gefundener relevanter Referenzen und dem Stichprobenumfang — es ist kein fester 95-%-Wert)",
+    "Сертификат положен ✅ У узорку нису пронађене нове релевантне референце; укупни одзив ≥95% (преостало релевантних ≤ {0}; поузданост следи хипергеометријску расподелу и мења се са бројем пронађених релевантних и величином узорка — није фиксних 95%)",
+    "증명서 통과 ✅ 표본 검사에서 새로운 관련 문헌이 발견되지 않았습니다. 총 재현율 ≥95%(남은 관련 문헌 ≤ {0}건. 신뢰도는 초기하 분포를 따르며 발견된 관련 수와 표본 크기에 따라 변동하고 고정된 95%가 아닙니다)"
   ],
   [
     "证书未通过 ❌ 抽验中发现 {0} 条新的相关文献，请继续筛选",
@@ -4612,7 +4760,7 @@
   ["开启时初筛界面不显示 机器学习相关度分数与徽标（文献仍按 机器学习排序呈现）；关闭时显示分数并标注仅供参考。偏好仅存本机浏览器。", "When on, the screening view hides Machine Learning relevance scores and badges (references are still Machine Learning-ordered); when off, scores are shown with a for-reference-only note. The preference is stored in this browser only.", "Activé, la vue de sélection masque les scores de pertinence par apprentissage automatique et les badges (les références restent ordonnées par l’apprentissage automatique) ; désactivé, les scores s’affichent avec la mention « à titre indicatif ». La préférence n’est conservée que dans ce navigateur.", "Во включённом режиме экран отбора скрывает оценки релевантности машинного обучения и значки (порядок публикаций остаётся определённым машинным обучением); в выключенном — оценки показываются с пометкой «только для справки». Настройка хранится только в этом браузере.", "Activado, la vista de cribado oculta las puntuaciones y las insignias de relevancia del aprendizaje automático (las referencias siguen ordenadas por aprendizaje automático); desactivado, se muestran las puntuaciones con la nota de que son solo orientativas. La preferencia se guarda solo en este navegador.", "オンの場合、スクリーニング画面に 機械学習 の関連度スコアとバッジを表示しません（文献は引き続き 機械学習 順で並びます）。オフの場合はスコアを表示し、参考値である旨を注記します。設定はこのブラウザーにのみ保存されます。", "Ativado, a visão de triagem oculta as pontuações e os emblemas de relevância do aprendizado de máquina (as referências continuam ordenadas pelo aprendizado de máquina); desativado, as pontuações aparecem com a nota de uso apenas orientativo. A preferência fica guardada somente neste navegador.", "Wenn aktiviert, verbirgt die Screening-Ansicht ML-Relevanzwerte und Badges (die Referenzen bleiben ML-sortiert); wenn deaktiviert, werden die Werte mit dem Hinweis „nur zur Orientierung“ gezeigt. Die Einstellung wird nur in diesem Browser gespeichert.", "Када је укључено, екран скрининга скрива оцене релевантности машинског учења и значке (референце остају поређане машинским учењем); када је искључено, оцене се приказују уз напомену да су само оријентационе. Подешавање се чува само у овом прегледачу.", "켜면 선별 화면에서 머신러닝 관련도 점수와 배지를 숨깁니다(문헌 순서는 여전히 머신러닝 정렬). 끄면 점수를 표시하고 참고용임을 밝힙니다. 설정은 이 브라우저에만 저장됩니다."],
   ["机器学习分数仅供参考，不应影响判断", "Machine Learning scores are for reference only and should not influence your judgement", "Les scores par apprentissage automatique sont donnés à titre indicatif et ne doivent pas influencer votre jugement", "Оценки машинного обучения приведены только для справки и не должны влиять на ваше суждение", "Las puntuaciones del aprendizaje automático son solo orientativas y no deben influir en su juicio", "機械学習 スコアは参考値であり、判断に影響を与えるものではありません", "As pontuações do aprendizado de máquina são apenas orientativas e não devem influenciar seu julgamento", "ML-Werte sind nur zur Orientierung und sollten Ihr Urteil nicht beeinflussen", "Оцене машинског учења су само оријентационе и не треба да утичу на вашу оцену", "머신러닝 점수는 참고용이며 판단에 영향을 주어서는 안 됩니다"],
   [
-    "人群（P）", "Population (P)", "Population (P)", "Популяция (P)", "Población (P)", "人群（P）", "População (P)", "Population (P)", "Популација (P)", "대상 집단(P)"
+    "人群（P）", "Population (P)", "Population (P)", "Популяция (P)", "Población (P)", "集団（P）", "População (P)", "Population (P)", "Популација (P)", "대상 집단(P)"
   ],
   [
     "干预（I）", "Intervention (I)", "Intervention (I)", "Вмешательство (I)", "Intervención (I)", "介入（I）", "Intervenção (I)", "Intervention (I)", "Интервенција (I)", "중재(I)"
@@ -5915,7 +6063,33 @@
     "Referenzstandard (reference_standard)",
     "референтни стандард (reference_standard)",
     "참조 표준(reference_standard)"
-  ]
+  ],
+  /* r8 FL4（MM11-12 #12）：mobile_concept.js:73 的 T('Work scope') 此前无词条 */
+  ["工作范围", "Work scope", "Périmètre de travail", "Объём работы", "Alcance del trabajo", "作業範囲", "Escopo do trabalho", "Arbeitsumfang", "Обим посла", "작업 범위"],
+  /* R1（2026-11-07）：合并仲裁页「从服务器加载全员决策」入口、加载/保存引导
+     文案，以及该路径新暴露的后端错误消息（双键注册，errOf 统一经 T()）。 */
+  /* 未选任务提示：index.html 内联词典已有同内容行；此处同步注册到共享词典，
+     确保独立前端/词条审计也能命中（本波新增两个调用点）。 */
+  ["请先选择任务","Pick a task first","Choisissez d'abord une tâche","Сначала выберите задачу","Elija primero una tarea","先にタスクを選択してください","Escolha uma tarefa primeiro","Bitte zuerst eine Aufgabe wählen","Прво изаберите задатак", "작업을 선택하세요"],
+  ["⇣ 从服务器加载全员决策", "⇣ Load all screener decisions from server", "⇣ Charger toutes les décisions des évaluateurs depuis le serveur", "⇣ Загрузить все решения членов команды с сервера", "⇣ Cargar todas las decisiones de los revisores desde el servidor", "⇣ サーバーから全スクリーナーの判定を読み込む", "⇣ Carregar todas as decisões dos triadores do servidor", "⇣ Alle Screener-Entscheidungen vom Server laden", "⇣ Учитај све одлуке чланова тима са сервера", "⇣ 서버에서 모든 검토자 결정 불러오기"],
+  ["服务器全员决策仅在联网团队模式下可用；单机/离线请继续使用 CSV 上传合并。", "Loading all screener decisions is available only in networked team mode; in standalone/offline mode, continue using CSV upload and merge.", "Le chargement de toutes les décisions n’est disponible qu’en mode d’équipe en réseau ; en mode autonome/hors ligne, continuez avec l’import CSV.", "Загрузка всех решений доступна только в сетевом командном режиме; в автономном/офлайн-режиме продолжайте использовать загрузку CSV.", "La carga de todas las decisiones solo está disponible en modo de equipo en red; en modo autónomo/sin conexión, siga usando la carga de CSV.", "全スクリーナーの判定の読み込みはネットワーク上のチームモードでのみ利用できます。単体/オフラインでは CSV のアップロードと統合を続けてください。", "O carregamento de todas as decisões está disponível apenas no modo de equipe em rede; no modo autônomo/offline, continue usando o upload de CSV.", "Das Laden aller Screener-Entscheidungen ist nur im vernetzten Teammodus verfügbar; im Einzel-/Offline-Modus weiterhin CSV-Upload und -Zusammenführung verwenden.", "Учитавање свих одлука доступно је само у умреженом тимском режиму; у самосталном/офлајн режиму наставите са увозом CSV датотека.", "모든 검토자 결정 불러오기는 네트워크 팀 모드에서만 사용할 수 있습니다. 단독/오프라인 모드에서는 계속 CSV 업로드 및 병합을 사용하세요."],
+  ["正在从服务器加载全员决策…已等待 {0} 秒", "Loading all screener decisions from the server… {0} s elapsed", "Chargement de toutes les décisions depuis le serveur… {0} s écoulées", "Загрузка всех решений с сервера… прошло {0} с", "Cargando todas las decisiones desde el servidor… {0} s transcurridos", "サーバーから全スクリーナーの判定を読み込み中…{0} 秒経過", "Carregando todas as decisões do servidor… {0} s decorridos", "Alle Screener-Entscheidungen werden vom Server geladen… {0} s vergangen", "Учитавање свих одлука са сервера… прошло {0} с", "서버에서 모든 검토자 결정 불러오는 중… {0}초 경과"],
+  ["已从服务器加载 {0} 位筛选员的决策。", "Loaded decisions from {0} screeners on the server.", "Décisions de {0} évaluateurs chargées depuis le serveur.", "Загружены решения {0} членов команды с сервера.", "Se cargaron las decisiones de {0} revisores desde el servidor.", "サーバーから {0} 名のスクリーナーの判定を読み込みました。", "Decisões de {0} triadores carregadas do servidor.", "Entscheidungen von {0} Screenern vom Server geladen.", "Учитане су одлуке {0} чланова тима са сервера.", "서버에서 검토자 {0}명의 결정을 불러왔습니다."],
+  ["双盲保护：独立筛选未全部暂停，暂不能加载全员决策。请先在团队设置暂停所有筛选阶段，或等待独立筛选完成。", "Double-blind protection: independent screening has not been fully paused, so all screener decisions cannot be loaded yet. Pause every screening stage in team settings or wait until independent screening finishes.", "Protection en double aveugle : la sélection indépendante n’est pas entièrement suspendue ; impossible de charger toutes les décisions. Suspendez toutes les étapes dans les réglages d’équipe ou attendez la fin de la sélection indépendante.", "Защита двойного ослепления: независимый отбор приостановлен не полностью, поэтому загрузить все решения нельзя. Приостановите все этапы отбора в настройках команды или дождитесь завершения независимого отбора.", "Protección de doble ciego: el cribado independiente no está totalmente en pausa, por lo que aún no se pueden cargar todas las decisiones. Pause todas las etapas en la configuración del equipo o espere a que finalice el cribado independiente.", "二重盲検保護：独立スクリーニングがすべて一時停止されていないため、全判定を読み込めません。チーム設定ですべてのスクリーニング段階を一時停止するか、独立スクリーニングの完了をお待ちください。", "Proteção de duplo-cego: a triagem independente não está totalmente pausada; não é possível carregar todas as decisões. Pause todas as etapas nas configurações da equipe ou aguarde o fim da triagem independente.", "Doppelblind-Schutz: Das unabhängige Screening ist nicht vollständig pausiert; alle Entscheidungen können noch nicht geladen werden. Pausieren Sie alle Screening-Phasen in den Teameinstellungen oder warten Sie, bis das unabhängige Screening abgeschlossen ist.", "Заштита двоструког слепила: независни одабир није потпуно паузиран, па се све одлуке не могу учитати. Паузирајте све фазе одабира у подешавањима тима или сачекајте завршетак независног одабира.", "이중 눈가림 보호: 독립 선별이 모두 일시중지되지 않아 전체 결정을 아직 불러올 수 없습니다. 팀 설정에서 모든 선별 단계를 일시중지하거나 독립 선별이 끝날 때까지 기다리세요."],
+  ["无权加载全员决策：仅任务属主或具有裁决权限的成员可以操作。", "Not authorized to load all screener decisions: only the task owner or a member with adjudication rights may do this.", "Non autorisé à charger toutes les décisions : seul le propriétaire de la tâche ou un membre ayant le droit d’arbitrage peut le faire.", "Нет прав на загрузку всех решений: это может делать только владелец задачи или участник с правом арбитража.", "Sin permiso para cargar todas las decisiones: solo el propietario de la tarea o un miembro con derechos de arbitraje puede hacerlo.", "全判定を読み込む権限がありません。タスク所有者または仲裁権限を持つメンバーのみ操作できます。", "Sem permissão para carregar todas as decisões: apenas o proprietário da tarefa ou um membro com direito de arbitragem pode fazer isso.", "Keine Berechtigung zum Laden aller Entscheidungen: Nur der Aufgabeninhaber oder ein Mitglied mit Schiedsrecht darf dies tun.", "Немате дозволу за учитавање свих одлука: то може само власник задатка или члан са правом арбитраже.", "전체 결정을 불러올 권한이 없습니다. 작업 소유자 또는 조정 권한이 있는 구성원만 수행할 수 있습니다."],
+  ["无法加载全员决策：{0}", "Could not load all screener decisions: {0}", "Impossible de charger toutes les décisions : {0}", "Не удалось загрузить все решения: {0}", "No se pudieron cargar todas las decisiones: {0}", "全判定を読み込めませんでした：{0}", "Não foi possível carregar todas as decisões: {0}", "Alle Entscheidungen konnten nicht geladen werden: {0}", "Није могуће учитати све одлуке: {0}", "전체 결정을 불러오지 못했습니다: {0}"],
+  ["从服务器加载失败：{0}", "Server load failed: {0}", "Échec du chargement depuis le serveur : {0}", "Ошибка загрузки с сервера: {0}", "Error al cargar desde el servidor: {0}", "サーバーからの読み込みに失敗：{0}", "Falha ao carregar do servidor: {0}", "Laden vom Server fehlgeschlagen: {0}", "Учитавање са сервера није успело: {0}", "서버에서 불러오기 실패: {0}"],
+  ["任务已切换，请重新从服务器加载全员决策。", "The task has changed. Load all screener decisions from the server again.", "La tâche a changé. Rechargez toutes les décisions depuis le serveur.", "Задача изменилась. Загрузите все решения с сервера заново.", "La tarea ha cambiado. Vuelva a cargar todas las decisiones desde el servidor.", "タスクが切り替わりました。サーバーから全判定を読み込み直してください。", "A tarefa foi alterada. Carregue novamente todas as decisões do servidor.", "Die Aufgabe wurde gewechselt. Laden Sie alle Entscheidungen erneut vom Server.", "Задатак је промењен. Поново учитајте све одлуке са сервера.", "작업이 변경되었습니다. 서버에서 전체 결정을 다시 불러오세요."],
+  ["独立筛选尚未全部暂停，无法加载全员决策。请先暂停所有筛选阶段，或等待独立筛选完成后再进入合并仲裁。", "Independent screening has not been fully paused, so all screener decisions cannot be loaded. Pause every screening stage or wait until independent screening finishes before entering merge adjudication.", "La sélection indépendante n’est pas entièrement suspendue ; impossible de charger toutes les décisions. Suspendez toutes les étapes ou attendez la fin de la sélection indépendante avant l’arbitrage.", "Независимый отбор приостановлен не полностью, поэтому загрузить все решения нельзя. Приостановите все этапы отбора или дождитесь его завершения перед переходом к арбитражу.", "El cribado independiente no está totalmente en pausa, por lo que no se pueden cargar todas las decisiones. Pause todas las etapas o espere a que finalice el cribado independiente antes del arbitraje.", "独立スクリーニングがすべて一時停止されていないため、全判定を読み込めません。すべてのスクリーニング段階を一時停止するか、独立スクリーニングの完了後に仲裁へ進んでください。", "A triagem independente não está totalmente pausada; não é possível carregar todas as decisões. Pause todas as etapas ou aguarde o fim da triagem independente antes da arbitragem.", "Das unabhängige Screening ist nicht vollständig pausiert; alle Entscheidungen können nicht geladen werden. Pausieren Sie alle Phasen oder warten Sie das Ende des unabhängigen Screenings ab, bevor Sie zur Schlichtung übergehen.", "Независни одабир није потпуно паузиран, па се све одлуке не могу учитати. Паузирајте све фазе одабира или сачекајте његов завршетак пре арбитраже.", "독립 선별이 모두 일시중지되지 않아 전체 결정을 불러올 수 없습니다. 모든 선별 단계를 일시중지하거나 독립 선별이 끝난 뒤 조정으로 진행하세요."],
+  ["请提供 2 到 9 份筛选员决策包", "Provide 2 to 9 screener decision packages", "Fournissez 2 à 9 paquets de décisions d’évaluateurs", "Предоставьте от 2 до 9 пакетов решений членов команды", "Proporcione de 2 a 9 paquetes de decisiones de revisores", "2～9 件のスクリーナー判定パッケージを指定してください", "Forneça de 2 a 9 pacotes de decisões de triadores", "Stellen Sie 2 bis 9 Screener-Entscheidungspakete bereit", "Обезбедите 2 до 9 пакета одлука чланова тима", "검토자 결정 패키지 2~9개를 제공하세요"],
+  ["缺少服务器来源标记；请先从服务器加载全员决策再保存。", "The server-source flag is missing; load all screener decisions from the server before saving.", "Le marqueur de source serveur est absent ; chargez d’abord toutes les décisions depuis le serveur avant d’enregistrer.", "Отсутствует отметка серверного источника; сначала загрузите все решения с сервера, затем сохраняйте.", "Falta la marca de origen del servidor; cargue primero todas las decisiones desde el servidor antes de guardar.", "サーバー由来の印がありません。保存する前にサーバーから全判定を読み込んでください。", "Falta a marca de origem do servidor; carregue todas as decisões do servidor antes de salvar.", "Die Serverquellen-Markierung fehlt; laden Sie alle Entscheidungen vom Server, bevor Sie speichern.", "Недостаје ознака серверског извора; прво учитајте све одлуке са сервера, па сачувајте.", "서버 출처 표시가 없습니다. 저장하기 전에 서버에서 전체 결정을 불러오세요."],
+  ["仅任务属主或仲裁员可以保存仲裁结果。", "Only the task owner or an adjudicator may save arbitration results.", "Seul le propriétaire de la tâche ou un arbitre peut enregistrer les résultats d’arbitrage.", "Сохранять результаты арбитража может только владелец задачи или арбитр.", "Solo el propietario de la tarea o un árbitro puede guardar los resultados del arbitraje.", "仲裁結果を保存できるのはタスク所有者または仲裁担当者のみです。", "Apenas o proprietário da tarefa ou um árbitro pode salvar os resultados da arbitragem.", "Nur der Aufgabeninhaber oder ein Schlichter darf Schlichtungsergebnisse speichern.", "Резултате арбитраже може сачувати само власник задатка или арбитар.", "작업 소유자 또는 조정자만 조정 결과를 저장할 수 있습니다."],
+  /* FL4（尾巴④）：团队属主重新登记成功 toast（index.html:5827 的 T() 调用）。
+     十语言一次补齐——只补 en 会增加"英文回退"，与 FL4 的英文回退归零口径冲突。 */
+  ["任务“{0}”的负责人已重新登记为 {1}，请确认任务管理权归属", "The owner of task “{0}” has been re-registered as {1}. Please confirm who owns task management.", "Le propriétaire de la tâche « {0} » a été réenregistré en tant que {1}. Veuillez confirmer la gestion de la tâche.", "Владелец задачи «{0}» перерегистрирован как {1}. Подтвердите, кому принадлежит управление задачей.", "El propietario de la tarea «{0}» se ha vuelto a registrar como {1}. Confirme la titularidad de la gestión de la tarea.", "タスク「{0}」の所有者が {1} として再登録されました。タスク管理権の帰属を確認してください。", "O proprietário da tarefa «{0}» foi reregistado como {1}. Confirme a titularidade da gestão da tarefa.", "Der Inhaber der Aufgabe „{0}“ wurde als {1} neu registriert. Bitte bestätigen Sie, wem die Aufgabenverwaltung gehört.", "Власник задатка „{0}“ је поново регистрован као {1}. Потврдите коме припада управљање задатком.", "작업 “{0}”의 소유자가 {1}(으)로 다시 등록되었습니다. 작업 관리 권한의 귀속을 확인하세요."],
+  /* 补扫修复：server-merge/server-save 在某筛选员个人库被外部进程持锁/暂时不可读
+     时返回的 503 文案（前端把 detail 交 T() 渲染）。十语言一次补齐。 */
+  ["筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。", "Screener decision libraries are temporarily unreadable (they may be in use by another operation). Please try again later.", "Les bases de décisions des évaluateurs sont momentanément illisibles (peut-être utilisées par une autre opération). Réessayez plus tard.", "Базы решений членов команды временно недоступны для чтения (возможно, заняты другой операцией). Повторите попытку позже.", "Las bases de decisiones de los revisores no se pueden leer temporalmente (pueden estar en uso por otra operación). Inténtelo de nuevo más tarde.", "スクリーナーの判定データベースを一時的に読み取れません（別の操作で使用中の可能性があります）。しばらくしてから再試行してください。", "As bases de decisões dos triadores estão temporariamente ilegíveis (podem estar em uso por outra operação). Tente novamente mais tarde.", "Die Entscheidungsdatenbanken der Screener sind vorübergehend nicht lesbar (möglicherweise durch einen anderen Vorgang belegt). Versuchen Sie es später erneut.", "Базе одлука чланова тима су привремено нечитљиве (можда их користи друга операција). Покушајте поново касније.", "검토자 결정 데이터베이스를 일시적으로 읽을 수 없습니다(다른 작업에서 사용 중일 수 있음). 잠시 후 다시 시도하세요."]
 ];
  RFLang.register(rows);
  window.RFInterfaceVocabulary=Object.freeze(rows.map(row=>Object.freeze(row.slice())));

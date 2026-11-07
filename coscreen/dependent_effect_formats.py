@@ -46,6 +46,17 @@ def _number(value: object, name: str) -> float:
 def _count(value: object, name: str) -> int:
     if type(value) is not int or value < 2:
         raise ValueError(f"{name} must be an integer >= 2")
+    # Counts are converted to float before ``math.sqrt``; an integer beyond the
+    # double range made that conversion raise OverflowError (a 500). Counts that
+    # do convert (through ~1.8e308) stay accepted exactly as before, so no
+    # previously valid sample size is rejected; only the non-representable tail
+    # is reported as a domain error, as in effect_size_formats._positive_integer.
+    try:
+        finite = math.isfinite(float(value))
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite integer") from exc
+    if not finite:
+        raise ValueError(f"{name} must be a finite integer")
     return value
 
 

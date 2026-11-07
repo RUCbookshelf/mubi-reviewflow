@@ -94,6 +94,16 @@ class ImportRuntime:
                                'digest': hashlib.sha256(path.read_bytes()).hexdigest()})
                 self.progress(job_id, task_id, user['user_id'], 'parse', min(9, 2 + 7 * (i + 1) // len(files)))
             result = await asyncio.to_thread(self.process, task_id, user, parsed, batch, job_id, screener)
+            # 复审 B3：文件级解析告警（截断/嵌合拆分/编码回退）随 API 响应
+            # 返回，Web 端不再只看到「少一条」；逐条去重保持出现顺序。
+            parse_warnings: list[str] = []
+            for entry in parsed:
+                for article in entry['articles']:
+                    for warning in (article.raw.get('_parse_warnings') or []):
+                        if warning not in parse_warnings:
+                            parse_warnings.append(warning)
+            if parse_warnings:
+                result['parse_warnings'] = parse_warnings
             self.progress(job_id, task_id, user['user_id'], 'complete', 100, staged=result['staged'], batch_id=result['batch_id'])
             return result
         except Exception as exc:
@@ -139,7 +149,15 @@ class ImportRuntime:
                 plan = store.prepare(snapshot, files, batch_id=bid, history_id=hid, owner_id=user['user_id'],
                     import_type='batch' if batch else 'single', protected=protected, title_groups=self.title_groups,
                     progress_callback=lambda stage, done, total: self.fuzzy_progress(job_id, task_id, user['user_id'], stage, done, total))
-                legacy = self.legacy_plan(snapshot, bid, existing, incoming, batch, plan['new_record_ids']) if not protected else None
+                # r10-U2（批准单 §六 F56 缓解半步）：95% 之后原本三次全库
+                # find_duplicates 与写库事务之间没有任何进度打点，前端长期停在
+                # 95% 且文案仍讲上一步。这里把三次匹配按 95→97 细分打点：
+                # 打点只在**百分比变化**时落盘（同一百分比不重复写），且只在本
+                # 线程内同步调用（无新增线程/无锁）——长任务路径不被高频写文件
+                # 反噬。写库事务本身仍是一个打点（97），不细化事务内部。
+                legacy_progress = self._legacy_progress(job_id, task_id, user['user_id'])
+                legacy = self.legacy_plan(snapshot, bid, existing, incoming, batch, plan['new_record_ids'],
+                                          progress_callback=legacy_progress) if not protected else None
                 self.progress(job_id, task_id, user['user_id'], 'save', 97)
                 with self.workflow.write_guard(task_id, user, 'screen', expected_version=version) as fresh:
                     current = workflow.settings(fresh.owner_db)
@@ -205,7 +223,32 @@ class ImportRuntime:
             copy('workflow_import_candidates', 'id=?', (row[0],))
             copy('workflow_import_candidate_members', 'candidate_id=?', (row[0],))
 
-    def legacy_plan(self, conn, bid, existing, incoming, batch, new_record_ids):
+    def _legacy_progress(self, job_id, task_id, user_id):
+        """F56：三次 legacy 匹配的 95→97 细分打点。
+
+        返回**按调用槽位**取回调的工厂：legacy_plan 的三次 find_duplicates 各取
+        一个槽（0/1/2），槽内按 done/total 再细分。若三个槽共用一个回调，三次
+        调用的起止比例都落在同一格，整段 95→97 只会打出一个 96——细分形同虚设
+        （该实现曾如此，故这里改成显式槽位）。按百分比去重，同一百分比不重复
+        落盘，长任务不被高频写文件反噬；区间硬限 95–97，不与 save 阶段的 97
+        主打点冲突。
+        """
+        seen = {'percent': 94}
+        def slot(index, slots=3):
+            def report(stage, done, total):
+                ratio = 1.0 if not total else min(1.0, max(0.0, done / total))
+                percent = 95 + int(2 * (index + ratio) / slots)
+                percent = max(95, min(97, percent))
+                # 只前进：进度条一旦到 96 不得被后续槽位的低值改写回 95（去重
+                # 按「严格递增」而非「与上一次不同」——后者会把 97 回写成 96）。
+                if percent <= seen['percent']:
+                    return
+                seen['percent'] = percent
+                self.progress(job_id, task_id, user_id, 'save', percent)
+            return report
+        return slot
+
+    def legacy_plan(self, conn, bid, existing, incoming, batch, new_record_ids, progress_callback=None):
         new_ids = set(new_record_ids)
         batch_rows = conn.execute('''SELECT r.* FROM workflow_import_members m
             JOIN workflow_source_records r ON r.id=m.record_id
@@ -251,10 +294,14 @@ class ImportRuntime:
         incoming = [article for row, article in zip(batch_rows, incoming)
                     if row['id'] in eligible_ids or
                     (row['state'] == 'active' and article.zotero_key in existing_keys)]
-        kept, within = find_duplicates(incoming, include_fuzzy=False)
+        # F56：三次匹配各占一个进度槽（0/1/2），槽内再按 done/total 细分 95→97。
+        (kept, within) = find_duplicates(incoming, include_fuzzy=False,
+            progress_callback=progress_callback(0) if progress_callback else None)
         selected = kept if batch else incoming
-        exact, report = find_duplicates(existing + selected, include_fuzzy=False)
-        _, fuzzy = find_duplicates(existing + selected)
+        exact, report = find_duplicates(existing + selected, include_fuzzy=False,
+            progress_callback=progress_callback(1) if progress_callback else None)
+        _, fuzzy = find_duplicates(existing + selected,
+            progress_callback=progress_callback(2) if progress_callback else None)
         existing_keys = {a.zotero_key for a in existing}
         groups = self.title_groups(exact, {a.zotero_key for a in selected} - existing_keys, fuzzy.fuzzy_pairs)
         _, previous = find_duplicates(existing, include_fuzzy=False)
@@ -341,7 +388,10 @@ class ImportRuntime:
             incoming_keys = {a.zotero_key for a in legacy['incoming']}
             hits = [pair for pair in metric_report.exact_pairs if batch or pair.dup_key in incoming_keys]
             previous_excess = 0 if batch else legacy['previous'].total - legacy['previous'].unique
-            result.update(exact_match_hits=len(hits), exact_duplicate_groups=len({pair.kept_key for pair in hits}),
+            # U1-P12：exact_match_hits 按记录去重（distinct dup_key），与
+            # 行口径（:327 exact_rows）及 total-unique 口径一致，不再按
+            # 事件计数翻倍。
+            result.update(exact_match_hits=len({pair.dup_key for pair in hits}), exact_duplicate_groups=len({pair.kept_key for pair in hits}),
                           exact_duplicate_excess=max(0, metric_report.total-metric_report.unique-previous_excess),
                           fuzzy_candidate_excess=sum(pair.dup_key in incoming_keys for pair in legacy['fuzzy'].fuzzy_pairs),
                           title_candidate_groups_including_exact=len(legacy['all_title_groups']),
@@ -380,7 +430,7 @@ def register_review_import_routes(app, require_user, **dependencies):
         ctx = runtime.workflow.context(task_id, user)
         if ctx.owner is None:
             raise HTTPException(403, 'Import provenance requires verified task ownership.')
-        with runtime.workflow.lock(task_id):
+        with runtime.workflow.lock(ctx.info.task_id):
             store.migrate(ctx.owner_db)
             review_undo.migrate(ctx.owner_db)
         return ctx
@@ -420,7 +470,15 @@ def register_review_import_routes(app, require_user, **dependencies):
         with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
             try:
                 result = store.batch_summary(conn,batch_id)
-            except KeyError as exc:
+            except (KeyError, ValueError) as exc:
+                # b15·F4-77：batch_summary 沿 record_target→canonical 解析文章身份，
+                # 文章行缺失或 is_duplicate_of 成环时抛的是 **ValueError**，此前的
+                # `except KeyError` 漏捕，GET 详情整页 500（同一状态的 POST undo
+                # 经 mutate 的 except (ValueError,KeyError) 译成 409）。读路径按写
+                # 路径同一口径收口：KeyError → 404（批次不存在），ValueError →
+                # 409（数据需刷新/库外改写需重做），README 提示由前端展示原文由
+                # translate 统一给出。canonical 解析失败的可用性降级见
+                # import_review_undo.available（F4-82）。
                 translate(exc)
             projection = review_projection(conn, batch_id)
             rows = projection[view]
@@ -475,7 +533,7 @@ def register_review_import_routes(app, require_user, **dependencies):
                     if changed and undo_kind:
                         review_undo.remember(conn,batch_id,str(user['user_id']),undo_kind,subject,snapshot,result['policy_version'])
                     if reason == 'import-activated':
-                        conn.execute("UPDATE workflow_import_undo SET state='activated' WHERE state='available'")
+                        review_undo.activate(conn, batch_id)
                     from custom_backend.import_review_actions import review_updates
                     if undo_kind:
                         actions = json.loads(subject) if undo_kind == 'bulk' else [{'kind': undo_kind, 'id': subject}]

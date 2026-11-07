@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 from scipy.optimize import minimize
@@ -10,10 +11,116 @@ from scipy.stats import norm
 
 
 _Z_975 = float(norm.ppf(.975))
+# F3-51: the expected-REML-information check may build the marginal covariance
+# and its three derivative matrices densely, costing 4*n_effects**2*8 bytes.
+# Up to this many effects that is at most 32 MiB and the historical dense
+# computation is kept verbatim; above it the identical quantity is accumulated
+# block by block so memory stays bounded by the largest study block.
+_DENSE_IDENTIFIABILITY_MAX_EFFECTS = 1000
+# F3-62: the stationarity gate used to be an absolute bound on the projected
+# gradient. A ratio measure shifts every analysis value by a constant
+# c = log(k): the model is mathematically unchanged (the outcome means absorb
+# c), the REML objective changes only through its 2*n*log(scale) and log|X'X|
+# terms, but the scaled sampling variance contracts by e^-2c so the reachable
+# gradient grows with the data magnitude. Large, perfectly fittable RR/OR/HR
+# data sets (10-300x) were therefore refused from every start. The 1e-4
+# constant is kept, but measured against the objective magnitude - the same
+# quantity L-BFGS-B's relative ftol stopping rule is scaled by - so the gate
+# never narrows acceptance for ordinary inputs and stops punishing scale.
+_GRADIENT_RTOL = 1e-4
+# F3-54/F3-58: the multi-start REML fits are synchronous and previously had no
+# wall-clock ceiling, so one legitimate request could occupy a shared worker
+# thread for tens of minutes (measured 47.66 s and 8.62 s on 100-study inputs,
+# extrapolating to 114.7 min and 25.9 min at maxiter=5000). Each objective
+# evaluation is cheap and independent, so the budget is checked per evaluation
+# and per start: once it expires the remaining starts are skipped, the fit that
+# already met every convergence diagnostic is returned, and only a run with no
+# acceptable fit reports the budget. Fittable data therefore still fits: the
+# largest documented input (100 blocks x 8 outcomes, the DependentSynthesisIn
+# ceiling) completes in 97.8 s on this reference machine, so 600 s leaves about
+# sixfold headroom and cannot truncate a fit that would have succeeded, while
+# the extrapolated pathological search is capped at 10 min instead of 114.7.
+_BUDGET_SECONDS = 600.0
 _CITATION_REMINDER = (
     "Report the source and assumptions for each within-study covariance matrix; "
     "cite Cheung (2015), Chapter 5, §5.3, pp. 127–133."
 )
+
+
+class _EvaluationBudget:
+    """Wall-clock budget shared by the starts of one REML fit (F3-54 / F3-58)."""
+
+    def __init__(self, seconds: float | None = None) -> None:
+        self.seconds = _BUDGET_SECONDS if seconds is None else seconds
+        self.started = time.monotonic()
+        self.exhausted = False
+
+    def expired(self) -> bool:
+        if not self.exhausted and time.monotonic() - self.started >= self.seconds:
+            self.exhausted = True
+        return self.exhausted
+
+    def guard(self, value):
+        """Objective wrapper: stop the optimizer once the budget is spent.
+
+        Returning +inf (as the objective already does for unidentifiable
+        parameter vectors) makes L-BFGS-B terminate the current start cleanly
+        instead of raising through scipy's internals.
+        """
+        if self.expired():
+            return math.inf
+        return value
+
+
+def _optimizer_options() -> dict:
+    """Identical L-BFGS-B options for every REML carrier, plus the budget stop."""
+    return {"ftol": 1e-15, "gtol": 1e-10, "maxiter": 5000, "maxls": 100,
+            "finite_diff_rel_step": 1e-5}
+
+
+def _pairwise_overlap_counts(pair_counts: dict, outcome_order: list[str]) -> list[dict]:
+    """Report per-pair overlapping-study counts (F3-56).
+
+    The label pair used to be flattened into one string with "|", which is not
+    injective: an outcome literally named ``"X|Y"`` collided with the pair
+    ``("X", "Y")`` and one overlap count silently overwrote the other (dossier
+    measured 10 pairs collapsing to 9 keys, and pair (X, Y|Z)=19 overwritten by
+    (X|Y, Z)=20). Keeping the two outcome labels as separate fields makes the
+    shape unique for any label content. Nothing else in the tree consumes this
+    payload, so the report is free to change shape.
+    """
+    counts = []
+    for left, right in pair_counts:
+        if isinstance(left, str):
+            # Callers may key by the labels themselves (legacy "|" join).
+            counts.append({"outcomes": [left, right], "n_studies": pair_counts[(left, right)]})
+        else:
+            counts.append({"outcomes": [outcome_order[left], outcome_order[right]],
+                           "n_studies": pair_counts[(left, right)]})
+    return counts
+
+
+def _coefficient_standard_errors(coefficient_covariance: np.ndarray) -> list[float]:
+    """Square roots of a fitted coefficient-covariance diagonal (F3-50 / F3-60 family).
+
+    Every carrier derived the reported SEs straight from
+    ``math.sqrt(diag(coefficient_covariance))``. A negative diagonal - which is
+    never a valid estimate, only a symptom of a broken fit - reached
+    ``math.sqrt`` as a bare ``ValueError: math domain error`` with no
+    indication of which check failed. The sibling kernel already refuses
+    non-positive sampling variances with a named domain error; this is the same
+    guard at the reporting boundary: non-finite or negative diagonals are
+    rejected with a message, and only a genuine (non-negative) diagonal is
+    square-rooted. Converged fits are unaffected, so no legal analysis is
+    refused.
+    """
+    diagonal = np.diag(coefficient_covariance).astype(float, copy=False)
+    if not np.isfinite(diagonal).all() or np.any(diagonal < 0.0):
+        raise ValueError(
+            "random-effects REML coefficient covariance diagonal must be finite and "
+            "non-negative; the fit is not usable"
+        )
+    return [math.sqrt(float(value)) for value in diagonal]
 
 
 def synthesize_random_reml_un(
@@ -29,7 +136,12 @@ def synthesize_random_reml_un(
     validation in ``dependent_synthesis``. Each study contributes its observed
     outcome submatrix, so missing outcomes are handled by selection.
     """
-    if len(outcome_order) != 2:
+    if len(outcome_order) != 2 or len(set(outcome_order)) != 2:
+        # F3-53: repeated labels collapsed through the outcome->index map, so a
+        # block could end up with two rows pointing at the same outcome, the
+        # design column count for the other outcome was 0, and math.log(0)
+        # escaped as a bare "math domain error". The two/three/four/five-plus
+        # modules already require distinct labels; report it the same way.
         raise ValueError("random_reml_un requires exactly two distinct outcomes")
 
     paired_studies = sum(len(rows) == 2 for rows in rows_by_block)
@@ -75,6 +187,8 @@ def synthesize_random_reml_un(
         sd1, sd2, rho = map(float, parameters)
         cov12 = rho * sd1 * sd2
         return np.asarray([[sd1 * sd1, cov12], [cov12, sd2 * sd2]])
+
+    budget = _EvaluationBudget()
 
     def evaluate(parameters: np.ndarray, details: bool = False):
         tau = covariance(parameters)
@@ -146,12 +260,23 @@ def synthesize_random_reml_un(
         c = float(weights.sum() - weights @ weights / weights.sum())
         tau2 = max(0.0, (q - (len(values) - 1)) / c) if c > 0 else 0.0
         initial_sds.append(max(math.sqrt(tau2), 0.05))
-    paired_residuals = [
-        (float(values[0]) - float(np.mean(marginal_residuals[0])),
-         float(values[1]) - float(np.mean(marginal_residuals[1])))
-        for values, outcomes in zip(values_by_block, outcomes_by_block)
-        if len(outcomes) == 2
-    ]
+    # F3-52: build each pair in outcome_order, not in the block's row order.
+    # The old code paired values[0]/values[1] positionally while centring with
+    # the mean of outcome 0/1, so a block stored in the opposite order swapped
+    # the pairing and distorted the rho starting value (measured: canonical
+    # rho 0.9 vs mixed-order 0.3524 for the same data). Placing every residual
+    # at its own outcome's slot and centring with that outcome's mean makes the
+    # result independent of row order; in-order blocks are unchanged bit for bit.
+    residual_centres = [float(np.mean(residuals)) if residuals.size else 0.0
+                        for residuals in marginal_residuals]
+    paired_residuals = []
+    for values, outcomes in zip(values_by_block, outcomes_by_block):
+        if len(outcomes) != 2:
+            continue
+        pair = [0.0, 0.0]
+        for value, index in zip(values, outcomes):
+            pair[index] = float(value) - residual_centres[index]
+        paired_residuals.append((pair[0], pair[1]))
     paired_array = np.asarray(paired_residuals)
     if np.any(np.std(paired_array, axis=0) <= 1e-12):
         rho_initial = 0.0
@@ -161,15 +286,21 @@ def synthesize_random_reml_un(
         rho_initial = 0.0
     rho_initial = min(.9, max(-.9, rho_initial))
     initial = np.asarray([*initial_sds, rho_initial], dtype=float)
+
+    def budgeted(parameters: np.ndarray) -> float:
+        # F3-54/F3-58: an exhausted budget surfaces as +inf, which is the same
+        # value the objective already uses for unidentifiable parameter vectors,
+        # so L-BFGS-B ends the search on its ordinary "no improvement" path.
+        return budget.guard(evaluate(parameters))
+
     try:
         optimized = minimize(
-            evaluate,
+            budgeted,
             initial,
             method="L-BFGS-B",
             jac="3-point",
             bounds=((0.0, None), (0.0, None), (-1.0, 1.0)),
-            options={"ftol": 1e-15, "gtol": 1e-10, "maxiter": 5000, "maxls": 100,
-                     "finite_diff_rel_step": 1e-5},
+            options=_optimizer_options(),
         )
     except (FloatingPointError, OverflowError, ValueError) as exc:
         raise ValueError(f"random-effects REML optimization failed: {exc}") from None
@@ -181,42 +312,48 @@ def synthesize_random_reml_un(
 
     # Check expected REML information for the three unique elements of T.
     total = n_effects
-    design = np.zeros((total, 2), dtype=float)
-    marginal_covariance = np.zeros((total, total), dtype=float)
-    derivative_matrices = [np.zeros((total, total), dtype=float) for _ in range(3)]
-    offset = 0
     tau = fitted["tau"]
-    for outcomes, sampling_covariance in zip(outcomes_by_block, scaled_matrices):
-        count = len(outcomes)
-        rows = np.arange(offset, offset + count)
-        design[rows, outcomes] = 1.0
-        marginal_covariance[np.ix_(rows, rows)] = (
-            sampling_covariance + tau[np.ix_(outcomes, outcomes)])
-        for local_index, outcome in enumerate(outcomes):
-            derivative_matrices[outcome][offset + local_index, offset + local_index] = 1.0
-        if count == 2:
-            derivative_matrices[2][offset, offset + 1] = 1.0
-            derivative_matrices[2][offset + 1, offset] = 1.0
-        offset += count
-    try:
-        weight = np.linalg.inv(marginal_covariance)
-        fixed_information = design.T @ weight @ design
-        weighted_design = weight @ design
-        projection = weight - weighted_design @ np.linalg.solve(
-            fixed_information, weighted_design.T)
-        fisher = np.asarray([
-            [0.5 * np.trace(projection @ left @ projection @ right)
-             for right in derivative_matrices]
-            for left in derivative_matrices
-        ])
-        fisher_scale = np.sqrt(np.diag(fisher))
-        if (not np.isfinite(fisher).all() or np.any(fisher_scale <= 0)
-                or not np.isfinite(fisher_scale).all()):
-            raise np.linalg.LinAlgError
-        fisher_correlation = fisher / np.outer(fisher_scale, fisher_scale)
-        eigenvalues = np.linalg.eigvalsh(fisher_correlation)
-    except np.linalg.LinAlgError:
-        raise ValueError("between-study covariance is not identifiable from the supplied studies") from None
+    if total <= _DENSE_IDENTIFIABILITY_MAX_EFFECTS:
+        design = np.zeros((total, 2), dtype=float)
+        marginal_covariance = np.zeros((total, total), dtype=float)
+        derivative_matrices = [np.zeros((total, total), dtype=float) for _ in range(3)]
+        offset = 0
+        for outcomes, sampling_covariance in zip(outcomes_by_block, scaled_matrices):
+            count = len(outcomes)
+            rows = np.arange(offset, offset + count)
+            design[rows, outcomes] = 1.0
+            marginal_covariance[np.ix_(rows, rows)] = (
+                sampling_covariance + tau[np.ix_(outcomes, outcomes)])
+            for local_index, outcome in enumerate(outcomes):
+                derivative_matrices[outcome][offset + local_index, offset + local_index] = 1.0
+            if count == 2:
+                derivative_matrices[2][offset, offset + 1] = 1.0
+                derivative_matrices[2][offset + 1, offset] = 1.0
+            offset += count
+        try:
+            weight = np.linalg.inv(marginal_covariance)
+            fixed_information = design.T @ weight @ design
+            weighted_design = weight @ design
+            projection = weight - weighted_design @ np.linalg.solve(
+                fixed_information, weighted_design.T)
+            fisher = np.asarray([
+                [0.5 * np.trace(projection @ left @ projection @ right)
+                 for right in derivative_matrices]
+                for left in derivative_matrices
+            ])
+            fisher_scale = np.sqrt(np.diag(fisher))
+            if (not np.isfinite(fisher).all() or np.any(fisher_scale <= 0)
+                    or not np.isfinite(fisher_scale).all()):
+                raise np.linalg.LinAlgError
+            fisher_correlation = fisher / np.outer(fisher_scale, fisher_scale)
+            eigenvalues = np.linalg.eigvalsh(fisher_correlation)
+        except np.linalg.LinAlgError:
+            raise ValueError("between-study covariance is not identifiable from the supplied studies") from None
+    else:
+        try:
+            eigenvalues = _blockwise_information_eigenvalues(outcomes_by_block, scaled_matrices, tau)
+        except np.linalg.LinAlgError:
+            raise ValueError("between-study covariance is not identifiable from the supplied studies") from None
     if (not np.isfinite(eigenvalues).all() or eigenvalues[0] <= 1e-10 * eigenvalues[-1]):
         raise ValueError("between-study covariance is not identifiable from the supplied studies")
     information_condition = float(eigenvalues[-1] / eigenvalues[0])
@@ -242,8 +379,9 @@ def synthesize_random_reml_un(
         raise ValueError("estimated between-study covariance is not positive semidefinite")
 
     estimates = []
+    standard_errors = _coefficient_standard_errors(coefficient_covariance)
     for index, outcome in enumerate(outcome_order):
-        se = math.sqrt(float(coefficient_covariance[index, index]))
+        se = standard_errors[index]
         lower = float(coefficients[index]) - _Z_975 * se
         upper = float(coefficients[index]) + _Z_975 * se
         if measure in {"RR", "OR", "HR", "RATE_RATIO"}:
@@ -308,3 +446,91 @@ def synthesize_random_reml_un(
         "citation_reminder": _CITATION_REMINDER,
     }
     return result
+
+
+def _blockwise_information_eigenvalues(
+    outcomes_by_block: list[list[int]],
+    scaled_matrices: list[np.ndarray],
+    tau: np.ndarray,
+) -> np.ndarray:
+    """Eigenvalues of the correlation-scaled Fischer information, block by block.
+
+    F3-51: the historical formulation built the full marginal covariance and its
+    three derivative matrices, i.e. ``4 * n_effects**2 * 8`` bytes (128 MiB at
+    2000 effects, 12.8 GiB at 20000). The marginal covariance is block diagonal
+    by study, so the trace is accumulated over per-study blocks of at most a
+    handful of rows and memory is bounded by the largest study.
+
+    stats-b-0: the projection itself is *not* block diagonal,
+    ``P = W - W X (X'WX)^-1 X'W``, so its off-diagonal blocks
+    ``-W_b X_b F X_c' W_c`` contribute to ``trace(P D_i P D_j)``. The previous
+    version kept only ``P``'s block-diagonal part (``W_b - W_b X_b F X_b' W_b``),
+    which is a different matrix: on heterogeneous study blocks the eigenvalues
+    differed from the dense path by ~1e-3 relative, so the docstring claim
+    "eigenvalues unchanged" was false. The exact trace is assembled with the
+    low-rank expansion (all corrections are p x p, p = 2, per block):
+        trace(P D_i P D_j) = trace(W D_i W D_j)
+                             - trace(F (C_ij + C_ji)) + trace(F G_j F G_i),
+        G_k = X' W D_k W X,   C_ij = X' W D_j W D_i W X.
+    Only count x count per-study blocks and 2 x 2 / 3 x 3 accumulators are
+    built, so the memory advantage is kept and the result is the same quantity
+    as the dense path (agrees to ~1e-15 relative; pinned by
+    build/tests/test_r13_stats_blockwise_information.py).
+    """
+    block_terms = []
+    fixed_information = np.zeros((2, 2), dtype=float)
+    for outcomes, sampling_covariance in zip(outcomes_by_block, scaled_matrices):
+        count = len(outcomes)
+        design = np.zeros((count, 2), dtype=float)
+        design[np.arange(count), outcomes] = 1.0
+        marginal = sampling_covariance + tau[np.ix_(outcomes, outcomes)]
+        weight = np.linalg.inv(marginal)
+        weighted_design = weight @ design
+        fixed_information += design.T @ weighted_design
+        derivatives = []
+        for derivative_index in range(3):
+            derivative = np.zeros((count, count), dtype=float)
+            if derivative_index < 2:
+                for local_index, outcome in enumerate(outcomes):
+                    if outcome == derivative_index:
+                        derivative[local_index, local_index] = 1.0
+            elif count == 2:
+                derivative[0, 1] = derivative[1, 0] = 1.0
+            derivatives.append(derivative)
+        weighted_derivatives = [weight @ derivative for derivative in derivatives]
+        weighted_derivative_designs = [weighted @ weighted_design
+                                       for weighted in weighted_derivatives]
+        block_terms.append((design, weighted_design, derivatives, weighted_derivatives,
+                            weighted_derivative_designs))
+    fixed_covariance = np.linalg.inv(fixed_information)
+    diagonal_trace = np.zeros((3, 3), dtype=float)
+    weighted_information = np.zeros((3, 2, 2), dtype=float)
+    cross_information = np.zeros((3, 3, 2, 2), dtype=float)
+    for (design, weighted_design, derivatives, weighted_derivatives,
+         weighted_designs) in block_terms:
+        for left_index in range(3):
+            weighted_information[left_index] += (
+                design.T @ weighted_derivatives[left_index] @ weighted_design)
+            for right_index in range(3):
+                diagonal_trace[left_index, right_index] += float(np.trace(
+                    weighted_derivatives[left_index] @ weighted_derivatives[right_index]))
+                cross_information[left_index, right_index] += (
+                    weighted_designs[right_index].T
+                    @ derivatives[left_index] @ weighted_design)
+    fisher = np.zeros((3, 3), dtype=float)
+    for left_index in range(3):
+        for right_index in range(3):
+            correction = float(np.trace(fixed_covariance @ (
+                cross_information[left_index, right_index]
+                + cross_information[right_index, left_index])))
+            quadratic = float(np.trace(
+                fixed_covariance @ weighted_information[right_index]
+                @ fixed_covariance @ weighted_information[left_index]))
+            fisher[left_index, right_index] = 0.5 * (
+                diagonal_trace[left_index, right_index] - correction + quadratic)
+    fisher = 0.5 * (fisher + fisher.T)
+    fisher_scale = np.sqrt(np.diag(fisher))
+    if (not np.isfinite(fisher).all() or np.any(fisher_scale <= 0)
+            or not np.isfinite(fisher_scale).all()):
+        raise np.linalg.LinAlgError
+    return np.linalg.eigvalsh(fisher / np.outer(fisher_scale, fisher_scale))

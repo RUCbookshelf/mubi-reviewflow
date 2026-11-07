@@ -2,11 +2,73 @@
 (function(){'use strict';
  const root=document.getElementById('researchTracePage');
  const state={tab:'overview',settings:null,summary:null,events:[],cursor:null,next:null,stage:'',query:'',since:'',until:'',action:'',ticket:0,pendingSettings:null,configuring:false,importResult:null,clearResult:null,pendingClear:null,clearing:false};
+ /* F04：日期筛选的“日界”必须按用户本地时区构造后再序列化。输入框给的是本地
+    日期（YYYY-MM-DD），而 recorded_at 存的是 UTC ISO 串；旧实现直接拼
+    'T00:00:00Z'/'T23:59:59Z'，等于把本地 0 点当成 UTC 0 点——UTC+8 下本地
+    2026-10-26 00:46 的记录是 2026-10-25T16:46Z，早于旧 since 而被整段排除
+    （UX 报告 F04：同筛选下 10/25→10/26 使 14 行变 0 行）。 */
+ function localDay(value,end=false){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||''));if(!m)return '';const dt=new Date(Number(m[1]),Number(m[2])-1,Number(m[3]),end?23:0,end?59:0,end?59:0,end?999:0);return Number.isNaN(dt.getTime())?'':dt.toISOString();}
+ function localDate(dt){return [dt.getFullYear(),String(dt.getMonth()+1).padStart(2,'0'),String(dt.getDate()).padStart(2,'0')].join('-');}
+ function defaultWindow(){const now=new Date(),start=new Date(now.getFullYear(),now.getMonth(),now.getDate()-6);return {since:localDate(start),until:localDate(now)};}
+ /* 概览热力图的每一列是后端按 substr(recorded_at,1,10) 分组的 **UTC** 日（见
+    coscreen/research_trace.py 的 daily 查询）。点击某列时若直接把它当本地日期，
+    UTC+8 用户点「25」会查本地 25 日（= UTC 24 16:00–25 15:59），而该列装的是
+    UTC 25 日的记录（本地 25 日 08:00 起）——正是 F04 的「有柱子却 0 行」。
+    这里把该 UTC 日换算成覆盖它的本地日期区间，点击结果至少包含整列记录。 */
+ function utcDaySpan(date){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));if(!m)return {since:String(date||''),until:String(date||'')};const start=new Date(Date.UTC(Number(m[1]),Number(m[2])-1,Number(m[3]),0,0,0,0)),end=new Date(Date.UTC(Number(m[1]),Number(m[2])-1,Number(m[3]),23,59,59,999));return {since:localDate(start),until:localDate(end)};}
+ Object.assign(state,defaultWindow());
+
  const stages={screen:'文献初筛',fulltext:'文献复筛',coding:'数据提取与编码'};
- const actions={history_cleared:'清除历史',fulltext_added:'添加全文',fulltext_replaced:'替换全文',decision_created:'首次决定',decision_changed:'修改决定',decision_imported:'导入决定',coding_value_created:'填写编码',coding_value_changed:'修改编码',coding_value_cleared:'清空编码',coding_note_created:'新增编码说明',coding_note_changed:'修改编码说明',coding_note_cleared:'清除编码说明',coding_note_image_added:'添加来源图片',coding_image_removed:'删除来源图片',coding_note_image_removed:'删除来源图片',coding_image_ocr_changed:'修改来源文字',field_definition_created:'新增字段',field_definition_changed:'修改字段',field_definition_deleted:'删除字段',rater_record_created:'保存编码修订',rater_record_changed:'保存编码修订',recording_started:'开始记录',recording_resumed:'恢复记录',recording_paused:'暂停记录',recording_stopped:'停止记录',stages_changed:'变更记录范围'};
- function changeText(event){const readable=value=>{if(value==null)return '';if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+(value.exclusion_reason||value.reason):'');if(Object.hasOwn(value,'value'))return String(value.value??'—');return '';};const before=readable(event.before),after=readable(event.after);return before||after?(before||'—')+' → '+(after||'—'):'';}
+ const actions={history_cleared:'清除历史',fulltext_added:'添加全文',fulltext_replaced:'替换全文',decision_created:'首次决定',decision_changed:'修改决定',decision_imported:'导入决定',coding_value_created:'填写编码',coding_value_changed:'修改编码',coding_value_cleared:'清空编码',coding_note_created:'新增编码说明',coding_note_changed:'修改编码说明',coding_note_cleared:'清除编码说明',coding_note_image_added:'添加来源图片',coding_image_removed:'删除来源图片',coding_note_image_removed:'删除来源图片',coding_image_ocr_changed:'修改来源文字',field_definition_created:'新增字段',field_definition_changed:'修改字段',field_definition_deleted:'删除字段',rater_record_created:'保存编码修订',rater_record_changed:'保存编码修订',recording_started:'开始记录',recording_resumed:'恢复记录',recording_paused:'暂停记录',recording_stopped:'停止记录',stages_changed:'变更记录范围',ai_suggestion_generated:'AI 生成建议',ai_suggestion_decided:'AI 建议决定'};
+ // 报告关联与证据（report_evidence_changed）载荷渲染：label 判定用下方显式集合（9 个前端 change() label +
+ // 4 个后端裁决/撤销 label，共 13 个已注册词条），纯编码值载荷（{value:存储值}，coscreen/coding.py）不在此列、
+ // 按数据原样输出，不会因撞上界面词条（如「可信」）被误译；changes/summary 载荷键名与枚举取值按映射表走全局字典。
+ const RE_LABELS=new Set(['保存个人关联线索','解除个人关联线索','保存个人定性证据草稿','保存定性方法学评价草稿','保存定性综合置信度草稿','保存定性问题草稿','保存方法工作草稿','保存综述路径','核对证据共同出处','确认报告关系','解除报告关系','撤销报告关系裁决','撤销报告关联与证据变更']);
+ const RE_KEYS={links:'报告关联',drafts:'证据草稿',findings:'证据草稿',review:'综述路径',method:'定性综合方法',appraisalTool:'评价工具',interpretations:'方法工作区',confidence:'证据置信度',duplicatePairs:'重复证据对',question:'研究问题',appraisals:'定性研究评价',analysisChoices:'样本与结果选择',workspace_sha256:'工作区校验和',total_subjects:'受影响主体',truncated_subjects:'已截断主体',skipped_events:'跳过事件',items:'评价条目',finding:'综合发现',reason:'判断依据',overall:'整体置信度',dependability:'可靠性（Dependability）',credibility:'可信度（Credibility）',limitations:'方法学局限',coherence:'一致性',adequacy:'资料充分性',relevance:'相关性',summary:'综合说明与未解决问题',coding:'原文编码与依据',descriptive:'描述性主题',analytic:'分析性主题与推理',framework:'框架及选择依据',mapping:'证据与框架映射',outside:'框架外发现',concepts:'原研究概念与出处',translation:'互惠／反驳转译',argument:'论证链与反思',categories:'类别形成依据',unsupported:'缺乏支持的发现如何单独呈现',integration:'定量与定性证据的整合备忘',participants:'研究对象／视角',phenomenon:'关注的现象或经历',context:'情境',criteria:'纳入条件与资料范围',judgment:'判断',locator:'页码／位置'};
+ const RE_ENUMS={linkType:{study:'同一研究的报告',sample:'相同样本',partial:'样本部分重叠',uncertain:'暂不确定',independent:'不同研究，样本不重叠'},linkStatus:{mine:'个人线索，待裁决',agreed:'已确认'},credibility:{unequivocal:'明确支持',credible:'可信',unsupported:'缺乏支持'},review:{quant:'定量综述／元分析',qual:'定性证据综合',mixed:'混合方法综述'},method:{jbi:'JBI 汇聚式综合',thematic:'主题综合',framework:'框架综合',ethno:'元民族志'},duplicatePairs:{same:'同一证据，保留共同出处',different:'不同证据，保留两条',uncertain:'暂不确定'}};
+ const enumOf=(group,v)=>v==null||v===''?'':T(RE_ENUMS[group]?.[v]||String(v));
+ // locator 仅拼接字符串；他成员提案在存储侧已脱敏为对象（{redacted,length[,sha256]}），渲染本地化占位说明而非 [object Object]。
+ const reLocator=v=>typeof v==='string'&&v?v:typeof v==='object'&&v!==null&&'redacted'in v?T('他人私有内容（已脱敏）'):'';
+ // 条目摘要：links 条目→类型/状态（+同样本核对标记与位置/脱敏占位），drafts 条目→研究发现（+JBI 可信度枚举）；其余交通用渲染。
+ function reEntryText(entry){
+  if(entry==null||typeof entry!=='object')return String(entry??'');
+  if('a'in entry&&'b'in entry)return [enumOf('linkType',entry.type),enumOf('linkStatus',entry.status),entry.same?T('相同样本已单独核对'):'',reLocator(entry.locator)].filter(Boolean).join(' · ');
+  if('finding'in entry||'theme'in entry)return [entry.finding||'',enumOf('credibility',entry.credibility)].filter(Boolean).join(' · ');
+  return readableValue(entry);
+ }
+ // 键值描述：changes 子对象直展；数组按条目摘要；父键命中的枚举字典（如 duplicatePairs 的 id 对）映射取值；
+ // 摘要哈希只显示前 12 位（完整载荷见技术视图）；其余标量按数据原样。
+ function reEntriesText(entries,parentKey){
+  const parts=[];
+  for(const [k,v]of Object.entries(entries||{})){
+   if(v==null||v==='')continue;
+   if(parentKey&&RE_ENUMS[parentKey]&&typeof v!=='object'){parts.push(enumOf(parentKey,v));continue;}
+   const label=T(RE_KEYS[k]||k);
+   if(k==='changes'){const inner=reEntriesText(v);if(inner)parts.push(inner);continue;}
+   if(Array.isArray(v)){const items=v.map(reEntryText).filter(Boolean);if(items.length)parts.push(label+': '+items.join(' · '));continue;}
+   if(typeof v==='object'){const inner=reEntriesText(v,k);if(inner)parts.push(label+': '+inner);continue;}
+   if(RE_ENUMS[k]){parts.push(label+': '+enumOf(k,v));continue;}
+   if(k==='workspace_sha256'){parts.push(label+': '+String(v).slice(0,12));continue;}
+   parts.push(label+': '+String(v));
+  }
+  return parts.join(' · ');
+ }
+ // {value:label,…} 形态的统一入口：label 命中 RE_LABELS 显式集合才翻译（body.label 为自由字符串、编码值可撞界面词条，
+ // 不能用整本界面词典判定）；编码值等纯 {value:数据} 载荷维持原样输出，报告关联载荷追加键值描述。
+ function reValueText(value,empty){
+  const label=value.value==null?'':String(value.value),rest={...value};
+  delete rest.value;delete rest.note;
+  const text=label?(RE_LABELS.has(label)?T(label):label):'';
+  const desc=reEntriesText(rest);
+  if(!desc)return text||empty;
+  return (text?text+' · ':'')+desc;
+ }
+ function changeText(event){const readable=value=>{if(value==null)return '';if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+(value.exclusion_reason||value.reason):'');if(Object.hasOwn(value,'value'))return reValueText(value,'—');return '';};const before=readable(event.before),after=readable(event.after);return before||after?(before||'—')+' → '+(after||'—'):'';}
  actions.decision_undone='撤销上次保存';
  actions.coding_values_undone='撤销上次保存';
+ // 编码证据撤销（coding_evidence_undone）与值撤销共用"撤销上次保存"文案；
+ // 该词条已在 interface_locale.js 注册十语言，不落"其他记录"兜底。
+ actions.coding_evidence_undone='撤销上次保存';
  actions.report_evidence_changed='报告关联与证据变更';
  function actionLabel(value){const action=value?.replace(/^imported_/,'');return actions[action]||(action?.startsWith('baseline_')?'起始状态':'其他记录');}
  function node(tag,text,attrs={}){const n=document.createElement(tag);if(text!=null)n.textContent=T(text);for(const [k,v]of Object.entries(attrs)){if(k==='class')n.className=v;else n.setAttribute(k,v);}return n;}
@@ -19,13 +81,13 @@
  let detailTicket=0;
  async function authoritativeEvent(event){return event.event_id?api(base()+'/events/'+encodeURIComponent(event.event_id)):{...event,actions:{}};}
  async function load(){clearTimeout(state.exportExpiryTimer);const ticket=++state.ticket;if(!S.task){root.replaceChildren(node('h1','轨迹'),node('p','请先选择任务'));return;}root.setAttribute('aria-busy','true');root.replaceChildren(node('h1','轨迹'),node('p','正在加载…',{role:'status'}));try{const [settings,summary,events]=await Promise.all([api(base()+'/settings'),api(base()+'/summary'),api(base()+'/events'+params())]);if(ticket!==state.ticket)return;state.settings=settings;refreshShortcutLabels(settings.status);state.summary=summary;state.events=events.events||[];state.next=events.next_cursor;render();}catch(e){if(ticket===state.ticket){root.replaceChildren(node('h1','轨迹'));error(e);root.append(button('重试',load));}}finally{if(ticket===state.ticket)root.removeAttribute('aria-busy');}}
- function params(){const p=new URLSearchParams({limit:'50'});if(state.cursor)p.set('cursor',state.cursor);if(state.stage)p.set('stage',state.stage);if(state.query)p.set('q',state.query);if(state.since)p.set('since',state.since+'T00:00:00Z');if(state.until)p.set('until',state.until+'T23:59:59Z');if(state.action)p.set('action',state.action);return '?'+p;}
+ function params(){const p=new URLSearchParams({limit:'50'});if(state.cursor)p.set('cursor',state.cursor);if(state.stage)p.set('stage',state.stage);if(state.query)p.set('q',state.query);const since=localDay(state.since),until=localDay(state.until,true);if(since)p.set('since',since);if(until)p.set('until',until);if(state.action)p.set('action',state.action);return '?'+p;}
  async function configure(status){if(state.configuring)return;state.configuring=true;const selected=Array.from(root.querySelectorAll('[name=traceStage]:checked'),n=>n.value);const payload={status,stages:root.querySelector('[name=traceStage]')?selected:(state.settings?.stages?.length?state.settings.stages:Object.keys(stages)),operation_id:crypto.randomUUID(),expected_version:state.settings?.version||0};try{state.pendingSettings=payload;const result=await api(base()+'/settings',{method:'PUT',body:payload});if(result.status!=='partial')state.pendingSettings=null;state.cursor=null;await load();}catch(e){error(e);}finally{state.configuring=false;}}
  function render(){clearTimeout(state.exportExpiryTimer);root.replaceChildren();const head=node('header',null,{class:'trace-heading'}),title=node('div');title.append(node('h1','轨迹'),node('p','查看我的筛选与编码变更。',{class:'trace-muted'}));head.append(title);const actions=node('div',null,{class:'trace-actions'}),status=state.settings?.status||'off';actions.append(node('span',status==='recording'?'记录中':status==='paused'?'已暂停':status==='partial'?'部分记录未就绪':'未启用',{class:'trace-status','data-status':status}));actions.append(button(status==='recording'?'暂停记录':status==='paused'?'恢复记录':'启用记录',()=>configure(status==='recording'?'paused':'recording')));actions.append(button('导出材料',()=>{state.tab='export';render();},'btn b-inc'));head.append(actions);if(status==='off')title.append(node('p','轨迹已关闭。选择需要记录的阶段后，可重新启用。',{class:'trace-muted'}));root.append(head,node('p',runtimeMode==='server'?'数据保存在此服务器':'数据保存在本机',{class:'trace-muted'}));const tabs=node('div',null,{class:'trace-tabs',role:'tablist'});for(const [id,label]of [['overview','概览'],['events','记录明细'],['export','导出材料']])tabs.append(button(label,()=>{state.tab=id;render();},''));Array.from(tabs.children).forEach((n,i)=>{n.setAttribute('role','tab');n.setAttribute('aria-selected',String(['overview','events','export'][i]===state.tab));n.tabIndex=['overview','events','export'][i]===state.tab?0:-1;n.addEventListener('keydown',e=>{const next=e.key==='ArrowRight'?(i+1)%3:e.key==='ArrowLeft'?(i+2)%3:e.key==='Home'?0:e.key==='End'?2:null;if(next==null)return;e.preventDefault();state.tab=['overview','events','export'][next];render();root.querySelectorAll('[role=tab]')[next].focus();});});if(status==='partial'){root.append(node('p','部分存储尚未就绪，请重试并检查各阶段状态。',{class:'trace-error',role:'status'}));if(state.pendingSettings)root.append(button('重试',async()=>{try{const result=await api(base()+'/settings',{method:'PUT',body:state.pendingSettings});if(result.status!=='partial')state.pendingSettings=null;await load();}catch(e){error(e);}}));}root.append(tabs);if(state.tab==='overview')overview();else if(state.tab==='events')records();else exportsView();}
  function overview(){const s=state.summary||{},metrics=node('div',null,{class:'trace-metrics'});for(const [label,value]of [['已处理文献',s.unique_subject_count],['发生修改',s.modified_subject_count],['编码变更',s.by_stage?.coding?.event_count]]){const n=node('div');n.append(node('span',label),node('strong',String(value||0)));metrics.append(n);}root.append(metrics);if(s.first_at)root.append(node('p',T('记录起点')+': '+time(s.first_at),{class:'trace-muted'}));const layout=node('div',null,{class:'trace-layout'}),activity=node('section',null,{class:'trace-panel'});activity.append(node('h2','记录活动'),node('p','统计已保存的变更，不代表阅读时长。',{class:'trace-muted'}));activity.append(node('p','最近 28 天 · 按记录日期排列，圆点面积表示保存次数。',{class:'trace-muted'}));
 const source=s.daily||s.by_day||[];
 if(Array.isArray(source)&&source.length){
- const days=new Map(source.map(d=>[d.date||d.day,d])), end=new Date(new Date().toISOString().slice(0,10)+'T00:00:00Z');
+ const days=new Map(source.map(d=>[d.date||d.day,d])), end=new Date(new Date().toISOString().slice(0,10)+'T00:00:00Z');   /* 图的列是后端按 UTC 日分组的键，故此处仍以 UTC 日为准；点击列时由 utcDaySpan 换算成本地日期区间 */
  const dates=Array.from({length:28},(_,i)=>new Date(end.getTime()-(27-i)*86400000).toISOString().slice(0,10));
  const chart=node('div',null,{class:'trace-timeline',role:'group','aria-label':T('每日保存的变更')});
  const count=(d,key)=>key==='total'?(d?.event_count??d?.count??0):(typeof d?.by_stage?.[key]==='number'?d.by_stage[key]:(d?.by_stage?.[key]?.event_count||0));
@@ -34,7 +96,7 @@ if(Array.isArray(source)&&source.length){
  for(const date of dates)chart.append(dataNode('span',date.slice(8),{class:'trace-track-date',title:date}));
  for(const [key,label]of [...Object.entries(stages),['total','合计']]){
   chart.append(node('span',label,{class:'trace-track-label'}));
-  for(const date of dates){const value=count(days.get(date),key),cell=button(String(value||'·'),()=>{state.since=state.until=date;state.stage=key==='total'?'':key;state.action='';state.query='';state.cursor=null;state.tab='events';load();},'trace-day trace-track-cell');
+  for(const date of dates){const value=count(days.get(date),key),cell=button(String(value||'·'),()=>{const span=utcDaySpan(date);state.since=span.since;state.until=span.until;state.stage=key==='total'?'':key;state.action='';state.query='';state.cursor=null;state.tab='events';load();},'trace-day trace-track-cell');
    cell.dataset.stage=key;cell.replaceChildren();if(key!=='total'){const dot=node('span',null,{class:'trace-track-dot'});dot.style.width=dot.style.height=(value?18*Math.sqrt(value/max):0)+'px';cell.append(dot);}cell.append(dataNode('span',value||'·',{class:'trace-track-count'}));
    cell.title=date+' · '+T(label)+': '+value;cell.setAttribute('aria-label',cell.title);chart.append(cell);
   }
@@ -45,7 +107,7 @@ if(Array.isArray(source)&&source.length){
  activity.append(node('p',dates[0]+' — '+dates.at(-1),{class:'trace-muted'}),chart,help);
 }else activity.append(node('p',s.event_count?'查看记录明细以核对已保存的变更。':'尚无记录'));
 const range=node('section',null,{class:'trace-panel trace-range'});range.append(node('h2','记录范围'));for(const [key,label]of Object.entries(stages)){const l=node('label'),input=node('input',null,{type:'checkbox',name:'traceStage',value:key});input.checked=(state.settings?.stages?.length?state.settings.stages:Object.keys(stages)).includes(key);l.append(input,document.createTextNode(' '+T(label)));range.append(l);}range.append(button('保存记录范围',()=>configure(state.settings?.status||'off')),node('p','从启用时开始记录，已有结果作为起始状态保留。',{class:'trace-muted'}));const progress=state.summary?.current_progress;if(progress){range.append(node('h3','当前研究进度'));for(const [key,value]of Object.entries(progress)){if(!stages[key]||!value)continue;const n=node('p');n.textContent=T(stages[key])+': '+(value.available===false?T('轨迹记录暂不可用'):(value.completed??value.screened??value.coded??value.filled_subject_count??0)+' / '+(value.total??'—'));range.append(n);}const rater=progress.coding_rater_records;if(rater?.available)range.append(node('p',T('共享编码已填字段')+': '+rater.nonempty_cell_count+' · '+T('有编码值的文献')+': '+rater.documents_with_nonempty_values));range.append(node('p','当前结果包含暂停期间的保存，不能用作轨迹完整性的证明。',{class:'trace-muted'}));}layout.append(activity,range);root.append(layout);const coverage=node('section',null,{class:'trace-panel'});coverage.append(node('h2','记录覆盖'));for(const [partition,value]of Object.entries(state.settings?.partitions||{})){const n=node('p');n.textContent=T(partition==='personal'?'个人记录':'共享编码记录')+': '+T(value.status==='recording'?'记录中':value.status==='paused'?'已暂停':value.status==='unavailable'?'部分记录未就绪':'未启用')+(value.updated_at?' · '+time(value.updated_at):'');coverage.append(n);const boundary=state.summary?.coverage_boundaries?.[partition];if(boundary?.recent_controls?.length){const list=node('ul');for(const event of boundary.recent_controls.slice(0,6)){const item=node('li');item.textContent=time(event.recorded_at)+' · '+T(actionLabel(event.action));list.append(item);}coverage.append(list);}}coverage.append(button('查看记录边界',()=>{state.stage='control';state.cursor=null;state.tab='events';load();}));root.append(coverage);table(state.summary?.recent_events||state.events.slice(-8).reverse(),'最近变更');}
- function table(events,title){const panel=node('section',null,{class:'trace-panel'});panel.append(node('h2',title));if(!events.length){panel.append(node('p',state.tab==='events'&&(state.stage||state.query||state.action||state.since||state.until)?'没有匹配的记录':'尚无记录'));root.append(panel);return;}const table=node('table',null,{class:'trace-table'}),thead=node('thead'),row=node('tr');for(const label of ['时间','阶段','文献','变更内容'])row.append(node('th',label,{scope:'col'}));thead.append(row);table.append(thead);const body=node('tbody');for(const event of events){const tr=node('tr');tr.append(node('td',time(event.recorded_at)),node('td',stages[event.stage]||(event.stage==='control'?'记录控制':event.stage)),dataNode('td',event.subject_title||(event.subject_id==='settings'?T('记录设置'):event.subject_id==='protocol'?T('任务起始信息'):event.subject_id||'—')));const cell=node('td');cell.append(button(actionLabel(event.action),()=>detail(event),''),eventMenu(event));const change=changeText(event);if(change){const summary=node('div',null,{class:'trace-muted',translate:'no'});summary.textContent=Array.from(change).slice(0,120).join('')+(Array.from(change).length>120?'…':'');cell.append(summary);}tr.append(cell);body.append(tr);}table.append(body);panel.append(table);root.append(panel);}
+ function table(events,title){const panel=node('section',null,{class:'trace-panel'});panel.append(node('h2',title));if(!events.length){/* F04：默认筛选已带“最近 7 天”窗口，不能再以“有筛选条件”判空态——历史里根本没有记录时仍应说“尚无记录”（summary.event_count 为全量口径）。 */const total=state.summary?.event_count;panel.append(node('p',state.tab==='events'&&(total==null||total>0)?'没有匹配的记录':'尚无记录'));root.append(panel);return;}const table=node('table',null,{class:'trace-table'}),thead=node('thead'),row=node('tr');for(const label of ['时间','阶段','文献','变更内容'])row.append(node('th',label,{scope:'col'}));thead.append(row);table.append(thead);const body=node('tbody');for(const event of events){const tr=node('tr');tr.append(node('td',time(event.recorded_at)),node('td',stages[event.stage]||(event.stage==='control'?'记录控制':event.stage)),dataNode('td',event.subject_title||(event.subject_id==='settings'?T('记录设置'):event.subject_id==='protocol'?T('任务起始信息'):event.subject_id||'—')));const cell=node('td');cell.append(button(actionLabel(event.action),()=>detail(event),''),eventMenu(event));const change=changeText(event);if(change){const summary=node('div',null,{class:'trace-muted',translate:'no'});summary.textContent=Array.from(change).slice(0,120).join('')+(Array.from(change).length>120?'…':'');cell.append(summary);}tr.append(cell);body.append(tr);}table.append(body);panel.append(table);root.append(panel);}
  function eventMenu(event){
   let menuTicket=0;
   const current=actorScope(),view=state.ticket,wrap=node('span',null,{class:'wf-trace-menu'});
@@ -87,9 +149,9 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
   if(value==null)return T('无');
   if(typeof value!=='object')return String(value);
   if(Array.isArray(value))return value.map(readableValue).join(' · ');
-  if(Object.hasOwn(value,'field_id')&&Object.hasOwn(value,'name'))return [value.name,value.type?T('类型')+': '+T(({numeric:'数值字段',text:'填空',choice:'单选',multi:'多选'})[value.type]||value.type):null,value.description,value.unit?T('单位')+': '+value.unit:null,Array.isArray(value.options)&&value.options.length?T('选项')+': '+value.options.join(' · '):null].filter(v=>v!=null&&v!=='').join(' · ');
+  if(Object.hasOwn(value,'field_id')&&Object.hasOwn(value,'name'))return [value.name,value.type?T('类型')+': '+T(({numeric:'数值字段',text:'短文本',choice:'单选',multi:'多选'})[value.type]||value.type):null,value.description,value.unit?T('单位')+': '+value.unit:null,Array.isArray(value.options)&&value.options.length?T('选项')+': '+value.options.join(' · '):null].filter(v=>v!=null&&v!=='').join(' · ');
   if(value.decision)return T(DEC_LABEL[value.decision]||value.decision)+((value.exclusion_reason||value.reason)?' · '+T('排除理由')+': '+(value.exclusion_reason||value.reason):'');
-  if(Object.hasOwn(value,'value'))return String(value.value??T('无'));
+  if(Object.hasOwn(value,'value'))return reValueText(value,T('无'));
   if(Object.hasOwn(value,'text'))return String(value.text||T('无'));
   return Object.entries(value).map(([key,v])=>T(({title:'文献',zotero_key:'文献标识',doi:'DOI',year:'年份',authors:'作者',reason:'排除理由',item_type:'类型',status:'状态',stages:'阶段'})[key]||key)+': '+(key==='status'?T(({recording:'记录中',paused:'已暂停',off:'未启用'})[v]||v):key==='stages'&&Array.isArray(v)?v.map(stage=>T(stages[stage]||stage)).join(' · '):v&&typeof v==='object'?readableValue(v):String(v??'—'))).join('\n');
  }
@@ -163,12 +225,12 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
   const prepare=button('预览导出内容',async()=>{
    invalidate('正在准备导出预览…');const ticket=previewTicket;prepare.disabled=true;
    try{
-    const result=await api(base()+'/exports/preview',{method:'POST',body:{preset:select.value,language:language.value,included_private_fields:Array.from(privateOptions.querySelectorAll('[name=tracePrivate]:checked'),n=>n.value),filters:subset.checked?{stage:state.stage||null,action:state.action||null,q:state.query||null,since:state.since?state.since+'T00:00:00Z':null,until:state.until?state.until+'T23:59:59Z':null}:{}}});
+    const result=await api(base()+'/exports/preview',{method:'POST',body:{preset:select.value,language:language.value,included_private_fields:Array.from(privateOptions.querySelectorAll('[name=tracePrivate]:checked'),n=>n.value),filters:subset.checked?{stage:state.stage||null,action:state.action||null,q:state.query||null,since:localDay(state.since)||null,until:localDay(state.until,true)||null}:{}}});
     if(ticket!==previewTicket||!panel.isConnected)return;
     exportPreview=result;exportPreviewContent(result,previewArea);
     downloadCondition(result.event_count?'预览已准备好，可以下载。':'所选范围没有记录。请调整筛选条件后重试。',result.event_count>0);
     state.exportExpiryTimer=setTimeout(()=>{if(ticket===previewTicket&&panel.isConnected)invalidate('预览已失效，请重新预览后下载。',false);},(result.expires_in_seconds||600)*1000);
-   }catch(e){if(ticket!==previewTicket||!panel.isConnected)return;downloadCondition('导出预览未完成，请重试。');}
+   }catch(e){if(ticket!==previewTicket||!panel.isConnected)return;/* F60：413 走后端已注册十语言的文案（errOf 已过 T()，e.message 即当前界面语言），状态行照实显示并提示缩小范围；其余失败沿用原文案。 */downloadCondition(e.status===413&&e.message?e.message:'导出预览未完成，请重试。');}
    finally{if(panel.isConnected)prepare.disabled=false;}
   });
   const controlRow=node('div',null,{class:'trace-export-controls'});controlRow.append(select,prepare,downloadWrap);

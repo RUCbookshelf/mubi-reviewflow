@@ -1,9 +1,12 @@
-"""主动学习模拟基准（SPEC.md §13；指标定义与 ASReview Insights 一致）。
+"""主动学习模拟基准（指标定义与 ASReview Insights 一致）。
+
+规格依据：口径的可复核副本见 ``docs/methodology/sim/README.md`` §1.5
+（仓库内不存在旧注释引用的规格书与功能清单——r9 b07·F1-118）。
 
 在**完整标注**的黄金标准集上"回放"主动学习逐条筛选过程，回答
 "要达到 95% 召回需要人工筛多少条？"（systematic review 的核心效率指标）。
 
-回放规则（与 SPEC §13 及 FUNCTIONAL_CHECKLIST "Simulation benchmark" 一致）：
+回放规则（口径副本见 ``docs/methodology/sim/README.md`` §1.5）：
 
 1. **Warm-start（模型尚不存在）**：初始顺序 = :func:`query_order` 作用在
    **空分数字典**上——``max``/``uncertainty`` 缺失分数按 0.0 参与排序且同分
@@ -35,6 +38,13 @@
 逐条 refit 的总代价约 O(n²·v)，本模块面向测试与中小规模基准，不面向
 生产级全量回放（需分块抽样）。
 
+输入前提（r9 起显式校验，不再静默失真）：
+- 文献键必须唯一（b10·F2-26）：重复键 → :class:`ValueError`。旧实现
+  会覆盖 ``texts``、重复筛选同一记录、``n_records`` 计重复而 ``n_relevant``
+  去重，产出静默错误的指标。
+- ``strategy`` 一律先校验（b10·F2-28）：全 exclude（``n_relevant == 0``）
+  的早退路径不再绕过未知策略检查。
+
 运行时零第三方依赖（仅标准库）；库代码不打印，呈现由 CLI 负责。
 """
 
@@ -45,7 +55,7 @@ from dataclasses import dataclass
 from coscreen import config
 from coscreen.al.features import TfidfVectorizer
 from coscreen.al.nb import MultinomialNB
-from coscreen.al.strategies import query_order
+from coscreen.al.strategies import query_order, validate_strategy
 from coscreen.models import Article
 
 __all__ = ["MAX_RECORDS", "WARMUP", "SimResult", "replay", "simulate_random_baseline"]
@@ -56,13 +66,24 @@ WARMUP: int = 5
 #: 单次回放的最大文献数（超过抛 ValueError，见模块 docstring）。
 MAX_RECORDS: int = 2000
 
-# 合法黄金标签（与决策语义一致；maybe 不是黄金标签）
+#: 合法黄金标签（与决策语义一致；maybe 不是黄金标签）
 _GOLD_LABELS = ("include", "exclude")
+
+#: 非法黄金标签回显的字符上限（b10·F2-27：与 ``missing[:5]`` 同为截断口径）
+_LABEL_ECHO_MAX: int = 60
+
+
+def _echo(value: object) -> str:
+    """把非法标签值截断成可放进异常消息的短串（b10·F2-27）。"""
+    text = repr(value)
+    if len(text) <= _LABEL_ECHO_MAX:
+        return text
+    return text[:_LABEL_ECHO_MAX] + "…"
 
 
 @dataclass
 class SimResult:
-    """一次回放的完整指标（字段含义见模块 docstring 与 SPEC.md §13）。"""
+    """一次回放的完整指标（字段含义见模块 docstring 与 ``docs/methodology/sim/README.md`` §1.5）。"""
 
     strategy: str  # "max" | "uncertainty" | "mixed"
     seed: int  # 随机种子（mixed 与随机基线生效；其余透传记录）
@@ -87,6 +108,9 @@ def _validated_gold(articles: list[Article], gold: dict[str, str]) -> dict[str, 
 
     - 文献键在 ``gold`` 中缺失 → ``KeyError``（中文消息，列出前几个缺失键）；
     - 标签（去首尾空白并小写后）不是 include/exclude → ``ValueError``；
+      回显的标签值截断到 :data:`_LABEL_ECHO_MAX` 字符（b10·F2-27：与缺失键
+      分支的 ``missing[:5]`` 同一截断口径，超长粘贴内容不再整段进异常消息
+      与 CLI stderr）；
     - ``gold`` 中多出的键（不在 ``articles`` 里）忽略，不做校验。
     """
     keys = [a.zotero_key for a in articles]
@@ -99,7 +123,7 @@ def _validated_gold(articles: list[Article], gold: dict[str, str]) -> dict[str, 
         label = str(gold[k]).strip().lower()
         if label not in _GOLD_LABELS:
             raise ValueError(
-                f"黄金标签必须是 include/exclude，键 {k!r} 得到 {gold[k]!r}"
+                f"黄金标签必须是 include/exclude，键 {k!r} 得到 {_echo(gold[k])}"
             )
         labels[k] = label
     return labels
@@ -127,7 +151,7 @@ def _score_remaining(
 def _metrics(
     strategy: str, seed: int, n_records: int, n_relevant: int, ttd: list[int],
 ) -> SimResult:
-    """由相关记录的发现位次列表计算 SimResult（SPEC §13 指标定义）。"""
+    """由相关记录的发现位次列表计算 SimResult（指标定义见模块 docstring）。"""
     if n_relevant == 0 or n_records == 0:
         return SimResult(strategy, seed, n_records, 0, 0, 0.0, 0.0, 0.0)
     target = config.SIM_RECALL_TARGET
@@ -162,8 +186,30 @@ def _simulate(
             f"模拟规模过大：{len(articles)} 条超过上限 {MAX_RECORDS}；"
             "请抽样后重试（逐条重训的开销随规模平方增长）"
         )
+    # b10·F2-28：策略校验**先于**一切早退（含 n_relevant==0）。旧实现
+    # 在全 exclude 黄金集上直接返回成功，拼错的策略被静默接受并存进
+    # SimResult.strategy，与 replay docstring 的「未知 → ValueError」矛盾。
+    validate_strategy(strategy)
     labels = _validated_gold(articles, gold)
     keys = [a.zotero_key for a in articles]
+    # b10·F2-26：键唯一性是回放的前提（docstring 明写「键须唯一」）。
+    # 重复键会让 texts 覆盖、同一记录被筛两次、n_records 计重复、
+    # n_relevant 去重——指标静默失真。此处按抛 ValueError 拒绝，
+    # 不再静默产出错数；生产 CLI 走 db.list_articles（主键保证唯一），
+    # 不受影响。
+    if len(set(keys)) != len(keys):
+        seen: set[str] = set()
+        dupes: list[str] = []
+        for key in keys:
+            if key in seen and key not in dupes:
+                dupes.append(key)
+            seen.add(key)
+        sample = ", ".join(repr(k) for k in dupes[:5])
+        more = "" if len(dupes) <= 5 else f" 等 {len(dupes)} 个"
+        raise ValueError(
+            f"文献键必须唯一：发现 {len(dupes)} 个重复键（{sample}{more}）；"
+            "重复键会让同一记录被筛两次并使指标失真，请先按 zotero_key 去重"
+        )
     texts = {a.zotero_key: _article_text(a) for a in articles}
     relevant = {k for k in keys if labels[k] == "include"}
 
@@ -195,19 +241,21 @@ def replay(
     articles: list[Article], gold: dict[str, str],
     strategy: str = config.AL_DEFAULT_STRATEGY, seed: int = config.AL_SEED,
 ) -> SimResult:
-    """在完整标注的黄金标准集上回放主动学习逐条筛选（SPEC §13）。
+    """在完整标注的黄金标准集上回放主动学习逐条筛选。
 
     参数
     ----
     articles:
-        全部（非重复）文献，按基准顺序（如导入顺序）传入；键须唯一。
+        全部（非重复）文献，按基准顺序（如导入顺序）传入；**键须唯一**——
+        重复键 → ``ValueError``（r9，b10·F2-26；旧实现静默产出失真指标）。
     gold:
         ``zotero_key -> "include" | "exclude"`` 的完整标注。文献键缺失 →
-        ``KeyError``；标签非法 → ``ValueError``（均含中文消息）；
+        ``KeyError``；标签非法 → ``ValueError``（均含中文消息；非法标签
+        回显截断到 60 字符）；
         多出的键忽略。
     strategy:
         查询策略 ``max`` / ``uncertainty`` / ``mixed``；未知 → ``ValueError``
-        （由 :func:`query_order` 抛出）。
+        （先于 ``n_relevant == 0`` 早退校验，r9 b10·F2-28）。
     seed:
         随机种子（``mixed`` 策略生效；默认取 :data:`config.AL_SEED` = 42）。
 

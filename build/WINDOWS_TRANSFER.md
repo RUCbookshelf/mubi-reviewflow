@@ -10,9 +10,12 @@
 ## 构建条件
 
 - Windows 10/11，64 位。
-- 可访问网络：脚本会下载 Python 3.12 嵌入式运行时、`get-pip.py`，并从 `build/requirements-app.txt` 安装运行依赖。
+- 可访问网络：脚本会下载 Python 3.12 嵌入式运行时，并从 PyPI 下载固定版本的 pip／setuptools／wheel／packaging wheel（`files.pythonhosted.org`，发布后不可变），然后从 `build/requirements-app.txt` 安装运行依赖。每个引导文件都按脚本内固定的 sha256 用 `certutil` 校验后才执行；下载缓存（`build/downloads/`）每次构建都会重新校验，失配即重新下载。下载失败与校验不符会给出不同的提示与建议。旧版构建留下的 `build/downloads/get-pip.py` 已不再使用，可安全删除。
 - Inno Setup 6/7 或 NSIS 3；脚本会检测可用的安装器编译器。若两者都未安装，构建会失败并提示安装编译器。
+- Node.js：与 CI 一致，本地构建也会运行四个静态校验器与发布产物核对（`verify_release_payload.py`），其中两个 JavaScript 校验器需要 `node.exe`。
 - 足够空间用于运行时、依赖 wheel、构建暂存目录和安装包。不要把 `.venv` 或其他平台的 Python 环境复制进安装包。
+- 同一检出目录同时只允许一个打包构建（锁目录 `build\.build-windows.lock`；脚本不会自动接管别人创建的锁——构建崩溃留下的陈锁会报出持有进程并停止构建，确认没有构建在运行时再手动删除锁目录，Linux/macOS 可用 `REVIEWFLOW_BUILD_LOCK_FORCE=1`）。
+- 若把 Windows 检出以 zip/共享目录方式带到 macOS/Linux 继续构建：仓库 `.gitattributes` 已把 `*.sh` 固定为 LF，新检出可直接运行；旧的工作区副本请先 `git checkout -- build/*.sh` 或执行 `dos2unix build/*.sh`，否则 shebang 行尾会报 `bad interpreter`。
 
 ## 构建步骤
 
@@ -55,9 +58,12 @@
 This guide is for maintainers building or checking the Windows installer from source. Most users should download a published version from [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases); they do not need Python, WSL, or build tools.
 
 ### Requirements
-- 64-bit Windows 10/11 and network access. The script downloads the Python 3.12 embeddable runtime and `get-pip.py`, then installs dependencies from `build/requirements-app.txt`.
+- 64-bit Windows 10/11 and network access. The script downloads the Python 3.12 embeddable runtime and fixed-version pip / setuptools / wheel / packaging wheels from PyPI (`files.pythonhosted.org`, immutable once published), then installs dependencies from `build/requirements-app.txt`. Every bootstrap file is verified with `certutil` against a sha256 pinned in the script before anything runs it, and the download cache (`build/downloads/`) is re-verified on every run - a mismatch triggers one re-download. Download failures and checksum mismatches give different messages. A `build/downloads/get-pip.py` left by an older build is no longer used and can be deleted safely.
 - Inno Setup 6/7 or NSIS 3. The script detects an installer compiler and fails with guidance if neither is available.
+- Node.js: like CI, a local build runs the four static validators and the release-payload comparison (`verify_release_payload.py`); the two JavaScript validators need `node.exe`.
 - Enough disk space for the runtime, wheels, staging files, and installer. Do not copy `.venv` or another platform's Python environment into the package.
+- Only one packaging build may run per checkout at a time (lock folder `build\.build-windows.lock`; the script never takes over a lock somebody else created - a stale lock left by a crashed build reports its owner and stops the build, so delete the lock folder manually once you have confirmed no build is running; on Linux/macOS you can use `REVIEWFLOW_BUILD_LOCK_FORCE=1`).
+- Moving a Windows checkout to macOS/Linux through a non-git channel (zip, shared folder): the repository `.gitattributes` pins `*.sh` to LF, so fresh checkouts work as-is; for an old working copy run `git checkout -- build/*.sh` or `dos2unix build/*.sh` first, otherwise the shebang line ending produces `bad interpreter`.
 
 ### Build
 1. Use a clean checkout and confirm the root `VERSION` is the intended release version.
@@ -79,7 +85,7 @@ Logs are `build/build_windows.log` and `build/build_windows_smoke.log`. On failu
 Ce guide s’adresse aux mainteneurs qui construisent ou vérifient l’installateur Windows depuis les sources. Les utilisateurs peuvent télécharger une version publiée depuis [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases), sans installer Python, WSL ni outils de compilation.
 
 ### Prérequis et construction
-Utilisez Windows 10/11 64 bits, une connexion réseau, Inno Setup 6/7 ou NSIS 3 et suffisamment d’espace disque. Le script télécharge Python 3.12 embarqué et `get-pip.py`, puis installe les dépendances de `build/requirements-app.txt`. Depuis une copie propre, vérifiez `VERSION`, ouvrez un terminal à la racine et lancez `build\build_windows.bat`. L’installateur attendu est `build/Output/ReviewFlow-Setup-x64.exe`.
+Utilisez Windows 10/11 64 bits, une connexion réseau, Inno Setup 6/7 ou NSIS 3 et suffisamment d’espace disque. Le script télécharge Python 3.12 embarqué et des wheels pip / setuptools / wheel / packaging à version fixe depuis PyPI (`files.pythonhosted.org`, immuables après publication), puis installe les dépendances de `build/requirements-app.txt`. Chaque fichier d’amorçage est vérifié par `certutil` contre un sha256 épinglé dans le script avant exécution, et le cache de téléchargement est revérifié à chaque construction ; un échec de téléchargement et une somme incorrecte donnent des messages différents. Un ancien `build/downloads/get-pip.py` n’est plus utilisé et peut être supprimé. Depuis une copie propre, vérifiez `VERSION`, ouvrez un terminal à la racine et lancez `build\build_windows.bat`. L’installateur attendu est `build/Output/ReviewFlow-Setup-x64.exe`.
 
 Le script effectue des contrôles de dépendances, un smoke test et compile l’installateur. Les journaux se trouvent dans `build/build_windows.log` et `build/build_windows_smoke.log`. En cas d’échec, consultez la première étape en erreur et ne publiez pas le paquet. Depuis WSL/UNC, le script copie temporairement le dépôt dans `%LOCALAPPDATA%\ReviewFlow-build`, puis recopie le résultat.
 
@@ -92,7 +98,7 @@ Le smoke test vérifie les dépendances, un parcours scikit-learn simple, l’ex
 Руководство предназначено для сопровождающих, которые собирают или проверяют установщик Windows из исходного кода. Пользователям рекомендуется загрузить выпуск из [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases); устанавливать Python, WSL и инструменты сборки не требуется.
 
 ### Требования и сборка
-Нужны Windows 10/11 x64, доступ к сети, Inno Setup 6/7 или NSIS 3 и свободное место. Скрипт загружает встраиваемую среду Python 3.12 и `get-pip.py`, затем устанавливает зависимости из `build/requirements-app.txt`. В чистой копии проверьте `VERSION`, откройте терминал в корне и выполните `build\build_windows.bat`. Результат: `build/Output/ReviewFlow-Setup-x64.exe`.
+Нужны Windows 10/11 x64, доступ к сети, Inno Setup 6/7 или NSIS 3 и свободное место. Скрипт загружает встраиваемую среду Python 3.12 и wheel-файлы pip / setuptools / wheel / packaging фиксированных версий с PyPI (`files.pythonhosted.org`, неизменны после публикации), затем устанавливает зависимости из `build/requirements-app.txt`. Каждый загрузочный файл проверяется через `certutil` по sha256, закреплённому в скрипте, до запуска; кэш загрузок перепроверяется при каждой сборке, а сбой загрузки и несовпадение контрольной суммы дают разные сообщения. Старый `build/downloads/get-pip.py` больше не используется и его можно удалить. В чистой копии проверьте `VERSION`, откройте терминал в корне и выполните `build\build_windows.bat`. Результат: `build/Output/ReviewFlow-Setup-x64.exe`.
 
 Журналы: `build/build_windows.log` и `build/build_windows_smoke.log`. При ошибке сначала изучите первый неудачный шаг; не публикуйте пакет, не прошедший smoke-проверку. Для пути WSL/UNC скрипт использует временную копию `%LOCALAPPDATA%\ReviewFlow-build` и возвращает результат в исходный каталог.
 
@@ -105,7 +111,7 @@ Le smoke test vérifie les dépendances, un parcours scikit-learn simple, l’ex
 Esta guía es para mantenedores que compilan o verifican el instalador de Windows desde el código fuente. Los usuarios pueden descargar la versión publicada en [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases), sin instalar Python, WSL ni herramientas de compilación.
 
 ### Requisitos y compilación
-Se necesita Windows 10/11 de 64 bits, conexión de red, Inno Setup 6/7 o NSIS 3 y espacio suficiente. El script descarga Python 3.12 embebido y `get-pip.py`, e instala dependencias de `build/requirements-app.txt`. Desde una copia limpia, compruebe `VERSION`, abra la terminal en la raíz y ejecute `build\build_windows.bat`. El resultado esperado es `build/Output/ReviewFlow-Setup-x64.exe`.
+Se necesita Windows 10/11 de 64 bits, conexión de red, Inno Setup 6/7 o NSIS 3 y espacio suficiente. El script descarga Python 3.12 embebido y wheels de pip / setuptools / wheel / packaging de versión fija desde PyPI (`files.pythonhosted.org`, inmutables tras publicarse), e instala dependencias de `build/requirements-app.txt`. Cada archivo de arranque se verifica con `certutil` contra un sha256 fijado en el script antes de ejecutarse; la caché se vuelve a verificar en cada compilación, y un fallo de descarga y una suma incorrecta dan mensajes distintos. Un `build/downloads/get-pip.py` antiguo ya no se usa y puede borrarse. Desde una copia limpia, compruebe `VERSION`, abra la terminal en la raíz y ejecute `build\build_windows.bat`. El resultado esperado es `build/Output/ReviewFlow-Setup-x64.exe`.
 
 Los registros están en `build/build_windows.log` y `build/build_windows_smoke.log`. Si falla, revise el primer paso fallido y no publique el paquete. Para rutas WSL/UNC, el script usa `%LOCALAPPDATA%\ReviewFlow-build` como área temporal. La prueba `windows_smoke.py` cubre dependencias, una ruta básica de scikit-learn, exportación SVG/PNG y el punto de inicio; no sustituye la aceptación manual.
 
@@ -118,7 +124,7 @@ En Windows 10/11 x64, compruebe instalación, accesos directos, inicio de sesió
 このガイドは、ソースから Windows インストーラーをビルドまたは確認する保守担当者向けです。一般ユーザーは [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) から公開版を取得でき、Python、WSL、ビルドツールは不要です。
 
 ### 要件とビルド
-Windows 10/11 64 ビット、ネットワーク、Inno Setup 6/7 または NSIS 3、十分な空き容量が必要です。スクリプトは Python 3.12 埋め込み版と `get-pip.py` を取得し、`build/requirements-app.txt` の依存関係を導入します。クリーンなチェックアウトで `VERSION` を確認し、リポジトリルートから `build\build_windows.bat` を実行します。出力先は `build/Output/ReviewFlow-Setup-x64.exe` です。
+Windows 10/11 64 ビット、ネットワーク、Inno Setup 6/7 または NSIS 3、十分な空き容量が必要です。スクリプトは Python 3.12 埋め込み版と、PyPI から固定バージョンの pip / setuptools / wheel / packaging wheel（`files.pythonhosted.org`、公開後は不変）を取得し、`build/requirements-app.txt` の依存関係を導入します。各ブートストラップファイルは実行前にスクリプト内の固定 sha256 と `certutil` で照合され、ダウンロードキャッシュはビルドごとに再検証されます。ダウンロード失敗と照合不一致では異なるメッセージが出ます。古い `build/downloads/get-pip.py` はもう使われないため削除できます。クリーンなチェックアウトで `VERSION` を確認し、リポジトリルートから `build\build_windows.bat` を実行します。出力先は `build/Output/ReviewFlow-Setup-x64.exe` です。
 
 ログは `build/build_windows.log` と `build/build_windows_smoke.log` です。最初の失敗箇所を確認し、smoke チェックに失敗したパッケージは公開しないでください。WSL/UNC からの実行では `%LOCALAPPDATA%\ReviewFlow-build` に一時コピーします。
 
@@ -131,7 +137,7 @@ Windows 10/11 64 ビット、ネットワーク、Inno Setup 6/7 または NSIS 
 Este guia destina-se aos mantenedores que compilam ou verificam o instalador Windows a partir do código-fonte. Os usuários podem baixar a versão publicada em [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases), sem instalar Python, WSL ou ferramentas de compilação.
 
 ### Requisitos e compilação
-É necessário Windows 10/11 de 64 bits, acesso à rede, Inno Setup 6/7 ou NSIS 3 e espaço suficiente. O script baixa o Python 3.12 embutido e `get-pip.py` e instala as dependências de `build/requirements-app.txt`. Em um checkout limpo, confira `VERSION`, abra um terminal na raiz e execute `build\build_windows.bat`. O resultado esperado é `build/Output/ReviewFlow-Setup-x64.exe`.
+É necessário Windows 10/11 de 64 bits, acesso à rede, Inno Setup 6/7 ou NSIS 3 e espaço suficiente. O script baixa o Python 3.12 embutido e wheels de pip / setuptools / wheel / packaging de versão fixa do PyPI (`files.pythonhosted.org`, imutáveis após a publicação) e instala as dependências de `build/requirements-app.txt`. Cada arquivo de bootstrap é verificado com `certutil` contra um sha256 fixado no script antes de ser executado, e o cache é reverificado a cada compilação; falha de download e checksum divergente geram mensagens diferentes. Um `build/downloads/get-pip.py` antigo não é mais usado e pode ser excluído. Em um checkout limpo, confira `VERSION`, abra um terminal na raiz e execute `build\build_windows.bat`. O resultado esperado é `build/Output/ReviewFlow-Setup-x64.exe`.
 
 Os logs ficam em `build/build_windows.log` e `build/build_windows_smoke.log`. Em caso de falha, examine a primeira etapa com erro e não publique o pacote. Em caminhos WSL/UNC, o script usa `%LOCALAPPDATA%\ReviewFlow-build` como área temporária. O `windows_smoke.py` verifica dependências, um fluxo básico do scikit-learn, exportação SVG/PNG e o ponto de entrada; não substitui a aceitação manual.
 
@@ -144,7 +150,7 @@ No Windows 10/11 x64, verifique instalação, atalhos, login, serviço limitado 
 Diese Anleitung richtet sich an Maintainer, die den Windows-Installer aus dem Quellcode erstellen oder prüfen. Nutzer können eine veröffentlichte Version von [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) laden und benötigen dafür weder Python noch WSL oder Build-Werkzeuge.
 
 ### Voraussetzungen und Build
-Erforderlich sind Windows 10/11 x64, Netzwerkzugriff, Inno Setup 6/7 oder NSIS 3 und genügend Speicherplatz. Das Skript lädt die eingebettete Python-3.12-Laufzeit und `get-pip.py` herunter und installiert Abhängigkeiten aus `build/requirements-app.txt`. In einem sauberen Checkout `VERSION` prüfen, ein Terminal im Repository-Stamm öffnen und `build\build_windows.bat` ausführen. Erwartete Ausgabe: `build/Output/ReviewFlow-Setup-x64.exe`.
+Erforderlich sind Windows 10/11 x64, Netzwerkzugriff, Inno Setup 6/7 oder NSIS 3 und genügend Speicherplatz. Das Skript lädt die eingebettete Python-3.12-Laufzeit und Wheel-Dateien von pip / setuptools / wheel / packaging in festen Versionen von PyPI (`files.pythonhosted.org`, nach Veröffentlichung unveränderlich) und installiert Abhängigkeiten aus `build/requirements-app.txt`. Jede Bootstrap-Datei wird vor der Ausführung mit `certutil` gegen einen im Skript fixierten sha256 geprüft; der Download-Cache wird bei jedem Build erneut geprüft, und Downloadfehler und Prüfsummenabweichungen erzeugen unterschiedliche Meldungen. Ein altes `build/downloads/get-pip.py` wird nicht mehr verwendet und kann gelöscht werden. In einem sauberen Checkout `VERSION` prüfen, ein Terminal im Repository-Stamm öffnen und `build\build_windows.bat` ausführen. Erwartete Ausgabe: `build/Output/ReviewFlow-Setup-x64.exe`.
 
 Protokolle: `build/build_windows.log` und `build/build_windows_smoke.log`. Bei Fehlern zuerst den ersten fehlgeschlagenen Schritt prüfen; ein fehlgeschlagenes Paket nicht veröffentlichen. Bei WSL/UNC-Pfaden nutzt das Skript `%LOCALAPPDATA%\ReviewFlow-build` als Zwischenverzeichnis. `windows_smoke.py` prüft Abhängigkeiten, einen einfachen scikit-learn-Pfad, SVG/PNG-Export und den App-Einstiegspunkt, ersetzt aber keine manuelle Abnahme.
 
@@ -157,7 +163,7 @@ Unter Windows 10/11 x64 Installation, Verknüpfungen, Anmeldung, lokale Bindung,
 Ovo uputstvo je namenjeno održavaocima koji prave ili proveravaju Windows instalacioni paket iz izvornog koda. Korisnici mogu preuzeti objavljeno izdanje sa [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases), bez instaliranja Pythona, WSL-a ili alata za izgradnju.
 
 ### Uslovi i izgradnja
-Potrebni su Windows 10/11 x64, mrežna veza, Inno Setup 6/7 ili NSIS 3 i dovoljno prostora. Skripta preuzima ugrađeni Python 3.12 i `get-pip.py`, zatim instalira zavisnosti iz `build/requirements-app.txt`. U čistom klonu proverite `VERSION`, otvorite terminal u korenu i pokrenite `build\build_windows.bat`. Očekivani rezultat je `build/Output/ReviewFlow-Setup-x64.exe`.
+Potrebni su Windows 10/11 x64, mrežna veza, Inno Setup 6/7 ili NSIS 3 i dovoljno prostora. Skripta preuzima ugrađeni Python 3.12 i wheel datoteke pip / setuptools / wheel / packaging fiksnih verzija sa PyPI-ja (`files.pythonhosted.org`, nepromenljive nakon objavljivanja), zatim instalira zavisnosti iz `build/requirements-app.txt`. Svaka bootstrap datoteka se pre pokretanja proverava preko `certutil` prema sha256 fiksiranom u skripti, a keš se ponovo proverava pri svakoj izgradnji; neuspeh preuzimanja i nepodudaranje kontrolnog zbira daju različite poruke. Stari `build/downloads/get-pip.py` se više ne koristi i može se obrisati. U čistom klonu proverite `VERSION`, otvorite terminal u korenu i pokrenite `build\build_windows.bat`. Očekivani rezultat je `build/Output/ReviewFlow-Setup-x64.exe`.
 
 Evidencije su `build/build_windows.log` i `build/build_windows_smoke.log`. Kod greške proverite prvi neuspešan korak i ne objavljujte paket. Za WSL/UNC putanju skripta koristi privremeni `%LOCALAPPDATA%\ReviewFlow-build`. `windows_smoke.py` proverava zavisnosti, osnovni scikit-learn tok, SVG/PNG izvoz i ulaznu tačku aplikacije, ali ne zamenjuje ručnu proveru.
 
@@ -170,7 +176,7 @@ Na Windows 10/11 x64 proverite instalaciju, prečice, prijavu, lokalno slušanje
 이 문서는 소스 코드에서 Windows 설치 파일을 빌드하거나 확인하는 유지관리자용입니다. 일반 사용자는 [GitHub Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases)에서 배포판을 받으면 되며 Python, WSL, 빌드 도구를 설치할 필요가 없습니다.
 
 ### 요구 사항 및 빌드
-Windows 10/11 64비트, 네트워크 연결, Inno Setup 6/7 또는 NSIS 3, 충분한 디스크 공간이 필요합니다. 스크립트는 Python 3.12 임베더블 런타임과 `get-pip.py`를 내려받고 `build/requirements-app.txt`의 의존성을 설치합니다. 깨끗한 체크아웃에서 `VERSION`을 확인하고 저장소 루트의 터미널에서 `build\build_windows.bat`를 실행하세요. 결과물은 `build/Output/ReviewFlow-Setup-x64.exe`입니다.
+Windows 10/11 64비트, 네트워크 연결, Inno Setup 6/7 또는 NSIS 3, 충분한 디스크 공간이 필요합니다. 스크립트는 Python 3.12 임베더블 런타임과 PyPI의 고정 버전 pip / setuptools / wheel / packaging wheel(`files.pythonhosted.org`, 게시 후 불변)을 내려받고 `build/requirements-app.txt`의 의존성을 설치합니다. 각 부트스트랩 파일은 실행 전에 스크립트에 고정된 sha256과 `certutil`로 검증되며, 다운로드 캐시는 빌드마다 다시 검증됩니다. 다운로드 실패와 체크섬 불일치는 서로 다른 메시지를 표시합니다. 이전 `build/downloads/get-pip.py`는 더 이상 사용되지 않으므로 삭제해도 됩니다. 깨끗한 체크아웃에서 `VERSION`을 확인하고 저장소 루트의 터미널에서 `build\build_windows.bat`를 실행하세요. 결과물은 `build/Output/ReviewFlow-Setup-x64.exe`입니다.
 
 로그는 `build/build_windows.log`, `build/build_windows_smoke.log`에 저장됩니다. 실패하면 최초 실패 단계를 확인하고 smoke 검사에 실패한 패키지를 배포하지 마세요. WSL/UNC 경로에서는 `%LOCALAPPDATA%\ReviewFlow-build`에 임시 복사합니다. `windows_smoke.py`는 의존성, 기본 scikit-learn 경로, SVG/PNG 내보내기와 앱 진입점을 점검하지만 수동 검수를 대체하지 않습니다.
 

@@ -159,6 +159,12 @@ CREATE TABLE IF NOT EXISTS review_effect_versions (
   UNIQUE(result_id, revision));
 CREATE INDEX IF NOT EXISTS idx_review_effect_versions_result
   ON review_effect_versions(result_id, revision);
+CREATE TRIGGER IF NOT EXISTS review_effect_versions_no_update
+BEFORE UPDATE ON review_effect_versions
+  BEGIN SELECT RAISE(ABORT, 'effect versions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS review_effect_versions_no_delete
+BEFORE DELETE ON review_effect_versions
+  BEGIN SELECT RAISE(ABORT, 'effect versions are immutable'); END;
 CREATE TABLE IF NOT EXISTS review_effect_design (
   result_id INTEGER PRIMARY KEY, cluster_id TEXT NOT NULL,
   sample_id TEXT NOT NULL, structure_note TEXT NOT NULL,
@@ -196,12 +202,21 @@ def ensure_analysis_storage(conn: sqlite3.Connection) -> None:
     """Upgrade a database copy or task database without rewriting legacy rows."""
     conn.executescript(_SCHEMA)
     fields = ",".join(_EFFECT_FIELDS)
-    conn.execute(
-        "INSERT INTO review_effect_versions (" + fields + ",revision,changed_at) "
-        "SELECT " + ",".join("e." + field for field in _EFFECT_FIELDS) +
-        ",1,datetime('now') FROM review_effects e WHERE NOT EXISTS ("
-        "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id)"
-    )
+    # 只读预检（L6d1）：稳态库没有缺 version 的 effect 时跳过下面的
+    # INSERT…SELECT，避免每次冷 _connect 都为「确认无需回填」抢写锁——
+    # 长写事务期间该写语句曾把冷连接阻塞到 5 秒 busy 超时后 500。
+    pending = conn.execute(
+        "SELECT 1 FROM review_effects e WHERE NOT EXISTS ("
+        "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id) "
+        "LIMIT 1"
+    ).fetchone()
+    if pending is not None:
+        conn.execute(
+            "INSERT INTO review_effect_versions (" + fields + ",revision,changed_at) "
+            "SELECT " + ",".join("e." + field for field in _EFFECT_FIELDS) +
+            ",1,datetime('now') FROM review_effects e WHERE NOT EXISTS ("
+            "SELECT 1 FROM review_effect_versions v WHERE v.result_id=e.result_id)"
+        )
     new_values = ",".join("NEW." + field for field in _EFFECT_FIELDS)
     changed = " OR ".join("OLD." + field + " IS NOT NEW." + field for field in _EFFECT_FIELDS[1:])
     conn.executescript(f"""
@@ -245,9 +260,7 @@ def effect_versions(conn: sqlite3.Connection, result_ids: list[int]) -> list[dic
 
 def effect_history(conn: sqlite3.Connection, result_ids: list[int]) -> list[dict]:
     """Expose exact saved versions for explicit result IDs without changing the legacy list."""
-    if not result_ids or len(result_ids) > 500 or len(set(result_ids)) != len(result_ids) \
-            or any(type(result_id) is not int or result_id <= 0 for result_id in result_ids):
-        raise ValueError("select 1 to 500 unique positive result IDs")
+    result_ids = _result_id_selection(result_ids)
     rows = []
     for result_id in result_ids:
         found = conn.execute(
@@ -297,10 +310,24 @@ def set_effect_design(conn: sqlite3.Connection, result_id: int, cluster_id: str,
                 structure_note=structure_note, revision=revision)
 
 
+def _result_id_selection(result_ids: object, label: str = "result") -> list[int]:
+    """Shared 1..500 unique-positive-integer guard for the result-id readers.
+
+    ``effect_history`` and ``result_moderators`` already applied exactly this
+    rule; ``effect_designs`` accepted any sequence (501 ids returned 501 rows,
+    and non-integer ids fell through to a per-row lookup). One helper keeps the
+    three readers on the same contract.
+    """
+    if not isinstance(result_ids, (list, tuple)) or not result_ids \
+            or len(result_ids) > 500 or len(set(result_ids)) != len(result_ids) \
+            or any(type(result_id) is not int or result_id <= 0 for result_id in result_ids):
+        raise ValueError(f"select 1 to 500 unique positive {label} IDs")
+    return list(result_ids)
+
+
 def effect_designs(conn: sqlite3.Connection, result_ids: list[int]) -> list[dict]:
     """Require explicit design for every requested effect, preserving order."""
-    if len(set(result_ids)) != len(result_ids) or not result_ids:
-        raise ValueError("unique result IDs are required")
+    result_ids = _result_id_selection(result_ids)
     rows = []
     for result_id in result_ids:
         row = conn.execute(
@@ -326,7 +353,17 @@ def save_result_moderator(conn: sqlite3.Connection, result_id: int, name: str,
         raise ValueError("moderator name is required (at most 120 characters)")
     name = name.strip()
     if value_type == "continuous":
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        # ``math.isfinite`` raises OverflowError on an int outside the float
+        # range (10**400), which escaped the ValueError→4xx contract as a 500.
+        # Validate through ``float`` first so an out-of-range integer is a
+        # plain domain error like ``nan``/``inf`` already were.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("continuous moderator needs a finite number")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
             raise ValueError("continuous moderator needs a finite number")
     elif value_type == "categorical":
         if not isinstance(value, str) or not value.strip() or len(value) > 300:
@@ -365,9 +402,7 @@ def save_result_moderator(conn: sqlite3.Connection, result_id: int, name: str,
 
 
 def result_moderators(conn: sqlite3.Connection, result_ids: list[int]) -> list[dict]:
-    if not result_ids or len(result_ids) > 500 or len(set(result_ids)) != len(result_ids) \
-            or any(type(value) is not int or value <= 0 for value in result_ids):
-        raise ValueError("select 1 to 500 unique positive result IDs")
+    result_ids = _result_id_selection(result_ids)
     rows = conn.execute(
         "SELECT moderator_version_id,result_id,name,revision,value_json,value_type,"
         "source_key,source_locator,changed_at FROM review_result_moderators "
@@ -401,9 +436,24 @@ def load_analysis_run(conn: sqlite3.Connection, run_id: str) -> dict | None:
     ).fetchone()
     if row is None:
         return None
-    return dict(run_id=row[0], created_at=row[1], specification=json.loads(row[2]),
-                input_snapshot=json.loads(row[3]), result=json.loads(row[4]),
-                software_version=row[5])
+    # A damaged row must not brick the run read endpoint. The runs GET handler
+    # has no ValueError→4xx translation of its own, so surfacing a JSON error
+    # here would still become a 500; instead every unreadable column is returned
+    # verbatim and the payload carries an explicit ``load_error`` marker. Healthy
+    # runs are untouched.
+    parsed, unreadable = {}, []
+    for name, raw in (("specification", row[2]), ("input_snapshot", row[3]), ("result", row[4])):
+        try:
+            parsed[name] = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed[name] = raw
+            unreadable.append(name)
+    record = dict(run_id=row[0], created_at=row[1], **parsed, software_version=row[5])
+    if unreadable:
+        record["load_error"] = (
+            "stored analysis run has unparsable JSON in: " + ", ".join(unreadable)
+        )
+    return record
 
 
 def create_synthesis_run(db_path, specification: dict, project_id: str,

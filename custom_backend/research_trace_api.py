@@ -31,6 +31,7 @@ from coscreen.research_trace_export import (
     research_operations,
     validate_import_package,
 )
+from custom_backend.report_evidence_api import compact_legacy_trace_events
 
 
 MAX_TRACE_BODY_BYTES = MAX_PACKAGE_BYTES + 1024 * 1024
@@ -38,11 +39,20 @@ MAX_PAGE_SIZE = 200
 _STAGES = set(research_trace.STAGES)
 _CURSOR_FILTERS = ("stage", "action", "subject_id", "since", "until")
 _PREVIEW_TTL_SECONDS = 600
-_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
-_PREVIEW_CACHE_ENTRIES = 8
+# 预览缓存上限随 MAX_PACKAGE_BYTES 联动上调（契约⑥）：缓存总字节=单包上限
+#（可容纳至少一个最大分卷包），槽位 8→4 控制最坏驻留内存。
+_PREVIEW_CACHE_BYTES = MAX_PACKAGE_BYTES
+_PREVIEW_CACHE_ENTRIES = 4
 _PREVIEW_LOCK = threading.Lock()
 _PREVIEWS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _PREVIEW_BYTES = 0
+# F60（UX 批准单 §六）：导出预览的 413 一律使用同一句已注册十语言的文案
+#（interface_locale.js 的双键行：「导出内容过多，无法生成预览。请缩小导出范围
+# 或减少内容后重试。」）。此前超限页用 f-string 拼「带条数插值」的英文原串——
+# errOf 的纯字符串 detail 走 T() 精确匹配，带插值的串永远命不中词典，九种
+# 非中文界面只能看到英文。事件条数不是用户可操作信息，故从文案中移除。
+_PREVIEW_TOO_LARGE = ("The export is too large to preview. "
+                      "Reduce the selected range or content and try again.")
 
 
 class _Input(BaseModel):
@@ -84,13 +94,24 @@ TraceExportIn.model_rebuild()
 
 
 async def _body_within_limit(request: Request) -> None:
-    raw = request.headers.get("content-length")
-    try:
-        length = int(raw) if raw is not None else None
-    except ValueError:
-        length = None
-    if length is not None and length > MAX_TRACE_BODY_BYTES:
-        raise HTTPException(413, "Request body exceeds the research trace limit.")
+    # 先按 Content-Length 提前拒绝超限请求；头部缺失/非法（chunked 传输）
+    # 时回退到读取实体后的精确校验（MM2-03/MM4-04：缺头曾完全不设卡）。
+    # 口径与 report_evidence_api.size_guard 一致，但 multipart 上传例外——
+    # imports/preview|commit 是 File 端点，整包读入会破坏流式 spool（129MB
+    # 包曾免落盘进内存）；multipart 的体积预检由 UploadSizeLimitMiddleware
+    # 负责（规则端点缺 Content-Length 一律 411、超限 413）。
+    header = request.headers.get("content-length")
+    if header:
+        try:
+            length = int(header)
+        except ValueError:
+            length = None
+        if length is not None and length > MAX_TRACE_BODY_BYTES:
+            raise HTTPException(413, "Request body exceeds the research trace limit.")
+    content_type = (request.headers.get("content-type") or "").lower()
+    if not content_type.startswith("multipart/"):
+        if len(await request.body()) > MAX_TRACE_BODY_BYTES:
+            raise HTTPException(413, "Request body exceeds the research trace limit.")
 
 
 def _bounded_upload(data: bytes) -> bytes:
@@ -771,9 +792,9 @@ def _snapshot(info: Any, actor_id: int | str, paths: dict[str, Any],
                     )
                     events.extend(page["events"])
                     if len(events) > MAX_EVENTS:
-                        raise HTTPException(413, f"Filtered export exceeds {MAX_EVENTS} events.")
+                        raise HTTPException(413, _PREVIEW_TOO_LARGE)
                 if len(events) > MAX_EVENTS:
-                    raise HTTPException(413, f"Filtered export exceeds {MAX_EVENTS} events.")
+                    raise HTTPException(413, _PREVIEW_TOO_LARGE)
                 summary = {
                     "event_count": len(events),
                     "history_event_count": whole_summary["event_count"],
@@ -838,7 +859,7 @@ def _cache_preview(task_id: str, actor_id: str, package: bytes, preset: str) -> 
             _, removed = _PREVIEWS.popitem(last=False)
             _PREVIEW_BYTES -= len(removed["package"])
         if len(package) > _PREVIEW_CACHE_BYTES:
-            raise HTTPException(413, "The export is too large to preview. Reduce the selected range or content and try again.")
+            raise HTTPException(413, _PREVIEW_TOO_LARGE)
         preview_id = uuid.uuid4().hex + uuid.uuid4().hex[:8]
         _PREVIEWS[preview_id] = {"owner": owner, "package": package,
                                  "expires_at": now + _PREVIEW_TTL_SECONDS}
@@ -1211,6 +1232,16 @@ def register_research_trace_routes(
                        included_private_fields: list[str],
                        filters: TraceExportFilters, info: Any,
                        actor_id: int | str, paths: dict[str, Any]) -> bytes:
+        # 导出前对涉及的存储执行 2.1.3 全量快照轨迹事件的一次性压缩/脱敏迁移：
+        # 存量轨迹不再把导出顶过 32MB 上限，公开导出也不再携带他人私有文本。
+        for _name, path in _unique_paths(paths):
+            if path is None:
+                continue
+            try:
+                with closing(db._connect(path)) as conn:
+                    compact_legacy_trace_events(conn)
+            except (OSError, sqlite3.Error):
+                continue  # 迁移失败不阻断导出；旧事件维持原样，由既有大小与脱敏限制兜底
         snapshot = _snapshot(info, actor_id, paths, filters)
         selected_private_fields = sorted(set(included_private_fields)) if preset == "public" else []
         snapshot["selection"]["included_private_fields"] = selected_private_fields
@@ -1286,6 +1317,12 @@ def register_research_trace_routes(
             parsed = validate_import_package(raw)
         except TracePackageError as exc:
             raise HTTPException(400, {"error_code": "invalid_trace_package", "message": str(exc)}) from exc
+        # N-01(b10)：Form 的 64 位长度约束按字符计数，64 个非 ASCII 字符可
+        # 穿透到 hmac.compare_digest（仅支持 ASCII str），TypeError 曾冒泡成
+        # 500。先做类型/ASCII 域检查收敛为 400；正确 64 位 hex 的对照行为
+        # 不变（匹配则放行，不匹配仍按下方 409 口径）。
+        if not isinstance(preview_sha256, str) or not preview_sha256.isascii():
+            raise HTTPException(400, "preview_sha256 must be a 64-character ASCII digest.")
         if not hmac.compare_digest(parsed["package_sha256"], preview_sha256.lower()):
             raise HTTPException(409, "Uploaded package differs from the reviewed preview.")
         personal_path = paths.get("personal")

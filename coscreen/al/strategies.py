@@ -1,12 +1,28 @@
 """查询策略（query strategies）：max / uncertainty / mixed。
 
-对应 SPEC.md §12 "coscreen/al/strategies.py" 与 FUNCTIONAL_CHECKLIST.md
-"Active learning ranking" 条目 2（查询策略确定性）。纯标准库实现；
-随机性仅用于 mixed 策略，且用 ``random.Random(rng_seed)`` 种子化——
-给定相同的 ``(keys, scores, rng_seed)``，输出完全确定、可复现。
+参数表见 ``docs/methodology/sim/README.md`` §1.4（功能清单文件不在本
+仓库，勿再引用）。纯标准库实现；随机性仅用于 mixed 策略，且用
+``random.Random(rng_seed)`` 种子化——给定相同的
+``(keys, scores, rng_seed)``，输出完全确定、可复现。
 
 本模块只做"排序"，不训练模型、不读数据库；分数字典由调用方
 （ranker，他人实现）传入。
+
+r9 修复（b10·F2-39/F2-40/F2-41）：
+
+- **值域校验**：``scores`` 的值必须是数值且不能是 ``NaN``（NaN 无大小
+  关系，"分数降序"在它上面没有定义，旧实现会静默给出与契约不符的序）；
+  字符串/``None`` 等非数值此前抛裸 ``TypeError``，现改为可读的
+  ``ValueError``（与未知策略同一异常族，调用方一处处理即可）。
+  ``±inf`` 仍被接受——它有确定的序，且是"某候选确定命中/确定排除"的
+  合法表达。
+- **``scores=None`` 语义统一**：三种策略一律按"无任何分数"处理
+  （等价空字典）。此前 max/uncertainty 抛 ``AttributeError``、mixed 却
+  静默退化为随机序，同一输入三种策略三种行为。
+- **mixed 的复杂度**：用位置索引替代 ``order.index(key)``，把命中随机
+  分支时的 O(n) 查找降为 O(1)，整体由 O(n²/20) 回到 O(n)。键互异（生产
+  与 ranker 的实际输入）时逐位输出不变；键有重复时退回旧的
+  ``list.index`` 语义，保证既有调用方拿到的序不受影响。
 """
 
 from __future__ import annotations
@@ -15,10 +31,55 @@ import random
 
 from coscreen.config import AL_MIXED_RANDOM_RATIO
 
-__all__ = ["query_order"]
+__all__ = ["query_order", "validate_strategy"]
 
-# 合法查询策略（与 SPEC.md §12 一致）
+# 合法查询策略（与 ``docs/methodology/sim/README.md`` §1.4 一致）
 _VALID_STRATEGIES = ("max", "uncertainty", "mixed")
+
+
+def validate_strategy(strategy: str) -> None:
+    """校验查询策略名；非法值抛 :class:`ValueError`（中文消息）。
+
+    独立成函数（r9，b10·F2-28）：``simulation`` 的 ``n_relevant == 0``
+    早退路径也必须先过这道校验，不能再靠 ``query_order`` 的调用顺带完成。
+    """
+    if strategy not in _VALID_STRATEGIES:
+        raise ValueError(
+            f"未知查询策略: {strategy!r}；可选值: {', '.join(_VALID_STRATEGIES)}"
+        )
+
+
+def _checked_scores(scores) -> dict:
+    """``scores`` 的规范形式：``None`` → 空字典；值域校验后原样返回。
+
+    - ``None`` 视为"无任何分数"（b10·F2-41，三策略统一）；
+    - 值必须是数值（``int``/``float``，含 ``bool``——它是 ``int`` 的子类，
+      旧实现照常当 0/1 用，R2：不放宽成拒绝），且不是 ``NaN``；``±inf``
+      允许（有确定序）；
+    - 超出双精度范围的 ``int``（如 ``10**400``）拒绝：排序比较时它会抛
+      ``OverflowError``，与"非数值"同一处置（可读 ValueError）。
+    """
+    if scores is None:
+        return {}
+    for key, value in scores.items():
+        if not isinstance(value, (int, float)):
+            raise ValueError(
+                f"分数必须是数值，键 {key!r} 得到 {value!r}"
+            )
+        # 自反不等价即 NaN；不用 math.isnan，避免超大 int 在转 float 时
+        # 抛 OverflowError（那是合法数值，只是大）。
+        if value != value:
+            raise ValueError(
+                f"分数不能是 NaN（无大小关系，无法定义排序），键 {key!r}"
+            )
+        if isinstance(value, int):
+            try:
+                float(value)
+            except OverflowError as exc:
+                raise ValueError(
+                    f"分数必须是可表示的双精度数值，键 {key!r} 得到 {value!r}"
+                ) from exc
+    return scores
 
 
 def _max_order(keys: list[str], scores: dict[str, float]) -> list[str]:
@@ -88,11 +149,16 @@ def query_order(
     对 ``(keys, scores, rng_seed)`` 完全确定，且与逐元素遍历顺序无关。
     效果：约 ``AL_MIXED_RANDOM_RATIO`` 比例的位置由随机候选键占据，
     其余位置维持 max 序——即"95% max + 5% random"。
+
+    实现注记（r9，b10·F2-39）：第 4 步的"在 ``order`` 内找到 ``k`` 当前
+    所在下标"用**位置表**（键 → 下标，交换后同步更新）实现，不再调用
+    ``order.index``——后者是 O(n) 查找，命中随机分支时整体退化为
+    O(n²/20)（实测 8k→64k 每翻倍 ×3.7）。位置表给出与 ``list.index``
+    完全相同的结果（键互异时；键重复时退回旧语义，见实现），
+    因此输出逐位不变。
     """
-    if strategy not in _VALID_STRATEGIES:
-        raise ValueError(
-            f"未知查询策略: {strategy!r}；可选值: {', '.join(_VALID_STRATEGIES)}"
-        )
+    validate_strategy(strategy)
+    scores = _checked_scores(scores)
     if not keys:
         return []
 
@@ -115,11 +181,20 @@ def query_order(
     order = _max_order(keys, scores)
     pos = 0  # shuffled 中首个"未使用"槽位
     n = len(order)
+    # 位置表只在键互异时可用（生产/ranker 的实际输入）；键有重复时
+    # ``list.index`` 的语义（取首个）与位置表不同，退回旧实现。
+    unique_keys = len(set(order)) == n
+    positions = {key: index for index, key in enumerate(order)} if unique_keys else None
     for i in range(n):
         if rng.random() < AL_MIXED_RANDOM_RATIO and pos < len(shuffled):
             # 将首个未使用的随机候选键换到位置 i（order 内部交换，保持排列不变）。
             key = shuffled[pos]
-            j = order.index(key)
-            order[i], order[j] = order[j], order[i]
+            j = positions[key] if positions is not None else order.index(key)
+            other = order[i]
+            order[i], order[j] = key, other
+            if positions is not None:
+                # 交换后两键的下标互换（i 与 j）。
+                positions[key] = i
+                positions[other] = j
             pos += 1
     return order

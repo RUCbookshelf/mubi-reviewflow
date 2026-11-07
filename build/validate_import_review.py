@@ -1,11 +1,21 @@
 """Presentation API regression checks using only disposable acceptance data."""
 from pathlib import Path
 import runpy, sqlite3, json
+if not __debug__:
+    # F1-68/F1-73: with -O every `assert` in this gate (and in the helper module
+    # it runs through runpy) is compiled away, so a broken fixture printed
+    # "passed" and exited 0. This gate has no non-assert enforcement layer;
+    # refuse to run optimized instead of reporting a green gate nobody checked.
+    raise SystemExit('run this gate without -O: assertions are the gate')
 scope=runpy.run_path(str(Path(__file__).with_name('validate_team_prisma.py')))
 client,call,base,data=scope['client'],scope['call'],scope['base'],scope['DATA']
 client.headers['Authorization']='Bearer '+scope['owner']['token']
 # Warm existing read-context migrations before checking read-only behavior.
 call('GET',base+'/workflow-settings')
+# import-review-summary lazily applies the one-time import-undo v3 migration
+# (CREATE TABLE IF NOT EXISTS workflow_import_undo, coscreen/import_review_undo.py)
+# on first read; warm it too so the snapshot below sees steady state.
+call('GET',base+'/import-review-summary')
 def snapshot():
     result={}
     for path in data.rglob('*.db'):
@@ -16,21 +26,33 @@ from coscreen.models import Article
 # A large fixture puts outstanding rows after a long completed prefix.
 ctx=scope['ctx'];bid='presentation-large-fixture'
 with sqlite3.connect(ctx.owner_db) as conn:
-    conn.row_factory=sqlite3.Row
-    source=conn.execute('SELECT id FROM workflow_sources LIMIT 1').fetchone()[0]
-    conn.execute('INSERT INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)',(bid,str(scope['team']['owner_user_id']),'fixture-history','batch',1,'partially_active','2026-10-12'))
-    conn.execute('INSERT INTO workflow_import_files VALUES(?,?,?,?,?)',(bid,0,'Fictional-large.ris','fixture-file',source))
+    conn.row_factory = sqlite3.Row
+    # F1-58: the fixture source is read from whatever the task import produced.
+    # fetchone() returned None as soon as that fixture changed (the older shape
+    # imported one file per source row), and the gate died with a bare
+    # TypeError: 'NoneType' object is not subscriptable that said nothing about
+    # what was missing. Fail with the reason instead.
+    row=conn.execute('SELECT id FROM workflow_sources LIMIT 1').fetchone()
+    if row is None:
+        raise SystemExit('fixture precondition failed: the validation task has no workflow_sources row')
+    source=row[0]
+    # F1-59: every fixture INSERT names its columns. Positional VALUES() tuples
+    # silently misplace data when the schema (coscreen/review_imports.py) gains,
+    # loses or reorders a column - the fixture would then assert on the wrong
+    # numbers or fail deep inside the read path instead of here.
+    conn.execute('INSERT INTO workflow_import_batches(id,owner_id,history_id,import_type,protected,status,created_at) VALUES(?,?,?,?,?,?,?)',(bid,str(scope['team']['owner_user_id']),'fixture-history','batch',1,'partially_active','2026-10-12'))
+    conn.execute('INSERT INTO workflow_import_files(batch_id,file_index,filename,digest,source_id) VALUES(?,?,?,?,?)',(bid,0,'Fictional-large.ris','fixture-file',source))
     for i in range(359):
         key='fixture-'+str(i);state='active' if i<321 else 'staged'
         article=Article(zotero_key=key,title='Fictional article '+str(i),authors='Example Reviewer',year=2026,source_format='ris').to_dict()
         conn.execute('INSERT INTO workflow_source_records(id,source_id,digest,row_index,filename,original_json,article_json,incoming_key,staged_key,canonical_key,target_record_id,outcome,state,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(key,source,'fixture-file',i,'Fictional-large.ris','{}',json.dumps(article),key,key,'one' if state=='active' or i==358 else None,None,'new',state,'2026-10-12'))
-        conn.execute('INSERT INTO workflow_import_members VALUES(?,?,0)',(bid,key))
+        conn.execute('INSERT INTO workflow_import_members(batch_id,record_id,file_index) VALUES(?,?,0)',(bid,key))
     current=dict(conn.execute("SELECT * FROM articles WHERE zotero_key='one'").fetchone())
     conn.execute('INSERT INTO workflow_import_metadata(record_id,canonical_key,before_json,incoming_json) VALUES(?,?,?,?)',('fixture-358','one',json.dumps(current),json.dumps({'title':'Incoming fictional title'})))
     for i in range(28):
         cid='fixture-group-'+str(i);status='not_duplicate' if i<25 else 'pending'
         conn.execute('INSERT INTO workflow_import_candidates(id,signature,kind,status,created_at,updated_at) VALUES(?,?,?,?,?,?)',(cid,cid,'title',status,'2026-10-12' if i<25 else '2026-10-13','2026-10-12'))
-        conn.execute('INSERT INTO workflow_import_candidate_members VALUES(?,?,?)',(cid,'record','fixture-'+str(i if i<25 else 358)))
+        conn.execute('INSERT INTO workflow_import_candidate_members(candidate_id,ref_type,ref_id) VALUES(?,?,?)',(cid,'record','fixture-'+str(i if i<25 else 358)))
 # Registering an outsider is allowed only in this temporary validation instance.
 outsider=call('POST','/api/auth/register',json={'username':'presentation.outsider','password':'DisposableValidation2026!'})
 before=snapshot()
@@ -80,6 +102,20 @@ assert call('GET',path+'?view=attention&limit=1')['can_manage'] is False
 client.headers['Authorization']='Bearer '+outsider['token']
 assert client.get(path).status_code==403
 assert client.get(base+'/import-review-summary').status_code==403
+# F1-57: the write surface had no negative case at all. Every POST /activate in
+# this gate was made by the owner, so a regression that let a non-owner activate
+# (the most consequential write in the batch flow) would still have been green.
+# A member of the task and a non-member must both be refused, and the refusal
+# must not touch the saved data.
+client.headers['Authorization']='Bearer '+scope['owner']['token']
+write_version=call('GET',base+'/workflow-settings')['version']
+client.headers['Authorization']='Bearer '+scope['member']['token']
+refused=client.post(path+'/activate',json={'expected_policy_version':write_version})
+assert refused.status_code==403,(refused.status_code,refused.text)
+client.headers['Authorization']='Bearer '+outsider['token']
+refused=client.post(path+'/activate',json={'expected_policy_version':write_version})
+assert refused.status_code==403,(refused.status_code,refused.text)
+assert snapshot()==before, 'Refused activations changed saved data'
 client.headers['Authorization']='Bearer '+scope['owner']['token']
 assert snapshot()==before, 'Presentation reads changed saved data'
 # Actual activation is exercised ONLY on fictional fixture records.

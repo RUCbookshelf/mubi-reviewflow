@@ -1,0 +1,22 @@
+{
+  "target": {
+    "strategy": "max",
+    "seed": 1,
+    "n_records": 366,
+    "n_relevant": 80,
+    "n_to_95": 242,
+    "wss95": 0.2887978142076502,
+    "r95": 0.95,
+    "ttd_mean": 112.0
+  },
+  "baseline": {
+    "strategy": "mixed",
+    "seed": 1,
+    "n_records": 366,
+    "n_relevant": 80,
+    "n_to_95": 310,
+    "wss95": 0.10300546448087428,
+    "r95": 0.95,
+    "ttd_mean": 171.725
+  }
+}

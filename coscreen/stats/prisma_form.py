@@ -4,7 +4,7 @@
 
 1. 表单数据结构（``PrismaFormData`` 及来源行/理由行），字段名与
    FORM_CONTRACT 逐字一致；
-2. 数字勾稽校验引擎 ``validate`` —— 按 R1→R13 顺序执行，**全部**违规一次性
+2. 数字勾稽校验引擎 ``validate`` —— 按 R1→R14 顺序执行，**全部**违规一次性
    返回（不因首错中断），错误消息中英双语并列规则号
    （如 ``R2: Σ识别(120) − 筛前移除(30) ≠ 进入筛选的记录(90) / ...``）；
    另有向导分组接口 ``validate_step(form, step)``（单步字段级 error +
@@ -13,14 +13,39 @@
 3. 确定性导出：``prisma_form_dot``（官方结构流程图 DOT，中文标签，玉青配色
    与 ``form_to_dict`` / ``form_json``（键名与契约字段一致）。
 
-依据与口径（规则号 = PRISMA_REFERENCE §8 总表）：
+依据与口径（规则号 = PRISMA_REFERENCE §8 总表；带后缀的规则号见下）：
 - R1–R5、R7：[E&E 序列] + [模板结构]（官方明文/官方模板箭头蕴含）；
-- R6/R9/R12：（推断）或图注明文，按手册标注落地；
-- R10：模板脚注 **（自动化工具拆分）；
+  R4/R5 对 v2「其他方法」列同样成立（该列亦有寻求获取→未获取→评估链，
+  U6-P1/r5#49：单列数字自洽是表单本职，官方模板不受影响）；
+- R6/R9/R12：（推断）或图注明文，按手册标注落地；R12 灰框零值隐藏对
+  db 列与其他方法列同规则执行（notret 为 0 时两列都隐藏该框，缺口由
+  R4B error 暴露而非靠灰框呈现——r6 评审裁决：不补零值灰框）；
+- R10：模板脚注 **（自动化工具拆分）——产品页未提供该拆分输入，按
+  r6 复审 R6-F6 方案 B 一律为 warning（可在备注中说明），不阻断；
 - R11：[DTA清单] item 17（"included in meta-analysis, if applicable"）；
-- R13（2026-09-21 契约演进）：初筛排除理由拆分 Σ理由 = 初筛排除数。官方 S2 侧框
-  （`Records excluded**`）为单一总数、**不拆理由**（PRISMA_REFERENCE §7 S2 行），
-  逐理由拆分属**本项目推断口径**（工程扩展），消息中已注明；S3 全文理由仍走 R8。
+- R13（2026-09-21 契约演进；U6-P9 修正）：初筛排除理由拆分 Σ理由 =
+  初筛排除数。官方 S2 侧框（`Records excluded**`）为单一总数、**不拆
+  理由**（PRISMA_REFERENCE §7 S2 行）——仅报单一总数（未拆分）时为
+  **warning**（官方模板合规，ok=True）；一旦填写了拆分行则 Σ 必须与
+  排除数相等（error，拆分口径自担）。S3 全文理由仍走 R8。
+- R14（U6-P2，推断口径；r6 #54 修正）：末框「纳入研究数 vs 纳入报告数」
+  ——报告数为 0 且研究数 >0 仍 error（无任何报告却纳入研究）；研究数 >
+  报告数且报告数 ≥ 1 降为 **warning**（R14W，官方模板明示 multi-study
+  report 为合法形态，可在备注中说明，不阻断导出）；研究数为 0 而报告数
+  >0 仅 warning。
+
+规则号后缀约定（r6 评审反馈 1 的范围裁决）：产品前端 prFriendlyMsg
+（index.html，不在本泳道允许改动段）按规则号 token 用**页面 db 列
+数值**重写文案——其他方法列/提示态的新消息若沿用 R4/R5/R13/R10 token
+会被错误重写（如「应该评估 18 篇，但你填了 18，数量一致」）。故这四类
+新消息改用带后缀 token，前端按原文（中英双语中的中文半句）直显：
+- R4B = R4 的其他方法列变体（sought_other − not_retrieved_other ≠
+  assessed_other）；db 列仍为 R4；
+- R5B = R5 的其他方法列单列余量变体（Σ理由_other > assessed_other）；
+  db 列单列余量仍为 R5（前端 exp<0 分支渲染正确）；
+- R13W = R13 的「仅报单一总数」提示态（warning）；拆分不符 error 仍为
+  R13（前端重写正确）；
+- R10W = R10 的拆分提示态（warning，含「可在备注中说明」）。
 - DTA 模式 = 新综述全部字段 + 可选 meta-analysis 计数（官方无 DTA 专属流程图，
   该计数**不渲染为图框**，仅出现在 JSON 与页面提示中——PRISMA_REFERENCE §6/§9）。
 - 更新综述的末框一致性（studies_included == total_studies 等）为（推断）工程口径：
@@ -155,7 +180,8 @@ class PrismaFormData:
     records_screened: int = 0
     records_excluded_screening: int = 0
     # 初筛（题目/摘要）排除理由行：官方 S2 侧框为单一总数，逐理由拆分为本项目
-    # 推断口径（R13 校验 Σ = records_excluded_screening；旧导出 JSON 无此键仍可加载）
+    # 推断口径（R13：仅报总数 -> warning；一旦拆分则 Σ 须 = records_excluded_
+    # screening；旧导出 JSON 无此键仍可加载）
     screening_exclusion_reasons: list[ReasonRow] = field(default_factory=list)
     human_excluded_n: int | None = None
     automation_excluded_n: int | None = None
@@ -295,10 +321,13 @@ AUTO_CHAIN: tuple[str, ...] = (
 )
 
 #: 向导步骤 -> 契约字段分组（validate_step 按步过滤 error；同一字段可归属
-#: 多步，如 records_screened 既是 S1 的「去重后数」又是 S2 的「进入初筛数」）
+#: 多步，如 records_screened 既是 S1 的「去重后数」又是 S2 的「进入初筛数」）。
+#: v2 其他方法列字段与脚注**拆分字段分别归属对应步骤（U6-P6/P10 修复：
+#: 此前这些字段的 error 在 s1–s4 均不可见，只剩 n_global 计数）。
 STEP_FIELDS: dict[str, tuple[str, ...]] = {
     "s1": (
         "identified_rows_db",
+        "identified_rows_other",
         "duplicates_removed",
         "automation_ineligible",
         "removed_other",
@@ -308,6 +337,8 @@ STEP_FIELDS: dict[str, tuple[str, ...]] = {
         "records_screened",
         "records_excluded_screening",
         "screening_exclusion_reasons",
+        "human_excluded_n",
+        "automation_excluded_n",
         "reports_sought_db",
     ),
     "s3": (
@@ -315,6 +346,10 @@ STEP_FIELDS: dict[str, tuple[str, ...]] = {
         "reports_not_retrieved_db",
         "reports_assessed_db",
         "exclusion_reasons_db",
+        "reports_sought_other",
+        "reports_not_retrieved_other",
+        "reports_assessed_other",
+        "exclusion_reasons_other",
     ),
     "s4": (
         "studies_included",
@@ -416,10 +451,13 @@ _INT_FIELDS = (
 
 
 def validate(form: PrismaFormData) -> ValidationResult:
-    """执行 R1→R12 勾稽校验，返回全部 error / warning / hint（不因首错中断）。
+    """执行 R1→R14 勾稽校验，返回全部 error / warning / hint（不因首错中断）。
 
-    error 阻止导出与流程图渲染；warning（R6 提示、R10 缺拆分建议）与
-    hint（R12 灰框建议）只提示。同输入同输出（确定性）。
+    error 阻止（前端）导出与流程图渲染；API 端点（/api/prisma/generate）
+    对 ok=False 的表单仍返回 dot/json 供直连客户端降级使用（r5#51 契约：
+    前端 prRenderResult 仅在 ok 分支渲染与启用下载）。warning（R6 提示、
+    R10 缺拆分/拆分不符建议、R13 仅报总数、R14 口径提醒）与 hint（R12
+    灰框建议）只提示。同输入同输出（确定性）。
     除规则号与双语文案外，每条 error 逐步注 ``field``（契约字段定位）与
     ``expected`` / ``actual``（等式规则的应为/当前值），供向导按字段弹泡。
     """
@@ -515,6 +553,8 @@ def validate(form: PrismaFormData) -> ValidationResult:
         )
 
     # ---- R4：寻求获取的报告 − 未获取到的报告 = 进行资格评估的报告 ----
+    # （db 列与其他方法列各查一次：该链为官方模板逐列结构，数字自洽是
+    #   表单本职；U6-P1/r5#49 前 other 列无勾稽，缺口被 R6/R12 掩盖）
     if form.reports_assessed_db != form.reports_sought_db - form.reports_not_retrieved_db:
         err(
             "R4",
@@ -525,6 +565,23 @@ def validate(form: PrismaFormData) -> ValidationResult:
             field="reports_assessed_db",
             expected=form.reports_sought_db - form.reports_not_retrieved_db,
             actual=form.reports_assessed_db,
+        )
+    if scope_other and form.reports_assessed_other != (
+        form.reports_sought_other - form.reports_not_retrieved_other
+    ):
+        # R4B（R4 的其他方法列变体）：token 不用 R4——产品前端 prFriendlyMsg
+        # 按 R4 token 用页面 db 列数值重写文案，会把 other 列错误渲染成
+        # 「应该评估 18 篇，但你填了 18，数量一致」（r6 评审反馈 1）。
+        err(
+            "R4B",
+            f"其他方法列：寻求获取的报告({form.reports_sought_other}) − 未获取到的报告({form.reports_not_retrieved_other})"
+            f" ≠ 进行资格评估的报告({form.reports_assessed_other})",
+            f"other-methods: reports sought({form.reports_sought_other}) −"
+            f" not retrieved({form.reports_not_retrieved_other})"
+            f" ≠ assessed({form.reports_assessed_other})",
+            field="reports_assessed_other",
+            expected=form.reports_sought_other - form.reports_not_retrieved_other,
+            actual=form.reports_assessed_other,
         )
 
     # ---- R5：资格评估 − Σ理由 = 纳入报告数（报告层；studies 不做等式）----
@@ -554,6 +611,37 @@ def validate(form: PrismaFormData) -> ValidationResult:
             expected=expected,
             actual=target,
         )
+    # ---- R5 单列余量（r5 复审 #49）：某列 Σ理由不得超该列评估数 ----
+    # 总额勾稽（上文）允许一列负余量被另一列抵消；逐列排除数以该列评估
+    # 数为上限是官方逐列结构的定义性约束，属数字自洽而非新增严格性。
+    sum_rs_db = sum_reasons(form.exclusion_reasons_db)
+    if sum_rs_db > form.reports_assessed_db:
+        err(
+            "R5",
+            f"数据库列：Σ排除理由({sum_rs_db}) > 进行资格评估的报告({form.reports_assessed_db})"
+            "（单列排除数不能超过该列评估数）",
+            f"db column: Σreasons({sum_rs_db}) > assessed({form.reports_assessed_db})"
+            " (per-column exclusions cannot exceed that column's assessed count)",
+            field="exclusion_reasons_db",
+            expected=form.reports_assessed_db,
+            actual=sum_rs_db,
+        )
+    if scope_other:
+        sum_rs_other = sum_reasons(form.exclusion_reasons_other)
+        if sum_rs_other > form.reports_assessed_other:
+            # R5B（R5 的其他方法列变体）：token 不用 R5——前端 prFriendlyMsg
+            # 按 R5 token 用 db 列数值重写，会把已对齐的总额 target 改坏
+            # （r6 评审反馈 1 实测：「应该纳入 8 篇，但你填了 3，差 5 篇」）。
+            err(
+                "R5B",
+                f"其他方法列：Σ排除理由({sum_rs_other}) > 进行资格评估的报告({form.reports_assessed_other})"
+                "（单列排除数不能超过该列评估数）",
+                f"other-methods: Σreasons({sum_rs_other}) > assessed({form.reports_assessed_other})"
+                " (per-column exclusions cannot exceed that column's assessed count)",
+                field="exclusion_reasons_other",
+                expected=form.reports_assessed_other,
+                actual=sum_rs_other,
+            )
 
     # ---- R6：其他方法列无识别→获取勾稽（提示即可）----
     if scope_other:
@@ -643,25 +731,39 @@ def validate(form: PrismaFormData) -> ValidationResult:
             )
 
     # ---- R10：脚注** 自动化拆分（人工 + 自动化 = 排除总数）----
+    # 产品 PRISMA 页未提供人工/自动化两个输入（r6 复审 R6-F6：前端全目录
+    # 0 命中、后端恒收 None），error 分支不可达却要求补填不存在的输入——
+    # 按方案 B 一律降级为 warning（可在备注中说明），不再阻断导出。
+    # token 用 R10W（提示态）：前端 prFriendlyMsg 的 R10 分支会把文案重写为
+    # 「脚注拆分不符…」，丢失「可在备注中说明」（r6 评审反馈 1）。
     human, auto = form.human_excluded_n, form.automation_excluded_n
     if (human is None) != (auto is None):
-        err(
-            "R10",
-            "脚注**拆分：人工与自动化两个计数需同时填写或同时留空",
-            "footnote** split: human and automation counts must be both filled or both empty",
-        )
-    elif human is not None and auto is not None and human + auto != form.records_excluded_screening:
-        err(
-            "R10",
-            f"脚注**拆分：人工({human}) + 自动化({auto}) ≠ 排除的记录({form.records_excluded_screening})",
-            f"footnote** split: human({human}) + automation({auto}) ≠ records excluded({form.records_excluded_screening})",
-        )
-    if human is None and auto is None and form.automation_ineligible > 0:
         warnings.append(Issue(
-            "R10",
-            f"使用了自动化工具（筛前移除 {form.automation_ineligible} 条）但未提供脚注**拆分——建议补填人工/自动化各排除多少",
-            f"automation tools used ({form.automation_ineligible} records removed pre-screening) but no footnote**"
-            f" split given — consider reporting human vs automation exclusions",
+            "R10W",
+            "脚注**拆分：人工与自动化两个计数需同时填写或同时留空（可在备注中说明）",
+            "footnote** split: human and automation counts must be both filled or both empty"
+            " (explainable in a note)",
+        ))
+    elif human is not None and auto is not None and human + auto != form.records_excluded_screening:
+        warnings.append(Issue(
+            "R10W",
+            f"脚注**拆分：人工({human}) + 自动化({auto}) ≠ 排除的记录({form.records_excluded_screening})"
+            "（可在备注中说明）",
+            f"footnote** split: human({human}) + automation({auto}) ≠"
+            f" records excluded({form.records_excluded_screening}) (explainable in a note)",
+        ))
+    if human is None and auto is None and form.automation_ineligible > 0:
+        # 第三处 R10 提醒同样用 R10W token（r6 评审反馈·三轮：前端 R10 分支
+        # 会把它静态重写成「脚注拆分不符…」，要求补填产品页不存在的输入）。
+        # 注意开头措辞避开 PR_MSG_RULES 的「^使用了自动化工具（筛前移除 N 条）」
+        # 前缀模式（该模式不锚定结尾，句尾追加说明仍会被旧模板吞掉）。
+        warnings.append(Issue(
+            "R10W",
+            f"自动化工具筛前移除了 {form.automation_ineligible} 条，但未提供脚注**拆分"
+            "——建议补填人工/自动化各排除多少（可在备注中说明）",
+            f"automation tools removed {form.automation_ineligible} records before screening"
+            " but no footnote** split was given — consider reporting human vs automation"
+            " exclusions (explainable in a note)",
         ))
 
     # ---- R11：DTA meta-analysis 计数 ≤ 纳入研究数 ----
@@ -697,11 +799,12 @@ def validate(form: PrismaFormData) -> ValidationResult:
         ))
 
     # ---- R13：初筛排除理由拆分 Σ理由 = 初筛排除数（推断口径，见模块 docstring）----
-    # 官方 S2 侧框（Records excluded**）只报单一总数；逐理由拆分为本项目扩展，
-    # 消息中显式注明「推断」，不得声称为官方规定（PRISMA_REFERENCE §0.3/§7）。
+    # 官方 S2 侧框（Records excluded**）只报单一总数：仅报总数（未拆分）为
+    # warning（U6-P9：官方模板合规表单必须 ok=True）；一旦填写拆分行，Σ 与
+    # 排除数不等仍为 error（选择了拆分口径即自担其勾稽）。
     scr_reasons = active_reason_rows(form.screening_exclusion_reasons)
     sum_scr = sum_reasons(form.screening_exclusion_reasons)
-    if sum_scr != form.records_excluded_screening:
+    if sum_scr > 0 and sum_scr != form.records_excluded_screening:
         err(
             "R13",
             f"初筛排除理由合计({sum_scr}) ≠ 初筛排除数({form.records_excluded_screening})"
@@ -713,9 +816,71 @@ def validate(form: PrismaFormData) -> ValidationResult:
             expected=form.records_excluded_screening,
             actual=sum_scr,
         )
+    elif sum_scr == 0 and form.records_excluded_screening > 0:
+        # token 用 R13W（提示态）：前端 prFriendlyMsg 的 R13 分支会把本
+        # warning 重写成「初筛排除理由对不上：…差 30 篇」，把官方模板
+        # 合规的表单渲染成有错（r6 评审反馈 1）。
+        warnings.append(Issue(
+            "R13W",
+            f"初筛排除 {form.records_excluded_screening} 条仅报单一总数：官方模板允许不拆分；"
+            "如需逐理由拆分请补填（拆分为本项目推断口径，需 Σ = 排除数）",
+            f"{form.records_excluded_screening} records excluded at first screening reported as a"
+            " single total: allowed by the official template; itemize if desired (project-side"
+            " convention, the sum must then match)",
+        ))
     _check_reason_rows(
         err, "初筛", scr_reasons, field="screening_exclusion_reasons", rule="R13"
     )
+
+    # ---- R14：纳入研究数 ≤ 纳入报告数（U6-P2，推断口径）----
+    # 官方末框两行（studies / reports of included studies）。r6 #54 口径
+    # 修正：官方 PRISMA 2020 模板明示 multi-study report（一份报告含多项
+    # 研究 → 研究数 > 报告数）为合法形态——研究数多于报告数且**报告数 ≥ 1**
+    # 时降为 warning（可在备注中说明，不再阻断导出；此前一律 error 曾把
+    # 官方模板合法数字挡在门外，updated 综述连上一版合法数字都无法导入）；
+    # 报告数为 0 且研究数 > 0 仍为 error（无任何报告却纳入研究，数字自洽
+    # 问题）；研究数为 0 而报告数 >0 仅 warning（可能是填写口径问题）。
+    if is_updated:
+        study_report_pairs = (
+            ("previous_studies", form.previous_studies, "previous_reports", form.previous_reports, "上一版综述纳入"),
+            ("new_studies", form.new_studies, "new_reports", form.new_reports, "新纳入"),
+            ("total_studies", form.total_studies, "total_reports", form.total_reports, "综述纳入"),
+        )
+    else:
+        study_report_pairs = (
+            ("studies_included", form.studies_included,
+             "reports_of_included_studies", form.reports_of_included_studies, "纳入综述"),
+        )
+    for studies_field, studies, _reports_field, reports, label in study_report_pairs:
+        if studies > reports:
+            if reports <= 0:
+                err(
+                    "R14",
+                    f"{label}研究数({studies}) 多于{label}报告数({reports})：每个纳入研究至少对应一份报告",
+                    f"{label} studies({studies}) exceed {label} reports({reports}):"
+                    " every included study has at least one report",
+                    field=studies_field,
+                )
+            else:
+                # token 用 R14W（提示态）：multi-study report 合法形态不阻断
+                # 导出，文案提示可在备注中说明（r6 #54）。
+                warnings.append(Issue(
+                    "R14W",
+                    f"{label}研究数({studies}) 多于{label}报告数({reports})：官方模板允许"
+                    "一份报告含多项研究（multi-study report），如确为该形态可在备注中说明",
+                    f"{label} studies({studies}) exceed {label} reports({reports}):"
+                    " the official template allows multi-study reports (one report"
+                    " covering several studies); if that is your case, explain it"
+                    " in a note",
+                ))
+        elif studies == 0 and reports > 0:
+            warnings.append(Issue(
+                "R14",
+                f"{label}研究数为 0 但{label}报告数为 {reports}：请确认口径"
+                "（官方末框为『纳入研究的报告』）",
+                f"{label} studies = 0 but {label} reports = {reports}: please double-check"
+                " (the official box reads 'reports of included studies')",
+            ))
 
     return ValidationResult(errors=errors, warnings=warnings, hints=hints)
 
@@ -886,8 +1051,15 @@ _GREY_LINE = "#85909D"
 
 
 def _esc(text: str) -> str:
-    """DOT 标签转义：反斜杠与双引号（换行由调用方以 \\l 追加）。"""
-    return (text or "").replace("\\", "\\\\").replace('"', '\\"')
+    """DOT 标签转义：反斜杠、双引号与 CR/LF（U6-P8）。
+
+    调用方按行拆分后经 ``\\l`` 追加换行；但 merge_note / removed_other_note
+    等自由文本入口未拆行，数据内裸 CR/LF 会在双引号串里直接断行生成非法
+    DOT。这里把 CR 归一为 LF 后统一转义为 graphviz 的 ``\\n``（居中换行），
+    保证引号串内不出现裸换行。
+    """
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return cleaned.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _lines_label(lines: list[str]) -> str:
@@ -908,12 +1080,16 @@ def prisma_form_dot(form: PrismaFormData, merge_note: str = "") -> str:
     - 数据库列主链：识别 → 进入筛选 → 寻求获取 → 资格评估 → 末框，
       侧框：筛前移除（灰框）、题摘排除（含本项目推断口径的逐理由拆分行，有行才列）、
       未获取（灰框）、全文排除理由；
-    - v2 追加其他方法列（识别 → 寻求获取 → 资格评估，无筛选/移除框）；
+    - v2 追加其他方法列（识别 → 寻求获取 → 资格评估，无筛选/移除框；
+      未获取 >0 时补灰框，U6-P1 完整 other 链）；
     - 更新综述追加「既往研究」列、新纳入框与 Total 末框；
     - DTA 与新综述同构（meta-analysis 计数不渲染为图框，见模块 docstring）；
     - 灰框规则（R12）：三行移除全 0 / 未获取为 0 时自动省略对应侧框；
-    - 页脚署名 ATTRIBUTION（CC BY 4.0）；``merge_note`` 非空时（更新综述的
-      「一句话合并说明」）追加在署名之后，向导页向导字段用，缺省不改变输出。
+    - rank=same 组在输出前合并共享节点（U6-P12：同一节点不再出现在多条
+      rank 语句中，v2 下不再产生重复 rank）；
+    - 页脚署名 ATTRIBUTION（CC BY 4.0）；``merge_note`` 为内部参数
+      （更新综述的一句话合并说明，产品 API 未暴露该字段，r6 复审 R6-F6
+      标注为内部使用），非空时追加在署名之后，缺省不改变输出。
 
     确定性：同输入同输出（纯字符串拼接，节点/边按固定顺序生成）。
     """
@@ -927,7 +1103,7 @@ def prisma_form_dot(form: PrismaFormData, merge_note: str = "") -> str:
 
     nodes: list[str] = []
     edges: list[str] = []
-    ranks: list[str] = []
+    ranks: list[list[str]] = []
 
     def node(name: str, label: str, **attrs: str) -> None:
         parts = [f'{k}="{v}"' for k, v in attrs.items()]
@@ -938,7 +1114,7 @@ def prisma_form_dot(form: PrismaFormData, merge_note: str = "") -> str:
         edges.append(f"    {src} -> {dst}{attr};")
 
     def rank(*names: str) -> None:
-        ranks.append("    { rank=same; " + "; ".join(names) + "; }")
+        ranks.append(list(names))
 
     # ---- 阶段侧栏（竖排标签，占位节点；\\n = DOT 居中换行）----
     node("stage_ident", "识别\\nIdentification", **{"shape": "plaintext", "fontcolor": _JADE_DARK})
@@ -1014,9 +1190,14 @@ def prisma_form_dot(form: PrismaFormData, merge_note: str = "") -> str:
     scr_reasons = active_reason_rows(form.screening_exclusion_reasons)
     excl_scr_lines += [f"· {(r.reason or '').strip()}（n = {r.n}）" for r in scr_reasons]
     if form.human_excluded_n is not None and form.automation_excluded_n is not None:
-        excl_scr_lines.append(
-            f"其中：人工 {form.human_excluded_n} · 自动化 {form.automation_excluded_n}"
-        )
+        # R10W 降级时拆分本身不勾稽（人工+自动化 ≠ 排除总数）——不把不一致
+        # 的拆分行画进导出图（复审：导出图只呈现自洽数字，不一致由 warning
+        # 与备注承载，不省略时会误导读者把 50+5 当 60）。
+        if (form.human_excluded_n + form.automation_excluded_n
+                == form.records_excluded_screening):
+            excl_scr_lines.append(
+                f"其中：人工 {form.human_excluded_n} · 自动化 {form.automation_excluded_n}"
+            )
     node("excl_screen_db", _lines_label(excl_scr_lines), fillcolor=_SIDE_FILL, color=_TERRA)
     edge("screened_db", "excl_screen_db")
     rank("stage_screen", "screened_db", "excl_screen_db")
@@ -1133,8 +1314,43 @@ def prisma_form_dot(form: PrismaFormData, merge_note: str = "") -> str:
         "    node [shape=box, style=\"rounded,filled\", fillcolor=" + f'"{_MAIN_FILL}", color="{_JADE}", fontcolor="#1F2A37", margin="0.16,0.10"];',
         f'    edge [color="{_JADE_DARK}", arrowsize=0.7];',
     ]
-    body = nodes + ranks + edges
+    body = nodes + [
+        "    { rank=same; " + "; ".join(group) + "; }"
+        for group in _dedupe_rank_groups(ranks)
+    ] + edges
     return "\n".join(header + body + ["}"]) + "\n"
+
+
+def _dedupe_rank_groups(groups: list[list[str]]) -> list[list[str]]:
+    """合并共享节点的 rank=same 组并保持首现顺序（U6-P12，确定性）。
+
+    v2 模式下数据库列节点（ident_db/removed_db/sought_db/assessed_db/
+    excl_ft_db）曾被写入两条 rank 语句——Graphviz 对节点出现在多个
+    rank 组的行为无承诺且属冗余。合并语义与前端渲染器（rank 组并查集
+    求同行）完全一致，布局不变、语句唯一。
+    """
+    member_of: dict[str, int] = {}
+    out: list[list[str] | None] = []
+    for group in groups:
+        hits = {member_of[name] for name in group if name in member_of}
+        if not hits:
+            index = len(out)
+            out.append(list(group))
+            for name in group:
+                member_of[name] = index
+            continue
+        target = min(hits)
+        merged = list(out[target])  # type: ignore[arg-type]  # target 组必非 None
+        for other in sorted(hits):
+            if other != target:
+                merged.extend(out[other])  # type: ignore[arg-type]
+                out[other] = None  # 已并入，稍后剔除（占位保索引稳定）
+        merged.extend(name for name in group if name not in member_of)
+        deduped = list(dict.fromkeys(merged))  # 去重且保持首现顺序
+        out[target] = deduped
+        for name in deduped:
+            member_of[name] = target
+    return [group for group in out if group]
 
 
 def _footer_label(merge_note: str) -> str:

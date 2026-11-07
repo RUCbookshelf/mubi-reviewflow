@@ -22,6 +22,12 @@ _TEST_FORMATS = {
 _LEGACY_APPROXIMATE_SUMMARY_FORMATS = {
     "independent_summary_stats", "analysis_calculate_smd", "continuous arms",
     "estimated_summary_arms", "multi-arm combination", "ipd_two_stage",
+    # MM5-04：rct_continuous 提取模板的 SMD 由 calculate_continuous_effect 转调
+    # review_analysis.continuous_effect——与 "continuous arms" 臂级入口是同一个
+    # 近似 J（1-3/(4df-1)）计算。这里按完整 entry_method 字面量（而非
+    # "extraction:*" 前缀）放行：当前四个内置模板中只有 rct_continuous 能产出
+    # SMD，前缀放行会让未来任何产出 SMD 的模板被冒认 hedges_g。
+    "extraction:rct_continuous",
 }
 SMD_ESTIMATORS = (
     {

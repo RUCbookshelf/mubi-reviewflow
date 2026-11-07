@@ -8,9 +8,58 @@ from contextlib import closing
 from pathlib import Path
 
 from coscreen.db import _connect
-from coscreen.review_analysis import RATIOS, SINGLE_GROUP, _synthesize_rows, selected_effects
+from coscreen.review_analysis import (
+    RATIOS,
+    SINGLE_GROUP,
+    _synthesize_rows,
+    effect_scale_label,
+    selected_effects,
+)
 
 DbPath = str | Path
+
+#: How many times the two-read stratum snapshot is retried before giving up.
+_SNAPSHOT_ATTEMPTS = 3
+
+
+def _data_version(conn) -> int | None:
+    """SQLite's per-connection change counter (bumps when *others* commit).
+
+    The value is only meaningful relative to the same connection, so callers
+    keep one watcher connection open across the reads they are validating.
+    """
+    row = conn.execute("PRAGMA data_version").fetchone()
+    return int(row[0]) if row else None
+
+
+def _stratum_snapshot(db: DbPath, comparison: str, outcome: str, timepoint: str,
+                      measure: str, dimension_id: int, study_ids: list[str] | None = None):
+    """Read the effect rows and their coded characteristic from one database state.
+
+    ``selected_effects`` and ``_characteristics`` each open their own connection
+    and SQLite takes a fresh snapshot per statement, so a concurrent writer
+    committing between the two reads used to pair rows from state A with coded
+    values from state B -- either a spurious 400 ("missing or conflicting
+    characteristic") or silently mismatched strata (F1-114). Neither module
+    lives in this file, so the reads stay as they are and the *window* is
+    detected instead: ``PRAGMA data_version`` only moves when another
+    connection commits, so an unchanged counter across both reads proves they
+    saw the same committed state. A changed counter means a concurrent write;
+    the pair is re-read (bounded) and, if writes keep landing, reported as such
+    rather than mis-attributed to the data.
+    """
+    for _attempt in range(_SNAPSHOT_ATTEMPTS):
+        with closing(_connect(db)) as watcher:
+            before = _data_version(watcher)
+            rows = _effects(db, comparison, outcome, timepoint, measure, study_ids)
+            values = _characteristics(db, rows, dimension_id)
+            after = _data_version(watcher)
+        if before is None or after is None or before == after:
+            return rows, values
+    raise ValueError(
+        "the analysis stratum kept changing while it was read; retry once the "
+        "concurrent edits have finished"
+    )
 
 
 def _effects(db: DbPath, comparison: str, outcome: str, timepoint: str,
@@ -50,7 +99,7 @@ def subgroup(db: DbPath, comparison: str, outcome: str, timepoint: str,
     rows = _effects(db, comparison, outcome, timepoint, measure)
     if len(rows) < 4:
         raise ValueError("subgroup analysis requires at least four studies")
-    values = _characteristics(db, rows, dimension_id)
+    rows, values = _stratum_snapshot(db, comparison, outcome, timepoint, measure, dimension_id)
     grouped: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         grouped[values[row["study_id"]]].append(row)
@@ -73,7 +122,7 @@ def meta_regression(db: DbPath, comparison: str, outcome: str, timepoint: str,
     rows = _effects(db, comparison, outcome, timepoint, measure)
     if len(rows) < 10:
         raise ValueError("meta-regression requires at least ten independent studies")
-    values = _characteristics(db, rows, dimension_id)
+    rows, values = _stratum_snapshot(db, comparison, outcome, timepoint, measure, dimension_id)
     try:
         x = np.asarray([float(values[r["study_id"]]) for r in rows])
     except ValueError as exc:
@@ -89,8 +138,10 @@ def meta_regression(db: DbPath, comparison: str, outcome: str, timepoint: str,
             "slope_se": float(fit.bse[1]), "slope_ci": [float(v) for v in fit.conf_int()[1]],
             "p": float(fit.pvalues[1]), "intercept": float(fit.params[0]),
             "tau2_from_intercept_only_model": tau2,
-            "effect_scale": "logit" if measure == "LOGIT_PROP" else
-                            "log" if measure in RATIOS | {"LOG_RATE", "LOG_ROM", "PAIRED_OR"} else "natural",
+            # MM5-08/MM9-14：只声明纯分析尺度（对照 measure_registry 词表）——本路径的
+            # slope/intercept 从不套用合成路径的显示变换（FISHER_Z→tanh、LOG_*→exp），
+            # "; results shown as X" 后缀只属于合成结果（_synthesis_effect_scale_label）。
+            "effect_scale": effect_scale_label(measure),
             "method": "exploratory inverse-variance WLS with fixed intercept-only Paule-Mandel tau2",
             "warning": "Study-level association is not a participant-level interaction or causal effect."}
 
@@ -104,12 +155,35 @@ def small_study_effects(db: DbPath, comparison: str, outcome: str, timepoint: st
     rows = _effects(db, comparison, outcome, timepoint, measure, study_ids)
     if len(rows) < 10:
         raise ValueError("Egger test requires at least ten independent studies")
+    # F1-113: a stored SE near the float minimum makes 1/se infinite, so the
+    # Egger design matrix contains inf and statsmodels raises MissingDataError
+    # (a plain Exception, not ValueError) past the endpoint's 4xx translation.
+    # Screen the precision the same way ``review_analysis`` screens
+    # inverse-variance weights: an SE whose reciprocal is not finite cannot
+    # support a precision-weighted regression at all.
+    for row in rows:
+        try:
+            precision = 1 / row["se"]
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError(
+                "Egger test needs finite study precisions; a stored SE is too "
+                "small for this regression"
+            ) from exc
+        if not math.isfinite(precision):
+            raise ValueError(
+                "Egger test needs finite study precisions; a stored SE is too "
+                "small for this regression"
+            )
     se = np.asarray([r["se"] for r in rows])
     if len(set(se)) < 2:
         raise ValueError("Egger test needs variation in study precision")
     y = np.asarray([math.log(r["estimate"]) if measure in RATIOS else r["estimate"] for r in rows])
     fit = OLS(y/se, np.column_stack((np.ones(len(se)), 1/se))).fit()
-    return {"n_studies": len(rows), "points": [{"study_id": r["study_id"],
+    return {"n_studies": len(rows),
+            # MM5-09/MM9-14：points[].effect 在纯分析尺度（z/log 原值，从不 tanh/exp），
+            # 标签同 meta_regression 只声明分析尺度，不带合成展示后缀。
+            "effect_scale": effect_scale_label(measure),
+            "points": [{"study_id": r["study_id"],
             "result_id": r["result_id"], "source_key": r["source_key"],
             "source_locator": r["source_locator"],
             "effect": float(effect), "se": float(error)} for r, effect, error in zip(rows, y, se)],
@@ -121,8 +195,13 @@ def small_study_effects(db: DbPath, comparison: str, outcome: str, timepoint: st
 
 def cumulative(db: DbPath, comparison: str, outcome: str, timepoint: str,
                measure: str, year_dimension_id: int, model: str = "fixed") -> dict:
-    rows = _effects(db, comparison, outcome, timepoint, measure)
-    values = _characteristics(db, rows, year_dimension_id)
+    rows, values = _stratum_snapshot(db, comparison, outcome, timepoint, measure,
+                                     year_dimension_id)
+    if not rows:
+        # Sibling methods reject an empty stratum with an explicit message; this
+        # one returned ``{"steps": []}`` with 200, so a typo in comparison /
+        # outcome / timepoint read as "that stratum has no data" (F1-116).
+        raise ValueError("no selected effects in this comparison/outcome/timepoint stratum")
     groups: dict[int, list[dict]] = defaultdict(list)
     for row in rows:
         value = values[row["study_id"]]
@@ -134,7 +213,17 @@ def cumulative(db: DbPath, comparison: str, outcome: str, timepoint: str,
         included.extend(groups[year])
         if len(included) >= 2:
             result = _synthesize_rows(included, measure, model, "normal")
+            # F1-115: only the three display values used to be copied out, so
+            # the analysis-scale bounds (``ci_analysis_high`` can be finite
+            # while the displayed ``ci_high`` is None) and every warning raised
+            # by the synthesis step were lost. Carry them through unchanged;
+            # the three legacy keys keep their exact values.
             steps.append({"through_year": year, "n_studies": len(included),
                           "pooled": result["pooled"], "ci_low": result["ci_low"],
-                          "ci_high": result["ci_high"]})
-    return {"steps": steps, "method": f"cumulative {model} synthesis by explicitly coded study year"}
+                          "ci_high": result["ci_high"],
+                          "ci_analysis_low": result.get("ci_analysis_low"),
+                          "ci_analysis_high": result.get("ci_analysis_high"),
+                          "warnings": list(result.get("warnings") or [])})
+    return {"steps": steps,
+            "warnings": [warning for step in steps for warning in step["warnings"]],
+            "method": f"cumulative {model} synthesis by explicitly coded study year"}

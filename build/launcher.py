@@ -17,6 +17,7 @@ FastAPI 应用的 ``/`` 上（API 路由先注册、优先匹配），并自动�
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import socket
 import sys
@@ -27,18 +28,82 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8613
+PORT_SEARCH_LIMIT = 100
+#: 单实例探测：/api/runtime 的 instance_id 形状（custom_backend/main.py `uuid4().hex`）
+_INSTANCE_ID = re.compile(r"^[0-9a-f]{32}$")
+#: `wait_and_open` 的等待上限（秒）——docstring 与实现同口径
+READY_TIMEOUT = 60.0
+
+
+def normalize_port(value: object, default: int = DEFAULT_PORT) -> int:
+    """把 REVIEWFLOW_PORT 之类的输入收敛到合法端口；0/越界/非数字回落默认。"""
+    try:
+        port = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if not 1 <= port <= 65535:
+        return default
+    return port
+
+
+def _bind_host() -> str:
+    """The host the backend actually binds (same default as `_run_server`)."""
+    return os.environ.get("REVIEWFLOW_HOST", "127.0.0.1")
+
+
+def _client_host() -> str:
+    """A loopback address that can reach a backend bound to `_bind_host()`."""
+    host = _bind_host().strip()
+    if host in {"", "0.0.0.0", "::", "[::]", "*"}:
+        return "127.0.0.1"
+    if host in {"localhost", "::1"}:
+        return host
+    return host
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
+
+
+def _bind_probe_socket(host: str, port: int) -> socket.socket:
+    """Bind (not listen) *port* on *host* so the probe matches the real bind."""
+    infos = socket.getaddrinfo(host or None, port, type=socket.SOCK_STREAM,
+                               flags=socket.AI_PASSIVE)
+    family, socktype, proto, _canon, sockaddr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    try:
+        sock.bind(sockaddr)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+def _ephemeral_port() -> int:
+    """端口段全部被占用时让系统分配一个空闲端口（仍是“可用端口”而非必败端口）。"""
+    with _bind_probe_socket(_bind_host(), 0) as s:
+        return int(s.getsockname()[1])
 
 
 def find_free_port(start: int = DEFAULT_PORT) -> int:
-    """从 start 起向后找 100 个可用端口，全占用则退回 start。"""
-    for port in range(start, start + 100):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    return start
+    """从 start 起向后找可用端口（与后端实际绑定的 host 同口径探测）。
+
+    端口段全被占用时不再把必被占用的 start 当结果返回，而是先让系统分配一个
+    空闲端口；连系统分配都失败才抛 RuntimeError（调用方给用户明确提示）。
+    """
+    start = normalize_port(start)
+    for port in range(start, min(start + PORT_SEARCH_LIMIT, 65536)):
+        try:
+            _bind_probe_socket(_bind_host(), port).close()
+            return port
+        except OSError:
+            continue
+    try:
+        return _ephemeral_port()
+    except OSError as exc:
+        raise RuntimeError(
+            "No local TCP port is available for ReviewFlow. Close other programs and try again."
+        ) from exc
 
 
 def resolve_data_dir() -> Path:
@@ -58,7 +123,10 @@ def default_data_dir() -> Path:
         return APP_DIR.parent / "data"
 
     if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        # 空/相对 LOCALAPPDATA（b06·F1-103 的同型）会解析成相对路径；与
+        # windows_start.user_root() 保持同一口径，落回用户配置目录。
+        raw = (os.environ.get("LOCALAPPDATA") or "").strip()
+        base = Path(raw) if raw and Path(raw).is_absolute() else Path.home() / "AppData" / "Local"
         user = base / "ReviewFlow"
     elif sys.platform == "darwin":
         user = Path.home() / "Library" / "Application Support" / "ReviewFlow"
@@ -113,26 +181,88 @@ def open_browser(url: str) -> None:
         webbrowser.open(url, new=2)
 
 
-def reopen_running_app() -> bool:
-    """A second shortcut click reopens the existing backend instead of starting two."""
-    import json
-    import urllib.request
+def read_instance_port() -> int | None:
+    """Read the port a previous desktop instance recorded, if any."""
     from coscreen import local_storage
 
     try:
-        port = int((local_storage.control_dir() / "desktop-port.txt").read_text(encoding="ascii"))
-        if not 1024 <= port <= 65535:
-            return False
-        url = f"http://127.0.0.1:{port}"
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(url + "/api/health", timeout=2) as response:
-            status = json.load(response)
-            if not isinstance(status, dict) or status.get("status") != "ok":
-                return False
-        open_browser(url)
-        return True
+        port = int((local_storage.control_dir() / "desktop-port.txt")
+                   .read_text(encoding="ascii").strip())
     except (OSError, ValueError):
+        return None
+    return port if 1024 <= port <= 65535 else None
+
+
+def record_port(instance_port: Path, port: int) -> None:
+    """Publish the active port to the instance file and REVIEWFLOW_PORT_FILE."""
+    try:
+        instance_port.parent.mkdir(parents=True, exist_ok=True)
+        instance_port.write_text(str(port), encoding="ascii")
+    except OSError:
+        pass
+    port_file = os.environ.get("REVIEWFLOW_PORT_FILE")
+    if port_file:
+        try:
+            port_path = Path(port_file)
+            port_path.parent.mkdir(parents=True, exist_ok=True)
+            port_path.write_text(str(port), encoding="ascii")
+        except OSError:
+            pass
+
+
+def probe_running_instance(port: int | None, timeout: float = 2.0) -> str | None:
+    """Return the base URL when *port* serves a live ReviewFlow backend.
+
+    A bare TCP connect is not enough: any other program listening on the same
+    port would satisfy it and the launcher would open a stranger's page (or
+    treat an orphaned backend as absent and start a second, double-writing
+    instance). ReviewFlow's own `/api/health` plus the `instance_id` shape that
+    `/api/runtime` reports identify our backend.
+    """
+    import json
+    import urllib.request
+
+    if not port:
+        return None
+    url = f"http://{_url_host(_client_host())}:{port}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url + "/api/health", timeout=timeout) as response:
+            status = json.load(response)
+        if not isinstance(status, dict) or status.get("status") != "ok":
+            return None
+        with opener.open(url + "/api/runtime", timeout=timeout) as response:
+            runtime = json.load(response)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(runtime, dict):
+        return None
+    if not _INSTANCE_ID.match(str(runtime.get("instance_id", ""))):
+        return None
+    return url
+
+
+def reopen_running_app() -> bool:
+    """A second shortcut click reopens the existing backend instead of starting two."""
+    url = probe_running_instance(read_instance_port())
+    if not url:
         return False
+    open_browser(url)
+    return True
+
+
+def reuse_or_reopen_running_app() -> bool:
+    """With the process lock free, still prefer a live orphaned backend.
+
+    The lock is released when its holder dies, but the backend child it spawned
+    keeps serving until it exits on its own. Treating "lock free" as "nothing
+    running" is what started a second backend against the same data folder.
+    """
+    url = probe_running_instance(read_instance_port())
+    if not url:
+        return False
+    open_browser(url)
+    return True
 
 
 def release_process_lock(handle) -> None:
@@ -151,19 +281,46 @@ def release_process_lock(handle) -> None:
 
 
 def wait_and_open(url: str, port: int) -> None:
-    """等服务端端口就绪后打开浏览器（最多等 60 秒）。"""
-    for _ in range(60):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1.0)
-                s.connect(("127.0.0.1", port))
-                break
-        except OSError:
-            time.sleep(1)
+    """等服务端端口就绪后打开浏览器（最多等 READY_TIMEOUT 秒）。
+
+    就绪判定用 `probe_running_instance`（/api/health + /api/runtime 的
+    instance_id），不只看 TCP 能否连上：同端口上别的程序也能接受连接，旧实现
+    会把陌生页面当成 ReviewFlow 打开。等待按整段 deadline 计时，不再把
+    connect 超时与 sleep 各算 1 秒（旧实现实际最坏 120 秒）。
+    """
+    deadline = time.monotonic() + READY_TIMEOUT
+    while time.monotonic() < deadline:
+        if probe_running_instance(port, timeout=1.0):
+            break
+        time.sleep(1)
     try:
         open_browser(url)
     except Exception:
         pass  # 无图形界面/无默认浏览器时静默忽略
+
+
+def report_child_failure(returncode: int, log_path: Path) -> None:
+    """Surface a backend child that died instead of returning silently.
+
+    A uvicorn bind failure (or any other startup crash) used to make the parent
+    exit with the child's code and no dialog: the user saw a window that never
+    appeared and no reason. The child's own output is already in the log file.
+    """
+    _notify_error(
+        f"ReviewFlow 后端进程异常退出（退出码 {returncode}）。\n"
+        f"请把日志提供给维护者：\n{log_path}")
+
+
+def _notify_error(text: str) -> None:
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, text, "木笔ReviewFlow", 0x10)
+            return
+        except Exception:
+            pass
+    _say(text, error=True)
 
 
 def build_app():
@@ -221,6 +378,10 @@ def _run_server(port: int) -> int:
         host=os.environ.get("REVIEWFLOW_HOST", "127.0.0.1"),
         port=port,
         log_level="warning",
+        # U5-P5：同源直连部署，不信任 X-Forwarded-For——uvicorn 默认
+        # proxy_headers=True 会对环回对端用客户端可伪造的 XFF 改写
+        # request.client.host，登录/注册的按 IP 限流可被无限轮换绕过。
+        proxy_headers=False,
     ))
     backend_main.configure_desktop_restart(lambda: setattr(server, "should_exit", True))
     server.run()
@@ -253,14 +414,67 @@ def _spawn_server(port: int, restart_file: Path) -> subprocess.Popen:
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
-def main() -> int:
+def _prepare_console() -> None:
+    """Keep startup prints from crashing on a non-UTF-8 code page.
+
+    `pythonw` has no console, but when the launcher runs from a terminal or a
+    build harness whose stdout is redirected with a cp1252/latin-1 code page,
+    printing the Chinese startup lines raised UnicodeEncodeError before the
+    backend ever started. Replace unencodable characters instead of aborting.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
+def _say(text: str, *, error: bool = False) -> None:
+    """Print without letting an encoding failure abort startup."""
+    stream = sys.stderr if error else sys.stdout
+    try:
+        print(text, file=stream)
+    except (UnicodeEncodeError, AttributeError, ValueError, OSError):
+        try:
+            print(text.encode("ascii", "replace").decode("ascii"),
+                  file=sys.stderr if error else sys.stdout)
+        except Exception:
+            pass
+
+
+def main(process_lock=None) -> int:
+    """Start the desktop app.
+
+    *process_lock* is an already-held single-instance handle (windows_start
+    takes the lock before it touches the runtime overlay, so repair and launch
+    are one exclusive critical section). Without it the lock is acquired here.
+    """
+    _prepare_console()
     # 包内布局：launcher.py 与 custom_backend/ coscreen/ 同级；仓库布局：包在上一级。
     for p in (os.environ.get("REVIEWFLOW_RUNTIME_OVERLAY"), str(APP_DIR), str(APP_DIR.parent)):
         if p and p not in sys.path:
             sys.path.insert(0, p)
 
+    # r13 tailpiece ①: a caller that asked for the team server mode must not be
+    # silently downgraded to the desktop app. The old code popped the caller's
+    # explicit COBOOKSHELF_DATA_DIR, rewrote REVIEWFLOW_MODE and started on the
+    # desktop default directory with no warning at all - the team UI was gone
+    # and the data "looked lost". Refuse instead, before any data-directory
+    # resolution, and point at the supported server entry point.
     if os.environ.get("REVIEWFLOW_MODE") == "server":
-        os.environ.pop("COBOOKSHELF_DATA_DIR", None)
+        # windows_start.py takes the single-instance lock before calling main()
+        # and hands it over, so an early return has to release it here.
+        if process_lock is not None:
+            release_process_lock(process_lock)
+        _notify_error(
+            "REVIEWFLOW_MODE=server 是团队服务模式：桌面启动器不会以团队模式运行，"
+            "也不会改动你的数据目录。请按 docs/deployment/UBUNTU_SERVER.md 用 "
+            "uvicorn 启动团队服务；如需启动桌面版，请先取消环境变量 "
+            "REVIEWFLOW_MODE=server。")
+        return 2
     os.environ["REVIEWFLOW_MODE"] = "desktop"
     child_mode = "--restart-child" in sys.argv[1:]
 
@@ -273,15 +487,25 @@ def main() -> int:
         os.environ[local_storage.CONFIG_ENV] = str(local_storage.config_path())
     os.environ[local_storage.ENABLED_ENV] = "1" if migration_enabled else "0"
 
-    process_lock = None
     try:
+        handed_off = False
         if not child_mode:
-            try:
-                process_lock = acquire_process_lock()
-            except RuntimeError:
-                if reopen_running_app():
-                    return 0
-                raise
+            if process_lock is None:
+                try:
+                    process_lock = acquire_process_lock()
+                except RuntimeError:
+                    if reopen_running_app():
+                        return 0
+                    raise
+            # 锁空闲不等于没有后端：持锁的父进程崩溃后，它派生的 uvicorn 子进程
+            # 仍可能在服务（孤儿）。旧实现只在锁被占时才探测，于是孤儿场景下
+            # 无条件再起第二套后端 → 同一数据目录双写。这里先按实例身份探测。
+            # 显式指定 COBOOKSHELF_DATA_DIR 的调用方（开发/测试）可能确实想并存
+            # 另一套后端，因此只在标准桌面路径上复用孤儿实例。
+            if not external_data and reuse_or_reopen_running_app():
+                # 已把用户导向仍在服务的实例：它的端口记录必须留给下次启动。
+                handed_off = True
+                return 0
         default = default_data_dir()
         if migration_enabled and not child_mode:
             queued = local_storage._read_config().get("pending")
@@ -302,22 +526,19 @@ def main() -> int:
 
         instance_port = local_storage.control_dir() / "desktop-port.txt"
         if child_mode:
-            return _run_server(int(os.environ.get("REVIEWFLOW_PORT", DEFAULT_PORT)))
+            return _run_server(normalize_port(os.environ.get("REVIEWFLOW_PORT")))
 
-        port = find_free_port(int(os.environ.get("REVIEWFLOW_PORT", DEFAULT_PORT)))
+        requested = os.environ.get("REVIEWFLOW_PORT")
+        port = find_free_port(normalize_port(requested))
+        if requested is not None and str(normalize_port(requested)) != str(requested).strip():
+            _say(f"忽略无效端口设置 REVIEWFLOW_PORT={requested!r}，改用 {port}", error=True)
         restart_file = local_storage.control_dir() / "desktop-restart.request"
         restart_file.unlink(missing_ok=True)
-        instance_port.write_text(str(port), encoding="ascii")
-        port_file = os.environ.get("REVIEWFLOW_PORT_FILE")
-        if port_file:
-            port_path = Path(port_file)
-            port_path.parent.mkdir(parents=True, exist_ok=True)
-            port_path.write_text(str(port), encoding="ascii")
-
-        url = f"http://127.0.0.1:{port}"
-        print(f"木笔ReviewFlow 启动中... 浏览器将自动打开 {url}")
-        print(f"数据目录: {data_dir}")
-        print("按 Ctrl+C 停止")
+        record_port(instance_port, port)
+        url = f"http://{_url_host(_client_host())}:{port}"
+        _say(f"木笔ReviewFlow 启动中... 浏览器将自动打开 {url}")
+        _say(f"数据目录: {data_dir}")
+        _say("按 Ctrl+C 停止")
         child = _spawn_server(port, restart_file)
         threading.Thread(target=wait_and_open, args=(url, port), daemon=True).start()
         while True:
@@ -328,20 +549,25 @@ def main() -> int:
             restart_file.unlink(missing_ok=True)
             if action != "restart":
                 break
+            # 重启窗口里端口可能已被别的程序抢占：沿用旧端口会静默绑定失败。
+            new_port = find_free_port(port)
+            if new_port != port:
+                port = new_port
+                record_port(instance_port, port)
+                url = f"http://{_url_host(_client_host())}:{port}"
+                threading.Thread(target=wait_and_open, args=(url, port), daemon=True).start()
             child = _spawn_server(port, restart_file)
+        if child.returncode:
+            report_child_failure(child.returncode, Path(data_dir) / "reviewflow.log")
         return child.returncode or 0
     except RuntimeError as exc:
-        if os.name == "nt":
-            import ctypes
-
-            ctypes.windll.user32.MessageBoxW(None, str(exc), "木笔ReviewFlow", 0x10)
-        else:
-            print(str(exc), file=sys.stderr)
+        _notify_error(str(exc))
         return 1
     finally:
         if process_lock is not None:
             try:
-                (local_storage.control_dir() / "desktop-port.txt").unlink(missing_ok=True)
+                if not handed_off:
+                    (local_storage.control_dir() / "desktop-port.txt").unlink(missing_ok=True)
             except OSError:
                 pass  # A stale port is checked against health before it is reused.
             finally:

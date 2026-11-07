@@ -22,6 +22,28 @@ def _cell_count(value: object, name: str) -> int:
     return int(value)
 
 
+def _rd_variance_term(a: int, b: int, c: int, d: int, n: int) -> float:
+    """Paired RD Wald variance term ``b + c - (b - c)^2 / n`` (F-03).
+
+    The historical float expression ``fsum((float(b + c), -((b - c)**2) / n))``
+    cancels catastrophically once the discordant counts reach ~2**53: for
+    ``{a: 1, b: 2**63-3, c: 1, d: 0}`` it evaluates to 0.0 (exact value 5.0,
+    false "zero variance" rejection) and near 2**53 it silently understates
+    the variance by up to ~20%. The exact integer identity
+    ``n*(b + c) - (b - c)^2 == (a + d)*(b + c) + 4*b*c`` (verified on 2000
+    random tables in the review evidence) is evaluated instead whenever the
+    float form disagrees with it by more than 1e-6 relative — i.e. only in
+    the cancellation regime. Regular tables keep the historical float path
+    bit-for-bit; ``int / int`` is correctly rounded in Python even for
+    bignums, so the identity branch is accurate to ~1 ULP at any count.
+    """
+    naive = math.fsum((float(b + c), -((b - c) ** 2) / n))
+    exact = ((a + d) * (b + c) + 4 * b * c) / n
+    if naive > 0 and abs(naive - exact) <= 1e-6 * exact:
+        return naive
+    return exact
+
+
 def paired_binary_effect(cells: dict, *, direction: str, level: float = 0.95,
                          or_correction: str | None = None,
                          source_provenance: dict | None = None) -> dict:
@@ -92,8 +114,10 @@ def paired_binary_effect(cells: dict, *, direction: str, level: float = 0.95,
 
     # Verified form: sqrt((b + c - (b - c)^2 / n) / n^2); Monte Carlo-checked
     # against multinomial simulation. Zero variance only when the table has no
-    # concordant pairs and one discordant count is zero.
-    var_rd = math.fsum((float(b + c), -((b - c) ** 2) / n)) / n**2
+    # concordant pairs and one discordant count is zero. The term itself goes
+    # through _rd_variance_term (F-03): the raw float expression cancels to a
+    # false zero (or a ~20% low variance) once discordant counts reach ~2**53.
+    var_rd = _rd_variance_term(a, b, c, d, n) / n**2
     if not math.isfinite(var_rd) or var_rd <= 0:
         raise ValueError(
             "the paired risk difference has zero or unrepresentable variance; "
@@ -136,7 +160,9 @@ def paired_binary_effect(cells: dict, *, direction: str, level: float = 0.95,
         "p_target": (a + b) / n,
         "p_control": (a + c) / n,
         "mcnemar_chi2_descriptive_only": (b - c) ** 2 / (b + c),
-        "mcnemar_chi2_continuity_descriptive_only": (abs(b - c) - 1) ** 2 / (b + c),
+        # F-07: with b == c the corrected statistic must be 0, not 1/(b + c)
+        # (max(0, .) only bites at |b - c| == 0; |b - c| == 1 already gave 0).
+        "mcnemar_chi2_continuity_descriptive_only": max(0, abs(b - c) - 1) ** 2 / (b + c),
         "inverse_variance_ready": True,
         "rd_inverse_variance_ready": True,
         "or_correction": or_correction,

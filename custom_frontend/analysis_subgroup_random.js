@@ -40,7 +40,8 @@
       if (current !== generation) return;
       result = data;
       const table = el('table');
-      const scale = data.analysis_scale === 'log' ? T('对数尺度') : T('自然尺度');
+      /* 批13-1：注册表尺度含 fisher_z/logit（FISHER_Z/LOGIT_PROP 可进本端点），三元只分 log 会误标“自然尺度” */
+      const scale = data.analysis_scale === 'log' ? T('对数尺度') : data.analysis_scale === 'fisher_z' ? T('Fisher z 尺度') : data.analysis_scale === 'logit' ? T('logit 尺度') : T('自然尺度');
       table.append(el('thead', {}, el('tr', {}, ...[T('亚组'), T('研究数'), T('估计值'), T('标准误'), T('95% 置信区间'), T('τ²（DL；{0}方差）', scale)].map(text => el('th', { text })))));
       const rows = el('tbody');
       Object.entries(data.subgroups).forEach(([name, group]) => rows.append(el('tr', {},

@@ -32,7 +32,7 @@
       const result=await api(taskApi()+'/analysis/influence?'+params);
       if(ticket!==generation)return;
       cached={result,params,ticket};render(result,params,ticket);
-    } catch(error){if(ticket===generation){host.replaceChildren(RFAnalysisLocale.message(error.message));toast(T('分析未完成，请查看错误详情。'),'warn');}}
+    } catch(error){if(ticket===generation){host.replaceChildren(RFAnalysisLocale.message(error.message,{localized:error.rfLocalized===true}));toast(T('分析未完成，请查看错误详情。'),'warn');}}
     finally{if(ticket===generation){clearInterval(timer);run.disabled=false;}}
   });
   document.addEventListener('reviewflow:language-changed',()=>{if(cached)render(cached.result,cached.params,cached.ticket);});

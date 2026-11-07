@@ -44,30 +44,105 @@ class WorkflowRuntime:
         with self._locks_guard:
             return self._locks.setdefault(task_id, threading.RLock())
 
-    def context(self, task_id: str, user: dict) -> WorkflowContext:
+    def readonly_context(self, task_id: str, user: dict) -> WorkflowContext:
+        """只读上下文（R6-U4/#24）：与 context() 同一访问判定，但**不建库、
+        不跑迁移/ensure_fields**——只解析权限与 actor 库路径。
+
+        用于撤销状态等纯读端点：修复前 status 走 context()，会让
+        screener_db(ensure=True) 的懒建链重建个人库、跑 store.migrate/
+        ensure_fields 自愈 DDL，甚至为成员创建**属主**库并灌入整套表
+        （r6 复审实测 48 张表）。属主/成员的个人库按既有命名规则只拼路径，
+        不触达磁盘写。"""
         info = self.task_lookup(task_id)
-        if not self.visible(info, user):
-            raise HTTPException(403, "Task access denied.")
+        task_id = info.task_id
         collab = task_collaboration.shared_store_path(info.dir)
         owner = task_collaboration.get_owner(collab, task_id=task_id)
+        if owner is not None:
+            if not (owner["owner_user_id"] == user["user_id"]
+                    or task_collaboration.is_participant(
+                        collab, user["user_id"], task_id=task_id)):
+                raise HTTPException(403, "Task access denied.")
+        elif not self.visible(info, user):
+            raise HTTPException(403, "Task access denied.")
+        actor_db = info.dir / (tasks.slugify_screener(user["username"]) + ".db")
+        if owner is None:
+            return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
+        owner_db = info.dir / (tasks.slugify_screener(owner["owner_username"]) + ".db")
+        return WorkflowContext(info, user, owner, owner_db, actor_db,
+                               owner["owner_user_id"] == user["user_id"], "personal", collab)
+
+    def context(self, task_id: str, user: dict) -> WorkflowContext:
+        info = self.task_lookup(task_id)
+        # R6-C3/#35：锁与权限键统一规范 task_id——find_task 会把尾点别名解析到
+        # 同一物理任务（Windows 'T.' 与 'T' 同目录），但字符串 id 不同会把
+        # get_owner 判成 legacy（owner paused 守卫被绕过）、锁分键（写互斥失效）。
+        # 对外路径不再以原始字符串作为权限/锁键；find_task 本身保留别名解析。
+        task_id = info.task_id
+        collab = task_collaboration.shared_store_path(info.dir)
+        owner = task_collaboration.get_owner(collab, task_id=task_id)
+        # 门禁墙钟（可见性合并）：属主/协作者判定直接复用已取的 owner——
+        # 原先注入的 visible() 会再开 2 个协作库连接重复 get_owner+
+        # is_participant（每请求 4 连接 → 2）。owner 为 None 的 legacy 分支
+        # 仍交回注入判定（保留 server/desktop 口径与路径检查）。
+        if owner is not None:
+            if not (owner["owner_user_id"] == user["user_id"]
+                    or task_collaboration.is_participant(
+                        collab, user["user_id"], task_id=task_id)):
+                raise HTTPException(403, "Task access denied.")
+        elif not self.visible(info, user):
+            raise HTTPException(403, "Task access denied.")
         # Legacy reads must not initialize databases or create backup files.
         actor_db = info.dir / (tasks.slugify_screener(user["username"]) + ".db")
         if owner is None:
             return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
         with self.lock(task_id):
             owner_db = self.screener_db(info, owner["owner_username"])
-            store.migrate(owner_db)
+            # 基础迁移由 import_sources.migrate 内部首步（_migrate_v4 先跑
+            # workflow.migrate）与 coding_evidence.ensure_fields 共同兜底，此处
+            # 不再单独调 store.migrate——每次请求省一次只读连接与版本查询。
             from coscreen import import_sources
-            import_sources.migrate(owner_db)
+            # 热路径合并（门禁墙钟）：v1/v4/v5/v3 版本齐全时各 migrate 本就是
+            # 无操作——一次只读连接判齐后整段跳过（原先每个 API 请求对同一
+            # 库开 4 个只读连接逐个重查）；未建库/旧库走完整链，首建与升级
+            # 行为不变。ensure_fields 的字段种子检查不受影响（仍每请求执行）。
+            owner_versions = store.migration_state(owner_db)
+            if owner_versions is None or not {
+                    store.SCHEMA_VERSION, import_sources.VERSION,
+                    import_sources.FILENAME_VERSION, coding_evidence.MIGRATION_VERSION,
+            } <= owner_versions:
+                import_sources.migrate(owner_db)
             coding_evidence.ensure_fields(owner_db)
             grants = task_collaboration.list_role_grants(collab, actor_user_id=owner["owner_user_id"], task_id=task_id)
             if any(grant["user_id"] != owner["owner_user_id"] for grant in grants):
                 self.latch_team_db(owner_db)
             kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
-            actor_db = self.screener_db(info, user["username"])
-            store.migrate(actor_db)
-            screening_rounds.migrate(actor_db)
-            if actor_db.resolve() != owner_db.resolve():
+            # 属主同人时复用 owner 库路径（省一次 _connect/PRAGMA；同文件
+            # 同名，语义不变），否则按成员名建/取个人库
+            if actor_db.name == owner_db.name:
+                actor_db = owner_db
+            else:
+                actor_db = self.screener_db(info, user["username"])
+            # 同法：actor 库 v1/v6 齐全时跳过两个 migrate 的重复重查；
+            # 属主同人时 actor 库即 owner 库，直接复用 owner 的版本判定与
+            # ensure_fields 结果（省一次 migration_state 连接与两次 resolve）
+            if actor_db is owner_db or actor_db.name == owner_db.name:
+                # 复审（HEAD 现态回归）：owner_versions 只判了 {1,4,5,3}——
+                # owner 即 actor 时复用它跳过 screening_rounds.migrate 会让
+                # 新任务缺 workflow_screen_rounds 表，POST screening-rounds
+                # start/finish 500。actor 判齐条件独立按 {1,6} 核对。
+                actor_versions = owner_versions
+                if actor_versions is None or not {
+                        store.SCHEMA_VERSION, screening_rounds.ROUNDS_VERSION,
+                } <= actor_versions:
+                    store.migrate(actor_db)
+                    screening_rounds.migrate(actor_db)
+            else:
+                actor_versions = store.migration_state(actor_db)
+                if actor_versions is None or not {
+                        store.SCHEMA_VERSION, screening_rounds.ROUNDS_VERSION,
+                } <= actor_versions:
+                    store.migrate(actor_db)
+                    screening_rounds.migrate(actor_db)
                 coding_evidence.ensure_fields(actor_db)
             return WorkflowContext(info, user, owner, owner_db, actor_db,
                                    owner["owner_user_id"] == user["user_id"], kind, collab)
@@ -78,6 +153,7 @@ class WorkflowRuntime:
             conn.execute("UPDATE workflow_state SET team_latched=1 WHERE singleton=1 AND team_latched=0")
 
     def latch_team(self, task_id: str, user: dict) -> None:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             # context discovers only non-owner grants; a self-grant must not
             # change the task kind. Call before revoking an existing grant.
@@ -118,6 +194,7 @@ class WorkflowRuntime:
 
     @contextmanager
     def schema_guard(self, task_id: str, user: dict, db: Path):
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if ctx.actor_db.resolve() != db.resolve():
@@ -126,6 +203,16 @@ class WorkflowRuntime:
             yield ctx
             coding_evidence.ensure_fields(db)
             if before != coding_evidence.field_rows(db):
+                if not ctx.can_manage and ctx.owner is not None:
+                    # U4-P3：**团队**成员编辑的是自己的私有 coding scheme，其他
+                    # 参与者既不可见也不依赖它——不 bump owner 库 workflow_state
+                    # .version（那是 owner 的全局乐观锁），也不向全员广播
+                    # coding-scheme，避免一名成员反复让全员的后续写请求 409。
+                    # owner 版本只由 owner 级写操作推进。
+                    # legacy（owner=None）单机任务不属该口径（#33）：actor 即
+                    # 唯一用户，方案编辑恢复 bump（修复前行为），版本随方案
+                    # 变化推进、依赖版本号的写互斥保持有效。
+                    return
                 with closing(store.connect(ctx.owner_db)) as conn, conn:
                     self.bump_version(conn)
                 self.notify(ctx, 'coding-scheme')
@@ -142,6 +229,7 @@ class WorkflowRuntime:
     def trace_actions(self, task_id: str, user: dict, events: list[dict]) -> None:
         from coscreen import workspace_undo
         from coscreen.research_trace import TraceContext
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键/journal 查询用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             context = TraceContext(task_id=task_id, actor_id=user['user_id'])
@@ -199,8 +287,17 @@ class WorkflowRuntime:
                         last = workspace_undo._latest(conn, context, stage)
                         if last and last['entry_id'] == operation[0]:
                             same = workspace_undo.snapshot_matches(conn, stage, key, before, after)
-                            actions.update(undo_entry_id=last['entry_id'], can_undo=reason is None and same,
-                                           reason=reason or (None if same else 'saved_state_changed'))
+                            # r6 #26：can_undo 与 undo() 的 MISSING_EVIDENCE_FILE
+                            # 拒绝同口径地检查待恢复图片文件存在性——修复前只比
+                            # DB 状态，文件被删后轨迹抽屉的 Undo this save 仍可点、
+                            # 点击后 409。
+                            files_ok = (stage != 'coding' or 'evidence' not in before
+                                        or workspace_undo._evidence_files_available(
+                                            ctx.actor_db, before['evidence']))
+                            actions.update(undo_entry_id=last['entry_id'],
+                                           can_undo=reason is None and same and files_ok,
+                                           reason=reason or (None if (same and files_ok) else
+                                                             ('missing_evidence_file' if same else 'saved_state_changed')))
                     # Trace lifecycle UUIDs and workflow field UUIDs are separate namespaces.
                     # Resolve only this authenticated actor's current, unretired lifecycle.
                     actions['current_field'] = None
@@ -233,6 +330,14 @@ class WorkflowRuntime:
                 actor_user_id=ctx.user["user_id"], task_id=ctx.info.task_id)
         except PermissionError:
             return
+        except (task_collaboration.OwnerUnavailableError,
+                task_collaboration.CollaborationStoreCorruptError) as exc:
+            # R6-C6：读取失败不再折叠成"无参与者"静默丢事件——显式记日志
+            import logging
+            logging.getLogger(__name__).warning(
+                "task %s notify skipped: participant lookup failed: %s",
+                ctx.info.task_id, exc)
+            return
         event = {"type": "task-workflow-changed", "task_id": ctx.info.task_id,
                  "version": store.settings(ctx.owner_db)["version"], "reason": reason}
         for actor in ids:
@@ -240,10 +345,20 @@ class WorkflowRuntime:
 
     def sync_catalog(self, ctx: WorkflowContext) -> None:
         if ctx.owner is not None and not ctx.can_manage:
-            from custom_backend.shared_corpus import sync_shared_articles
-            sync_shared_articles(ctx.info.dir, owner_username=ctx.owner["owner_username"],
-                                 member_username=ctx.user["username"],
-                                 catalog_revision=store.catalog_revision(ctx.owner_db))
+            from custom_backend.shared_corpus import (ReservedScreenerCollisionError,
+                                                      sync_shared_articles)
+            try:
+                sync_shared_articles(ctx.info.dir, owner_username=ctx.owner["owner_username"],
+                                     member_username=ctx.user["username"],
+                                     catalog_revision=store.catalog_revision(ctx.owner_db))
+            except ReservedScreenerCollisionError:
+                # r6 #29：升级前已存在的撞名授权成员的目录同步收敛为 409 撞名
+                # 改名指引（修复前裸 ValueError -> work-queue/articles 500）。
+                from custom_backend.main import COLLABORATION_RESERVED_NAME_MESSAGE
+                raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                          "message_key": "coding.collaboration_reserved_name", "params": {},
+                                          "details": "Username collides with the reserved collaboration database filename",
+                                          "message": COLLABORATION_RESERVED_NAME_MESSAGE})
 
     @staticmethod
     def article_rows(db: Path, *, compact: bool = False) -> list[dict]:
@@ -375,6 +490,9 @@ class WorkflowRuntime:
                     expected_version: int | None = None, *, canonical_only: bool = False):
         if stage not in store.STAGES:
             raise HTTPException(400, "Unknown workflow stage.")
+        # R6-C3/#22：任务锁键统一规范 task_id（尾点别名与规范 id 互斥），
+        # 与撤销/保存路径持同一把锁。
+        task_id = self.task_lookup(task_id).task_id
         # Same-process RLock is held through the caller's actual save/commit. It
         # complements SQLite transactions and the preexisting task file lock.
         with self.lock(task_id):
@@ -396,10 +514,25 @@ class WorkflowRuntime:
                                               "workflow_settings": self.settings(ctx)})
             yield ctx
 
-    def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str) -> None:
-        if decision == "maybe" and not store.settings(ctx.owner_db)["stages"][stage].get("show_maybe", True):
-            raise HTTPException(409, {"code": "maybe_disabled", "version": store.settings(ctx.owner_db)["version"],
+    def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str,
+                    key: str | None = None, *, db: Path | None = None) -> None:
+        """任务级 show_maybe 与「暂不确定只在初筛第一轮」的写闸门。
+
+        ``key``/``db`` 是本次实际写入的文献与筛选员库：只要该文献进过该筛选员
+        任一复筛轮次快照（active/closed/released），初筛的 maybe 一律 409。
+        复筛（fulltext）不传 key，行为完全不变；撤销/回导不是本闸门路径。
+        """
+        if decision != "maybe":
+            return
+        state = store.settings(ctx.owner_db)
+        if not state["stages"][stage].get("show_maybe", True):
+            raise HTTPException(409, {"code": "maybe_disabled", "version": state["version"],
                                       "workflow_settings": self.settings(ctx)})
+        if stage == "screen" and key is not None:
+            if key in screening_rounds.snapshot_keys(db or ctx.actor_db):
+                raise HTTPException(409, {"code": "maybe_first_round_only",
+                                          "version": state["version"],
+                                          "workflow_settings": self.settings(ctx)})
 
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
         """Current owner requirements apply to every actor's current saved evidence."""
@@ -407,6 +540,7 @@ class WorkflowRuntime:
 
     def queue(self, task_id: str, user: dict, stage: str, source_id: str | None = None,
               order: str = "import", *, shuffle: bool = False) -> dict:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             self.sync_catalog(ctx)
@@ -451,6 +585,7 @@ class WorkflowRuntime:
                     "paused": state["stages"][stage]["mode"] == "paused"}
 
     def submission_evidence_queue(self, task_id: str, user: dict, source_id: str | None = None) -> dict:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if not self.can_submit_coding(ctx):
@@ -476,6 +611,7 @@ class WorkflowRuntime:
                     'submission_evidence': self.submission_evidence_capability(ctx)}
 
     def work_item(self, task_id: str, user: dict, stage: str, key: str, *, submission_evidence: bool = False) -> dict:
+        task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             if submission_evidence and (stage != 'coding' or not self.can_submit_coding(ctx)):
@@ -506,10 +642,15 @@ class WorkflowRuntime:
                                               'required': mapped.get(dim['id']) in required,
                                               'writable': dim['id'] in mapped and reason is None}
                                              for dim in coding_evidence.field_rows(ctx.actor_db)]}
+            # 初筛：「暂不确定」只在第一轮（该文献从未进过本人任一复筛轮次快照）。
+            # 全文保持不变，恒为 True。
+            maybe_allowed = (stage != 'screen'
+                             or key not in screening_rounds.snapshot_keys(ctx.actor_db))
             return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
                     **(self.evidence_state(ctx, key) if stage == 'coding' else {}),
                     **submission,
                     "writable": reason is None, "reason": reason,
+                    "maybe_allowed": maybe_allowed,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 
     @staticmethod
@@ -691,13 +832,23 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
 
     @app.post("/api/tasks/{task_id}/screening-rounds")
     def change_round(task_id: str, body: RoundIn, user: dict = Depends(require_user)) -> dict:
+        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
+        task_id = task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx = runtime.context(task_id, user)
             if ctx.owner is None or ctx.info.degraded:
                 raise HTTPException(403, 'Task is read-only.')
             policy = store.settings(ctx.owner_db)
             if body.expected_policy_version != policy['version']:
-                raise HTTPException(409, 'Workflow policy changed. Refresh and retry.')
+                # F63（UX 批准单 §七）：同类「策略版本冲突」此前两套口径——
+                # write_guard 回 {code:'workflow_version_conflict', version,
+                # workflow_settings}，前端 W.error 据此自动刷新并保留草稿；
+                # screening-rounds 只回一句纯英文串、前端既不刷新也不更新版本，
+                # 重试必然再 409（死循环）。此处对齐 write_guard 的载荷形状，
+                # W.error→W.refresh('conflict') 生效后重试即通过。
+                raise HTTPException(409, {"code": "workflow_version_conflict",
+                                          "version": policy['version'],
+                                          "workflow_settings": runtime.settings(ctx)})
             runtime.sync_catalog(ctx)
             rows, saved = runtime.eligible(ctx, 'screen')
             source_id = body.source_id or None
@@ -708,6 +859,9 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
             elif action == 'start':
                 active = screening_rounds.current(ctx.actor_db, saved)
                 if active and active['pending_keys']:
+                    # 余下三条 409 保持纯字符串 error 形状（前端不按 code 做动作），
+                    # 但文案改由 RFLang 双键词典命中（screening_rounds.js 注册十语言），
+                    # errOf 的 detail -> T() 即输出当前界面语言。
                     raise HTTPException(409, 'Finish the current round or proceed to full-text screening first.')
                 if any(not saved.get(row['zotero_key']) for row in rows):
                     raise HTTPException(409, 'Complete the current title-and-abstract queue first.')

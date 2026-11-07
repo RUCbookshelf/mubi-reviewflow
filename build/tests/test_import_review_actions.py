@@ -17,17 +17,31 @@ class ReviewActionsTests(unittest.TestCase):
   result=cls.client.post('/api/auth/register',json={'username':'fixture@example.test','password':'Review-Test-2026'}).json()
   cls.user={'user_id':result['user']['id'],'username':result['user']['username']}
   cls.client.headers['Authorization']='Bearer '+result['token']
+  # 门禁墙钟（类级模板库，同 test_report_evidence 手法）：原 setUp 每用例
+  # 「POST + 首建迁移链 + init/migrate + 三行种子」约 400ms；类级建真实
+  # 模板任务（同一条产品路径产出）快照库字节，每用例复制（~3ms）。
+  from coscreen import tasks as _tasks
+  cls._slug=_tasks.slugify_screener(cls.user['username'])
+  tpl=cls.client.post('/api/tasks',json={'name':'actions-template'}).json()['task_id']
+  ctx0=app.state.review_workflow.context(tpl,cls.user)
+  db.init_db(ctx0.owner_db);store.migrate(ctx0.owner_db)
+  with closing(wf.connect(ctx0.owner_db)) as c, c:
+   c.execute('INSERT INTO workflow_sources VALUES(?,?,?,?,?)',('s','01-Wiley.ris','01-wiley.ris',1,'now'))
+   c.execute('INSERT INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)',('b',str(cls.user['user_id']),'h','batch',1,'staged','now'))
+   c.execute('INSERT INTO workflow_import_files VALUES(?,?,?,?,?)',('b',0,'01-Wiley.ris','d','s'))
+  cls._template_db_bytes=Path(ctx0.owner_db).read_bytes()
  @classmethod
  def tearDownClass(cls):cls.client.__exit__(None,None,None);gc.collect();_fixture.cleanup()
  def setUp(self):
   self.task=self.client.post('/api/tasks',json={'name':self._testMethodName}).json()['task_id']
   self.base=f'/api/tasks/{self.task}/import-batches/b'
-  ctx=app.state.review_workflow.context(self.task,self.user);self.db=ctx.owner_db
-  db.init_db(self.db);store.migrate(self.db)
-  with closing(wf.connect(self.db)) as c, c:
-   c.execute('INSERT INTO workflow_sources VALUES(?,?,?,?,?)',('s','01-Wiley.ris','01-wiley.ris',1,'now'))
-   c.execute('INSERT INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)',('b',str(self.user['user_id']),'h','batch',1,'staged','now'))
-   c.execute('INSERT INTO workflow_import_files VALUES(?,?,?,?,?)',('b',0,'01-Wiley.ris','d','s'))
+  from coscreen import tasks as _tasks
+  from custom_backend.main import DATA_DIR as _APP_DATA_DIR
+  # main.DATA_DIR 是任务真实落盘根（全套 pytest 下本模块 fixture.name 会
+  # 被首个导入模块的绑定取代）
+  info=_tasks.find_task(self.task,_APP_DATA_DIR)
+  self.db=info.dir/(self._slug+'.db')
+  Path(self.db).write_bytes(self._template_db_bytes)
  def record(self,c,key,doi='10.test/same',canonical=None):
   a=Article(zotero_key=key,title='Synthetic '+key,doi=doi).to_dict()
   c.execute('INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(key,'s',key,1,'01-Wiley.ris',json.dumps(a),json.dumps(a),key,key,canonical,None,'new','staged','now'))

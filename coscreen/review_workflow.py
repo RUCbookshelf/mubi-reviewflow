@@ -7,8 +7,10 @@ This module never edits decisions, field IDs, or researched article metadata.
 from __future__ import annotations
 
 import json
+import os
 import random
 import sqlite3
+import threading
 import unicodedata
 from contextlib import closing
 from datetime import datetime, timezone
@@ -66,20 +68,88 @@ def has_table(conn: sqlite3.Connection, table: str) -> bool:
     return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
 
 
+_FRESH_LOCK = threading.Lock()
+_FRESH_DBS: dict[str, int] = {}
+
+
+def note_freshly_created(db: str | Path) -> None:
+    """登记「本进程新建的库」的文件身份（st_ino 文件索引）。
+
+    首建迁移链中的库不含任何既有数据：升级前备份与逐事务 fsync 对它没有
+    保护对象。登记按文件身份而非路径字符串生效——文件被删除替换后 st_ino
+    变化，登记自动失效，不会误伤后来放到同一路径的旧库。
+    """
+    try:
+        identity = os.stat(db).st_ino
+    except OSError:
+        return
+    with _FRESH_LOCK:
+        _FRESH_DBS[str(Path(db).resolve())] = identity
+
+
+def migration_state(db: str | Path) -> set[int] | None:
+    """一次只读连接读出 workflow_migrations 已落地的版本集合。
+
+    供 context() 热路径合并版本核查（门禁墙钟：每个 API 请求原先对同一
+    库开 5 个只读连接逐个重查 v1/v4/v5/v3/v6——各 migrate 在版本齐全时
+    本就是无操作，此处一次判齐后跳过，首建/旧库升级行为不变）。库文件
+    不存在或账本表未建时返回 None（调用方走完整迁移链）。
+    """
+    path = Path(db)
+    if not path.is_file():
+        return None
+    with closing(connect(path, read_only=True)) as conn:
+        if not has_table(conn, "workflow_migrations"):
+            return None
+        return {int(row[0]) for row in conn.execute("SELECT version FROM workflow_migrations")}
+
+
+def is_fresh_database(db: str | Path) -> bool:
+    """该库文件是否由本进程新建且从未被整体替换（可安全跳过升级前备份）。"""
+    try:
+        identity = os.stat(db).st_ino
+    except OSError:
+        return False
+    with _FRESH_LOCK:
+        return _FRESH_DBS.get(str(Path(db).resolve())) == identity
+
+
+def connect_for_initial_migration(db: str | Path) -> sqlite3.Connection:
+    """首建迁移链的写连接：对「本进程新建」的库临时放宽 synchronous。
+
+    同一进程内 SCHEMA_VERSION 恒定，版本行缺失只可能是首建链尚未走完，此时
+    库内不存在本进程之外写入的数据：断电最坏回到未建库状态，下次打开由幂等
+    迁移链原样重建。真实旧库（非进程新建）仍走默认 FULL，升级行为不变。
+    """
+    conn = connect(db)
+    if is_fresh_database(db):
+        conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
 def migrate(db: str | Path) -> None:
     """Upgrade once, with SQLite's consistent backup before first existing DB upgrade."""
     path = Path(db)
-    if path.is_file():
+    # 本调用即文件创建者：库内不可能存在既有数据，无需升级前备份。
+    creating = not path.is_file()
+    if not creating:
         with closing(connect(path, read_only=True)) as conn:
             if has_table(conn, "workflow_migrations") and conn.execute(
                     "SELECT 1 FROM workflow_migrations WHERE version=?", (SCHEMA_VERSION,)).fetchone():
                 return
-            backup = path.with_name(path.name + ".pre-workflow-v1.bak")
-            if not backup.exists():
-                with closing(sqlite3.connect(backup)) as target:
-                    conn.backup(target)
+            # 备份只保护既有库的首次升级；本进程新建、尚在首建链中的库没有
+            # 可备份的数据，跳过空库备份拷贝（真实旧库不是进程新建，照常备份）。
+            if not is_fresh_database(path):
+                backup = path.with_name(path.name + ".pre-workflow-v1.bak")
+                if not backup.exists():
+                    with closing(sqlite3.connect(backup)) as target:
+                        conn.backup(target)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(connect(path)) as conn, conn:
+    conn = connect(path)
+    if creating or is_fresh_database(path):
+        # 首建链写事务免逐事务 fsync（依据见 connect_for_initial_migration 注释）。
+        conn.execute("PRAGMA synchronous=NORMAL")
+    with closing(conn), conn:
         # Account reason stores have no catalogue; task catalogues already exist.
         schema = _SCHEMA if has_table(conn, "articles") else _SCHEMA.split("CREATE TRIGGER")[0]
         conn.executescript("BEGIN IMMEDIATE;\n" + schema)
@@ -90,6 +160,10 @@ def migrate(db: str | Path) -> None:
             conn.execute("INSERT OR IGNORE INTO workflow_article_sources SELECT zotero_key,? FROM articles a "
                          "WHERE NOT EXISTS(SELECT 1 FROM workflow_article_sources s WHERE s.zotero_key=a.zotero_key)", (UNASSIGNED,))
         conn.execute("INSERT OR IGNORE INTO workflow_migrations VALUES(?,?)", (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()))
+    if creating:
+        # 只有「本调用创建了该文件」才登记；升级既有旧库时不能把旧库标成新建，
+        # 否则下游 v4/v5/v3/v6 会误跳过它们对旧库的保护性备份。
+        note_freshly_created(path)
 
 
 def settings(db: str | Path) -> dict:

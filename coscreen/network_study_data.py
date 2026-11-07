@@ -7,6 +7,8 @@ import math
 from contextlib import closing
 from pathlib import Path
 
+import numpy as np
+
 from coscreen.db import _connect
 from coscreen.review_analysis import _linked
 
@@ -83,6 +85,19 @@ def _validate(contrasts, covariance, measure: str, covariance_scale: str) -> tup
         clean_covariance.append([float(value) for value in row])
     if any(clean_covariance[i][i] <= 0 for i in range(n)):
         raise ValueError("covariance diagonal values must be positive")
+    # G4-01: the storage layer itself must refuse covariance that is not
+    # symmetric positive definite. Same caliber as the outer gate
+    # (network_gls._parse_study): symmetry within np.allclose tolerance, then a
+    # Cholesky factorisation on the symmetrised copy for positive definiteness.
+    # Exactly symmetric SPD input is stored unchanged; near-symmetric input
+    # within the tolerance is accepted as the outer layer does.
+    matrix = np.asarray(clean_covariance, dtype=float)
+    if not np.allclose(matrix, matrix.T, rtol=1e-10, atol=1e-12):
+        raise ValueError("covariance must be symmetric positive definite")
+    try:
+        np.linalg.cholesky(matrix / 2 + matrix.T / 2)
+    except (FloatingPointError, np.linalg.LinAlgError) as exc:
+        raise ValueError("covariance must be symmetric positive definite") from exc
     return clean_contrasts, clean_covariance
 
 

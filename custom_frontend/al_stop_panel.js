@@ -234,7 +234,7 @@
       if (result) {
         resultBox.hidden = false;
         const verdict = result.pass
-          ? el('p', { class: 'al-stop-verdict pass', text: T('证书通过 ✅ 以 ≥95% 置信度，总召回 ≥95%（剩余相关 ≤ {0} 条）', String(result.kT)) })
+          ? el('p', { class: 'al-stop-verdict pass', text: T('证书通过 ✅ 抽验未见新相关，总召回 ≥95%（剩余相关 ≤ {0} 条；置信度按超几何随已发现相关数与抽验量变化，并非固定 95%）', String(result.kT)) })
           : el('p', { class: 'al-stop-verdict fail', text: T('证书未通过 ❌ 抽验中发现 {0} 条新的相关文献，请继续筛选', String(result.newRelevant)) });
         resultBox.replaceChildren(verdict);
       } else resultBox.hidden = true;

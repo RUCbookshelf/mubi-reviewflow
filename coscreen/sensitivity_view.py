@@ -245,7 +245,8 @@ def sensitivity_view(
 
     Invalid inputs raise ``SensitivityViewError`` (a ``ValueError``) with a
     stable ``reason`` code: unknown measure, mixed-measure pool, k < 2,
-    non-positive SE, duplicate study ids, bootstrap/seed mismatches.
+    non-positive SE, degenerate SE (squared SE outside the supported numeric
+    range), duplicate study ids, bootstrap/seed mismatches.
     """
     if isinstance(level, bool) or not isinstance(level, Real):
         raise SensitivityViewError("level_invalid", "level must be a number strictly between 0 and 1")
@@ -337,6 +338,31 @@ def sensitivity_view(
 
     y = [math.log(estimate) if measure in RATIOS else estimate for _, _, estimate, _ in cleaned]
     v = [se * se for _, _, _, se in cleaned]
+    # Degenerate-SE screening (B08-N2), mirroring the MM10-01 fix in
+    # ``review_analysis._screened_inverse_variance_weights``: a squared SE that
+    # overflows to inf (se ≳ 1.34e154) or underflows to an exact 0.0
+    # (se ≲ 2.2e-162) breaks this module's ValueError -> 4xx contract at the
+    # read endpoint. Pre-fix, measured on the baseline: the underflow band
+    # (and an all-degenerate overflow pool, w all 0.0 -> total_w == 0) raises
+    # ZeroDivisionError inside ``_model_fit`` -> HTTP 500; a mixed overflow
+    # pool instead leaks inf into the REML preconditions and surfaces as an
+    # out-of-contract ValueError("REML needs matching finite effects and
+    # positive sampling variances") with the wrong message. Reject both bands
+    # here with one structured error; every other input -- including the
+    # subnormal band that already fails inside fsum with a ValueError -> 400
+    # -- keeps its existing behavior bit for bit.
+    degenerate = [
+        study_id
+        for (study_id, _, _, _), variance in zip(cleaned, v)
+        if not math.isfinite(variance) or variance <= 0.0
+    ]
+    if degenerate:
+        raise SensitivityViewError(
+            "se_out_of_supported_range",
+            "study standard errors are outside the supported numeric range "
+            "for inverse-variance weighting",
+            study_ids=degenerate,
+        )
     transform = _display_transform(measure)
     has_null = info["null_display"] is not None
 

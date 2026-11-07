@@ -22,7 +22,7 @@
   #appMain .row>*{min-width:0;max-width:100%}
   body>.footer{display:none}
   /* The concept app bar: separate menu, title/task, Trace, globe, moon. */
-  body.rf-navigation-sheet #appMain>.top{display:grid;grid-template-columns:44px minmax(0,1fr) 20px auto;grid-template-rows:25px 20px;gap:0 5px;padding:9px 10px 10px;min-height:72px;border-bottom:1px solid var(--border);background:var(--surface)}
+  body.rf-navigation-sheet #appMain>.top{display:grid;grid-template-columns:44px minmax(0,1fr) 44px auto;grid-template-rows:25px 20px;gap:0 5px;padding:9px 10px 10px;min-height:72px;border-bottom:1px solid var(--border);background:var(--surface)}
   #rfMobileNavigation{grid-column:1;grid-row:1/3;width:44px;height:48px;padding:11px;border:0;background:transparent;color:var(--ink);border-radius:14px;cursor:pointer}
   #rfMobileNavigation svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round}
   #rfMobilePageTitle{grid-column:2;grid-row:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:600 14px/25px 'Segoe UI','Microsoft YaHei',sans-serif}
@@ -33,7 +33,9 @@
   #appMain .top :is(#themeBtn,#rf-app-language-button,#rf-restart-button){width:44px;min-width:44px;min-height:48px;padding:10px;border-radius:14px;justify-content:center}
   #themeBtnText,#rf-app-language-current,#rf-app-language-button>.caret,#rf-restart-button>span{display:none}
   body[data-workspace=analysis] #themeBtn .icon{display:block}
-  #appMain .top .trace-shortcut-status{grid-column:3;grid-row:1/3;width:20px;min-width:20px;padding:0;font-size:0;overflow:hidden;align-self:center}
+  /* F39：轨迹入口是真实跳转按钮，只能看到 8px 状态圆点会把命中区压到 20px 宽
+     （低于 WCAG 2.5.8 的 24px 下限）。圆点保留，按钮外包透明内边距凑满 44×44。 */
+  #appMain .top .trace-shortcut-status{grid-column:3;grid-row:1/3;display:flex;align-items:center;justify-content:center;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;font-size:0;overflow:hidden;align-self:center}
   #appMain .top .trace-shortcut-status:before{margin:0}
   body.rf-navigation-sheet #appMain>.top .rf-breadcrumb{display:none}
   #rfNavigationSheet{top:auto!important;left:0;bottom:0;width:100%!important;height:82dvh!important;border-radius:24px 24px 0 0!important}
@@ -71,7 +73,7 @@
   /* Home: current review, shortcuts and card-based settings. */
   .page[data-p=home]>.rf-page-title{display:none}
   .page[data-p=home]:has(#wf-tab-overview[aria-selected=true])>.rf-mobile-settings-footer{display:none}
-  .wf-tabs,.trace-tabs{display:flex;flex-wrap:nowrap;overflow:auto;margin:0 -16px 16px;padding:0 16px 9px;gap:6px;border-bottom:1px solid var(--border);scrollbar-width:none}
+  .wf-tabs,.trace-tabs{display:flex;flex-wrap:nowrap;overflow:auto;margin:0 -16px 16px;padding:0 16px 9px;gap:6px;border-bottom:1px solid var(--border);scrollbar-width:thin}
   #appMain .wf-tabs [role=tab],#appMain .trace-tabs [role=tab]{flex:none;min-height:48px;padding:8px 12px;border:0;border-radius:0;background:transparent;font-size:13px;white-space:nowrap}
   #appMain .wf-tabs [aria-selected=true],.trace-tabs [aria-selected=true]{color:var(--primary-dark)}
   #wf-current-task{display:grid;gap:8px}
@@ -114,6 +116,11 @@
   .rf-mobile-settings-card label{display:block;margin:12px 0 5px}
   .wf-settings-save .btn{width:100%;white-space:normal;margin:8px 0}
   /* Reader: three order segments, source + stopping, compact actions, article. */
+  /* F41 缓解半步：页顶工作流阶段一级切换 tab（初筛↔复筛↔编码），省掉
+     「汉堡→抽屉→条目」两步。仍走原有 go()，导航主干与首页快捷区未动。 */
+  .rf-mobile-stage-tabs{display:flex;margin:-18px -16px 14px;padding:0 16px;gap:4px;border-bottom:1px solid var(--border);background:var(--surface);overflow:auto;scrollbar-width:thin}
+  #appMain .rf-mobile-stage-tabs>.rf-mobile-stage-tab{flex:none;min-height:48px;min-width:44px;padding:8px 14px;border:0;border-bottom:3px solid transparent;border-radius:0;background:transparent;color:var(--muted);font:600 13px/1.3 'Segoe UI','Microsoft YaHei',sans-serif;white-space:nowrap}
+  #appMain .rf-mobile-stage-tabs>.rf-mobile-stage-tab[aria-current=page]{color:var(--primary-dark);border-bottom-color:var(--primary)}
   .rf-reader-page>h2,.rf-fulltext-reader>.page-cap,.rf-coding-reader>.page-cap{display:none}
   .rf-reader-page>.al-mode,.rf-reader-page>.wf-queue-tools,.rf-document-toolbar{display:none!important}
   .rf-mobile-queue{display:grid;gap:8px;margin-bottom:14px}
@@ -130,10 +137,13 @@
   #appMain .wf-scope-progress{font-size:12px;color:var(--muted)}
   #appMain .wf-readonly{font-size:13px;color:var(--danger)}
   .rf-mobile-source .rf-stop-anchor{margin:0;flex:none;align-self:start}
-  #appMain .rf-mobile-source .rf-stop-summary{width:48px;min-height:48px;padding:10px;font-size:0;justify-content:center}
+  #appMain .rf-mobile-source .rf-stop-summary{width:auto;min-width:48px;min-height:48px;padding:10px;font-size:0;justify-content:center;gap:6px}
   .rf-mobile-source .rf-stop-summary:after{display:none}
   .rf-mobile-source .rf-stop-summary>*{display:none}
   .rf-mobile-source .rf-stop-summary>.rf-mobile-stop-icon{display:block;width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  /* F43：图标旁补两字短标签「停止」。按钮高度仍是 48px（命中区不变），宽度按
+     图标＋文字自然展开；文案经 RFMobileLabels 十语言注册。 */
+  .rf-mobile-source .rf-stop-summary>.rf-mobile-stop-label{display:inline;font-size:12px;line-height:1;white-space:nowrap}
   .rf-mobile-screen-actions,.rf-mobile-document-actions,.rf-mobile-document-status{display:flex;align-items:center;gap:6px;justify-content:space-between;margin:12px 0;min-width:0}
   #appMain .rf-mobile-screen-actions .btn,#appMain .rf-mobile-document-actions .btn{min-height:44px;font-size:12px;padding:8px 10px;white-space:normal}
   .rf-mobile-document-status .chip,.rf-mobile-screen-actions .chip{font-size:12px;white-space:normal;border-radius:30px;padding:6px 12px}
@@ -154,6 +164,15 @@
   #appMain .scr-decisions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;position:sticky;bottom:-28px;padding:12px 0 18px;background:var(--surface);border-top:1px solid var(--border);z-index:4}
   #appMain .scr-decisions>.btn{min-height:52px;font-size:13px;padding:8px 4px;white-space:normal}
   #appMain #excReason{grid-column:1/-1;max-width:none!important;width:100%;margin-top:2px}
+  /* F37：无理由库管理权的筛选员，自定义理由输入框原先只占 1/3 网格列宽
+     （全宽行样式只挂在 can_manage 才生成的 .wf-custom-reason-row 上）。 */
+  #appMain #excCustomReason{grid-column:1/-1;max-width:none!important;width:100%!important}
+  /* F38：排除理由行默认折叠（只有按「3 排除」才需要），把决策条压回按钮行高度。
+     展开由 mobile_concept.js 的捕获阶段点击处理完成（触屏两段式：先 3 再理由）。 */
+  #appMain .scr-decisions.rf-reason-collapsed #excReason,
+  #appMain .scr-decisions.rf-reason-collapsed #excCustomReason,
+  #appMain .scr-decisions.rf-reason-collapsed .wf-custom-reason-row{display:none}
+  #appMain .scr-decisions.rf-reason-collapsed{row-gap:0;padding-bottom:10px}
   #appMain .wf-custom-reason-row{grid-column:1/-1;display:flex;gap:8px;min-width:0;width:100%}
   #appMain .wf-custom-reason-row>.input{flex:1;min-width:0;width:0}
   #appMain .wf-custom-reason-row>.btn{flex:none;width:48px;min-height:48px;padding:10px}
@@ -168,7 +187,10 @@
   /* PDF.js needs an absolute scroll container. Its mobile offset follows the
      real wrapped toolbar height, measured by the presentation observer. */
   .pdfwrap .pdf-container{top:var(--rf-mobile-pdf-toolbar-height,104px)}
-  #appMain .ft-decide{position:static;margin-top:12px;background:var(--surface);border-top:1px solid var(--border);padding:12px 0 18px}
+  /* F42：初筛决策条是粘底常驻，复筛（#ftDecide）与编码保存条却随页滚动——三个阶段
+     行为不一致。这里复用初筛的粘底模式（sticky bottom + safe-area 内边距），
+     并在页面尾部预留滚动余量，避免粘底条遮住 PDF 底部工具与表单末行。 */
+  #appMain .ft-decide{position:sticky;bottom:0;z-index:4;margin-top:12px;background:var(--surface);border-top:1px solid var(--border);padding:12px 0 calc(18px + env(safe-area-inset-bottom,0px))}
   #appMain .ft-decide>.row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
   #appMain .ft-decide>.row>.btn{min-height:52px;font-size:13px;padding:8px 4px;white-space:normal;width:100%}
   #appMain #ftReason{grid-column:1/-1;width:100%!important;max-width:none!important}
@@ -200,7 +222,10 @@
   .wf-evidence input[type=file]{font-size:12px!important;width:100%;white-space:normal}
   .wf-evidence-images figure{max-width:calc(50% - 12px)}
   .wf-evidence-images img{max-width:100%}
-  #appMain .rf-mobile-coding-footer .rf-coding-savebar{position:static;background:var(--surface);padding:12px 0 18px;border:0;box-shadow:none}
+  /* F42（续）：编码保存条同样改为粘底常驻。.rf-mobile-coding-footer 由
+     mobile_concept.js 建在页面末尾，保存条在其中 sticky，保存反馈条仍在条上方。 */
+  #appMain .rf-mobile-coding-footer{position:sticky;bottom:0;z-index:4;background:var(--surface);border-top:1px solid var(--border);padding-bottom:calc(6px + env(safe-area-inset-bottom,0px))}
+  #appMain .rf-mobile-coding-footer .rf-coding-savebar{position:static;background:var(--surface);padding:12px 0 12px;border:0;box-shadow:none}
   #appMain .rf-mobile-coding-footer .row{display:flex;flex-wrap:wrap;gap:7px}
   #appMain .rf-mobile-coding-footer #cbSave{flex:1}
   #appMain .rf-mobile-sheet #wf-coding-entry{display:grid;gap:8px}
@@ -243,7 +268,7 @@
   #appMain .rf-prisma-section .row{display:block}
   #appMain .rf-prisma-section .row>div{min-width:0!important;margin:12px 0}
   #appMain .rf-prisma-section input,#appMain .rf-prisma-section select{max-width:none!important;width:100%}
-  .rf-prisma-preview #prView{overflow:auto}
+  .rf-prisma-preview #prView{overflow:auto;scrollbar-width:thin}
   .rf-prisma-preview #prView svg{min-width:570px;max-width:none}
   #appMain .rf-prisma-toolbar>.row{display:grid;gap:8px}
   .rf-prisma-toolbar .btn{width:100%;white-space:normal}
@@ -258,8 +283,7 @@
   #appMain .an-page-header{display:none}
   .an-intro-note{font-size:13px}
   #appMain .an-jump{display:block!important;position:static;inset:auto;width:100%;max-height:none;max-width:none;padding:0;border:0;background:none;margin-bottom:16px;transform:none;box-shadow:none;overflow:visible}
-  #appMain .an-jump-categories{display:flex;flex-wrap:nowrap;overflow:auto;gap:6px;margin:0 -16px 16px;padding:0 16px 9px;border-bottom:1px solid var(--border);scrollbar-width:none}
-  #appMain .an-jump-categories::-webkit-scrollbar{display:none}
+  #appMain .an-jump-categories{display:flex;flex-wrap:nowrap;overflow:auto;gap:6px;margin:0 -16px 16px;padding:0 16px 9px;border-bottom:1px solid var(--border);scrollbar-width:thin}
   #appMain .an-category-node{flex:none;min-width:0;max-width:100%}
   #appMain .an-jump-categories button{font-size:13px;min-height:48px;white-space:nowrap;border:0;border-radius:0;background:none;padding:8px 12px}
   /* Keep each method group under its category for the original navigation service.
@@ -278,7 +302,10 @@
   .rf-mobile-trace-panel{border-bottom:1px solid var(--border);margin:12px 0}
   #appMain .rf-mobile-trace-panel>.trace-panel{border:0;padding:0;background:none}
   .rf-mobile-trace-panel>.trace-panel>h2{display:none}
-  .trace-timeline{grid-template-columns:90px repeat(28,minmax(24px,1fr))}
+  /* F40：横向容器（PRISMA 570px、轨迹时间线 762px、各类页签条）在 360-390px 视口
+     里近半内容在屏外，而滚动条被显式隐藏、没有任何「右侧还有内容」的线索。
+     缓解半步＝恢复细滚动条可见（渐隐遮罩组件属移动端结构包）。 */
+  .trace-timeline{grid-template-columns:90px repeat(28,minmax(24px,1fr));scrollbar-width:thin}
   .trace-metrics>div{padding:0 8px;border:0}
   .trace-metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px}
   .trace-filters{display:grid;grid-template-columns:1fr}
@@ -288,7 +315,7 @@
   .trace-table td{display:block;padding:5px 0;border:0;white-space:normal;overflow-wrap:anywhere}
   .trace-table td:first-child,.trace-table td:nth-child(2){font-size:12px;color:var(--muted)}
   .trace-table td:nth-child(3){font-size:14px;font-weight:600}
-  .trace-panel{overflow:auto}
+  .trace-panel{overflow:auto;scrollbar-width:thin}
   .trace-drawer{inset:auto 0 0;width:auto;max-width:none;max-height:85dvh;border-radius:24px 24px 0 0;padding:20px}
   /* Help and login follow the concept; auth remains the existing form. */
   .help-layout,.help-grid{display:block}

@@ -10,5 +10,13 @@ bcrypt>=4.0
 python-docx>=1.1
 python-pptx>=1.0
 Pillow>=10
+# b05·F4-28：numpy/scipy/scikit-learn 是请求期懒导入的运行时依赖，不是可选
+# 加速件——按本清单自建 .venv 时缺它们，/evidence-map（coscreen/evidence_mapper.py
+# 的 KMeans 聚类）、AI 排序与多数统计端点会在请求期 ImportError（端点只捕
+# ValueError → 无诊断的 500）。版本区间与打包清单 build/requirements-app.txt
+# 逐字一致，两条部署路径不再漂移。
+numpy>=1.26,<3
+scipy>=1.11,<2
+scikit-learn>=1.4,<2
 # 以下为 coscreen 本体既有依赖（后端复用），仅供部署参考：
 # pandas pypdf rapidfuzz

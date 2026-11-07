@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from coscreen.db import _add_column_if_missing, _connect
+from coscreen.measure_registry import MEASURE_REGISTRY
 from coscreen.pool_compatibility import NON_DIRECTIONAL_MEASURES, require_compatible_effects
 
 DbPath = str | Path
@@ -37,7 +38,9 @@ def binary_effect(events_t: int, total_t: int, events_c: int, total_c: int, meas
     """Two independent arms; zero event cells require an explicit external decision."""
     if measure not in {"RR", "OR", "RD"}:
         raise ValueError("binary measure must be RR, OR or RD")
-    if any(not isinstance(x, int) for x in (events_t, total_t, events_c, total_c)) or \
+    # B08-N4: bool is an int subclass; True passed the isinstance check and was
+    # pooled as 1 event. Counts must be genuine ints.
+    if any(isinstance(x, bool) or not isinstance(x, int) for x in (events_t, total_t, events_c, total_c)) or \
        not (0 <= events_t <= total_t and 0 <= events_c <= total_c and total_t > 0 and total_c > 0):
         raise ValueError("events must be integers between zero and group total")
     a, b, c, d = events_t, total_t-events_t, events_c, total_c-events_c
@@ -63,22 +66,33 @@ def continuous_effect(n_t: int, mean_t: float, sd_t: float,
                       n_c: int, mean_c: float, sd_c: float, measure: str) -> dict:
     if measure not in {"MD", "SMD"}:
         raise ValueError("continuous measure must be MD or SMD")
-    if any(not isinstance(n, int) or n < 2 for n in (n_t, n_c)) or \
+    # B08-N4: same bool-as-count guard for the continuous arm sizes.
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 2 for n in (n_t, n_c)) or \
        any(not math.isfinite(x) for x in (mean_t, sd_t, mean_c, sd_c)) or min(sd_t, sd_c) < 0:
         raise ValueError("each arm needs n >= 2, finite mean and nonnegative SD")
     diff = mean_t-mean_c
-    if measure == "MD":
-        estimate, variance = diff, sd_t**2/n_t + sd_c**2/n_c
-    else:
-        total = n_t+n_c
-        df = total-2
-        pooled_sd = math.sqrt(((n_t-1)*sd_t**2+(n_c-1)*sd_c**2)/df)
-        if pooled_sd == 0:
-            raise ValueError("SMD needs a positive pooled SD")
-        correction = 1-3/(4*df-1)
-        d = diff/pooled_sd
-        estimate = correction*d
-        variance = correction**2 * (total/(n_t*n_c) + d**2/(2*total))
+    # b14·F4-100：:91 的门只做 isfinite，合法有限但极大的臂级 SD（IPD 的
+    # ±1.5e308 参与者值经 stdev 得 1.73e308）在下面的 ``sd_t**2`` 处抛
+    # OverflowError(34)（CPython 的幂运算先抛错，``x*x`` 才是 inf）。该异常
+    # 不在端点 ``except ValueError`` 覆盖内 → HTTP 500。算式逐字保留（正常
+    # 输入的估计与 SE 逐位不变），只在外面把溢出翻译成同一条 ValueError 契约；
+    # 乘法路径溢出成 inf 的中间量由随后的有限性判定接住。
+    try:
+        if measure == "MD":
+            estimate, variance = diff, sd_t**2/n_t + sd_c**2/n_c
+        else:
+            total = n_t+n_c
+            df = total-2
+            pooled_sd = math.sqrt(((n_t-1)*sd_t**2+(n_c-1)*sd_c**2)/df)
+            if pooled_sd == 0:
+                raise ValueError("SMD needs a positive pooled SD")
+            correction = 1-3/(4*df-1)
+            d = diff/pooled_sd
+            estimate = correction*d
+            variance = correction**2 * (total/(n_t*n_c) + d**2/(2*total))
+    except OverflowError as exc:
+        raise ValueError("arm summaries are too large to represent: the sampling variance "
+                         "exceeds the finite range") from exc
     if variance <= 0:
         raise ValueError("zero sampling variance: this result needs a different method")
     return {"measure": measure, "estimate": estimate, "se": math.sqrt(variance), "se_scale": "natural"}
@@ -484,12 +498,78 @@ def synthesize(db: DbPath, comparison: str, outcome: str, timepoint: str, measur
     return _synthesize_rows(rows, measure, model, ci_method)
 
 
+def effect_scale_label(measure: str) -> str:
+    """效应量的纯分析尺度标签（MM5-08/09 公共口径；MM9-14 收敛词表）。
+
+    词表对照 ``measure_registry`` 的 ``scale`` 字段（'log' | 'natural' |
+    'fisher_z' | 'logit'）：只描述数值所在的**分析尺度**，不携带任何展示
+    变换声明。``"; results shown as X"`` 后缀描述的是合成路径独有的显示
+    变换（FISHER_Z→tanh、LOG_*→exp、LOGIT_PROP→expit，见
+    ``_synthesize_rows``），由 :func:`_synthesis_effect_scale_label` 仅在
+    合成结果里拼接；meta 回归与漏斗路径（``advanced_analysis``）从不套用
+    该变换，直接用本函数，不得再出现该后缀（MM9-14：曾把合成后缀原样接
+    到这两条路径，导出 JSON 声称 z/log 数值「shown as r / ratio of means」）。
+    """
+    return MEASURE_REGISTRY.get(measure, {}).get("scale", "natural")
+
+
+# 合成路径（_synthesize_rows）的展示口径（MM5-08 历史字面；MM9-14 起后缀
+# 只在此拼接）：后缀声明的显示变换只作用于合成结果的 pooled/ci/prediction
+# 展示值。分析尺度词沿用历史展示字面（"Fisher z" 带空格），保证合成 JSON
+# 的 effect_scale 字面不因 MM9-14 收敛词表而变动（防回归钉子锁死旧字面）。
+_SYNTHESIS_SHOWN_AS_SUFFIX = {
+    "FISHER_Z": "; results shown as r",
+    "LOGIT_PROP": "; results shown as proportion",
+    "LOG_RATE": "; results shown as rate",
+    "LOG_ROM": "; results shown as ratio of means",
+    "PAIRED_OR": "; results shown as matched-pair odds ratio",
+}
+_SYNTHESIS_SCALE_DISPLAY = {"fisher_z": "Fisher z"}
+
+
+def _synthesis_effect_scale_label(measure: str) -> str:
+    """合成结果的 effect_scale：纯分析尺度 + 展示变换声明（仅此路径）。"""
+    scale = effect_scale_label(measure)
+    return (_SYNTHESIS_SCALE_DISPLAY.get(scale, scale)
+            + _SYNTHESIS_SHOWN_AS_SUFFIX.get(measure, ""))
+
+
+def _screened_inverse_variance_weights(rows: list[dict]) -> list[float]:
+    """Inverse-variance weights ``1/se²`` with degenerate-SE screening (MM10-01).
+
+    Two degenerate bands escape the ValueError→4xx API contract as raw 500s:
+    ``se ** 2`` raises OverflowError for se ≳ 1.34e154, and underflows to an
+    exact 0.0 for se ≲ 2.2e-162 making ``1/se**2`` a ZeroDivisionError. Neither
+    is a ValueError, so the read endpoints' ``except ValueError`` never fires.
+    Screen them here — the same "supported numeric range" rejection
+    publication_bias already applies to its precisions — and also reject
+    non-finite/non-positive SEs (the write side, save_effect, already refuses
+    those; this is the read-side backstop of the same contract, not new
+    strictness against legal inputs). The subnormal band in between
+    (e.g. se=1e-160 → 1/se² = inf → downstream NaN → null) is deliberately
+    passed through: that is the known MM5-05 200+null behavior. The weight
+    expression stays literally ``1/se**2`` so legal inputs keep bit-identical
+    results.
+    """
+    weights = []
+    for row in rows:
+        se = row["se"]
+        if not math.isfinite(se) or se <= 0:
+            raise ValueError("every study SE must be finite and positive for inverse-variance weighting")
+        try:
+            weights.append(1 / se**2)
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError("study standard errors are outside the supported numeric range "
+                             "for inverse-variance weighting") from exc
+    return weights
+
+
 def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str) -> dict:
     require_compatible_effects(rows, measure)
     from scipy.stats import chi2, norm, t  # statistical dependency, installed with statsmodels
 
     y = [math.log(r["estimate"]) if measure in RATIOS else r["estimate"] for r in rows]
-    w = [1 / r["se"]**2 for r in rows]
+    w = _screened_inverse_variance_weights(rows)
     fixed = sum(a*b for a, b in zip(w, y)) / sum(w)
     q = sum(a*(b-fixed)**2 for a, b in zip(w, y))
     df = len(rows) - 1
@@ -556,12 +636,7 @@ def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str)
                        "random_pm":"Paule-Mandel inverse variance",
                        "random_reml":"restricted maximum likelihood inverse variance"}[model],
             "ci_method": "modified HKSJ 95%" if ci_method == "hksj" else "normal 95%",
-            "effect_scale": "log" if measure in RATIOS else
-                "Fisher z; results shown as r" if measure == "FISHER_Z" else
-                "logit; results shown as proportion" if measure == "LOGIT_PROP" else
-                "log; results shown as rate" if measure == "LOG_RATE" else
-                "log; results shown as ratio of means" if measure == "LOG_ROM" else
-                "log; results shown as matched-pair odds ratio" if measure == "PAIRED_OR" else "natural",
+            "effect_scale": _synthesis_effect_scale_label(measure),
             "pooled_analysis": pooled,
             "ci_analysis_low": ci_low_analysis,
             "ci_analysis_high": ci_high_analysis,

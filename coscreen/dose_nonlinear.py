@@ -96,21 +96,36 @@ def _validate_inputs(curves: Sequence[dict], knots: Sequence[float], prediction_
         if not study_id.strip() or not source_key.strip():
             raise ValueError("study ID and source key are required")
         study_ids.append(study_id)
-        if not isinstance(contrasts, Sequence) or isinstance(contrasts, (str, bytes)) or len(contrasts) < 3:
-            raise ValueError("each study needs at least three dose contrasts")
+        # F3-85：入库契约（dose_analysis.save_curve：≥2 对比、不排序）与拟合
+        # 契约旧实现（≥3 对比且严格递增）脱节——三臂研究（参照组 + 2 对比）
+        # 能存进库却永远进不了非线性拟合。此处对齐入库侧：接受 ≥2 对比，
+        # 对比按剂量升序重排（协方差矩阵同步做行列置换）；剂量必须互异。
+        # 两个对比恰好识别两个样条系数，rank/条件数门在 _fit_study 内照常生效。
+        if not isinstance(contrasts, Sequence) or isinstance(contrasts, (str, bytes)) or len(contrasts) < 2:
+            raise ValueError("each study needs at least two dose contrasts")
         try:
             doses = [_finite_float(item["dose"], "contrast dose") for item in contrasts]
             estimates = [_finite_float(item["estimate"], "contrast estimate") for item in contrasts]
         except (KeyError, TypeError):
             raise ValueError("each contrast needs a finite dose and estimate") from None
-        if any(left >= right for left, right in zip(doses, doses[1:])):
-            raise ValueError("dose contrasts must be strictly increasing")
+        if len(set(doses)) != len(doses):
+            raise ValueError("study doses must be distinct across contrasts")
+        # 形状/有限性检查必须在行列置换之前：协方差尺寸不符时 ``np.ix_`` 会抛
+        # IndexError（非 ValueError）而不是给出契约内的 4xx。
+        if covariance.shape != (len(doses), len(doses)) or not np.isfinite(covariance).all():
+            raise ValueError("covariance matrix must match the contrasts and be finite")
+        order = sorted(range(len(doses)), key=lambda index: doses[index])
+        if order != list(range(len(doses))):
+            doses = [doses[index] for index in order]
+            estimates = [estimates[index] for index in order]
+            covariance = covariance[np.ix_(order, order)]
         if reference in doses:
             raise ValueError("reference dose must differ from every contrast dose")
         if measure in _RATIO_MEASURES and any(value <= 0 for value in estimates):
-            raise ValueError("ratio estimates must be positive")
-        if covariance.shape != (len(doses), len(doses)) or not np.isfinite(covariance).all():
-            raise ValueError("covariance matrix must match the contrasts and be finite")
+            # F3-88：契约是自然尺度的比值（内部取一次 log），因此非正值仍是
+            # 非法的比值；旧文案不点明尺度，读起来像「负 log-RR 被拒」。
+            raise ValueError("ratio measures need positive natural-scale ratio estimates "
+                             "(the log is applied once internally; do not pre-log them)")
         if not np.allclose(covariance, covariance.T, rtol=0, atol=1e-10):
             raise ValueError("within-study covariance must be symmetric positive definite")
         try:
@@ -196,13 +211,39 @@ def fit_nonlinear_dose_response(curves: Sequence[dict], knots: Sequence[float],
                                 prediction_reference_dose: float | None = None) -> dict:
     """Fit a reference-centered three-knot spline dose-response meta-analysis.
 
-    ``curves`` uses the row contract returned by ``dose_analysis.list_curves``.
+    ``curves`` uses the row contract returned by ``dose_analysis.list_curves``:
+    for ratio measures each contrast ``estimate`` is the **natural-scale**
+    ratio (as stored by ``save_curve``/``arm_summaries_to_dose_curve``) and
+    ``covariance`` is already on the **log-ratio** scale (Greenland &
+    Longnecker contrasts). The fit takes ``log(estimate)`` exactly once — the
+    docstring previously claimed log-scale estimates, which would have applied
+    a second log here (F3-88). Both scales are echoed back per study
+    (``contrasts_scale`` / ``sampling_covariance_scale``) so a caller cannot
+    mix them up (F3-89).
+
     ``knots`` are common lower, interior and upper knots in ``dose_unit``.
-    Ratio measures require estimates and covariance on the log-ratio scale;
-    returned coefficients and curve values remain on that analysis scale.
+    Returned coefficients and curve values are on the analysis scale
+    (``log`` for ratio measures, ``identity`` otherwise).
     """
     import numpy as np
     from scipy.stats import chi2, norm
+
+    # F3-76：``dose_analysis.list_curves`` 对损坏的存储列降级为
+    # ``unreadable`` 而不是抛错；此处跳过这些行并如实回显，让一条坏记录
+    # 不再把整个非线性端点变成 500（与线性合成同一口径）。
+    if isinstance(curves, Sequence) and not isinstance(curves, (str, bytes)):
+        skipped_rows = [row for row in curves if isinstance(row, dict) and "unreadable" in row]
+        if skipped_rows:
+            curves = [row for row in curves
+                      if not (isinstance(row, dict) and "unreadable" in row)]
+    else:
+        skipped_rows = []
+    if skipped_rows and len(curves) < 3:
+        raise ValueError(
+            "nonlinear dose-response synthesis requires at least three studies with readable "
+            "stored curves; the stored curves for "
+            + ", ".join(sorted(str(row.get("study_id")) for row in skipped_rows))
+            + " are unreadable (re-enter those studies to repair them)")
 
     (parsed_knots, outcome, timepoint, measure, dose_unit, rows,
      prediction_reference) = _validate_inputs(
@@ -231,6 +272,10 @@ def fit_nonlinear_dose_response(curves: Sequence[dict], knots: Sequence[float],
                 for dose, estimate in zip(row["doses"], row["estimates"])
             ],
             "sampling_covariance": row["covariance"].tolist(),
+            # F3-89：自然尺度 estimate 与 log 尺度 covariance 在同一行并列且
+            # 旧实现无任何标注。显式给出两侧尺度，消费者不可能再误读。
+            "contrasts_scale": "natural",
+            "sampling_covariance_scale": "log" if measure in _RATIO_MEASURES else "identity",
             "coefficients": [
                 {"term": term, "estimate": float(value)}
                 for term, value in zip(_TERMS, coefficients)
@@ -348,6 +393,8 @@ def fit_nonlinear_dose_response(curves: Sequence[dict], knots: Sequence[float],
         "q": pooled["q"],
         "fit": pooled["fit"],
         "warnings": pooled["warnings"],
+        # F3-76：被跳过的坏行如实回显（正常输入下为空列表，响应逐位不变）。
+        "unreadable_studies": [str(row.get("study_id")) for row in skipped_rows],
         "limitations": [
             "All studies use the same three knots and the same restricted cubic spline basis.",
             "Within-study covariance matrices are treated as known and must already use the stated analysis scale.",

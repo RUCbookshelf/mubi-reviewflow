@@ -6,9 +6,9 @@
   <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
 </div>
 
-**2.1.3:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.3) · [更新说明 / Release notes](RELEASE_NOTES.md)
+**2.1.4:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.4) · [更新说明 / Release notes](RELEASE_NOTES.md)
 
-2.1.3 使用引导：[导入文献](docs/IMPORT_LITERATURE_USER_GUIDE.zh-CN.md) · [报告关联与证据](docs/REPORT_LINKS_AND_EVIDENCE.zh-CN.md)。机器学习设置及排序更新间隔按成员保存。
+2.1.4 使用引导：[导入文献](docs/IMPORT_LITERATURE_USER_GUIDE.zh-CN.md) · [报告关联与证据](docs/REPORT_LINKS_AND_EVIDENCE.zh-CN.md)。机器学习设置及排序更新间隔按成员保存。
 
 ## 中文
 
@@ -24,7 +24,9 @@
 | 文献导入 | RIS 导入、重复记录处理、导入历史与原始数据追溯 |
 | 文献筛选 | 标题/摘要初筛、PDF 全文复筛、常用与自定义排除理由 |
 | 机器学习排序 | 辅助安排阅读顺序；纳入、需复核和排除由用户决定 |
+| 停止规则与召回证书 | 检查点随机抽验＋超几何上界，给出可核查的停止建议；界面明示置信度并非固定 95% |
 | 数据提取与编码 | 提取研究信息、记录编码内容与全文依据 |
+| AI 抽取建议（BYOK） | 可选的编码辅助，默认关闭：成员自带钥匙或任务共享钥匙双模式（兼容 OpenAI 协议端点，支持本地 Ollama 零出网）；建议附服务端核验的原文引文可溯源（正文来源附页码、摘要来源标注摘要），采纳逐条人工确认；决策可导出审计 CSV 并生成 Methods 报告段落 |
 | 数据分析 | 效应量计算、固定与随机效应合并、异质性、亚组、Meta 回归、敏感性与小研究效应分析 |
 | 扩展分析 | 诊断准确性、网络 Meta 分析、剂量反应、IPD、贝叶斯与多层模型等模块；使用前请确认各模块的输入与适用条件 |
 | 偏倚风险 | 记录 RoB 2、ROBINS-I、QUADAS-2 等工具的人工判断 |
@@ -56,11 +58,19 @@
 - **首页与设置：** 六个标签页集中管理概览、任务与团队、筛选设置、机器学习、数据提取与编码、外观与存储。初筛顺序可选导入、机器学习或随机；随机顺序按用户、任务与来源范围保存。
 - **导入来源与去重：** 来源名称直接使用导入文件的完整文件名（例如 `01-Wiley.ris`），不再从 RIS 数据库元数据推断。精确匹配与待人工核验的标题/模糊候选分开处理。按来源筛选或编码时，多来源文献在总体队列中只出现一次。
 - **保护既有工作：** 已有保存决定或编码后，追加导入的新记录先暂存，负责人核验重复及元数据差异后激活；保留既有标识、决定与证据。
-- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。两阶段分别设置是否提供暂不确定；初筛纳入或暂不确定均进入全文筛选，全文暂不确定仍待解决，不因该决定进入编码。 可选择第 2、3、4 或更多轮初筛，仅复核仍暂不确定的文献；不继续复核时进入全文筛选。
+- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。两阶段分别设置是否提供暂不确定；初筛纳入或暂不确定均进入全文筛选，全文暂不确定仍待解决，不因该决定进入编码。 可选择第 2、3、4 或更多轮初筛，仅复核仍暂不确定的文献；不继续复核时进入全文筛选。自 2.1.4 起，暂不确定只在初筛第一轮提供：进过本人任一复筛轮次的文献，第 2 轮起只能纳入或排除（服务端拒绝并保留原决定）；之后新导入、从未进过轮次的文献仍按第一轮处理。
 - **数据提取与编码：** 每个维度可添加文字、页码和 PNG/JPEG/WebP 图片证据。负责人可要求指定维度提供证据；不完整内容可保存为草稿，不计为完成。
 - **撤销与轨迹回溯：** 初筛、全文筛选、编码支持受保护的撤销。可从轨迹打开文献修改当前结果；只有满足条件的最近保存可直接撤销，不能任意恢复旧快照。
 - **团队管理：** 在同一区域管理成员与进度、阶段来源权限、筛选选项及导入来源。任务负责人、筛选与编码员、裁决员有角色标识与成员操作菜单；负责人可为各阶段设置全部来源、指定来源或暂停，成员列表及任务变更自动刷新。
 - **PRISMA：** 保留独立手动填数与选择性导入任务指标，支持更新综述和其他来源分支及指标依据 CSV。未知数值需要确认；研究数与报告数独立，“每份报告对应一项研究”须主动选择。
+
+### 召回证书与停止规则
+
+筛选何时可以安全停止？木笔 ReviewFlow 用显式统计证书回答：到达检查点（已筛 50%/70%/85%/95%）时，从未筛池随机抽取 30%（面板可一键随机置顶待判读）并由人工判读；抽验量足且未发现新的相关文献时，声明“总召回 ≥95%（容许剩余相关不超过 k 条）”。该声明的置信度在数学上按**超几何上界**随已发现相关数与抽验量逐次计算（筛选早期可能远低于 95%，绝不虚标）；界面明示“并非固定 95%”，当前暂不显示具体数值（精确数值表见方法学报告）；“连续排除 N 条”类规则经仿真证明不能承载安全职责，已降级为默认关闭的进度提示。停止始终是研究者的决定，证书只是可核查的建议。方法学推导、90 场验证批原始数据与边界披露（序贯 α 校正目前仅在理论层，产品判定为单次抽样的零相关检查）见[召回证书方法学报告](docs/methodology/recall_certificate.md)。
+
+### 统计方法验证
+
+统计内核与 R 社区（metafor / meta / metadat）公开发表值做过逐位数值对拍：10 个经典数据集、204 项检查，159 项直接通过，11 项差异经三方对拍全部归因于参考材料本身（内核算术无误），其余 31 项为设计内未运行、3 项只记录无判定参照。夹具、逐项明细、原始语料来源与复现命令见[统计方法验证材料](docs/benchmark/README.md)。
 
 **升级：** 从 [最新 Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) 获取安装包，升级前备份整个数据目录。2.0.5 客户端可能不自动提示 2.0.5.1，请直接下载该维护版本；新版本支持四段版本比较。
 
@@ -83,7 +93,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-启动器同时提供页面与 API，并打开浏览器。默认本机端口为 `8613`；端口被占用时尝试其他空闲端口，以实际打开的地址为准。`run_pathB.bat` 是 Windows 上通过 WSL 启动源码的开发入口，安装版不需要它。
+启动器同时提供页面与 API，并打开浏览器。默认本机端口为 `8613`；端口被占用时尝试其他空闲端口，以实际打开的地址为准。
 
 ### 数据存储与协作
 
@@ -96,7 +106,7 @@ python build/launcher.py
 
 上传的 PDF 位于数据目录中的 `tasks/<任务标识>/pdfs`，占用磁盘空间。安装版可在「首页 & 设置 → 外观与存储 → 数据存放位置」迁移到其他目录，**重启应用后生效**。迁移完成前保留原数据；确认新目录正常后再使用清理功能。卸载保留个人研究数据。请另行备份重要材料。
 
-本机使用的数据保存在本机。启用在线 AI/API 时，相应请求会发往配置的服务。服务器模式将任务数据持久保存到服务器；同一服务器的任务成员能查看彼此进度，但不能修改他人的个人筛选决定。
+本机使用的数据保存在本机。AI 抽取建议为可选功能且默认关闭：启用后可使用自带钥匙（BYOK）或任务负责人配置的共享钥匙，请求仅发往用户自行配置的服务端点（填本地模型地址即可零出网）；钥匙以明文 JSON 保存在数据目录 `.ai_keys/`（一期不加密；文件权限尽力而为，Windows 下不保证系统级隔离。真正的防线是：界面永不回显明文、无读取他人钥匙的功能、钥匙不进任何导出包）。服务器模式下 AI 请求由服务器发出，成员配置的端点可访问服务器所在内网，详见《AI 抽取建议说明与治理边界》（docs/AI_SUGGESTIONS.zh-CN.md）；每条建议均附原文引文，逐条人工确认后仅填入表单，全程留痕并可通过轨迹与审计导出复查。服务器模式将任务数据持久保存到服务器；同一服务器的任务成员能查看彼此进度，但不能修改他人的个人筛选决定。
 
 团队服务器请按[Ubuntu 服务器部署指南](docs/deployment/UBUNTU_SERVER.md#zh-cn)配置。团队协作必须设置 `REVIEWFLOW_MODE=server`；不要用桌面启动器启动团队服务。账户、任务、导入原件、PDF 和决定保存在服务器数据目录，请备份整个目录。协作与离线合并说明见应用左下角「帮助」及[协作指南](docs/handoff/2026-09-30-cloud-collaboration.md#zh-cn)。
 
@@ -106,11 +116,13 @@ python build/launcher.py
 
 | 平台 | 操作 | 输出 |
 | --- | --- | --- |
-| Windows 10/11 x64 | 安装 Inno Setup 6/7 或 NSIS 3，运行 `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| Windows 10/11 x64 | 安装 Inno Setup 6/7 或 NSIS 3 与 Node.js（运行 JavaScript 静态校验器所需），运行 `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| macOS | 安装 Node.js（三平台本地构建都会运行与 CI 相同的静态校验器与产物核对），`bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | 安装 Node.js（同上），`bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
-macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。
+macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚本存在不代表最新源码已有对应发布包；请检查发布时间与版本。Windows 详细步骤见[构建与验收说明](build/WINDOWS_TRANSFER.md#zh-cn)。机器可读 API 契约 `docs/openapi.json` 由离线脚本生成：`python build/scripts/export_openapi.py`（运行时仍不暴露 `/openapi.json`）；稳定核心子集的手写[接口参考](docs/API_REFERENCE.md)随源码维护。
+
+本地构建与 CI 一致：四个静态校验器与发布产物核对（`build/verify_release_payload.py`）都会运行；构建期下载的引导文件（嵌入式 Python、固定版本的 pip／setuptools／wheel／packaging wheel、appimagetool）逐一做 sha256 校验后才使用（Windows 侧用 `certutil`），下载缓存也会在每次构建时重新校验——下载失败与校验不符会给出不同提示。引导 wheel 发布后不可变，不再使用滚动的 `get-pip.py`；旧构建留下的 `build/downloads/get-pip.py` 已不再使用，可安全删除。同一检出目录同时只允许一个打包构建（锁目录 `build/.build-dist.lock` / `build/.build-windows.lock`；脚本不会自动接管别人创建的锁，异常退出留下的陈锁会报出持有进程并停止构建，确认没有构建在运行后再手动删除，Linux/macOS 可用 `REVIEWFLOW_BUILD_LOCK_FORCE=1`）。根目录的 `SHA256SUMS.initial-release-snapshot.json` 是首次公开发布时的源码哈希存档（此后不再更新，发布包校验以 Release 附带的 `SHA256SUMS.txt` 为准）。
 
 ### 常见问题
 
@@ -121,8 +133,9 @@ macOS 的 Intel 与 Apple Silicon 包应分别在对应架构构建。构建脚�
 ### 开发与贡献
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
 | 目录 | 用途 |
@@ -131,7 +144,7 @@ python -m pytest
 | `custom_backend/` | API、认证、任务与文件处理 |
 | `coscreen/` | 文献处理、统计计算与导出 |
 | `build/` | 启动器与各平台构建脚本 |
-| `tests/` | 自动化测试 |
+| `build/tests/` | 自动化测试 |
 | `docs/` | 方法、设计与部署说明 |
 
 欢迎通过 Issue 或 Pull Request 提交问题与改进。统计方法变更请附方法来源、适用条件及可复现的参考结果。请勿提交账号、密钥、研究数据库或未获授权的全文文件。
@@ -155,7 +168,9 @@ The application uses FastAPI, a browser interface and Python calculation modules
 - **Reference import:** RIS files, duplicate handling, import history and original import data.
 - **Screening:** title/abstract and PDF full-text screening, with standard or custom exclusion reasons.
 - **Machine Learning:** assistance with reading order; inclusion, uncertainty and exclusion remain user decisions.
+- **Stopping rules and recall certificate:** checkpoint random sampling with a hypergeometric upper bound gives an auditable stop suggestion; the interface states the confidence is not a fixed 95%. Methodology and raw data: [recall certificate report](docs/methodology/recall_certificate.md).
 - **Data extraction & coding:** study information extraction and supporting full-text evidence.
+- **AI extraction suggestions (BYOK):** optional coding assistance, off by default; bring your own key or use a task-shared key (OpenAI-compatible endpoints, local Ollama supported for zero outbound traffic); every suggestion carries a server-verified source quote for tracing (full-text quotes carry page numbers; abstract-sourced quotes are labelled as such), adoption is confirmed item by item, and decisions support audit CSV export and Methods report generation.
 - **Analysis:** effect sizes, fixed and random effects, heterogeneity, subgroups, meta-regression, sensitivity and small-study effects.
 - **Extended methods:** diagnostic accuracy, network meta-analysis, dose–response, IPD, Bayesian and multilevel modules, each with its own input requirements.
 - **Risk of bias:** manual assessments using tools such as RoB 2, ROBINS-I and QUADAS-2.
@@ -184,11 +199,19 @@ Implementation does not establish validation for every study design. Consult the
 - **Home & Settings:** six tabs organize Overview, Tasks & team, Screening settings, Machine Learning, Data extraction & coding, and Appearance & storage. Initial-screening order offers Import / Machine Learning / Random; random order persists per user, task and source scope.
 - **Sources and deduplication:** Source names use the complete imported filename (for example, `01-Wiley.ris`), without inferring names from RIS database metadata. Exact matches are separate from title/fuzzy candidates requiring human review. Multi-source articles appear once in the overall queue when screening or coding by source.
 - **Protect existing work:** once decisions or coding have been saved, additional new records are staged for owner review of duplicates and metadata differences before activation. Existing identities, decisions and evidence are retained.
-- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Not Sure Now is configurable independently for both stages. Initial Include and Not Sure Now advance to full-text screening; full-text Not Sure Now remains unresolved and does not qualify an article for coding. Optional second, third, fourth or further title-and-abstract rounds revisit only remaining Not Sure Now articles; stopping releases them to full-text screening.
+- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Not Sure Now is configurable independently for both stages. Initial Include and Not Sure Now advance to full-text screening; full-text Not Sure Now remains unresolved and does not qualify an article for coding. Optional second, third, fourth or further title-and-abstract rounds revisit only remaining Not Sure Now articles; stopping releases them to full-text screening. Since 2.1.4, Not Sure Now is available only in the first round: once an article has entered one of the reviewer's repeat-round snapshots, that reviewer can only include or exclude it from round 2 on (the server rejects the save and keeps the existing decision); newly imported articles never in a round still behave as first round.
 - **Data extraction & coding:** add text, page references and PNG/JPEG/WebP evidence per dimension. Owners may require evidence for selected dimensions; incomplete work can be saved as a draft and is not counted as complete.
 - **Undo and Trace:** guarded Undo is available in initial screening, full-text screening and coding. Open linked articles from Trace to correct current results; only an eligible latest save can be undone directly, rather than restoring arbitrary historical snapshots.
 - **Team management:** one panel contains members/progress, stage source permissions, screening options and imported sources. Task owner / Coder / Adjudicator badges and member action menus identify responsibilities. Owners choose All / Selected / Paused per stage; membership and task lists refresh automatically.
 - **PRISMA:** preserve standalone manual entry and selective task-metric import, with updated-review and other-source branches and metric-provenance CSV. Unknown values need confirmation. Study and report counts are independent; one report per study is an explicit shortcut.
+
+### Recall certificate and stopping rules
+
+When is it safe to stop screening? ReviewFlow answers with an explicit statistical certificate: at check points (50%/70%/85%/95% screened), draw a random 30% sample from the unscreened pool (the panel can move a random sample to the top of the queue) for manual judgement; with a sufficient sample and zero newly found relevant articles, the tool reports "total recall ≥ 95% (at most k relevant records remaining)". The confidence of that claim follows the **hypergeometric upper bound** and changes with the number of relevant articles already found and with the sample size (early in screening it may be far below 95% — never a fixed value); the interface states it is "not a fixed 95%" and does not yet show the numeric value (the exact table is in the methodology report). Simulations showed that "N consecutive exclusions" rules cannot carry safety responsibility, so they are demoted to a progress hint, off by default. Stopping remains the researcher's decision; the certificate is an auditable suggestion. The methodology, the raw data of the 90-run verification batch and the boundary disclosures (sequential α correction exists at theory level only; the product decision is a single-sample zero-findings test) are in the [recall certificate report](docs/methodology/recall_certificate.md).
+
+### Statistical method validation
+
+The statistical kernel was compared value by value against published results from the R ecosystem (metafor / meta / metadat): 10 classic datasets and 204 checks, 159 direct matches, 11 differences all traced to the reference material itself (no algorithmic error in the kernel), with the remaining 31 not run by design and 3 recorded as informational without a reference verdict. Fixtures, per-check details, source of the raw corpora and reproduction commands are in the [statistical validation dossier](docs/benchmark/README.md).
 
 **Upgrading:** download from the [latest Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) and back up the complete data directory first. Existing 2.0.5 clients may not automatically prompt for 2.0.5.1; download this hotfix directly. The corrected checker supports four-part versions.
 
@@ -207,7 +230,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-The launcher serves the UI and API together and opens a browser. The default local port is `8613`; another available port is used if needed. Use the address opened by the launcher. `run_pathB.bat` is a Windows/WSL development entry, not an installed application requirement.
+The launcher serves the UI and API together and opens a browser. The default local port is `8613`; another available port is used if needed. Use the address opened by the launcher.
 
 ### Storage and collaboration
 
@@ -219,7 +242,7 @@ Source runs use the repository's `data/` folder. Installed applications default 
 
 Uploaded PDFs are stored under `tasks/<task-id>/pdfs` inside the data folder. In installed applications, use **Home & Settings → Appearance & storage → Data location** to migrate data. **Restart the application to apply the change.** The original data is retained until you confirm the new location and use the cleanup option. Uninstalling retains personal research data; keep separate backups.
 
-Local mode stores research data locally. Online AI/API features send relevant requests to the configured service. Server mode persists task data on the server. Task members can see each other's progress without changing another reviewer's personal decisions.
+Local mode stores research data locally. AI extraction suggestions are optional and off by default: once enabled they run on your own key (BYOK) or a task-shared key configured by the task owner, and requests go only to the endpoint you configure (point it at a local model such as Ollama for zero outbound traffic). Keys are stored as plaintext JSON in the data directory under `.ai_keys/` (not encrypted in phase 1; file permissions are best effort and system-level isolation is not guaranteed on Windows — the real safeguards are: the UI never echoes key plaintext, no feature can read another user's key, and keys never enter any export package). In server mode AI requests are sent by the server, and a member-configured endpoint can reach the server's internal network — see docs/AI_SUGGESTIONS.zh-CN.md (Chinese) for the full disclosure. Every suggestion carries a verbatim source quote, requires per-item human confirmation before filling the form, and is fully traceable with auditable exports. Server mode persists task data on the server. Task members can see each other's progress without changing another reviewer's personal decisions.
 
 For team deployment, follow the [Ubuntu server deployment guide](docs/deployment/UBUNTU_SERVER.md#en). Team collaboration requires `REVIEWFLOW_MODE=server`; do not use the desktop launcher for the team service. Accounts, tasks, imported originals, PDFs, and decisions are stored in the server data directory, which should be backed up in full. See **Help** in the sidebar and the [collaboration guide](docs/handoff/2026-09-30-cloud-collaboration.md#en) for collaboration and offline merging.
 
@@ -229,11 +252,13 @@ Build on the target operating system with an internet connection.
 
 | Platform | Command / preparation | Output |
 | --- | --- | --- |
-| Windows 10/11 x64 | Install Inno Setup 6/7 or NSIS 3; run `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| Windows 10/11 x64 | Install Inno Setup 6/7 or NSIS 3 plus Node.js (required to run the JavaScript static validators); run `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| macOS | Install Node.js, then `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | Install Node.js, then `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Build Intel and Apple Silicon macOS packages separately on the corresponding architecture. Check release dates and versions: a build script does not imply that an up-to-date binary is published. See the [Windows build guide](build/WINDOWS_TRANSFER.md#en).
+
+A local build matches CI: the four static validators and the release-payload comparison (`build/verify_release_payload.py`) always run. Bootstrap downloads (embedded Python, fixed-version pip / setuptools / wheel / packaging wheels, appimagetool) are sha256-verified before use (via `certutil` on Windows), and the download cache is re-verified on every run - download failures and checksum mismatches produce different messages. The bootstrap wheels are immutable once published and the rolling `get-pip.py` is no longer used; a `build/downloads/get-pip.py` left by an older build can be deleted safely. Only one packaging build may run per checkout at a time (lock folders `build/.build-dist.lock` / `build/.build-windows.lock`; the script never takes over a lock somebody else created - a stale lock from a crashed build reports its owner and stops the build, so delete it manually once you have confirmed no build is running; on Linux/macOS you can use `REVIEWFLOW_BUILD_LOCK_FORCE=1`). The root `SHA256SUMS.initial-release-snapshot.json` is the source-digest archive of the initial public release - it is not updated afterwards; verify release packages against the `SHA256SUMS.txt` published with each Release.
 
 ### Troubleshooting and contributing
 
@@ -242,11 +267,12 @@ Build Intel and Apple Silicon macOS packages separately on the corresponding arc
 Report reproducible problems through [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues), including your OS, version and sanitized logs. Pull requests are welcome. Statistical changes should include method sources, assumptions and reproducible reference results. Do not commit credentials, research databases or unauthorized full texts.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
-Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscreen/` (research logic), `build/` (launchers and packaging), `tests/` and `docs/`.
+Code is organized into `custom_frontend/` (UI), `custom_backend/` (API), `coscreen/` (research logic), `build/` (launchers and packaging), `build/tests/` and `docs/`.
 
 ### License and contact
 
@@ -282,6 +308,8 @@ La disponibilidad de un método no significa que esté validado para todos los d
 - **Deshacer y trazabilidad:** deshacer protegido en las tres etapas; abrir un artículo vinculado desde el registro para corregir sus valores actuales. Solo se deshace directamente el último guardado admisible, no cualquier instantánea histórica.
 - **Equipo:** un panel integra miembros/progreso, fuentes permitidas por etapa, opciones de cribado y fuentes importadas. Insignias Responsable de la tarea / Revisor y codificador / Adjudicador y menús de miembros indican responsabilidades. El propietario elige Todas / Seleccionadas / En pausa; miembros y tareas se actualizan automáticamente.
 - **PRISMA:** entrada manual independiente o importación selectiva de métricas, revisiones actualizadas/otras fuentes y CSV de procedencia. Los valores desconocidos necesitan confirmación; estudios e informes son independientes, con un atajo explícito de un informe por estudio.
+- **Certificado de recall y reglas de detención:** en los puntos de control (50/70/85/95 %), una muestra aleatoria del material sin cribar, evaluada manualmente sin nuevos hallazgos, permite declarar un recall total ≥ 95 % según el límite superior hipergeométrico; la interfaz indica que la confianza no es un 95 % fijo (tabla exacta en el informe) y las rachas de exclusiones son solo un aviso de progreso, sin garantía de seguridad. Metodología y datos: [certificado de recall](docs/methodology/recall_certificate.md).
+- **Validación de métodos estadísticos:** el núcleo estadístico se contrastó valor por valor con resultados publicados del ecosistema R (metafor / meta / metadat): 10 conjuntos de datos clásicos y 204 comprobaciones, 159 coincidencias directas, 11 diferencias atribuidas por completo al material de referencia (ningún error algorítmico en el núcleo), 31 no ejecutadas por diseño y 3 solo informativas sin veredicto de referencia. Fixtures, detalle por comprobación y comandos de reproducción: [materiales de validación estadística](docs/benchmark/README.md).
 
 **Actualización:** descargue la [última versión](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) y respalde toda la carpeta de datos. El cliente 2.0.5 puede no avisar de 2.0.5.1; descargue el parche directamente. El comprobador corregido admite versiones de cuatro componentes.
 
@@ -320,6 +348,8 @@ ReviewFlowは、文献の取り込み、スクリーニング、コーディン�
 - **取り消しと履歴：** 3段階で保護付き取り消しを利用できます。履歴から文献を開いて現在値を修正できますが、直接取り消せるのは条件を満たす直近の保存のみです。
 - **チーム：** メンバーと進捗、段階別ソース、判断設定、取り込み済みソースを一つのパネルにまとめます。タスク所有者／スクリーニング・コーディング担当／判定担当者のバッジと操作メニューを表示し、所有者は全ソース／選択／一時停止を設定します。メンバーとタスク一覧は自動更新します。
 - **PRISMA：** 独立した手入力と選択的なタスク指標取り込みを維持し、更新レビュー・その他ソースと指標の由来CSVに対応します。不明値は確認が必要です。研究数と報告数は独立し、1報告＝1研究は明示的に選択します。
+- **リコール証明と停止ルール：** チェックポイント（50/70/85/95%）到達時に未スクリーニングのプールから無作為抽出して手動判定し、新規関連文献が0件なら、超幾何上界に基づく「総合リコール≥95%」の停止提案を出します。界面は信頼度が固定95%ではないことを明示し（正確な数値表はレポート参照）、連続除外は進捗のヒントのみで安全保証はありません。方法論とデータ：[リコール証明書](docs/methodology/recall_certificate.md)。
+- **統計手法の検証：** 統計カーネルを R コミュニティ（metafor / meta / metadat）の公開値と数値単位で照合しました。古典的な 10 データセット・204 項目の検査で 159 項目が直接一致し、11 項目の差異はすべて参照資料側に帰属（カーネルにアルゴリズム誤りなし）、残る 31 項目は設計上未実行、3 項目は参照判定なしの記録のみです。フィクスチャ、項目別の明細と再現コマンド：[統計検証資料](docs/benchmark/README.md)。
 
 **更新：** データフォルダー全体をバックアップしてから[最新版](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest)を取得してください。2.0.5は2.0.5.1を自動通知しない場合があるため、直接ダウンロードしてください。修正版は4要素のバージョンに対応します。
 
@@ -358,6 +388,8 @@ A implementação de um método não comprova sua validação para todos os deli
 - **Desfazer e histórico:** desfazer protegido nas três etapas; abrir artigos vinculados ao histórico para corrigir valores atuais. Apenas o último salvamento elegível pode ser desfeito diretamente, sem restaurar instantâneos históricos arbitrários.
 - **Equipe:** um painel reúne membros/progresso, fontes por etapa, opções de triagem e fontes importadas. Insígnias Responsável pela tarefa / Revisor e codificador / Adjudicador e menus de membros indicam responsabilidades. O proprietário escolhe Todas / Selecionadas / Pausada; membros e tarefas atualizam automaticamente.
 - **PRISMA:** entrada manual independente ou importação seletiva de métricas, revisões atualizadas/outras fontes e CSV de procedência. Valores desconhecidos exigem confirmação; estudos e relatórios são independentes, com atalho explícito de um relatório por estudo.
+- **Certificado de recall e regras de parada:** nos pontos de verificação (50/70/85/95%), uma amostra aleatória do acervo não triado, julgada manualmente sem novos achados, sustenta a declaração de recall total ≥ 95% com base no limite hipergeométrico; a interface indica que a confiança não é um 95% fixo (tabela exata no relatório) e sequências de exclusões são apenas aviso de progresso, sem garantia de segurança. Metodologia e dados: [certificado de recall](docs/methodology/recall_certificate.md).
+- **Validação de métodos estatísticos:** o núcleo estatístico foi conferido valor a valor com resultados publicados do ecossistema R (metafor / meta / metadat): 10 conjuntos de dados clássicos e 204 verificações, 159 concordâncias diretas, 11 diferenças integralmente atribuídas ao material de referência (nenhum erro algorítmico no núcleo), 31 não executadas por decisão de projeto e 3 apenas informativas sem veredito de referência. Fixtures, detalhe por verificação e comandos de reprodução: [materiais de validação estatística](docs/benchmark/README.md).
 
 **Atualização:** baixe a [versão mais recente](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) e faça backup de toda a pasta de dados. O cliente 2.0.5 pode não avisar sobre 2.0.5.1; baixe o corretivo diretamente. A verificação corrigida aceita versões com quatro componentes.
 
@@ -396,6 +428,8 @@ Eine implementierte Methode ist nicht automatisch für jedes Studiendesign valid
 - **Rückgängig und Protokoll:** geschütztes Rückgängigmachen in allen drei Phasen; verknüpfte Artikel aus dem Protokoll zur Korrektur aktueller Werte öffnen. Nur die letzte zulässige Speicherung lässt sich direkt rückgängig machen, kein beliebiger historischer Stand.
 - **Team:** ein Bereich enthält Mitglieder/Fortschritt, Quellen je Phase, Screening-Optionen und importierte Quellen. Aufgabeninhaber / Screening- und Kodierperson / Entscheidungsperson werden durch Symbole und Mitgliedermenüs gekennzeichnet. Der Eigentümer wählt Alle / Ausgewählte / Pausiert; Mitglieder- und Aufgabenlisten aktualisieren sich automatisch.
 - **PRISMA:** unabhängige manuelle Eingabe oder selektiver Kennzahlenimport, aktualisierte Reviews/andere Quellen und Herkunfts-CSV. Unbekannte Werte müssen bestätigt werden; Studien und Berichte werden getrennt gezählt, ein Bericht pro Studie ist eine ausdrückliche Auswahl.
+- **Recall-Zertifikat und Stoppregeln:** an Prüfpunkten (50/70/85/95 %) stützt eine zufällige, manuell bewertete Stichprobe aus dem ungescreenten Pool ohne neue relevante Funde die Angabe „Gesamt-Recall ≥ 95 %“ nach der hypergeometrischen Schranke; die Oberfläche weist darauf hin, dass die Konfidenz kein fester 95-%-Wert ist (genaue Tabelle im Bericht), und Ausschlussserien sind nur ein Fortschrittshinweis ohne Sicherheitsgarantie. Methodik und Daten: [Recall-Zertifikat](docs/methodology/recall_certificate.md).
+- **Validierung der statistischen Methoden:** Der Statistik-Kern wurde Wert für Wert gegen veröffentlichte Ergebnisse aus dem R-Ökosystem (metafor / meta / metadat) geprüft: 10 klassische Datensätze und 204 Prüfungen, 159 direkte Übereinstimmungen, 11 Abweichungen vollständig auf das Referenzmaterial zurückgeführt (kein Algorithmusfehler im Kern), 31 planmäßig nicht ausgeführt und 3 nur informativ ohne Referenzurteil. Fixtures, Einzelnachweise und Reproduktionsbefehle: [Unterlagen zur statistischen Validierung](docs/benchmark/README.md).
 
 **Aktualisierung:** laden Sie die [neueste Version](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) und sichern Sie vorher den gesamten Datenordner. Version 2.0.5 meldet 2.0.5.1 möglicherweise nicht automatisch; laden Sie den Hotfix direkt. Die korrigierte Prüfung unterstützt vierteilige Versionen.
 
@@ -434,6 +468,8 @@ Dostupnost metode ne znači da je ona validirana za svaki dizajn istraživanja. 
 - **Opoziv i trag:** zaštićeni opoziv u tri faze; otvaranje povezanog članka iz traga radi ispravke trenutnih vrednosti. Direktno se opoziva samo poslednje dozvoljeno čuvanje, ne proizvoljan istorijski snimak.
 - **Tim:** jedan panel sadrži članove/napredak, izvore po fazama, opcije skrininga i uvezene izvore. Oznake Vlasnik zadatka / Pregledač i koder / Arbitar i meniji članova prikazuju uloge. Vlasnik bira Svi / Izabrani / Pauzirano; članstvo i liste zadataka se automatski osvežavaju.
 - **PRISMA:** samostalan ručni unos ili selektivan uvoz pokazatelja, ažurirani pregledi/drugi izvori i CSV porekla. Nepoznate vrednosti zahtevaju potvrdu; studije i izveštaji se broje odvojeno, jedan izveštaj po studiji je izričit izbor.
+- **Sertifikat recall-a i pravila zaustavljanja:** na kontrolnim tačkama (50/70/85/95%) slučajni uzorak nepregledanog fonda, ručno ocenjen bez novih relevantnih nalaza, podržava tvrdnju da je ukupni recall ≥ 95% prema hipergeometrijskoj gornjoj granici; interfejs navodi da pouzdanost nije fiksnih 95% (tačna tabela u izveštaju), a nizovi isključenja su samo napomena o napretku, bez bezbednosne garancije. Metodologija i podaci: [sertifikat recall-a](docs/methodology/recall_certificate.md).
+- **Validacija statističkih metoda:** statističko jezgro upoređeno je vrednost po vrednost sa objavljenim rezultatima iz R ekosistema (metafor / meta / metadat): 10 klasičnih skupova podataka i 204 provere, 159 direktnih poklapanja, 11 razlika u potpunosti pripisano referentnom materijalu (nema algoritamske greške u jezgru), 31 planski nije izvršeno i 3 su samo informativne bez referentne ocene. Fiksture, pojedinačni nalazi i komande za reprodukciju: [materijali za statističku validaciju](docs/benchmark/README.md).
 
 **Ažuriranje:** preuzmite [najnovije izdanje](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) i prvo kopirajte ceo direktorijum podataka. Klijent 2.0.5 možda neće automatski najaviti 2.0.5.1; preuzmite ispravku direktno. Ispravljena provera podržava četiri dela verzije.
 
@@ -472,6 +508,8 @@ ReviewFlow는 체계적 문헌고찰과 메타분석을 위한 문헌 가져오�
 - **실행 취소 및 기록:** 세 단계에 보호된 실행 취소를 제공합니다. 기록에서 연결 문헌을 열어 현재 값을 수정할 수 있지만 직접 취소는 조건을 충족하는 최근 저장만 가능합니다.
 - **팀:** 구성원·진행률, 단계별 출처, 선별 옵션, 가져온 출처를 한 패널에 모읍니다. 작업 소유자 / 선별 및 코딩 담당자 / 판정자 표시와 구성원 메뉴로 역할을 구분합니다. 소유자는 전체 / 선택 / 일시 중지를 설정하며 구성원과 작업 목록은 자동 갱신됩니다.
 - **PRISMA:** 독립 수동 입력과 선택적 작업 지표 가져오기, 갱신 고찰·기타 출처 분기, 지표 출처 CSV를 지원합니다. 미상 값은 확인해야 합니다. 연구 수와 보고서 수는 별개이며 보고서 1개당 연구 1개는 명시적으로 선택합니다.
+- **리콜 증명서와 정지 규칙:** 검사 지점(50/70/85/95%) 도달 시 미선별 풀에서 무작위 표본을 수동 판정하고 새 관련 문헌이 없으면, 초기하 상계에 따라 "전체 리콜 ≥95%" 정지 제안을 제공합니다. 화면은 신뢰도가 고정 95%가 아님을 밝히며(정확한 수치표는 보고서 참조), 연속 제외는 진행 알림일 뿐 안전 보장이 아닙니다. 방법론과 데이터: [리콜 증명서](docs/methodology/recall_certificate.md).
+- **통계 방법 검증:** 통계 커널을 R 생태계(metafor / meta / metadat)의 공개 결과와 값 단위로 대조했습니다. 고전 데이터셋 10개·검사 204항목 가운데 159항목이 직접 일치했고, 11항목의 차이는 모두 참조 자료 쪽으로 귀속되었으며(커널의 알고리즘 오류 없음) 나머지 31항목은 설계상 실행하지 않았고 3항목은 참조 판정 없이 기록만 했습니다. 픽스처, 항목별 명세와 재현 명령: [통계 검증 자료](docs/benchmark/README.md).
 
 **업데이트:** 전체 데이터 폴더를 백업한 뒤 [최신 릴리스](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest)를 받으세요. 2.0.5는 2.0.5.1을 자동 알리지 않을 수 있으므로 직접 내려받으세요. 수정된 검사기는 네 부분 버전을 지원합니다.
 
@@ -517,6 +555,8 @@ ReviewFlow — рабочая среда для систематических �
 - **Отмена и журнал:** защищённая отмена в трёх этапах; открытие связанной записи из журнала для исправления текущих значений. Напрямую отменяется только последнее допустимое сохранение, а не произвольный старый снимок.
 - **Команда:** общая панель участников/прогресса, источников по этапам, вариантов решений и импортированных источников. Значки Владелец задачи / Специалист по отбору и кодированию / Арбитр и меню участников показывают роли. Владелец выбирает Все / Выбранные / Приостановлено; состав и списки задач обновляются автоматически.
 - **PRISMA:** независимый ручной ввод и выборочный импорт показателей задачи, обновлённые обзоры/другие источники и CSV происхождения показателей. Неизвестные значения требуют подтверждения; исследования и отчёты считаются отдельно, «один отчёт на исследование» — явный выбор.
+- **Сертификат полноты и правила остановки:** в контрольных точках (50/70/85/95 %) случайная выборка из неотобранного пула, вручную оценённая без новых релевантных находок, подтверждает заявление «общая полнота ≥ 95 %» по гипергеометрической верхней границе; интерфейс указывает, что уверенность не является фиксированными 95 % (точная таблица — в отчёте), а серии исключений — лишь подсказка о прогрессе без гарантии безопасности. Методология и данные: [сертификат полноты](docs/methodology/recall_certificate.md).
+- **Проверка статистических методов:** статистическое ядро сопоставлено значение за значением с опубликованными результатами экосистемы R (metafor / meta / metadat): 10 классических наборов данных и 204 проверки, 159 прямых совпадений, 11 расхождений полностью отнесены к самому эталонному материалу (алгоритмических ошибок в ядре нет), 31 проверка не выполнялась по замыслу, 3 зафиксированы только как информационные без эталонного вердикта. Фикстуры, построчные результаты и команды воспроизведения: [материалы статистической проверки](docs/benchmark/README.md).
 
 **Обновление:** скачайте [последний выпуск](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest), предварительно скопировав весь каталог данных. Клиент 2.0.5 может не сообщить о 2.0.5.1 автоматически; скачайте исправление напрямую. Исправленная проверка поддерживает четыре компонента версии.
 
@@ -535,7 +575,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-Запускатель обслуживает интерфейс и API и открывает браузер. Порт по умолчанию — `8613`; если он занят, выбирается другой свободный порт. Используйте открытый программой адрес. `run_pathB.bat` предназначен для разработки в Windows через WSL и не нужен установленному приложению.
+Запускатель обслуживает интерфейс и API и открывает браузер. Порт по умолчанию — `8613`; если он занят, выбирается другой свободный порт. Используйте открытый программой адрес.
 
 ### Хранение данных и совместная работа
 
@@ -557,9 +597,9 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 
 | Платформа | Действие | Результат |
 | --- | --- | --- |
-| Windows 10/11 x64 | Установить Inno Setup 6/7 или NSIS 3; запустить `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| Windows 10/11 x64 | Установить Inno Setup 6/7 или NSIS 3 и Node.js (нужен для запуска JavaScript-статических валидаторов); запустить `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| macOS | Установить Node.js, затем `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | Установить Node.js, затем `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Пакеты macOS для Intel и Apple Silicon собираются отдельно на соответствующей архитектуре. Проверяйте дату и версию выпуска: наличие скрипта сборки не означает наличие актуального опубликованного пакета. Подробнее: [сборка для Windows](build/WINDOWS_TRANSFER.md#ru).
 
@@ -570,11 +610,12 @@ PDF хранятся в `tasks/<task-id>/pdfs` внутри каталога д�
 Сообщайте о проблемах в [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues): ОС, версия, шаги воспроизведения и журнал без личных данных. Приветствуются Pull Request. Для изменений статистических методов приложите источники, условия применения и воспроизводимые эталонные результаты. Не публикуйте пароли, базы исследований или полные тексты без разрешения.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
-Основные каталоги: `custom_frontend/` — интерфейс, `custom_backend/` — API, `coscreen/` — исследовательская логика, `build/` — запуск и сборка, `tests/` — тесты, `docs/` — документация.
+Основные каталоги: `custom_frontend/` — интерфейс, `custom_backend/` — API, `coscreen/` — исследовательская логика, `build/` — запуск и сборка, `build/tests/` — тесты, `docs/` — документация.
 
 ### Лицензия и контакты
 
@@ -616,6 +657,8 @@ La présence d'une méthode ne signifie pas qu'elle a été entièrement validé
 - **Annulation et traçabilité :** annulation protégée dans les trois étapes ; ouvrir une référence liée au journal pour corriger sa valeur actuelle. Seul le dernier enregistrement admissible peut être annulé directement, sans restauration arbitraire d’anciens instantanés.
 - **Équipe :** un panneau réunit membres/progression, sources autorisées par étape, options de sélection et sources importées. Les badges Responsable de la tâche / Responsable du dépistage et du codage / Arbitre et menus des membres précisent les rôles. Le propriétaire choisit Toutes / Sélectionnées / En pause ; listes et adhésions sont actualisées automatiquement.
 - **PRISMA :** saisie manuelle indépendante ou import sélectif des indicateurs d’une tâche, branches de revue actualisée/autres sources et CSV de provenance. Les valeurs inconnues doivent être confirmées ; études et rapports sont distincts, avec un raccourci explicite « un rapport par étude ».
+- **Certificat de rappel et règles d'arrêt :** aux points de contrôle (50/70/85/95 %), un échantillon aléatoire du pool non trié, évalué manuellement sans nouvelle référence pertinente, étaye la déclaration « rappel global ≥ 95 % » selon la borne supérieure hypergéométrique ; l'interface précise que la confiance n'est pas un 95 % fixe (table exacte dans le rapport) et les séries d'exclusions ne sont qu'un indicateur d'avancement, sans garantie de sécurité. Méthodologie et données : [certificat de rappel](docs/methodology/recall_certificate.md).
+- **Validation des méthodes statistiques :** le noyau statistique a été confronté valeur par valeur aux résultats publiés de l'écosystème R (metafor / meta / metadat) : 10 jeux de données classiques et 204 vérifications, 159 concordances directes, 11 écarts tous attribués au matériel de référence (aucune erreur algorithmique du noyau), 31 non exécutées par conception et 3 seulement informatives sans verdict de référence. Fixtures, détail par vérification et commandes de reproduction : [dossier de validation statistique](docs/benchmark/README.md).
 
 **Mise à niveau :** utilisez la [dernière version](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) et sauvegardez tout le dossier de données. Le client 2.0.5 peut ne pas signaler automatiquement 2.0.5.1 ; téléchargez ce correctif directement. La vérification corrigée prend en charge quatre composantes.
 
@@ -634,7 +677,7 @@ python -m pip install -r build/requirements-app.txt
 python build/launcher.py
 ```
 
-Le lanceur sert l'interface et l'API et ouvre le navigateur. Le port local par défaut est `8613` ; un autre port libre est choisi si nécessaire. Utilisez l'adresse ouverte par le lanceur. `run_pathB.bat` est une entrée de développement Windows via WSL, inutile pour l'application installée.
+Le lanceur sert l'interface et l'API et ouvre le navigateur. Le port local par défaut est `8613` ; un autre port libre est choisi si nécessaire. Utilisez l'adresse ouverte par le lanceur.
 
 ### Stockage et collaboration
 
@@ -656,9 +699,9 @@ Compilez sur le système cible avec une connexion Internet.
 
 | Plateforme | Commande / préparation | Résultat |
 | --- | --- | --- |
-| Windows 10/11 x64 | Installer Inno Setup 6/7 ou NSIS 3 ; lancer `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
-| macOS | `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
-| Linux x86_64 | `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
+| Windows 10/11 x64 | Installer Inno Setup 6/7 ou NSIS 3 et Node.js (requis pour les validateurs statiques JavaScript) ; lancer `build\build_windows.bat` | `build/Output/ReviewFlow-Setup-x64.exe` |
+| macOS | Installer Node.js, puis `bash build/build_macos.sh` | `build/dist/ReviewFlow.dmg` |
+| Linux x86_64 | Installer Node.js, puis `bash build/build_linux.sh` | `build/dist/ReviewFlow-x86_64.AppImage` |
 
 Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur l'architecture correspondante. Vérifiez la date et la version : un script de compilation ne garantit pas l'existence d'un paquet publié à jour. Voir le [guide Windows](build/WINDOWS_TRANSFER.md#fr).
 
@@ -669,11 +712,12 @@ Les paquets macOS Intel et Apple Silicon doivent être créés séparément sur 
 Signalez les problèmes dans [Issues](https://github.com/RUCbookshelf/mubi-reviewflow/issues), avec le système, la version, les étapes de reproduction et des journaux sans données personnelles. Les Pull Request sont bienvenues. Toute modification statistique doit préciser les sources, les conditions d'application et des résultats de référence reproductibles. N'ajoutez pas d'identifiants, de bases de recherche ou de textes intégraux non autorisés.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pip install -r build/requirements-app.txt
+python -m pip install pytest httpx
+python -m pytest build/tests -q
 ```
 
-Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API, `coscreen/` pour les traitements scientifiques, `build/` pour le lancement et les paquets, `tests/` et `docs/`.
+Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API, `coscreen/` pour les traitements scientifiques, `build/` pour le lancement et les paquets, `build/tests/` et `docs/`.
 
 ### Licence et contact
 

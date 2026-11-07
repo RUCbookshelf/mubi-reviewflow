@@ -13,7 +13,20 @@
  L.status=function(state,retry){const U=ImportExportWorkspace,n=U.node,l=U.literal,box=n('div',null,{class:'load-state','data-phase':state.phase,role:'status','aria-live':'polite','aria-atomic':'true'}),copy=n('div',null,{class:'load-copy'}),initial=state.phase==='initial',complete=state.phase==='complete',failed=state.phase==='failed';
   const label=initial?'Loading the first records':failed?'Loading interrupted':complete?'Loading complete':'Loading in background';
   if(complete||failed)box.append(U.icon(complete?'check':'shield'));else{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('class','load-ring '+(state.total===null?'indeterminate':'determinate'));svg.setAttribute('aria-hidden','true');const ratio=state.total?Math.min(1,state.loaded/state.total):0;svg.innerHTML='<circle class="ring-track" cx="16" cy="16" r="12"/><circle class="ring-value" cx="16" cy="16" r="12" pathLength="100" style="stroke-dasharray:100;stroke-dashoffset:'+(state.total===null?72:100-ratio*100)+'"/><g class="ring-orbit"><circle cx="16" cy="4" r="1.6"/></g>';box.append(svg);}
-  box.title=T('Loading counts include source records and candidate groups, not unique articles.');box.setAttribute('aria-label',T(label)+' '+state.loaded+(state.total===null?'':' / '+state.total)+'. '+box.title);copy.append(n('strong',label));if(!initial)copy.append(l('span',state.loaded+(state.total===null?'':' / '+state.total),{class:'load-number'}));box.append(copy);if(failed){box.title=WorkflowControls.errorText(state.error);box.append(U.button('Retry loading',retry));}return box;
+  box.title=T('Loading counts include source records and candidate groups, not unique articles.');box.setAttribute('aria-label',T(label)+' '+state.loaded+(state.total===null?'':' / '+state.total)+'. '+box.title);copy.append(n('strong',label));if(!initial)copy.append(l('span',state.loaded+(state.total===null?'':' / '+state.total),{class:'load-number'}));box.append(copy);if(failed){box.title=WorkflowControls.errorText(state.error);box.append(U.button('Retry loading',retry));}
+  /* 高5（F31 complete 胶囊永久驻留；评审修正真折叠）：完成后 4 秒折叠。
+     import_export_workspace.css 的 .load-state 有 min-height:44px（移动端
+     import_review_refined.css 为 22px）加 padding/border——只设 maxHeight/
+     opacity 时 min-height 胜出，实测高度仍 44px。因此 min-height/padding/
+     border 一并归零（CSS 文件不在本次改动范围，用内联覆盖），过渡结束后再
+     display:none 收走占位；role=status 的内容在插入时已播报。减少动态效果
+     时不播过渡直接收起。 */
+  if(complete&&!failed)setTimeout(()=>{if(!box.isConnected)return;const collapse=()=>{box.style.minHeight='0px';box.style.paddingTop='0px';box.style.paddingBottom='0px';box.style.paddingLeft='0px';box.style.paddingRight='0px';box.style.borderWidth='0px';box.style.maxHeight='0px';box.style.opacity='0';box.style.margin='0';};const hide=()=>{if(box.isConnected)box.style.display='none';};
+   if(matchMedia('(prefers-reduced-motion:reduce)').matches){collapse();hide();return;}
+   box.style.overflow='hidden';box.style.transition='min-height .45s ease,max-height .45s ease,padding .45s ease,border-width .45s ease,opacity .45s ease,margin .45s ease';box.style.minHeight='0px';box.style.paddingTop='0px';box.style.paddingBottom='0px';box.style.paddingLeft='0px';box.style.paddingRight='0px';box.style.borderWidth='0px';box.style.maxHeight=box.offsetHeight+'px';void box.offsetWidth;/* 强制 reflow 锚定过渡起点（不依赖 rAF） */
+   box.style.maxHeight='0px';box.style.opacity='0';box.style.margin='0';setTimeout(hide,1100);
+  },4000);
+  return box;
  };
  L.skeleton=function(){const shell=ImportExportWorkspace.node('div',null,{class:'initial-shell','aria-hidden':'true'});shell.innerHTML='<div class="skeleton-queue">'+Array.from({length:4},()=>'<div class="skeleton skeleton-row"></div>').join('')+'</div><div class="skeleton-reader"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div><div class="compare">'+Array.from({length:2},()=>'<div class="record"><div class="skeleton skeleton-line short"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')+'</div></div>';return shell;};
 })();

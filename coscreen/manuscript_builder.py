@@ -403,16 +403,26 @@ class _Svg:
         return "\n".join([*self.parts, "</svg>"])
 
 
-def _display_value(value: float, measure: str) -> float:
-    """分析尺度 → 展示尺度（与 synthesis_report._display_value 同口径）。"""
-    if measure in _LOG_SCALE_MEASURES or measure in {"LOG_RATE", "LOG_ROM", "PAIRED_OR"}:
-        return math.exp(value)
-    if measure == "FISHER_Z":
-        return math.tanh(value)
-    if measure == "LOGIT_PROP":
-        return 1 / (1 + math.exp(-value)) if value >= 0 else \
-            math.exp(value) / (1 + math.exp(value))
-    return value
+def _display_value(value: float, measure: str) -> float | None:
+    """分析尺度 → 展示尺度（与 synthesis_report._display_value 同口径）。
+
+    溢出/非有限展示值降级为 None（"—"），复用 coscreen/review_analysis.py
+    display() 的既有降级契约：大 SE 的 log 类指标置信界可超出 exp 的可表示
+    范围（>709.78），展示层降级而不是让稿件端点抛 OverflowError 500。
+    ``_num(None)`` 渲染既有 "—" 占位，与池效应行同一呈现。"""
+    try:
+        if measure in _LOG_SCALE_MEASURES or measure in {"LOG_RATE", "LOG_ROM", "PAIRED_OR"}:
+            out = math.exp(value)
+        elif measure == "FISHER_Z":
+            out = math.tanh(value)
+        elif measure == "LOGIT_PROP":
+            out = 1 / (1 + math.exp(-value)) if value >= 0 else \
+                math.exp(value) / (1 + math.exp(value))
+        else:
+            out = value
+    except OverflowError:
+        return None
+    return out if math.isfinite(out) else None
 
 
 def forest_plot_svg(result: dict, title: str = "") -> str:

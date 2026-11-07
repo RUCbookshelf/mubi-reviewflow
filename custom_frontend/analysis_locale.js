@@ -20,7 +20,15 @@
   ],
   [
     "Cochrane Handbook 第 6 章，第 6.3.1–6.3.2 节",
-    "Cochrane Handbook ch. 6, §§6.3.1–6.3.2"
+    "Cochrane Handbook ch. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook, ch. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook, гл. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook, cap. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook 第6章、§§6.3.1–6.3.2",
+    "Cochrane Handbook, cap. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook, Kap. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook, погл. 6, §§6.3.1–6.3.2",
+    "Cochrane Handbook 제6장, §§6.3.1–6.3.2"
   ],
   [
     "。比值效应在对数尺度上分析。请引用实际计算方法和研究报告；发表前核对检验及区间假设。",
@@ -32,11 +40,27 @@
   ],
   [
     "Tierney 等（2007）公式 7",
-    "Tierney et al. (2007), equation 7"
+    "Tierney et al. (2007), equation 7",
+    "Tierney et al. (2007), équation 7",
+    "Tierney et al. (2007), уравнение 7",
+    "Tierney et al. (2007), ecuación 7",
+    "Tierney et al. (2007)、式 7",
+    "Tierney et al. (2007), equação 7",
+    "Tierney et al. (2007), Gleichung 7",
+    "Tierney et al. (2007), једначина 7",
+    "Tierney et al. (2007), 식 7"
   ],
   [
     "Cochrane Handbook 第 6 章，第 6.8.2 节",
-    "Cochrane Handbook ch. 6, §6.8.2"
+    "Cochrane Handbook ch. 6, §6.8.2",
+    "Cochrane Handbook, ch. 6, §6.8.2",
+    "Cochrane Handbook, гл. 6, §6.8.2",
+    "Cochrane Handbook, cap. 6, §6.8.2",
+    "Cochrane Handbook 第6章、§6.8.2",
+    "Cochrane Handbook, cap. 6, §6.8.2",
+    "Cochrane Handbook, Kap. 6, §6.8.2",
+    "Cochrane Handbook, погл. 6, §6.8.2",
+    "Cochrane Handbook 제6장, §6.8.2"
   ],
   [
     "。请核对治疗组符号、事件定义和原始方法，并引用换算方法和研究报告。",
@@ -48,7 +72,15 @@
   ],
   [
     "，第 2 版第 4 章，第 23–29 页；Cooper、Hedges 与 Valentine 主编（2019）",
-    ", 2nd ed., ch. 4, pp. 23–29; Cooper, Hedges & Valentine (eds., 2019),"
+    ", 2nd ed., ch. 4, pp. 23–29; Cooper, Hedges & Valentine (eds., 2019),",
+    ", 2e éd., ch. 4, p. 23–29 ; Cooper, Hedges & Valentine (dir., 2019),",
+    ", 2-е изд., гл. 4, с. 23–29; Cooper, Hedges & Valentine (ред., 2019),",
+    ", 2.ª ed., cap. 4, pp. 23–29; Cooper, Hedges & Valentine (eds., 2019),",
+    "、第2版第4章pp.23–29；Cooper, Hedges & Valentine（eds., 2019）,",
+    ", 2.ª ed., cap. 4, pp. 23–29; Cooper, Hedges & Valentine (eds., 2019),",
+    ", 2. Aufl., Kap. 4, S. 23–29; Cooper, Hedges & Valentine (Hrsg., 2019),",
+    ", 2. изд., погл. 4, стр. 23–29; Cooper, Hedges & Valentine (ур., 2019),",
+    ", 제2판 제4장 pp.23–29; Cooper, Hedges & Valentine (eds., 2019),"
   ],
   [
     "，第 11 章，第 211–216 页；以及 Cochrane Handbook 第 6 章和第 23 章。请引用实际使用的方法、假定相关系数的来源及研究报告；撰写前核对原书和设计假设。",
@@ -60,7 +92,15 @@
   ],
   [
     "，第 2 版第 4 章，第 24、26–28 页，以及",
-    ", 2nd ed., ch. 4, pp. 24 and 26–28, and the"
+    ", 2nd ed., ch. 4, pp. 24 and 26–28, and the",
+    ", 2e éd., ch. 4, p. 24 et 26–28, et le",
+    ", 2-е изд., гл. 4, с. 24 и 26–28, а также",
+    ", 2.ª ed., cap. 4, pp. 24 y 26–28, y el",
+    "、第2版第4章pp.24、26–28、および",
+    ", 2.ª ed., cap. 4, pp. 24 e 26–28, e o",
+    ", 2. Aufl., Kap. 4, S. 24 und 26–28, und die",
+    ", 2. изд., погл. 4, стр. 24 и 26–28, и",
+    ", 제2판 제4장 pp.24 및 26–28, 그리고 "
   ],
   [
     "metafor escalc 的 SMD 文档", "metafor escalc SMD documentation", "Documentation de metafor::escalc pour le SMD", "Документация metafor::escalc для SMD", "Documentación de metafor::escalc para SMD", "metafor escalc SMD documentation", "Documentação de metafor::escalc para SMD", "SMD-Dokumentation zu metafor::escalc", "Документација metafor::escalc за SMD", "metafor escalc SMD documentation"
@@ -97,19 +137,51 @@
   ],
   [
     "Cochrane Handbook 第 23 章，第 23.1.4–23.1.5 节",
-    "Cochrane Handbook ch. 23, §§23.1.4–23.1.5"
+    "Cochrane Handbook ch. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook, ch. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook, гл. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook, cap. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook 第23章、§§23.1.4–23.1.5",
+    "Cochrane Handbook, cap. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook, Kap. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook, погл. 23, §§23.1.4–23.1.5",
+    "Cochrane Handbook 제23장, §§23.1.4–23.1.5"
   ],
   [
     "Cochrane Handbook 第 23.3.4 节",
+    "Cochrane Handbook §23.3.4",
+    "Cochrane Handbook, §23.3.4",
+    "Cochrane Handbook, §23.3.4",
+    "Cochrane Handbook, §23.3.4",
+    "Cochrane Handbook §23.3.4",
+    "Cochrane Handbook, §23.3.4",
+    "Cochrane Handbook, §23.3.4",
+    "Cochrane Handbook, §23.3.4",
     "Cochrane Handbook §23.3.4"
   ],
   [
     "Cochrane Handbook 第 10.14 节；Harrer 等（2022）",
+    "Cochrane Handbook §10.14; Harrer et al. (2022),",
+    "Cochrane Handbook, §10.14 ; Harrer et al. (2022),",
+    "Cochrane Handbook, §10.14; Harrer et al. (2022),",
+    "Cochrane Handbook, §10.14; Harrer et al. (2022),",
+    "Cochrane Handbook §10.14；Harrer et al. (2022),",
+    "Cochrane Handbook, §10.14; Harrer et al. (2022),",
+    "Cochrane Handbook, §10.14; Harrer et al. (2022),",
+    "Cochrane Handbook, §10.14; Harrer et al. (2022),",
     "Cochrane Handbook §10.14; Harrer et al. (2022),"
   ],
   [
     "，第 11–12 章及第 17 章。",
-    ", chs. 11–12 and 17."
+    ", chs. 11–12 and 17.",
+    ", ch. 11–12 et 17.",
+    ", гл. 11–12 и 17.",
+    ", caps. 11–12 y 17.",
+    "、第11–12章および第17章。",
+    ", caps. 11–12 e 17.",
+    ", Kap. 11–12 und 17.",
+    ", погл. 11–12 и 17.",
+    ", 제11–12장 및 제17장."
   ],
   [
     "RR、OR、HR 和发生率比要求正的估计值及对数尺度标准误。FISHER_Z 保存 Fisher z，合并后显示相关系数 r。MEAN 使用结局原始单位；LOGIT_PROP 和 LOG_RATE 保存 logit 或对数估计及标准误，再显示比例或发生率。单组分析请在比较组中明确标注，并核对单位、人群与时间点的可比性。",
@@ -129,7 +201,15 @@
   ],
   [
     "，第 4.1 章及第 4.2.1、4.2.3、4.4.4 节（本地 PDF 第 214–215、224–225、228–232、251–253 页）。",
-    ", ch. 4.1 and §§4.2.1, 4.2.3, 4.4.4 (local PDF pp. 214–215, 224–225, 228–232, 251–253)."
+    ", ch. 4.1 and §§4.2.1, 4.2.3, 4.4.4 (local PDF pp. 214–215, 224–225, 228–232, 251–253).",
+    ", ch. 4.1 et §§4.2.1, 4.2.3, 4.4.4 (PDF local p. 214–215, 224–225, 228–232, 251–253).",
+    ", гл. 4.1 и §§4.2.1, 4.2.3, 4.4.4 (локальный PDF, с. 214–215, 224–225, 228–232, 251–253).",
+    ", cap. 4.1 y §§4.2.1, 4.2.3, 4.4.4 (PDF local, pp. 214–215, 224–225, 228–232, 251–253).",
+    "、第4.1章および§§4.2.1、4.2.3、4.4.4（ローカルPDF pp.214–215、224–225、228–232、251–253）。",
+    ", cap. 4.1 e §§4.2.1, 4.2.3, 4.4.4 (PDF local, pp. 214–215, 224–225, 228–232, 251–253).",
+    ", Kap. 4.1 und §§4.2.1, 4.2.3, 4.4.4 (lokales PDF, S. 214–215, 224–225, 228–232, 251–253).",
+    ", погл. 4.1 и §§4.2.1, 4.2.3, 4.4.4 (локални PDF, стр. 214–215, 224–225, 228–232, 251–253).",
+    ", 제4.1장 및 §§4.2.1, 4.2.3, 4.4.4(로컬 PDF pp.214–215, 224–225, 228–232, 251–253)."
   ],
   [
     "基础效应量与逆方差合并：Harrer 等（2022）",
@@ -177,11 +257,27 @@
   ],
   [
     "，第 3.2.2、4.2.6 节，第 60–61、132–134 页（logit 比例与二项 logit 广义线性混合模型）；Borenstein 等（2021）",
-    ", §§3.2.2, 4.2.6, pp. 60–61, 132–134 (logit proportions and binomial-logit GLMM); Borenstein et al. (2021),"
+    ", §§3.2.2, 4.2.6, pp. 60–61, 132–134 (logit proportions and binomial-logit GLMM); Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, p. 60–61, 132–134 (proportions logit et GLMM logit binomiale) ; Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, с. 60–61, 132–134 (logit-пропорции и биномиальный logit-GLMM); Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, pp. 60–61, 132–134 (proporciones logit y GLMM logit binomial); Borenstein et al. (2021),",
+    "、§§3.2.2、4.2.6、pp.60–61、132–134（logit 比例と二項 logit GLMM）；Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, pp. 60–61, 132–134 (proporções logit e GLMM logit binomial); Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, S. 60–61, 132–134 (Logit-Anteile und binomiale Logit-GLMM); Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, стр. 60–61, 132–134 (logit пропорције и биномијални logit GLMM); Borenstein et al. (2021),",
+    ", §§3.2.2, 4.2.6, pp.60–61, 132–134(logit 비율과 이항 logit GLMM); Borenstein et al. (2021),"
   ],
   [
     "，第 2 版第 50 章，第 465–468 页（患病率示例）；",
-    ", 2nd ed., ch. 50, pp. 465–468 (prevalence example);"
+    ", 2nd ed., ch. 50, pp. 465–468 (prevalence example);",
+    ", 2e éd., ch. 50, p. 465–468 (exemple de prévalence) ;",
+    ", 2-е изд., гл. 50, с. 465–468 (пример по распространённости);",
+    ", 2.ª ed., cap. 50, pp. 465–468 (ejemplo de prevalencia);",
+    "、第2版第50章pp.465–468（有病率の例）；",
+    ", 2.ª ed., cap. 50, pp. 465–468 (exemplo de prevalência);",
+    ", 2. Aufl., Kap. 50, S. 465–468 (Beispiel zur Prävalenz);",
+    ", 2. изд., погл. 50, стр. 465–468 (пример преваленције);",
+    ", 제2판 제50장 pp.465–468(유병률 예시);"
   ],
   [
     "metafor rma.glmm 方法文档", "metafor rma.glmm methods", "Documentation méthodologique de metafor::rma.glmm", "Описание метода metafor::rma.glmm", "Documentación metodológica de metafor::rma.glmm", "metafor rma.glmm methods", "Documentação metodológica de metafor::rma.glmm", "Methodendokumentation zu metafor::rma.glmm", "Опис методе metafor::rma.glmm", "metafor rma.glmm methods"
@@ -196,11 +292,27 @@
   ],
   [
     "，第 2 版第 42 章，第 369–376 页（MH OR、Peto）；Harrer 等（2022）",
-    ", 2nd ed., ch. 42, pp. 369–376 (MH OR, Peto); Harrer et al. (2022),"
+    ", 2nd ed., ch. 42, pp. 369–376 (MH OR, Peto); Harrer et al. (2022),",
+    ", 2e éd., ch. 42, p. 369–376 (MH OR, Peto) ; Harrer et al. (2022),",
+    ", 2-е изд., гл. 42, с. 369–376 (MH OR, Peto); Harrer et al. (2022),",
+    ", 2.ª ed., cap. 42, pp. 369–376 (MH OR, Peto); Harrer et al. (2022),",
+    "、第2版第42章pp.369–376（MH OR、Peto）；Harrer et al. (2022),",
+    ", 2.ª ed., cap. 42, pp. 369–376 (MH OR, Peto); Harrer et al. (2022),",
+    ", 2. Aufl., Kap. 42, S. 369–376 (MH OR, Peto); Harrer et al. (2022),",
+    ", 2. изд., погл. 42, стр. 369–376 (MH OR, Peto); Harrer et al. (2022),",
+    ", 제2판 제42장 pp.369–376(MH OR, Peto); Harrer et al. (2022),"
   ],
   [
     "，第 4 章，第 115–119 页。Mantel 与 Haenszel（1959），DOI 10.1093/jnci/22.4.719。RR/RD 公式见 Cochrane RevMan 5 统计算法。",
-    ", ch. 4, pp. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. RR/RD formulas: Cochrane RevMan 5 statistical algorithms."
+    ", ch. 4, pp. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. RR/RD formulas: Cochrane RevMan 5 statistical algorithms.",
+    ", ch. 4, p. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. Formules RR/RD : algorithmes statistiques de Cochrane RevMan 5.",
+    ", гл. 4, с. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. Формулы RR/RD: статистические алгоритмы Cochrane RevMan 5.",
+    ", cap. 4, pp. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. Fórmulas RR/RD: algoritmos estadísticos de Cochrane RevMan 5.",
+    "、第4章pp.115–119。Mantel & Haenszel (1959)、DOI 10.1093/jnci/22.4.719。RR/RD の式は Cochrane RevMan 5 の統計アルゴリズムを参照。",
+    ", cap. 4, pp. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. Fórmulas RR/RD: algoritmos estatísticos do Cochrane RevMan 5.",
+    ", Kap. 4, S. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. RR/RD-Formeln: statistische Algorithmen von Cochrane RevMan 5.",
+    ", погл. 4, стр. 115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. Формуле RR/RD: статистички алгоритми Cochrane RevMan 5.",
+    ", 제4장 pp.115–119. Mantel & Haenszel (1959), DOI 10.1093/jnci/22.4.719. RR/RD 공식: Cochrane RevMan 5 통계 알고리즘."
   ],
   [
     "配对观测请使用",
@@ -280,7 +392,15 @@
   ],
   [
     "，第 2 版第 22 章。Knapp 与 Hartung（2003），DOI 10.1002/sim.1482。",
-    ", 2nd ed., ch. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482."
+    ", 2nd ed., ch. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    ", 2e éd., ch. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    ", 2-е изд., гл. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    ", 2.ª ed., cap. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    "、第2版第22章。Knapp & Hartung (2003)、DOI 10.1002/sim.1482。",
+    ", 2.ª ed., cap. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    ", 2. Aufl., Kap. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    ", 2. изд., погл. 22. Knapp & Hartung (2003), DOI 10.1002/sim.1482.",
+    ", 제2판 제22장. Knapp & Hartung (2003), DOI 10.1002/sim.1482."
   ],
   [
     "，第 9 章，第 242–244 页。原始方法：Begg 与 Mazumdar（1994），DOI 10.2307/2533446；Rosenthal（1979），DOI 10.1037/0033-2909.86.3.638；Orwin（1983），DOI 10.3102/10769986008002157；Duval 与 Tweedie（2000），DOI 10.1111/j.0006-341X.2000.00455.x。仅引用实际使用的方法。剪补法属于敏感性分析。",
@@ -288,11 +408,27 @@
   ],
   [
     "Cochrane Handbook 第 11 章，第 11.4.3 节；Harrer 等（2022）",
-    "Cochrane Handbook, Chapter 11, §11.4.3; Harrer et al. (2022),"
+    "Cochrane Handbook, Chapter 11, §11.4.3; Harrer et al. (2022),",
+    "Cochrane Handbook, ch. 11, §11.4.3 ; Harrer et al. (2022),",
+    "Cochrane Handbook, гл. 11, §11.4.3; Harrer et al. (2022),",
+    "Cochrane Handbook, cap. 11, §11.4.3; Harrer et al. (2022),",
+    "Cochrane Handbook 第11章§11.4.3；Harrer et al. (2022),",
+    "Cochrane Handbook, cap. 11, §11.4.3; Harrer et al. (2022),",
+    "Cochrane Handbook, Kap. 11, §11.4.3; Harrer et al. (2022),",
+    "Cochrane Handbook, погл. 11, §11.4.3; Harrer et al. (2022),",
+    "Cochrane Handbook 제11장 §11.4.3; Harrer et al. (2022),"
   ],
   [
     "，第 12 章，第 12.2.1 节，第 336–338 页（对比网络模型及随机效应扩展），342–344 页（设计间 Q）；Hedges（2019），载于",
-    ", ch. 12, §12.2.1, pp. 336–338 (contrast network model and random-effects extension), pp. 342–344 (between-design Q); Hedges (2019), in"
+    ", ch. 12, §12.2.1, pp. 336–338 (contrast network model and random-effects extension), pp. 342–344 (between-design Q); Hedges (2019), in",
+    ", ch. 12, §12.2.1, p. 336–338 (modèle de réseau par contrastes et extension à effets aléatoires), p. 342–344 (Q entre designs) ; Hedges (2019), dans",
+    ", гл. 12, §12.2.1, с. 336–338 (модель сетевого контраста и расширение случайных эффектов), с. 342–344 (Q между дизайнами); Hedges (2019), в",
+    ", cap. 12, §12.2.1, pp. 336–338 (modelo de red por contrastes y extensión de efectos aleatorios), pp. 342–344 (Q entre diseños); Hedges (2019), en",
+    "、第12章§12.2.1、pp.336–338（対比ネットワークモデルとランダム効果拡張）、pp.342–344（デザイン間Q）；Hedges (2019) 所収：",
+    ", cap. 12, §12.2.1, pp. 336–338 (modelo de rede por contrastes e extensão de efeitos aleatórios), pp. 342–344 (Q entre delineamentos); Hedges (2019), em",
+    ", Kap. 12, §12.2.1, S. 336–338 (Kontrast-Netzwerkmodell und Random-Erweiterung), S. 342–344 (Q zwischen Designs); Hedges (2019), in",
+    ", погл. 12, §12.2.1, стр. 336–338 (модел мреже контраста и проширење случајних ефеката), стр. 342–344 (Q између дизајна); Hedges (2019), у",
+    ", 제12장 §12.2.1, pp.336–338(대비 네트워크 모형과 임의효과 확장), pp.342–344(설계 간 Q); Hedges (2019),"
   ],
   [
     "，第 13 章，第 13.1.1 节，第 282–283 页（相依比较）。协方差感知路径需要提供研究内协方差。REML 假定各组偏差独立、方差相同，且共享一个 τ²。独立的设计间 Q 检验仅采用固定效应；两种分析均不检验可传递性。请核对原书、模型假设和研究报告，并引用实际方法。",
@@ -304,7 +440,15 @@
   ],
   [
     "，第 4.1.2.1–2 节，第 102–104 页（方差估计与 HKSJ 区间）。",
-    ", §§4.1.2.1–2, pp. 102–104 (variance estimators and HKSJ intervals)."
+    ", §§4.1.2.1–2, pp. 102–104 (variance estimators and HKSJ intervals).",
+    ", §§4.1.2.1–2, p. 102–104 (estimateurs de variance et intervalles HKSJ).",
+    ", §§4.1.2.1–2, с. 102–104 (оценки дисперсии и интервалы HKSJ).",
+    ", §§4.1.2.1–2, pp. 102–104 (estimadores de varianza e intervalos HKSJ).",
+    "、§§4.1.2.1–2、pp.102–104（分散推定量と HKSJ 区間）。",
+    ", §§4.1.2.1–2, pp. 102–104 (estimadores de variância e intervalos HKSJ).",
+    ", §§4.1.2.1–2, S. 102–104 (Varianzschätzer und HKSJ-Intervalle).",
+    ", §§4.1.2.1–2, стр. 102–104 (процене варијансе и HKSJ интервали).",
+    ", §§4.1.2.1–2, pp.102–104(분산 추정량과 HKSJ 구간)."
   ],
   [
     "相关线性剂量趋势的 GLS 见 Greenland 与 Longnecker（1992），DOI 10.1093/oxfordjournals.aje.a116237。Cooper 等（2019）",
@@ -979,6 +1123,14 @@
   ],
   [
     "{0}：{1}",
+    "{0}: {1}",
+    "{0} : {1}",
+    "{0}: {1}",
+    "{0}: {1}",
+    "{0}：{1}",
+    "{0}: {1}",
+    "{0}: {1}",
+    "{0}: {1}",
     "{0}: {1}"
   ],
   [
@@ -1148,7 +1300,15 @@
   ],
   [
     "不同区间对是否跨越无效值的结论不一致。",
-    "Intervals disagree on whether they cross the null. "
+    "Intervals disagree on whether they cross the null. ",
+    "Les intervalles ne concordent pas sur le franchissement de la valeur nulle. ",
+    "Интервалы расходятся в оценке пересечения нулевого значения. ",
+    "Los intervalos no coinciden en si cruzan el valor nulo. ",
+    "区間ごとに帰無値をまたぐかどうかの結論が一致しません。",
+    "Os intervalos divergem quanto ao cruzamento do valor nulo. ",
+    "Die Intervalle widersprechen sich beim Überschreiten des Nulwerts. ",
+    "Интервали се не слажу око преласка нулте вредности. ",
+    "구간마다 귀무값을 가로지르는지에 대한 결론이 일치하지 않습니다. "
   ],
   [
     "第一层参数自助法百分位区间",
@@ -1301,10 +1461,26 @@
   ],
   [
     "DerSimonian 与 Laird（1986），DOI 10.1016/0197-2456(86)90046-2。",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
+    "DerSimonian & Laird (1986)、DOI 10.1016/0197-2456(86)90046-2。",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
+    "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2",
     "DerSimonian & Laird (1986), DOI 10.1016/0197-2456(86)90046-2"
   ],
   [
     "Paule 与 Mandel（1982），J. Res. Natl. Bur. Stand.，87：377–385。",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
+    "Paule & Mandel (1982)、J. Res. Natl. Bur. Stand. 87:377–385。",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
+    "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385",
     "Paule & Mandel (1982), J. Res. Natl. Bur. Stand. 87:377–385"
   ],
   [
@@ -3565,7 +3741,54 @@
     "문헌 목록을 사용할 수 없습니다: 분석 페이지 문헌이 아직 로드되지 않았습니다. 잠시 후 다시 시도하세요."
   ],
   ["主题簇根据当前文献库使用 TF-IDF+KMeans 自动分配。此处按另一维度（{0}）筛选文献；单篇归属不单独重算。", "Topic clusters are assigned across the current reference library using TF-IDF + K-means. This list filters by the other dimension ({0}); individual assignments are not recalculated here.", "Les groupes thématiques sont attribués à l’ensemble de la bibliothèque actuelle avec TF-IDF + K-means. Cette liste filtre selon l’autre dimension ({0}) ; les attributions individuelles ne sont pas recalculées ici.", "Тематические кластеры распределяются по текущей библиотеке публикаций методом TF-IDF + K-means. В этом списке действует фильтр по другому измерению ({0}); принадлежность отдельной публикации здесь не пересчитывается.", "Los grupos temáticos se asignan en toda la biblioteca actual mediante TF-IDF + K-means. Esta lista filtra por la otra dimensión ({0}); aquí no se recalcula la asignación de cada referencia.", "現在の文献ライブラリ全体を対象に TF-IDF + K-means でトピッククラスターを割り当てます。この一覧はもう一方の次元（{0}）で絞り込み、各文献の割り当てはここでは再計算しません。", "Os grupos temáticos são atribuídos em toda a biblioteca atual usando TF-IDF + K-means. Esta lista filtra pela outra dimensão ({0}); as atribuições individuais não são recalculadas aqui.", "Themencluster werden anhand der aktuellen Referenzbibliothek mit TF-IDF + K-means zugewiesen. Diese Liste filtert nach der anderen Dimension ({0}); einzelne Zuordnungen werden hier nicht neu berechnet.", "Тематски кластери се додељују у целој тренутној библиотеци референци методом TF-IDF + K-means. Овај списак филтрира по другој димензији ({0}); појединачне доделе се овде не прерачунавају.", "현재 문헌 라이브러리 전체를 대상으로 TF-IDF + K-means를 사용해 주제 군집을 할당합니다. 이 목록은 다른 차원({0})으로 필터링하며 개별 문헌의 할당을 여기서 다시 계산하지 않습니다."],
-  ["按相同规则从当前文献库筛出 {0} 篇，与地图计数 {1} 不一致（生成地图后，文献库可能已变化）。", "Applying the same rules to the current reference library gives {0} references, compared with {1} on the map. The library may have changed since the map was generated.", "L’application des mêmes règles à la bibliothèque actuelle donne {0} références, contre {1} sur la carte. La bibliothèque a peut-être changé depuis la création de la carte.", "Применение тех же правил к текущей библиотеке публикаций даёт {0} ссылок, тогда как на карте указано {1}. После построения карты библиотека могла измениться.", "Al aplicar las mismas reglas a la biblioteca actual se obtienen {0} referencias, frente a {1} en el mapa. La biblioteca pudo cambiar desde que se generó el mapa.", "現在の文献ライブラリに同じ規則を適用すると {0} 件となり、地図の件数 {1} と一致しません。地図の作成後にライブラリが変更された可能性があります。", "A aplicação das mesmas regras à biblioteca atual resulta em {0} referências, enquanto o mapa mostra {1}. A biblioteca pode ter mudado desde a geração do mapa.", "Nach denselben Regeln ergeben sich in der aktuellen Referenzbibliothek {0} Einträge, während die Karte {1} zeigt. Die Bibliothek kann sich seit der Kartenerstellung geändert haben.", "Применом истих правила на тренутну библиотеку добија се {0} референци, док мапа приказује {1}. Библиотека се можда променила од прављења мапе.", "현재 문헌 라이브러리에 같은 규칙을 적용하면 {0}건이며 지도에는 {1}건이 표시됩니다. 지도를 만든 뒤 라이브러리가 변경되었을 수 있습니다."]
+  ["按相同规则从当前文献库筛出 {0} 篇，与地图计数 {1} 不一致（生成地图后，文献库可能已变化）。", "Applying the same rules to the current reference library gives {0} references, compared with {1} on the map. The library may have changed since the map was generated.", "L’application des mêmes règles à la bibliothèque actuelle donne {0} références, contre {1} sur la carte. La bibliothèque a peut-être changé depuis la création de la carte.", "Применение тех же правил к текущей библиотеке публикаций даёт {0} ссылок, тогда как на карте указано {1}. После построения карты библиотека могла измениться.", "Al aplicar las mismas reglas a la biblioteca actual se obtienen {0} referencias, frente a {1} en el mapa. La biblioteca pudo cambiar desde que se generó el mapa.", "現在の文献ライブラリに同じ規則を適用すると {0} 件となり、地図の件数 {1} と一致しません。地図の作成後にライブラリが変更された可能性があります。", "A aplicação das mesmas regras à biblioteca atual resulta em {0} referências, enquanto o mapa mostra {1}. A biblioteca pode ter mudado desde a geração do mapa.", "Nach denselben Regeln ergeben sich in der aktuellen Referenzbibliothek {0} Einträge, während die Karte {1} zeigt. Die Bibliothek kann sich seit der Kartenerstellung geändert haben.", "Применом истих правила на тренутну библиотеку добија се {0} референци, док мапа приказује {1}. Библиотека се можда променила од прављења мапе.", "현재 문헌 라이브러리에 같은 규칙을 적용하면 {0}건이며 지도에는 {1}건이 표시됩니다. 지도를 만든 뒤 라이브러리가 변경되었을 수 있습니다."],
+  ["至少需要两项独立研究才能合并。", "at least two independent studies are required", "Au moins deux études indépendantes sont nécessaires.", "Для объединения требуются как минимум два независимых исследования.", "Se requieren al menos dos estudios independientes.", "統合には少なくとも 2 つの独立した研究が必要です。", "São necessários pelo menos dois estudos independentes.", "Es sind mindestens zwei unabhängige Studien erforderlich.", "Потребна су најмање два независна истраживања.", "병합하려면 독립적인 연구가 두 개 이상 필요합니다."],
+  ["不支持的效应指标或模型。", "unsupported measure or model", "Mesure ou modèle non pris en charge.", "Неподдерживаемый показатель или модель.", "Medida o modelo no admitido.", "未対応の効果指標またはモデルです。", "Medida ou modelo não suportado.", "Nicht unterstützte Effektmaß oder Modell.", "Неподржана мера или модел.", "지원되지 않는 효과 지표 또는 모델입니다."],
+  ["轮廓似然区间至少需要三项匹配的研究效应与方差。", "profile interval needs at least three matching study effects and variances", "L’intervalle de vraisemblance profilée requiert au moins trois effets et variances d’études correspondants.", "Для профиля интервала правдоподобия нужно как минимум три совпадающих эффекта и дисперсии исследований.", "El intervalo de verosimilitud perfilada necesita al menos tres efectos y varianzas de estudios coincidentes.", "プロファイル尤度区間には一致する研究の効果と分散が少なくとも 3 組必要です。", "O intervalo de verossimilhança perfilada exige pelo menos três efeitos e variâncias de estudos correspondentes.", "Das Profil-Likelihood-Intervall erfordert mindestens drei übereinstimmende Studieneffekte und Varianzen.", "Интервал профилне вероватноће захтева најмање три одговарајућа ефекта и варијансе студија.", "프로파일 우도 구간에는 일치하는 연구 효과와 분산이 최소 세 개 필요합니다."],
+  ["REML 轮廓优化失败。", "REML profile optimization failed", "Échec de l’optimisation du profil REML.", "Не удалось оптимизировать профиль REML.", "Falló la optimización del perfil REML.", "REML プロファイル最適化に失敗しました。", "Falha na otimização do perfil REML.", "REML-Profiloptimierung fehlgeschlagen.", "Оптимизација REML профила није успела.", "REML 프로파일 최적화에 실패했습니다."],
+  ["此比较、结局与时间点的已选效应指标、标准化方法或方向不兼容。", "incompatible selected effect measures, standardizers or directions for this comparison/outcome/timepoint", "Les mesures d’effet, standardisations ou directions sélectionnées sont incompatibles pour cette comparaison/critère/point temporel.", "Выбранные показатели эффекта, методы стандартизации или направления несовместимы для этого сравнения/исхода/момента времени.", "Las medidas del efecto, estandarizaciones o direcciones seleccionadas son incompatibles para esta comparación/desenlace/momento.", "この比較・アウトカム・時点に対して、選択された効果指標・標準化方法・方向のいずれかが互換性がありません。", "As medidas de efeito, padronizações ou direções selecionadas são incompatíveis para esta comparação/desfecho/momento.", "Die ausgewählten Effektmaße, Standardisierungen oder Richtungen sind für diese Vergleich/Endpunkt/Zeitpunkt-Kombination unverträglich.", "Изабране мере ефекта, стандардизације или смерови нису међусобно сагласни за ово поређење/исход/временску тачку.", "이 비교/결과/시점에 대해 선택된 효과 지표, 표준화 방법 또는 방향이 호환되지 않습니다."],
+  ["运行前请先选择合并模型。", "Choose a synthesis model before running this analysis.", "Choisissez d’abord un modèle de synthèse avant de lancer cette analyse.", "Сначала выберите модель объединения, затем запускайте анализ.", "Elija primero un modelo de síntesis antes de ejecutar este análisis.", "この分析を実行する前に統合モデルを選択してください。", "Escolha o modelo de síntese antes de executar esta análise.", "Wählen Sie vor dem Ausführen dieser Analyse ein Synthesemodell.", "Пре покретања ове анализе изаберите модел синтезе.", "이 분석을 실행하기 전에 통합 모델을 먼저 선택하세요."],
+  ["运行前请先选择置信区间方法。", "Choose a confidence interval method before running this analysis.", "Choisissez d’abord une méthode d’intervalle de confiance avant de lancer cette analyse.", "Сначала выберите метод доверительного интервала, затем запускайте анализ.", "Elija primero un método de intervalo de confianza antes de ejecutar este análisis.", "この分析を実行する前に信頼区間の方法を選択してください。", "Escolha o método de intervalo de confiança antes de executar esta análise.", "Wählen Sie vor dem Ausführen dieser Analyse eine Konfidenzintervallmethode.", "Пре покретања ове анализе изаберите метод интервала поузданости.", "이 분석을 실행하기 전에 신뢰구간 방법을 먼저 선택하세요."],
+  ["运行前请先选择效应指标。", "Choose an effect measure before running this analysis.", "Choisissez d’abord une mesure d’effet avant de lancer cette analyse.", "Сначала выберите показатель эффекта, затем запускайте анализ.", "Elija primero una medida del efecto antes de ejecutar este análisis.", "この分析を実行する前に効果指標を選択してください。", "Escolha a medida de efeito antes de executar esta análise.", "Wählen Sie vor dem Ausführen dieser Analyse ein Effektmaß.", "Пре покретања ове анализе изаберите меру ефекта.", "이 분석을 실행하기 전에 효과 지표를 먼저 선택하세요."],
+  ["运行合并分析前，请先选择：{0}。", "Before running the synthesis, choose: {0}.", "Avant de lancer la synthèse, choisissez : {0}.", "Перед запуском объединения выберите: {0}.", "Antes de ejecutar la síntesis, elija: {0}.", "統合解析の実行前に選択してください：{0}。", "Antes de executar a síntese, escolha: {0}.", "Wählen Sie vor dem Ausführen der Synthese: {0}.", "Пре покретања синтезе изаберите: {0}.", "통합 분석을 실행하기 전에 선택하세요: {0}."],
+  ["修正 HKSJ 区间需要随机效应模型。", "Modified HKSJ intervals require a random-effects model.", "Les intervalles HKSJ modifiés exigent un modèle à effets aléatoires.", "Модифицированные интервалы HKSJ требуют модель со случайными эффектами.", "Los intervalos HKSJ modificados requieren un modelo de efectos aleatorios.", "修正 HKSJ 区間にはランダム効果モデルが必要です。", "Intervalos HKSJ modificados exigem um modelo de efeitos aleatórios.", "Modifizierte HKSJ-Intervalle erfordern ein Modell mit zufälligen Effekten.", "Модификовани HKSJ интервали захтевају модел са случајним ефектима.", "수정 HKSJ 구간에는 무작위 효과 모델이 필요합니다."],
+  ["、", ", ", ", ", ", ", ", ", "、", ", ", ", ", ", ", "、"],
+  /* r8 FL4（MM10-07 含 MM11-12 增量 / MM9-06）：此前未登记的分析面板字面量，
+     以及合成页 effect_scale 长串的 term 反查对（en 必须与后端
+     review_analysis._synthesis_effect_scale_label 的字面逐字一致）。 */
+  ["SE（分析尺度）", "SE (analysis scale)", "Erreur type (échelle d'analyse)", "SE (шкала анализа)", "EE (escala de análisis)", "SE（分析尺度）", "EP (escala de análise)", "SE (Analyseskala)", "SE (скала анализе)", "SE(분석 척도)"],
+  ["边际 Q（抽样方差）", "Marginal Q (sampling variance)", "Q marginal (variance d'échantillonnage)", "Маргинальный Q (выборочная дисперсия)", "Q marginal (varianza de muestreo)", "周辺 Q（サンプリング分散）", "Q marginal (variância de amostragem)", "Marginales Q (Stichprobenvarianz)", "Маргинални Q (варијанса узорковања)", "주변 Q(표본 분산)"],
+  ["协方差来源或假设（必填）", "Covariance source or assumption (required)", "Source ou hypothèse de covariance (obligatoire)", "Источник или предположение ковариации (обязательно)", "Fuente o supuesto de covarianza (obligatorio)", "共分散の出典または仮定（必須）", "Fonte ou pressuposição de covariância (obrigatório)", "Kovarianzquelle oder -annahme (erforderlich)", "Извор или претпоставка коваријансе (обавезно)", "공분산 출처 또는 가정(필수)"],
+  ["例如：原文表 3 的相关系数，或预设假设及理由", "e.g. the correlation in Table 3 of the paper, or a preset assumption and rationale", "p. ex. la corrélation du tableau 3 de l'article, ou une hypothèse prédéfinie et sa justification", "напр., коэффициент корреляции из табл. 3 статьи или заранее заданное допущение с обоснованием", "p. ej. la correlación de la tabla 3 del artículo, o un supuesto predefinido y su justificación", "例：原文表 3 の相関係数、または所定の仮定とその根拠", "p. ex. a correlação da tabela 3 do artigo, ou um pressuposto predefinido e a justificativa", "z. B. die Korrelation aus Tabelle 3 der Originalarbeit oder eine gesetzte Annahme mit Begründung", "нпр. корелација из табеле 3 оригиналног рада, или унапред задата претпоставка и образложење", "예: 원문 표 3의 상관계수, 또는 미리 정한 가정과 그 근거"],
+  ["比较、时间点或效应指标已变化，请重新载入结果", "The comparison, time point or effect measure has changed; reload the results", "La comparaison, le point temporel ou la mesure d'effet a changé ; rechargez les résultats", "Сравнение, момент времени или показатель эффекта изменились; загрузите результаты заново", "La comparación, el momento o la medida de efecto han cambiado; vuelva a cargar los resultados", "比較・時点・効果指標が変更されました。結果を再読み込みしてください", "A comparação, o momento ou a medida de efeito mudou; recarregue os resultados", "Vergleich, Zeitpunkt oder Effektmaß hat sich geändert; laden Sie die Ergebnisse neu", "Поређење, временска тачка или мера ефекта се променила; поново учитајте резултате", "비교, 시점 또는 효과 지표가 변경되었습니다. 결과를 다시 불러오세요"],
+  ["查看协方差与输入快照", "View covariance and input snapshot", "Voir la covariance et l'instantané des entrées", "Просмотреть ковариацию и снимок входных данных", "Ver la covarianza y la captura de entradas", "共分散と入力スナップショットを表示", "Ver covariância e captura das entradas", "Kovarianz und Eingabe-Snapshot anzeigen", "Прикажи коваријансу и снимак уноса", "공분산과 입력 스냅샷 보기"],
+  ["请先填写比较和时间点", "Enter the comparison and time point first", "Saisissez d'abord la comparaison et le point temporel", "Сначала укажите сравнение и момент времени", "Indique primero la comparación y el momento", "先に比較と時点を入力してください", "Informe primeiro a comparação e o momento", "Geben Sie zuerst Vergleich und Zeitpunkt an", "Прво унесите поређење и временску тачку", "먼저 비교와 시점을 입력하세요"],
+  ["此层至少需要两个已选用的结局", "This layer needs at least two selected outcomes", "Cette couche requiert au moins deux critères sélectionnés", "Для этого слоя нужно не менее двух выбранных исходов", "Esta capa necesita al menos dos desenlaces seleccionados", "この層には選択したアウトカムが 2 つ以上必要です", "Esta camada precisa de pelo menos dois desfechos selecionados", "Diese Ebene benötigt mindestens zwei ausgewählte Endpunkte", "Овај слој захтева бар два изабрана исхода", "이 층에는 선택한 결과가 두 개 이상 필요합니다"],
+  ["请先载入当前层的结果", "Load the results for the current layer first", "Chargez d'abord les résultats de la couche actuelle", "Сначала загрузите результаты текущего слоя", "Cargue primero los resultados de la capa actual", "先に現在の層の結果を読み込んでください", "Carregue primeiro os resultados da camada atual", "Laden Sie zuerst die Ergebnisse der aktuellen Ebene", "Прво учитајте резултате текућег слоја", "먼저 현재 층의 결과를 불러오세요"],
+  ["协方差必须是有限数值", "Covariance values must be finite", "Les valeurs de covariance doivent être finies", "Значения ковариации должны быть конечными", "Los valores de covarianza deben ser finitos", "共分散は有限の数値でなければなりません", "Os valores de covariância devem ser finitos", "Kovarianzwerte müssen endlich sein", "Вредности коваријансе морају бити коначне", "공분산 값은 유한수여야 합니다"],
+  ["至少需要两项独立研究", "At least two independent studies are required", "Au moins deux études indépendantes sont requises", "Требуются как минимум два независимых исследования", "Se requieren al menos dos estudios independientes", "独立した研究が 2 つ以上必要です", "São necessários pelo menos dois estudos independentes", "Mindestens zwei unabhängige Studien sind erforderlich", "Потребна су најмање две независне студије", "독립 연구가 두 개 이상 필요합니다"],
+  ["每个结局至少需要两项独立研究", "Each outcome needs at least two independent studies", "Chaque critère requiert au moins deux études indépendantes", "Для каждого исхода нужно не менее двух независимых исследований", "Cada desenlace necesita al menos dos estudios independientes", "各アウトカムには独立した研究が 2 つ以上必要です", "Cada desfecho precisa de pelo menos dois estudos independentes", "Jeder Endpunkt benötigt mindestens zwei unabhängige Studien", "Сваки исход захтева најмање две независне студије", "각 결과마다 독립 연구가 두 개 이상 필요합니다"],
+  ["请选择相关结局联合合并模型", "Choose a joint synthesis model for correlated outcomes", "Choisissez un modèle de synthèse joint pour les critères corrélés", "Выберите модель совместного объединения для коррелированных исходов", "Elija un modelo de síntesis conjunta para desenlaces correlacionados", "相関するアウトカムの同時統合モデルを選択してください", "Escolha um modelo de síntese conjunta para desfechos correlacionados", "Wählen Sie ein gemeinsames Synthesemodell für korrelierte Endpunkte", "Изаберите заједнички модел синтезе за корелисане исходе", "상관된 결과를 위한 결합 통합 모형을 선택하세요"],
+  /* r8.1 FL4：dependent-synthesis 的 REML 结局数下限校验此前是裸英文字面
+     （非中文界面直出英文、且非中文界面也无从翻译），改为 T() 模板并补十语词条。 */
+  ["随机效应 REML 模型要求 2 至 8 个结局", "Random-effects REML requires two to eight outcomes", "Le modèle REML à effets aléatoires exige de deux à huit critères", "Модель REML со случайными эффектами требует от двух до восьми исходов", "El modelo REML de efectos aleatorios requiere de dos a ocho desenlaces", "ランダム効果 REML モデルは 2～8 個のアウトカムを必要とします", "O modelo REML de efeitos aleatórios exige de dois a oito desfechos", "Das Random-Effects-REML-Modell erfordert zwei bis acht Endpunkte", "Модел REML са случајним ефектима захтева од два до осам исхода", "무작위 효과 REML 모형에는 결과가 2개에서 8개 필요합니다"],
+  ["拟合方法：{0}；结点：{1}；参照剂量：{2}", "Fit method: {0}; knots: {1}; reference dose: {2}", "Méthode d'ajustement : {0} ; nœuds : {1} ; dose de référence : {2}", "Метод подгонки: {0}; узлы: {1}; референтная доза: {2}", "Método de ajuste: {0}; nodos: {1}; dosis de referencia: {2}", "当てはめ方法：{0}；ノット：{1}；参照用量：{2}", "Método de ajuste: {0}; nós: {1}; dose de referência: {2}", "Anpassungsmethode: {0}; Knoten: {1}; Referenzdosis: {2}", "Метода уклапања: {0}; чворови: {1}; референтна доза: {2}", "적합 방법: {0}; 매듭점: {1}; 참조 용량: {2}"],
+  ["方法来源：", "Method sources:", "Sources des méthodes : ", "Источники методов: ", "Fuentes del método: ", "方法の出典：", "Fontes do método: ", "Methodenquellen: ", "Извори метода: ", "방법 출처: "],
+  ["比值尺度", "Ratio scale", "Échelle des rapports", "Шкала отношений", "Escala de razones", "比率尺度", "Escala de razões", "Verhältnisskala", "Скала односа", "비율 척도"],
+  ["森林图数据不含有限的效应值或区间端点，无法建立坐标系；请检查效应值与 SE。", "Forest data lack finite effect values or interval endpoints; a coordinate system cannot be built. Check the effect values and SEs.", "Les données du forest plot ne contiennent ni effets finis ni bornes d'intervalle ; aucun système de coordonnées ne peut être construit. Vérifiez les effets et les ET.", "Данные лесовицы не содержат конечных значений эффекта или границ интервала; построить систему координат невозможно. Проверьте значения эффекта и SE.", "Los datos del diagrama de bosque carecen de efectos finitos o extremos de intervalo; no se puede construir un sistema de coordenadas. Compruebe los efectos y los EE.", "フォレストプロットデータに有限の効果量または区間端点がなく、座標系を構築できません。効果量と SE を確認してください。", "Os dados da floresta não contêm efeitos finitos nem extremos de intervalo; não é possível construir um sistema de coordenadas. Verifique os efeitos e os EP.", "Die Forest-Plot-Daten enthalten keine endlichen Effekte oder Intervallgrenzen; ein Koordinatensystem kann nicht erstellt werden. Prüfen Sie Effektwerte und SE.", "Подаци шумског дијаграма немају коначне ефекте или границе интервала; координатни систем не може да се изгради. Проверите вредности ефеката и SE.", "숲 그림 데이터에 유한한 효과값이나 구간 끝점이 없어 좌표계를 만들 수 없습니다. 효과값과 SE를 확인하세요."],
+  ["τ² 非中心卡方近似区间", "τ² non-central chi-square approximate interval", "Intervalle approximatif du χ² non central pour τ²", "Приближённый интервал τ² на основе нецентрального χ²", "Intervalo aproximado de χ² no central para τ²", "τ² 非心カイ二乗近似区間", "Intervalo aproximado de χ² não central para τ²", "Approximatives τ²-Intervall per nichtzentralem χ²", "Апроксимативни интервал τ² помоћу нецентралног χ²", "τ² 비중심 카이제곱 근사 구간"],
+  ["τ² Q-profile 区间", "τ² Q-profile interval", "Intervalle de profil Q pour τ²", "Интервал профиля Q для τ²", "Intervalo de perfil Q para τ²", "τ² Q プロファイル区間", "Intervalo de perfil Q para τ²", "τ²-Q-Profil-Intervall", "Интервал Q-профиля за τ²", "τ² Q-프로파일 구간"],
+  ["Higgins–Thompson H 转换区间", "Higgins–Thompson H transform interval", "Intervalle transformé H de Higgins–Thompson", "Интервал преобразования H Хиггинса–Томпсона", "Intervalo de transformación H de Higgins–Thompson", "Higgins–Thompson H 変換区間", "Intervalo de transformação H de Higgins–Thompson", "Higgins–Thompson-H-Transformationsintervall", "Интервал трансформације H Хигинса–Томпсона", "Higgins–Thompson H 변환 구간"],
+  ["导出 {0} 审计", "Export {0} audit", "Exporter l'audit {0}", "Экспорт аудита {0}", "Exportar auditoría {0}", "{0} 監査をエクスポート", "Exportar auditoria {0}", "{0}-Audit exportieren", "Извези аудит {0}", "{0} 감사 내보내기"],
+  ["I² = max(0, (Q − df) / Q) × 100%，来自固定逆方差 Q；Q = 0 时记为 0。", "I² = max(0, (Q − df) / Q) × 100% from fixed inverse-variance Q; I² = 0 when Q = 0.", "I² = max(0, (Q − dl) / Q) × 100 % à partir du Q fixe pondéré par l'inverse de la variance ; I² = 0 lorsque Q = 0.", "I² = max(0, (Q − df) / Q) × 100 % по фиксированному Q с обратно-дисперсионными весами; I² = 0 при Q = 0.", "I² = max(0, (Q − gl) / Q) × 100 % a partir de la Q fija de varianza inversa; I² = 0 cuando Q = 0.", "I² = max(0, (Q − df) / Q) × 100%（固定逆分散 Q に基づく）。Q = 0 のとき I² = 0。", "I² = max(0, (Q − gl) / Q) × 100% a partir da Q fixa de variância inversa; I² = 0 quando Q = 0.", "I² = max(0, (Q − df) / Q) × 100 % aus dem fixen invers-varianz-gewichteten Q; I² = 0, wenn Q = 0.", "I² = max(0, (Q − df) / Q) × 100 % из фиксног Q са тежинама обрнуте варијансе; I² = 0 када је Q = 0.", "I² = max(0, (Q − df) / Q) × 100%(고정 역분산 Q 기준). Q = 0이면 I² = 0."],
+  ["HSROC 参数", "HSROC parameter", "Paramètre HSROC", "Параметр HSROC", "Parámetro HSROC", "HSROC パラメータ", "Parâmetro HSROC", "HSROC-Parameter", "Параметар HSROC", "HSROC 매개변수"],
+  ["准确度与阈值方差位于其潜在 HSROC 参数尺度上。仅描述性 HSROC 曲线与参数：不提供 HSROC 参数置信区间或形状显著性检验。另有双变量预测区域时会在图中单独显示。", "Accuracy and threshold variances are on their latent HSROC parameter scales. Descriptive HSROC curve and parameters only: no HSROC parameter CI or shape significance test. The separate bivariate prediction region is shown on the plot when available.", "Les variances d'exactitude et de seuil sont sur leurs échelles latentes de paramètres HSROC. Courbe et paramètres HSROC descriptifs uniquement : pas d'IC de paramètre HSROC ni de test de significativité de la forme. La région de prédiction bivariée séparée est montrée sur le graphique si disponible.", "Дисперсии точности и порога находятся на своих латентных шкалах параметров HSROC. Приводятся только описательные кривая и параметры HSROC: доверительных интервалов параметров HSROC и теста значимости формы нет. Отдельная область двумерного прогноза показывается на графике при наличии.", "Las varianzas de exactitud y de umbral están en sus escalas latentes de parámetros HSROC. Solo curva y parámetros HSROC descriptivos: sin IC de parámetros HSROC ni prueba de significación de la forma. La región de predicción bivariada separada se muestra en el gráfico cuando está disponible.", "精度と閾値の分散は、潜在 HSROC パラメータの尺度上にあります。記述的な HSROC 曲線とパラメータのみであり、HSROC パラメータの信頼区間や形状の有意性検定は行いません。独立した二変量予測領域は、利用可能な場合に図に表示されます。", "As variâncias de acurácia e de limiar estão em suas escalas latentes de parâmetros HSROC. Apenas curva e parâmetros HSROC descritivos: sem IC de parâmetro HSROC ou teste de significância da forma. A região de predição bivariada separada é mostrada no gráfico quando disponível.", "Genauigkeits- und Schwellenvarianzen liegen auf ihren latenten HSROC-Paramterskalen. Nur beschreibende HSROC-Kurve und -Parameter: kein Konfidenzintervall für HSROC-Parameter und kein Signifikanztest der Form. Der separate bivariate Vorhersagebereich wird im Plot angezeigt, wenn verfügbar.", "Варијансе тачности и прага налазе се на својим латентним скалама HSROC параметара. Само дескриптивна HSROC крива и параметри: без ЦИ параметара HSROC или теста значајности облика. Одвојена биваријатна област предвиђања приказује се на графикону када је доступна.", "정확도와 임계값 분산은 잠재 HSROC 매개변수 척도에 있습니다. 기술적 HSROC 곡선과 매개변수만 제공되며 HSROC 매개변수 신뢰구간이나 형태 유의성 검정은 없습니다. 별도의 이변량 예측 영역은 가능한 경우 그림에 표시됩니다."],
+  /* MM9-06：合成路径 effect_scale 长串（en 列 = 后端 _synthesis_effect_scale_label 字面） */
+  ["Fisher z；结果显示为 r", "Fisher z; results shown as r", "z de Fisher ; résultats affichés en r", "z Фишера; результаты показаны как r", "z de Fisher; resultados mostrados como r", "Fisher z；結果は r として表示", "z de Fisher; resultados exibidos como r", "Fisher z; Ergebnisse als r dargestellt", "Фишеров z; резултати приказани као r", "Fisher z; 결과는 r로 표시"],
+  ["logit；结果显示为比例", "logit; results shown as proportion", "logit ; résultats affichés en proportion", "logit; результаты показаны как доли", "logit; resultados mostrados como proporción", "logit；結果は割合として表示", "logit; resultados exibidos como proporção", "logit; Ergebnisse als Anteil dargestellt", "logit; резултати приказани као пропорција", "logit; 결과는 비율로 표시"],
+  ["对数尺度；结果显示为发生率", "log; results shown as rate", "échelle logarithmique ; résultats affichés en taux", "логарифмическая шкала; результаты показаны как частоты", "escala logarítmica; resultados mostrados como tasas", "対数尺度；結果は発生率として表示", "escala logarítmica; resultados exibidos como taxas", "Log-Skala; Ergebnisse als Rate dargestellt", "логаритамска скала; резултати приказани као стопа", "로그 척도; 결과는 발생률로 표시"],
+  ["对数尺度；结果显示为均数比", "log; results shown as ratio of means", "échelle logarithmique ; résultats affichés en rapport de moyennes", "логарифмическая шкала; результаты показаны как отношение средних", "escala logarítmica; resultados mostrados como razón de medias", "対数尺度；結果は平均値比として表示", "escala logarítmica; resultados exibidos como razão de médias", "Log-Skala; Ergebnisse als Verhältnis der Mittelwerte dargestellt", "логаритамска скала; резултати приказани као однос средњих вредности", "로그 척도; 결과는 평균 비율로 표시"],
+  ["对数尺度；结果显示为配对比值比", "log; results shown as matched-pair odds ratio", "échelle logarithmique ; résultats affichés en rapport de cotes apparié", "логарифмическая шкала; результаты показаны как отношение шансов парных наблюдений", "escala logarítmica; resultados mostrados como odds ratio de pares apareados", "対数尺度；結果は対応ペアのオッズ比として表示", "escala logarítmica; resultados exibidos como razão de chances de pares pareados", "Log-Skala; Ergebnisse als Odds Ratio gepaarter Beobachtungen dargestellt", "логаритамска скала; резултати приказани као однос шанса упарених посматрања", "로그 척도; 결과는 대응쌍 오즈비로 표시"]
 ];
   RFLang.register(pairs);
   const bySource = new Map(pairs.flatMap(([zh,en]) => [[zh,zh],[en,zh]]));
@@ -3573,10 +3796,18 @@
     const raw = value == null ? '—' : String(value);
     return RFLang.t(bySource.get(raw) || raw);
   };
-  function message(value) {
+  function message(value, options) {
     const raw = String(value ?? '');
-    const translated = term(raw);
     const host = document.createElement('span');
+    /* 高2（F02）：options.localized 标记“调用方已用 T() 本地化的界面文案”
+       （如合并分析前的校验汇总）。这类文案按当前语言直读，不再落入下方
+       “疑似英文技术串”的启发式分支——否则法语等界面会把自己语言的校验
+       提示误包进“暂无译文”外壳里。 */
+    if (options && options.localized) {
+      host.textContent = raw;
+      return host;
+    }
+    const translated = term(raw);
     if (RFLang.get() === 'en' || translated !== raw || /[\u3400-\u9fff]/.test(raw) || !/[A-Za-z]{3}.*\s+[A-Za-z]{3}/.test(raw)) {
       host.textContent = translated; return host;
     }
@@ -3586,6 +3817,17 @@
     const details = document.createElement('details');
     const label = document.createElement('summary'); label.textContent = RFLang.t('查看原始信息');
     const content = document.createElement('div'); content.textContent = raw; content.lang = 'en'; content.setAttribute('translate','no');
+    /* 高2（F02 “查看原始信息”点不开的兜底）：原生 details/summary 的开合
+       依赖浏览器激活行为，易被样式或容器状态干扰。这里显式接管点击切换：
+       preventDefault 阻止原生默认切换后自行 open 取反，双击路径唯一，
+       展开不再依赖任何外部条件。 */
+    label.addEventListener('click', event => {
+      event.preventDefault();
+      details.open = !details.open;
+    });
+    label.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); details.open = !details.open; }
+    });
     details.append(label,content); host.append(summary,details); return host;
   }
   window.RFAnalysisLocale = Object.freeze({term,message});

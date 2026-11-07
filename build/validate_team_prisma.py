@@ -5,11 +5,56 @@ import sys
 import tempfile
 import json
 import asyncio
+import atexit
+import shutil
+import sqlite3
 from pathlib import Path
+
+if not __debug__:
+    # F1-73: this gate enforces every check with a bare `assert` (43, no raises).
+    # Under `python -O` they are compiled away - including in the sibling gates
+    # that run this file through runpy - so the gate printed "passed" and exited
+    # 0 while its fixture writes still executed. Refuse the optimized
+    # interpreter rather than report an unchecked green run.
+    raise SystemExit('run this gate without -O: assertions are the gate')
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'build'))
 DATA=Path(tempfile.mkdtemp(prefix='reviewflow-team-prisma-validation-'))
+
+
+def _remove_disposable_data():
+    """F1-72: the mkdtemp tree was never removed.
+
+    Every run - including a failing one, because the cleanup has to survive the
+    exception that ends the gate - left a full research-shaped data directory
+    (SQLite catalogues, WAL files, attachments) behind in temp. The directory is
+    disposable by construction (COBOOKSHELF_DATA_DIR is pointed at it below), so
+    it is removed at interpreter exit; the diagnostic paths are printed before
+    that and stay in the output.
+
+    Windows keeps a handle open while any sqlite3.Connection still exists: the
+    gate's own `with wf.connect(...) as conn:` blocks commit but do not close,
+    and the module-level `conn` binding keeps the last one alive. Connections are
+    closed here first, then the tree is retried; a leftover file owned by an
+    external process is reported rather than silently ignored."""
+    import gc
+    import time
+    for _ in range(5):
+        gc.collect()
+        for obj in gc.get_objects():
+            if isinstance(obj,sqlite3.Connection):
+                try:obj.close()
+                except sqlite3.Error:pass
+        shutil.rmtree(DATA,ignore_errors=True)
+        if not DATA.exists():
+            return
+        time.sleep(0.2)
+    for path in sorted(DATA.rglob('*')):
+        print('disposable data left behind: '+str(path),file=sys.stderr)
+
+
+atexit.register(_remove_disposable_data)
 os.environ['COBOOKSHELF_DATA_DIR']=str(DATA)
 os.environ['REVIEWFLOW_MODE']='server'
 os.environ.pop('REVIEWFLOW_RUNTIME_OVERLAY',None)
@@ -128,9 +173,15 @@ with review_workflow.connect(legacy) as conn:
     before={t:[tuple(r) for r in conn.execute('SELECT * FROM '+t)] for t in ['articles','decisions','coding_values','coding_notes','coding_note_images']}
     policy=review_workflow.defaults();policy['screen'].update(mode='selected',source_ids=[review_workflow.UNASSIGNED])
     conn.execute('UPDATE workflow_state SET stages_json=? WHERE singleton=1',(json.dumps(policy),))
+# 0a83446 起，本进程新建的库在首建链中会跳过升级前备份（is_fresh_database）。
+# 用 sqlite backup API 把填好的库复制成「上一进程遗留」的外部库（不在新建登记表内），
+# 以继续覆盖既有库升级前生成 .bak 备份的路径（该提交自己用子进程建库验证过）；
+# backup API 会连同已提交未 checkpoint 的 WAL 一起带过去，文件复制做不到。
+legacy_in_process=legacy;legacy=DATA/'legacy-external.db'
+with sqlite3.connect(legacy_in_process) as source,sqlite3.connect(legacy) as target:source.backup(target)
 import_sources.migrate(legacy);version=review_workflow.settings(legacy)['version'];import_sources.migrate(legacy)
 assert review_workflow.settings(legacy)['version']==version
-assert legacy.with_name('legacy.db.pre-source-v4.bak').is_file()
+assert legacy.with_name(legacy.name+'.pre-source-v4.bak').is_file()
 assert {s['name'] for s in review_workflow.sources(legacy)}=={'old.ris'}
 assert review_workflow.UNASSIGNED not in review_workflow.settings(legacy)['stages']['screen']['source_ids']
 with review_workflow.connect(legacy) as conn:

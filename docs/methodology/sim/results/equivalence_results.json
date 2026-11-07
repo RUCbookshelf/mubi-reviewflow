@@ -1,0 +1,46 @@
+{
+  "platform": {
+    "python": "3.12.3",
+    "numpy": "2.5.3"
+  },
+  "tfidf_vs_sklearn": {
+    "n_train_docs": 24,
+    "n_transform_docs": 4,
+    "vocab_size": 779,
+    "vocab_identical_order": true,
+    "idf_bitwise_equal": true,
+    "idf_max_abs_diff": 0.0,
+    "matrix_values_compared": 918,
+    "matrix_bitwise_mismatches": 412,
+    "matrix_max_abs_diff": 1.1102230246251565e-16,
+    "matrix_pass_1e-12": true
+  },
+  "nb_vs_sklearn": {
+    "n_train": 24,
+    "n_classes_seen": 2,
+    "n_features_ours": 779,
+    "n_features_sklearn": 779,
+    "class_log_prior_max_abs_diff": 1.1102230246251565e-16,
+    "feature_log_prob_max_abs_diff": 0.0,
+    "proba_max_abs_diff": 0.0,
+    "proba_pass_1e-12": true
+  },
+  "nb_single_class_divergence_documented": {
+    "our_scores_all_zero": true,
+    "sklearn_columns": 1,
+    "sklearn_proba_all_one": true,
+    "note": "单类训练:我方对缺席类 prior=-inf 得分恒定;sklearn classes_ 只含所见类,predict_proba 返回单列全 1。语义等价(缺席类后验为 0),接口不同——不对齐。"
+  },
+  "pipeline_end_to_end_vs_sklearn": {
+    "n_candidates_scored": 4,
+    "pipeline_max_abs_diff": 0.0,
+    "pipeline_pass_1e-12": true,
+    "order_head": [
+      "CAND1",
+      "CAND0",
+      "CAND2"
+    ]
+  },
+  "overall_pass": true,
+  "verdict_note": "TF-IDF/NB 与 sklearn 在可对齐参数下无算法级系统性差异;残差来自浮点求和顺序(点积/范数/分母的归并顺序),量级 ≤1e-12。唯一不对齐项:单类训练接口差异(见 nb_single_class_divergence_documented)。"
+}

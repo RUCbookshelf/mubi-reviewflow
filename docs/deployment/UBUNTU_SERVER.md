@@ -40,13 +40,13 @@ mkdir -p /home/ubuntu/reviewflow-data
 
 ### 4. 以服务器模式启动（团队协作必需）
 
-**不要用 `build/launcher.py` 启动团队服务器。** 该启动入口会将运行模式设为桌面模式，不提供团队邀请和共享进度 API。服务器应直接通过 `build_app()` 启动完整的 API 和前端服务：
+**不要用 `build/launcher.py` 启动团队服务器。** 该启动入口不会以团队模式运行（设置 `REVIEWFLOW_MODE=server` 时会直接报错退出、返回码 2，且不读取也不改动你的数据目录），也不提供团队邀请和共享进度 API。服务器应直接通过 `build_app()` 启动完整的 API 和前端服务：
 
 ```bash
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 ```
 
@@ -72,6 +72,43 @@ server {
     ssl_certificate     /path/to/fullchain.pem;
     ssl_certificate_key /path/to/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+
+    # 上传上限：nginx 默认 client_max_body_size 仅 1m，>1MB 的正常上传
+    # （PDF 全文等，应用层单文件上限 100MB）会被代理层直接 413。
+    client_max_body_size 100m;
+
+    # 登录/注册限流（反代场景必须由 nginx 完成，见下方安全说明）：
+    # 应用层按直连对端 IP 分桶，反代后所有请求的对端都是 nginx 本机。
+    # zone 声明必须放在 http{} 上下文（例如新建
+    # /etc/nginx/conf.d/rf_auth_limit.conf，内容一行：
+    #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+    # ），server 块内只放 limit_req 引用。
+    # R6-S1 修正：限流只覆盖登录/注册（写操作、有口令猜解面）；会话恢复
+    # GET /api/auth/me（前端每次启动调用）不得限流——此前 ^~ /api/auth/
+    # 前缀把 /me 也计入，多标签/频繁刷新的第 6 个请求被 nginx 429，
+    # 合法会话无法恢复。
+    location = /api/auth/login {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+    location = /api/auth/register {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8613;
@@ -118,6 +155,38 @@ location ^~ /api/ {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 600s;
+    # 上传走 /api/：默认 1m 会把 >1MB 的正常上传拦成 413（应用层单文件上限 100MB）
+    client_max_body_size 100m;
+}
+
+# 登录/注册限流（反代场景必须由 nginx 完成）：应用层按直连对端 IP 分桶，
+# 反代后所有请求的对端都是 nginx 本机，应用层计数退化为单一共享桶。
+# zone 声明放在 http{} 上下文（如 /etc/nginx/conf.d/rf_auth_limit.conf：
+#   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+# ）。限流 location 用精确匹配只覆盖 login/register 两个写端点。
+# R6-S1 修正：限流只覆盖登录/注册两个写端点（精确匹配）；会话恢复
+# GET /api/auth/me 不限流（前端每次启动调用，限流会误伤多标签/刷新）。
+location = /api/auth/login {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
+}
+location = /api/auth/register {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
 }
 ```
 
@@ -131,6 +200,42 @@ sudo nginx -t && sudo systemctl reload nginx
 
 还需在云防火墙/安全组放行所用 HTTPS 端口（场景 A 示例为 8443）。不要对公网开放应用的 8613 端口。
 
+**上传与限流的安全说明（反向代理场景）**：
+
+- **上传大小**：`client_max_body_size 100m` 与应用层单文件上限（100MB）对齐。
+  批量导入端点单请求最多 20 个文件，若确需一次提交总大小超过 100MB 的多文件
+  批量导入，需有意调大该值（例如 `2000m`）——但要注意代理层会先把请求体缓
+  冲到自身临时磁盘，调大即放大临时盘占用面；更稳妥的做法是分多次提交。
+  应用层在解析请求体**之前**会按 Content-Length 预检，超限直接 413，
+  不落入服务器临时盘；预检上限与各端点真实限制一致（均含余量）：单文件
+  文本/PDF 导入 100MB、批量导入 20×100MB、合并/一致性/仲裁多文件端点
+  9×100MB、trace 导入包 128MB、编码证据 10MB。缺 Content-Length 的
+  multipart（chunked）、未认证的 multipart、以及重复 Content-Type/
+  Content-Length 头的请求在解析前即被 411/401/400 拒绝；multipart 的
+  boundary 缺失或不可解析同样直接 400（解析对齐 Starlette：重复参数取
+  最后一个、引号去引号）。文件 part 数超过端点声明上限（如批量导入
+  20 个）、字段 part 超过 16 个、或单个表单字段超过 1MB 的请求，同样
+  在多余内容落盘/进内存前被截断（413）；无法分类的超长 part 头按
+  「可能是文件 part」保守计数，宁可误拒畸形请求、不放过漏计。
+  注意：trace 导入包（≤128MB+余量）若经反代提交，需将
+  `client_max_body_size` 相应调大（如 `client_max_body_size 130m`）。
+- **登录/注册限流（应用层按 peer 分桶，反代后应由反代限流）**：应用层的
+  限流按**直连对端 IP**分桶计数，且**完全忽略 `X-Forwarded-For`**（该头
+  可被客户端伪造轮换，不可作为分桶依据）。因此经反向代理访问时，所有
+  请求的对端都是反代机，应用层计数会退化成**单一共享桶**——限流必须
+  由反代层按真实客户端 IP（`$binary_remote_addr`）完成，即上方两个示例
+  配置中的 `limit_req` 块：`limit_req_zone` 声明放 `http{}` 上下文 +
+  `location = /api/auth/login` 与 `location = /api/auth/register` 内
+  `limit_req zone=rf_auth burst=5 nodelay` +
+  `limit_req_status 429`（与应用层 429 语义对齐；nginx 的 429 不带应用层
+  的 Retry-After 头，客户端按默认间隔重试即可）。直连部署（start.sh /
+  桌面启动器）不受影响：官方启动器已显式 `proxy_headers=False`，uvicorn
+  不会用可伪造的 XFF 改写对端地址，按对端 IP 分桶即按真实客户端 IP 分桶。
+- **PDF 上传校验的边界**：应用层对 PDF 的 `%PDF-` 文件头与 pypdf 可解析性
+  校验是**格式门槛，不是内容安全边界**——恶意构造的 PDF 内容本身仍可能
+  利用阅读器漏洞。部署时应保持同源回放（本应用即是）、`X-Content-Type-
+  Options: nosniff` 与 CSP（应用默认已加），不要把回放域名与站点主域混用。
+
 ### 6. 开启团队协作
 
 1. 每位成员在服务器页面自行注册账户：用户名 3–64 个字符，密码至少 8 位。系统不会发送邮件邀请或代建账户。
@@ -142,7 +247,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 - 找不到 `requirements.txt`：请使用 `build/requirements-app.txt`。
 - 页面可以打开但功能异常：检查子路径部署是否同时代理 `/api/`。
-- 无法邀请成员或看不到团队功能：确认进程由 `REVIEWFLOW_MODE=server` 启动，而不是桌面启动入口。
+- 无法邀请成员或看不到团队功能：确认进程由 `REVIEWFLOW_MODE=server` 启动，而不是桌面启动入口。桌面启动器现在会直接报错退出（返回码 2），不会切到桌面模式，也不会读取或改动你的数据目录。
 - 服务器重启后服务没有运行：`nohup` 不会自启；生产环境请配置 systemd。
 - 备份：保存整个数据目录（包括数据库、PDF、协作状态）；只备份表格不能完整恢复任务。
 
@@ -184,13 +289,13 @@ Server mode requires an absolute `COBOOKSHELF_DATA_DIR`. Accounts, task database
 
 ### 4. Start in server mode (required for team collaboration)
 
-**Do not start the team server with `build/launcher.py`.** That entry point forces desktop mode, which does not provide team invitations or shared-progress APIs. Start the complete API and frontend service directly through `build_app()`:
+**Do not start the team server with `build/launcher.py`.** With `REVIEWFLOW_MODE=server` that entry point refuses to start (exit code 2) and tells you to use the server entry point; it does not read or modify your data directory, and it does not provide team invitations or shared-progress APIs. Start the complete API and frontend service directly through `build_app()`:
 
 ```bash
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 ```
 
@@ -215,6 +320,43 @@ server {
     ssl_certificate     /path/to/fullchain.pem;
     ssl_certificate_key /path/to/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    # Uploads: nginx defaults to a 1m body limit, which breaks normal >1MB
+    # uploads (PDF full text etc.; the app allows 100MB per file).
+    client_max_body_size 100m;
+
+    # Login/register rate limiting MUST be done at nginx when proxied (see the
+    # notes below): the app rate-limits by direct peer IP, and behind a proxy
+    # every request peers with nginx itself. The zone declaration belongs in
+    # the http{} context (e.g. a new /etc/nginx/conf.d/rf_auth_limit.conf
+    # containing exactly one line:
+    #   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+    # ); only the limit_req reference lives in the server block.
+    # R6-S1 修正：限流只覆盖登录/注册（写操作、有口令猜解面）；会话恢复
+    # GET /api/auth/me（前端每次启动调用）不得限流——此前 ^~ /api/auth/
+    # 前缀把 /me 也计入，多标签/频繁刷新的第 6 个请求被 nginx 429，
+    # 合法会话无法恢复。
+    location = /api/auth/login {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+    location = /api/auth/register {
+        limit_req zone=rf_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8613;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8613;
@@ -259,12 +401,52 @@ location ^~ /api/ {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 600s;
+    # Uploads go through /api/: the default 1m limit would 413 any >1MB
+    # upload (the app allows 100MB per file).
+    client_max_body_size 100m;
+}
+
+# Login/register rate limiting must be done at nginx when proxied: the app
+# rate-limits by direct peer IP, which degenerates to one shared bucket behind
+# a proxy. Put the zone declaration in the http{} context (e.g.
+# /etc/nginx/conf.d/rf_auth_limit.conf:
+#   limit_req_zone $binary_remote_addr zone=rf_auth:10m rate=5r/m;
+# ). This longer prefix wins over /api/ for auth paths only.
+# R6-S1 修正：限流只覆盖登录/注册两个写端点（精确匹配）；会话恢复
+# GET /api/auth/me 不限流（前端每次启动调用，限流会误伤多标签/刷新）。
+location = /api/auth/login {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
+}
+location = /api/auth/register {
+    limit_req zone=rf_auth burst=5 nodelay;
+    limit_req_status 429;
+    proxy_pass http://127.0.0.1:8613;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 600s;
 }
 ```
 
 The page `proxy_pass` ends with `/`, removing the `/reviewflow/` prefix; the API target has no trailing slash, preserving `/api/...`. If another app also uses `/api/`, check for route conflicts. Nginx selects the more specific longer prefix.
 
 Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. Open the chosen HTTPS port in the cloud firewall/security group (8443 in Option A). Do not expose port 8613 publicly.
+
+**Upload and rate-limit notes (reverse-proxy deployments):**
+
+- **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked), unauthenticated multipart requests, and requests with duplicate Content-Type/Content-Length headers are rejected with 411/401/400 before parsing; a multipart request whose boundary is missing or unparseable is likewise rejected with 400 immediately (boundary parsing matches Starlette: the last duplicate parameter wins, quoted values are unquoted). Requests whose file-part count exceeds the endpoint's declared maximum (e.g. 20 for batch import), whose field parts exceed 16, or whose single form field exceeds 1MB are cut off before the excess parts touch the disk or memory (413); an unclassifiable oversized part header is conservatively counted as a file part — malformed requests are rejected rather than under-counted. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
+- **Login/register rate limiting (the app buckets by direct peer IP; behind a proxy the proxy must do the limiting)**: the app rate-limits by *direct peer IP* and **completely ignores `X-Forwarded-For`** (it is client-forgeable and cannot be trusted as a bucketing key). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — throttling must be done at the proxy by real client IP (`$binary_remote_addr`), exactly the `limit_req` blocks in the two example configs above: the `limit_req_zone` declaration in the `http{}` context plus `limit_req zone=rf_auth burst=5 nodelay;` and `limit_req_status 429;` inside the exact-match `location = /api/auth/login` / `location = /api/auth/register` blocks (429 aligns with the app's own semantics; nginx's 429 carries no Retry-After, clients retry at their default interval). Direct deployments (start.sh / the desktop launcher) are unaffected: they pass `proxy_headers=False` explicitly, so uvicorn never rewrites the peer address from a forgeable XFF, and peer-IP bucketing equals real-client-IP bucketing.
+- **PDF upload checks are a format gate, not a content-security boundary**: the `%PDF-` header and pypdf parseability checks reject malformed files, but a maliciously crafted PDF could still exploit reader bugs. Keep same-origin playback (the default), `X-Content-Type-Options: nosniff` and CSP (enabled by default); do not mix the playback origin with your main site domain.
 
 ### 6. Enable team collaboration
 
@@ -277,7 +459,7 @@ Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. O
 
 - Missing `requirements.txt`: use `build/requirements-app.txt`.
 - Page loads but features fail: for path deployment, verify the `/api/` proxy.
-- Cannot invite members or see team features: confirm `REVIEWFLOW_MODE=server`; the desktop launcher forces desktop mode.
+- Cannot invite members or see team features: confirm the process was started with `REVIEWFLOW_MODE=server` rather than the desktop launcher. The desktop launcher now refuses to start (exit code 2) instead of forcing desktop mode, and it neither reads nor modifies your data directory.
 - Service is down after reboot: `nohup` does not enable startup; configure systemd for production.
 - Backups: copy the entire data directory, including database, PDFs, and collaboration state. A spreadsheet-only backup cannot restore a complete task.
 
@@ -311,7 +493,7 @@ N’utilisez pas `build/launcher.py` pour un serveur d’équipe : il force le m
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -354,7 +536,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -397,7 +579,7 @@ No use `build/launcher.py` para el servidor de equipo: fuerza el modo escritorio
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -440,7 +622,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -483,7 +665,7 @@ Não use `build/launcher.py` para o servidor de equipe: ele força o modo deskto
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -526,7 +708,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -569,7 +751,7 @@ Nemojte koristiti `build/launcher.py` za timski server: on forsira desktop reži
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```
@@ -612,7 +794,7 @@ mkdir -p /home/ubuntu/reviewflow-data
 cd /home/ubuntu/mubi-reviewflow
 REVIEWFLOW_MODE=server \
 COBOOKSHELF_DATA_DIR=/home/ubuntu/reviewflow-data \
-nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning')" \
+nohup .venv/bin/python -c "import sys; sys.path.insert(0, 'build'); from launcher import build_app; import uvicorn; uvicorn.run(build_app(), host='127.0.0.1', port=8613, log_level='warning', proxy_headers=False)" \
 > /home/ubuntu/reviewflow-data/server.out 2>&1 &
 curl http://127.0.0.1:8613/api/health
 ```

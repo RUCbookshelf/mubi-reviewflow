@@ -14,7 +14,15 @@
 生产部署：uvicorn 应置于 nginx/Caddy 等 TLS 反向代理之后（HTTPS 终止在代理层），
 例如::
 
-    uvicorn custom_backend.main:app --host 0.0.0.0 --port 8613 --workers 2
+    uvicorn custom_backend.main:app --host 0.0.0.0 --port 8613 --no-proxy-headers
+    # R6-S1：--no-proxy-headers 保证 request.client.host 恒为直连对端（见 custom_backend/start.sh 注释）。
+    # r6 #41/#43（注释降级声明）：限流计数、SSE 事件票据、任务列表读互斥
+    # 均为**进程内**状态，生产示例去掉 --workers 2 改单 worker（官方启动器
+    # build/launcher.py / start.sh 即单进程）——多 worker 下票据跨 worker
+    # 无效（换票与连流分落两 worker 时 401）、限流阈值按**进程数放大且方向
+    # 是放宽**（N 个 worker ⇒ 同一来源合计 N×5 次/分钟，攻击者得利）、
+    # DELETE 看不到其他 worker 的在途列表读；确需多 worker 时上述互斥须由部署方
+    # 自行承担或改为共享存储实现，不在本口径内。
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import uuid
 import tempfile
 import threading
@@ -47,7 +56,8 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
+from starlette.concurrency import run_in_threadpool
 
 from coscreen import coding as coding_mod
 from coscreen import task_collaboration as collaboration_mod
@@ -64,6 +74,13 @@ from coscreen import qualitative_analysis as qual_mod
 from coscreen import tasks as tasks_mod
 from coscreen.pool_compatibility import NON_DIRECTIONAL_MEASURES
 from coscreen.al.ranker import ActiveLearningRanker
+# 仅类型导入：coscreen.al.svm 模块级零 sklearn 加载（延迟导入不变量）。
+# ImportError 兜底：svm.py 被回退（无该符号）时 app 必须仍可导入——
+# 撤修复红证要以干净的 failed/200 形态复现，而非 ImportError 收集错误。
+try:
+    from coscreen.al.svm import SingleClassTrainingError
+except ImportError:  # pragma: no cover - 仅撤修复时可达
+    SingleClassTrainingError = None
 from coscreen.al.stop import current_streak as al_current_streak
 from coscreen.al.stop import suggest_stop as al_suggest_stop
 from coscreen.dedup import (
@@ -122,15 +139,22 @@ from custom_backend.events import BUS, notify_tasks_changed
 from custom_backend.update_check import check_latest_release, current_version
 from custom_backend.source_provenance import source_articles
 from custom_backend.security import (
+    AUTH_JSON_BODY_LIMIT_BYTES,  # noqa: F401  上限常量随模块口径导出
     MAX_UPLOAD_BYTES,  # noqa: F401  上限常量随模块口径导出
     TEXT_EXTENSIONS,
+    AuthBodyLimitMiddleware,
+    EventTicketStore,
     UploadRejected,
+    UploadSizeLimitMiddleware,
+    apply_security_headers,
     check_extension,
     check_pdf_bytes,
     check_text_bytes,
     clean_upload_name,
+    cors_response_headers,
     is_within,
     login_limiter,
+    rate_limit_key,
     stem_of,
 )
 from custom_backend.security import SecurityHeadersMiddleware
@@ -186,16 +210,288 @@ class TaskLockMiddleware:
     防线是死代码（审查 P1-3）。现按路径统一 acquire/release：另一存活后端
     进程正在处理同一任务时返回 409（同进程并发请求按引用计数共享一把锁，
     锁只在最后一个在途请求结束后释放）。
+
+    - **U5-P1 锁别名**：锁键与锁文件一律用 ``find_task`` 解析出的规范
+      ``info.task_id``（来自 task.json），Windows 上 ``task.`` 与 ``task``
+      会解析到同一任务目录——URL 里的别名不再派生第二个锁文件；
+    - **U5-P4 鉴权前置**：无有效 Bearer 凭据的请求**不取锁**直接放行给
+      端点（由 require_user 统一回 401），消除未认证的 409 占用状态预言机
+      与未认证锁文件操作；
+    - **L-01 参与者前置（r7-lunafix）**：U5-P4 只挡了「未认证」——持**有效**
+      JWT 的非参与者仍能在 require_user 发 403 之前按 URL task_id 取锁
+      （请求体读取早于依赖鉴权，慢速小体即可长时间占锁，多进程部署下合法
+      属主经另一进程得 409）。现取锁前先跑与 require_user **同一套**
+      ``_task_visible_to`` 判定：检查不过（非参与者/不可见/legacy 口径/
+      属主暂不可解析）一律不取锁、放行给下游 401/403/404/409/503 路径；
+      合法参与者的取锁与 409 语义逐字不变。预检本身要读任务目录内的
+      task.json 与 collaboration.db——计数在 ``find_task`` **之前**、与
+      「删除中」判定**同临界区**按 URL task_id 登记 ``_precheck_readers``
+      （DELETE 的读排空按本任务别名族等空：预检的文件句柄同样会让
+      Windows 上 shutil.move 半删，R6-S2 三轮口径；不可见请求的计数保持
+      贯穿下游——下游 require_user 会重开同样的任务文件），读放线程池
+      执行（同步 SQLite 的 busy_timeout 不占事件循环）。
+    - **U5-P2/R6-S2 在途计数（写口径）**：``inflight()`` 只统计**写方法**
+      （POST/PUT/PATCH/DELETE）——此前把 GET 也计入，前端后台轮询进行中
+      会让 DELETE 误报 409「任务有操作进行中」；DELETE 端点据此对同进程
+      并发写操作（导入进行中删除任务）回 409；
+    - **R6-S2 删除中标记**：DELETE 端点在检查在途计数**之前**先置
+      ``deleting`` 标记（``_begin_delete``/``_end_delete``，进程内注册表），
+      中间件对删除中任务的一切后续请求（含 GET）直接 409——收掉「检查
+      通过到 shutil.move 之间」的窗口：此前暂停 move 期间并发 GET /articles
+      仍 200、随后任务目录消失，并发导入可把数据写进已移入 .trash 的库。
+      跨进程场景仍由锁文件互斥兜底（本进程 DELETE 全程持锁；**仅任务级
+      请求**——全局列表读不取任务锁文件，见下条与 r6 #43 降级声明）；
+    - **R6-S2 三轮（读排空 + 全局列表互斥）**：move 前有界排空在途**读**
+      （读请求持 SQLite/文件句柄，Windows 上未排空即 move 会触发
+      shutil.move 的 copytree+rmtree 回退半删）；全局 ``GET /api/tasks``
+      列表读（不在 /api/tasks/{id}/** 计数内，但会打开所有任务的
+      task.json）经 ``try_enter_list_read`` 与 deleting 标记**同临界区**
+      原子准入——删除进行中列表先等、准入后登记、DELETE 排空等待，
+      双向无「已过检查未计数」窗口。
+    - **r6 #43（注释降级声明）**：``_list_readers``/``_precheck_readers``/
+      ``_held``/``_deleting`` 均为**进程内**状态——多 worker（uvicorn
+      ``--workers``>1 / 多实例）部署下，DELETE 落在 A worker 时看不到
+      B worker 的在途列表读（r6 用真实 2-worker uvicorn 实测：同一时刻
+      A 读到 1、B 读到 0），且列表读不获取任务锁文件，「跨进程由锁文件
+      兜底」对列表读不成立。官方部署形态为单进程（build/launcher.py 单
+      uvicorn / start.sh），模块 docstring 生产示例亦已改单 worker；多
+      worker 部署需自行接受该互斥缺口、改单 worker，或后续把列表读改为
+      跨进程租约（独立工程，不在本轮）。
     """
 
     _PATH_RE = re.compile(r"^/api/tasks/([^/]+)")
-    # task_id -> [在途请求数, 锁路径]：同任务并发请求共享一把锁，最后一个
-    # 在途请求结束时释放（无论谁最初获取）。
+    _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    #: DELETE 置 deleting 标记后等待在途**读**请求排空的上限秒数（评审二轮：
+    #: 读请求持有 SQLite 文件句柄，不排空就在 Windows 上触发 shutil.move 的
+    #: copytree+rmtree 回退——半删原目录 + .trash 全量副本 + 500）。
+    READ_DRAIN_TIMEOUT = 5.0
+    # 规范 task_id -> [在途请求数(全部方法), 锁路径, 在途写请求数]：
+    # 同任务并发请求共享一把锁，最后一个在途请求结束时释放（无论谁最初
+    # 获取）；第三位只计写方法，供 DELETE 端点与 coscreen 层删除防线使用。
     _held: dict[str, list] = {}
+    # 删除进行中的规范 task_id（R6-S2）：置位期间中间件对该任务的一切
+    # 请求（含 GET）回 409，move 完成或删除失败后清除。
+    _deleting: set[str] = set()
+    # 在途的全局任务列表读数（R6-S2 三轮）：GET /api/tasks 不匹配
+    # /api/tasks/{id}/** 的中间件路径正则，但 list_tasks 会打开**所有**
+    # 任务的 task.json——必须让 DELETE 的排空同样等它。
+    _list_readers: int = 0
+    # 取锁前可见性预检（L-01）的在途读数：键为 **URL** task_id 经
+    # ``_url_task_key`` 规范后的键（Windows：长目录名——8.3 短名/大小写/
+    # 尾点别名与规范 id 同键，r10；POSIX：原样 URL）。在 find_task 之前
+    # 登记，覆盖 task.json 读＋协作库读＋锁文件创建的整个预检段；不可见
+    # 请求保持计数贯穿下游 require_user 的重读。delete_task 的读排空按
+    # 本任务别名族归一等空（precheck_readers_for；POSIX 字面匹配）。预检
+    # 打开任务目录内的 collaboration.db——该句柄未释放时 shutil.move
+    # 同样半删（R6-S2 的 Windows WinError 32 路径）。
+    _precheck_readers: dict[str, int] = {}
     _guard = threading.Lock()
 
     def __init__(self, app):  # noqa: ANN001  ASGI 约定
         self.app = app
+
+    @classmethod
+    def inflight(cls, task_id: str) -> int:
+        """该（规范）任务当前在本进程内的**在途写请求**数（无则 0）。
+
+        只计 POST/PUT/PATCH/DELETE：读请求与后台轮询不占用删除配额，
+        DELETE 不再因 GET 轮询误报 409（R6-S2）。
+        """
+        with cls._guard:
+            entry = cls._held.get(task_id)
+            return entry[2] if entry else 0
+
+    @classmethod
+    def read_inflight(cls, task_id: str) -> int:
+        """该任务当前在本进程内的**在途读请求**数（总在途 − 写在途）。
+
+        DELETE 不以读请求作为 409 依据（R6-S2），但 move 前必须等它排空
+        （见 DELETE 端点）——否则打开的 SQLite 句柄会触发 shutil.move 的
+        copytree+rmtree 回退（Windows 上数据破坏）。
+        """
+        with cls._guard:
+            entry = cls._held.get(task_id)
+            return max(0, entry[0] - entry[2]) if entry else 0
+
+    @classmethod
+    def try_enter_list_read(cls) -> bool:
+        """全局任务列表读的**准入**（R6-S2 三轮；与 deleting 同临界区原子判定）。
+
+        列表读（``GET /api/tasks``，出货前端每 30s 轮询）会打开所有任务的
+        task.json，且不在 ``/api/tasks/{id}/**`` 中间件计数内——评审三轮
+        实测：列表持 task.json 时 DELETE 照样触发 copytree+rmtree 半删。
+        准入规则（与 ``_begin_delete`` 同一把 ``_guard``，无竞态窗口）：
+
+        - 任一任务删除进行中 → 返回 False（调用方有界等待后重试，等待上限
+          超过删除自身的排空超时 + 余量，删除失败/完成后标志即清）；
+        - 否则计入在途列表读并返回 True——DELETE 的排空据此等待，
+          「已过检查未计数」的窗口因同临界区而不存在。
+        """
+        with cls._guard:
+            if cls._deleting:
+                return False
+            cls._list_readers += 1
+            return True
+
+    @classmethod
+    def exit_list_read(cls) -> None:
+        with cls._guard:
+            cls._list_readers = max(0, cls._list_readers - 1)
+
+    @classmethod
+    def list_readers(cls) -> int:
+        with cls._guard:
+            return cls._list_readers
+
+    @classmethod
+    def precheck_readers(cls, task_id: str) -> int:
+        """该任务当前在本进程内**取锁前可见性预检**的在途读数（URL 键）。
+
+        L-01 预检读 collaboration.db（同步 SQLite，句柄随读打开/关闭）；
+        delete_task 的读排空必须把它与本进程在途读一并等空（R6-S2：读
+        句柄未排空就在 Windows 上 move → copytree+rmtree 半删）。计数在
+        ``find_task`` **之前**按 URL task_id 登记——任务目录内的一切预检
+        文件读（task.json/collaboration.db/锁文件创建）都落在计数窗口内。
+        """
+        with cls._guard:
+            return cls._precheck_readers.get(task_id, 0)
+
+    @classmethod
+    def precheck_readers_for(cls, task_id: str) -> int:
+        """该任务（含其 URL 别名族键）的在途预检读数——DELETE 排空按任务等空。
+
+        预检按 ``_url_task_key`` 规范后的 URL 键计数——Windows 上 8.3 短名
+        （``AVERYL~1``）、``task.``/``task..``/``TASK`` 等别名与规范 id 解析
+        到同一任务目录（U5-P1/r10），登记时已折叠为长目录名，尾点/空格＋
+        大小写归一的 needle 兜底匹配同一任务的残留别名键；POSIX 文件系统
+        大小写敏感且尾点/空格是不同文件，find_task 只按字面命中——精确
+        匹配即可（避免把仅大小写不同的**另一任务**误等进排空）。
+        """
+        with cls._guard:
+            if os.name != "nt":
+                return cls._precheck_readers.get(task_id, 0)
+            needle = task_id.rstrip(". ").lower()
+            return sum(count for key, count in cls._precheck_readers.items()
+                       if key.rstrip(". ").lower() == needle)
+
+    @classmethod
+    def any_precheck_readers(cls) -> int:
+        """全部在途预检读总数（不限任务键；排空诊断/泄漏观测用）。"""
+        with cls._guard:
+            return sum(cls._precheck_readers.values())
+
+    @staticmethod
+    def _release_precheck(key: str) -> None:
+        """注销一个预检在途计数（恰好一次；登记/注销异常安全由调用方的
+        try/finally + 置 None 保证，见 ``__call__``）。"""
+        with TaskLockMiddleware._guard:
+            left = TaskLockMiddleware._precheck_readers.get(key, 1) - 1
+            if left > 0:
+                TaskLockMiddleware._precheck_readers[key] = left
+            else:
+                TaskLockMiddleware._precheck_readers.pop(key, None)
+
+    @classmethod
+    def _begin_delete(cls, task_id: str) -> None:
+        with cls._guard:
+            cls._deleting.add(task_id)
+
+    @classmethod
+    def _end_delete(cls, task_id: str) -> None:
+        with cls._guard:
+            cls._deleting.discard(task_id)
+
+    @staticmethod
+    def _bearer_token(scope) -> str | None:  # noqa: ANN001
+        """从 ASGI scope 提取 Bearer 令牌；无/形状不符返回 None。"""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"authorization":
+                try:
+                    authorization = value.decode("latin-1")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+                if not authorization.lower().startswith("bearer "):
+                    return None
+                token = authorization[7:].strip()
+                return token or None
+        return None
+
+    @staticmethod
+    def _origin_of(scope) -> str | None:  # noqa: ANN001
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"origin":
+                try:
+                    return value.decode("ascii")
+                except (UnicodeDecodeError, AttributeError):
+                    return None
+        return None
+
+    @classmethod
+    def _busy_response(cls, scope, detail: str) -> JSONResponse:  # noqa: ANN001
+        """409 早拒响应（R6-S5：同样带安全头；跨域白名单补 CORS 头）。"""
+        response = JSONResponse(status_code=409, content={"detail": detail})
+        headers = apply_security_headers(list(response.raw_headers))
+        headers.extend(cors_response_headers(cls._origin_of(scope), _cors_origins()))
+        response.raw_headers = headers
+        return response
+
+    @staticmethod
+    def _visible_to_payload(info, payload) -> bool:  # noqa: ANN001
+        """L-01：取锁前的参与者/可见性预检（与 require_user 同一套判定）。
+
+        判定不过时中间件**不取锁**、直接放行下游（401/403/404/409/503 由
+        require_user / 路由按既有口径发出）：
+
+        - ``sub`` 形状非法 → False（下游统一 401）；
+        - 属主/参与者不可见 → False（下游 403；server 模式 legacy 任务由
+          require_user 按统一口径回 409 迁移指引——中间件不复制该状态分支，
+          只保证「检查不过不取锁」）；
+        - 属主解析异常（``OwnerUnavailableError``，含库损坏子类）→ False：
+          该请求在下游必然以 503/409 终止、不会触达业务写入，不取锁即放行
+          （fail-open 到「无锁」，端点侧授权门仍然完整）。
+        """
+        try:
+            user_id = int(payload["sub"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        try:
+            return _task_visible_to(info, {"user_id": user_id})
+        except collaboration_mod.OwnerUnavailableError:
+            return False
+
+    @staticmethod
+    def _url_task_key(task_id: str) -> str:
+        """URL task_id 的预检计数/删除匹配键：Windows 先规范为长目录名。
+
+        r10 复审（阻断）：Win32 卷启用 8.3 短名时（C: 系统卷默认启用）API
+        真实接受 ``AVERYL~1`` 这类短名 URL——``tasks_root/{短名}`` 经 Win32
+        路径解析命中同一长名任务目录（find_task 因此拿到同一任务的规范
+        task.json）。若登记/匹配只做尾点/空格＋大小写归一，短名键与 DELETE
+        排空用的规范长名互不可见：不可见请求的下游重读（require_user 重开
+        task.json/collaboration.db）持句柄贯穿 ``shutil.move`` → WinError 32
+        半删/500（复审探针每任务 12 并发非参与者短名 GET：10/10 DELETE
+        500，基线 5cb6314 为 0/10）。
+
+        实现：``Path(tasks_root/{task_id}).resolve().name`` 实测把已存在
+        目录的真实短名还原为长名（``AVERYL~1`` → ``averylongtaskname-…``），
+        同时顺带折叠大小写/尾点别名到在磁盘上的真实名字；目录不存在（幽灵
+        任务）或解析异常时**原样返回**——幽灵请求保持基线放行语义（find_task
+        未命中即注销放行）。解析结果必须仍落在 tasks_root 内（``..``、
+        ``a\\..`` 等字面上跳被父目录校验拒绝，回退原样），避免把任务根
+        之外的目录名登记进任务计数表。POSIX 无 8.3 别名且 resolve 会改写
+        symlink 目标名——原样返回，行为不变。
+        """
+        if os.name != "nt":
+            return task_id
+        root = tasks_mod.tasks_root(DATA_DIR)
+        try:
+            resolved = (root / task_id).resolve()
+            if (resolved.parent == root.resolve()
+                    and resolved.name not in {"", ".", ".."}):
+                return resolved.name
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return task_id
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
         if scope["type"] != "http" or scope.get("method") == "OPTIONS":
@@ -209,26 +505,130 @@ class TaskLockMiddleware:
         if not match:
             await self.app(scope, receive, send)
             return
+        # U5-P4：先做凭据存在性+有效性检查，未认证请求不触碰任务锁。
+        token = self._bearer_token(scope)
+        payload = None if token is None else auth.decode_access_token(token)
+        if payload is None:
+            await self.app(scope, receive, send)  # 端点 require_user 统一回 401
+            return
         task_id = match.group(1)
+        canonical = None
         entry = None
-        busy_response = None
-        info = tasks_mod.find_task(task_id, DATA_DIR)
-        if info is not None:
-            with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
-                entry = self._held.get(task_id)
-                if entry is None:
-                    lock_path = tasks_mod.acquire_task_lock(
-                        task_id, DATA_DIR, task_dir=info.dir)
-                    if lock_path is None:
-                        busy_response = JSONResponse(status_code=409, content={
-                            "detail": "任务正被其他窗口（另一个后端进程）使用，请稍后重试。"})
+        early_response = None
+        is_write = scope.get("method", "") in self._WRITE_METHODS
+        # L-01（r7-lunafix）＋R6-S2 复审：取锁前先过与 require_user 同一套
+        # 「任务可见性/参与者」判定——非参与者（含 sub 形状非法、属主暂不
+        # 可解析）不取锁，直接走下游 401/403/404/409/503 路径；合法参与者
+        # 照旧取锁，锁语义不变。预检会读任务目录内的 task.json 与
+        # collaboration.db，因此：
+        # - 计数在 find_task **之前**、与「删除中」判定同一临界区登记
+        #   （_precheck_readers，URL 键——Windows 先经 _url_task_key 规范为
+        #   长目录名（r10：8.3 短名别名与规范 id 同键，尾点/空格/大小写
+        #   顺带折叠）；删除中——按平台别名族归一匹配，Windows 尾点/空格/
+        #   大小写、POSIX 字面——不登记也不读任何任务文件，直接 409）；
+        # - 整个登记段包在 try/finally 里（r9 复审：find_task/线程池预检
+        #   抛异常或协程取消时计数不得残留——残留会让该进程后续所有
+        #   DELETE 永久等满 5s 回 409）；
+        # - 可见请求：计数保持到 _held 在途计数建立**之后**注销——预检段
+        #   的一切任务目录文件操作（task.json 读、协作库读、锁文件创建）
+        #   都落在计数窗口内；
+        # - **不可见**请求：计数保持贯穿下游 await self.app（r9 复审：下游
+        #   require_user 会重开 task.json/collaboration.db——基线中这类请求
+        #   持锁计数、DELETE 排空等它们 ≤5s 后受控 409；放行前注销会留下
+        #   未计数的重读窗口，WinError 32 半删）；幽灵任务（无目录可碰）
+        #   与基线一致不计数；
+        # - 协作库读放线程池（busy_timeout 的同步 SQLite 读不占事件循环）。
+        precheck_key = None
+        # r10：URL task_id → 登记/匹配键（Windows 规范为长目录名——短名
+        # 别名与 DELETE 排空的规范键同族；resolve 是纯路径解析，句柄即时
+        # 开关、不计入读排空也不在 _guard 内做）。POSIX 原样。
+        task_key = self._url_task_key(task_id)
+        try:
+            with self._guard:
+                if self._deleting:
+                    if os.name == "nt":
+                        needle = task_key.rstrip(". ").lower()
+                        deleting_hit = any(
+                            d.rstrip(". ").lower() == needle
+                            for d in self._deleting)
+                    else:  # POSIX：大小写敏感、尾点/空格是不同文件——字面匹配
+                        deleting_hit = task_key in self._deleting
+                else:
+                    deleting_hit = False
+                if not deleting_hit:
+                    precheck_key = task_key
+                    self._precheck_readers[precheck_key] = (
+                        self._precheck_readers.get(precheck_key, 0) + 1)
+            if not deleting_hit:
+                info = tasks_mod.find_task(task_id, DATA_DIR)
+                if info is None:
+                    # 幽灵任务：无任务目录文件可碰，注销后放行下游 404
+                    #（基线对 find_task 未命中者从不取锁/计数）。
+                    self._release_precheck(precheck_key)
+                    precheck_key = None
+                    await self.app(scope, receive, send)
+                    return
+                # U5-P1：规范名（task.json 里的 task_id）作锁键；锁文件落在
+                # 规范任务目录（tasks_root/{info.task_id}），URL 尾点等别名
+                # 不再派生出 `{task_id}..lock` 之类的第二把锁。
+                canonical = info.task_id
+                visible = await run_in_threadpool(
+                    self._visible_to_payload, info, payload)
+                if not visible:
+                    # 不可见：不取锁、**保持计数**贯穿下游（401/403/404/409/
+                    # 503 由 require_user/路由按既有口径发出）。删除已开始的
+                    # 复检保持「删除中一律 409」的既有口径（原实现 deleting
+                    # 检查先于 require_user，本分支与其一致）。
+                    with self._guard:
+                        recheck_deleting = canonical in self._deleting
+                    if recheck_deleting:
+                        self._release_precheck(precheck_key)
+                        precheck_key = None
+                        early_response = "任务正在被删除，请稍后重试。"
                     else:
-                        entry = [0, lock_path]
-                        self._held[task_id] = entry
-                if entry is not None:
-                    entry[0] += 1
-        if busy_response is not None:
-            await busy_response(scope, receive, send)
+                        try:
+                            await self.app(scope, receive, send)
+                        finally:
+                            self._release_precheck(precheck_key)
+                            precheck_key = None
+                        return
+                with self._guard:  # 锁内不做 await（事件循环单线程，await 让位时会死锁）
+                    if canonical in self._deleting:
+                        # R6-S2：删除进行中——一切请求（含 GET）直接 409，
+                        # 不再进入端点读到「半消失」的任务目录。
+                        early_response = "任务正在被删除，请稍后重试。"
+                    else:
+                        entry = self._held.get(canonical)
+                        if entry is None:
+                            # 锁文件获取放到 _guard 外做会引入竞态；acquire 内部
+                            # 对同进程同锁幂等（_HELD_LOCKS），不会自锁。
+                            lock_path = tasks_mod.acquire_task_lock(
+                                canonical, DATA_DIR,
+                                task_dir=tasks_mod.tasks_root(DATA_DIR) / canonical,
+                            )
+                            if lock_path is None:
+                                early_response = (
+                                    "任务正被其他窗口（另一个后端进程）使用，请稍后重试。")
+                            else:
+                                entry = [0, lock_path, 0]
+                                self._held[canonical] = entry
+                        if entry is not None:
+                            entry[0] += 1
+                            if is_write:
+                                entry[2] += 1
+                # _held 在途计数已建立（或已定 409 早拒）——注销预检计数，
+                # 后续由 _held/finally 接管排空语义。
+                self._release_precheck(precheck_key)
+                precheck_key = None
+            else:
+                early_response = "任务正在被删除，请稍后重试。"
+        finally:
+            # r9 复审：find_task/线程池预检抛异常或协程取消时计数必须注销，
+            # 否则残留计数会让本进程后续所有 DELETE 永久等满排空超时回 409。
+            if precheck_key is not None:
+                self._release_precheck(precheck_key)
+        if early_response is not None:
+            await self._busy_response(scope, early_response)(scope, receive, send)
             return
         try:
             await self.app(scope, receive, send)
@@ -236,13 +636,98 @@ class TaskLockMiddleware:
             if entry is not None:
                 with self._guard:
                     entry[0] -= 1
+                    if is_write:
+                        entry[2] = max(0, entry[2] - 1)
                     last = entry[0] <= 0
-                    if last:
-                        self._held.pop(task_id, None)
+                    if last and canonical is not None:
+                        self._held.pop(canonical, None)
                 if last:
                     tasks_mod.release_task_lock(entry[1])
 
 
+#: U5-P3：multipart 上传在请求体解析/落盘前的预检（字节数 + 文件 part 数）。
+#: **上限取各端点真实限制 + multipart 开销余量**（boundary/文件名/表单字段），
+#: 只提前拒绝超限流量，不收紧也不放宽端点既有校验：
+#: - 文本导入/PDF 全文：security.MAX_UPLOAD_BYTES（100MB/文件）；
+#: - import-batch：20 文件 × 100MB（review_imports_api 的文件数上限）；
+#: - 合并/一致性/仲裁：2..9 文件 × 100MB（端点文件数校验）；
+#: - trace 导入包：端点守卫 MAX_TRACE_BODY_BYTES = MAX_PACKAGE_BYTES(128MB)+1MB，
+#:   预检取同值（129MB）——再大的包会在解析后才 413（评审三轮对齐）；
+#: - 编码证据：coscreen/coding_evidence.MAX_UPLOAD_BYTES=10MB；
+#: - living-review/import-update：端点从不读文件（固定 409 引导到受保护
+#:   导入），出货前端无调用，给 10MB 小上限封住无效落盘面。
+#: 文件 part 数（第三列）= 各端点声明的文件数上限；超出者其内容不再进入
+#: 解析器（security._MultipartPartCounter 在 receive 层流式拦截）。字段
+#: part 的数量（16）与单字段大小（1MB+余量）上限为全局常量，见
+#: security.MAX_FIELD_PARTS / MAX_FIELD_PART_BYTES（R6-S3：字段在端点校验
+#: 前整体进内存，本产品全部端点表单字段 ≤4 个，16 为 4 倍余量）。
+from coscreen.research_trace_export import MAX_PACKAGE_BYTES as _TRACE_PACKAGE_MAX_BYTES
+from coscreen.coding_evidence import MAX_UPLOAD_BYTES as _CODING_EVIDENCE_MAX_BYTES
+
+_UPLOAD_SLACK_BYTES = 1024 * 1024
+_BATCH_IMPORT_MAX_FILES = 20
+_MULTI_CSV_MAX_FILES = 9
+#: 与 custom_backend.research_trace_api.MAX_TRACE_BODY_BYTES 同值（129MB）；
+#: 不直接 import 该模块是保持 main 顶层依赖不变（其路由为按需加载）。
+_TRACE_BODY_MAX_BYTES = _TRACE_PACKAGE_MAX_BYTES + 1024 * 1024
+
+#: 预检规则表（模块级常量供回归测试核对：新增上传端点必须补对应规则）
+_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int, int]] = [
+    (re.compile(r"^/api/tasks/[^/]+/import-batch$"),
+     _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES,
+     _BATCH_IMPORT_MAX_FILES),
+    (re.compile(r"^/api/tasks/[^/]+/screening-arbitrations$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/merge/decisions$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/coding/agreement$"),
+     _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
+     _MULTI_CSV_MAX_FILES),
+    (re.compile(r"^/api/tasks/[^/]+/import$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/fulltext/[^/]+/upload$"),
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/living-review/import-update$"),
+     10 * 1024 * 1024 + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/coding/(submission-)?evidence/uploads$"),
+     _CODING_EVIDENCE_MAX_BYTES + _UPLOAD_SLACK_BYTES, 1),
+    (re.compile(r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"),
+     _TRACE_BODY_MAX_BYTES, 1),
+]
+
+app.add_middleware(
+    UploadSizeLimitMiddleware,
+    rules=_UPLOAD_SIZE_RULES,
+    # 未认证的 multipart 在解析/落盘前直接 401（全部上传端点都要求登录）
+    token_validator=lambda token: auth.decode_access_token(token) is not None,
+    # R6-S5：早拒响应对跨域前端（8614/8615 独立前端）补 CORS 简单响应头，
+    # 否则浏览器把上传 401/411/413 吞成网络错误，掩盖真实原因。
+    cors_origins=_cors_origins(),
+)
+
+# U5-P2/R6-S2：任务删除的同进程在途防线——coscreen 层通过该钩子读取当前
+# 任务的**在途写请求**数（DELETE 请求自身占 1，>1 即还有导入/分析等写操作
+# 在跑；GET 轮询不计入，避免误报 409）。
+tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
+
+# MM2-02：/api/auth/login|register 是全站仅有的两个未认证写端点，此前对
+# 请求体完全没有上限——20MB 畸形体被整包读入、422 原样回显（放大反射），
+# 且 handler 内的登录限流对校验失败请求不可达。4KB 上限在 ASGI 层预检
+# （Content-Length 超限不读体直接 413；chunked 有界读取后精确判定）。
+# 注册在 UploadSizeLimitMiddleware 之后（外一层）：重复 Content-Length
+# 等头结构异常仍由内层上传中间件按 400 口径拒绝，两者职责不重叠。
+app.add_middleware(
+    AuthBodyLimitMiddleware,
+    paths=[r"^/api/auth/login$", r"^/api/auth/register$"],
+    limit=AUTH_JSON_BODY_LIMIT_BYTES,
+    cors_origins=_cors_origins(),
+)
+
+# 复审（#43 顺序）：TaskLockMiddleware 在 UploadSizeLimitMiddleware **之外**
+# 注册（后 add 者为外层）——删除进行中的任务级 409 语义优先于上传预检的
+# 401/411/413/415（规则端点非 multipart 的 415 不得抢在删除互斥 409 前）。
 app.add_middleware(TaskLockMiddleware)
 
 
@@ -256,13 +741,80 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     return JSONResponse(status_code=500, content={"detail": "服务暂时无法完成请求，请稍后重试。"})
 
 
+#: 422 校验错误回显的体积上限（MM2-02）：FastAPI 默认把 pydantic 错误里的
+#: ``input`` 原样回显——20MB 畸形字段曾得到约 20MB 的 422 响应（放大反射）。
+#: 超过该 repr 长度的 ``input``/``ctx`` 值替换为占位符；正常小输入的回显
+#: 保持不变（校验 UX 不受影响）。
+_MAX_VALIDATION_ECHO_CHARS = 1024
+
+#: 回显值递归清洗（list/dict/tuple 容器）的深度上限：请求体 JSON 正常嵌套
+#: 极浅。**超限的容器子树必须整体替换为占位字符串，绝不能原样放行**——
+#: 复审 R2 实测：深度放行时 9 层列表 [[…[NaN]…]] 的 repr 仅 21 字符，
+#: 长度裁剪不设防，嵌套的非有限浮点逃逸 → JSONResponse(allow_nan=False)
+#: 序列化崩溃 → 500。
+_ECHO_SANITIZE_MAX_DEPTH = 8
+_DEEP_ECHO_PLACEHOLDER = "<deep nesting omitted>"
+
+
+def _sanitize_nonfinite_echo(value, _depth: int = 0):  # noqa: ANN001
+    """把回显值里的非有限浮点（含容器内嵌套）替换为占位字符串。
+
+    只影响 422 回显的呈现，不改变任何校验判定（MM9-04）：
+    - ``nan``/``inf``/``-inf`` -> ``"<non-finite nan>"`` 等字符串（任意
+      可达深度；非有限浮点检查在最前，标量不受深度上限影响）；
+    - 其余标量原样返回；容器递归清洗（错误 ``input`` 可能是整个畸形体）；
+    - 深度超限的容器子树整体替换为 ``<deep nesting omitted>``（展示层
+      占位；该形状在本产品的合法请求体中不存在，见上）。
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"<non-finite {value!r}>"
+    if isinstance(value, (dict, list, tuple)):
+        if _depth >= _ECHO_SANITIZE_MAX_DEPTH:
+            return _DEEP_ECHO_PLACEHOLDER
+        if isinstance(value, dict):
+            return {key: _sanitize_nonfinite_echo(item, _depth + 1)
+                    for key, item in value.items()}
+        cleaned = [_sanitize_nonfinite_echo(item, _depth + 1) for item in value]
+        return tuple(cleaned) if isinstance(value, tuple) else cleaned
+    return value
+
+
+def _clip_validation_echo(value):  # noqa: ANN001
+    """超大校验回显值替换为占位符（正常小值原样返回）。
+
+    MM9-04：非有限浮点先替换为安全占位字符串再做长度裁剪——
+    ``repr(nan)`` 仅 3 字符，长度裁剪必然放行原值，随后
+    ``JSONResponse(allow_nan=False)`` 序列化崩溃把 422 变成 500。
+    """
+    value = _sanitize_nonfinite_echo(value)
+    try:
+        size = len(repr(value))
+    except Exception:  # pragma: no cover - repr 失败的极端对象
+        return "<omitted>"
+    if size > _MAX_VALIDATION_ECHO_CHARS:
+        return f"<{size} chars omitted>"
+    return value
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
     if '/analysis/ipd/' in request.url.path:
         return JSONResponse(status_code=422, content={'detail': [
             {key: error[key] for key in ('loc', 'msg', 'type')} for error in exc.errors()
         ]})
-    return await request_validation_exception_handler(request, exc)
+    # MM2-02：超大 input/ctx 不回显（曾 20MB 畸形字段 → 20MB 422 响应）。
+    clipped = []
+    for error in exc.errors():
+        item = {key: (_clip_validation_echo(value) if key == "input" else value)
+                for key, value in error.items()}
+        # ctx 里也可能嵌套携带原值（如 string_too_long 的 ctx）
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {key: _clip_validation_echo(value)
+                           for key, value in ctx.items()}
+        clipped.append(item)
+    return await request_validation_exception_handler(
+        request, RequestValidationError(clipped))
 
 
 @app.exception_handler(UploadRejected)
@@ -270,9 +822,52 @@ async def _upload_rejected_handler(request: Request, exc: UploadRejected) -> JSO
     return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
 
 
+#: 协作库永久损坏（非 SQLite/镜像残缺）时的修复指引文案（R6-C4/#30）。
+#: desktop 模式下该故障映射 409 并给出删文件重建指引（而非误导性的 503
+#: “稍后重试”）；已注册 interface_locale.js 十语言双键。
+COLLABORATION_STORE_CORRUPT_MESSAGE = (
+    "任务的协作权限库（collaboration.db）已损坏。请先备份任务数据，"
+    "再删除或改名该文件后重启应用修复。")
+
+
+@app.exception_handler(collaboration_mod.OwnerUnavailableError)
+async def _collaboration_owner_unavailable_handler(
+    request: Request, exc: collaboration_mod.OwnerUnavailableError
+) -> JSONResponse:
+    """属主解析异常（锁超时/读失败/库损坏）-> 503 重试语义（U4-P1）。
+
+    不得折叠成“无 owner=legacy”：server 模式下 legacy 会走 409 迁移口径，
+    desktop 模式下 legacy 保持可管理（fail-open）；解析失败必须显式重试。
+    例外（R6-C4/#30）：**永久损坏**（CollaborationStoreCorruptError）在
+    desktop 模式映射 409 + 修复指引（备份后删/改名 collaboration.db）——
+    “稍后重试”对损坏无益；server 模式维持 fail-closed 503。
+    """
+    if isinstance(exc, collaboration_mod.CollaborationStoreCorruptError) and not _server_mode():
+        logger.error("Collaboration store corrupted on %s %s: %s",
+                     request.method, request.url.path, exc)
+        return JSONResponse(status_code=409,
+                            content={"detail": COLLABORATION_STORE_CORRUPT_MESSAGE})
+    logger.warning("Collaboration owner unavailable on %s %s: %s",
+                   request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "任务属主状态暂时无法确认（协作库锁定或读取失败），请稍后重试。"},
+        headers={"Retry-After": "5"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # 鉴权依赖与请求模型
 # ---------------------------------------------------------------------------
+
+def _is_store_recovery_request(request: Request) -> bool:
+    """协作库恢复动作（repair / rebind）的路由判定（R6-C4/#30、R6-C2/#31）。
+
+    这两条端点是 corrupt/legacy 状态下恢复管理权的唯一受支持出口，必须在
+    fail-closed 闸门之下对参与证据持有人开放（端点内再自证身份并写审计日志）。"""
+    path = request.url.path.rstrip('/')
+    return path.endswith(('/collaboration/repair', '/collaboration/rebind'))
+
 
 def require_user(
     request: Request,
@@ -311,7 +906,43 @@ def require_user(
     task_id = request.path_params.get("task_id")
     if task_id:
         info = _task_or_404(task_id)
-        if not _task_visible_to(info, user):
+        try:
+            visible = _task_visible_to(info, user)
+        except collaboration_mod.CollaborationStoreCorruptError:
+            # R6-C4/#30：协作库**永久损坏**的任务无法核验属主/角色。
+            # - 恢复动作（repair / rebind）对"可能的参与者"在**两种模式**下放行
+            #   ——修复前 server 模式所有任务级请求在到达端点前就被全局处理器
+            #   折成 503，修库/认领端点自身也不可达，任务永久不可管理；
+            # - desktop 模式其余请求按 legacy 口径放行（可见可管理降级），
+            #   非参与者 403；server 模式其余请求维持 fail-closed（交全局处理器）。
+            if _is_store_recovery_request(request):
+                # 恢复端点自证：参与者放行；非参与者给端点自己的 403 文案，不再
+                # 落到全局 503（第 3 轮：503 会让端点内“仅任务参与者可…”永远不可达，
+                # 且把“你不是参与者”误报成“稍后重试”）。
+                if _probable_task_participant(info, user):
+                    return user
+                raise HTTPException(403, "仅任务参与者可执行协作库修复或重新登记属主。")
+            if not _server_mode() and _probable_task_participant(info, user):
+                visible = True
+            else:
+                raise
+        except collaboration_mod.OwnerUnavailableError:
+            raise  # 全局处理器映射 503 重试语义（U4-P1）
+        if not visible:
+            # 统一 legacy 口径（U4-P1/P6）：server 模式下无属主记录的任务不再
+            # 误报“不是参与者”（403），而是与列表隐藏、协作管理一致地 409
+            # 提示属主迁移；desktop 模式下 legacy 任务可见，不会进入此分支。
+            owner = (collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
+                     if _server_mode() else None)
+            if owner is None and _server_mode():
+                if _is_store_recovery_request(request):
+                    # r6 #31：属主重新登记是 legacy 409 指引指向的受支持出口，
+                    # 该入口对"可能的参与者"开放（端点内自证并写审计日志），
+                    # 不得被 fail-closed 闸门一并封死；其余账号 403。
+                    if _probable_task_participant(info, user):
+                        return user
+                    raise HTTPException(403, "仅任务参与者可重新登记属主。")
+                raise _legacy_owner_migration_error()
             raise HTTPException(403, "当前账号不是该任务的参与者。")
     return user
 
@@ -512,6 +1143,10 @@ class CollaborationRoleIn(BaseModel):
     role: Literal["coder", "reconciler"]
 
 
+class CollaborationMemberScreeningIn(BaseModel):
+    screening_enabled: StrictBool
+
+
 class CollaborationInviteIn(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     role: Literal["coder", "reconciler"] = "coder"
@@ -687,10 +1322,12 @@ class DtaResultIn(BaseModel):
     target_condition: str = Field(min_length=1, max_length=300)
     threshold: str = Field(min_length=1, max_length=100)
     reference_standard: str = Field(min_length=1, max_length=300)
-    tp: int = Field(ge=0)
-    fp: int = Field(ge=0)
-    fn: int = Field(ge=0)
-    tn: int = Field(ge=0)
+    # F-06: 计数上限对齐 SQLite INTEGER（2**63-1）；越界此前穿过校验后在
+    # INSERT 处 OverflowError → 500，现在请求层即 422（域层 save_result 同口径）。
+    tp: int = Field(ge=0, le=2**63 - 1)
+    fp: int = Field(ge=0, le=2**63 - 1)
+    fn: int = Field(ge=0, le=2**63 - 1)
+    tn: int = Field(ge=0, le=2**63 - 1)
     source_key: str = Field(min_length=1, max_length=300)
     source_locator: str = Field(default="", max_length=500)
 
@@ -769,6 +1406,10 @@ class HighlightEventIn(BaseModel):
     text: str = Field(default="", max_length=8000)
     color: str = Field(default="jade", pattern="^(jade|amber|terra)$")
     note: str = Field(default="", max_length=4000)
+    # MM5-13：每个 rect 恰 4 个浮点分量，语义同读取端/前端：[x0, y0, x1, y1]
+    # 两角点（fulltext.get_highlights_with_rects 存取、index.html 以 min/max
+    # 归一），不是 (x, y, w, h)。长度约束在写路由显式 400（评审按 400 验收）；
+    # 空 rects（不附坐标的高亮）仍允许，前端正常路径恒发 4 元素。
     rects: list[list[float]] = Field(default_factory=list, max_length=200)
 
 
@@ -867,6 +1508,31 @@ def _dim_error(exc: ValueError) -> HTTPException:
     return _bad(str(exc), 404 if "不存在" in str(exc) else 400)
 
 
+#: server 模式下 legacy（无属主记录）任务管理操作的 409 文案（U4-P1/P6 复审
+#: #31：409 原文案要求“完成属主迁移”，但产品内并无属主迁移流程——文案改为
+#: 给出真实可行的操作。r8（r6 #31 收口）：协作属主重新登记端点
+#: （POST /api/tasks/{task_id}/collaboration/rebind）落地后，文案同步指向该
+#: 受支持入口（历史参与者可恢复管理权），保留 desktop 删除/重建备选。
+#: 已注册 interface_locale.js 十语言双键（errOf 经 payload.message -> T() 命中）。
+LEGACY_OWNER_UNSET_MESSAGE = (
+    "旧任务缺少协作属主记录，服务器模式下无法管理；"
+    "该任务的历史参与者可通过协作属主重新登记恢复管理，"
+    "也可在单机模式下打开同一数据目录完成删除或重建。")
+
+
+def _legacy_owner_migration_error() -> HTTPException:
+    """server 模式下 legacy（无属主记录）任务的统一 409 口径（U4-P1/P6）。
+
+    与列表隐藏、协作管理、仲裁端点一致；文案给出可行操作（历史参与者经
+    rebind 端点重新登记属主，或 desktop 模式删除/重建，见
+    LEGACY_OWNER_UNSET_MESSAGE）而非指向不存在的迁移流程。
+    """
+    return HTTPException(409, {"error_code": "collaboration_owner_unset",
+                                "message_key": "coding.collaboration_owner_unset", "params": {},
+                                "details": "Legacy task has no registered collaboration owner",
+                                "message": LEGACY_OWNER_UNSET_MESSAGE})
+
+
 def _task_or_404(task_id: str) -> tasks_mod.TaskInfo:
     """按 id 取任务；id 形状或目录逃逸校验失败一律 404（不泄露文件系统信息）。"""
     if not _TASK_ID_RE.match(task_id or "") or Path(task_id).name != task_id:
@@ -879,13 +1545,35 @@ def _task_or_404(task_id: str) -> tasks_mod.TaskInfo:
     return info
 
 
-def _screener_db(info: tasks_mod.TaskInfo, screener: str) -> Path:
-    """筛选员 -> ``{task_dir}/{slug}.db``（懒建库；路径白名单校验）。"""
+def _screener_db(info: tasks_mod.TaskInfo, screener: str, *, ensure: bool = True) -> Path:
+    """筛选员 -> ``{task_dir}/{slug}.db``（懒建库；路径白名单校验）。
+
+    - ``ensure=False`` 供只读状态查询使用（R6-U4/#24）：不建库、不跑自愈
+      DDL，写路径保持懒建。
+    - r6 #29：slug 撞任务目录保留库名（collaboration.db）且该路径已是协作
+      权限库（可读出属主）时拒绝（409 撞名改名指引）——升级前已存在的撞名
+      授权成员会把整套筛选表灌进协作库（实测 2→50 张表）。仅当该文件确为
+      协作库时拒绝：legacy 时代以同名落库的个人数据库（无属主记录）保持
+      历史可用（R2：不新增对合法存量输入的拒绝）。"""
     slug = tasks_mod.slugify_screener(screener)
     db = info.dir / f"{slug}.db"
     if not is_within(db, info.dir):
         raise _bad("非法筛选员名。", 400)
-    db_mod.init_db(db)  # 幂等：确保表齐全（首次使用即建库）
+    if f"{slug}.db".casefold() == collaboration_mod.DB_FILENAME.casefold() and db.is_file():
+        try:
+            reserved_owner = collaboration_mod.get_owner(db, task_id=info.task_id)
+        except collaboration_mod.CollaborationStoreCorruptError:
+            raise  # 全局处理器：desktop 409 修库指引 / server 503 fail-closed
+        except collaboration_mod.OwnerUnavailableError as exc:
+            raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
+        if reserved_owner is not None:
+            raise HTTPException(
+                409, {"error_code": "collaboration_reserved_name",
+                      "message_key": "coding.collaboration_reserved_name", "params": {},
+                      "details": "Username collides with the reserved collaboration database filename",
+                      "message": COLLABORATION_RESERVED_NAME_MESSAGE})
+    if ensure:
+        db_mod.init_db(db)  # 幂等：确保表齐全（首次使用即建库）
     return db
 
 
@@ -927,13 +1615,15 @@ def _run_export(exporter, suffix: str) -> bytes:
 def _file_response(data: bytes, media_type: str, filename: str) -> Response:
     safe_name = clean_upload_name(filename, "download")
     ascii_name = safe_name.encode("ascii", "ignore").decode("ascii") or "download"
+    # U5-P6：非 ASCII 文件名必须百分号编码后再进头部（starlette 只接受
+    # latin-1，中文任务名/文献名直接拼接会 UnicodeEncodeError -> 500）。
     return Response(
         content=data,
         media_type=media_type,
         headers={
             "Content-Disposition": (
                 f"attachment; filename=\"{ascii_name}\"; "
-                f"filename*=UTF-8''{safe_name}"
+                f"filename*=UTF-8''{quote(safe_name, safe='')}"
             )
         },
     )
@@ -1028,25 +1718,113 @@ def app_update_check() -> dict:
 
 @app.post("/api/auth/register")
 def register(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(f"register:{request.client.host if request.client else '?'}")
+    # U5-P5/R6-S1：按直连对端 IP 分桶（XFF 一律不信任，IPv6 归一 /64），
+    # 见 rate_limit_key；429 文案标明计数维度，方便运维定位（反代部署应由
+    # 反代层 limit_req）。
+    # 语义如实记录（r6 #39/#45 后更正——旧注释「peek 先挡/失败补记/成功
+    # 清零」与本实现不符）：peer 维用 check() 原子占位（防并发放大）；
+    # 注册**失败**（重名/校验类 AuthError）refund 退回**本次占位**——重名
+    # 重试不占额的宽容语义保留，且重名检查已前移到 auth.create_user 的
+    # bcrypt 之前（失败路径不烧 rounds=12 哈希，无限轰炸不再消耗 CPU）；
+    # 注册**成功计入 peer 配额**（不退款）：注册走 bcrypt，成功量也须有
+    # 上限（复审 #41「连续 6 次成功注册全 200」旁路），5 次/分钟/对端。
+    peer_key = rate_limit_key(
+        "register",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    )
+    allowed, retry_after = login_limiter.check(peer_key)
     if not allowed:
-        raise HTTPException(429, "注册尝试过于频繁，请稍后再试。", headers={"Retry-After": str(retry_after)})
+        raise HTTPException(
+            429, "注册尝试过于频繁，请稍后再试（按连接来源 IP 计数）。",
+            headers={"Retry-After": str(retry_after)})
     try:
         user = auth.create_user(body.username, body.password)
     except auth.AuthError as exc:
+        login_limiter.refund(peer_key)  # 注册失败（重名/校验）退回占位
         raise _bad(str(exc)) from exc
+    # 注册**成功计入 peer 配额**（不退款）：注册走 bcrypt，成功量也须有
+    # 上限（复审 #41「连续 6 次成功注册全 200」旁路），5 次/分钟/对端。
     return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
 
 
 @app.post("/api/auth/login")
 def login(body: CredentialsIn, request: Request) -> dict:
-    allowed, retry_after = login_limiter.check(f"login:{request.client.host if request.client else '?'}")
+    # 复审（鉴权重回归收口）：双维限流——
+    # - peer 维（对端 IP，IPv6 归一 /64）：check() **原子占位**（占位与
+    #   判定同临界区，防并发放大；防 bcrypt 口令猜解耗 CPU），成功仅退回
+    #   本次占位；peer 维**先行判定**（双桶皆满时按 peer 维文案，回归钉
+    #   钉住该顺序）；
+    # - 账号维（对端+用户名 / r6 #46 增全局用户名键）：只计**失败**；成功
+    #   即清零该账号的失败桶（handoff「只对失败尝试计数，成功即清零」按
+    #   账号维度成立）——他人成功登录不再清空受害者的失败记录，「4 错+1
+    #   成功循环」旁路由此闭合；同一账号 5 次失败后被锁定（含正确密码
+    #   429，防猜解）。
+    # r6 #46（账号维 429 生效顺序）：账号桶此前只按「peer+用户名」分键，
+    #   与 peer 桶按同一批失败事件 1:1 增长（len(acct) ≤ len(peer) 恒成立），
+    #   peer 维先判时「按账号计数」分支在真实路径不可达（死分支，r6 实测
+    #   自然序列只出 peer 维文案）。补 **全局用户名键**（跨对端生效）：
+    #   攻击者轮换源 IP/对端绕过各 peer 桶后，同一账号 5 次失败仍触发账号
+    #   维 429，分支可达；peer 维仍先行，单对端场景的文案顺序不变。
+    #   DoS 面**升级**如实登记（r6 #46 第二/三轮实测，非「同量级」）：
+    #   单对端锁需占用同出口 IP 的 5 次配额（换网络即恢复）；全局键下攻击者
+    #   用 5 个不同来源各打 1 次即把 login:acct=<name> 打满，第 6 个来源起
+    #   该账号即 429（含正确密码）。
+    #   缓解**仅部分有效**，不得写成已闭环（三轮评审宁可中继/代理放大：
+    #   真实端点 12s 间隔、单 IP 累计 6 次全部 401，peer 桶只到 5 从未触发
+    #   429，受害者第 6 次后仍 429「按账号计数」）：
+    #   - 已做：全局键命中时**不退** peer 占位（refund 只给 account_key 命中，
+    #     见下）——同一来源反复锁号会吃满自己的 peer 桶，1 分钟最多 5 次；
+    #   - 未闭合：攻击者**轮换来源**（或多跳中继/僵尸网络）即可绕开该代价，
+    #     全局账号锁定仍可被低成本持续续锁。这是「使账号维分支可达」的必然
+    #     代价；是否可接受属产品裁决（本组不擅自核销），残余在此显式登记。
+    peer_key = rate_limit_key(
+        "login",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    )
+    username_key = str(body.username).strip().lower()
+    account_key = f"{peer_key}|acct={username_key}"
+    global_account_key = f"login:acct={username_key}"
+    allowed, retry_after = login_limiter.check(peer_key)
     if not allowed:
-        raise HTTPException(429, "登录尝试过于频繁，请 1 分钟后再试。", headers={"Retry-After": str(retry_after)})
+        raise HTTPException(
+            429, "登录尝试过于频繁，请 1 分钟后再试（按连接来源 IP 计数）。",
+            headers={"Retry-After": str(retry_after)})
+    account_allowed, account_retry = login_limiter.peek(account_key)
+    if not account_allowed:
+        login_limiter.refund(peer_key)
+        raise HTTPException(
+            429, "该账号登录失败次数过多，请 1 分钟后再试（按账号计数）。",
+            headers={"Retry-After": str(account_retry)})
+    global_allowed, global_retry = login_limiter.peek(global_account_key)
+    if not global_allowed:
+        # r6 #46：全局键命中**不退** peer 占位（本次 check 已计入），同一来源
+        # 反复锁号会吃满自己的 peer 桶；**但轮换来源/中继仍可绕开**（见函数
+        # 上方注释的残余登记，不宣称已闭环）。本对端账号桶命中仍退款（同一
+        # 对端被自己打满时不额外罚，与既有语义一致）。
+        raise HTTPException(
+            429, "该账号登录失败次数过多，请 1 分钟后再试（按账号计数）。",
+            headers={"Retry-After": str(global_retry)})
     user = auth.authenticate(body.username, body.password)
     if user is None:
+        login_limiter.record(account_key)
+        login_limiter.record(global_account_key)
         raise _bad("用户名或密码错误。", 401)
-    return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
+    # U4-P2：历史上已注册、但用户名与任务目录保留库名（collaboration.db）
+    # 相撞的账号：不阻断登录、不破坏数据，在响应中给出改名指引。
+    warnings = []
+    if auth.reserved_screener_collision(user["username"]):
+        warnings.append(
+            "您的用户名与任务协作数据库保留文件名（collaboration.db）冲突，"
+            "团队协作功能不可用；请改用其他用户名注册新账号使用协作功能，"
+            "本账号的历史数据保持不变。"
+        )
+    login_limiter.refund(peer_key)
+    login_limiter.reset(account_key)
+    login_limiter.reset(global_account_key)
+    return {"token": auth.create_access_token(user["id"], user["username"]),
+            "user": user, "warnings": warnings}
 
 
 @app.get("/api/auth/me")
@@ -1054,11 +1832,69 @@ def me(user: dict = Depends(require_user)) -> dict:
     return {"user_id": user["user_id"], "username": user["username"]}
 
 
+#: U5-P10：SSE 事件流短期票据（60 秒一次性，r6 #41 对齐 handoff「票据 60s
+#: 一次性」——此前 300s；EventSource 无法设 Authorization 头）
+_event_tickets = EventTicketStore(ttl_seconds=60)
+
+
+@app.post("/api/events/ticket")
+def issue_event_ticket(user: dict = Depends(require_user)) -> dict:
+    """凭 Bearer 换一次性短期票据（60 秒），供 EventSource 连接 /api/events。
+
+    取代把 24h JWT 放进 URL 查询参数的旧方案（完整凭据进入反代/访问日志
+    与浏览器历史）；票据一次性、短时效，泄露不可重放。
+    """
+    ticket, expires_in = _event_tickets.issue(user["user_id"], user["username"])
+    return {"ticket": ticket, "expires_in": expires_in}
+
+
 @app.get("/api/events")
-async def task_events(request: Request, token: str | None = Query(default=None),
+async def task_events(request: Request,
+                      ticket: str | None = Query(default=None),
+                      token: str | None = Query(default=None),
                       authorization: str | None = Header(default=None)):
-    # EventSource cannot set a Bearer header. Reuse all normal auth checks.
-    user = require_user(request, authorization or (f"Bearer {token}" if token else None))
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    # r6 #41（query token 下线时间表：先 Deprecation 头、后 410）：
+    # 只要 URL 里出现 `?token=` 就 410——**不看请求是否另带 Bearer、也不看
+    # 是否另带 ticket**（r8 复审实测：上一版把本判定放在 `else:` 分支里，
+    # `?ticket=<有效票>&token=<24h JWT>` 先走 ticket 分支即 200，token 的
+    # 410 被整体跳过——并存即可绕开下线）。各类凭证的失效语义必须独立生效，
+    # 不能用「另一类凭证有效」把本类的下线决定短路掉；故本判定前移到凭证
+    # 分派之前，对所有并存组合都成立。
+    #
+    # 已知后果（**未获产品签署，待裁决**，不在本组擅自核销）：v2.1.3
+    # 已发布标签页仍用 `/api/events?token=`（git show v2.1.3:custom_frontend/
+    # index.html 实测），升级后未刷新的标签页会撞 410 → 只剩 30s 轮询、
+    # 协作通知实时性丢失，刷新页面即恢复。handoff
+    # （docs/handoff/r6-review-fixes/upload-security.md:39）要求
+    # 「先 Deprecation 头、后 410」的时间表，本组无法自行证明「后 410」
+    # 的时点已到；若产品要求保留一个版本周期的 200+Deprecation，改回
+    # 本节为加头放行即可（r7 的既有实现形态）。出货前端只用 `?ticket=`
+    # （custom_frontend/index.html:5571-5575：先 POST 换票再
+    # `EventSource('/api/events?ticket=' + ...)`，URL 中从不带 token），
+    # 因此本判定不会影响现行 SSE 客户端。
+    if token is not None:
+        raise HTTPException(
+            410,
+            "事件流 token 查询参数已下线（410 Gone）：完整 JWT 进 URL 会"
+            "泄漏到反代/访问日志与浏览器历史；请先 POST /api/events/ticket"
+            " 换取一次性短期票据，再以 ?ticket= 连接 /api/events。",
+            headers={
+                "Deprecation": "true",
+                "Warning": '299 reviewflow "token query parameter is removed'
+                           ' (410); use POST /api/events/ticket"',
+            })
+    if ticket is not None:
+        # U5-P10：短期一次性票据（POST /api/events/ticket 换取）。签发时已
+        # 走完整 require_user 校验，这里只恢复身份并立即消费（防重放）。
+        payload = _event_tickets.consume(ticket)
+        if payload is None:
+            raise HTTPException(401, "事件票据无效或已过期，请重新获取。",
+                                headers={"WWW-Authenticate": "Bearer"})
+        user = {"user_id": payload["user_id"], "username": payload["username"]}
+    else:
+        # EventSource cannot set a Bearer header. Reuse all normal auth checks.
+        user = require_user(request, authorization)
 
     async def stream():
         queue = BUS.subscribe(user["user_id"])
@@ -1075,14 +1911,17 @@ async def task_events(request: Request, token: str | None = Query(default=None),
             BUS.unsubscribe(user["user_id"], queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers=headers)
 
 
 # ---------------------------------------------------------------------------
 # 任务 CRUD
 # ---------------------------------------------------------------------------
 
-def _task_payload(info: tasks_mod.TaskInfo) -> dict:
+def _task_payload(info: tasks_mod.TaskInfo, *, degraded: bool | None = None) -> dict:
+    """任务列表行。``degraded`` 缺省取 task.json 损坏标记；协作库永久损坏的
+    任务由列表调用方显式置 True（r6 #30：修复前 payload degraded=false，用户
+    看不到任何"待修复"提示）。"""
     return {
         "task_id": info.task_id,
         "name": info.display_name,
@@ -1091,7 +1930,7 @@ def _task_payload(info: tasks_mod.TaskInfo) -> dict:
         "created_at": info.created_at,
         "last_used_at": info.last_used_at,
         "archived": info.archived,
-        "degraded": info.degraded,
+        "degraded": info.degraded if degraded is None else degraded,
     }
 
 
@@ -1099,25 +1938,94 @@ def _task_payload(info: tasks_mod.TaskInfo) -> dict:
 def list_all_tasks(
     include_archived: bool = False, user: dict = Depends(require_user)
 ) -> dict:
-    infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
-    # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
-    # 尚无属主记录（显式迁移路径未定），保持历史可见性。
-    visible = [i for i in infos if _task_visible_to(i, user)]
-    return {"tasks": [_task_payload(i) for i in visible]}
+    # R6-S2（评审三轮）：列表读打开**所有**任务的 task.json（出货前端每 30s
+    # 轮询 loadTasks），且不在 /api/tasks/{id}/** 的任务锁中间件计数内——
+    # 评审实测列表持 task.json 时 DELETE 触发 copytree+rmtree 半删。准入与
+    # deleting 标记同临界区：删除进行中先有界等待（上限=删除排空超时+余量），
+    # 准入后登记在途列表读供 DELETE 排空；finally 释放（可见性检查还要读各
+    # 任务 collaboration.db，同样在登记期内）。
+    # 集成对账（复审 S2 洞 a/c）：等待超时说明删除异常长（半删目录仍在移动），
+    # 此时**不得未登记就放行**去读半删列表——改 fail-closed 503（前端 30s
+    # 轮询会自动重试）；且只有真正 enter 成功才在 finally 退出，防止把仍在
+    # 活动读者的计数减穿（洞 c）。
+    deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT + 1.0
+    entered = False
+    while not TaskLockMiddleware.try_enter_list_read():
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                503, "任务列表暂时不可用（正在执行删除），请稍后重试")
+        time.sleep(0.02)
+    entered = True
+    try:
+        infos = tasks_mod.list_tasks(DATA_DIR, include_archived=include_archived)
+        # 水平权限：仅返回当前用户属主/协作参与的任务；legacy 无协作库的任务
+        # 尚无属主记录（显式迁移路径未定），server 模式保持不可见、desktop 模式
+        # 维持历史可见性（见 task_collaboration 模块披露）。属主解析失败
+        # （锁超时/读失败）的任务本轮按不可见降级，不拖垮整个列表（U4-P1）。
+        # 例外（R6-C4/#30）：desktop 模式下协作库**永久损坏**的任务不再静默剔除
+        # （单机安装该故障修复前按 legacy 可见；管理操作会给明确的修库指引），
+        # 且仅对"可能的参与者"（task.json 登记筛选员或任务目录内有其个人库）
+        # 呈现并标 degraded=True——修复前对任意账号可见且 degraded=false；
+        # server 模式维持 fail-closed 不可见。
+        visible = []
+        degraded_ids: set[str] = set()
+        for info in infos:
+            try:
+                if _task_visible_to(info, user):
+                    visible.append(info)
+            except collaboration_mod.OwnerUnavailableError as exc:
+                if (isinstance(exc, collaboration_mod.CollaborationStoreCorruptError)
+                        and not _server_mode()
+                        and _probable_task_participant(info, user)):
+                    visible.append(info)
+                    degraded_ids.add(info.task_id)
+                continue
+        return {"tasks": [_task_payload(i, degraded=i.task_id in degraded_ids)
+                          for i in visible]}
+    finally:
+        if entered:
+            TaskLockMiddleware.exit_list_read()
 
 
 @app.post("/api/tasks", status_code=201)
 def create_task(body: TaskCreateIn, user: dict = Depends(require_user)) -> dict:
+    # R6-C1（复审收口：create_task 口）：保留名 'collaboration' 撞协作库文件名
+    # （slug 同名 collaboration.db），撞名账号一旦成为属主会把整套筛选表灌进
+    # 协作库（实测 2→50 张表）并使成员请求 500——与 invite/roles 同文案拒绝。
+    if auth.reserved_screener_collision(user["username"]):
+        # r6 #34：补 message（前端 errOf 仅在 payload.message 存在时走 T()，
+        # 否则对象回退 JSON.stringify 直出原始 JSON）；文案复用已注册十语言
+        # 的 COLLABORATION_RESERVED_NAME_MESSAGE。
+        raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                  "message_key": "coding.collaboration_reserved_name", "params": {},
+                                  "detail": "该用户名与系统保留的协作库名冲突，无法创建任务。",
+                                  "message": COLLABORATION_RESERVED_NAME_MESSAGE})
+    # R6-S2（复审洞 b）：create_task 内部 list_tasks 会读全部 task.json（查重
+    # 名），与 GET /api/tasks 同样纳入删除互斥门，不读半删目录。
+    deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT + 1.0
+    while not TaskLockMiddleware.try_enter_list_read():
+        if time.monotonic() >= deadline:
+            raise HTTPException(503, "任务列表暂时不可用（正在执行删除），请稍后重试")
+        time.sleep(0.02)
     try:
         info = tasks_mod.create_task(body.name, body.description, DATA_DIR)
-        collaboration_mod.initialize_task_store(
-            info.dir, task_id=info.task_id, owner_user_id=user["user_id"],
-            owner_username=user["username"],
-        )
-        tasks_mod.register_screener(info.task_id, user["username"], DATA_DIR)
+        try:
+            collaboration_mod.initialize_task_store(
+                info.dir, task_id=info.task_id, owner_user_id=user["user_id"],
+                owner_username=user["username"],
+            )
+            tasks_mod.register_screener(info.task_id, user["username"], DATA_DIR)
+        except (sqlite3.Error, OSError) as exc:
+            # R6-C2（复审）：initialize_task_store 半途失败会留下无协作库的
+            # 「幽灵任务」目录（列表隐藏/删除 409/重名重建 409）。回滚刚建
+            # 的任务目录后以可操作 500 失败，不留半初始化状态。
+            shutil.rmtree(info.dir, ignore_errors=True)
+            raise HTTPException(500, f"任务初始化失败已回滚，请重试：{exc}") from exc
         info = tasks_mod.find_task(info.task_id, DATA_DIR) or info
     except ValueError as exc:
         raise _bad(str(exc), 409) from exc
+    finally:
+        TaskLockMiddleware.exit_list_read()
     return _task_payload(info)
 
 
@@ -1128,22 +2036,78 @@ def _collaboration_store(info: tasks_mod.TaskInfo) -> Path:
     return path
 
 
-def _collaboration_owner_store(task_id: str, user: dict) -> Path:
+def _screening_allowed(info: tasks_mod.TaskInfo, user: dict) -> bool:
+    """该成员当前是否可写初筛/复筛（裁决员「参与筛选」开关）。
+
+    属主、coder、legacy（无协作库）恒为 True；异常口径对齐协作模块契约：
+    永久损坏交全局处理器（desktop 409 修复指引 / server 503）、锁超时/读失败
+    映射 503——绝不折叠成 403 或静默放行。
+    """
+    try:
+        return collaboration_mod.screening_allowed(
+            _collaboration_store(info), user["user_id"], task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "筛选参与权状态暂时无法确认，请稍后重试。") from exc
+
+
+def _screening_allowed_for_read(info: tasks_mod.TaskInfo, user: dict) -> bool:
+    """只读端点（progress）的软判定：无法确认时按「不限制」降级，绝不阻断读取。"""
+    try:
+        return _screening_allowed(info, user)
+    except HTTPException:
+        return True
+    except collaboration_mod.OwnerUnavailableError:
+        return True
+
+
+def _collaboration_owner_store(task_id: str, user: dict) -> tuple[tasks_mod.TaskInfo, Path]:
+    """协作管理入口的属主闸门；返回 (规范任务信息, 协作库路径)。
+
+    U4-P4：协作管理（邀请/授权/撤销/列表）整体仅服务器模式开放——门禁
+    收口在本助手内，覆盖按用户名与按 user_id 的全部入口。
+    R6-C3/#35：调用方一律以返回的 info.task_id 作为 grant/revoke/list 的
+    task_id（尾点别名与规范 id 同任务同键，修复前别名路径 500/折叠 legacy）。
+    """
+    if not _server_mode():
+        raise HTTPException(404, "团队协作仅在服务器模式下开放。")
     info = _task_or_404(task_id)
     path = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    try:
+        owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise  # 全局处理器：desktop 409 修复指引 / server 503 fail-closed
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
     if owner is None:
-        raise HTTPException(409, {"error_code": "collaboration_owner_unset",
-                                  "message_key": "coding.collaboration_owner_unset", "params": {},
-                                  "details": "Legacy task needs explicit owner migration",
-                                  "message": "Legacy task needs explicit owner migration"})
+        raise _legacy_owner_migration_error()
     if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can manage collaborators.")
-    return path
+    return info, path
+
+
+def _probable_task_participant(info: tasks_mod.TaskInfo, user: dict) -> bool:
+    """协作库不可读（损坏）或无属主记录时的参与证据判定（r6 #30/#31）。
+
+    协作库读不出属主/角色时无法核验身份，以任务侧留存的两类证据代替：
+    task.json 登记的筛选员名单含该用户（创建任务/邀请成员都会登记），或
+    任务目录内存在其 ``{slug}.db`` 个人库（成员访问过工作队列即生成）。
+    仅用于损坏库可见性/修库/属主重新登记的闸门，不构成正常路径的权限判定。"""
+    if user["username"] in info.screeners:
+        return True
+    slug_db = info.dir / f"{tasks_mod.slugify_screener(user['username'])}.db"
+    return is_within(slug_db, info.dir) and slug_db.is_file()
 
 
 def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
-    """任务对当前用户是否可见：属主/协作者可见，legacy 无属主任务保持可见。"""
+    """任务对当前用户是否可见：属主/协作者可见，legacy 无属主任务保持可见。
+
+    desktop 模式下 legacy 任务维持历史可见性（单机安装的向后兼容，有意
+    保留并在 task_collaboration 模块披露）；server 模式下不可见。
+    属主解析失败（OwnerUnavailableError）向上抛出：单任务请求映射 503
+    重试语义，任务列表由调用方按不可见降级。
+    """
     try:
         path = _collaboration_store(info)
     except HTTPException:
@@ -1159,12 +2123,26 @@ def _task_visible_to(info: tasks_mod.TaskInfo, user: dict) -> bool:
 def _require_task_owner(task_id: str, user: dict) -> tasks_mod.TaskInfo:
     """任务改名/描述/归档/删除的属主闸门。
 
-    已登记属主的任务仅属主可改（非属主 403）；legacy 任务尚无属主记录
-    （创建于协作库机制之前、迁移路径未定），保持既有可管理性。
+    已登记属主的任务仅属主可改（非属主 403）。legacy 任务（创建于协作库
+    机制之前、迁移路径未定）按模式区分（U4-P6）：server 模式 fail-closed
+    ——与列表隐藏、协作管理 409 同口径，提示走属主迁移流程；desktop 模式
+    维持既有可管理性（单机向后兼容，见 task_collaboration 模块披露）。
+    属主解析失败（OwnerUnavailableError）映射 503，不折叠成 legacy；协作库
+    **永久损坏**（CollaborationStoreCorruptError）交全局处理器（desktop 409
+    修复指引 / server 503，R6-C4/#30）。
     """
     info = _task_or_404(task_id)
-    owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
-    if owner is not None and owner["owner_user_id"] != user["user_id"]:
+    try:
+        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
+    if owner is None:
+        if _server_mode():
+            raise _legacy_owner_migration_error()
+        return info
+    if owner["owner_user_id"] != user["user_id"]:
         raise HTTPException(403, "Only the task owner can modify or delete this task.")
     return info
 
@@ -1188,9 +2166,155 @@ def _run_coding_freeze(info: tasks_mod.TaskInfo, user: dict,
 
 @app.get("/api/tasks/{task_id}/collaboration/roles")
 def collaboration_roles(task_id: str, user: dict = Depends(require_user)) -> dict:
-    path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
     return {"roles": collaboration_mod.list_role_grants(
-        path, actor_user_id=user["user_id"], task_id=task_id)}
+        path, actor_user_id=user["user_id"], task_id=info.task_id)}
+
+
+@app.post("/api/tasks/{task_id}/collaboration/repair")
+def collaboration_repair_store(task_id: str, user: dict = Depends(require_user)) -> dict:
+    """受支持的修库动作（R6-C4/#30）：把**永久损坏**的 collaboration.db 原地
+    改名隔离（collaboration.db.corrupt-{时间戳}，备份保留、不删除任何数据），
+    任务随即可按 legacy 口径继续管理——desktop 模式立即可见可管理；server
+    模式可再经 rebind 端点由历史参与者重新登记属主。
+
+    授权：协作库不可读时无法核验属主/角色，以参与证据代替
+    （_probable_task_participant：task.json 筛选员登记或任务目录内个人库）。
+    库未损坏/任务未启用协作时 409（无可修复对象）。"""
+    info = _task_or_404(task_id)
+    store = _collaboration_store(info)
+    corrupt = False
+    try:
+        collaboration_mod.get_owner(store, task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        corrupt = True
+    except collaboration_mod.OwnerUnavailableError:
+        raise  # 全局处理器：503 重试语义（锁/暂时读失败）
+    if not corrupt:
+        raise HTTPException(409, "协作权限库未损坏（或任务未启用协作），无需修复。")
+    if not _probable_task_participant(info, user):
+        raise HTTPException(403, "仅任务参与者可执行协作库修复。")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = store.with_name(f"{store.name}.corrupt-{stamp}")
+    suffix = 1
+    while backup.exists():
+        backup = store.with_name(f"{store.name}.corrupt-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        store.rename(backup)
+    except OSError as exc:
+        raise HTTPException(
+            409, f"协作库隔离失败（文件可能被占用），请关闭占用该文件的窗口后重试：{exc}") from exc
+    logger.warning("Corrupt collaboration store quarantined: task=%s actor=%s backup=%s",
+                   info.task_id, user["user_id"], backup.name)
+    return {"repaired": True, "task_id": info.task_id, "backup": backup.name}
+
+
+class CollaborationRebindIn(BaseModel):
+    confirm: bool = False
+
+
+@app.post("/api/tasks/{task_id}/collaboration/rebind")
+def collaboration_rebind_owner(task_id: str, body: CollaborationRebindIn,
+                               user: dict = Depends(require_user)) -> dict:
+    """属主修复入口（R6-C2/#31）：legacy（无属主记录）任务由历史参与者重新
+    登记协作属主，恢复 server 模式下的管理权（改名/归档/删除/协作管理）。
+
+    授权口径：协作库无属主记录时无法核验历史属主，以参与证据代替
+    （_probable_task_participant）；能在服务器上通过该闸门的即该任务的历史
+    参与者（创建者恒在 task.json screeners 登记内）。desktop 模式 legacy 任务
+    本就可管理，不开放（404，与协作管理端点同口径）。已有属主/重复认领 409；
+    撞保留名的账号不得成为属主（其个人库路径与协作库同文件，#29 同根）。"""
+    if not _server_mode():
+        raise HTTPException(404, "团队协作仅在服务器模式下开放。")
+    info = _task_or_404(task_id)
+    store = _collaboration_store(info)
+    if auth.reserved_screener_collision(user["username"]):
+        # 撞保留名账号的个人库路径与协作库同文件，不得成为属主（r6 #29 同根）。
+        raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                  "message_key": "coding.collaboration_reserved_name", "params": {},
+                                  "details": "Username collides with the reserved collaboration database filename",
+                                  "message": COLLABORATION_RESERVED_NAME_MESSAGE})
+    try:
+        owner = collaboration_mod.get_owner(store, task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError as exc:
+        raise HTTPException(
+            409, {"error_code": "collaboration_store_corrupt",
+                  "message_key": "coding.collaboration_store_corrupt", "params": {},
+                  "details": "Task collaboration store is unreadable; repair it first "
+                             "(POST /api/tasks/{task_id}/collaboration/repair)",
+                  "message": COLLABORATION_STORE_CORRUPT_MESSAGE}) from exc
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务属主状态暂时无法确认，请稍后重试。") from exc
+    if owner is not None:
+        raise HTTPException(409, "任务已登记协作属主，无需重新登记；如需变更属主请联系当前属主操作。")
+    if not _probable_task_participant(info, user):
+        raise HTTPException(403, "仅任务参与者可重新登记属主。")
+    if not body.confirm:
+        raise HTTPException(400, "请显式确认（confirm=true）后重新登记属主。")
+    with app.state.review_workflow.lock(info.task_id):
+        try:
+            registered = collaboration_mod.initialize_task_store(
+                info.dir, task_id=info.task_id, owner_user_id=user["user_id"],
+                owner_username=user["username"])
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        tasks_mod.register_screener(info.task_id, user["username"], DATA_DIR)
+    logger.warning("Legacy task ownership rebound: task=%s actor=%s username=%s",
+                   info.task_id, user["user_id"], user["username"])
+    # r6 第二轮复查（属主转移可见性）：认领闸门只能区分"历史参与者"，无法区分
+    # 原属主与任一经邀请成员——文件级故障后一次 rebind 即可易主。除服务端审计
+    # 日志外，向任务名单内的每个账号广播可见事件，使易主对同任务参与者可观察。
+    for username in list(info.screeners):
+        account = auth.get_user(username)
+        if account is not None:
+            BUS.publish(account["id"], {"type": "task-ownership-changed",
+                                        "task_id": info.task_id,
+                                        "task_name": info.display_name,
+                                        "new_owner_username": user["username"]})
+    return {"task_id": info.task_id, "owner": registered}
+
+
+#: 邀请/按 user_id 授权的目标用户名与 collaboration.db 保留名冲突时的 409 文案
+#: （U4-P2 复审 #29/#34：注册口已拒绝，存量撞名账号仍可被拉入协作——其个人库
+#: 与任务权限库同文件，成员侧队列 500、权限库被灌入整套表）。已注册
+#: interface_locale.js 十语言双键。
+COLLABORATION_RESERVED_NAME_MESSAGE = (
+    "该用户名与任务协作数据库保留文件名冲突，无法邀请其参与协作；"
+    "请对方更换用户名后再试。")
+
+
+#: 裁决员「参与筛选」开关关闭时的 403 引导文案（team.screening_not_enabled）。
+#: 形状对齐 coding.collaborator_not_found 先例；十语言词条已注册
+#: interface_locale.js，前端 errOf 按 message_key 渲染。
+SCREENING_NOT_ENABLED_MESSAGE = (
+    "你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。")
+
+
+#: 补扫修复：某个筛选员个人库被外部进程持锁/暂时不可读时的 503 文案。
+#: 十语言词条已注册 interface_locale.js（前端把 HTTPException.detail 交 T() 渲染）。
+SCREENER_LIBRARY_UNAVAILABLE_MESSAGE = (
+    "筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。")
+
+
+def _screening_disabled_error() -> HTTPException:
+    """结构化 403（error_code + message_key），与 coding.collaborator_not_found 同形。"""
+    return HTTPException(403, {
+        "error_code": "screening_not_enabled",
+        "message_key": "team.screening_not_enabled",
+        "params": {},
+        "details": "Screening participation is not enabled for this member",
+        "message": SCREENING_NOT_ENABLED_MESSAGE,
+    })
+
+
+def _reject_reserved_screener_collision(target: dict) -> None:
+    """邀请/授权目标账号的保留名校验（存量账号同口径，U4-P2 复审 #29/#34）。"""
+    if auth.reserved_screener_collision(target["username"]):
+        raise HTTPException(409, {"error_code": "collaboration_reserved_name",
+                                  "message_key": "coding.collaboration_reserved_name", "params": {},
+                                  "details": "Username collides with the reserved collaboration database filename",
+                                  "message": COLLABORATION_RESERVED_NAME_MESSAGE})
 
 
 @app.post("/api/tasks/{task_id}/collaboration/invite", status_code=201)
@@ -1198,17 +2322,18 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
                          user: dict = Depends(require_user)) -> dict:
     if not _server_mode():
         raise HTTPException(404, "团队协作仅在服务器模式下开放。")
-    path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
     target = auth.get_user(body.username)
     if target is None:
         raise HTTPException(404, "该账号不存在。请对方先在此服务器注册。")
-    with app.state.review_workflow.lock(task_id):
+    _reject_reserved_screener_collision(target)
+    with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=target["id"],
-            role=body.role, task_id=task_id)
-        app.state.review_workflow.latch_team(task_id, user)
-    tasks_mod.register_screener(task_id, target["username"], DATA_DIR)
-    notify_tasks_changed(target["id"], "invited", _task_or_404(task_id).display_name)
+            role=body.role, task_id=info.task_id)
+        app.state.review_workflow.latch_team(info.task_id, user)
+    tasks_mod.register_screener(info.task_id, target["username"], DATA_DIR)
+    notify_tasks_changed(target["id"], "invited", info.display_name)
     return {"grant": {**grant, "username": target["username"]}}
 
 
@@ -1218,23 +2343,44 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
         raise HTTPException(404, "团队进度仅在服务器模式下开放。")
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(store, task_id=task_id)
+    # R6-C3/#35：属主/参与者/授权查询统一 info.task_id（尾点别名同键，
+    # 修复前别名路径被折叠成 legacy -> 409 误报）。
+    owner = collaboration_mod.get_owner(store, task_id=info.task_id)
     if owner is None:
-        raise HTTPException(409, "旧任务需先完成属主迁移，才能使用团队进度。")
+        raise HTTPException(409, LEGACY_OWNER_UNSET_MESSAGE)
     try:
         ids = collaboration_mod.list_participant_ids(
-            store, actor_user_id=user["user_id"], task_id=task_id)
+            store, actor_user_id=user["user_id"], task_id=info.task_id)
     except PermissionError as exc:
         raise HTTPException(403, "当前账号不是该任务的参与者。") from exc
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise  # 全局处理器：desktop 409 修复指引 / server 503 fail-closed
+    except collaboration_mod.OwnerUnavailableError as exc:
+        # R6-C6：读取失败绝不返回伪空表（统计清零）——503 重试语义
+        raise HTTPException(503, "任务参与者状态暂时无法确认，请稍后重试。") from exc
     accounts = [account for uid in ids
                 if (account := auth.get_user_by_id(uid)) is not None]
     user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
-    members = list_team_progress(task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
-    grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=task_id)
+    members = list_team_progress(info.task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
+    grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=info.task_id)
+    # R2：属主读取前完成一次性回填（升级前 reconciler -> 开），再批量取开关；
+    # 非 reconciler（含属主）恒为 True，不受该开关约束。回填只在属主请求时
+    # 触发，成员侧 team-progress 维持纯读（未迁移库按「升级前默认开」判定）。
+    if can_manage:
+        try:
+            collaboration_mod.ensure_screening_backfill(store, task_id=info.task_id)
+        except ValueError:
+            pass  # 属主已在上方确认存在；绑定不匹配等确定性否定无回填对象
+        except collaboration_mod.OwnerUnavailableError:
+            # 回填写锁忙/暂时失败：本次读降级为「未迁移默认开」，绝不把
+            # team-progress 读变成 503（标记写入可在下次属主请求重试）。
+            logger.warning("Screening backfill deferred for task %s (store busy)", info.task_id)
+    screening_flags = collaboration_mod.list_screening_flags(store, task_id=info.task_id)
     return {"members": [{**member, "user_id": user_ids[member["username"]],
-                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member['username']]})}
+                         "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member["username"]]}),
+                         "screening_enabled": screening_flags.get(user_ids[member["username"]], True)}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
             "grants": grants if can_manage else []}
@@ -1243,33 +2389,122 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
 @app.post("/api/tasks/{task_id}/collaboration/roles", status_code=201)
 def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
                              user: dict = Depends(require_user)) -> dict:
-    path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
     target = auth.get_user_by_id(body.user_id)
     if target is None:
         raise HTTPException(400, {"error_code": "collaborator_not_found",
                                   "message_key": "coding.collaborator_not_found", "params": {},
                                   "details": "Account ID does not exist", "message": "Account ID does not exist"})
-    with app.state.review_workflow.lock(task_id):
+    # U4-P2 复审 #29/#34：按 user_id 授权口对目标用户名做保留名校验（存量
+    # 撞名账号同口径拒绝），否则绕过用户名邀请口把撞名账号拉入协作。
+    _reject_reserved_screener_collision(target)
+    with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=body.user_id,
-            role=body.role, task_id=task_id)
-        app.state.review_workflow.latch_team(task_id, user)
-    notify_tasks_changed(body.user_id, "invited", _task_or_404(task_id).display_name)
+            role=body.role, task_id=info.task_id)
+        app.state.review_workflow.latch_team(info.task_id, user)
+    notify_tasks_changed(body.user_id, "invited", info.display_name)
     return {"grant": {**grant, "username": target["username"]}}
+
+
+@app.put("/api/tasks/{task_id}/collaboration/members/{target_user_id}/screening")
+def collaboration_set_member_screening(
+    task_id: str, target_user_id: int, body: CollaborationMemberScreeningIn,
+    user: dict = Depends(require_user),
+) -> dict:
+    """负责人按成员开关裁决员的初筛/复筛参与权（R2）。
+
+    仅属主可写（`_collaboration_owner_store`：非属主 403、desktop 404、
+    legacy 409）；目标无 reconciler 授权 -> 400。写操作留痕（updated_by/
+    updated_at）。异常口径对齐协作模块：锁/读失败 503、永久损坏交全局处理器。
+    """
+    info, path = _collaboration_owner_store(task_id, user)
+    target = auth.get_user_by_id(target_user_id)
+    if target is None:
+        raise HTTPException(400, {"error_code": "collaborator_not_found",
+                                  "message_key": "coding.collaborator_not_found", "params": {},
+                                  "details": "Account ID does not exist",
+                                  "message": "Account ID does not exist"})
+    try:
+        settings = collaboration_mod.set_member_screening(
+            path, actor_user_id=user["user_id"], user_id=target_user_id,
+            enabled=body.screening_enabled, task_id=info.task_id)
+    except PermissionError as exc:
+        raise HTTPException(403, "Only the task owner can manage collaborators.") from exc
+    except ValueError as exc:
+        raise _bad(str(exc), 400) from exc
+    return {"member": {**settings, "username": target["username"]}}
+
+
+
+def _quarantine_member_db(info: tasks_mod.TaskInfo, username: str) -> None:
+    """把被撤销成员的个人库改名隔离（r6 #37，尽力而为、不删数据）。
+
+    改名后文件不再匹配 screener_options 的 ``{slug}.db`` 兜底 glob，被撤成员
+    不再以乱理 slug 形态出现在筛选员名单；数据保留（``{slug}.db.revoked-{ts}``，
+    可手工改回），再次邀请时按原名新建个人库。文件被占用（Windows 上连接未
+    释放）等失败静默跳过——名单残留可由重复撤销/重试收敛。"""
+    slug = tasks_mod.slugify_screener(username)
+    db = info.dir / f"{slug}.db"
+    if not db.is_file() or db.is_symlink() or not is_within(db, info.dir):
+        return
+    if f"{slug}.db".casefold() == collaboration_mod.DB_FILENAME.casefold():
+        return  # 保留名（协作库本身）不适用本路径
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = db.with_name(f"{db.name}.revoked-{stamp}")
+    suffix = 1
+    while target.exists():
+        target = db.with_name(f"{db.name}.revoked-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        db.rename(target)
+        for sidecar in ("-journal", "-wal", "-shm"):
+            side = db.with_name(db.name + sidecar)
+            if side.is_file():
+                side.rename(target.with_name(target.name + sidecar))
+    except OSError:
+        pass
 
 
 @app.delete("/api/tasks/{task_id}/collaboration/roles/{target_user_id}/{role}")
 def collaboration_revoke_role(task_id: str, target_user_id: int,
                               role: Literal["coder", "reconciler"],
                               user: dict = Depends(require_user)) -> dict:
-    path = _collaboration_owner_store(task_id, user)
-    with app.state.review_workflow.lock(task_id):
-        app.state.review_workflow.latch_team(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user)
+    with app.state.review_workflow.lock(info.task_id):
+        app.state.review_workflow.latch_team(info.task_id, user)
         revoked = collaboration_mod.revoke_role(
             path, actor_user_id=user["user_id"], user_id=target_user_id,
-            role=role, task_id=task_id)
+            role=role, task_id=info.task_id)
     if revoked:
-        notify_tasks_changed(target_user_id, "revoked", _task_or_404(task_id).display_name)
+        # R6-C1（复审）：撤销时回收 task.json 的 screeners 登记——此前撤销
+        # 后登记残留，被撤成员仍出现在筛选员名单。
+        # G-03/r6 #32：仅当该成员已无任何角色 grant（且不是属主）时才回收——
+        # 修复前无条件回收，coder+reconciler 双角色成员撤销其一即被整体剔除。
+        target = auth.get_user_by_id(target_user_id)
+        if target:
+            still_engaged = True
+            try:
+                owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+                remaining = collaboration_mod.list_role_grants(
+                    path, actor_user_id=user["user_id"], task_id=info.task_id)
+                still_engaged = (
+                    owner is not None and owner["owner_user_id"] == target_user_id
+                ) or any(g["user_id"] == target_user_id for g in remaining)
+            except (collaboration_mod.OwnerUnavailableError, PermissionError, ValueError):
+                still_engaged = True  # 读取失败时保守不回收（保持登记，可重试收敛）
+            if not still_engaged:
+                try:
+                    tasks_mod.unregister_screener(info.task_id, target["username"], DATA_DIR)
+                except (ValueError, OSError):
+                    pass  # 回收失败不阻断撤销结果（幂等可重试）
+                # r6 #37：全无 grant 后隔离其个人库文件名——screener_options 会把
+                # 任务目录内现存 {slug}.db 以 slug 本名兜底呈现（剥 @ 的乱理形态，
+                # 如 member@example.test -> memberexample.test），修复前被撤成员
+                # 以乱理 slug 残留在筛选员名单。改名保留数据（可手工改回），再
+                # 邀请时按同名新建个人库。
+                _quarantine_member_db(info, target["username"])
+        notify_tasks_changed(target_user_id, "revoked", info.display_name)
     return {"revoked": revoked}
 
 
@@ -1298,11 +2533,41 @@ def update_task(
 
 @app.delete("/api/tasks/{task_id}")
 def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
-    _require_task_owner(task_id, user)
+    info = _require_task_owner(task_id, user)
+    # U5-P2/R6-S2：单进程部署下中间件对同任务并发只做引用计数，此前本进程
+    # 持锁时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
+    # 顺序：①置「删除中」标记（中间件对后续一切请求——含 GET/导入——直接
+    # 409）→ ②查在途写计数（DELETE 自身占 1，>1 说明还有导入/分析等写操作
+    # 在跑；只读轮询不计入，不再误报）→ ③**排空在途读**（评审二轮实测回归：
+    # 读请求持有 SQLite 文件句柄，未排空即 move 会在 Windows 上 os.rename
+    # 失败→shutil.move 回退 copytree+rmtree→在打开的 .db 上半删原目录、
+    # .trash 留全量副本、端点 500）→ ④真正 move。读排空有界：超时受控 409
+    # （任务原样保留），绝不落入破坏性回退路径。
+    TaskLockMiddleware._begin_delete(info.task_id)
     try:
-        trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
-    except ValueError as exc:
-        raise _bad(str(exc), 409) from exc
+        inflight = TaskLockMiddleware.inflight(info.task_id)
+        if inflight > 1:
+            raise _bad(f"任务有操作进行中（{inflight - 1} 个写请求未完成），请等待后再删除。", 409)
+        deadline = time.monotonic() + TaskLockMiddleware.READ_DRAIN_TIMEOUT
+        while (TaskLockMiddleware.read_inflight(info.task_id) > 0
+               or TaskLockMiddleware.list_readers() > 0
+               # L-01：取锁前可见性预检（URL 键计数，按任务别名族归一）在途
+               # 时不得 move——预检段的 task.json/collaboration.db 句柄未释放
+               # 即 move 会重现 R6-S2 的 Windows 半删路径。按**本任务**等空
+               # （r9 复审：整表等空会让无关任务的慢预检把本任务 DELETE
+               # 拖满 5s 超时 409）。
+               or TaskLockMiddleware.precheck_readers_for(info.task_id) > 0):
+            # 排空对象含全局任务列表读（R6-S2 三轮：列表持 task.json 时
+            # move 同样半删）；排不空 → 受控 409，任务原样保留。
+            if time.monotonic() >= deadline:
+                raise _bad("任务或任务列表仍有读取请求未完成，请稍后重试删除。", 409)
+            time.sleep(0.02)
+        try:
+            trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
+        except ValueError as exc:
+            raise _bad(str(exc), 409) from exc
+    finally:
+        TaskLockMiddleware._end_delete(info.task_id)
     return {"deleted": True, "trash": trash_path.name}
 
 
@@ -1319,15 +2584,25 @@ def list_articles(
 ) -> dict:
     info = _task_or_404(task_id)
     if _server_mode():
-        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=task_id)
+        owner = collaboration_mod.get_owner(_collaboration_store(info), task_id=info.task_id)
         if owner is not None and owner["owner_user_id"] != user["user_id"]:
             owner_db = info.dir / f"{tasks_mod.slugify_screener(owner['owner_username'])}.db"
             if owner_db.is_file():
-                from custom_backend.shared_corpus import sync_shared_articles
-                sync_shared_articles(
-                    info.dir, owner_username=owner["owner_username"],
-                    member_username=user["username"],
-                )
+                from custom_backend.shared_corpus import (ReservedScreenerCollisionError,
+                                                          sync_shared_articles)
+                try:
+                    sync_shared_articles(
+                        info.dir, owner_username=owner["owner_username"],
+                        member_username=user["username"],
+                    )
+                except ReservedScreenerCollisionError:
+                    # r6 #29：升级前已存在的撞名授权成员收敛为 409 撞名改名指引
+                    # （修复前裸 ValueError -> 500）。
+                    raise HTTPException(
+                        409, {"error_code": "collaboration_reserved_name",
+                              "message_key": "coding.collaboration_reserved_name", "params": {},
+                              "details": "Username collides with the reserved collaboration database filename",
+                              "message": COLLABORATION_RESERVED_NAME_MESSAGE})
     db = _screener_db(info, screener or user["username"])
     articles = db_mod.list_articles(db, include_duplicates=include_duplicates)
     review = db_mod.title_duplicate_review_progress(db)
@@ -1405,25 +2680,71 @@ def _stabilize_generated_import_keys(existing: list, incoming: list) -> None:
 
     Generated ``auto-*`` values are storage identifiers, not evidence of a match.
     The source digest + row locator makes collision suffixes stable on re-import.
+    U2-P5/#18：行身份优先 raw["_record_id"]（内容稳定、含 #N occurrence，
+    不随文件字节漂移——「仅加一行注释的重导出」零新增）；旧 2.1.3 行无
+    _record_id 时回退 _fallback_id 匹配（v2.1.3 逐字一致形态）。
+    r8 #9：补 content_hash 身份层（与 CLI stabilize_conflicting_keys 分层
+    对齐）——旧行只有 _fallback_id（2.1.3 形态）而重导出字节不同（_record_id
+    同、_fallback_id 变）时，前两层落空，Web 曾生成新键插新行（CLI 沿用
+    旧键零新增，双路径幂等口径分叉）。哈希命中叠加与 CLI 同口径的首作者/
+    年份门（content_hash 只含 doi|title，同题异作者/异年是不同文献，不得
+    静默沿用），不满足时落 base_key/后缀路径。
     """
+    from coscreen.dedup import _first_authors_compatible  # noqa: SLF001  与 CLI 同一谓词，口径不分叉
+    from coscreen.normalize import years_compatible
+
     occupied = {a.zotero_key for a in existing}
-    key_by_fallback_id: dict[str, str] = {}
+    existing_by_key: dict[str, object] = {}
+    # 旧行可能只有 _fallback_id（2.1.3 形态）——双登记，命中任一即沿用其键
+    key_by_identity: dict[str, str] = {}
+    # content_hash（sha1(doi|title)，2.1.3 起持久化）-> 库内键（r8 #9）
+    key_by_hash: dict[str, str] = {}
     for article in existing:
-        fallback_id = str(article.raw.get("_fallback_id") or "")
-        if fallback_id:
-            key_by_fallback_id[fallback_id] = article.zotero_key
+        raw = article.raw if isinstance(article.raw, dict) else {}
+        identities = (str(raw.get("_record_id") or "").strip(),
+                      str(raw.get("_fallback_id") or "").strip())
+        for identity in identities:
+            if identity and identity not in key_by_identity:
+                key_by_identity[identity] = article.zotero_key
+        content_hash = str(getattr(article, "content_hash", "") or "")
+        if content_hash and content_hash not in key_by_hash:
+            key_by_hash[content_hash] = article.zotero_key
+        existing_by_key.setdefault(article.zotero_key, article)
     for article in incoming:
         if not article.raw.get("_generated_key"):
             continue
+        raw = article.raw if isinstance(article.raw, dict) else {}
         base_key = str(article.raw.get("_fallback_key") or article.zotero_key)
-        fallback_id = str(article.raw.get("_fallback_id") or "")
-        known_key = key_by_fallback_id.get(fallback_id) if fallback_id else None
+        known_key = next(
+            (key_by_identity[i] for i in
+             (str(raw.get("_record_id") or "").strip(),
+              str(raw.get("_fallback_id") or "").strip())
+             if i and i in key_by_identity),
+            None,
+        )
+        # r8 #9：content_hash 层（在 _record_id/_fallback_id 之后），带
+        # CLI 同款首作者/年份门；不满足时视为未命中，落 base_key/后缀路径。
+        hash_key = None
+        if known_key is None:
+            content_hash = str(getattr(article, "content_hash", "") or "")
+            target = key_by_hash.get(content_hash) if content_hash else None
+            if target is not None:
+                db_art = existing_by_key.get(target)
+                if db_art is not None and (
+                        _first_authors_compatible(article, db_art)
+                        and years_compatible(getattr(article, "year", None),
+                                             getattr(db_art, "year", None))):
+                    hash_key = target
+        identity = str(raw.get("_record_id") or "").strip() \
+            or str(raw.get("_fallback_id") or "").strip()
         if known_key:
             chosen = known_key
+        elif hash_key:
+            chosen = hash_key
         elif base_key not in occupied:
             chosen = base_key
         else:
-            suffix = hashlib.sha256(fallback_id.encode("utf-8")).hexdigest()[:12]
+            suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
             chosen = f"{base_key}-{suffix}"
             serial = 2
             while chosen in occupied:
@@ -1431,8 +2752,8 @@ def _stabilize_generated_import_keys(existing: list, incoming: list) -> None:
                 serial += 1
         article.zotero_key = chosen
         occupied.add(chosen)
-        if fallback_id:
-            key_by_fallback_id[fallback_id] = chosen
+        if identity:
+            key_by_identity[identity] = chosen
 
 
 def _title_review_groups(exact_survivors: list, incoming_keys: set,
@@ -1526,7 +2847,10 @@ def _exact_duplicate_metrics(report, incoming_keys: set | None = None,
         if previous_report is not None else 0
     )
     return {
-        "exact_match_hits": len(hits),
+        # U1-P12：按记录去重计数（distinct dup_key）——同 DOI 且同键的一对
+        # 重复行产生 exact_doi+exact_key 两条事件但只有 1 条记录，与
+        # exact_duplicate_excess（total-unique 口径）一致，不再翻倍。
+        "exact_match_hits": len({p.dup_key for p in hits}),
         "exact_duplicate_groups": len(groups),
         "exact_duplicate_excess": max(
             0, report.total - report.unique - previous_excess
@@ -1660,7 +2984,11 @@ def export_title_duplicate_reviews(
     ])
     for group in groups:
         for member in group["members"]:
-            writer.writerow([
+            # MM-05：公式注入防护（同仓其余 5 处 CSV 导出同款）——以 =/+/-/@/
+            # Tab/CR 开头的字符串单元格补 ' 前缀；csv 引号转义不阻止 Excel
+            # 解引号后按公式求值，跨用户场景（成员导入落属主库、属主导出）
+            # 曾可注入。原始字节仍完整保留在 original_record_json 列。
+            row = [
                 group["review_id"], group["status"], group["decision_by"],
                 group["updated_at"], group["normalized_title"],
                 group["keeper_key"], member["zotero_key"],
@@ -1668,6 +2996,12 @@ def export_title_duplicate_reviews(
                 member["authors"], member["year"], member["journal"],
                 member["volume"], member["issue"], member["pages"], member["doi"],
                 json.dumps(member["raw"], ensure_ascii=False),
+            ]
+            writer.writerow([
+                ("'" + value if isinstance(value, str)
+                 and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r"))
+                 else value)
+                for value in row
             ])
     data = ("\ufeff" + output.getvalue()).encode("utf-8")
     return _file_response(data, "text/csv; charset=utf-8", "title-duplicate-review.csv")
@@ -1746,6 +3080,8 @@ def progress(task_id: str, screener: str | None = None, user: dict = Depends(req
         "stage1": db_mod.get_progress(db),
         "stage2": get_stage2_progress(db),
         "coding": coding_mod.coding_progress(db, owner_db=_coding_owner_db(info) or db),
+        # 只读软判定：被关成员的筛选页据此渲染引导文案；读取永不因该开关被拦。
+        "screening_enabled": _screening_allowed_for_read(info, user),
     }
 
 
@@ -1802,10 +3138,13 @@ def list_decisions(task_id: str, screener: str | None = None, user: dict = Depen
 def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                   user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
+    if not _screening_allowed(info, user):
+        raise _screening_disabled_error()
     db = _screener_db(info, screener or user["username"])
     with app.state.review_workflow.write_guard(task_id, user, "screen", body.zotero_key,
                                                body.expected_policy_version) as workflow:
-        app.state.review_workflow.check_maybe(workflow, "screen", body.decision)
+        app.state.review_workflow.check_maybe(workflow, "screen", body.decision,
+                                              body.zotero_key, db=db)
         _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": db_mod.get_progress(db)}
@@ -1827,6 +3166,8 @@ def list_stage2(task_id: str, screener: str | None = None, user: dict = Depends(
 def save_stage2_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                          user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
+    if not _screening_allowed(info, user):
+        raise _screening_disabled_error()
     db = _screener_db(info, screener or user["username"])
     with app.state.review_workflow.write_guard(task_id, user, "fulltext", body.zotero_key,
                                                body.expected_policy_version) as workflow:
@@ -1977,7 +3318,16 @@ def al_rank(task_id: str, screener: str | None = None,
         min_labeled=settings["min_labeled"],
         profile=profile,
     )
-    result = ranker.rank(articles, decisions)
+    try:
+        result = ranker.rank(articles, decisions)
+    except ValueError as exc:
+        # svm/cjk 预设 + 单类训练标签：用户补齐标签即可恢复 → 400。
+        # isinstance 精确匹配（不吞 rank 路径其他 ValueError）；符号缺失
+        # （svm.py 回退）时原样放行，红证以 500 形态干净复现。
+        if SingleClassTrainingError is not None and isinstance(
+                exc, SingleClassTrainingError):
+            raise _bad(str(exc)) from exc
+        raise
     if result is None:
         return {
             "available": False,
@@ -2129,31 +3479,19 @@ async def _read_name_frame(upload: UploadFile, *, matrix: bool = False) -> tuple
     return stem_of(name), frame
 
 
-@app.post("/api/merge/decisions")
-async def merge_decisions_ep(
-    files: list[UploadFile] = File(...), user: dict = Depends(require_user)
-) -> dict:
-    """上传 2~9 位筛选员的决策 CSV -> 合并 + 一致率 + 两两 kappa + Light's kappa。"""
-    if not (2 <= len(files) <= 9):
-        raise _bad("请同时上传 2~9 份决策 CSV 文件。")
-    named: dict[str, pd.DataFrame] = {}
-    for i, upload in enumerate(files, start=1):
-        stem, frame = await _read_name_frame(upload)
-        key = stem or f"筛选员{i}"
-        if key in named:
-            raise _bad(f"存在重名的筛选员文件：{key}（请用不同文件名区分）。")
-        named[key] = frame
-    try:
-        from coscreen.screening_arbitration import merge_decision_packages
-        merged = merge_decision_packages(named)
-        summary = summarize_multi(merged)
-        named_labels = {n: merged[f"decision_{n}"].tolist() for n in named}
-        pair_results = pairwise_kappa(named_labels)
-        light = light_kappa(named_labels)
-        reasons = exclusion_reason_distribution_multi(merged)
-    except ValueError as exc:
-        raise _bad(str(exc)) from exc
+def _multi_merge_payload(merged: pd.DataFrame) -> dict:
+    """多人合并表 -> /api/merge/decisions 的响应体。
 
+    CSV 上传与服务器端「全员决策」加载必须返回完全同形的 JSON（前端零改
+    渲染），因此两条路径共用本函数。
+    """
+    summary = summarize_multi(merged)
+    names = [column[len("decision_"):] for column in merged.columns
+             if column.startswith("decision_")]
+    named_labels = {name: merged[f"decision_{name}"].tolist() for name in names}
+    pair_results = pairwise_kappa(named_labels)
+    light = light_kappa(named_labels)
+    reasons = exclusion_reason_distribution_multi(merged)
     pairs = [
         {
             "a": a,
@@ -2185,17 +3523,100 @@ async def merge_decisions_ep(
     }
 
 
+@app.post("/api/merge/decisions")
+async def merge_decisions_ep(
+    files: list[UploadFile] = File(...), user: dict = Depends(require_user)
+) -> dict:
+    """上传 2~9 位筛选员的决策 CSV -> 合并 + 一致率 + 两两 kappa + Light's kappa。"""
+    if not (2 <= len(files) <= 9):
+        raise _bad("请同时上传 2~9 份决策 CSV 文件。")
+    named: dict[str, pd.DataFrame] = {}
+    for i, upload in enumerate(files, start=1):
+        stem, frame = await _read_name_frame(upload)
+        key = stem or f"筛选员{i}"
+        if key in named:
+            raise _bad(f"存在重名的筛选员文件：{key}（请用不同文件名区分）。")
+        named[key] = frame
+    try:
+        from coscreen.screening_arbitration import merge_decision_packages
+        merged = merge_decision_packages(named)
+        return _multi_merge_payload(merged)
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
+
+
 def _arbitration_store(task_id: str, user: dict) -> Path:
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
-    owner = collaboration_mod.get_owner(store, task_id=task_id)
+    # R6-C3/#35：属主/授权查询统一 info.task_id（尾点别名同键）。
+    owner = collaboration_mod.get_owner(store, task_id=info.task_id)
     if owner is None:
         if _server_mode():
-            raise HTTPException(409, "旧任务需先完成属主迁移。")
+            raise _legacy_owner_migration_error()
     elif owner["owner_user_id"] != user["user_id"] and not collaboration_mod.authorize_action(
-            store, user["user_id"], "consensus:write", task_id=task_id):
+            store, user["user_id"], "consensus:write", task_id=info.task_id):
         raise HTTPException(403, "仅任务属主或仲裁员可以保存仲裁结果。")
     return store
+
+
+def _arbitration_double_blind_guard(task_id: str, user: dict) -> None:
+    """团队任务独立筛选未全部暂停时，禁止读取/落盘全员合并快照。
+
+    与 /al/shared-ranking（main.py 的共享排序守卫）同口径：team 任务且任一
+    stage mode != "paused" -> 409。加载与服务器来源保存共用本守卫，避免
+    保存路径绕过双盲；异常只含引导文案，不携带任何成员判定。
+    """
+    ctx = app.state.review_workflow.context(task_id, user)
+    if ctx.task_kind == "team" and any(
+            value["mode"] != "paused"
+            for value in app.state.review_workflow.settings(ctx)["stages"].values()):
+        raise _bad(
+            "独立筛选尚未全部暂停，无法加载全员决策。"
+            "请先暂停所有筛选阶段，或等待独立筛选完成后再进入合并仲裁。",
+            409,
+        )
+
+
+async def _save_server_sourced_arbitration(
+    task_id: str, store: Path, request: Request, user: dict,
+) -> dict:
+    """服务器来源的仲裁保存：不重传文件，由后端现取任务目录内的合并表。
+
+    前端只提交 ``{stage, resolutions, server_source: true}``；合并表完全由
+    服务端从各筛选员个人库只读重建（与 GET server-merge 同一函数），
+    防止客户端伪造/替换合并输入。缺标记或形状不符一律 400。
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:  # JSON 解析失败 / 空体 / 非 UTF-8
+        raise _bad("仲裁数据不是有效 JSON。") from exc
+    if not isinstance(payload, dict):
+        raise _bad("仲裁数据必须为 JSON 对象。")
+    if payload.get("server_source") is not True:
+        raise _bad("缺少服务器来源标记；请先从服务器加载全员决策再保存。")
+    stage = payload.get("stage")
+    if stage not in {"stage1", "stage2"}:
+        raise _bad("stage 必须为 stage1 或 stage2。")
+    choices = payload.get("resolutions")
+    if not isinstance(choices, list):
+        raise _bad("resolutions 必须为数组。")
+    info = _task_or_404(task_id)
+    from coscreen.screening_arbitration import (
+        ScreenerLibraryUnavailableError, append_decision_arbitration,
+        load_screener_decision_packages, merge_decision_packages,
+    )
+    try:
+        named = load_screener_decision_packages(info.db_files, stage=stage)
+        merged = merge_decision_packages(named)
+        return append_decision_arbitration(
+            store, stage=stage, merged=merged, resolutions=choices,
+            arbitrator_id=user["user_id"],
+        )
+    except ScreenerLibraryUnavailableError as exc:
+        # 暂时不可读（锁忙/IO）：503 稍后重试，绝不落盘缺员合并表。
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
 
 
 @app.post("/api/tasks/{task_id}/screening-arbitrations", status_code=201)
@@ -2206,6 +3627,11 @@ async def save_screening_arbitration(
     resolutions: str = Form(...),
     user: dict = Depends(require_user),
 ) -> dict:
+    """上传 2-9 份决策 CSV 保存仲裁记录（离线流程，行为原样保留）。
+
+    服务器来源的保存走 ``POST .../screening-arbitrations/server-save``：
+    不重传文件，由后端从任务目录现取合并表。
+    """
     store = _arbitration_store(task_id, user)
     if not 2 <= len(files) <= 9:
         raise _bad("请上传 2 到 9 份决策 CSV。")
@@ -2233,6 +3659,25 @@ async def save_screening_arbitration(
     return saved
 
 
+@app.post("/api/tasks/{task_id}/screening-arbitrations/server-save", status_code=201)
+async def save_server_sourced_screening_arbitration(
+    task_id: str,
+    request: Request,
+    user: dict = Depends(require_user),
+) -> dict:
+    """服务器来源的仲裁保存（R1）：只接受 JSON，合表由后端现取。
+
+    请求体 ``{stage, resolutions, server_source: true}``；缺少服务器来源标记
+    或形状不符一律 400。合表从任务目录内的个人库只读重建，客户端无法替换
+    合并输入（防伪造）。
+    """
+    if not _server_mode():
+        raise _bad("团队协作仅在服务器模式下开放。", 404)
+    store = _arbitration_store(task_id, user)
+    _arbitration_double_blind_guard(task_id, user)
+    return await _save_server_sourced_arbitration(task_id, store, request, user)
+
+
 @app.get("/api/tasks/{task_id}/screening-arbitrations/latest")
 def latest_screening_arbitration(
     task_id: str, stage: Literal["stage1", "stage2"] = "stage1",
@@ -2244,6 +3689,40 @@ def latest_screening_arbitration(
     if record is None:
         raise _bad("尚无仲裁记录。", 404)
     return record
+
+
+@app.get("/api/tasks/{task_id}/screening-arbitrations/server-merge")
+def server_merge_screening_arbitration(
+    task_id: str,
+    stage: Literal["stage1", "stage2"] = "stage1",
+    user: dict = Depends(require_user),
+) -> dict:
+    """联网团队模式：一键读取任务目录内全部筛选员的决策，直接进入 κ+冲突仲裁。
+
+    - 权限与保存端点同口径（属主或 consensus:write 裁决员；legacy 409）。
+    - 双盲守卫：team 任务且任一阶段未暂停 -> 409；响应只有引导文案，绝不含
+      任何成员判定内容。
+    - 返回体与 POST /api/merge/decisions 完全同形（前端复用同一渲染）。
+    - 仅服务器模式开放（desktop/离线团队协作入口 404，CSV 上传流程保留）。
+    """
+    if not _server_mode():
+        raise _bad("团队协作仅在服务器模式下开放。", 404)
+    _arbitration_store(task_id, user)  # 权限闸门（403/409 与保存端点一致）
+    _arbitration_double_blind_guard(task_id, user)
+    info = _task_or_404(task_id)
+    from coscreen.screening_arbitration import (
+        ScreenerLibraryUnavailableError, load_screener_decision_packages,
+        merge_decision_packages,
+    )
+    try:
+        named = load_screener_decision_packages(info.db_files, stage=stage)
+        merged = merge_decision_packages(named)
+        return _multi_merge_payload(merged)
+    except ScreenerLibraryUnavailableError as exc:
+        # 成员库被持锁/暂时不可读：503 重试语义，绝不返回缺员合并表。
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+    except ValueError as exc:
+        raise _bad(str(exc)) from exc
 
 
 @app.get("/api/tasks/{task_id}/screening-arbitrations/{record_id}")
@@ -2358,8 +3837,12 @@ def prisma_generate(body: PrismaGenerateIn, user: dict = Depends(require_user)) 
         "errors": [i.text for i in result.errors],
         "warnings": [i.text for i in result.warnings],
         "hints": [i.text for i in result.hints],
-        "dot": prisma_form_dot(form),
-        "json": form_json(form),
+        # R6-F8（复审：恢复集成轮契约）：error 阻止导出——ok=False 时
+        # dot/json 一律 None。r5 #51 的「官方模板被 error 误伤」动机已由
+        # R13W warning 化修复闭环（官方模板实测 ok=True），对非法表单开放
+        # 降级导出会让未获产品裁决的 API 客户端直接导出非法图。
+        "dot": prisma_form_dot(form) if result.ok else None,
+        "json": form_json(form) if result.ok else None,
         "form": form_to_dict(form),
     }
 
@@ -2373,7 +3856,9 @@ def coding_dimensions(task_id: str, screener: str | None = None,
                       user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
-    with app.state.review_workflow.lock(task_id):
+    # R6-C3（复审扫尾）：读锁键一律用规范 task_id（尾点别名与写路径同键
+    # 互斥，别名读不得绕过 schema_guard 写的进程内互斥读到迁移中途状态）。
+    with app.state.review_workflow.lock(info.task_id):
         ctx = app.state.review_workflow.context(task_id, user)
         from coscreen import coding_evidence
         mapped, issues, required = coding_evidence.mapping(db, ctx.owner_db)
@@ -2494,7 +3979,8 @@ def export_scheme_ep(task_id: str, screener: str | None = None,
     db = _screener_db(info, screener or user["username"])
     from coscreen import coding_evidence
     runtime = app.state.review_workflow
-    with runtime.lock(task_id):
+    # R6-C3（复审扫尾）：读锁键一律用规范 task_id（同上）。
+    with runtime.lock(info.task_id):
         ctx = runtime.context(task_id, user)
         mapping, _, _ = coding_evidence.mapping(db, ctx.owner_db)
         dims = coding_evidence.field_rows(db)
@@ -3411,6 +4897,11 @@ def analysis_advanced(task_id: str, method: str, comparison: str, outcome: str,
         if method == "cumulative":
             if model is None:
                 raise ValueError("choose a cumulative synthesis model explicitly")
+            # MM5-06：model 白名单与 review_analysis.synthesize 同口径。修前未校验，
+            # 未知值（如 "bogus"/"fixed "）在 cumulative 内部 KeyError 被全局兜底
+            # 统一成 500；非法值必须走 ValueError -> 400。
+            if model not in {"fixed", "random", "random_pm", "random_reml"}:
+                raise ValueError("unsupported cumulative synthesis model")
             args += (model,)
         return methods[method](*args)
     except ValueError as exc:
@@ -4393,12 +5884,17 @@ def fulltext_pdf(task_id: str, zotero_key: str, screener: str | None = None,
     )
     if data is None or not inside:
         raise _bad("PDF 文件不存在或已移动。", 404)
+    # U5-P6：inline PDF 的文件名同样走「ASCII 回退 + 百分号编码 UTF-8」双写
+    # （对齐 download_import_file 的既有正确写法），中文文献键不再 500。
+    display_name = clean_upload_name(meta.filename, "document.pdf")
+    ascii_name = display_name.encode("ascii", "ignore").decode("ascii") or "document.pdf"
     return Response(
         content=data,
         media_type="application/pdf",
         headers={
             "Content-Disposition": (
-                f"inline; filename=\"{clean_upload_name(meta.filename, 'document.pdf')}\""
+                f"inline; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quote(display_name, safe='')}"
             )
         },
     )
@@ -4417,6 +5913,10 @@ async def upload_pdf(task_id: str, zotero_key: str, file: UploadFile = File(...)
         meta = save_pdf(db, zotero_key, data, pdfs_dir=_pdfs_dir(info), trace_context=_trace_context(info, user))
     except ValueError as exc:
         raise _bad(exc) from exc
+    except sqlite3.IntegrityError as exc:
+        # U5-P7：zotero_key 不在 articles 表时外键插入失败——按文献不存在
+        # 映射 4xx（对齐 add_highlights 的既有处理），不再 500 刷服务端日志。
+        raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
     return {
         "zotero_key": meta.zotero_key,
         "filename": meta.filename,
@@ -4439,6 +5939,14 @@ def highlights_for(task_id: str, zotero_key: str, screener: str | None = None,
 @app.post("/api/tasks/{task_id}/highlights")
 def add_highlights(task_id: str, body: HighlightsIn, screener: str | None = None,
                    user: dict = Depends(require_user)) -> dict:
+    # MM5-13：读取端（fulltext.get_highlights_with_rects）只保留 len==4 的 rect
+    # （[x0,y0,x1,y1] 两角点），写入端必须在请求层显式 400 拒绝其它长度——修前
+    # 3/5 分量 200 入库、读回 rects=[]，坐标被静默丢弃。文案按读取端真实语义
+    # 表述，不得写成 (x, y, w, h)（评审第 2 轮：会诱导发送被接受但绘制错误的分量）。
+    for event in body.events:
+        for rect in event.rects:
+            if len(rect) != 4:
+                raise _bad("每个高亮坐标必须恰有 4 个浮点分量（x0, y0, x1, y1）。")
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     events = [ev.model_dump() for ev in body.events]
@@ -4581,10 +6089,9 @@ def _coding_owner_db(info: tasks_mod.TaskInfo) -> Path | None:
 def _shared_rob_db(info: tasks_mod.TaskInfo) -> Path:
     owner_db = _coding_owner_db(info)
     if owner_db is None:
-        raise HTTPException(409, {"error_code": "collaboration_owner_unset",
-                                  "message_key": "analysis.rob.collaboration_owner_unset", "params": {},
-                                  "details": "Legacy task needs verified owner migration",
-                                  "message": "Legacy task needs verified owner migration"})
+        # 复审（R6-C2 同口径）：与列表/协作/仲裁端点统一 legacy 409 口径
+        # （此前是未注册词条的英文硬编码文案）。
+        raise _legacy_owner_migration_error()
     return owner_db
 
 
@@ -4658,7 +6165,48 @@ register_review_import_routes(app, require_user, parse_upload=_parse_upload_to_a
     touch=lambda info: tasks_mod.touch_task(info.task_id, DATA_DIR, throttle=0))
 
 
-register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR)
+register_workspace_undo_routes(app, require_user, _task_or_404, _screener_db, _trace_context, DATA_DIR,
+                               screening_allowed=_screening_allowed,
+                               screening_disabled_error=_screening_disabled_error)
+
+# AI 抽取建议（BYOK，B4 §2–§4）：钥匙只存 {DATA_DIR}/.ai_keys/ 保险柜（custom_backend/ai_keys.py），
+# 出站仅 stdlib urllib；未配置钥匙时全部端点优雅降级（B4 §0 修订 R1，无 Key 零影响）。
+from custom_backend.ai_suggest_api import register_ai_suggest_routes
+
+register_ai_suggest_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR)
+
+# W1 Zotero 直连（B5）：只读本机回环 127.0.0.1:23119（Zotero 7 本地 API，无需
+# 钥匙，绝不触碰 Zotero 云）；默认关——无任何后台/定时请求，仅用户在导入页显式
+# 点击时出站；集合条目合成 RIS 虚拟文件经 app.state.review_imports.upload() 走
+# 受保护导入（去重/待审/溯源全管线复用）；失败优雅降级 409 绝不 500。
+from custom_backend.zotero_local_api import register_zotero_local_routes
+
+register_zotero_local_routes(app, require_user, _task_or_404, _task_visible_to)
+
+# R11 ERIC 教育检索（2.1.4）：官方 API api.ies.ed.gov（免 key，题录+摘要，1966+）。
+# 默认关——无后台/定时请求，仅用户在导入页显式点击「预览命中」或「检索并导入」
+# 时出站；出站仅 stdlib urllib（_NoRedirectHandler 先例、短超时、读取上限）；
+# 检索结果合成 RIS 虚拟文件经 app.state.review_imports.upload() 走受保护导入
+# （去重/待审/溯源全管线复用）；失败优雅降级 4xx 绝不 500。
+from custom_backend.eric_search_api import register_eric_search_routes
+
+register_eric_search_routes(app, require_user, _task_or_404, _task_visible_to)
+
+# W2 PDF 自动获取（DOI→Unpaywall（email 参数）→开放 PDF→check_pdf_bytes→save_pdf
+# 落盘+轨迹）：联网默认关（任务级 pdf_fetch_settings.json 缺省 enabled=false，
+# 未启用一律 403 且零出站）；出站仅 stdlib urllib（_NoRedirectHandler 先例、
+# 短超时、读取上限）；Crossref 元数据只读建议，绝不静默改库。
+from custom_backend.pdf_fetch_api import register_pdf_fetch_routes
+
+register_pdf_fetch_routes(app, require_user, _task_or_404, _screener_db, _pdfs_dir, _trace_context)
+
+# W4 预置分类器（B3）：研究设计分类只读端点（GET /api/tasks/{id}/study-designs）。
+# 纯本地正则启发式（coscreen/al/study_design.py，复用 evidence_mapper 规则），
+# 零联网零写库；取数走工作流 runtime 的只读目录（不建成员筛选员库）；
+# 全部导入/读库/分类异常降级为 200+available=false（绝不 500）。
+from custom_backend.study_design_api import register_study_design_routes
+
+register_study_design_routes(app, require_user, _task_or_404, _task_visible_to)
 
 from custom_backend.report_evidence_api import register_report_evidence_routes
 register_report_evidence_routes(app, require_user)
@@ -5121,12 +6669,41 @@ class ExtractionApplyIn(BaseModel):
 
 
 def _dta_count(values: dict, key: str) -> int:
-    """提取值 -> 非负整数（DOR 信息性展示与 DTA 计数入库共用同一口径）。"""
+    """提取值 -> 非负整数（DOR 信息性展示与 DTA 计数入库共用同一口径）。
+
+    F-06：上限对齐 SQLite INTEGER（2**63-1）。整数判定只对 float 施加
+    ``float(raw) != int(raw)`` —— 原实现对 int 也做该校验，2**63-1 被
+    ``float(2**63-1) == 2**63`` 的舍入误判为"非整数"，与本端点主路径
+    （DtaResultIn 直接入库 200）口径相反；而 2**63 恰为 float 可精确表示，
+    反而穿过校验在 INSERT 处 OverflowError 500。
+
+    b15·F4-43（含 F4-47）：本函数与 ``extraction_templates._coerce_number``
+    是同一 apply 请求的两层校验——map 层刻意接受数字字符串与整数值浮点
+    （``float(str(value).strip())``），保存层此前只认 ``int/float`` 实例，
+    于是 schema 合法的 ``tp='3'`` 在 map 层算出 DOR、保存层随即以
+    "TP 必须是非负整数" 拒绝（误导性 400，同一提交两层口径分裂）。此处按
+    map 层同一口径放宽：数字字符串与整数值浮点一律接受，非整数/非有限/
+    越界仍拒绝（R2：守卫放宽到合法域，不新增对合法输入的拒绝）。int 直传
+    保持精确（不复经 float，F-06 的 2**63-1 边界不变）。
+    """
     raw = values.get(key)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or \
-            float(raw) != int(raw) or int(raw) < 0:
+    if isinstance(raw, bool):
         raise ValueError(f"{key.upper()} 必须是非负整数")
-    return int(raw)
+    if isinstance(raw, int):
+        count = raw
+    else:
+        try:
+            number = raw if isinstance(raw, float) else float(str(raw).strip())
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError(f"{key.upper()} 必须是非负整数") from exc
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{key.upper()} 必须是非负整数")
+        count = int(number)
+    if count < 0:
+        raise ValueError(f"{key.upper()} 必须是非负整数")
+    if count > 2**63 - 1:
+        raise ValueError(f"{key.upper()} 超出可存储的整数上限（2^63-1）")
+    return count
 
 
 @app.get("/api/tasks/{task_id}/extraction/templates")
@@ -5343,8 +6920,10 @@ def check_stop_certificate(
     elif at_look:
         message = (
             f"已到达检查点（{look_fraction:.0%}）：从未筛池 {pool_size} 条中随机抽取 "
-            f"{required} 条人工判读；抽验量足且未发现新的相关文献时，以 ≥95% 置信度"
-            f"保证总召回 ≥95%（容许剩余相关 ≤ {k_t} 条）。"
+            f"{required} 条人工判读；抽验量足且未发现新的相关文献时可停筛，"
+            f"总召回 ≥{int(certificate.recall_target*100)}%（容许剩余相关 ≤ {k_t} 条）。"
+            f"该声明的置信度按超几何上界随已发现相关数与实际抽验量变化"
+            f"（k_t={k_t} 偏小时可能远低于 95%），并非固定 95%。"
         )
     else:
         message = (f"未到达检查点（当前已筛 {fraction:.1%}，下一检查点 "
@@ -5401,7 +6980,7 @@ def get_shared_ranking(
 
     info = _task_or_404(task_id)
     ctx = app.state.review_workflow.context(task_id, user)
-    if not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=task_id):
+    if not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=info.task_id):
         raise HTTPException(403, "Shared ranking requires an adjudicator.")
     if ctx.task_kind == "team" and any(v["mode"] != "paused" for v in app.state.review_workflow.settings(ctx)["stages"].values()):
         raise HTTPException(409, "Shared labels cannot be used during independent screening.")
@@ -5449,7 +7028,15 @@ def get_shared_ranking(
         min_labeled=settings["min_labeled"],
         profile=profile,
     )
-    result = ranker.rank(articles, merged)
+    try:
+        result = ranker.rank(articles, merged)
+    except ValueError as exc:
+        # 与 /al/rank 同口径：svm/cjk 单类训练标签 → 400 非 500；
+        # isinstance 精确匹配，符号缺失（svm.py 回退）时原样放行。
+        if SingleClassTrainingError is not None and isinstance(
+                exc, SingleClassTrainingError):
+            raise _bad(str(exc)) from exc
+        raise
     meta = {
         "min_labeled": int(settings["min_labeled"]),
         "strategy": settings["strategy"],
@@ -5483,10 +7070,15 @@ def get_shared_ranking(
 #   coscreen/living_review.py（纯计算模块）；
 # - 第二层：save-search 生成 PubMed 可点击 URL（仅拼字符串，点击后的检索由
 #   用户浏览器完成，后端不联网）；
-# - 第三层（可选插件，默认关闭）：check-now 延迟导入
-#   custom_backend/living_review_plugin.py 调 PubMed E-utilities，失败返回降级
-#   提示（不 500、不中断离线功能）；enable-auto 只把开关写入 task.json 的
-#   "living_review_auto" 字段，绝不启动后台线程。
+# - 第三层（可选插件，默认关闭，W3 复活）：check-now 延迟导入
+#   custom_backend/living_review_plugin.py 调 PubMed E-utilities（唯一联网
+#   出口；显式 UA、短超时、读取上限、拒绝重定向），拉取结果合成虚拟 RIS
+#   文件走 review_imports.upload() 受保护导入待审（不直接入库、不重算合并）；
+#   失败统一 PubMedPluginError → 409 降级提示（不 500、不中断离线功能）；
+#   enable-auto 只把开关写入 task.json 的 "living_review_auto" 字段，绝不
+#   启动后台线程——「自动」由前端页面会话内定时器实现，应用关闭即停。
+#   （另一条遗留上传路由 import-update 不受复活影响：仍只鉴权后固定 409
+#   protected_import_required，见下方 living_review_import_update。）
 # 检索式与更新历史存 {task_dir}/living_review.json（读-改-写 + 原子写，与
 # task.json 同一把路径级互斥锁）。本段为纯追加，不修改上方任何既有行。
 
@@ -5509,12 +7101,72 @@ class LivingReviewAutoIn(BaseModel):
 
 
 class LivingReviewCheckIn(BaseModel):
-    """check-now 的可选结局层：缺省时只走去重/导入/AL，跳过 Meta 对比。"""
+    """check-now 请求体（W3 检索订阅复活）。
 
+    - ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；
+      缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。
+    - 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，
+      受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。
+    """
+
+    query_string: str = Field(default="", max_length=4000)
+    since_date: str = Field(default="", max_length=10)
     comparison: str = Field(default="", max_length=300)
     outcome: str = Field(default="", max_length=300)
     timepoint: str = Field(default="", max_length=100)
     measure: str = Field(default="", max_length=30)
+
+
+def _pubmed_updates_to_ris(articles: list[dict]) -> str:
+    """插件返回的 Article 形状 dict 列表 → RIS 文本（虚拟导入文件）。
+
+    只写 ris_parser 会读回的标签：``ID  - PMID-<pmid>`` 作为全局稳定来源键
+    （无空白、非纯数字序号，不会被解析器降级），使同一 PMID 在去重层按精确
+    键识别为既有文献（不会作为不同文献重复入库）。行身份的三元组是
+    ``(source_id, digest, row_index)``——source_id 由文件名决定（端点用固定
+    名 ``pubmed-update.ris``），因此同一 PMID 集合重复拉取时复用既有源记录；
+    PMID 集合变化会改变 digest，按「同一文件被改动后重导」的正常语义处理。
+    多行文本（标题/摘要）折叠为单行：rispy 续行文法与本生成器的最小交集。
+    """
+
+    def one_line(value: object) -> str:
+        return " ".join(str(value or "").split())
+
+    lines: list[str] = []
+    for article in articles:
+        if not isinstance(article, dict):
+            continue
+        lines.append("TY  - JOUR")
+        title = one_line(article.get("title"))
+        if title:
+            lines.append(f"TI  - {title}")
+        for author in str(article.get("authors") or "").split(";"):
+            author = author.strip()
+            if author:
+                lines.append(f"AU  - {author}")
+        journal = one_line(article.get("journal"))
+        if journal:
+            lines.append(f"JO  - {journal}")
+        try:
+            year = int(article.get("year")) if article.get("year") else None
+        except (TypeError, ValueError):
+            year = None  # 年份形态异常时宁缺毋错，不阻断整批虚拟文件
+        if year:
+            lines.append(f"PY  - {year}")
+        doi = one_line(article.get("doi"))
+        if doi:
+            lines.append(f"DO  - {doi}")
+        abstract = one_line(article.get("abstract"))
+        if abstract:
+            lines.append(f"AB  - {abstract}")
+        url = one_line(article.get("url"))
+        if url:
+            lines.append(f"UR  - {url}")
+        key = one_line(article.get("zotero_key"))
+        if key:
+            lines.append(f"ID  - {key}")
+        lines.append("ER  - ")
+    return "\n".join(lines) + "\n"
 
 
 def _living_review_store(info: tasks_mod.TaskInfo) -> Path:
@@ -5687,8 +7339,10 @@ def living_review_enable_auto(task_id: str, body: LivingReviewAutoIn,
                               user: dict = Depends(require_user)) -> dict:
     """开启/关闭自动监控（显式操作，默认关闭）。
 
-    只把设置写入 task.json 的 "living_review_auto" 字段——不启动任何后台
-    线程/定时任务；增量拉取永远由用户手动点击 check-now 触发。
+    只把设置写入 task.json 的 "living_review_auto" 字段——后端不启动任何
+    后台线程/定时任务。「自动」的实现是前端 living_review.js 在**页面会话
+    内**按间隔触发 check-now（应用关闭即停）；后端永远只在收到显式 HTTP
+    请求时才联网拉取。
     """
     info = _task_or_404(task_id)
     settings = {"enabled": bool(body.enabled),
@@ -5703,19 +7357,200 @@ def living_review_enable_auto(task_id: str, body: LivingReviewAutoIn,
     return {"living_review_auto": settings}
 
 
-@app.post("/api/tasks/{task_id}/living-review/check-now")
-def living_review_check_now(task_id: str, body: LivingReviewCheckIn | None = None,
-                            user: dict = Depends(require_user)) -> dict:
-    """Prevent the legacy fetch-and-write path; retain saved searches and history."""
-    app.state.review_imports.authorize(task_id, user, None)
-    # No fetch, article write, analysis rerun, history mutation or last-run advance.
-    # The original exported database file must enter the protected import service.
-    raise HTTPException(409, {
-        "code": "protected_import_required",
-        "message": "Export the search results and use protected Import review. Select the original source file there; review metadata and candidates before activation. Living Review history is retained.",
+def _pubmed_unavailable(task_id: str, exc: Exception) -> HTTPException:
+    """PubMedPluginError → 结构化 409，并按失败类型给**可执行**的指引。
+
+    r8-r3 评审 high：原先所有失败都劝用户「稍后重试」，但体量类失败（响应
+    超过读取上限、命中数过多、超时于大批量）重试永远不会成功——检索式命中
+    量是常量。这里按异常文案分流：体量类给出缩小检索式/缩短日期窗口/分批
+    导入三种可操作路径，网络类才建议重试。附带命中量上限说明，使「上限与
+    命中量」的关系对用户可见。
+    """
+    text = str(exc)
+    volume = any(marker in text for marker in ("读取上限", "超时", "timed out", "截断"))
+    if volume:
+        message = (
+            f"PubMed 增量拉取未完成（{text}）。本次检索的命中量可能过大。"
+            "可执行的处理：① 在检索式中加上限缩条件（如 AND review[pt]、"
+            "限定 [tiab] 或日期范围）；② 把「上次检索日期」改近一些以缩小增量窗口；"
+            "③ 直接从 PubMed 分批导出文件，经导入页受保护导入。")
+        hint = "reduce_query_or_window"
+    else:
+        message = (
+            f"PubMed 检索暂不可用（{text}）。离线功能不受影响：请稍后重试，"
+            "或从 PubMed 导出文件后经导入页受保护导入。")
+        hint = "retry_or_manual_import"
+    from custom_backend.living_review_plugin import (
+        EFETCH_PAGE_SIZE,
+        MAX_RESPONSE_BYTES,
+        RETMAX,
+    )
+    return HTTPException(409, {
+        "code": "pubmed_unavailable",
+        "message": message,
+        "hint": hint,
+        "limits": {
+            "max_records_per_check": RETMAX,
+            "efetch_page_size": EFETCH_PAGE_SIZE,
+            "max_response_bytes": MAX_RESPONSE_BYTES,
+        },
         "import_url": f"/api/tasks/{task_id}/import",
         "review_url": f"/api/tasks/{task_id}/import-batches",
     })
+
+
+@app.post("/api/tasks/{task_id}/living-review/check-now")
+async def living_review_check_now(task_id: str,
+                                  body: LivingReviewCheckIn | None = None,
+                                  user: dict = Depends(require_user)) -> dict:
+    """真实拉取 PubMed 增量 → 虚拟 RIS 文件 → 受保护导入（W3 复活）。
+
+    治理红线：本端点是 living_review_plugin 的**唯一**生产调用方，且只在
+    收到本请求时才延迟导入并联网（默认关闭；无后台服务）。拉取结果不直接
+    入库——合成虚拟 RIS 文件（``_pubmed_updates_to_ris``，PMID 稳定键）走
+    ``review_imports.upload()`` 与手工上传同一条受保护管线：staged 待审、
+    元数据/候选核验、显式激活、溯源与撤销全继承。虚拟文件名固定
+    （``pubmed-update.ris``），与手工重复上传同名同字节文件同径：同批次
+    再次拉回相同 PMID 集合时不新增源记录（batch 收据仍会新增，与手工重
+    上传一致）；PMID 集合变化时按「改动过的同一文件重导」语义追加新行。
+    不重算合并（激活后由分析页单独运行）；成功后追加 living_review 历史并
+    推进检索式 last_run_date（不覆盖用户录入的 total_hits_last）。
+
+    降级契约：**插件**任何失败（不可达/超时/重定向被拒/坏响应）统一
+    PubMedPluginError → 409 ``pubmed_unavailable`` + 手动导入指引，绝不
+    500、不中断离线功能。注意降级覆盖的是检索阶段；进入受保护导入管线后
+    的失败与其他导入端点同语义（沿用管线既有错误映射）。
+    """
+    info = _task_or_404(task_id)
+    app.state.review_imports.authorize(task_id, user, None)
+    payload = body or LivingReviewCheckIn()
+
+    state = _read_living_review_state(info)
+    pubmed_records = [row for row in state["search_records"]
+                      if isinstance(row, dict)
+                      and row.get("database") == "pubmed"
+                      and str(row.get("query_string") or "").strip()]
+    query = (payload.query_string or "").strip()
+    record = next((row for row in pubmed_records
+                   if str(row.get("query_string")).strip() == query), None)
+    if not query:
+        if not pubmed_records:
+            raise _bad("请先保存 PubMed 检索式（save-search）或在请求中提供 query_string。", 400)
+        record = pubmed_records[0]
+        query = str(record["query_string"]).strip()
+    since = (payload.since_date or "").strip()
+    if not since and record is not None:
+        since = str(record.get("last_run_date") or "").strip()
+    if since and not _LR_DATE_RE.match(since):
+        raise _bad("since_date 必须为 YYYY-MM-DD。", 400)
+    if not since:
+        raise _bad("缺少增量起始日期：请提供 since_date，或先为检索式填写上次检索日期。", 400)
+
+    # 默认关闭红线：插件只在本次显式请求内延迟导入；失败统一可捕获
+    from custom_backend.living_review_plugin import (
+        PubMedPluginError,
+        fetch_pubmed_updates,
+    )
+    try:
+        articles = await run_in_threadpool(fetch_pubmed_updates, query, since)
+    except PubMedPluginError as exc:
+        raise _pubmed_unavailable(task_id, exc) from exc
+
+    # 截断即不完整（r8-r3 评审 medium）：一次检查最多 RETMAX 条，命中数超过
+    # 该上限时拿到的只是前 RETMAX 条。此时若照常入库并把游标推进到今天，
+    # 剩下的文献会被永久跳过（下一次从今天起算）。因此先判截断，直接给可执行
+    # 指引，绝不写入半截增量。
+    from custom_backend.living_review_plugin import RETMAX
+    if len(articles) >= RETMAX:
+        raise _pubmed_unavailable(task_id, PubMedPluginError(
+            f"本次增量命中超过 {RETMAX} 条上限，结果被截断"))
+
+    # 固定文件名（r8 评审 medium）：source 身份 = 完整文件名（import_sources.detect
+    # 的 identity='filename:…'）。按秒时间戳命名会让每次检查都生成新 source_id，
+    # 同一 PMID 反复新增 staged 源记录。固定名 + 固定内容 → 与手工重复上传同一
+    # 文件完全同径（source_id/digest/row_index 三者相同 → 复用既有行，不新增）。
+    # 增量集合变化时 digest 变化，与「手工重导一份改动过的文件」同语义（既有行
+    # 保留、新行追加），此处如实记录而不宣称更强的不变量。
+    name = "pubmed-update.ris"
+    import_result = None
+    if articles:
+        virtual = UploadFile(file=BytesIO(
+            _pubmed_updates_to_ris(articles).encode("utf-8")), filename=name)
+        # 与手工上传同一条受保护管线（authorize/dedup/staged/溯源/历史）
+        import_result = await app.state.review_imports.upload(
+            task_id, user, [virtual], batch=False,
+            source_ids=None, job_id=None, screener=None)
+
+    when = datetime.now().isoformat(timespec="seconds")
+    # 结果口径（r8 评审 medium）：只取管线返回的真实字段，不再用 len(articles)
+    # 冒充「新增」。protected/staged 批次在激活前不推进筛选与合并，故
+    # activated_new=0、pending_records>0；fresh 任务与手工上传同径直接激活。
+    result = import_result or {}
+    activated_new = int(result.get("n_new") or 0)
+    pending_new = int(result.get("pending_records") or 0)
+    staged = bool(result.get("staged"))
+    duplicates = int(result.get("duplicates_against_db") or 0)
+    if not articles:
+        change_report = f"自 {since} 起 PubMed 无新增（检索式命中 0 条）。"
+    elif staged:
+        change_report = (
+            f"PubMed 增量 {len(articles)} 条已进入受保护导入待审"
+            f"（批 {result.get('batch_id')}：待审记录 {pending_new} 条，"
+            f"与库内既有文献匹配 {duplicates} 条）；请到「导入核验」确认候选与"
+            "元数据后激活。激活前不改变筛选队列与合并结果。")
+    else:
+        change_report = (
+            f"PubMed 增量 {len(articles)} 条已直接导入"
+            f"（新入库 {activated_new} 条，与库内既有文献匹配 {duplicates} 条）；"
+            "本任务尚无研究记录，导入沿用首个来源的即时激活口径。"
+            "合并结果需在分析页单独重跑。")
+
+    def _mutate(latest: dict) -> None:
+        latest["history"].append({
+            "when": when, "source": "pubmed", "label": name,
+            "comparison": payload.comparison, "outcome": payload.outcome,
+            "timepoint": payload.timepoint, "measure": payload.measure,
+            "fetched": len(articles),
+            "n_new": activated_new,
+            "pending_new": pending_new,
+            "duplicates_removed": duplicates,
+            "al_available": None, "conclusion_changed": False,
+            "meta_before": None, "meta_after": None,
+            "change_report": change_report,
+        })
+        for row in latest["search_records"]:
+            if (isinstance(row, dict) and row.get("database") == "pubmed"
+                    and str(row.get("query_string") or "").strip() == query):
+                # R3（禁止静默覆盖）：total_hits_last 是用户录入的检索式总命中，
+                # 不因一次增量拉取被改写；本次拉取条数另记 last_fetched_count。
+                #
+                # 游标推进（r8-r3 评审 medium）：只有「本次拉取可信且未截断」才
+                # 推进 last_run_date。可信性由三件事保证：① 服务端按
+                # mindate+maxdate 成对过滤（真网实测取效，且有钉子）；
+                # ② 命中数未达 RETMAX（截断已在上方直接 409，不入库不推进）；
+                # ③ 插件任一批失败即整次抛错（不会半截入库）。
+                # 不用「发表年份 >= 起始年」作判据：真网实测 3531 条
+                # 2026-10 录入的检索里存在 DP=2022 的记录（在线优先/回溯标引
+                # 时 DP 早于 EDAT 属正常），用年份判定会把正常结果误判成失真。
+                row["last_fetched_count"] = len(articles)
+                row["last_checked_at"] = when
+                row["last_run_date"] = when[:10]
+
+    state = _mutate_living_review_state(info, _mutate)
+    history_entry = next((entry for entry in reversed(state["history"])
+                          if entry.get("label") == name), None)
+    return {
+        "checked": True, "source": "pubmed",
+        "query_string": query, "since_date": since,
+        "fetched": len(articles), "virtual_file": name,
+        "activated_new": activated_new, "pending_new": pending_new,
+        "already_present": duplicates, "staged": staged,
+        "import": import_result,
+        "import_url": f"/api/tasks/{task_id}/import",
+        "review_url": f"/api/tasks/{task_id}/import-batches",
+        "history_entry": history_entry,
+        "search_records": state["search_records"],
+    }
 
 
 # ---- Batch W12 endpoints (additive) ----
@@ -5789,9 +7624,20 @@ def _collect_manuscript_data(info: tasks_mod.TaskInfo, user: dict,
     unique_articles = db_mod.list_articles(db, include_duplicates=False)
     stage1 = db_mod.get_progress(db)
     stage2 = get_stage2_progress(db)
+    # r8 #4：duplicates_removed 只计**实际打标移除**的行（is_duplicate_of 非
+    # 空——机器精确证据或人工确认的重复）。list_articles(include_duplicates
+    # =False) 还会过滤 pending/undecided 标题审阅组成员（其 is_duplicate_of
+    # 仍 NULL，待人工确认），len(all)-len(unique) 把这些待确认候选计成
+    # 「已去除重复」，与 living_review/prisma_task_metrics 的 is_duplicate_of
+    # 口径分叉（同库 IncrementalResult duplicates_removed=0/pending=1 而
+    # 稿件公式报 1）。
+    with closing(sqlite3.connect(db)) as _conn:
+        marked_removed = _conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NOT NULL"
+        ).fetchone()[0]
     prisma = {
         "identified": len(all_articles),
-        "duplicates_removed": len(all_articles) - len(unique_articles),
+        "duplicates_removed": marked_removed,
         "records_screened": stage1["screened"],
         "records_excluded": stage1["exclude"],
         "records_included": (stage2["include"] if stage2["screened"] else stage1["include"]),

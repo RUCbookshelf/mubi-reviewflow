@@ -17,7 +17,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -29,7 +32,12 @@ from typing import TYPE_CHECKING, Any
 
 from coscreen import config
 from coscreen.al.ranker import RankingResult
-from coscreen.dedup import DuplicatePair
+from coscreen.dedup import (
+    KEY_MAX_LEN,
+    DuplicatePair,
+    compliant_key_for_overlong,
+    fresh_key_for_overlong,
+)
 from coscreen.measure_registry import MEASURE_CODES
 from coscreen.models import Article
 
@@ -389,19 +397,33 @@ _MIGRATED_SCHEMAS: dict[Path, int] = {}
 def _add_column_if_missing(
     conn: sqlite3.Connection, table: str, column: str, ddl_sql: str
 ) -> None:
-    """跨进程安全的补列原语：BEGIN IMMEDIATE → 事务内复查 → ALTER → commit。
+    """跨进程安全的补列原语：只读探测 → 缺列才 BEGIN IMMEDIATE → 复查 → ALTER。
 
-    缺列检查与 ALTER 必须同处一个写事务：PRAGMA table_info 不加锁，「先查
-    后改」的两个并发连接会同时看到缺列、随后双双 ALTER，后到者抛
-    duplicate column name。BEGIN IMMEDIATE 先取写锁再复查，事务内的检查
+    稳态快路径（列已存在）只做一次 ``pragma_table_info`` 只读查询就直接
+    返回，不取任何写锁：读路径不再为「确认无迁移可做」付出写锁代价
+    （L6d1：长导入期间读端点曾在此等 5 秒 busy 超时后 500）。
+
+    只有真的缺列才进入写事务，事务内**保留**复查再 ALTER：PRAGMA table_info
+    不加锁，「先查后改」的两个并发连接会同时看到缺列、随后双双 ALTER，后到
+    者抛 duplicate column name。BEGIN IMMEDIATE 先取写锁再复查，事务内的检查
     结果不会被其他进程已提交的迁移作废。撞上其他进程（旧版本代码）刚提交
     的同名列时按幂等成功处理。table/column 仅接受调用方的固定字面量，不
     接受外部输入。表不存在时不动（建表归各自的 schema 自愈步骤）。
     """
+    # 稳态快路径：列已存在时只做一次 pragma_table_info 只读查询即返回，
+    # 不取写锁（WAL 下 PRAGMA/SELECT 不会被长写事务阻塞）。L6d1：读路径
+    # 曾因无条件 BEGIN IMMEDIATE 在长导入期间等 5 秒 busy 超时后 500。
+    rows = conn.execute(
+        "SELECT name FROM pragma_table_info(?)", (table,)
+    ).fetchall()
+    if rows and column in {row[0] for row in rows}:
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        if rows and column not in {r[1] for r in rows}:
+        rows = conn.execute(
+            "SELECT name FROM pragma_table_info(?)", (table,)
+        ).fetchall()
+        if rows and column not in {row[0] for row in rows}:
             conn.execute(ddl_sql)
         conn.commit()
     except sqlite3.OperationalError as exc:
@@ -539,10 +561,29 @@ def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
             )
             conn.execute("DROP TABLE review_effects")
             conn.execute("ALTER TABLE review_effects_new RENAME TO review_effects")
+        # MM3-01：建唯一索引前先按层去重。旧库同层多条 selected=1（含无
+        # selected 列被上方回填为 1 的迁移路径自行制造的违例）会让
+        # CREATE UNIQUE INDEX 永久失败，_connect 从此整库不可用且无产品内
+        # 恢复路径。同层仅保留 result_id 最大的一条 selected=1，其余降为 0
+        # （行本身保留，去重只调整 selected 归属，与 save_effect 的
+        # "后来者成为选中项" 口径一致）。
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_review_effects_selected "
-            "ON review_effects(study_id,comparison,outcome,timepoint) WHERE selected=1"
+            "UPDATE review_effects SET selected=0 WHERE selected=1 AND result_id NOT IN ("
+            "SELECT MAX(result_id) FROM review_effects WHERE selected=1 "
+            "GROUP BY study_id,comparison,outcome,timepoint)"
         )
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_review_effects_selected "
+                "ON review_effects(study_id,comparison,outcome,timepoint) WHERE selected=1"
+            )
+        except sqlite3.IntegrityError as exc:
+            # 防御纵深：去重后该分支对数据不可达；若仍失败（如库外改写触发
+            # 其他约束冲突），给出可排查指引而非裸 IntegrityError 反复砸连接。
+            raise ValueError(
+                "review_effects 迁移失败：同层（study_id/comparison/outcome/timepoint）"
+                "存在多条 selected=1 且无法自动去重，请检查该表数据后重试。"
+            ) from exc
         conn.commit()
     except Exception:
         conn.rollback()
@@ -550,10 +591,16 @@ def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
 
 
 def _connect(db_path: StrPath) -> sqlite3.Connection:
+    # 尚不存在的库文件由本次连接创建：库内不可能存在既有数据，自愈建表过程
+    # 免逐事务 fsync（synchronous=NORMAL）；断电最坏回到未建库状态，下次打开
+    # 由下方幂等自愈序列原样重建。既有库仍保持默认 FULL，行为不变。
+    creating = not os.path.exists(db_path)
     conn = sqlite3.connect(db_path)
     with _MIGRATE_LOCK:  # 连接初始化与自愈迁移序列进程内串行（跨进程由写事务串行）
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        if creating:
+            conn.execute("PRAGMA synchronous=NORMAL")
         # 稳态快路径：本进程已完成该库的自愈迁移且 schema cookie 未变
         # （PRAGMA schema_version 只随 DDL 变化，数据写入不影响）时跳过全部
         # DDL——读操作不再抢 SQLite 写锁。任何外部 schema 改动（含测试模拟
@@ -582,10 +629,16 @@ def _connect(db_path: StrPath) -> sqlite3.Connection:
         )
         # 旧库自愈（幂等）：highlights 补 rects_json 列（SPEC §16 页面级标注）。
         # 函数所有者在 coscreen.fulltext（合同位置）；此处延迟导入以打破
-        # db -> fulltext 的循环依赖（fulltext 反向复用本模块的连接工厂）。
+        # 循环依赖（fulltext 反向复用本模块的连接工厂）。db -> review_workflow
+        # 无环（后者仅依赖标准库），同样延迟导入以备将来引入反向依赖。
         from coscreen.fulltext import _ensure_rects_column  # noqa: PLC0415
+        from coscreen.review_workflow import note_freshly_created  # noqa: PLC0415
 
         _ensure_rects_column(conn)
+        if creating:
+            # 登记「本进程新建的库」：workflow 迁移链据此跳过空库升级前备份
+            # 与首建期逐事务 fsync（按文件身份生效，删除替换后自动失效）。
+            note_freshly_created(path)
         if schema_version is not None:
             try:
                 _MIGRATED_SCHEMAS[path] = int(
@@ -600,10 +653,615 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def is_coscreen_database(db_path: StrPath) -> bool:
+    """该文件是否为可识别的文献库（r9 夜扫 b11·F2-78）。
+
+    CLI 的 stats/export/restore/simulate 一旦拿到坏路径（目录、无权限）或
+    任意非 SQLite 文件（如 ``fake.db`` 文本），底层 sqlite3 直接抛英文
+    ``DatabaseError: file is not a database``/``unable to open database
+    file`` 逃出 main → traceback + exit 1。把「可打开 + 至少含 articles
+    表」做成显式预检，调用方据此打印中文错误并返回退出码 2。
+
+    只读检查：不改库、不建库（不会在坏路径上留下空文件）。非 coscreen
+    库（合法 SQLite 但无 articles 表）同样返回 False——向它写决策只会
+    自带建表，让用户以为导入成功了别的库。
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    try:
+        # mode=ro：路径是目录/无权限时直接抛 OperationalError 而不是建库。
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles'"
+            ).fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return False
+    return row is not None
+
+
 def init_db(db_path: StrPath) -> None:
     """建库建表（幂等，可重复调用）。"""
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA)
+    # MM6-03：存量超长键的幂等迁移。CLI import（cli.cmd_import）与 Web
+    # 筛选员库访问（custom_backend._screener_db）都以本函数为入口，接在
+    # 此处即覆盖两条产品路径；无超长键的正常库只做一次 SELECT、零写入。
+    # MM9-26：迁移失败降级——迁移自检（差量外键违例、触发器注入等）失败时
+    # 不再向上冒泡：_screener_db 每个请求都调 init_db，裸抛会让全部筛选端点
+    # 500 重放且无旁路（库本身完好，仅超长键未迁移）。降级 = 记 WARNING 日志
+    # + 跳过（库按 2.1.3 未迁移口径继续可用，下次 init_db 仍会重试迁移）；
+    # 上方的建表 executescript 失败不在此列，照常抛出（schema 缺失不可降级）。
+    try:
+        migrate_overlong_keys(db_path)
+    except (ValueError, sqlite3.Error) as exc:
+        logging.getLogger(__name__).warning(
+            "init_db(%s): 超长键迁移失败，已降级跳过（库按未迁移状态继续使用，"
+            "后续 init_db 将自动重试）：%r", db_path, exc)
+
+
+# ---------------------------------------------------------------------------
+# 存量超长键迁移（MM6-03）
+# ---------------------------------------------------------------------------
+
+def _article_key_reference_columns(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    """发现库内所有语义上引用 ``articles.zotero_key`` 的 (表, 列, 追加条件)。
+
+    数据驱动（以实际库内表结构为准，不维护易漂移的静态清单）：任意表中
+    名为 zotero_key / source_key / keeper_key / canonical_key / staged_key /
+    incoming_key 的列都是文献键引用（本仓全部表满足该约定，含
+    analysis_storage / rob_storage / binary_arm_data / network_study_data /
+    review_imports 等模块的自建表；canonical_key 仅存在于
+    workflow_source_records / workflow_import_metadata，语义均为文章键；
+    staged_key / incoming_key 仅存在于 workflow_source_records，是同一键的
+    staged/incoming 别名——MM9-23：漏掉它们则迁移后
+    batch_summary 的 ``canonical_key in (staged_key, incoming_key)`` 归属
+    判定恒假，导入报告/导入历史的 activated_new_total 静默清零）。ref_id
+    仅在 ``ref_type='active'`` 时是文章键
+    （workflow_import_candidate_members 的 'record' 等其他 ref_type 存
+    record id，绝不能误改），以追加 WHERE 条件限定。articles 自身的主键
+    列除外（重命名单独处理），其 is_duplicate_of 指向保留条目键，同样
+    要同步。
+    """
+    columns: list[tuple[str, str, str]] = []
+    tables = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()]
+    for table in tables:
+        names = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        if table == "articles":
+            if "is_duplicate_of" in names:
+                columns.append(("articles", "is_duplicate_of", ""))
+            continue
+        for column in ("zotero_key", "source_key", "keeper_key", "canonical_key",
+                       "staged_key", "incoming_key"):
+            if column in names:
+                columns.append((table, column, ""))
+        if {"ref_id", "ref_type"} <= names:
+            columns.append((table, "ref_id", "ref_type='active'"))
+    return sorted(set(columns))
+
+
+# JSON 文本列内的键引用（r1 评审·阻断项）：title_duplicate_reviews.
+# members_json 冗余存成员键（与 title_duplicate_members 平行），撤销快照
+# before/after_json 由 _title_review_snapshot 生成、内嵌成员键——迁移若只
+# 改列名白名单，这些 JSON 滞留旧键：decide 对旧键查 articles 得 None →
+# _title_review_snapshot 的 list(None) TypeError（整组 500 不可决策），
+# undo 快照比较被判「已有后续变更」。
+#
+# MM9-21：workflow_screen_rounds.snapshot_json 是 {文章键: 指纹}——文章键
+# 位于 JSON **对象键名**（带引号精确 token 可命中，指纹值不含键）。滞留
+# 旧键时轮次 keys/pending_keys 全是库内已不存在的旧键：completed 永不
+# 收敛、初筛队列被 round_keys 过滤为空、开启新轮次被 409 阻断。
+#
+# MM9-20：workflow_import_undo.before/after_json 是 import-review 的撤销
+# 快照，滞留旧键时 available() 的「现算快照 == 库存 after_json」全等比较
+# 永久失配（升级前最后一条撤销条目报废、POST /undo 409），restore() 还
+# 会把 before_json 里的旧 canonical_key 回写。该两列走**结构感知**同步
+# （见 _IMPORT_UNDO_SNAPSHOT_COLUMNS），不能用上面的盲替换：快照内嵌
+# 真实表整行，库内同步过的键列/JSON 载荷列必须与库内逐字节一致，否则
+# 全等比较同样失配。
+#
+# MM9-24（mm9_verify_g4 §5 confirmed）：真实表里还有一批「JSON 文本
+# 载荷内嵌文章键」的列。改写面**不硬编码字段名**，而是按本次迁移实际改
+# 写的列（references，即本次白名单发现结果）逐列定位：真实表哪个键列被
+# 改了，载荷里同名列就跟着改。这样
+# - 不会按「值字面等于旧键」误改 title/abstract 等非键字段（r2 评审阻塞
+#   项：否则迁移后 decide_metadata 的 canonical 元数据比对失配 → 原本可
+#   采纳的提议被新增拒绝为 409，违反 R2）；
+# - articles.is_duplicate_of 这类「也在白名单里」的列，一旦出现在整行
+#   载荷（before_json = dumps(articles 整行)）里会自动对齐（r3 评审第 2
+#   条：此前只硬编码 zotero_key，造成「白名单改 N 列、载荷只改 1 列」的
+#   静态不对称）。
+#
+# 入清单（真实引用，必须跟随迁移）：
+# - workflow_source_records.article_json：``data['zotero_key'] = staged_key``
+#   （review_imports.py:238），activate() 会拿它查出/新建文章
+#   （review_imports.py:346-351）；滞留旧键会让激活路径把 313 键**重新
+#   写回** articles。
+# - workflow_import_metadata.before_json：``dumps(current)``（articles 整行，
+#   review_imports.py:140）。
+# - workflow_import_metadata.incoming_json：``dumps(article_json)``，同上。
+#
+# 明确**不入清单**（保持原值，理由是溯源契约而非遗漏）：
+# - workflow_source_records.original_json：解析器原始载荷。模块契约
+#   review_imports.py:4「Original payloads are immutable」；导入审查 CSV
+#   亦承诺「preserving exact originals in the JSON column」
+#   （custom_backend/review_imports_api.py:555-556）。
+# - articles.raw_json（及其在所有载荷里的嵌套副本）：历史原始键的保留
+#   本身就是 provenance——复审判定原文即「raw_json 里历史原始键保留
+#   （可论证为 provenance，本应保留）」（mm9_verify_g4.md:205）。解析器
+#   还明写把被降级的来源键保留在 raw['_demoted_source_key'] 供追溯
+#   （csv_parser.py:505-508、ris_parser.py:314-317）。附带效果：articles
+#   表因载荷同步产生的额外 UPDATE 归零，不再触发 workflow_catalog_update
+#   （review_workflow.py:42-43）多一次 catalog_revision 递增。
+# - workflow_import_metadata.accepted_json：只存 METADATA_FIELDS（无键，
+#   review_imports.py:21、447-448）。
+# - coding_freezes.records_json：由 300 上限的共识写入生成，物理上不可能
+#   含超长键（coding_consensus.py:201）。
+# - trace_events.subject_id：列不在白名单，且无产品写入路径能为超长键
+#   产生 trace 事件（mm9_verify_g4.md:200）。
+_JSON_KEY_PAYLOAD_COLUMNS: frozenset[tuple[str, str]] = frozenset({
+    ("workflow_source_records", "article_json"),
+    ("workflow_import_metadata", "before_json"),
+    ("workflow_import_metadata", "incoming_json"),
+})
+
+_JSON_KEY_REFERENCE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("title_duplicate_reviews", "members_json"),
+    ("title_duplicate_undo", "before_json"),
+    ("title_duplicate_undo", "after_json"),
+    ("workflow_import_undo", "before_json"),
+    ("workflow_import_undo", "after_json"),
+    ("workflow_screen_rounds", "snapshot_json"),
+    *_JSON_KEY_PAYLOAD_COLUMNS,
+)
+
+#: MM9-20：workflow_import_undo 快照列集合——按本次迁移对真实表实际改写
+#: 的键列集（migrate_overlong_keys 的 references）做结构感知同步，而非全
+#: 文 token 盲替换（理由见 _JSON_KEY_REFERENCE_COLUMNS 注释）。
+_IMPORT_UNDO_SNAPSHOT_COLUMNS: frozenset[tuple[str, str]] = frozenset({
+    ("workflow_import_undo", "before_json"),
+    ("workflow_import_undo", "after_json"),
+})
+
+
+def _sync_import_undo_snapshot_text(
+    text: str,
+    renames: list[tuple[str, str]],
+    references: list[tuple[str, str, str]],
+    signatures: dict[str, str] | None = None,
+) -> str:
+    """MM9-20：按库内列同步的键位改写 workflow_import_undo 快照文本。
+
+    快照（coscreen.import_review_undo.snapshot）内嵌 workflow_import_
+    candidates / workflow_source_records / workflow_import_metadata /
+    workflow_metadata_acceptances 的整行字典，以及 ``{zotero_key,
+    **metadata}`` 的文章投影。available() 以「现算快照 == 库存 after_json」
+    **全等**判定可撤销性，因此快照文本必须与库内迁移逐位一致：本次迁移
+    对真实表改写了哪些键列（references，列名白名单将来扩展会自动跟进），
+    快照就只改哪些键位；真实表的 JSON 载荷列（_JSON_KEY_PAYLOAD_COLUMNS，
+    MM9-24）内嵌在快照里的是同源字符串副本，必须走与真实列**同一函数**
+    （_rewrite_payload_key_fields，同一 columns 集合）改写——同输入同输出，
+    否则全等比较同样失配。同理，candidates 段内嵌的 ``signature`` 在真实
+    行已被 _refresh_candidate_signatures 重算，此处按同一公式重算快照里
+    的成员集（r3 评审阻塞项：不跟进则升级后最后一条 candidate/bulk 撤销
+    永久失效）。库内未触及的位置原样保留。restore() 依据改写后的
+    before_json 回写，落库的同样是迁移后新键。重排使用与写入侧
+    （coscreen.review_imports.dumps）完全相同的序列化参数；解析失败的
+    历史脏载荷原样返回——迁移不得因此失败。
+    """
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(payload, dict):
+        return text
+    mapping = dict(renames)
+    signatures = signatures or {}
+    renamed: dict[str, set[str]] = {}
+    key_columns: set[str] = set()
+    for table, column, _condition in references:
+        renamed.setdefault(table, set()).add(column)
+        key_columns.add(column)
+    # articles 的主键列不在 references 内（references 只列外键/引用列），
+    # 但整行载荷里同样以 zotero_key 呈现——并入键位集合。
+    key_columns.add("zotero_key")
+    payloads: dict[str, set[str]] = {}
+    for table, column in _JSON_KEY_PAYLOAD_COLUMNS:
+        payloads.setdefault(table, set()).add(column)
+    changed = False
+    sections = (
+        ("candidates", "workflow_import_candidates"),
+        ("records", "workflow_source_records"),
+        ("proposals", "workflow_import_metadata"),
+        ("acceptances", "workflow_metadata_acceptances"),
+    )
+    for section, table in sections:
+        items = payload.get(section)
+        if not isinstance(items, list):
+            continue
+        columns = renamed.get(table, ())
+        embedded = payloads.get(table, ())
+        # r3 评审阻塞项：candidate 快照内嵌整行（含 signature），而真实行的
+        # signature 已被 _refresh_candidate_signatures 重算。快照里没有成员
+        # 列表，无法就地重算，故按候选 id 取库内**重算后**的真实值注入，
+        # 保证两边逐位一致，否则 available() 的全等比较失配（升级后最后
+        # 一条 candidate/bulk 撤销永久失效）。
+        sig_candidate = section == "candidates"
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if sig_candidate:
+                fresh = signatures.get(item.get("id"))
+                if fresh is not None and item.get("signature") != fresh:
+                    item["signature"] = fresh
+                    changed = True
+            for column in sorted(columns):
+                value = item.get(column)
+                if isinstance(value, str) and value in mapping:
+                    item[column] = mapping[value]
+                    changed = True
+            for column in sorted(embedded):
+                value = item.get(column)
+                if not isinstance(value, str):
+                    continue
+                new_value = _rewrite_payload_key_fields(value, renames, key_columns)
+                if new_value != value:
+                    item[column] = new_value
+                    changed = True
+    items = payload.get("articles")
+    if isinstance(items, list):
+        # 文章投影的键列即被重命名的 articles 主键本身（不在 references
+        # 内——references 只列外键/引用列），单独按映射处理。
+        for item in items:
+            if (isinstance(item, dict) and isinstance(item.get("zotero_key"), str)
+                    and item["zotero_key"] in mapping):
+                item["zotero_key"] = mapping[item["zotero_key"]]
+                changed = True
+    if not changed:
+        return text
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
+def _rewrite_payload_key_fields(
+    text: str, renames: list[tuple[str, str]], columns: set[str],
+) -> str:
+    """MM9-24：结构感知改写 JSON 载荷里**列名命中 references 的键位**。
+
+    ``columns`` 是本次迁移对真实表实际改写的列名集合（由 references 派生，
+    含 zotero_key / is_duplicate_of 等）；只有**同名列**的值命中旧键时才
+    改写，其余字段（title/abstract/raw_json 等）逐字节保留：
+    - 按值字面相等做全文替换会把 title/abstract 一并改写，使迁移后
+      ``decide_metadata`` 的 canonical 元数据比对失配、原本可采纳的提议
+      被新增拒绝（r2 评审阻塞项，违反 R2）；
+    - 按列名而非硬编码单个字段，则白名单将来新增任何键列（如
+      articles.is_duplicate_of，它在整行 before_json 里）都会自动对齐，
+      不会留下「白名单改 N 列、载荷只改 1 列」的不对称（r3 评审第 2 条）。
+
+    未命中时返回原文本（逐字节不变，避免无谓重排）；命中时按写入侧
+    （coscreen.review_imports.dumps）完全相同的序列化参数重排，保证真实
+    列与撤销快照内嵌副本同输入同输出（MM9-20 全等比较的前提）。解析
+    失败的历史脏载荷原样返回——迁移不得因此失败。
+    """
+    if not text:
+        return text
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(payload, dict):
+        return text
+    mapping = dict(renames)
+    changed = False
+    for column in columns:
+        value = payload.get(column)
+        if isinstance(value, str) and value in mapping:
+            payload[column] = mapping[value]
+            changed = True
+    if not changed:
+        return text  # 未命中：逐字节原样
+    try:
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                          allow_nan=False)
+    except ValueError:
+        # 历史载荷含 NaN/Infinity：重排会失败。原样返回而不是让整个迁移
+        # 失败（迁移失败会被 init_db 降级为每次请求的 WARNING 重放）。
+        return text
+
+
+def _rewrite_key_tokens(text: str, renames: list[tuple[str, str]]) -> str:
+    """把 JSON 文本中的键字面量按 renames 做带引号精确 token 替换。
+
+    仅用于 _JSON_KEY_REFERENCE_COLUMNS 中的**成员键快照**列
+    （title_duplicate_*、workflow_screen_rounds.snapshot_json）——这些
+    列里旧键只可能以键/值的身份出现，且没有可结构化的载体。真实表的
+    JSON 载荷列走 :func:`_rewrite_payload_key_fields`，绝不走本函数
+    （理由见该函数 docstring）。
+
+    json.dumps 两种 ensure_ascii 编码各生成一份 token（members_json 写入
+    用 ensure_ascii=False、撤销快照用默认 True）；不解析、不重排、不改
+    其余字节，未命中即原样；幂等（第二次运行旧 token 不再出现）。撤销
+    快照把 members_json 整段**再编码一层**（JSON 字符串内的 JSON，键周围
+    的引号被转义成 \\"），故对每个 token 同时生成转义形态变体
+    （json.dumps(token)[1:-1]）一并替换。
+    """
+    for old, new in renames:
+        for ensure_ascii in (True, False):
+            token_old = json.dumps(old, ensure_ascii=ensure_ascii)
+            token_new = json.dumps(new, ensure_ascii=ensure_ascii)
+            if token_old == token_new:
+                continue
+            variants = [(token_old, token_new)]
+            # 嵌套编码层（快照内的 members_json 段）：引号被转义
+            variants.append((json.dumps(token_old)[1:-1],
+                             json.dumps(token_new)[1:-1]))
+            for v_old, v_new in variants:
+                text = text.replace(v_old, v_new)
+    return text
+
+
+def _sync_json_key_references(
+    conn: sqlite3.Connection, renames: list[tuple[str, str]],
+    references: list[tuple[str, str, str]] | None = None,
+) -> int:
+    """把 JSON 文本列中的键引用同步为迁移后新键，返回更新的行数。
+
+    按列的性质分三条路径：
+    - ``_JSON_KEY_PAYLOAD_COLUMNS``（MM9-24 真实表载荷）走结构感知的
+      :func:`_rewrite_payload_key_fields`——只改**列名命中本次 references**
+      的键位，不碰 title/abstract 等非键字段，也不碰原始溯源载荷（理由见
+      该函数与清单处注释）。
+    - 其余列（成员键快照）走 :func:`_rewrite_key_tokens`。
+    - ``_IMPORT_UNDO_SNAPSHOT_COLUMNS`` 例外：走 :func:`_sync_import_undo_
+      snapshot_text`——该快照内嵌真实表整行，必须与库内迁移保持逐位一致
+      （键列随 references、内嵌载荷随同一 _rewrite_payload_key_fields 与
+      同一 columns 集合、candidate 的 signature 按同一映射注入），否则
+      破坏 available() 的全等比较（MM9-20）。
+    """
+    updated = 0
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    # 候选签名映射（按**迁移后**的成员集计算；列同步已在上游完成）：
+    # 快照侧按它注入，真实行侧由 _refresh_candidate_signatures 写回。
+    signatures = _candidate_signatures_map(conn)
+    for table, column in _JSON_KEY_REFERENCE_COLUMNS:
+        if table not in existing:
+            continue
+        structured = (table, column) in _IMPORT_UNDO_SNAPSHOT_COLUMNS
+        payload = (table, column) in _JSON_KEY_PAYLOAD_COLUMNS
+        rows = conn.execute(f'SELECT rowid, "{column}" FROM "{table}"').fetchall()
+        for rowid, text in rows:
+            if not isinstance(text, str):
+                continue
+            if structured:
+                new_text = _sync_import_undo_snapshot_text(
+                    text, renames, references or [], signatures)
+            elif payload:
+                new_text = _rewrite_payload_key_fields(
+                    text, renames, _payload_key_columns(references or []))
+            else:
+                new_text = _rewrite_key_tokens(text, renames)
+            if new_text != text:
+                conn.execute(
+                    f'UPDATE "{table}" SET "{column}"=? WHERE rowid=?',
+                    (new_text, rowid))
+                updated += 1
+    return updated
+
+
+def _candidate_signature(refs: list[tuple[str, str]] | set[tuple[str, str]]) -> str:
+    """workflow_import_candidates.signature 的规范公式（与写入侧一致）。
+
+    coscreen/review_imports.add_candidate 以 ``sha256(dumps(sorted(refs)))``
+    生成签名（review_imports.py:144-145，dumps 为 ensure_ascii=False、
+    sort_keys=True、allow_nan=False 的 JSON）。跨模块不能直接复用该函数
+    （review_imports 依赖本模块，反向导入会成环），故在此按同一公式实现，
+    并共用同一排序/序列化参数。
+    """
+    return hashlib.sha256(
+        json.dumps(sorted(refs), ensure_ascii=False, sort_keys=True,
+                   allow_nan=False).encode()).hexdigest()
+
+
+def _payload_key_columns(references: list[tuple[str, str, str]]) -> set[str]:
+    """载荷改写用的列名集合：本次迁移实际改写的列 + articles 主键列名。"""
+    return {column for _table, column, _condition in references} | {"zotero_key"}
+
+
+def _candidate_signatures_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """候选 id → 按**当前（迁移后）**成员集重算的签名；无候选表时为空。"""
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if not {"workflow_import_candidates",
+            "workflow_import_candidate_members"} <= tables:
+        return {}
+    result: dict[str, str] = {}
+    for candidate_id, in conn.execute(
+            'SELECT id FROM workflow_import_candidates'):
+        refs = [(row[0], row[1]) for row in conn.execute(
+            'SELECT ref_type, ref_id FROM workflow_import_candidate_members '
+            'WHERE candidate_id=?', (candidate_id,))]
+        result[candidate_id] = _candidate_signature(refs)
+    return result
+
+
+def _refresh_candidate_signatures(conn: sqlite3.Connection) -> int:
+    """MM9-24 同源：ref_id 迁移后重算 workflow_import_candidates.signature。
+
+    签名覆盖成员集（含被迁移的 ref_id）；不同步则 ``add_candidate`` 的
+    「同成员集 → 复用既有候选」不变式失效：重导时同一组冲突再插一行
+    重复候选（r2 评审第 3 条）。按当前成员集重算，与旧值相同则不写
+    （幂等）。候选集全等意味着迁移没有改变成员语义，因此重算不引入新的
+    判定口径。
+    """
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if not {"workflow_import_candidates",
+            "workflow_import_candidate_members"} <= tables:
+        return 0  # 纯 db schema 库（未跑过 review_imports.migrate）：无候选表
+    rows = conn.execute(
+        'SELECT id, signature FROM workflow_import_candidates').fetchall()
+    fresh_map = _candidate_signatures_map(conn)
+    updated = 0
+    for candidate_id, signature in rows:
+        fresh = fresh_map[candidate_id]
+        if fresh != signature:
+            conn.execute(
+                'UPDATE workflow_import_candidates SET signature=? WHERE id=?',
+                (fresh, candidate_id))
+            updated += 1
+    return updated
+
+
+def migrate_overlong_keys(db_path: StrPath) -> int:
+    """一次性幂等迁移（MM6-03）：把库内超长（>KEY_MAX_LEN）来源键重命名
+    为现行公式的合规键，并在同一事务内同步全部引用。
+
+    - 背景：G-02 截断之前生成的消歧键可达 301-313（serial 形态更长）
+      字符，SQLite 照常入库、文章列表可见，但 Web 决策/全文/编码端点的
+      ``DecisionIn``/``_KEY_RE`` 契约（≤300）对其 422/400——文献成为
+      不可推进的死锁行。按复审建议的「重命名不丢数据」修法落地。
+    - 目标键 = :func:`coscreen.dedup.compliant_key_for_overlong`（截断+
+      哈希后缀形态）：与重导管线的截断候选键一致，迁移后的行重导继续走
+      更新路径（与 MM6-04 的沿用链衔接）；目标键被既有行占用时按 serial
+      确定性重试，绝不覆盖既有行。
+    - 同步范围（r1 评审返修后如实声明）：
+      (a) 列名白名单：任意表的 zotero_key / source_key / keeper_key /
+          canonical_key / staged_key / incoming_key 列 +
+          articles.is_duplicate_of（数据驱动发现，覆盖全部 REFERENCES
+          articles 外键列及 review_imports 的 canonical_key；staged_key/
+          incoming_key 仅 workflow_source_records 持有——MM9-23：漏掉则
+          batch_summary 的 ``canonical_key in (staged_key, incoming_key)``
+          归属判定迁移后恒假，导入报告/历史的 activated_new_total 静默
+          清零）；
+      (b) 条件列：workflow_import_candidate_members.ref_id 仅
+          ref_type='active' 行（文章键），'record' 等其他 ref_type 存
+          record id，绝不能误改；
+      (c) JSON 文本列：title_duplicate_reviews.members_json 与
+          title_duplicate_undo 的 before/after_json 快照（带引号精确
+          token 替换，不解析不重排）；workflow_screen_rounds.snapshot_json
+          （{文章键: 指纹}，键在对象键名位——MM9-21，滞留旧键则轮次
+          keys/pending_keys 全为库内不存在的旧键，completed 永不收敛且
+          阻塞新轮次）；workflow_import_undo 的 before/after_json
+          （MM9-20，结构感知：快照内嵌真实表整行，键位随库内列同步、
+          内嵌载荷走同一 _rewrite_payload_key_fields，保证 available()
+          的全等比较通过、restore() 回写落在迁移后新键上）；真实表 JSON
+          载荷列 _JSON_KEY_PAYLOAD_COLUMNS（MM9-24：article_json/
+          before_json/incoming_json）——**只改顶层 zotero_key 键位**，
+          不按值字面相等做全文替换（否则 title/abstract 恰等于旧键时被
+          改写，迁移后 decide_metadata 的 canonical 比对失配、原本可采纳
+          的提议被新增拒绝为 409，违反 R2；r2 评审阻塞项）。原始溯源载荷
+          明确排除、保持原值：workflow_source_records.original_json、
+          articles.raw_json 及其嵌套副本、raw['_demoted_source_key']
+          （review_imports.py:4「Original payloads are immutable」、
+          review_imports_api.py:555-556、csv_parser.py:505-508、
+          mm9_verify_g4.md:205）。漏掉 (c) 会让标题候选组 decide/undo 对
+          滞留旧键查无行而 500（r1 评审阻断项）、升级前最后一条
+          import-review 撤销条目永久失效（POST /undo 409）、复筛轮次永不
+          收敛、导入计数半迁移（MM9-23）；
+      (d) 派生值重算：workflow_import_candidates.signature 是成员集
+          （含被迁移的 ref_id）的哈希（review_imports.py:144-145），
+          不重算则 add_candidate 去重不变式失效、重导产生重复候选
+          （_refresh_candidate_signatures）。
+    - 外键自检按**差量**判定（r1 评审中低项）：迁移前先快照全库
+      ``PRAGMA foreign_key_check`` 结果，迁移后仅**新增**违例才回滚报错；
+      与本次重命名无关的既存悬挂外键保持原样（不修不删不阻断）——
+      否则一条历史脏数据会让挂在 init_db 尾部的迁移在每个 Web 请求上
+      重复 raise，整库接口永久 500 且无旁路。
+    - 幂等/零损：仅键长 >KEY_MAX_LEN 的行被重命名；行数与决策/高亮/编码
+      等附属数据全部原样保留，只替换键值；无超长键的库**只读不写**
+      （先 SELECT、命中为空即返回，主库文件逐字节零变化）。
+    - 可见副作用：`articles` 的主键行本身就是超长键行，重命名必然触发
+      ``workflow_catalog_update``（review_workflow.py:42-43）→
+      ``catalog_revision`` 递增一次，客户端会据此做一次全量目录重同步。
+      JSON 载荷同步**只 UPDATE 非 articles 表**（original_json/raw_json
+      已排除，见 (c)），因此不再额外递增（r2 评审第 4 条：此前
+      articles.raw_json 的改写会多触发一次）。字段名/数值不变的行不写。
+    :return: 本次重命名的键数（0 = 无需迁移）。
+    """
+    with closing(_connect(db_path)) as conn:
+        overlong = [row[0] for row in conn.execute(
+            "SELECT zotero_key FROM articles "
+            "WHERE length(zotero_key) > ? ORDER BY zotero_key", (KEY_MAX_LEN,)
+        ).fetchall()]
+        if not overlong:
+            return 0  # 正常库：零写入（主库文件逐字节不变）
+        references = _article_key_reference_columns(conn)
+        occupied = {row[0] for row in conn.execute(
+            "SELECT zotero_key FROM articles").fetchall()}
+        renames: list[tuple[str, str]] = []
+        # r9 夜扫 b12·F3-37：合规目标必须先按**单键**计算，再检查是否与
+        # 既有行/其他迁移目标撞键。反例：两条仅第 288 位之后不同、尾 12hex
+        # 相同的超长来源键按历史形态截断会折叠到同一 300 目标，后到者只能
+        # 拿 serial ``-2`` 目标——该目标取决于库里是否有兄弟键，违反
+        # compliant_key_for_overlong 的「确定性、可重算」。
+        # 修法：撞键（且不是与自身旧键比较）时改用 fresh_key_for_overlong
+        # ——全键 sha256 后缀，单键可重算、互不折叠；目标仍与既有行撞键时
+        # 才按 serial 重试。
+        chosen: dict[str, str] = {}
+        taken = set(occupied)
+        for old in overlong:
+            target = compliant_key_for_overlong(old)
+            if target in taken:
+                # 折叠/占用：改用只依赖本键的 fresh 目标
+                fresh = fresh_key_for_overlong(old)
+                if fresh not in taken:
+                    target = fresh
+            serial = 2
+            first_choice = target
+            while target in taken:  # 确定性 serial 重试
+                if first_choice == compliant_key_for_overlong(old):
+                    target = fresh_key_for_overlong(old, serial)
+                else:
+                    target = compliant_key_for_overlong(old, serial)
+                serial += 1
+            taken.add(target)
+            chosen[old] = target
+        for old in overlong:
+            target = chosen[old]
+            occupied.discard(old)
+            occupied.add(target)
+            renames.append((old, target))
+        # 既存悬挂外键快照（差量自检基线，见 docstring）：不阻断、不修复
+        pre_violations = {tuple(row) for row in conn.execute(
+            "PRAGMA foreign_key_check").fetchall()}
+        conn.execute("PRAGMA foreign_keys=OFF")  # 键重命名无 ON UPDATE CASCADE
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for old, new in renames:
+                conn.execute(
+                    "UPDATE articles SET zotero_key=? WHERE zotero_key=?",
+                    (new, old))
+            for table, column, condition in references:
+                for old, new in renames:
+                    conn.execute(
+                        f'UPDATE "{table}" SET "{column}"=? '
+                        f'WHERE "{column}"=?' + (f" AND {condition}" if condition else ""),
+                        (new, old))
+            # 顺序说明：ref_id 等键列已在上面的 references 循环里同步完毕，
+            # 因此 _candidate_signatures_map 看到的是迁移后成员集——
+            # 真实行与撤销快照两侧都取同一份结果，available() 的全等比较
+            # 才成立（r3 评审阻塞项）。
+            _refresh_candidate_signatures(conn)
+            _sync_json_key_references(conn, renames, references)
+            new_violations = {tuple(row) for row in conn.execute(
+                "PRAGMA foreign_key_check").fetchall()} - pre_violations
+            if new_violations:
+                raise ValueError(
+                    "超长键迁移引入新的外键违例（已回滚，库未被修改）："
+                    f"{sorted(new_violations)[:3]!r} —— 请检查引用表数据后重试。"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+        return len(renames)
 
 
 # ---------------------------------------------------------------------------
@@ -650,9 +1308,23 @@ def upsert_articles(
     ``preserve_existing`` leaves every existing article column untouched.
     """
     if conn is None:
-        with closing(_connect(db_path)) as owned, owned:
-            return upsert_articles(db_path, articles, duplicate_pairs, title_review_groups,
-                                   conn=owned, preserve_existing=preserve_existing)
+        with closing(_connect(db_path)) as owned:
+            # r9 夜扫 b12·F3-31：``SELECT MAX(import_order)`` 原先在 autocommit
+            # 下先读、首个 INSERT 才隐式开事务——并发导入可读到同一旧值，
+            # 产生重复排序键（import_order 无 UNIQUE）。读取与写入必须同处
+            # 一个 BEGIN IMMEDIATE 写事务：先取库级写锁再读 MAX，第二个写者
+            # 排队到第一个提交后才读，天然串行化。这里不引入进程内全局锁，
+            # 单进程正常路径只是多一次事务边界（R2 行为不变）。
+            owned.execute("BEGIN IMMEDIATE")
+            try:
+                summary = upsert_articles(
+                    db_path, articles, duplicate_pairs, title_review_groups,
+                    conn=owned, preserve_existing=preserve_existing)
+                owned.commit()
+            except BaseException:
+                owned.rollback()
+                raise
+            return summary
     # dup_key -> kept_key；并解析链式指向（A->B->C 解析为 A->C），兜底外部传入的配对。
     # 自指配对（dup_key == kept_key，即同 zotero_key 的重复行）不产生标记：
     # 两行在主键 upsert 时自然合并为一条，幸存行是"保留条目"而非重复条目。
@@ -740,6 +1412,20 @@ def upsert_articles(
                 conn.execute(
                     "DELETE FROM title_duplicate_reviews WHERE review_id=?", (prior[0],)
                 )
+                # r9 夜扫 b04·F3-33：被合并删除的 prior 组的撤销条目必须同时
+                # 消费（undo=1）。否则该条目永远占据 actor 的「最新未消费」
+                # 位置且永不置 undone，撤销永久抛「相关记录已有后续变更」，
+                # 更早的撤销条目也全部不可达（死条目阻塞）。
+                conn.execute(
+                    "UPDATE title_duplicate_undo SET undone=1 WHERE review_id=? AND undone=0",
+                    (prior[0],),
+                )
+            # 兜底：历史遗留的、指向已不存在 review 的死条目一次性消费，避免
+            # 升级前产生的死条目继续阻塞（本函数是唯一写入 undo 表的入口之一）。
+            conn.execute(
+                "UPDATE title_duplicate_undo SET undone=1 WHERE undone=0 AND review_id NOT IN "
+                "(SELECT review_id FROM title_duplicate_reviews)"
+            )
         else:
             review_id = uuid.uuid4().hex
             conn.execute(
@@ -767,8 +1453,14 @@ def upsert_articles(
 
 
 def list_articles(db_path: StrPath, include_duplicates: bool = False) -> list[Article]:
-    """按 import_order 列出文献；默认过滤掉重复条目。"""
-    sql = f"SELECT {', '.join(_ARTICLE_COLUMNS)} FROM articles"
+    """按 import_order 列出文献；默认过滤掉重复条目。
+
+    ``include_duplicates=True`` 时每行以**附加属性** ``is_duplicate_of``
+    带出重复标记（值即保留条目键，非重复为 None）。该属性不在 Article
+    的声明字段里（不参与相等/序列化，R1 结构不变），供 dedup 的身份索引
+    区分「筛选可见行」与「已标重复行」（r9 夜扫 b04·F3-36）。
+    """
+    sql = f"SELECT {', '.join(_ARTICLE_COLUMNS)}, is_duplicate_of FROM articles"
     if not include_duplicates:
         sql += (
             " WHERE is_duplicate_of IS NULL AND NOT EXISTS ("
@@ -780,7 +1472,12 @@ def list_articles(db_path: StrPath, include_duplicates: bool = False) -> list[Ar
     sql += " ORDER BY import_order, zotero_key"
     with closing(_connect(db_path)) as conn:
         rows = conn.execute(sql).fetchall()
-    return [_row_to_article(r) for r in rows]
+    articles = []
+    for row in rows:
+        article = _row_to_article(row[:-1])
+        article.is_duplicate_of = row[-1]  # type: ignore[attr-defined]
+        articles.append(article)
+    return articles
 
 
 def list_title_duplicate_reviews(
@@ -897,6 +1594,42 @@ def undo_title_duplicate_review(db_path: StrPath, actor: str) -> bool:
     return True
 
 
+def _title_review_marks_before_duplicate(
+    conn: sqlite3.Connection, review_id: str,
+) -> dict[str, str | None]:
+    """该组「被判为 duplicate 之前」的成员 is_duplicate_of 原值（b04·F3-29）。
+
+    撤销日志逐条记录每次决策的 before/after 整组快照。倒序扫描本组日志，
+    找到最近一条「after=duplicate 且 before 不是 duplicate」的条目——那条
+    决策正是把成员标记写成本组 keeper 的动作，其 before 的 ``articles``
+    三元组（zotero_key, is_duplicate_of, content_hash）即标记出现前的真实
+    值。找不到（例如库外改写/日志被清理）时返回空 dict，调用方据此不改写
+    任何行（保守：宁可保留标记也不臆测一个回滚值）。
+    """
+    rows = conn.execute(
+        "SELECT before_json,after_json FROM title_duplicate_undo "
+        "WHERE review_id=? ORDER BY seq DESC", (review_id,),
+    ).fetchall()
+    for before_json, after_json in rows:
+        try:
+            before = json.loads(before_json)
+            after = json.loads(after_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            continue
+        if (after.get("review") or [None])[0] != "duplicate":
+            continue
+        if (before.get("review") or [None])[0] == "duplicate":
+            continue
+        return {
+            entry[0]: entry[1]
+            for entry in (before.get("articles") or [])
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2
+        }
+    return {}
+
+
 def decide_title_duplicate_review(
     db_path: StrPath, review_id: str, decision: str, keeper_key: str = "",
     decided_by: str = "",
@@ -909,11 +1642,12 @@ def decide_title_duplicate_review(
         conn.execute("BEGIN IMMEDIATE")
         before = _title_review_snapshot(conn, review_id)
         row = conn.execute(
-            "SELECT status,members_json FROM title_duplicate_reviews WHERE review_id=?",
+            "SELECT status,members_json,keeper_key FROM title_duplicate_reviews WHERE review_id=?",
             (review_id,),
         ).fetchone()
         if row is None:
             return False
+        prior_status, prior_keeper = row[0], row[2]
         members = json.loads(row[1])
         keys = {m["zotero_key"] for m in members}
         if decision == "duplicate":
@@ -926,10 +1660,43 @@ def decide_title_duplicate_review(
                 [(keeper_key, key) for key in duplicate_keys],
             )
             status = "duplicate"
-        elif decision == "not_duplicate":
-            status = "not_duplicate"
         else:
-            status = "undecided"
+            # r9 夜扫 b04·F3-29：把已判 duplicate 的组翻转为 not_duplicate /
+            # undecided 时，必须回滚**本组上一次 duplicate 决策写入的**标记，
+            # 否则成员从此被 list_articles/get_progress 永久过滤（除逐条回放
+            # undo 链外无产品内恢复）。
+            #
+            # 回滚**只**针对「当前标记仍等于本次决策前 keeper」的成员：若该行
+            # 之后又被别的组改写（标记值已变），那不是本次决策的产物，保持
+            # 原样——绝不覆盖后续变更。回滚值取本次决策前的快照（before），
+            # 因此先前由精确去重/导入写入的标记原样恢复。
+            if prior_status == "duplicate" and prior_keeper:
+                # 回滚值必须取「本组被判为 duplicate **之前**」的状态：那正是
+                # 该组制造这些标记的原点。撤销日志里记录了每次决策的 before
+                # 快照——找最近一条「决策后=duplicate 且决策前≠duplicate」的
+                # 条目，其 before 即标记出现前的真实值（NULL 或此前由精确
+                # 去重/导入写入的标记），绝不臆测。
+                origin_marks = _title_review_marks_before_duplicate(conn, review_id)
+                # 找不到原点（日志被清理/库外改写）时 origin_marks 为空：
+                # 此时**不改写任何行**（保守——宁可保留标记，也不臆测一个
+                # 回滚值把别的组写的标记抹掉）。
+                rollback = [
+                    (origin_marks[key], key)
+                    for member in members
+                    for key in [member["zotero_key"]]
+                    if key != prior_keeper
+                    and origin_marks
+                    and key in origin_marks
+                    and conn.execute(
+                        "SELECT is_duplicate_of FROM articles WHERE zotero_key=?",
+                        (key,)).fetchone() == (prior_keeper,)
+                ]
+                if rollback:
+                    conn.executemany(
+                        "UPDATE articles SET is_duplicate_of=? WHERE zotero_key=?",
+                        rollback,
+                    )
+            status = "not_duplicate" if decision == "not_duplicate" else "undecided"
         conn.execute(
             "UPDATE title_duplicate_reviews SET status=?,keeper_key=?,decision_by=?,updated_at=? WHERE review_id=?",
             (status, keeper_key if decision == "duplicate" else "", decided_by, now, review_id),
@@ -1309,7 +2076,11 @@ def record_ranking(db_path: StrPath, result: RankingResult) -> int:
     - 同一批次的各行以 created_at 归组（id 为逐行自增，不能作批次键）。
       为保证"最近批次"可被 :func:`latest_ranking` 唯一识别，本函数保证
       created_at **严格大于**既有最大值：同一秒内连续重排时，时间戳按秒
-      顺延 +1（确定性、可复现）；
+      顺延 +1（确定性、可复现）。D-05-02：该保证此前只对**单写者**成立——
+      SELECT MAX 与批量 INSERT 之间无跨进程写锁，多进程/多线程并发重排可
+      共读同一 prev、两批共用同一 created_at（latest_ranking 混批）。现在
+      读-判-写整体包在 BEGIN IMMEDIATE 写事务内，跨进程串行化后不变式
+      对并发写者同样成立；
     - ``order`` 为空时无行可写，返回 0；
     - 兼容旧库：写入前先执行 ``CREATE TABLE IF NOT EXISTS``（幂等、additive），
       未经新版 init_db 建过 rankings 表的数据库文件也能直接记录。
@@ -1318,6 +2089,9 @@ def record_ranking(db_path: StrPath, result: RankingResult) -> int:
     meta_json = json.dumps(result.model_meta, ensure_ascii=False, sort_keys=True)
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_RANKINGS_SCHEMA)  # 旧库自愈（幂等）
+        # D-05-02：executescript 先提交隐式事务，此处显式开写事务，把
+        # SELECT MAX 的读点与批量 INSERT 置于同一跨进程互斥的临界区。
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT MAX(created_at) FROM rankings").fetchone()
         prev_created_at = row[0] if row else None
         if prev_created_at is not None and created_at <= prev_created_at:

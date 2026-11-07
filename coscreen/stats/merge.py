@@ -1,7 +1,9 @@
 """合并与汇总：双盲决策表外连接、一致性状态判定、排除理由分布（SPEC §7）。
 
 merge_decisions 将两名筛选员导出的决策 DataFrame 按 zotero_key 外连接，
-为每条文献标注 status ∈ {"agree", "conflict", "A_only", "B_only"}；
+为每条文献标注 status ∈ {"agree", "conflict", "A_only", "B_only",
+"unscreened"}（双方决策均为空串 = 无人筛，U6-P3/P7 修复，不计一致、
+不计入 PRISMA 的 screened 分母）；
 summarize 输出各类计数与一致率；exclusion_reason_distribution 汇总双方
 exclude 记录的排除理由频次。
 
@@ -23,8 +25,9 @@ import pandas as pd
 
 from coscreen.config import DECISIONS
 
-#: 合并后每条文献的一致性状态（与 SPEC §7 一致）
-MERGE_STATUS = ("agree", "conflict", "A_only", "B_only")
+#: 合并后每条文献的一致性状态（前四类与 SPEC §7 一致；"unscreened" 为
+#: U6-P3/P7 修复新增：双方决策均为空串 = 无人筛，不是一致）
+MERGE_STATUS = ("agree", "conflict", "A_only", "B_only", "unscreened")
 
 #: 合并输出的列顺序（固定，保证下游 CSV/JSON 确定性）
 MERGE_COLUMNS = (
@@ -55,6 +58,7 @@ class MergeSummary:
     n_agree: int
     n_conflict: int
     n_A_only: int
+    n_unscreened: int  # 双方决策均为空（无人筛，U6-P3/P7）——四桶之外的第五桶
     n_B_only: int
     agreement_rate: float
 
@@ -96,8 +100,10 @@ def _normalize_side(df: pd.DataFrame, label: str = "") -> pd.DataFrame:
 def merge_decisions(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
     """按 zotero_key 外连接两份决策表，输出固定 9 列并按 zotero_key 排序。
 
-    状态判定：双方均有决策且相等 -> agree；均有但不等 -> conflict；
-    仅 A 有 -> A_only；仅 B 有 -> B_only。缺失决策以 "" 表示。
+    状态判定：双方均有实际决策且相等 -> agree；均有但不等 -> conflict；
+    仅 A 有 -> A_only；仅 B 有 -> B_only；双方决策均为空串 -> unscreened
+    （无人筛，不算一致、不计入 PRISMA 的 screened 分母，U6-P3/P7）。
+    缺失决策以 "" 表示。
     """
     a = _normalize_side(df_a, "A")
     b = _normalize_side(df_b, "B")
@@ -107,9 +113,18 @@ def merge_decisions(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
     in_b = joined["_merge"].isin(("right_only", "both"))
     both = in_a & in_b
     equal = joined["decision_A"] == joined["decision_B"]
+    # U6-P3/P7："" == "" 不是一致而是无人筛——先排除双空再判 agree，
+    # 避免 never-screened 记录被计入 screened 分母。
+    has_decision = (joined["decision_A"] != "") | (joined["decision_B"] != "")
     status = np.select(
-        condlist=[both & equal, both & ~equal, in_a & ~in_b, in_b & ~in_a],
-        choicelist=list(MERGE_STATUS),
+        condlist=[
+            both & ~has_decision,
+            both & has_decision & equal,
+            both & has_decision & ~equal,
+            in_a & ~in_b,
+            in_b & ~in_a,
+        ],
+        choicelist=("unscreened", "agree", "conflict", "A_only", "B_only"),
         default="",
     )
 
@@ -141,6 +156,7 @@ def summarize(merged: pd.DataFrame) -> MergeSummary:
     n_conflict = int((status == "conflict").sum())
     n_a_only = int((status == "A_only").sum())
     n_b_only = int((status == "B_only").sum())
+    n_unscreened = int((status == "unscreened").sum())  # 勾稽第五桶（复审）
     denominator = n_agree + n_conflict
     agreement_rate = (n_agree / denominator) if denominator > 0 else 0.0
     return MergeSummary(
@@ -150,6 +166,7 @@ def summarize(merged: pd.DataFrame) -> MergeSummary:
         n_A_only=n_a_only,
         n_B_only=n_b_only,
         agreement_rate=agreement_rate,
+        n_unscreened=n_unscreened,
     )
 
 
@@ -223,7 +240,9 @@ def merge_decisions_multi(named_dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     title 取按 named_dfs 顺序首个非空值。
 
     N=2 时与 merge_decisions 的对应关系：agree/conflict 逐一相同，
-    A_only 与 B_only 均对应 incomplete（决策非空时完全等价）。
+    A_only 与 B_only 均对应 incomplete（决策非空时完全等价）；
+    双方决策均为空的行在 merge_decisions 为 unscreened、在此为
+    incomplete（n_screened=0，均不计入 PRISMA 的 screened 分母）。
     """
     names = list(named_dfs)
     if len(names) < 2:

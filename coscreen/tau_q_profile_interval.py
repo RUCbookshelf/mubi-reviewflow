@@ -43,6 +43,30 @@ NONCENTRAL_METHOD = "noncentral_chi_square_inversion"
 Q_PROFILE_METHOD = "viechtbauer_2007_q_profile"
 
 _MAX_SEARCH = sys.float_info.max / 4
+# F-05: subnormal positive inputs (below the smallest normal float) pass the
+# "finite and positive" contract but overflow/infect every derived quantity:
+# c_constant = 5e-324 returned tau2=inf / h2=nan with converged=True, and
+# sampling variances in the subnormal band raised OverflowError / NaN-solver
+# ValueErrors. The smallest normal float is the boundary below which no
+# sensible tau^2 scale exists; at or above it every reviewed input works.
+_MIN_SUPPORTED = sys.float_info.min
+
+
+def _solve(f, lo: float, hi: float) -> float:
+    """brentq with the F-05 except expansion.
+
+    ``brentq`` raises ``RuntimeError`` when maxiter is exhausted and lets
+    ``OverflowError`` from the objective escape; neither is a ``ValueError``,
+    so callers' ``except ValueError`` (the 4xx API contract) never fired.
+    Both convert to the module's normal rejection here.
+    """
+    try:
+        return brentq(f, lo, hi, xtol=1e-12, rtol=4 * sys.float_info.epsilon, maxiter=1000)
+    except (RuntimeError, OverflowError) as exc:
+        raise ValueError(
+            "the interval search did not converge numerically; the inputs are "
+            "outside the supported numeric range for this interval"
+        ) from exc
 
 
 def tau_q_profile_interval(
@@ -127,6 +151,11 @@ def tau_q_profile_interval(
             raise ValueError("c_constant must be a finite positive number") from exc
         if not math.isfinite(c) or c <= 0:
             raise ValueError("c_constant must be finite and positive")
+        if c < _MIN_SUPPORTED:
+            raise ValueError(
+                "c_constant is below the supported numeric range: subnormal values "
+                "cannot form a representable tau-squared scale"
+            )
         input_data: dict = {"q": q, "k": k, "level": level, "c_constant": c}
     else:
         weights = list(weights)  # type: ignore[arg-type]
@@ -167,10 +196,7 @@ def tau_q_profile_interval(
             if right >= _MAX_SEARCH:
                 return None
             right = min(_MAX_SEARCH, 2.0 * right)
-        return brentq(
-            lambda nc: noncentrality_cdf(nc, target), 0.0, right,
-            xtol=1e-12, rtol=4 * sys.float_info.epsilon, maxiter=1000,
-        )
+        return _solve(lambda nc: noncentrality_cdf(nc, target), 0.0, right)
 
     lambda_lower = solve_noncentrality(1.0 - alpha / 2)
     lower = 0.0 if lambda_lower is None else lambda_lower / c
@@ -198,6 +224,17 @@ def tau_q_profile_interval(
 
     tau2 = max(0.0, (q - df) / c)
     typical = df / c
+    # F-05 finiteness screen: never report converged=True alongside non-finite
+    # tau^2 / limits (the reviewed failure returned tau2=inf, h2=nan,
+    # converged=True). Inputs that were already legal and finite keep their
+    # exact values; this only converts the degenerate band into the module's
+    # normal ValueError rejection.
+    if not all(math.isfinite(value) for value in (tau2, lower)
+               if value is not None) or (upper is not None and not math.isfinite(upper)):
+        raise ValueError(
+            "the profiled interval is outside the supported numeric range "
+            "(tau^2 or its limits overflowed); choose a representable scale"
+        )
 
     def to_i2_percent(value: float) -> float:
         return min(100.0, max(0.0, 100.0 * value / (typical + value)))
@@ -290,6 +327,14 @@ def q_profile_tau2_interval(
         raise ValueError("effects and sampling variances must be finite")
     if any(value <= 0 for value in v):
         raise ValueError("sampling variances must be positive")
+    # F-05: subnormal variances pass the positive-finite contract but their
+    # inverse weights overflow (1/5e-324 = inf) and the solver dies on NaN
+    # mid-search; reject them as outside the supported numeric range.
+    if any(value < _MIN_SUPPORTED for value in v):
+        raise ValueError(
+            "sampling variances are outside the supported numeric range: subnormal "
+            "values overflow the inverse-variance weights"
+        )
     if isinstance(level, bool) or not isinstance(level, Real):
         raise ValueError("level must be a number strictly between 0 and 1")
     level = float(level)
@@ -314,10 +359,7 @@ def q_profile_tau2_interval(
             if right >= _MAX_SEARCH:
                 return None
             right = min(_MAX_SEARCH, 2.0 * right)
-        return brentq(
-            lambda tau2: delta(tau2, critical), 0.0, right,
-            xtol=1e-12, rtol=4 * sys.float_info.epsilon, maxiter=1000,
-        )
+        return _solve(lambda tau2: delta(tau2, critical), 0.0, right)
 
     lower_root = solve(crit_upper)
     lower = 0.0 if lower_root is None else lower_root

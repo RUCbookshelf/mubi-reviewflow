@@ -5,6 +5,60 @@ from __future__ import annotations
 import copy
 import math
 
+#: 审计载荷（``input_data``/``source_provenance``）的嵌套深度上限。
+#: deepcopy 深度族的族内统一常量（与 ``glass_delta_effect`` /
+#: ``binary_correlation_conversion`` 同值同形，三载体须同步修改）。
+_MAX_PROVENANCE_DEPTH = 32
+_DEEP_PROVENANCE_PLACEHOLDER = "<nesting too deep>"
+
+
+def _sanitize_provenance(value, _depth: int = 0):  # noqa: ANN001
+    """source_provenance 有界拷贝（deepcopy 族 F2-80 + 零校验族 F2-84 的统一入口）。
+
+    客户端可控的 ``source_provenance`` 此前由 ``copy.deepcopy`` 整树复制：
+    嵌套约 500 层即抛 ``RecursionError``（非 ValueError），穿出只捕
+    ValueError 的端点 → 500。此处以深度上限 + 有限性清洗替代递归 deepcopy：
+    - 容器递归重建成新的 dict/list（不再走 deepcopy 的递归实现）；
+    - 深度达到 :data:`_MAX_PROVENANCE_DEPTH` 的子树整体替换为占位字符串——
+      不拒绝输入（R2：客户端可能携带任意嵌套的来源信息，拒绝即新增严格性）；
+    - 非有限浮点（nan/±inf）替换为占位字符串：裸 NaN 落库后 GET 回读 null，
+      并在渲染层触发 ``allow_nan=False`` 500（同族 F2-84 口径）。
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"<non-finite {value!r}>"
+    if isinstance(value, (dict, list, tuple)):
+        if _depth >= _MAX_PROVENANCE_DEPTH:
+            return _DEEP_PROVENANCE_PLACEHOLDER
+        if isinstance(value, dict):
+            return {key: _sanitize_provenance(item, _depth + 1)
+                    for key, item in value.items()}
+        cleaned = [_sanitize_provenance(item, _depth + 1) for item in value]
+        return tuple(cleaned) if isinstance(value, tuple) else cleaned
+    return value
+
+
+def _copy_input(values: dict) -> dict:
+    """有界结构化拷贝（替代递归 ``copy.deepcopy``，深/宽结构一律新容器）。
+
+    provenance 走同一清洗器，故 ``source_provenance`` 的深度封顶与非有限
+    清洗与其余字段口径一致（F2-80 / F2-84 同族同入口）。容器全部重建，
+    返回结果不与调用方输入共享可变对象，与旧 deepcopy 的可变隔离语义等价。
+    """
+    return _sanitize_provenance(values)
+
+
+def _finite_fsum(terms) -> float:  # noqa: ANN001
+    """``math.fsum`` 的溢出家族统一入口：中间溢出转 ValueError（4xx 契约）。
+
+    fsum 对「各项都有限、部分和却超出 float 范围」的输入抛
+    ``OverflowError``（fsum 溢出族：F2-87/F4-106/F4-95 同型），端点只捕
+    ValueError，于是溢出变成 500。常规输入仍走同一条 fsum，结果逐位不变。
+    """
+    try:
+        return math.fsum(terms)
+    except OverflowError as exc:
+        raise ValueError("inputs imply a variance outside the representable range") from exc
+
 
 def _number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -28,6 +82,27 @@ def _integer(value: object, name: str, minimum: int) -> int:
     if not finite:
         raise ValueError(f"{name} must be a finite integer")
     return value
+
+
+def _reciprocal_gap(events: int, participants: int) -> float:
+    """``1/events - 1/participants`` with the F-04 cancellation guard.
+
+    The float difference of reciprocals cancels catastrophically once the
+    counts reach ~2**53: at ``participants = 2**63-1, events = 2**63-2`` it
+    evaluates to 0.0 (exact value 1.1754943508222875e-38, so a positive
+    variance is falsely rejected) and at 2**53 it doubles the true gap,
+    silently inflating the SE by ~41%. The exact integer form
+    ``(participants - events) / (events * participants)`` replaces it
+    whenever the two disagree by more than 1e-6 relative — i.e. only in the
+    cancellation regime (physically plausible trial sizes are orders of
+    magnitude below it); regular trials keep the historical float path
+    bit-for-bit. ``int / int`` is correctly rounded even for bignums.
+    """
+    naive = 1 / events - 1 / participants
+    exact = (participants - events) / (events * participants)
+    if naive > 0 and abs(naive - exact) <= 1e-6 * exact:
+        return naive
+    return exact
 
 
 def _arm(values: object, outcome_type: str, name: str) -> dict:
@@ -118,6 +193,9 @@ def calculate_cluster_trial_effect(values: dict) -> dict:
         raise ValueError("arms must contain exactly treatment and control")
     if "source_provenance" in values and not isinstance(values["source_provenance"], dict):
         raise ValueError("source_provenance must be an object")
+    # F2-80（deepcopy 深度族）/ F2-84（source_provenance 零校验族）统一入口：
+    # 有界拷贝在 deepcopy 之前完成深度封顶与非有限清洗。
+    data = _copy_input(values)
     treatment = _arm(arms["treatment"], outcome_type, "treatment")
     control = _arm(arms["control"], outcome_type, "control")
     parsed_arms = {"treatment": treatment, "control": control}
@@ -162,7 +240,7 @@ def calculate_cluster_trial_effect(values: dict) -> dict:
                 - math.log(control["events"]) + math.log(non_events_c)
             )
             estimate = _exp(analysis_estimate, "OR estimate")
-            variance = math.fsum((
+            variance = _finite_fsum((
                 adjustment_arms["treatment"]["design_effect"] / treatment["events"],
                 adjustment_arms["treatment"]["design_effect"] / non_events_t,
                 adjustment_arms["control"]["design_effect"] / control["events"],
@@ -174,17 +252,17 @@ def calculate_cluster_trial_effect(values: dict) -> dict:
                 raise ValueError("RR requires positive event counts in both arms")
             analysis_estimate = math.log(risk_t) - math.log(risk_c)
             estimate = _exp(analysis_estimate, "RR estimate")
-            variance = math.fsum((
+            variance = _finite_fsum((
                 adjustment_arms["treatment"]["design_effect"]
-                * (1 / treatment["events"] - 1 / treatment["participants"]),
+                * _reciprocal_gap(treatment["events"], treatment["participants"]),
                 adjustment_arms["control"]["design_effect"]
-                * (1 / control["events"] - 1 / control["participants"]),
+                * _reciprocal_gap(control["events"], control["participants"]),
             ))
             se_scale = "log"
         else:
             estimate = risk_t - risk_c
             analysis_estimate = estimate
-            variance = math.fsum((
+            variance = _finite_fsum((
                 adjustment_arms["treatment"]["design_effect"] * risk_t * (1 - risk_t)
                 / treatment["participants"],
                 adjustment_arms["control"]["design_effect"] * risk_c * (1 - risk_c)
@@ -204,8 +282,12 @@ def calculate_cluster_trial_effect(values: dict) -> dict:
         "analysis_estimate": analysis_estimate,
         "se": se,
         "se_scale": se_scale,
-        "input_data": copy.deepcopy(values),
-        "source_provenance": copy.deepcopy(values.get("source_provenance")),
+        # data 已经过 _copy_input：全部容器重建、深度已封顶、非有限值已清洗，
+        # 因此不再递归 deepcopy（那正是 F2-80 的崩溃点），也不会与被调用方
+        # 输入共享可变对象。provenance 再单独拷一份，保持两个响应字段互不
+        # 别名（深度已 ≤ _MAX_PROVENANCE_DEPTH，此处的 deepcopy 安全）。
+        "input_data": data,
+        "source_provenance": copy.deepcopy(data.get("source_provenance")),
         "entry_method": "cluster_trial_design_effect",
         "cluster_adjustment": {
             "method": "design_effect_effective_sample_size",

@@ -18,17 +18,24 @@ class _Input(BaseModel):
 
 
 #: 编码共识端点的请求体大小上限（2MB；字段本身有 max_length，此处挡无界
-#: value/source/ID 列表的整包放大）。分块传输无 Content-Length 时不设卡。
+#: value/source/ID 列表的整包放大）。
 MAX_CONSENSUS_BODY_BYTES = 2 * 1024 * 1024
 
 
 async def _body_within_limit(request: Request) -> None:
-    raw = request.headers.get("content-length")
-    try:
-        length = int(raw) if raw is not None else None
-    except ValueError:
-        length = None
-    if length is not None and length > MAX_CONSENSUS_BODY_BYTES:
+    # 先按 Content-Length 提前拒绝超限请求；头部缺失/非法（chunked 传输）
+    # 时回退到读取实体后的精确校验（MM2-03/MM4-04：缺头曾完全不设卡——
+    # 同一 3MB 体，带 Content-Length 时 413、chunked 时放行）。口径与
+    # report_evidence_api.size_guard 一致。
+    header = request.headers.get("content-length")
+    if header:
+        try:
+            length = int(header)
+        except ValueError:
+            length = None
+        if length is not None and length > MAX_CONSENSUS_BODY_BYTES:
+            raise HTTPException(413, "Request body exceeds the coding consensus limit (2 MB).")
+    if len(await request.body()) > MAX_CONSENSUS_BODY_BYTES:
         raise HTTPException(413, "Request body exceeds the coding consensus limit (2 MB).")
 
 
@@ -89,6 +96,24 @@ def register_coding_consensus_routes(
         if "user_id" not in user:
             raise HTTPException(401, "Authenticated user ID is missing.")
         return info, store_path(info), user["user_id"]
+
+    def guarded_consensus_write(task_id: str, info, user: dict, action: str, write: Callable[[], Any]):
+        """consensus/freeze 写路径的授权复查（U4-P5，对齐 rater 路径 write_guard 模式）。
+
+        撤销端点（roles DELETE）在同一把 ``review_workflow.lock`` 内完成撤销；
+        本路径在写前于同一把锁内复查 ``authorize_task``，使“授权读 -> 写入”
+        与“撤销”串行化：context() 首次授权读之后被撤销的角色，写入被 403 拒绝。
+        存储函数（append_consensus_record/freeze_consensus）自持连接并自行
+        BEGIN IMMEDIATE，外层再持独立写事务会与存储写自锁，故按 rater 记录
+        路径的同款进程内任务锁 + 锁内复查实现。
+        """
+        with app.state.review_workflow.lock(info.task_id):
+            # R6-C3/#35（复审扫尾）：锁键用规范 task_id——尾点别名路径
+            # （'T.'）曾与规范撤销（锁 'T'）分键不互斥，U4-P5 的角色撤销
+            # TOCTOU 在别名路径重新打开。
+            if authorize_task(info, user, action) is not True:
+                raise HTTPException(403, "Task access denied.")
+            return write()
 
     @app.post("/api/tasks/{task_id}/coding/records", status_code=201, dependencies=[Depends(_body_within_limit)])
     def append_rater_record(task_id: str, body: RaterRecordIn, user: dict = Depends(require_user)):
@@ -159,12 +184,15 @@ def register_coding_consensus_routes(
         if validate_value and not isinstance(field, dict):
             raise HTTPException(400, "Value does not match the canonical coding field.")
         try:
-            return coding_consensus.append_consensus_record(
-                path, item_key=body.item_key, field_key=body.field_key,
-                reconciler_id=actor_id, value=body.value,
-                source={**body.source, "_reviewflow_field": field} if field else body.source,
-                rationale=body.rationale, rater_record_ids=body.rater_record_ids,
-            )
+            # U4-P5：写前在任务锁内复查授权，撤销后落地被拒。
+            return guarded_consensus_write(
+                task_id, info, user, "consensus:write",
+                lambda: coding_consensus.append_consensus_record(
+                    path, item_key=body.item_key, field_key=body.field_key,
+                    reconciler_id=actor_id, value=body.value,
+                    source={**body.source, "_reviewflow_field": field} if field else body.source,
+                    rationale=body.rationale, rater_record_ids=body.rater_record_ids,
+                ))
         except ValueError as exc:
             raise bad(str(exc)) from exc
 
@@ -182,9 +210,12 @@ def register_coding_consensus_routes(
     def freeze(task_id: str, body: FreezeIn, user: dict = Depends(require_user)):
         info, path, actor_id = context(task_id, user, "consensus:freeze")
         try:
-            return coding_consensus.freeze_consensus(
-                path, name=body.name, frozen_by=actor_id, consensus_ids=body.consensus_ids
-            )
+            # U4-P5：写前在任务锁内复查授权，撤销后冻结被拒。
+            return guarded_consensus_write(
+                task_id, info, user, "consensus:freeze",
+                lambda: coding_consensus.freeze_consensus(
+                    path, name=body.name, frozen_by=actor_id, consensus_ids=body.consensus_ids
+                ))
         except ValueError as exc:
             raise bad(str(exc)) from exc
 
@@ -199,7 +230,10 @@ def register_coding_consensus_routes(
     @app.get("/api/tasks/{task_id}/coding/freezes/{freeze_id}")
     def get_freeze(task_id: str, freeze_id: int, user: dict = Depends(require_user)):
         info, path, _ = context(task_id, user, "consensus:read")
-        freeze_record = coding_consensus.get_freeze(path, freeze_id)
+        try:
+            freeze_record = coding_consensus.get_freeze(path, freeze_id)
+        except ValueError as exc:
+            raise bad(str(exc)) from exc
         if freeze_record is None:
             raise HTTPException(404, "Coding freeze not found.")
         return freeze_record

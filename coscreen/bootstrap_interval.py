@@ -67,6 +67,25 @@ MODEL_LABELS = {
 #: processed in chunks, so peak memory stays near this bound for any k.
 MAX_N_BOOT = 200_000
 
+#: Work budget (study-replicates) for one call. ``MAX_N_BOOT`` alone does not
+#: bound CPU: a replicate costs O(k) for ``fixed``/``dl`` and a full profile
+#: REML optimisation for ``reml``, so k=200 with n_boot=200000 extrapolated to
+#: ~107 s of a shared worker thread (F2-70). Measured cost per study-replicate
+#: is ~0.03 us for fixed/dl and ~3.4 us for reml, so the two models get
+#: different budgets; both still admit every ordinary request (k=10,
+#: n_boot=5000 = 5e4 replicates) and the heaviest realistic REML request
+#: measured here (k=800, n_boot=5000 = 4e6 replicates, ~14 s) is exactly at the
+#: REML limit rather than above it.
+MAX_BOOTSTRAP_WORK = 40_000_000
+_BOOTSTRAP_WORK_BUDGET = {"fixed": MAX_BOOTSTRAP_WORK, "dl": MAX_BOOTSTRAP_WORK,
+                          "reml": 4_000_000}
+
+#: Degenerate-SE family guard message (same wording family as
+#: ``coscreen.influence_diagnostics._RANGE_MESSAGE``): an intermediate that is
+#: non-finite or has collapsed to zero cannot support inverse-variance weights,
+#: and the caller gets the same 4xx contract instead of a 500.
+_RANGE_MESSAGE = "study standard errors or effect scales are outside the supported numeric range"
+
 # Bootstrap rows are processed in chunks of at most ~2e6 cells so the
 # (chunk, k) intermediates stay a few tens of megabytes for any k.
 _MAX_CHUNK_CELLS = 2_000_000
@@ -207,6 +226,16 @@ def _fit_pooled(y: np.ndarray, v: np.ndarray, model: str) -> dict:
     weights = w if model == "fixed" else 1.0 / (v + tau2)
     total = float(weights.sum())
     pooled = float(weights @ y / total)
+    # Degenerate-SE family (shared form with influence_diagnostics F4-92):
+    # F2-69 -- effect estimates of +-1e160 make Q overflow to inf, tau2=inf and
+    # the weights sum to 0, so ``1/total`` raised ZeroDivisionError; F2-71 --
+    # se=1e-160 squares to a subnormal, 1/v is inf and C is nan, so the summary
+    # was reported as a "success". Both are legal on the write side, so the
+    # guard sits at the compute point and raises the module's ValueError.
+    if not all(math.isfinite(value) for value in (pooled, q, c, tau2)):
+        raise ValueError(_RANGE_MESSAGE)
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError(_RANGE_MESSAGE)
     pooled_se = math.sqrt(1.0 / total)
     return {
         "pooled": pooled,
@@ -361,6 +390,13 @@ def bootstrap_pooled_interval(
         raise ValueError("bootstrap_pooled_interval needs at least two studies")
     if any(value <= 0 for value in se_list):
         raise ValueError("ses must be positive")
+    work = k * n_boot
+    budget = _BOOTSTRAP_WORK_BUDGET[model]
+    if work > budget:
+        raise ValueError(
+            f"this bootstrap needs {work} study-replicates, above the "
+            f"{budget} budget for model={model}; reduce n_boot or the number of studies"
+        )
 
     started = time.perf_counter()
     y = np.asarray(y_list, dtype=float)

@@ -8,8 +8,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+# L-03（r7-lunafix）最小权限：workflow 级只读——build/publish 原先各自
+# 继承 contents: write，构建/测试步骤（pip 安装、pytest、校验器）因此持有
+# 写令牌（供应链爆炸半径）。写权限只下沉到真正打标签/建发行版的 publish
+# 作业；build 的 checkout 不把凭据持久化进本地 git 配置。
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -37,6 +41,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # L-03：构建/测试作业不需要凭据——不把令牌留进本地 git 配置
+          #（后续 pip 安装/pytest/校验器执行的代码一律拿不到写凭据）。
+          persist-credentials: false
       - name: Read application version
         shell: bash
         run: echo "APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
@@ -68,8 +76,64 @@ jobs:
           else
             cp build/dist/${{ matrix.artifact }} release-assets/
           fi
+      - name: Provision playwright for the browser regression
+        shell: bash
+        run: |
+          # MM9-01: the only browser regression in the release gate
+          # (build/tests/import_review_browser.cjs, spawned by
+          # test_r7_mm7_relchain.py) is skipif-gated on BOTH
+          # REVIEWFLOW_PLAYWRIGHT (a require() path to the playwright module,
+          # the convention every build/tests/*.cjs harness uses) and
+          # PLAYWRIGHT_BROWSERS_PATH (the browser cache). Without this step
+          # the gate ships zero browser coverage while looking green.
+          pw_root="$RUNNER_TEMP/reviewflow-playwright"
+          npm install --prefix "$pw_root" "playwright@>=1.55.0 <2"
+          pw_cli="$pw_root/node_modules/playwright/cli.js"
+          if [ "${{ matrix.command }}" = "linux" ]; then
+            PLAYWRIGHT_BROWSERS_PATH="$pw_root/browsers" node "$pw_cli" install --with-deps chromium
+          else
+            PLAYWRIGHT_BROWSERS_PATH="$pw_root/browsers" node "$pw_cli" install chromium
+          fi
+          {
+            echo "REVIEWFLOW_PLAYWRIGHT=$pw_root/node_modules/playwright"
+            echo "PLAYWRIGHT_BROWSERS_PATH=$pw_root/browsers"
+          } >> "$GITHUB_ENV"
       - name: Verify versioned application payload
         run: python build/verify_release_payload.py ${{ matrix.command }}
+      - name: Run static validators
+        shell: bash
+        run: |
+          # MM7-02: the four static validators run in CI after the payload check;
+          # any non-zero exit fails the job. httpx is used by the two Python
+          # validators and is not part of the runtime requirements file;
+          # pyyaml is used by build/tests/test_r7_luna_release_static.py (L-03).
+          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest pyyaml
+          # MM8-02: the test suite (1,222+ assertions) runs in CI before the
+          # validators; any failure fails the job.
+          python -m pytest build/tests -q
+          python build/validate_import_review.py
+          python build/validate_screening_rounds.py
+          node build/validate_import_review_static.cjs
+          node build/validate_team_prisma_static.js
+          # MM11-01: the three node --test unit suites (17 cases) were
+          # documentation-only - no automation ever ran them. They ride the
+          # same node-on-PATH precondition as the two node validators above
+          # (every matrix runner image ships node) and run from the checkout
+          # root: ml_batch.test.cjs reads custom_frontend/index.html relative
+          # to the working directory.
+          # W2 (2.1.4-r8): pdf_fetch_ui.test.cjs nails the PDF auto-fetch
+          # frontend module (default-off zero-render, three outcome paths,
+          # ten-language corpus). Local-green only would leave it unguarded
+          # on every release platform, so it joins the same node --test run.
+          # W3 (2.1.4-r8): living_review.test.cjs nails the revived PubMed
+          # check (manual check-now wiring, graceful 409 degradation, and the
+          # sliced in-session timer that must never overflow the 32-bit delay).
+          node --test build/tests/import_review_model.test.cjs \
+                      build/tests/import_review_updates.test.cjs \
+                      build/tests/ml_batch.test.cjs \
+                      build/tests/study_design_badge.test.cjs \
+                      build/tests/pdf_fetch_ui.test.cjs \
+                      build/tests/living_review.test.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}
@@ -81,6 +145,10 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-22.04
+    # L-03：写权限只在 publish 显式授予（打标签/推标签/建发行版）；
+    # checkout 保持默认持久化凭据——git push 标签依赖它。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Read application version

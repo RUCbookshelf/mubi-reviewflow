@@ -98,7 +98,11 @@
   window.addEventListener('resize',scheduleLayout);
   document.addEventListener('reviewflow:language-changed',scheduleLayout);
   document.addEventListener('reviewflow:task-context-changed',scheduleLayout);
-  document.addEventListener('reviewflow:workspace-changed',()=>{refresh();scheduleLayout();});
+  /* F10（修复）：抽屉是覆盖式浮层（sidebar_sheet.css 的 z-index:60），经导航跳到
+     新页面后若仍展开，会继续盖住刚打开的内容，用户得再点一次外部才能操作。
+     路由切换事件里收起抽屉：焦点落回开关按钮（不丢键盘位置），移动端的遮罩/
+     inert 由 syncAccess 一并对齐。 */
+  document.addEventListener('reviewflow:workspace-changed',()=>{if(target)setOpen(false,{immediate:true});refresh();scheduleLayout();});
   new MutationObserver(scheduleLayout).observe(shell,{childList:true,characterData:true,subtree:true});
   new MutationObserver(scheduleLayout).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','data-density']});
   new MutationObserver(refresh).observe(main,{attributes:true,attributeFilter:['style']});

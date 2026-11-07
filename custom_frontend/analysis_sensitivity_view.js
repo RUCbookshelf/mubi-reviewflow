@@ -263,7 +263,7 @@
       if (current !== request) return;
       report = { generated_at_utc:new Date().toISOString(), options, result };
       renderSensitivity(result, options);
-    } catch (error) { if (current === request) { host.textContent = ''; host.append(window.RFAnalysisLocale.message(error.message)); toast(T(error.message), 'warn'); } }
+    } catch (error) { if (current === request) { host.textContent = ''; host.append(window.RFAnalysisLocale.message(error.message, {localized: error.rfLocalized === true})); toast(T(error.message), 'warn'); } }
     finally { if (current === request) { clearInterval(progressTimer); runButton.disabled = false; } }
   });
   document.querySelectorAll('[data-sensitivity-report]').forEach(button => button.addEventListener('click',async () => {

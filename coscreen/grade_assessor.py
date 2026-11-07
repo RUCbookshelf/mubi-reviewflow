@@ -123,8 +123,20 @@ def _require_dict(value: object, name: str) -> dict:
     return value
 
 
+def _member(value: object, catalog: object) -> bool:
+    """成员判断：不可哈希值按"不属于"处理，保持模块的 ValueError 契约。
+
+    直接写 ``value in dict/frozenset`` 时，list/dict 等不可哈希值会抛
+    TypeError，绕过调用方统一的 ``except ValueError``（F4-61）。
+    """
+    try:
+        return value in catalog
+    except TypeError:
+        return False
+
+
 def _validate_level(value: object, catalog: dict, name: str) -> str:
-    if value not in catalog:
+    if not _member(value, catalog):
         raise ValueError(f"{name} 必须是 {sorted(catalog)} 之一")
     return value
 
@@ -174,7 +186,7 @@ def suggest_rob_downgrade(rob_assessment: dict | None) -> tuple[str, dict]:
         total = 0
         high_risk = 0
         for judgement, count in counts.items():
-            if judgement not in ROB_OVERALL_JUDGEMENTS:
+            if not _member(judgement, ROB_OVERALL_JUDGEMENTS):
                 raise ValueError(f"未知 RoB overall 判定: {judgement!r}")
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
                 raise ValueError("overall_counts 的研究数必须是非负整数")
@@ -195,7 +207,7 @@ def suggest_rob_downgrade(rob_assessment: dict | None) -> tuple[str, dict]:
     overall = source.get("overall")
     if overall is None:
         return "none", empty
-    if overall not in ROB_OVERALL_JUDGEMENTS:
+    if not _member(overall, ROB_OVERALL_JUDGEMENTS):
         raise ValueError(f"未知 RoB overall 判定: {overall!r}")
     if overall == "critical":
         return "very_serious", {"available": True, "rule": "rob_overall_critical", "overall": overall}
@@ -278,6 +290,10 @@ def suggest_imprecision_downgrade(imprecision: dict | None) -> tuple[str, dict]:
         return "none", signal
 
     signal = {"available": True, "ci_low": ci_low, "ci_high": ci_high, "null_value": null_value}
+    if ci_low > ci_high:
+        # F4-59：倒置区间不是合法 CI（synthesize 恒产有序区间）；原实现静默判
+        # "无不精确信号"，给损坏数据开具无异常证明。按模块契约转 ValueError。
+        raise ValueError("ci_low 不能大于 ci_high")
     reasons: list[str] = []
     width_ratio = _ci_width_ratio(ci_low, ci_high)
     if width_ratio is not None:
@@ -313,9 +329,14 @@ def suggest_publication_bias_downgrade(publication_bias: dict | None) -> tuple[s
         return "none", empty
     source = _require_dict(publication_bias, "publication_bias")
     p_value = _finite_number(source.get("p_value"), "p_value")
+    if p_value is not None and not 0.0 <= p_value <= 1.0:
+        # F4-62：p 值不在 [0,1] 时原实现按阈值比较静默产出降级/不降级，
+        # 与同文件 overall_counts/total_events 的拒绝口径不一致。
+        raise ValueError("p_value 必须在 [0, 1] 之间")
     n_studies = source.get("n_studies")
-    if n_studies is not None and (isinstance(n_studies, bool) or not isinstance(n_studies, int)):
-        raise ValueError("n_studies 必须是整数")
+    if n_studies is not None and (isinstance(n_studies, bool) or not isinstance(n_studies, int)
+                                  or n_studies < 0):
+        raise ValueError("n_studies 必须是非负整数")
     if n_studies is not None and n_studies < PUB_BIAS_MIN_STUDIES:
         return ("none", {"available": True, "rule": "insufficient_studies_no_auto_downgrade",
                          "n_studies": n_studies, "minimum_studies": PUB_BIAS_MIN_STUDIES,
@@ -340,8 +361,10 @@ def final_quality(initial_design: str, downgrades: dict, upgrades: dict | None =
 
     分值夹在 [1, 4]（极低…高），越界时返回 warnings 而不是报错。
     """
-    if initial_design not in INITIAL_DESIGNS:
+    if not _member(initial_design, INITIAL_DESIGNS):
         raise ValueError(f"initial_design 必须是 {sorted(INITIAL_DESIGNS)} 之一")
+    if upgrades is not None and not isinstance(upgrades, dict):
+        raise ValueError("upgrades 必须是 dict 或 None")
     upgrade_allowed = initial_design == "observational"
     resolved_upgrades = dict.fromkeys(UPGRADE_FACTORS, "none")
     if upgrades:
@@ -392,7 +415,7 @@ def assess_grade(
     总降级/升级步数、每个因子的推导依据（signal_sources）、覆盖对照
     （overrides_applied）与 warnings。
     """
-    if initial_design not in INITIAL_DESIGNS:
+    if not _member(initial_design, INITIAL_DESIGNS):
         raise ValueError(f"initial_design 必须是 {sorted(INITIAL_DESIGNS)} 之一")
     indirectness = _validate_level(indirectness, _DOWNGRADE_STEPS, "indirectness")
     if user_overrides is not None:
@@ -430,6 +453,10 @@ def assess_grade(
             overrides_applied[factor] = {"auto": suggested[factor][0] if factor in suggested
                                          else "none",
                                          "user": level}
+    if "indirectness" in overrides_applied:
+        # F4-63：signal_sources.indirectness.user_selected 在应用覆盖前固化，
+        # 覆盖后必须回填，否则同一返回 dict 里 downgrades 与 signal_sources 矛盾。
+        signal_sources["indirectness"]["user_selected"] = factors["indirectness"]
 
     outcome = final_quality(initial_design, factors, upgrades)
     return {
@@ -473,14 +500,28 @@ def build_sof_table(assessments: list[dict], *, title: str = "GRADE 证据概要
             downgrades = {factor: item.get(factor, "none") for factor in DOWNGRADE_FACTORS}
         for factor in DOWNGRADE_FACTORS:
             _validate_level(downgrades.get(factor, "none"), _DOWNGRADE_STEPS, factor)
+        # F4-58：上面已按 "none" 放行缺因子，现算路径必须用同一补全后的 dict，
+        # 否则 final_quality 的严格校验会把刚放行的输入击落（自相矛盾）。
+        resolved_downgrades = {factor: downgrades.get(factor, "none")
+                               for factor in DOWNGRADE_FACTORS}
+        upgrades = item.get("upgrades")
+        if upgrades is not None and not isinstance(upgrades, dict):
+            # F4-60：原实现把非 dict 真值直接透传，final_quality 的 .items() 抛
+            # AttributeError，逃逸调用方统一的 except ValueError。
+            raise ValueError("upgrades 必须是 dict 或 None")
         level = item.get("final_quality")
-        if level not in GRADE_LEVELS:
+        if not _member(level, GRADE_LEVELS):
             # 未给最终质量时按因子现算（升级因子仅观察性可用）。
-            computed = final_quality(item.get("initial_design", "rct"), downgrades,
-                                     item.get("upgrades") or None)
+            computed = final_quality(item.get("initial_design", "rct"), resolved_downgrades,
+                                     upgrades or None)
             level = computed["final_quality"]
-        label_parts = [str(item.get("outcome", "")).strip() or "（未命名结局）"]
-        timepoint = str(item.get("timepoint", "")).strip()
+        # F4-64：键存在但值为 None 时 str(None) 得到真值 "None"，"（未命名结局）"
+        # 与"无时间点"回退都不生效；按"缺键/空值"统一折叠。
+        outcome = item.get("outcome")
+        label_parts = [str(outcome).strip() if outcome is not None else ""]
+        label_parts[0] = label_parts[0] or "（未命名结局）"
+        timepoint = item.get("timepoint")
+        timepoint = str(timepoint).strip() if timepoint is not None else ""
         if timepoint:
             label_parts.append(f"（{timepoint}）")
         participants = item.get("n_participants")
