@@ -402,7 +402,7 @@ def get_fulltext(db_path: StrPath, zotero_key: str) -> FulltextMeta | None:
     """取一篇文献的 PDF 元数据；从未上传过返回 None。"""
     with closing(_connect(db_path)) as conn:
         row = conn.execute(
-            f"SELECT {', '.join(_FULLTEXT_COLUMNS)} FROM fulltexts "
+            "SELECT zotero_key, filename, path, sha256, n_pages, added_at FROM fulltexts "
             "WHERE zotero_key = ?",
             (zotero_key,),
         ).fetchone()
@@ -607,7 +607,7 @@ def add_highlight(
 
 def list_highlights(db_path: StrPath, zotero_key: str | None = None) -> list[Highlight]:
     """列出高亮：指定文献时只列该文献；一律按 (page, id) 升序（确定性）。"""
-    sql = f"SELECT {', '.join(_HIGHLIGHT_COLUMNS)} FROM highlights"
+    sql = "SELECT id, zotero_key, page, text, color, note, created_at FROM highlights"
     params: tuple = ()
     if zotero_key is not None:
         sql += " WHERE zotero_key = ?"
@@ -786,7 +786,7 @@ def get_highlights_with_rects(db_path: StrPath, zotero_key: str) -> list[dict]:
     重绘）；旧行（rects_json 为空）或损坏 JSON 一律解析为 []，绝不抛异常。
     """
     sql = (
-        f"SELECT {', '.join(_HIGHLIGHT_COLUMNS)}, rects_json "
+        "SELECT id, zotero_key, page, text, color, note, created_at, rects_json "
         "FROM highlights WHERE zotero_key = ? ORDER BY page, id"
     )
     with closing(_connect(db_path)) as conn:
@@ -987,8 +987,8 @@ def get_stage2(db_path: StrPath, zotero_key: str) -> dict | None:
     """取一条复筛决策（含 updated_at）；从未复筛过返回 None。"""
     with closing(_connect(db_path)) as conn:
         row = conn.execute(
-            f"SELECT {', '.join(_STAGE2_FULL_COLUMNS)} FROM stage2_decisions "
-            "WHERE zotero_key = ?",
+            "SELECT zotero_key, decision, exclusion_reason, notes, tags, screened_at, "
+            "updated_at FROM stage2_decisions WHERE zotero_key = ?",
             (zotero_key,),
         ).fetchone()
     return dict(zip(_STAGE2_FULL_COLUMNS, row)) if row else None
@@ -1012,6 +1012,8 @@ def list_stage2_decisions(db_path: StrPath) -> list[dict]:
 #: 标题候选组成员（imported_in_batch=1 且组状态 pending/undecided）。复筛进度与
 #: 复筛队列必须共用这一个谓词（v06·F4-53：此前进度排除、队列不排除，同一库
 #: 两条路径给出不同的文献集合）。
+#: 2.1.5 waveA：该文本在下方查询里以**字面量内联**（Mimosa 钩子不允许在
+#: execute 处拼装 SQL）；本常量保留唯一权威原文，修改谓词时须同步各内联副本。
 _ELIGIBLE_ARTICLE_SQL = (
     "a.is_duplicate_of IS NULL AND NOT EXISTS ("
     "SELECT 1 FROM title_duplicate_members m "
@@ -1033,13 +1035,21 @@ def get_stage2_progress(db_path: StrPath) -> dict:
         total = conn.execute(
             "SELECT COUNT(*) FROM articles a "
             "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
-            f"WHERE {_ELIGIBLE_ARTICLE_SQL}"
+            "WHERE a.is_duplicate_of IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1 "
+            "AND r.status IN ('pending','undecided'))"
         ).fetchone()[0]
         for decision, cnt in conn.execute(
             "SELECT s.decision, COUNT(*) FROM stage2_decisions s "
             "JOIN articles a ON a.zotero_key = s.zotero_key "
             "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
-            f"WHERE {_ELIGIBLE_ARTICLE_SQL} "
+            "WHERE a.is_duplicate_of IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM title_duplicate_members m "
+            "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+            "WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1 "
+            "AND r.status IN ('pending','undecided')) "
             "GROUP BY s.decision"
         ):
             if decision in counts:
@@ -1087,7 +1097,12 @@ def stage2_queue(
         with closing(_connect(db_path)) as conn:
             eligible = {
                 row[0] for row in conn.execute(
-                    f"SELECT a.zotero_key FROM articles a WHERE {_ELIGIBLE_ARTICLE_SQL}"
+                    "SELECT a.zotero_key FROM articles a WHERE "
+                    "a.is_duplicate_of IS NULL AND NOT EXISTS ("
+                    "SELECT 1 FROM title_duplicate_members m "
+                    "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+                    "WHERE m.zotero_key=a.zotero_key AND m.imported_in_batch=1 "
+                    "AND r.status IN ('pending','undecided'))"
                 )
             }
         return [

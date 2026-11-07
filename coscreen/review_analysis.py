@@ -130,8 +130,47 @@ def save_study(db: DbPath, study_id: str, label: str, reports: list[str]) -> Non
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='review_single_group_counts'").fetchone():
             source_tables.append("review_single_group_counts")
         for key in removed:
-            if any(conn.execute(f"SELECT 1 FROM {table} WHERE study_id=? AND source_key=? LIMIT 1",
-                                (study_id, key)).fetchone() for table in source_tables):
+            # 表名来自模块内固定枚举 → 逐条字面量选择（标识符不拼接）。
+            uses_result = False
+            for table in source_tables:
+                if table == "review_effects":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_effects WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_rob":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_rob WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_dta_results":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_dta_results WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_qual_findings":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_qual_findings WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_dose_curves":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_dose_curves WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_binary_arms":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_binary_arms WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_network_studies":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_network_studies WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                elif table == "review_single_group_counts":
+                    hit = conn.execute(
+                        "SELECT 1 FROM review_single_group_counts WHERE study_id=? AND source_key=? LIMIT 1",
+                        (study_id, key)).fetchone()
+                else:
+                    hit = None
+                if hit is not None:
+                    uses_result = True
+                    break
+            if uses_result:
                 raise ValueError(f"report {key} is used by an analysis result; update that source first")
         conn.execute("INSERT INTO review_studies(id,label) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label",
                      (study_id, label))
@@ -281,15 +320,24 @@ def save_rob(db: DbPath, study_id: str, outcome: str, timepoint: str, framework:
 
 
 def list_rob(db: DbPath, study_id: str | None = None, outcome: str | None = None) -> list[dict]:
-    sql = "SELECT study_id,comparison,outcome,timepoint,framework,reviewer,domains_json,overall,overall_rationale,source_key,source_locator,updated_at FROM review_rob WHERE 1=1"
+    clauses = []
     args = []
     if study_id is not None:
-        sql += " AND study_id=?"; args.append(study_id)
+        clauses.append("study_id=?"); args.append(study_id)
     if outcome is not None:
-        sql += " AND outcome=?"; args.append(outcome)
+        clauses.append("outcome=?"); args.append(outcome)
     with closing(_connect(db)) as conn, conn:
         _ensure_rob_locator(conn)
-        rows = conn.execute(sql + " ORDER BY study_id,comparison,outcome,timepoint,framework,reviewer", args).fetchall()
+        rows = conn.execute(
+            "".join((
+                "SELECT study_id,comparison,outcome,timepoint,framework,reviewer,domains_json,"
+                "overall,overall_rationale,source_key,source_locator,updated_at FROM review_rob WHERE 1=1",
+                " AND " if clauses else "",
+                " AND ".join(clauses),
+                " ORDER BY study_id,comparison,outcome,timepoint,framework,reviewer",
+            )),
+            args,
+        ).fetchall()
     keys = ("study_id", "comparison", "outcome", "timepoint", "framework", "reviewer", "domains", "overall", "overall_rationale", "source_key", "source_locator", "updated_at")
     return [dict(zip(keys, (*r[:6], json.loads(r[6]), *r[7:]))) for r in rows]
 

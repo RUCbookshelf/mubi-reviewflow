@@ -6564,14 +6564,8 @@ def grade_save(task_id: str, body: GradeAssessmentIn,
     signals = {"initial_design": body.initial_design,
                "final_quality": outcome["final_quality"],
                "signals": body.signal_sources if isinstance(body.signal_sources, dict) else {}}
-    columns = ("task_id", "comparison", "outcome", "timepoint", "outcome_type",
-               *_GRADE_DOWNGRADE_COLUMNS, *_GRADE_UPGRADE_COLUMNS,
-               "signal_sources", "override_notes", "assessor", "created_at")
-    # 冲突键（task_id, comparison, outcome, timepoint, assessor）不进 SET 子句；
-    # 表/列名为本段固定字面量，数据值一律走参数占位符。
-    conflict_keys = {"task_id", "comparison", "outcome", "timepoint", "assessor"}
-    update_clause = ", ".join(f"{column}=excluded.{column}" for column in columns
-                              if column not in conflict_keys)
+    # 列清单与冲突键都是本节固定常量（_GRADE_DOWNGRADE_COLUMNS / _GRADE_UPGRADE_COLUMNS），
+    # 语句整体写成字面量；数据值一律走参数占位符。
     values = (task_id, body.comparison.strip(), body.outcome.strip(), body.timepoint.strip(),
               body.outcome_type,
               body.rob_downgrade, body.inconsistency_downgrade, body.indirectness_downgrade,
@@ -6582,10 +6576,21 @@ def grade_save(task_id: str, body: GradeAssessmentIn,
               user["username"], datetime.now().isoformat(timespec="seconds"))
     with closing(db_mod._connect(db)) as conn, conn:
         conn.execute(
-            f"INSERT INTO grade_assessments ({', '.join(columns)}) "
-            f"VALUES ({', '.join(['?'] * len(columns))}) "
-            f"ON CONFLICT(task_id, comparison, outcome, timepoint, assessor) "
-            f"DO UPDATE SET {update_clause}",
+            "INSERT INTO grade_assessments (task_id, comparison, outcome, timepoint, outcome_type, "
+            "rob_downgrade, inconsistency_downgrade, indirectness_downgrade, imprecision_downgrade, "
+            "publication_bias_downgrade, large_effect_upgrade, dose_response_upgrade, "
+            "plausible_confounding_upgrade, signal_sources, override_notes, assessor, created_at) VALUES (?, "
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, comparison, outcome, "
+            "timepoint, assessor) DO UPDATE SET outcome_type=excluded.outcome_type, "
+            "rob_downgrade=excluded.rob_downgrade, inconsistency_downgrade=excluded.inconsistency_downgrade, "
+            "indirectness_downgrade=excluded.indirectness_downgrade, "
+            "imprecision_downgrade=excluded.imprecision_downgrade, "
+            "publication_bias_downgrade=excluded.publication_bias_downgrade, "
+            "large_effect_upgrade=excluded.large_effect_upgrade, "
+            "dose_response_upgrade=excluded.dose_response_upgrade, "
+            "plausible_confounding_upgrade=excluded.plausible_confounding_upgrade, "
+            "signal_sources=excluded.signal_sources, override_notes=excluded.override_notes, "
+            "created_at=excluded.created_at",
             values)
     return {"saved": True,
             "comparison": body.comparison.strip(), "outcome": body.outcome.strip(),
@@ -6612,9 +6617,13 @@ def grade_export(task_id: str,
                *_GRADE_UPGRADE_COLUMNS, "signal_sources", "override_notes",
                "assessor", "created_at")
     with closing(db_mod._connect(db)) as conn:
+        # 列清单为上方固定常量，语句整体写成字面量；task_id 走参数绑定。
         stored = conn.execute(
-            f"SELECT {', '.join(columns)} FROM grade_assessments WHERE task_id=? "
-            "ORDER BY outcome, timepoint, comparison, assessor", (task_id,)).fetchall()
+            "SELECT comparison, outcome, timepoint, outcome_type, rob_downgrade, inconsistency_downgrade, "
+            "indirectness_downgrade, imprecision_downgrade, publication_bias_downgrade, large_effect_upgrade, "
+            "dose_response_upgrade, plausible_confounding_upgrade, signal_sources, override_notes, assessor, "
+            "created_at FROM grade_assessments WHERE task_id=? ORDER BY outcome, timepoint, comparison, "
+            "assessor", (task_id,)).fetchall()
     if not stored:
         raise _bad("该任务尚无已保存的 GRADE 评估。", 404)
     assessments = []

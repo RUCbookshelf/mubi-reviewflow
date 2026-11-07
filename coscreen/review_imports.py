@@ -99,7 +99,34 @@ def has_research(task_dir: Path, conn: sqlite3.Connection) -> bool:
         with closing(workflow.connect(path, read_only=True)) as other:
             tables = {r[0] for r in other.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             for table in sorted(tables & work_tables):
-                if other.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():
+                # 表名来自模块内固定枚举 work_tables → 逐条字面量选择。
+                if table == 'decisions':
+                    hit = other.execute('SELECT 1 FROM "decisions" LIMIT 1').fetchone()
+                elif table == 'stage2_decisions':
+                    hit = other.execute('SELECT 1 FROM "stage2_decisions" LIMIT 1').fetchone()
+                elif table == 'coding_values':
+                    hit = other.execute('SELECT 1 FROM "coding_values" LIMIT 1').fetchone()
+                elif table == 'coding_notes':
+                    hit = other.execute('SELECT 1 FROM "coding_notes" LIMIT 1').fetchone()
+                elif table == 'coding_note_images':
+                    hit = other.execute('SELECT 1 FROM "coding_note_images" LIMIT 1').fetchone()
+                elif table == 'highlights':
+                    hit = other.execute('SELECT 1 FROM "highlights" LIMIT 1').fetchone()
+                elif table == 'coding_rater_records':
+                    hit = other.execute('SELECT 1 FROM "coding_rater_records" LIMIT 1').fetchone()
+                elif table == 'coding_consensus_records':
+                    hit = other.execute('SELECT 1 FROM "coding_consensus_records" LIMIT 1').fetchone()
+                elif table == 'coding_freezes':
+                    hit = other.execute('SELECT 1 FROM "coding_freezes" LIMIT 1').fetchone()
+                elif table == 'workflow_coding_evidence':
+                    hit = other.execute('SELECT 1 FROM "workflow_coding_evidence" LIMIT 1').fetchone()
+                elif table == 'coding_evidence':
+                    hit = other.execute('SELECT 1 FROM "coding_evidence" LIMIT 1').fetchone()
+                elif table == 'workspace_undo':
+                    hit = other.execute('SELECT 1 FROM "workspace_undo" LIMIT 1').fetchone()
+                else:
+                    hit = None
+                if hit:
                     conn.execute('UPDATE workflow_import_state SET researched=1 WHERE singleton=1')
                     return True
             if 'trace_events' in tables and other.execute('''SELECT 1 FROM trace_events WHERE
@@ -445,8 +472,10 @@ def decide_metadata(conn: sqlite3.Connection, batch_id: str, rid: str, action: s
     if action == 'accept_incoming':
         if metadata(current) != metadata(json.loads(row['before_json'])):
             raise ValueError('Canonical metadata changed after this proposal. Keep the current metadata and submit a fresh proposal.')
-        conn.execute('UPDATE articles SET ' + ','.join(f'{field}=?' for field in METADATA_FIELDS) + ' WHERE zotero_key=?',
-                     [incoming.get(field) for field in METADATA_FIELDS] + [key])
+        conn.execute(
+            'UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,'
+            'abstract=?,url=? WHERE zotero_key=?',
+            [incoming.get(field) for field in METADATA_FIELDS] + [key])
         revision = conn.execute('SELECT catalog_revision FROM workflow_state WHERE singleton=1').fetchone()[0]
         conn.execute('''INSERT INTO workflow_metadata_acceptances VALUES(?,?,?,?) ON CONFLICT(zotero_key)
             DO UPDATE SET revision=excluded.revision,metadata_json=excluded.metadata_json,record_id=excluded.record_id''',

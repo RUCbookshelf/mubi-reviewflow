@@ -690,7 +690,7 @@ def iter_fulltexts(db_path: str | Path) -> list[dict]:
     try:
         with closing(sqlite3.connect(uri, uri=True)) as conn:
             rows = conn.execute(
-                f"SELECT {', '.join(_FULLTEXT_QUERY_COLUMNS)} FROM fulltexts"
+                "SELECT zotero_key, filename, path, sha256 FROM fulltexts"
             ).fetchall()
     except sqlite3.Error:
         return []

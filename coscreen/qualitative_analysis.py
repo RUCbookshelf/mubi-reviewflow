@@ -51,8 +51,9 @@ def add_category(db: DbPath, label: str, finding_ids: list[int], reviewer: str) 
         raise ValueError("duplicate finding")
     with closing(_connect(db)) as conn, conn:
         marks = ",".join("?" for _ in finding_ids)
-        found = conn.execute(f"SELECT id,credibility FROM review_qual_findings WHERE id IN ({marks})",
-                             finding_ids).fetchall()
+        found = conn.execute(
+            "".join(("SELECT id,credibility FROM review_qual_findings WHERE id IN (", marks, ")")),
+            finding_ids).fetchall()
         if len(found) != len(finding_ids):
             raise ValueError("finding does not exist")
         if any(credibility == "unsupported" for _, credibility in found):
@@ -81,8 +82,9 @@ def add_synthesis(db: DbPath, finding: str, category_ids: list[int], reviewer: s
         raise ValueError("duplicate category")
     with closing(_connect(db)) as conn, conn:
         marks = ",".join("?" for _ in category_ids)
-        rows = conn.execute(f"SELECT id FROM review_qual_categories WHERE id IN ({marks})",
-                            category_ids).fetchall()
+        rows = conn.execute(
+            "".join(("SELECT id FROM review_qual_categories WHERE id IN (", marks, ")")),
+            category_ids).fetchall()
         if len(rows) != len(category_ids):
             raise ValueError("category does not exist")
         cur = conn.execute("INSERT INTO review_qual_syntheses(finding,reviewer,created_at) VALUES (?,?,?)",

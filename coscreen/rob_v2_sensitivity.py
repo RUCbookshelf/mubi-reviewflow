@@ -75,7 +75,8 @@ def _legacy_records(conn) -> list[dict]:
     fields = ("study_id", "comparison", "outcome", "timepoint", "framework", "reviewer",
               "domains_json", "overall", "overall_rationale", "source_key", "source_locator", "updated_at")
     rows = conn.execute(
-        "SELECT " + ",".join(fields) + " FROM review_rob "
+        "SELECT study_id,comparison,outcome,timepoint,framework,reviewer,domains_json,overall,"
+        "overall_rationale,source_key,source_locator,updated_at FROM review_rob "
         "ORDER BY study_id,comparison,outcome,timepoint,framework,reviewer"
     ).fetchall()
     return [from_legacy_row(dict(zip(fields, row))) for row in rows]
@@ -86,7 +87,9 @@ def _load_effect(conn, ref: dict) -> dict | None:
               "timepoint", "measure", "estimate", "se", "source_key", "input_json", "entry_method",
               "selected", "source_locator", "changed_at")
     row = conn.execute(
-        "SELECT " + ",".join(fields) + " FROM review_effect_versions "
+        "SELECT effect_version_id,revision,result_id,study_id,comparison,outcome,timepoint,"
+        "measure,estimate,se,source_key,input_json,entry_method,selected,source_locator,"
+        "changed_at FROM review_effect_versions "
         "WHERE result_id=? AND effect_version_id=?",
         (ref["result_id"], ref["effect_version_id"]),
     ).fetchone()
@@ -222,8 +225,11 @@ def analyze(db_path: DbPath, *, result_refs: list[dict], framework: str, tool_ve
                                         study_ids=multiple)
         placeholders = ",".join("?" for _ in effects)
         designs = conn.execute(
-            "SELECT cluster_id,sample_id FROM review_effect_design WHERE result_id IN (" +
-            placeholders + ")", tuple(effect["result_id"] for effect in effects)).fetchall()
+            "".join((
+                "SELECT cluster_id,sample_id FROM review_effect_design WHERE result_id IN (",
+                placeholders, ")",
+            )),
+            tuple(effect["result_id"] for effect in effects)).fetchall()
         if any(len({row[column] for row in designs}) != len(designs) for column in (0, 1)):
             raise RobV2SensitivityError("dependent_effects_unsupported",
                                         "Selected effects share a recorded cluster or sample")

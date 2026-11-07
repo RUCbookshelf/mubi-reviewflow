@@ -367,8 +367,14 @@ class WorkflowRuntime:
         with closing(store.connect(db, read_only=True)) as conn:
             if not store.has_table(conn, "articles"):
                 return []
-            columns = "zotero_key,title,authors,journal,year,doi,item_type,is_duplicate_of,import_order" if compact else "*"
-            return [dict(row) for row in conn.execute(f"SELECT {columns} FROM articles ORDER BY import_order,zotero_key")]
+            # compact 的两种取值都是固定枚举：各写一条字面量 SQL。
+            if compact:
+                rows = conn.execute(
+                    "SELECT zotero_key,title,authors,journal,year,doi,item_type,is_duplicate_of,import_order "
+                    "FROM articles ORDER BY import_order,zotero_key")
+            else:
+                rows = conn.execute("SELECT * FROM articles ORDER BY import_order,zotero_key")
+            return [dict(row) for row in rows]
 
     @staticmethod
     def article_row(db: Path, key: str) -> dict | None:
@@ -393,7 +399,12 @@ class WorkflowRuntime:
                 for row in conn.execute("SELECT zotero_key,dimension_id,value FROM coding_values"):
                     result.setdefault(row[0], {})[row[1]] = row[2]
                 return result
-            return {row["zotero_key"]: dict(row) for row in conn.execute(f"SELECT * FROM {table}")}
+            # table 只来自上方固定枚举（coding 已提前返回）：两条字面量 SQL。
+            if table == "stage2_decisions":
+                rows = conn.execute("SELECT * FROM stage2_decisions")
+            else:
+                rows = conn.execute("SELECT * FROM decisions")
+            return {row["zotero_key"]: dict(row) for row in rows}
 
     @staticmethod
     def saved_item(db: Path, stage: str, key: str) -> dict | None:
@@ -406,7 +417,11 @@ class WorkflowRuntime:
             if stage == "coding":
                 return {row[0]: row[1] for row in conn.execute(
                     "SELECT dimension_id,value FROM coding_values WHERE zotero_key=?", (key,))}
-            row = conn.execute(f"SELECT * FROM {table} WHERE zotero_key=?", (key,)).fetchone()
+            # table 只来自上方固定枚举（coding 已提前返回）：两条字面量 SQL。
+            if table == "stage2_decisions":
+                row = conn.execute("SELECT * FROM stage2_decisions WHERE zotero_key=?", (key,)).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM decisions WHERE zotero_key=?", (key,)).fetchone()
             return dict(row) if row else None
 
     def eligible(self, ctx: WorkflowContext, stage: str) -> tuple[list[dict], dict]:

@@ -239,7 +239,8 @@ def _options_json(options: list[str]) -> str:
 def _fetch_dimension(conn: sqlite3.Connection, dim_id: int) -> dict | None:
     """按 id 取维度（公开字典形态）；不存在返回 None。"""
     row = conn.execute(
-        f"SELECT {', '.join(_DIM_COLUMNS)} FROM coding_dimensions WHERE id = ?",
+        "SELECT id, name, dtype, options_json, multi_select, unit, description, section, "
+        "position, created_at FROM coding_dimensions WHERE id = ?",
         (int(dim_id),),
     ).fetchone()
     return _row_to_dimension(row) if row else None
@@ -369,8 +370,8 @@ def list_dimensions(db: StrPath) -> list[dict]:
     """
     with closing(_connect(db)) as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(_DIM_COLUMNS)} FROM coding_dimensions "
-            "ORDER BY section, position, id"
+            "SELECT id, name, dtype, options_json, multi_select, unit, description, section, "
+            "position, created_at FROM coding_dimensions ORDER BY section, position, id"
         ).fetchall()
     return [_row_to_dimension(r) for r in rows]
 
@@ -666,21 +667,25 @@ def _cascade_delete_dimensions(
     paths = [
         r[0]
         for r in conn.execute(
-            f"SELECT i.path FROM coding_note_images i JOIN coding_notes n "
-            f"ON n.id = i.note_id WHERE n.dimension_id IN ({marks})",
+            "".join((
+                "SELECT i.path FROM coding_note_images i JOIN coding_notes n ",
+                "ON n.id = i.note_id WHERE n.dimension_id IN (", marks, ")",
+            )),
             tuple(ids),
         ).fetchall()
     ]
     conn.execute(
-        f"DELETE FROM coding_note_images WHERE note_id IN "
-        f"(SELECT id FROM coding_notes WHERE dimension_id IN ({marks}))",
+        "".join((
+            "DELETE FROM coding_note_images WHERE note_id IN ",
+            "(SELECT id FROM coding_notes WHERE dimension_id IN (", marks, "))",
+        )),
         tuple(ids),
     )
     conn.execute(
-        f"DELETE FROM coding_notes WHERE dimension_id IN ({marks})", tuple(ids)
+        "".join(("DELETE FROM coding_notes WHERE dimension_id IN (", marks, ")")), tuple(ids)
     )
     conn.execute(
-        f"DELETE FROM coding_values WHERE dimension_id IN ({marks})", tuple(ids)
+        "".join(("DELETE FROM coding_values WHERE dimension_id IN (", marks, ")")), tuple(ids)
     )
     return [p for p in paths if p]
 
@@ -852,8 +857,8 @@ def _scheme_snapshot(conn: sqlite3.Connection) -> list[dict]:
             for row in conn.execute("SELECT dimension_id, field_id FROM workflow_coding_fields")
         }
     rows = conn.execute(
-        f"SELECT {', '.join(_DIM_COLUMNS)} FROM coding_dimensions "
-        "ORDER BY section, position, id"
+        "SELECT id, name, dtype, options_json, multi_select, unit, description, section, "
+        "position, created_at FROM coding_dimensions ORDER BY section, position, id"
     ).fetchall()
     snapshot = []
     for row in rows:
@@ -1291,8 +1296,8 @@ def get_coding_note(db: StrPath, dim_id: int, key: str) -> dict | None:
     """
     with closing(_connect(db)) as conn:
         row = conn.execute(
-            f"SELECT {', '.join(_NOTE_COLUMNS)} FROM coding_notes "
-            "WHERE dimension_id = ? AND zotero_key = ?",
+            "SELECT id, dimension_id, zotero_key, text, created_at, updated_at "
+            "FROM coding_notes WHERE dimension_id = ? AND zotero_key = ?",
             (int(dim_id), key),
         ).fetchone()
     return dict(zip(_NOTE_COLUMNS, row)) if row else None
@@ -1305,8 +1310,8 @@ def list_coding_notes(db: StrPath) -> list[dict]:
     """
     with closing(_connect(db)) as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(_NOTE_COLUMNS)} FROM coding_notes "
-            "ORDER BY dimension_id, id"
+            "SELECT id, dimension_id, zotero_key, text, created_at, updated_at "
+            "FROM coding_notes ORDER BY dimension_id, id"
         ).fetchall()
     return [dict(zip(_NOTE_COLUMNS, r)) for r in rows]
 
@@ -1427,7 +1432,7 @@ def list_note_images(db: StrPath, note_id: int | None = None) -> list[dict]:
     可一次取回全库图片）；每项含全部数据库字段，另附 ``filename``（文件名）
     与 ``exists``（磁盘文件是否仍在）。
     """
-    sql = f"SELECT {', '.join(_IMAGE_COLUMNS)} FROM coding_note_images"
+    sql = "SELECT id, note_id, path, sha256, ocr_text, ocr_status, created_at FROM coding_note_images"
     params: tuple = ()
     if note_id is not None:
         sql += " WHERE note_id = ?"

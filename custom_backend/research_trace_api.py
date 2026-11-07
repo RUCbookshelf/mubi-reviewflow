@@ -309,6 +309,8 @@ def _attach_subject_titles(paths: dict[str, Any], events: list[dict[str, Any]]) 
         return events
     title_by_subject: dict[str, str] = {}
     title_paths = {name: paths.get(name) for name in ("shared", "personal") if paths.get(name) is not None}
+    # 占位符个数由 subject_ids 数量决定，SQLite 不支持绑定占位符列表；拼入的
+    # 内容只有 '?' 字符，具体 id 值仍通过参数绑定传入（检查器白名单已登记）。
     placeholders = ",".join("?" for _ in subject_ids)
     for _name, path in _unique_paths(title_paths):
         try:
@@ -350,6 +352,8 @@ def _cross_store_subject_counts(
         branches = []
         params: list[Any] = []
         for index, (path, cutoff) in enumerate(stores):
+            # ATTACH 的 schema 名是 SQLite 标识符，无法用 ? 绑定；它由内部整数
+            # 序号生成（trace_store_<index>），不含外部输入（检查器白名单已登记）。
             schema = f"trace_store_{index}"
             uri = Path(path).resolve().as_uri() + "?mode=ro"
             conn.execute(f"ATTACH DATABASE ? AS {schema}", (uri,))
@@ -363,6 +367,8 @@ def _cross_store_subject_counts(
                 "OR action LIKE 'imported_coding_note_%' OR action LIKE 'imported_rater_record_%')"
             )
             params.extend((str(task_id), str(actor_id), int(cutoff)))
+        # 跨库 UNION ALL 的分支数取决于 store 数量，且分支里的 schema 是 ATTACH
+        # 标识符（无法绑定）；各分支的数据过滤值全部是 ? 参数（检查器白名单已登记）。
         query = (
             "WITH research AS (" + " UNION ALL ".join(branches) + ") "
             "SELECT 'unique' AS metric,'' AS label,COUNT(DISTINCT subject_id) AS n FROM research "

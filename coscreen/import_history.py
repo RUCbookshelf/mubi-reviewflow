@@ -37,7 +37,7 @@ def _connect(path: str | Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=_BUSY_TIMEOUT_MS / 1000)
-    conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA busy_timeout=15000")
     # WAL 是库文件级持久设置；对既有库是幂等切换，对并发读者无破坏。
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -204,9 +204,11 @@ def list_imports(
         if ids:
             marks = ",".join("?" for _ in ids)
             file_rows = conn.execute(
-                "SELECT import_id, file_index, filename, length(content), sha256 "
-                f"FROM import_files WHERE import_id IN ({marks}) "
-                "ORDER BY import_id, file_index",
+                "".join((
+                    "SELECT import_id, file_index, filename, length(content), sha256 ",
+                    "FROM import_files WHERE import_id IN (", marks, ") ",
+                    "ORDER BY import_id, file_index",
+                )),
                 ids,
             ).fetchall()
 

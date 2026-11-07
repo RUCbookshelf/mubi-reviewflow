@@ -61,8 +61,11 @@ def snapshot(conn, kind: str, subject: str) -> dict:
     members_by_candidate: dict[str, list] = {}
     if candidate_ids:
         for candidate_id, ref_id in conn.execute(
-                "SELECT candidate_id,ref_id FROM workflow_import_candidate_members "
-                "WHERE ref_type='record' AND candidate_id IN (" + ','.join('?' for _ in candidate_ids) + ")",
+                "".join((
+                    "SELECT candidate_id,ref_id FROM workflow_import_candidate_members ",
+                    "WHERE ref_type='record' AND candidate_id IN (",
+                    ",".join('?' for _ in candidate_ids), ")",
+                )),
                 tuple(candidate_ids)):
             members_by_candidate.setdefault(candidate_id, []).append(ref_id)
         for candidate_id in members_by_candidate:
@@ -81,16 +84,19 @@ def snapshot(conn, kind: str, subject: str) -> dict:
     if all_record_ids:
         placeholders = ','.join('?' for _ in all_record_ids)
         record_rows = {row['id']: dict(row) for row in conn.execute(
-            f'SELECT * FROM workflow_source_records WHERE id IN ({placeholders})', tuple(all_record_ids))}
+            "".join(("SELECT * FROM workflow_source_records WHERE id IN (", placeholders, ")")),
+            tuple(all_record_ids))}
         proposal_rows = {row['record_id']: dict(row) for row in conn.execute(
-            f'SELECT * FROM workflow_import_metadata WHERE record_id IN ({placeholders})', tuple(all_record_ids))}
+            "".join(("SELECT * FROM workflow_import_metadata WHERE record_id IN (", placeholders, ")")),
+            tuple(all_record_ids))}
     else:
         proposal_rows = {}
     candidate_rows = {}
     if candidate_ids:
         placeholders = ','.join('?' for _ in candidate_ids)
         candidate_rows = {row['id']: dict(row) for row in conn.execute(
-            f'SELECT * FROM workflow_import_candidates WHERE id IN ({placeholders})', tuple(candidate_ids))}
+            "".join(("SELECT * FROM workflow_import_candidates WHERE id IN (", placeholders, ")")),
+            tuple(candidate_ids))}
     # metadata 类 part 的 canonical 文章 + acceptance（canonical 沿 is_duplicate_of
     # 链解析，需逐 part 调用；part 数受 bulk 上限 100 约束）
     article_rows, acceptance_rows = {}, {}
@@ -220,21 +226,27 @@ def restore(conn, batch: str, actor: str) -> dict:
                      (record['canonical_key'], record['target_record_id'], record['outcome'], record['state'], record['id']))
     for candidate in before['candidates']:
         fields = ('status', 'keeper_key', 'keeper_record_id', 'decided_by', 'updated_at')
-        conn.execute('UPDATE workflow_import_candidates SET '+','.join(f'{f}=?' for f in fields)+' WHERE id=?',
-                     [candidate[f] for f in fields] + [candidate['id']])
+        conn.execute(
+            "UPDATE workflow_import_candidates SET status=?,keeper_key=?,keeper_record_id=?,"
+            "decided_by=?,updated_at=? WHERE id=?",
+            [candidate[f] for f in fields] + [candidate['id']])
     proposal_ids = {r['record_id'] for r in before['proposals']}
     for proposal in after['proposals']:
         if proposal['record_id'] not in proposal_ids:
             conn.execute('DELETE FROM workflow_import_metadata WHERE record_id=?', (proposal['record_id'],))
     for proposal in before['proposals']:
         fields = ('canonical_key', 'before_json', 'incoming_json', 'action', 'accepted_json', 'decided_by', 'decided_at')
-        conn.execute('UPDATE workflow_import_metadata SET '+','.join(f'{f}=?' for f in fields)+' WHERE record_id=?',
-                     [proposal[f] for f in fields]+[proposal['record_id']])
+        conn.execute(
+            "UPDATE workflow_import_metadata SET canonical_key=?,before_json=?,incoming_json=?,"
+            "action=?,accepted_json=?,decided_by=?,decided_at=? WHERE record_id=?",
+            [proposal[f] for f in fields]+[proposal['record_id']])
     for article in before['articles']:
         if imports.metadata(article) == imports.metadata(next((r for r in after['articles'] if r['zotero_key']==article['zotero_key']), {})):
             continue
-        conn.execute('UPDATE articles SET '+','.join(f'{f}=?' for f in imports.METADATA_FIELDS)+' WHERE zotero_key=?',
-                     [article[f] for f in imports.METADATA_FIELDS]+[article['zotero_key']])
+        conn.execute(
+            "UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,"
+            "abstract=?,url=? WHERE zotero_key=?",
+            [article[f] for f in imports.METADATA_FIELDS]+[article['zotero_key']])
         workflow.bump_catalog_revision(None, conn=conn)
         revision = conn.execute('SELECT catalog_revision FROM workflow_state WHERE singleton=1').fetchone()[0]
         # Publish a new metadata revision so already-synchronized reviewers can
