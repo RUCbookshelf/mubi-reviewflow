@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -144,6 +145,24 @@ class ArbitrationServerLoadTests(unittest.TestCase):
             conn.execute(
                 "UPDATE workflow_state SET stages_json=?", (json.dumps(stages),))
 
+    @contextmanager
+    def _exclusive_lock(self, path: Path):
+        """模拟外部进程（备份/杀软/网盘同步）独占某个筛选员个人库。
+
+        生产库是 WAL（读写不互斥）；先切回 rollback journal 再 ``BEGIN
+        EXCLUSIVE``，只读连接才会在 busy timeout 后真正拿到
+        ``database is locked``——这正是补扫缺陷要覆盖的「暂时不可读」。
+        """
+        with closing(sqlite3.connect(path)) as setup:
+            setup.execute("PRAGMA journal_mode=DELETE")
+        holder = sqlite3.connect(path, timeout=1)
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            yield
+        finally:
+            holder.rollback()
+            holder.close()
+
     def _server_merge(self, *, stage: str = "stage1", actor: int = 0, params: dict | None = None):
         query = {"stage": stage, **(params or {})}
         return self.client.get(
@@ -216,6 +235,42 @@ class ArbitrationServerLoadTests(unittest.TestCase):
         r = self._server_merge()
         self.assertEqual(r.status_code, 400, r.text)
         self.assertIn("2 到 9", r.json()["detail"])
+
+    # ---- 2b. 补扫：锁忙成员不得被静默剔除出合并集 -----------------------
+
+    def test_server_merge_locked_member_returns_503_without_member_content(self):
+        """被持锁的成员库是「暂时不可读」，不是「没有决策」。
+
+        缺陷：``_decision_rows_read_only`` 把 ``database is locked`` 吞成 ``[]``，
+        缺员合并表照常返回（更少的一致率/冲突集）。修复后必须 503（稍后重试），
+        且响应不得携带任何成员判定。
+        """
+        from coscreen import screening_arbitration
+        self._seed_three()
+        with self._exclusive_lock(self._screener_db(2)), mock.patch.object(
+                screening_arbitration, "SCREENER_READ_TIMEOUT", 0.2):
+            r = self._server_merge()
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertNotIn("K1", r.text)
+        self.assertNotIn("decision_", r.text)
+        self.assertNotIn('"include"', r.text)
+        self.assertNotIn('"exclude"', r.text)
+
+    def test_server_save_locked_member_returns_503_and_persists_nothing(self):
+        """server-save 不得把缺员合并表落成 append-only 仲裁记录。"""
+        from coscreen import screening_arbitration
+        from coscreen import task_collaboration as collaboration_mod
+        self._seed_three()
+        url = f"/api/tasks/{self.task}/screening-arbitrations/server-save"
+        payload = {"stage": "stage1", "resolutions": [], "server_source": True}
+        with self._exclusive_lock(self._screener_db(2)), mock.patch.object(
+                screening_arbitration, "SCREENER_READ_TIMEOUT", 0.2):
+            r = self.client.post(url, json=payload, headers=self.auth())
+        self.assertEqual(r.status_code, 503, r.text)
+        store = collaboration_mod.shared_store_path(self.info.dir)
+        self.assertIsNone(
+            screening_arbitration.latest_decision_arbitration(store, "stage1"),
+            "锁忙时不得落盘任何仲裁记录（append-only 且不可修改）")
 
     # ---- 3. 双盲守卫 ---------------------------------------------------
 
@@ -465,3 +520,75 @@ class LoadScreenerDecisionPackagesTests(unittest.TestCase):
         from coscreen.screening_arbitration import load_screener_decision_packages
         with self.assertRaises(ValueError):
             load_screener_decision_packages([], stage="stage3")
+
+
+class TransientScreenerLibraryLockTests(unittest.TestCase):
+    """补扫（权限与双盲）：锁忙成员库不得被折叠成「该成员没有决策」。
+
+    缺陷路径：``_decision_rows_read_only`` 的 ``except (sqlite3.DatabaseError,
+    OSError): return []`` 把 ``sqlite3.OperationalError('database is locked')``
+    一起吞掉，``load_screener_decision_packages`` 再 ``if not rows: continue``
+    → 缺员合并表（更少的 κ/一致率/冲突集）照常返回，server-save 还会把它落成
+    append-only 仲裁记录。暂时不可读必须与「确无决策/永久损坏」分开：抛
+    ``ScreenerLibraryUnavailableError``，由 HTTP 层映射 503 重试语义。
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory(prefix="r12arb_lock_")
+        self.root = Path(self._dir.name)
+        self.paths = {}
+        for name, decision in (("alpha", "include"), ("beta", "exclude"),
+                               ("carol", "include")):
+            path = self.root / f"{name}.db"
+            path.write_bytes(_TEMPLATE_DB_BYTES)
+            db_mod.save_decision(path, "K1", decision)
+            self.paths[name] = path
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    @contextmanager
+    def _exclusive_lock(self, path: Path):
+        with closing(sqlite3.connect(path)) as setup:
+            setup.execute("PRAGMA journal_mode=DELETE")
+        holder = sqlite3.connect(path, timeout=1)
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            yield
+        finally:
+            holder.rollback()
+            holder.close()
+
+    def test_locked_member_raises_instead_of_silent_drop(self):
+        from coscreen import screening_arbitration
+        with self._exclusive_lock(self.paths["carol"]), mock.patch.object(
+                screening_arbitration, "SCREENER_READ_TIMEOUT", 0.2):
+            with self.assertRaises(
+                    screening_arbitration.ScreenerLibraryUnavailableError):
+                screening_arbitration.load_screener_decision_packages(
+                    list(self.paths.values()))
+
+    def test_two_members_one_locked_is_not_reported_as_too_few(self):
+        """两人都有决策、其中一人被持锁：不得报「请提供 2 到 9 份」。"""
+        from coscreen import screening_arbitration
+        with self._exclusive_lock(self.paths["carol"]), mock.patch.object(
+                screening_arbitration, "SCREENER_READ_TIMEOUT", 0.2):
+            with self.assertRaises(
+                    screening_arbitration.ScreenerLibraryUnavailableError) as caught:
+                screening_arbitration.load_screener_decision_packages(
+                    [self.paths["alpha"], self.paths["carol"]])
+        self.assertNotIn("2 到 9", str(caught.exception))
+
+    def test_release_lock_restores_full_member_set(self):
+        """锁释放后同一调用必须回到三人合并集——证明此前缺失不是「确无决策」。"""
+        from coscreen import screening_arbitration
+        with self._exclusive_lock(self.paths["carol"]), mock.patch.object(
+                screening_arbitration, "SCREENER_READ_TIMEOUT", 0.2):
+            with self.assertRaises(
+                    screening_arbitration.ScreenerLibraryUnavailableError):
+                screening_arbitration.load_screener_decision_packages(
+                    list(self.paths.values()))
+        packages = screening_arbitration.load_screener_decision_packages(
+            list(self.paths.values()))
+        self.assertEqual(list(packages), ["alpha", "beta", "carol"])
+

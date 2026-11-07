@@ -86,6 +86,23 @@
 - 第三轮收紧（r3 复审）：① 非公网地址判据改为 `is_global` 白名单——旧判据漏掉 100.64.0.0/10（RFC 6598 CGNAT），阿里云 ECS 元数据面 `100.100.100.200` 会被当成可访问地址真实抓取；② 出站 opener 显式挂空 `ProxyHandler({})`——否则 `HTTP(S)_PROXY` 会把 DOI 与联系 email 整包发给代理，配置到回环的自托管端点也收不到请求；③ 官方 Unpaywall 身份判定不再看端口（`:80` / `:8443` 变体曾同时绕过 email 必填与 https 强制，现按 hostname 判官方，非 443 端口一律拒绝）；④ 批量/单篇的幂等 request_id 改为对文献键散列（旧写法拼原键，键长 ≥164 字符时超 200 上限导致合法文献永久失败）；⑤ 读库与工作流门禁纳入 503 兜底（SQLite 争用不再 500），批量逐条折成 `failed/storage`；⑥ 前端补三条回归钉子（覆盖确认、批量补充计数、鉴权 blob 打开），此前这三条修复在 CI 里退回也全绿；⑦「打开 PDF」不再双开标签页（`window.open(..., 'noopener')` 恒返回 null 会误入兜底分支）；⑧ 界面披露句与后端 `pdf_hosts_note` 同口径（含「本机与内网地址一律拒绝」）；⑨ 域名解析失败单列 `unresolvable`（502），不再误报成「指向内网」；⑩ 批量跳过按原因拆分（已有全文 / 键非法 / 工作流拦截 / 上游中止）；⑪ 成员读取设置时联系 email 掩码（`o***@team.test`），仅负责人可见完整值；⑫ 出站兜底不再吞 `AssertionError`（测试桩的「未声明端点」断言不会被降级成 502）。
 - 验证（本泳道工作树 `E:/rf214-r8-features` 实跑）：`python -m pytest build/tests/test_pdf_fetch_api.py -q` → 69 passed / 35 subtests（含 r3 新增 9 项）；`node --test build/tests/pdf_fetch_ui.test.cjs` → 11 passed；CI 同款合并命令 `node --test build/tests/{import_review_model,import_review_updates,ml_batch,study_design_badge,pdf_fetch_ui}.test.cjs` → 38 passed（本版已把 `pdf_fetch_ui.test.cjs` 接入 `release.yml`）。破坏即红：后端 5 个变异（is_global 判据、空 ProxyHandler、官方端口判定、幂等键散列、存储兜底）与前端 3 个变异（补充计数、覆盖确认、blob 打开）全部使对应钉子变红（副本上做，目标树未改）。门禁实跑：`python -m pytest build/tests -q` → 958 passed, 4 skipped, 220 subtests passed。
 
+## 后续波次概要（r9–r14）
+
+- **r9 夜扫波**：夜间扫描确认的 286 条问题处置——约 268 条修妥、6 条经复核销账（基线已修、留探针证据），其余为部分落地并登记小尾巴（r9.1 收口 5 条）。代表项：贝叶斯大样本（n≥200）改分片 CDF 后不再整体拒绝、SVM 路径内存峰值约 152MB → 约 1.1MB、构建链截断下载信任/BOM/双卸载器互删、门禁 fail-open 收口。
+- **r10 UX 与导入决策波**：UX 批准单 60 项（34 修复 + 26 随版缓解，F58 复核不成立而放弃）、导入流程 12 项按简报推荐方案落地、A7 统计验证材料公开（10 个经典数据集 / 204 项检查，逐项归因）。
+- **r11 对标工程**：ERIC 检索通道接入（仅官方 `api.ies.ed.gov`、用户点击才出站），题录经既有受保护导入管线进入待审。台账中的 ML 版预置分类器与 SYNERGY 式公开外部回测**未随本版交付**；本版交付的是 r8 的规则版研究设计分类器（源码中无机器学习分类器模型或公开外部回测报告）。
+- **r11c 撤销读路径**：导入核验撤销的可用性不再依赖全局工作流版本，改由与条目作用域一致的三道守卫（行状态、快照逐位一致、无已激活记录）判定。
+- **r12 仲裁与角色开关**（提交 `7fb49a0`，合入 `cf7c342`）：合并仲裁页在联网团队模式下可「从服务器加载全部筛选员决策」（双盲阶段进行中拒绝并提示；≥2 位成员有决策才可加载；CSV 上传离线流程保留为回退）；裁决员「同时允许参与筛选」改为负责人对每名成员的开关，仲裁权不可关闭，存量裁决员默认保留、新授权默认不带，无筛选权的裁决员看到引导文案而非裸 403，变更留痕并覆盖十语言。数据层新增 `collaboration_settings` / `collaboration_member_settings` 表与一次性回填（见执行报告第一部分）。
+- **r13 终扫波**（提交 `5a8eaa6`，合入 `6fde937`）：终扫 9 项 + 登记尾巴 5 项。用户可感知项：批次卡片统计行不再把 DOM 元素当翻译参数（十语言都曾显示 `[object HTMLSpanElement]`）；Windows 引导改用固定版本 wheel + sha256（不再使用滚动 `get-pip.py`）；桌面启动器在 `REVIEWFLOW_MODE=server` 下明确拒绝（返回码 2）而非静默切桌面；PDF 通道改为「解析一次、钉住已校验公网 IP」连接；Crossref 空响应返回 200 空建议；长导入期间偏倚风险/DTA 结果页不再因数据库被占用返回 500；`network_random` 的 REML 对数似然更正为标准误差对照密度口径（含 `−log|X'X|`），分块可辨识性特征值与稠密路径精确同量。
+- **r14 收尾波**：FL4 日语词条统一（报告证据三处「可信性」→「信頼性」）；导入批次列表在 `reviewflow:language-changed` 时用缓存原地重渲染（不重新请求 `/import-batches`）；r12 真浏览器验收发现并修复两个真缺陷（合并仲裁控件在一次服务器加载/CSV 合并后被永久禁用；负责人切换筛选开关后成员进入筛选页仍读旧权限）；补扫 5 项：仲裁服务器加载区分「暂时不可读」（503 + 十语言「稍后重试」文案，不落盘缺员合并表）与「确无决策」、服务器合并在途请求跨任务切换守卫、PDF 候选地址逐地址钉扎回退。
+
+## Validation record（r9–r14）
+
+- `build/tests/w5_pwa_sw_browser.cjs`：真浏览器 Service Worker 端到端（注册/activate/controller、runtime 缓存名与 `?v=` 条目、shell 缓存键等于 `registration.scope`、`setOffline` 后 reload 仍出应用壳且真实 `postMessage` 提示条出现、`/api/` 不进缓存、根路径与 `/reviewflow/` 子路径同构），已接入 `build/tests/test_r8_w5_pwa_static_guards.py` 的 pytest 门控（缺少 Playwright 环境变量时 skip），该泳道实跑 5/5 稳定。`docs/MOBILE_INTERFACE.md` 中没有「离线 SW 未自动化」这类措辞，无需修改。
+- `build/tests/test_r12_arbitration_browser.cjs`：r12 真浏览器验收（20 条断言，覆盖验收单 1–7；账号/任务/文献走 API 准备，邀请、成员卡开关、初筛/复筛决策、阶段暂停、服务器加载、冲突仲裁、保存、最近记录、导出、CSV 上传均走页面点击），由 `build/tests/test_r12_browser_acceptance.py` 以 `skipif` + subprocess 接入 pytest（pytest 自行起停隔离服务器/桌面实例）。
+- 其余定向钉子：`build/tests/test_r13_import_counts_static.py` / `test_r13_import_counts_browser.cjs`（批次统计行与单位词）、`build/tests/test_r13_pdf_pinning.py`（逐地址钉扎）、`build/tests/test_r14_sweep_frontend_static.py`（r14 前端契约）、`build/tests/test_r6_undo_collab_fixes.py`（503 文案与缓存令牌钉对）。
+- 最终门禁数字（全量 pytest / node / 浏览器三套 / openapi）**见执行报告**，本文件不写未实测数字。
+
 ## Deferred（按终审要求逐项声明；终局轮后仅余下列各项）
 
 - 高1/高2/高4/高5/高7 与 G21：原「未实现／部分交付／零浏览器覆盖」的声明均已过时并移出本节——五项高危 UX 修复已交付并经机器与浏览器验证，report_evidence 前端行为已有隔离实例浏览器回归，见「终局集成轮」小节。

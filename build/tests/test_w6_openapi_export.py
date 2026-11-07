@@ -52,6 +52,31 @@ OPENAPI_JSON = REPO / "docs" / "openapi.json"
 _METHODS = {"get", "put", "post", "delete", "patch"}
 _ENDPOINT_TOKEN_RE = re.compile(r"`(GET|POST|PUT|DELETE|PATCH) (/api/[^`]+)`")
 
+#: API_REFERENCE.md「Known limits」段声明的三项计数：操作总数、占位 2xx 响应数、
+#: 带 authorization 头的操作数。r14 之前这些数字只按下界钉（≥200），路由增长后
+#: 文档从 289/209/284 漂到实测 296/216/291 而无人察觉；现在从文档实读，与 schema
+#: 实算做**等值**比对——改文档不改 schema、或加/删路由不改文档，两个方向都会红。
+_DOC_PLACEHOLDER_RE = re.compile(
+    r"Of the (\d+) operations, (\d+) have a 2xx `application/json` schema")
+_DOC_AUTH_RE = re.compile(
+    r"(\d+) of (\d+) operations instead expose `authorization`")
+
+
+def _documented_openapi_counts() -> tuple[int, int, int]:
+    """返回 (操作总数, 占位 2xx 响应数, 带 authorization 头的操作数)，取自文档。"""
+    text = DOC.read_text(encoding="utf-8")
+    placeholder_match = _DOC_PLACEHOLDER_RE.search(text)
+    auth_match = _DOC_AUTH_RE.search(text)
+    assert placeholder_match, (
+        "API_REFERENCE.md 的 Known limits 段缺少「Of the N operations, M have a 2xx …」句")
+    assert auth_match, (
+        "API_REFERENCE.md 的 Known limits 段缺少「N of M operations … authorization」句")
+    total, placeholders = int(placeholder_match.group(1)), int(placeholder_match.group(2))
+    auth_count, auth_total = int(auth_match.group(1)), int(auth_match.group(2))
+    assert total == auth_total, (
+        f"API_REFERENCE.md 两处操作总数不一致（{total} vs {auth_total}）")
+    return total, placeholders, auth_count
+
 #: API_REFERENCE.md 声明的「稳定核心子集」= a080fde 基线上的 55 条路由
 #: （auth/tasks/import/decisions/fulltext/exports/AL + 公开面 health/
 #: runtime/app-update/check——后两条 r3 评审指出此前正文并入了 public
@@ -466,7 +491,19 @@ def test_w6_documented_openapi_limits_stay_true(exported):
         f"{sorted(set(operations) - public_surface - with_auth_header)}"
     )
 
-    # ② 2xx 响应普遍是无字段的 additionalProperties 占位（文档写 209/289）
+    # ① 的操作数、② 的占位响应数、authorization 头数量都必须与文档所写**相等**
+    # （r14 起由下界钉升级为等值钉；文档数字变化而 schema 未变、或路由增减而文档
+    # 未更新，两个方向都红）。
+    documented_total, documented_placeholders, documented_auth = (
+        _documented_openapi_counts())
+    assert documented_total == len(operations), (
+        f"API_REFERENCE.md 写 {documented_total} 个操作，schema 实算 "
+        f"{len(operations)} 个——路由增减后请同步刷新 Known limits 段的三项计数")
+    assert documented_auth == len(with_auth_header), (
+        f"API_REFERENCE.md 写 {documented_auth} 个操作带 authorization 头，schema 实算 "
+        f"{len(with_auth_header)} 个——鉴权头分布变化后请同步刷新计数")
+
+    # ② 2xx 响应普遍是无字段的 additionalProperties 占位（含 title，无 properties）
     def is_placeholder(op) -> bool:
         for code, response in (op.get("responses") or {}).items():
             if not str(code).startswith("2"):
@@ -479,10 +516,9 @@ def test_w6_documented_openapi_limits_stay_true(exported):
         return False
 
     placeholders = sum(1 for op in operations.values() if is_placeholder(op))
-    assert placeholders >= 200, (
-        f"占位响应只剩 {placeholders} 条（文档写 209/289）——"
-        "若已有泳道补齐 response_model，Known limits 段需整体修订"
-    )
+    assert documented_placeholders == placeholders, (
+        f"API_REFERENCE.md 写 {documented_placeholders} 条占位 2xx 响应，schema 实算 "
+        f"{placeholders} 条——若已有泳道补齐 response_model，Known limits 段需整体修订")
 
     # ③ import 的 screener 是 query 参数而非 multipart 字段（文档已更正）
     import_op = schema["paths"]["/api/tasks/{task_id}/import"]["post"]
