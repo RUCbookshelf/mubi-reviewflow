@@ -43,6 +43,11 @@
   W.selectedSource = stage => selected[stage];
   W.activeItem = stage => items[stage];
   W.maybe = stage => settings?.stages?.[stage]?.show_maybe !== false;
+  /* 「暂不确定」的可用性 = 任务级 show_maybe && 本筛选员对该文献第一轮（未进过
+     任一复筛轮次快照）。maybe_allowed 由初筛 work_item 下发；全文恒为 true，
+     全文按钮行为不变。 */
+  W.maybeAllowed = stage => stage !== 'screen' || items[stage]?.maybe_allowed !== false;
+  W.maybeAvailable = stage => W.maybe(stage) && W.maybeAllowed(stage);
   W.settingsDirty = () => syncSettingsDirty() || libraryDirty || syncALDirty();
   const decisionBaselines={};
   const reasonSignature=stage=>{
@@ -118,7 +123,7 @@
     finally{autoReload=null;for(const [control,disabled] of contextControls)control.disabled=disabled;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
   }
 
-  const reasonLabels={article_pending_round:'This article is in a repeat screening round. Finish the round or proceed to full-text screening first.',task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.',missing_evidence_file:'The saved evidence image is no longer in the data directory, so this save cannot be undone.'};
+  const reasonLabels={article_pending_round:'This article is in a repeat screening round. Finish the round or proceed to full-text screening first.',task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',maybe_first_round_only:'本轮请选择纳入或排除，暂不确定只在第一轮提供。',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.',missing_evidence_file:'The saved evidence image is no longer in the data directory, so this save cannot be undone.'};
   W.reason = value => T(reasonLabels[value] || value || '');
   /* F65（r10-u1，前端半步）：403 文案此前是「已译的中文句 + 空格 + 后端英文原串」，
      中英混排。这里把两段都过 T()（词典按中英双键索引，后端英文原串命中即译全）；
@@ -143,7 +148,7 @@
   W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Source not recorded') : source.name;
   W.error = error => {
     toast(W.errorText(error), 'warn');
-    if (error.status === 409 && (error.workflowSettings || ['workflow_version_conflict','stage_paused','article_outside_scope','maybe_disabled'].includes(error.code))) run(() => W.refresh('conflict'));
+    if (error.status === 409 && (error.workflowSettings || ['workflow_version_conflict','stage_paused','article_outside_scope','maybe_disabled','maybe_first_round_only'].includes(error.code))) run(() => W.refresh('conflict'));
   };
   const home = document.querySelector('section.page[data-p="home"]');
   const panels = {};
@@ -515,14 +520,21 @@
     const writable=item && item.key===key&&item.writable&&settings?.stages?.[stage]?.mode!=='paused'&&item.policy_version===settings?.version;
     const ids=stage==='screen'?['btnInc','btnMay','btnExc']:stage==='fulltext'?['ftInc','ftMay','ftExc']:['cbSave'];
     for(const id of ids){const b=$('#'+id);if(b)b.disabled=!writable;}
-    const maybe=$(stage==='screen'?'#btnMay':'#ftMay');if(stage!=='coding'&&maybe){maybe.hidden=!W.maybe(stage);maybe.disabled=!writable||!W.maybe(stage);}
+    const maybe=$(stage==='screen'?'#btnMay':'#ftMay');if(stage!=='coding'&&maybe){const available=W.maybeAvailable(stage);maybe.hidden=!available;maybe.disabled=!writable||!available;}
     const notice=tools(stage).querySelector('.wf-readonly');notice.replaceChildren();if(item && item.key===key&&!item.writable)notice.append(n('span','Read-only: current policy or source scope does not allow saving.'),document.createTextNode(' '),n('span',W.reason(item.reason)));
     if(stage!=='coding')W.decorateReasons(stage);
   };
   W.canSave=(stage,decision)=>{
     if(autoReload)return false;
     const item=items[stage],key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:stage==='fulltext'?curFt()?.zotero_key:S.cbQueue[S.cbIdx]?.zotero_key;
-    if(!item||item.key!==key||!item.writable||settings?.stages?.[stage]?.mode==='paused'||item.policy_version!==settings?.version||decision==='maybe'&&!W.maybe(stage)){toast(T('This item is read-only under the current workflow policy.'),'warn');return false;}return true;
+    /* 初筛「暂不确定」的两种不可用各有说明，不套「只读」那句：
+       ① 任务关闭了该阶段 maybe；② 该文献已进过本人复筛轮次。
+       全文（fulltext）不走这两条，保持原有提示与行为完全不变。 */
+    if(!item||item.key!==key||!item.writable||settings?.stages?.[stage]?.mode==='paused'||item.policy_version!==settings?.version){toast(T('This item is read-only under the current workflow policy.'),'warn');return false;}
+    if(decision==='maybe'&&stage==='screen'&&!W.maybe('screen')){toast(W.reason('maybe_disabled'),'warn');return false;}
+    if(decision==='maybe'&&stage==='screen'&&!W.maybeAllowed('screen')){toast(W.reason('maybe_first_round_only'),'warn');return false;}
+    if(decision==='maybe'&&!W.maybe(stage)){toast(T('This item is read-only under the current workflow policy.'),'warn');return false;}
+    return true;
   };
   W.reload=stage=>stage==='screen'?loadScreen():stage==='fulltext'?loadFulltext():loadBench();
   W.reopen=async(stage,key,access='personal',field=null,{guarded=false}={})=>{
@@ -570,7 +582,7 @@
     const changed=pendingPolicyRefresh;
     if(draft&&!policyChanged)draft.version=result.version;
     settings=result;
-    for(const [stage,id] of [['screen','btnMay'],['fulltext','ftMay']]){const maybe=$('#'+id);if(maybe){maybe.hidden=!W.maybe(stage);if(!W.maybe(stage))maybe.disabled=true;}}
+    for(const [stage,id] of [['screen','btnMay'],['fulltext','ftMay']]){const maybe=$('#'+id);if(maybe){const available=W.maybeAvailable(stage);maybe.hidden=!available;if(!available)maybe.disabled=true;}}
     for(const [stage,ids] of [['screen',['btnInc','btnMay','btnExc']],['fulltext',['ftInc','ftMay','ftExc']]])if(result.stages[stage].mode==='paused')for(const id of ids){const control=$('#'+id);if(control)control.disabled=true;}
     W.anyDirty(); // Refresh value-based dirty flags before rendering the policy.
     $('#wf-settings-notice').textContent=pendingPolicyReview&&policyDraftDirty()?T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'):'';

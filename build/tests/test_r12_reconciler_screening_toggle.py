@@ -470,7 +470,7 @@ class ReconcilerScreeningToggleTests(unittest.TestCase):
         # 被改动的 workflow_controls.js 缓存令牌必须已上调（24h 旧 JS 不得残留）。
         self.assertNotRegex(
             index, r'workflow_controls\.js\?v=20261101-r10u1')
-        self.assertRegex(index, r'workflow_controls\.js\?v=20261107-r12arb3')
+        self.assertRegex(index, r'workflow_controls\.js\?v=20261107-r15')
         # 十语言词条：四类新文案每行必须 10 个非空槽位。
         sources = (
             "允许参与筛选",

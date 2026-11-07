@@ -67,3 +67,27 @@ def marker(db: Path) -> dict | None:
             return None
         row=conn.execute('SELECT id,status FROM workflow_screen_rounds ORDER BY id DESC LIMIT 1').fetchone()
         return dict(row) if row else None
+
+
+def snapshot_keys(db: Path) -> set[str]:
+    """该筛选员进过任一复筛轮次快照的文献键（只读）。
+
+    ``snapshot_json`` 的键就是轮次开始时纳入复核的文献；active/closed/released
+    三种状态都算（一次进入即永久适用「暂不确定只在第一轮」）。库或表不存在
+    （legacy/ghost 任务、升级前旧库）返回空集，不建库、不跑迁移。
+    """
+    if not Path(db).is_file():
+        return set()
+    with closing(store.connect(db, read_only=True)) as conn:
+        if not store.has_table(conn,'workflow_screen_rounds'):
+            return set()
+        keys: set[str] = set()
+        for row in conn.execute('SELECT snapshot_json FROM workflow_screen_rounds'):
+            try:
+                snapshot = json.loads(row[0])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(snapshot, dict):
+                keys.update(snapshot)
+        return keys
+

@@ -3137,7 +3137,8 @@ def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
     db = _screener_db(info, screener or user["username"])
     with app.state.review_workflow.write_guard(task_id, user, "screen", body.zotero_key,
                                                body.expected_policy_version) as workflow:
-        app.state.review_workflow.check_maybe(workflow, "screen", body.decision)
+        app.state.review_workflow.check_maybe(workflow, "screen", body.decision,
+                                              body.zotero_key, db=db)
         _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": db_mod.get_progress(db)}
