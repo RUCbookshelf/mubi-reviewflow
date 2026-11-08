@@ -5506,6 +5506,72 @@
         "title": "SensitivityViewIn",
         "type": "object"
       },
+      "SessionDecideIn": {
+        "description": "单条裁决请求体。\n\n``decision`` 故意不加 pattern/min_length：r18 的两道闸必须对\n空值/maybe/任意值给出稳定 400（``arbitration_decision_invalid``），\n而不是 FastAPI 的 422（与 CSV / server-save 的拒绝形状同口径）。",
+        "properties": {
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "",
+            "title": "Decision"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 100000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "stage": {
+            "enum": [
+              "stage1",
+              "stage2"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "zotero_key": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Zotero Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "zotero_key"
+        ],
+        "title": "SessionDecideIn",
+        "type": "object"
+      },
+      "SessionStageIn": {
+        "properties": {
+          "stage": {
+            "enum": [
+              "stage1",
+              "stage2"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage"
+        ],
+        "title": "SessionStageIn",
+        "type": "object"
+      },
       "SingleGroupCountIn": {
         "properties": {
           "append": {
@@ -18760,6 +18826,285 @@
         "summary": "Analysis Zero Cell Preview"
       }
     },
+    "/api/tasks/{task_id}/appraisal/recommendation": {
+      "get": {
+        "operationId": "appraisal_recommendation_api_tasks__task_id__appraisal_recommendation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "article_key",
+            "required": true,
+            "schema": {
+              "title": "Article Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Appraisal Recommendation Api Tasks  Task Id  Appraisal Recommendation Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Appraisal Recommendation"
+      }
+    },
+    "/api/tasks/{task_id}/appraisal/tools": {
+      "get": {
+        "operationId": "appraisal_tools_api_tasks__task_id__appraisal_tools_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Appraisal Tools Api Tasks  Task Id  Appraisal Tools Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Appraisal Tools"
+      }
+    },
+    "/api/tasks/{task_id}/appraisal/{article_key}": {
+      "get": {
+        "operationId": "appraisal_get_api_tasks__task_id__appraisal__article_key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "article_key",
+            "required": true,
+            "schema": {
+              "title": "Article Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tool"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Appraisal Get Api Tasks  Task Id  Appraisal  Article Key  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Appraisal Get"
+      },
+      "put": {
+        "operationId": "appraisal_put_api_tasks__task_id__appraisal__article_key__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "article_key",
+            "required": true,
+            "schema": {
+              "title": "Article Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Appraisal Put Api Tasks  Task Id  Appraisal  Article Key  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Appraisal Put"
+      }
+    },
     "/api/tasks/{task_id}/articles": {
       "get": {
         "operationId": "list_articles_api_tasks__task_id__articles_get",
@@ -25968,6 +26313,297 @@
           }
         },
         "summary": "Save Server Sourced Screening Arbitration"
+      }
+    },
+    "/api/tasks/{task_id}/screening-arbitrations/session": {
+      "get": {
+        "description": "打开/恢复逐条裁决会话（队列零泄露；已完成会话冻结返回）。",
+        "operationId": "get_arbitration_session_api_tasks__task_id__screening_arbitrations_session_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "default": "stage1",
+              "enum": [
+                "stage1",
+                "stage2"
+              ],
+              "title": "Stage",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Arbitration Session Api Tasks  Task Id  Screening Arbitrations Session Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Arbitration Session"
+      }
+    },
+    "/api/tasks/{task_id}/screening-arbitrations/session/finish": {
+      "post": {
+        "description": "全部冲突已裁决后落 append-only 记录；未完成 -> 结构化 409。",
+        "operationId": "finish_arbitration_session_api_tasks__task_id__screening_arbitrations_session_finish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionStageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Finish Arbitration Session Api Tasks  Task Id  Screening Arbitrations Session Finish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Arbitration Session"
+      }
+    },
+    "/api/tasks/{task_id}/screening-arbitrations/session/item": {
+      "post": {
+        "description": "裁决单条冲突；成功后才返回该条的 reveal（先判后示）。",
+        "operationId": "decide_arbitration_session_item_api_tasks__task_id__screening_arbitrations_session_item_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionDecideIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Decide Arbitration Session Item Api Tasks  Task Id  Screening Arbitrations Session Item Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Arbitration Session Item"
+      }
+    },
+    "/api/tasks/{task_id}/screening-arbitrations/session/reveal": {
+      "get": {
+        "description": "已裁决条目的 reveal；未裁决一律不返回任何筛选员决定。",
+        "operationId": "get_arbitration_session_reveal_api_tasks__task_id__screening_arbitrations_session_reveal_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "default": "stage1",
+              "enum": [
+                "stage1",
+                "stage2"
+              ],
+              "title": "Stage",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "zotero_key",
+            "required": true,
+            "schema": {
+              "maxLength": 300,
+              "minLength": 1,
+              "title": "Zotero Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Arbitration Session Reveal Api Tasks  Task Id  Screening Arbitrations Session Reveal Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Arbitration Session Reveal"
       }
     },
     "/api/tasks/{task_id}/screening-arbitrations/{record_id}": {
