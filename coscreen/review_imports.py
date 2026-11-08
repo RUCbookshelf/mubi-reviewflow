@@ -1,13 +1,17 @@
 """Owner-authoritative source provenance and protected import staging.
 
 All mutations accept the caller's transaction; the API holds the workflow lock.
-Source rows never stand in for active articles. Original payloads are immutable.
+Source rows never stand in for active articles. Original upload payloads are
+immutable; the staged ``article_json`` payload is the reviewable working copy and
+may be completed by duplicate merge fill (field-level, trail-logged).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
+import unicodedata
 import uuid
 from contextlib import closing
 from datetime import datetime, timezone
@@ -15,11 +19,16 @@ from pathlib import Path
 
 from coscreen import db as articles_db, review_workflow as workflow
 from coscreen.dedup import (
-    _key_merge_confirmed, _norm_doi, find_duplicates, is_journal_pattern_doi,
+    _identity_doi, _key_merge_confirmed, _norm_doi, find_duplicates, is_journal_pattern_doi,
 )
 from coscreen.models import Article
 
-MIGRATION_VERSION = 2
+#: 迁移版本号在所有写 workflow_migrations 的模块之间必须**全局唯一**（共用同一
+#: 张表）。已占用：1 workflow、2 本模块（G5 之前）、3 import_review_undo、
+#: 4/5 import_sources、6 screening_rounds、7 coding_evidence、8 binary_reset。
+#: G5 的字段留痕表取 9——绝不能复用 3（曾误用，遗留库会因 3 已存在而早退、
+#: 永不建新表，首次确认重复即 500）。
+MIGRATION_VERSION = 9
 METADATA_FIELDS = ('item_type', 'title', 'authors', 'journal', 'year', 'doi', 'abstract', 'url')
 _SCHEMA = '''
 CREATE TABLE IF NOT EXISTS workflow_import_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1), researched INTEGER NOT NULL DEFAULT 0);
@@ -59,7 +68,121 @@ CREATE TABLE IF NOT EXISTS workflow_metadata_acceptances(
 CREATE TABLE IF NOT EXISTS workflow_metadata_applied(
  owner_identity TEXT NOT NULL, zotero_key TEXT NOT NULL, revision INTEGER NOT NULL,
  PRIMARY KEY(owner_identity,zotero_key));
+CREATE TABLE IF NOT EXISTS workflow_import_field_merges(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, candidate_id TEXT NOT NULL,
+ keeper_kind TEXT NOT NULL, keeper_ref TEXT NOT NULL, field TEXT NOT NULL,
+ before_value TEXT, after_value TEXT, source_record_id TEXT,
+ decision_source TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 1,
+ conflict INTEGER NOT NULL DEFAULT 0, ai_suggestion_id TEXT,
+ actor_id TEXT NOT NULL, created_at TEXT NOT NULL, undone INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS workflow_field_merges_candidate ON workflow_import_field_merges(candidate_id,undone);
 '''
+
+
+# ---------------------------------------------------------------------------
+# 合并质量（2.1.5 G5）：空值/占位串、完整度、通用与过短标题
+#
+# 单一事实源：判据（bulk eligibility）、建议保留者（suggested_keeper）与只补空
+# 都只读这里的定义。任何一处改动必须同步契约
+# （frontend_contract_2.1.5-g5-merge-rules.md）。
+# ---------------------------------------------------------------------------
+
+#: 保守占位串（NFKC + casefold + strip 后逐字比对）。命中即按「空」处理：
+#: 只补空不会把占位串当成真实值，也不会把真实值覆盖成占位串。
+BLANK_PLACEHOLDERS = frozenset({
+    '[no abstract available]', '[no abstract]', '[abstract not available]',
+    'no abstract available', 'n.d.', 'n.d', 'none', 'null', 'n/a', 'na',
+    '-', '--', '—', '…',
+})
+
+#: 完整度字典序（规则②）：身份 DOI 有无 > 摘要 > 期刊 > 年份 > 作者 > 标题。
+COMPLETENESS_FIELDS = ('doi', 'abstract', 'journal', 'year', 'authors', 'title')
+COMPLETENESS_REASONS = ('has_doi', 'has_abstract', 'has_journal', 'has_year',
+                        'has_authors', 'has_title')
+
+#: 通用标题（英文，规范化后整串相等）；前缀项按规范化前缀匹配。
+GENERIC_TITLE_EN = (
+    'editorial', 'introduction', 'preface', 'foreword', 'erratum', 'corrigendum',
+    'correction', 'retraction', 'book review', 'review', 'commentary', 'comment',
+    'letter', 'reply', 'response', 'announcement', 'obituary', 'index', 'contents',
+)
+GENERIC_TITLE_PREFIXES_EN = (
+    'introduction to the special issue', 'guest editorial', "editor's note",
+)
+#: 通用标题（中文，规范化后整串相等）。
+GENERIC_TITLE_ZH = ('编者按', '卷首语', '前言', '导言', '书评', '勘误', '更正', '启事', '目录')
+
+_CJK_RE = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
+
+
+def _fold(value) -> str:
+    if value is None:
+        return ''
+    return unicodedata.normalize('NFKC', str(value)).strip().casefold()
+
+
+def is_blank(value) -> bool:
+    """字段是否按「空」处理：NULL、空串、仅空白、以及保守占位串。"""
+    text = _fold(value)
+    return not text or text in BLANK_PLACEHOLDERS
+
+
+def normalize_title(value) -> str:
+    """题名规范化（与 identity_key 的题名段同一算法）：NFKC → casefold →
+    标点/符号折叠为空格 → 压缩空白。"""
+    text = unicodedata.normalize('NFKC', str(value or '')).casefold()
+    text = ''.join(' ' if unicodedata.category(ch).startswith(('P', 'S')) else ch
+                   for ch in text)
+    return ' '.join(text.split())
+
+
+_GENERIC_EXACT = frozenset(
+    normalize_title(title) for title in GENERIC_TITLE_EN + GENERIC_TITLE_ZH)
+_GENERIC_PREFIXES = tuple(
+    normalize_title(title) for title in GENERIC_TITLE_PREFIXES_EN)
+
+
+def is_generic_title(normalized_title: str) -> bool:
+    """通用标题：规范化后整串命中清单，或以三个前缀之一开头。"""
+    return (normalized_title in _GENERIC_EXACT
+            or any(normalized_title.startswith(prefix) for prefix in _GENERIC_PREFIXES))
+
+
+def is_short_title(normalized_title: str) -> bool:
+    """规范化后过短：含 CJK 时按字数（< 6 字），否则按词数（< 4 词）。"""
+    cjk = len(_CJK_RE.findall(normalized_title))
+    if cjk:
+        return cjk < 6
+    return len(normalized_title.split()) < 4
+
+
+def completeness(article: dict) -> tuple[int, ...]:
+    """规则②完整度分（字典序比较，越大越完整）。"""
+    article = article or {}
+    scores = []
+    for field in COMPLETENESS_FIELDS:
+        if field == 'doi':
+            scores.append(1 if _identity_doi(article.get('doi') or '') else 0)
+        else:
+            scores.append(0 if is_blank(article.get(field)) else 1)
+    return tuple(scores)
+
+
+def completeness_reasons(article: dict) -> list[str]:
+    return [key for key, present in zip(COMPLETENESS_REASONS, completeness(article))
+            if present]
+
+
+class MergeError(ValueError):
+    """带结构化 message_key 的合并/元数据错误（API 层译成 JSON 详情）。"""
+
+    def __init__(self, message: str, message_key: str, *, params: dict | None = None,
+                 status: int = 409):
+        super().__init__(message)
+        self.message_key = message_key
+        self.params = dict(params or {})
+        self.status = status
+
 
 
 def now() -> str:
@@ -399,8 +522,212 @@ def activate(conn: sqlite3.Connection, db: Path, batch_id: str) -> dict:
     return {'activated_new': added, 'activated_source_records': linked}
 
 
+def _occupied_identity_dois(conn: sqlite3.Connection, *, exclude_key: str | None = None) -> dict:
+    """任务内已入任务文献的身份 DOI → zotero_key（撞号守卫用）。"""
+    occupied = {}
+    for row in conn.execute(
+            "SELECT zotero_key,doi FROM articles "
+            "WHERE is_duplicate_of IS NULL AND doi IS NOT NULL AND doi!=''"):
+        if exclude_key is not None and row['zotero_key'] == exclude_key:
+            continue
+        ident = _identity_doi(row['doi'])
+        if ident:
+            occupied.setdefault(ident, row['zotero_key'])
+    return occupied
+
+
+def _doi_block_reason(value, occupied: dict) -> str | None:
+    """待写入 DOI 的守卫结论：期刊样式 / 已被另一篇已入任务文献占用。"""
+    if is_journal_pattern_doi(value or ''):
+        return 'journal_pattern'
+    ident = _identity_doi(value or '')
+    return 'occupied' if ident and ident in occupied else None
+
+
+def _doi_collision(field: str, value, reason: str, occupied: dict) -> dict:
+    entry = {'field': field, 'doi': value, 'reason': reason}
+    if reason == 'occupied':
+        entry['occupied_by'] = occupied.get(_identity_doi(value or ''))
+    return entry
+
+
+def _write_articles(conn: sqlite3.Connection, key: str, meta: dict) -> None:
+    conn.execute(
+        'UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,'
+        'abstract=?,url=? WHERE zotero_key=?',
+        [meta.get(field) for field in METADATA_FIELDS] + [key])
+
+
+def _log_field_merge(conn, *, batch_id, candidate_id, keeper_kind, keeper_ref, field,
+                     before_value, after_value, source_record_id, decision_source,
+                     applied, conflict, ai_suggestion_id, actor) -> None:
+    conn.execute(
+        'INSERT INTO workflow_import_field_merges(batch_id,candidate_id,keeper_kind,'
+        'keeper_ref,field,before_value,after_value,source_record_id,decision_source,'
+        'applied,conflict,ai_suggestion_id,actor_id,created_at) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (batch_id, candidate_id, keeper_kind, keeper_ref, field, before_value,
+         after_value, source_record_id, decision_source, 1 if applied else 0,
+         1 if conflict else 0, ai_suggestion_id, actor, now()))
+
+
+def apply_keeper_fill(conn: sqlite3.Connection, *, batch_id: str, candidate_id: str,
+                      actor: str, keeper_kind: str, keeper_ref: str,
+                      keeper_meta: dict, merged: list[dict],
+                      conflict_picks: dict | None = None,
+                      ai_suggestion_id: str | None = None) -> dict:
+    """只补空 + 冲突选择 + DOI 守卫 + 逐字段留痕（保留条目为已入任务文献或待审记录）。
+
+    ``keeper_meta`` 是操作前的保留条目题录（规划依据）；落笔前逐字段复核当前值
+    （仍为空 / 仍等于操作前值），不满足则该字段跳过并报告，绝不覆盖他人改动。
+    """
+    summary = {'articles': 0, 'fields': {}, 'doi_collision': [], 'skipped': []}
+    merged = [m for m in (merged or []) if m.get('record_id')]
+    member_ids = {m['record_id'] for m in merged}
+    picks = dict(conflict_picks or {})
+    for field, pick in picks.items():
+        if field not in METADATA_FIELDS:
+            raise MergeError('Unknown metadata field in conflict_picks: %s' % field,
+                             'import_merge.conflict_pick_invalid_field',
+                             params={'field': field}, status=400)
+        if pick != 'keeper' and pick not in member_ids:
+            raise MergeError(
+                'conflict_picks must reference the keeper or a merged record of this group.',
+                'import_merge.conflict_pick_invalid_member',
+                params={'field': field}, status=400)
+    if not merged:
+        return summary
+    # 多被合并者：完整度降序 + 原顺序（稳定排序）决定取值优先级。
+    ordered = sorted(merged, key=lambda item: completeness(item.get('article') or {}),
+                     reverse=True)
+    occupied = _occupied_identity_dois(
+        conn, exclude_key=keeper_ref if keeper_kind == 'active' else None)
+    writes, trail = [], []
+    for field in METADATA_FIELDS:
+        keeper_value = keeper_meta.get(field)
+        if is_blank(keeper_value):
+            chosen = next((item for item in ordered
+                           if not is_blank((item.get('article') or {}).get(field))), None)
+            if chosen is None:
+                continue
+            value = (chosen.get('article') or {}).get(field)
+            if field == 'doi':
+                reason = _doi_block_reason(value, occupied)
+                if reason:
+                    summary['doi_collision'].append(_doi_collision(field, value, reason, occupied))
+                    continue
+            distinct = {(item.get('article') or {}).get(field) for item in ordered
+                        if not is_blank((item.get('article') or {}).get(field))}
+            writes.append({'field': field, 'value': value,
+                           'source_record_id': chosen['record_id'],
+                           'decision_source': 'rule', 'conflict': len(distinct) > 1})
+            for other in ordered:
+                if other is chosen:
+                    continue
+                other_value = (other.get('article') or {}).get(field)
+                if is_blank(other_value) or other_value == value:
+                    continue
+                trail.append({'field': field, 'value': None,
+                              'source_record_id': other['record_id'],
+                              'decision_source': 'rule', 'conflict': True})
+            continue
+        pick = picks.get(field)
+        if not pick or pick == 'keeper':
+            continue
+        member = next(item for item in ordered if item['record_id'] == pick)
+        value = (member.get('article') or {}).get(field)
+        if is_blank(value):
+            continue
+        if field == 'doi':
+            reason = _doi_block_reason(value, occupied)
+            if reason:
+                summary['doi_collision'].append(_doi_collision(field, value, reason, occupied))
+                continue
+        writes.append({'field': field, 'value': value, 'source_record_id': pick,
+                       'decision_source': 'ai_prefill' if ai_suggestion_id else 'human',
+                       'conflict': True})
+    if not writes:
+        return summary
+    if keeper_kind == 'active':
+        row = conn.execute('SELECT * FROM articles WHERE zotero_key=?', (keeper_ref,)).fetchone()
+        if row is None:
+            raise KeyError('Keeper article not found.')
+        current = dict(row)
+    else:
+        row = conn.execute('SELECT article_json FROM workflow_source_records WHERE id=?',
+                           (keeper_ref,)).fetchone()
+        if row is None:
+            raise KeyError('Keeper source record not found.')
+        current = json.loads(row[0])
+    written = dict(current)
+    applied_fields = set()
+    for write in writes:
+        now_value = current.get(write['field'])
+        unchanged = (is_blank(now_value) if write['decision_source'] == 'rule'
+                     else now_value == keeper_meta.get(write['field']))
+        if not unchanged:
+            summary['skipped'].append({'field': write['field'], 'reason': 'changed_by_other'})
+            continue
+        written[write['field']] = write['value']
+        applied_fields.add(write['field'])
+        summary['fields'][write['field']] = summary['fields'].get(write['field'], 0) + 1
+    if applied_fields:
+        if keeper_kind == 'active':
+            _write_articles(conn, keeper_ref, written)
+        else:
+            conn.execute('UPDATE workflow_source_records SET article_json=? WHERE id=?',
+                         (dumps(written), keeper_ref))
+        summary['articles'] = 1
+        for write in writes:
+            if write['field'] not in applied_fields:
+                continue
+            _log_field_merge(
+                conn, batch_id=batch_id, candidate_id=candidate_id,
+                keeper_kind=keeper_kind, keeper_ref=keeper_ref, field=write['field'],
+                before_value=keeper_meta.get(write['field']), after_value=write['value'],
+                source_record_id=write['source_record_id'],
+                decision_source=write['decision_source'], applied=True,
+                conflict=write['conflict'], ai_suggestion_id=ai_suggestion_id, actor=actor)
+            for other in trail:
+                if other['field'] != write['field']:
+                    continue
+                _log_field_merge(
+                    conn, batch_id=batch_id, candidate_id=candidate_id,
+                    keeper_kind=keeper_kind, keeper_ref=keeper_ref, field=other['field'],
+                    before_value=keeper_meta.get(other['field']), after_value=None,
+                    source_record_id=other['source_record_id'],
+                    decision_source=other['decision_source'], applied=False,
+                    conflict=other['conflict'], ai_suggestion_id=ai_suggestion_id,
+                    actor=actor)
+    return summary
+
+
+def _candidate_merged_members(conn: sqlite3.Connection, members: list[dict],
+                              keeper_record_id: str | None) -> list[dict]:
+    """被合并成员（保留者之外的 record 成员），按导入顺序（原顺序）排列。"""
+    merged = []
+    for member in members:
+        if member['ref_type'] != 'record' or member['ref_id'] == keeper_record_id:
+            continue
+        row = conn.execute(
+            'SELECT article_json,created_at,row_index FROM workflow_source_records WHERE id=?',
+            (member['ref_id'],)).fetchone()
+        if row is None:
+            continue
+        merged.append({'record_id': member['ref_id'],
+                       'article': json.loads(row['article_json']),
+                       '_order': (str(row['created_at'] or ''), int(row['row_index'] or 0),
+                                  member['ref_id'])})
+    merged.sort(key=lambda item: item['_order'])
+    for item in merged:
+        item.pop('_order', None)
+    return merged
+
+
 def decide_candidate(conn: sqlite3.Connection, batch_id: str, cid: str, status: str,
-                     actor: str, keeper_key: str | None, keeper_record_id: str | None) -> None:
+                     actor: str, keeper_key: str | None, keeper_record_id: str | None,
+                     *, conflict_picks: dict | None = None,
+                     ai_suggestion_id: str | None = None) -> dict | None:
     candidate = candidate_row(conn, batch_id, cid)
     members = candidate['members']
     record_ids = {m['ref_id'] for m in members if m['ref_type'] == 'record'}
@@ -415,6 +742,7 @@ def decide_candidate(conn: sqlite3.Connection, batch_id: str, cid: str, status: 
         raise ValueError('This review already has activated records; its saved decision cannot be changed.')
     if candidate['status'] == 'duplicate':
         raise ValueError('A confirmed duplicate resolution is final; its keeper cannot be changed.')
+    fill = None
     if status == 'duplicate':
         if bool(keeper_key) == bool(keeper_record_id):
             raise ValueError('Choose exactly one keeper_key or keeper_record_id.')
@@ -447,6 +775,28 @@ def decide_candidate(conn: sqlite3.Connection, batch_id: str, cid: str, status: 
                 raise ValueError('This resolution would rewrite a previously confirmed duplicate relationship. Keep its existing keeper or leave this candidate unresolved.')
             changes.append(rid)
         # Validate the complete change set before writing any target or proposal.
+        #
+        # 只补空（B3）：先对保留条目做补空/冲突选择（含 DOI 守卫与逐字段留痕），
+        # 再写目标指针——这样随后 proposal() 比较的是补空后的保留条目，不会为
+        # 已被补入的同一值生成多余的「信息差异」提案。
+        if keeper_key:
+            keeper_ref = canonical(conn, keeper_key)
+            keeper_row = conn.execute('SELECT * FROM articles WHERE zotero_key=?',
+                                      (keeper_ref,)).fetchone()
+            if keeper_row is None:
+                raise KeyError('Keeper article not found.')
+            keeper_meta, keeper_kind = dict(keeper_row), 'active'
+        else:
+            keeper_row = conn.execute('SELECT article_json FROM workflow_source_records WHERE id=?',
+                                      (keeper_record_id,)).fetchone()
+            if keeper_row is None:
+                raise KeyError('Keeper source record not found.')
+            keeper_meta, keeper_kind, keeper_ref = json.loads(keeper_row[0]), 'record', keeper_record_id
+        fill = apply_keeper_fill(
+            conn, batch_id=batch_id, candidate_id=cid, actor=actor,
+            keeper_kind=keeper_kind, keeper_ref=keeper_ref, keeper_meta=keeper_meta,
+            merged=_candidate_merged_members(conn, members, keeper_record_id),
+            conflict_picks=conflict_picks, ai_suggestion_id=ai_suggestion_id)
         for rid in changes:
             conn.execute('UPDATE workflow_source_records SET canonical_key=?,target_record_id=?,outcome=? WHERE id=?',
                          (keeper_key, keeper_record_id, 'confirmed_duplicate', rid))
@@ -454,9 +804,36 @@ def decide_candidate(conn: sqlite3.Connection, batch_id: str, cid: str, status: 
                 proposal(conn, rid, keeper_key)
     conn.execute('UPDATE workflow_import_candidates SET status=?,keeper_key=?,keeper_record_id=?,decided_by=?,updated_at=? WHERE id=?',
                  (status, keeper_key if status == 'duplicate' else None, keeper_record_id if status == 'duplicate' else None, actor, now(), cid))
+    if status == 'duplicate' and fill and any(
+            fill.get(key) for key in ('articles', 'fields', 'doi_collision', 'skipped')):
+        return {'merge_fill': fill}
+    return None
 
 
-def decide_metadata(conn: sqlite3.Connection, batch_id: str, rid: str, action: str, actor: str) -> None:
+def _metadata_doi_guard(conn: sqlite3.Connection, key: str, current_value,
+                        incoming_value) -> tuple[str | None, str | None]:
+    """信息差异采纳时的 DOI 守卫：返回（原因, 占用方 zotero_key）。"""
+    if is_journal_pattern_doi(incoming_value or ''):
+        return 'journal_pattern', None
+    ident = _identity_doi(incoming_value or '')
+    if not ident or ident == _identity_doi(current_value or ''):
+        return None, None
+    occupied = _occupied_identity_dois(conn, exclude_key=key)
+    if ident in occupied:
+        return 'occupied', occupied.get(ident)
+    return None, None
+
+
+def _publish_metadata_acceptance(conn: sqlite3.Connection, key: str, rid: str, meta: dict) -> None:
+    revision = conn.execute(
+        'SELECT catalog_revision FROM workflow_state WHERE singleton=1').fetchone()[0]
+    conn.execute('''INSERT INTO workflow_metadata_acceptances VALUES(?,?,?,?) ON CONFLICT(zotero_key)
+        DO UPDATE SET revision=excluded.revision,metadata_json=excluded.metadata_json,record_id=excluded.record_id''',
+        (key, revision, dumps(metadata(meta)), rid))
+
+
+def decide_metadata(conn: sqlite3.Connection, batch_id: str, rid: str, action: str, actor: str,
+                    *, picks: dict | None = None) -> dict | None:
     if not conn.execute('SELECT 1 FROM workflow_import_members WHERE batch_id=? AND record_id=?', (batch_id, rid)).fetchone():
         raise KeyError('Source record not in this batch.')
     row = conn.execute('SELECT * FROM workflow_import_metadata WHERE record_id=?', (rid,)).fetchone()
@@ -469,19 +846,52 @@ def decide_metadata(conn: sqlite3.Connection, batch_id: str, rid: str, action: s
     key = canonical(conn, row['canonical_key'])
     current = dict(conn.execute('SELECT * FROM articles WHERE zotero_key=?', (key,)).fetchone())
     incoming = json.loads(row['incoming_json'])
+    collision = []
     if action == 'accept_incoming':
         if metadata(current) != metadata(json.loads(row['before_json'])):
             raise ValueError('Canonical metadata changed after this proposal. Keep the current metadata and submit a fresh proposal.')
-        conn.execute(
-            'UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,'
-            'abstract=?,url=? WHERE zotero_key=?',
-            [incoming.get(field) for field in METADATA_FIELDS] + [key])
-        revision = conn.execute('SELECT catalog_revision FROM workflow_state WHERE singleton=1').fetchone()[0]
-        conn.execute('''INSERT INTO workflow_metadata_acceptances VALUES(?,?,?,?) ON CONFLICT(zotero_key)
-            DO UPDATE SET revision=excluded.revision,metadata_json=excluded.metadata_json,record_id=excluded.record_id''',
-            (key, revision, dumps(metadata(incoming)), rid))
+        written = dict(current)
+        for field in METADATA_FIELDS:
+            value = incoming.get(field)
+            if field == 'doi':
+                reason, occupied_by = _metadata_doi_guard(conn, key, current.get('doi'), value)
+                if reason:
+                    collision.append(_doi_collision(
+                        field, value, reason,
+                        {_identity_doi(value or ''): occupied_by} if occupied_by else {}))
+                    continue
+            written[field] = value
+        _write_articles(conn, key, written)
+        _publish_metadata_acceptance(conn, key, rid, written)
+    elif action == 'field_picks':
+        if metadata(current) != metadata(json.loads(row['before_json'])):
+            raise ValueError('Canonical metadata changed after this proposal. Keep the current metadata and submit a fresh proposal.')
+        picks = dict(picks or {})
+        for field in picks:
+            if field not in METADATA_FIELDS:
+                raise MergeError('Unknown metadata field in picks: %s' % field,
+                                 'import_merge.metadata_pick_invalid_field',
+                                 params={'field': field}, status=400)
+        written = dict(current)
+        for field in METADATA_FIELDS:
+            if picks.get(field) != 'incoming':
+                continue
+            value = incoming.get(field)
+            if field == 'doi':
+                reason, occupied_by = _metadata_doi_guard(conn, key, current.get('doi'), value)
+                if reason:
+                    collision.append(_doi_collision(
+                        field, value, reason,
+                        {_identity_doi(value or ''): occupied_by} if occupied_by else {}))
+                    continue
+            written[field] = value
+        _write_articles(conn, key, written)
+        _publish_metadata_acceptance(conn, key, rid, written)
+    else:
+        written = current
     conn.execute('UPDATE workflow_import_metadata SET action=?,accepted_json=?,decided_by=?,decided_at=? WHERE record_id=?',
-                 (action, dumps(metadata(incoming) if action == 'accept_incoming' else metadata(current)), actor, now(), rid))
+                 (action, dumps(metadata(written)), actor, now(), rid))
+    return {'doi_collision': collision} if collision else None
 
 
 def batch_summary(conn: sqlite3.Connection, bid: str) -> dict:

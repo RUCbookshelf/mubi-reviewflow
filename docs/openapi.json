@@ -262,10 +262,35 @@
             "title": "Item Id",
             "type": "string"
           },
+          "keeper_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keeper Key"
+          },
+          "keeper_record_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keeper Record Id"
+          },
           "kind": {
             "enum": [
               "duplicate_group",
-              "metadata_diff"
+              "metadata_diff",
+              "merge_conflict"
             ],
             "title": "Kind",
             "type": "string"
@@ -811,6 +836,31 @@
       },
       "BulkItem": {
         "properties": {
+          "ai_suggestion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Suggestion Id"
+          },
+          "conflict_picks": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict Picks"
+          },
           "id": {
             "maxLength": 128,
             "minLength": 1,
@@ -857,6 +907,31 @@
       },
       "CandidateBody": {
         "properties": {
+          "ai_suggestion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Suggestion Id"
+          },
+          "conflict_picks": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict Picks"
+          },
           "expected_policy_version": {
             "anyOf": [
               {
@@ -3629,11 +3704,13 @@
         "type": "object"
       },
       "MetadataBody": {
+        "additionalProperties": false,
         "properties": {
           "action": {
             "enum": [
               "keep_existing",
-              "accept_incoming"
+              "accept_incoming",
+              "field_picks"
             ],
             "title": "Action",
             "type": "string"
@@ -3648,6 +3725,24 @@
               }
             ],
             "title": "Expected Policy Version"
+          },
+          "picks": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "enum": [
+                    "keep",
+                    "incoming"
+                  ],
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Picks"
           }
         },
         "required": [
@@ -26252,6 +26347,73 @@
           }
         },
         "summary": "Assist"
+      }
+    },
+    "/api/tasks/{task_id}/import-review/ai-assist/audit/{audit_id}": {
+      "get": {
+        "description": "审计导出：逐字段可查 rule_pick / ai_pick / human_final（参与者可读）。\n\n``human_final`` 由第一段留痕表 ``workflow_import_field_merges`` 经\n``ai_suggestion_id``（= 本审计行 id 的字符串）关联得出；该组尚未被\n人工确认时 ``executed=false`` 且 ``human_final=null``。",
+        "operationId": "assist_audit_api_tasks__task_id__import_review_ai_assist_audit__audit_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "audit_id",
+            "required": true,
+            "schema": {
+              "title": "Audit Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Assist Audit Api Tasks  Task Id  Import Review Ai Assist Audit  Audit Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assist Audit"
       }
     },
     "/api/tasks/{task_id}/import-review/ai-assist/settings": {

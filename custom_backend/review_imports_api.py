@@ -17,7 +17,7 @@ from typing import Literal
 
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from coscreen import db as db_mod, import_history, import_sources, review_imports as store, review_workflow as workflow
 from coscreen import import_review_undo as review_undo
@@ -35,10 +35,25 @@ class CandidateBody(VersionBody):
     status: Literal['duplicate', 'not_duplicate', 'undecided']
     keeper_key: str | None = None
     keeper_record_id: str | None = None
+    #: 冲突字段选择：{字段: "keeper" | 被合并记录 id}，仅对两边都有值的冲突生效。
+    conflict_picks: dict[str, str] | None = None
+    #: 仅存储用于审计关联 AI 预填与人的最终选择。
+    ai_suggestion_id: str | None = None
 
 
 class MetadataBody(VersionBody):
-    action: Literal['keep_existing', 'accept_incoming']
+    model_config = ConfigDict(extra='forbid')
+    action: Literal['keep_existing', 'accept_incoming', 'field_picks']
+    #: 逐字段采用：{字段: "keep" | "incoming"}，缺省=keep。
+    picks: dict[str, Literal['keep', 'incoming']] | None = None
+
+    @field_validator('picks')
+    @classmethod
+    def _known_metadata_fields(cls, value):
+        for field in value or {}:
+            if field not in store.METADATA_FIELDS:
+                raise ValueError('Unknown metadata field: %s' % field)
+        return value
 
 
 class BulkItem(BaseModel):
@@ -46,6 +61,8 @@ class BulkItem(BaseModel):
     id: str = Field(min_length=1, max_length=128)
     keeper_key: str | None = None
     keeper_record_id: str | None = None
+    conflict_picks: dict[str, str] | None = None
+    ai_suggestion_id: str | None = None
 
 
 class BulkBody(VersionBody):
@@ -476,6 +493,12 @@ def register_review_import_routes(app, require_user, **dependencies):
     def translate(exc):
         if isinstance(exc, KeyError):
             raise HTTPException(404, str(exc)) from exc
+        # 合并/元数据的结构化错误：只新增 message_key 载荷，旧错误仍为纯文本 409。
+        if isinstance(exc, store.MergeError):
+            raise HTTPException(exc.status, {'error_code': exc.message_key.replace('.', '_'),
+                                             'message_key': exc.message_key,
+                                             'params': exc.params,
+                                             'detail': str(exc)}) from exc
         raise HTTPException(409, str(exc)) from exc
 
     @app.get('/api/tasks/{task_id}/import-review-summary')
@@ -594,12 +617,13 @@ def register_review_import_routes(app, require_user, **dependencies):
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/candidates/{review_id}')
     def decide(task_id: str, batch_id: str, review_id: str, body: CandidateBody, user: dict=Depends(require_user)):
         return mutate(task_id,batch_id,user,body,lambda conn,ctx:store.decide_candidate(conn,batch_id,review_id,body.status,
-            str(user['user_id']),body.keeper_key,body.keeper_record_id),'import-candidate-reviewed','candidate',review_id)
+            str(user['user_id']),body.keeper_key,body.keeper_record_id,
+            conflict_picks=body.conflict_picks, ai_suggestion_id=body.ai_suggestion_id),'import-candidate-reviewed','candidate',review_id)
 
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/metadata/{record_id}')
     def metadata(task_id: str,batch_id: str,record_id: str,body: MetadataBody,user: dict=Depends(require_user)):
         return mutate(task_id,batch_id,user,body,lambda conn,ctx:store.decide_metadata(conn,batch_id,record_id,body.action,
-            str(user['user_id'])),'import-metadata-reviewed','metadata',record_id)
+            str(user['user_id']), picks=body.picks),'import-metadata-reviewed','metadata',record_id)
 
     @app.post('/api/tasks/{task_id}/import-batches/{batch_id}/undo')
     def undo(task_id: str,batch_id: str,body: VersionBody,user: dict=Depends(require_user)):

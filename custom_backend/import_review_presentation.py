@@ -85,8 +85,53 @@ def present_record(conn, row: dict, classification: dict) -> dict:
     return result
 
 
+def _member_article(member: dict) -> dict:
+    if member.get('ref_type') == 'active':
+        return member.get('article') or {}
+    return (member.get('record') or {}).get('article') or {}
+
+
+def _member_order(member: dict) -> tuple:
+    """原顺序（导入顺序）：活跃文章按 import_order，待审记录按 created_at/row_index。"""
+    if member.get('ref_type') == 'active':
+        article = member.get('article') or {}
+        order = article.get('import_order')
+        return (0, '%012d' % order if isinstance(order, int) else '',
+                str(article.get('zotero_key') or member.get('ref_id')))
+    record = member.get('record') or {}
+    row_index = record.get('row_index')
+    return (1, str(record.get('created_at') or ''),
+            '%012d' % row_index if isinstance(row_index, int) else '',
+            str(member.get('ref_id')))
+
+
+def suggested_keeper(members: list[dict]) -> dict:
+    """建议保留者：规则①已入任务成员必为保留者；否则规则②完整度最高者。
+
+    平分取原顺序（导入顺序）。reasons 是结构化键（has_doi… / active_member），
+    由前端渲染文案。确认接口仍要求显式 keeper——这里只是建议。
+    """
+    active = [member for member in members or [] if member.get('ref_type') == 'active']
+    if active:
+        active.sort(key=_member_order)
+        return {'keeper_key': active[0]['ref_id'], 'keeper_record_id': None,
+                'reasons': ['active_member']}
+    best, best_score = None, None
+    for member in sorted(members or [], key=_member_order):
+        score = store.completeness(_member_article(member))
+        if best_score is None or score > best_score:
+            best, best_score = member, score
+    if best is None:
+        return {'keeper_key': None, 'keeper_record_id': None, 'reasons': []}
+    return {'keeper_key': None, 'keeper_record_id': best['ref_id'],
+            'reasons': [key for key, present
+                        in zip(store.COMPLETENESS_REASONS, best_score) if present]}
+
+
 def present_candidates(conn, selected: list[dict]) -> list[dict]:
     """Expand only the requested page, without rescanning all groups per item."""
+    # 延迟导入：import_review_actions 在模块级导入本模块（判据与载荷必须同源）。
+    from custom_backend.import_review_actions import bulk_eligibility
     result = []
     for candidate in selected:
         members = []
@@ -101,5 +146,9 @@ def present_candidates(conn, selected: list[dict]) -> list[dict]:
                 record = conn.execute('SELECT * FROM workflow_source_records WHERE id=?', (member['ref_id'],)).fetchone()
                 member['record'] = store.public_record(conn, dict(record)) if record else None
             members.append(member)
-        result.append({**candidate, 'review_id': candidate['id'], 'members': members})
+        payload = {**candidate, 'review_id': candidate['id'], 'members': members}
+        eligible, reason = bulk_eligibility(payload)
+        result.append({**payload, 'bulk_eligible': eligible,
+                       'bulk_ineligible_reason': reason,
+                       'suggested_keeper': suggested_keeper(members)})
     return result

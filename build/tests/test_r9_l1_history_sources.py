@@ -342,7 +342,7 @@ class ImportSourceMigrationTests(unittest.TestCase):
             conn.execute("DELETE FROM workflow_migrations WHERE version IN (4,5)")
         # 修前：JSONDecodeError / UnicodeEncodeError，版本 4/5 永不落地（红）
         import_sources.migrate(db)
-        self.assertEqual(self._versions(db), [1, 2, 4, 5])
+        self.assertEqual(self._versions(db), sorted([1, review_imports.MIGRATION_VERSION, import_sources.VERSION, import_sources.FILENAME_VERSION]))
         with closing(sqlite3.connect(db)) as conn:
             source_id = conn.execute(
                 "SELECT source_id FROM workflow_source_records WHERE id='r1'").fetchone()[0]
@@ -355,7 +355,7 @@ class ImportSourceMigrationTests(unittest.TestCase):
         self.assertFalse(import_sources._backup_usable(backup))
         # 修前：坏 .bak 被 exists() 信任 → 迁移照做、备份仍 176B 不可打开（红）
         self._migrate_subprocess(db)
-        self.assertEqual(self._versions(db), [1, 2, 4, 5])
+        self.assertEqual(self._versions(db), sorted([1, review_imports.MIGRATION_VERSION, import_sources.VERSION, import_sources.FILENAME_VERSION]))
         self.assertTrue(import_sources._backup_usable(backup))
         self.assertGreater(backup.stat().st_size, 1024)
 
@@ -487,7 +487,7 @@ class ImportSourceRaceWindowTests(unittest.TestCase):
                 state = conn.execute(
                     "SELECT version,catalog_revision FROM workflow_state "
                     "WHERE singleton=1").fetchone()
-            self.assertEqual(versions, [1, 2, 4, 5])
+            self.assertEqual(versions, sorted([1, review_imports.MIGRATION_VERSION, import_sources.VERSION, import_sources.FILENAME_VERSION]))
             # 另一进程已完成 → 本次迁移体必须整体回滚为无操作（修前重跑两次
             # v4/v5 迁移体：state.version +1、catalog_revision +1）。
             self.assertEqual(tuple(state), (state_before[0], state_before[1]))
@@ -580,7 +580,7 @@ class ImportSourceConcurrencyTests(unittest.TestCase):
                 with closing(sqlite3.connect(db)) as conn:
                     versions = [row[0] for row in conn.execute(
                         "SELECT version FROM workflow_migrations ORDER BY version")]
-                self.assertEqual(versions, [1, 2, 4, 5])
+                self.assertEqual(versions, sorted([1, review_imports.MIGRATION_VERSION, import_sources.VERSION, import_sources.FILENAME_VERSION]))
 
 
 # ---------------------------------------------------------------------------
