@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 __all__ = [
     "PICOElement",
     "SearchStrategy",
+    "KeyTerm",
     "ProtocolDocument",
     "PUBMED_URL_PREFIX",
     "EMBASE_URL_PREFIX",
@@ -39,6 +40,7 @@ __all__ = [
     "build_search_strategies",
     "protocol_to_dict",
     "protocol_from_dict",
+    "key_terms_from_dict",
     "protocol_to_markdown",
 ]
 
@@ -78,6 +80,21 @@ class SearchStrategy:
 
 
 @dataclass
+class KeyTerm:
+    """关键术语的团队约定定义（术语名 + 释义）。
+
+    term       术语名（如 "同伴支持"、"干预≥8 周"）
+    definition 团队对该术语的约定释义（自由文本，原样展示）
+
+    2.1.5 W8：标准对照常驻卡的数据来源之一（纳入/排除标准之外的第三段）。
+    只做结构化承载，不做词表校验（与 PICO 同口径：garbage in, garbage out）。
+    """
+
+    term: str
+    definition: str = ""
+
+
+@dataclass
 class ProtocolDocument:
     """完整方案文档。"""
 
@@ -86,6 +103,7 @@ class ProtocolDocument:
     pico: list[PICOElement]
     inclusion_criteria: list[str] = field(default_factory=list)  # 纳入标准（与 PICO 对齐）
     exclusion_criteria: list[str] = field(default_factory=list)  # 排除标准
+    key_terms: list[KeyTerm] = field(default_factory=list)  # 关键术语定义（2.1.5 W8）
     search_strategies: list[SearchStrategy] = field(default_factory=list)
     created_at: str = ""
 
@@ -373,6 +391,32 @@ def protocol_to_dict(protocol: ProtocolDocument) -> dict:
     return asdict(protocol)
 
 
+def key_terms_from_dict(raw: object) -> list[KeyTerm]:
+    """``key_terms`` 反序列化：**宽松兼容**旧数据（2.1.5 W8）。
+
+    兼容面（旧 task.json 无该字段是本路径的常态）：
+    - 字段缺失 / ``None`` / 非 list → 空清单（不抛错）；
+    - 条目非 dict → 跳过；``term`` 缺失或空白 → 跳过（无名术语无法展示）；
+    - ``term``/``definition`` 非字符串 → 按 ``str`` 归一并去首尾空白。
+
+    与 PICO 的严格口径不同是有意的：标准对照常驻卡是**只读聚合**，一条
+    畸形术语不应让整份方案导出/面板 400 或 500（失败优雅降级）。写路径
+    （API 层）已负责清洗，此处只保证读侧不炸。
+    """
+    if not isinstance(raw, list):
+        return []
+    terms: list[KeyTerm] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        terms.append(KeyTerm(term=term,
+                             definition=str(item.get("definition") or "").strip()))
+    return terms
+
+
 def protocol_from_dict(data: dict) -> ProtocolDocument:
     """存储的 dict -> ProtocolDocument（round-trip；形状非法抛 ValueError）。"""
     if not isinstance(data, dict):
@@ -413,9 +457,21 @@ def protocol_from_dict(data: dict) -> ProtocolDocument:
         pico=pico,
         inclusion_criteria=[str(c) for c in data.get("inclusion_criteria") or []],
         exclusion_criteria=[str(c) for c in data.get("exclusion_criteria") or []],
+        key_terms=key_terms_from_dict(data.get("key_terms")),
         search_strategies=strategies,
         created_at=str(data.get("created_at") or ""),
     )
+
+
+def _md_cell(value: str) -> str:
+    """Markdown 表格单元格转义：``|`` 会撕裂表格、换行会断行（K1）。
+
+    反斜杠**最先**转义（评审 r2）：否则术语 ``a\\|b`` 会输出 ``a\\\\|b``，
+    原始反斜杠把我们的 ``\\|`` 重新变成字面 ``|``，转义失效、表格被撕裂。
+    """
+    text = str(value or "").replace("\\", "\\\\")
+    return text.replace("|", "\\|").replace("\r\n", "<br>").replace(
+        "\n", "<br>").replace("\r", "<br>")
 
 
 def protocol_to_markdown(protocol: ProtocolDocument | dict) -> str:
@@ -459,6 +515,14 @@ def protocol_to_markdown(protocol: ProtocolDocument | dict) -> str:
         lines += ["## 纳入标准", ""] + [f"- {c}" for c in doc.inclusion_criteria] + [""]
     if doc.exclusion_criteria:
         lines += ["## 排除标准", ""] + [f"- {c}" for c in doc.exclusion_criteria] + [""]
+    if doc.key_terms:
+        # 2.1.5 W8：关键术语定义（PROSPERO 注册表与团队内部对齐都用得上）。
+        # 表格单元格内的 | 与换行按 Markdown 表格要求转义，避免撕裂表格。
+        lines += ["## 关键术语", "", "| 术语 | 定义 |", "| --- | --- |"]
+        for key_term in doc.key_terms:
+            lines.append("| {} | {} |".format(
+                _md_cell(key_term.term), _md_cell(key_term.definition)))
+        lines.append("")
     if doc.created_at:
         lines += ["---", f"创建时间：{doc.created_at}", ""]
     return "\n".join(lines).strip() + "\n"

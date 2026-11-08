@@ -80,7 +80,7 @@
           "strategy": {
             "anyOf": [
               {
-                "pattern": "^(max|uncertainty|mixed)$",
+                "pattern": "^(max|uncertainty|mixed|cluster)$",
                 "type": "string"
               },
               {
@@ -125,6 +125,23 @@
           "rater_ids"
         ],
         "title": "AgreementIn",
+        "type": "object"
+      },
+      "ArchiveExportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "default": "all",
+            "enum": [
+              "all",
+              "stage1_include",
+              "stage2_include"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "title": "ArchiveExportIn",
         "type": "object"
       },
       "ArmEffectIn": {
@@ -538,6 +555,45 @@
           "package"
         ],
         "title": "Body_import_commit_api_tasks__task_id__trace_imports_commit_post",
+        "type": "object"
+      },
+      "Body_import_package_api_tasks_import_package_post": {
+        "properties": {
+          "package": {
+            "contentMediaType": "application/octet-stream",
+            "title": "Package",
+            "type": "string"
+          },
+          "preview_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Sha256"
+          }
+        },
+        "required": [
+          "package"
+        ],
+        "title": "Body_import_package_api_tasks_import_package_post",
+        "type": "object"
+      },
+      "Body_import_package_preflight_api_tasks_import_package_preflight_post": {
+        "properties": {
+          "package": {
+            "contentMediaType": "application/octet-stream",
+            "title": "Package",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package"
+        ],
+        "title": "Body_import_package_preflight_api_tasks_import_package_preflight_post",
         "type": "object"
       },
       "Body_import_preview_api_tasks__task_id__trace_imports_preview_post": {
@@ -4205,6 +4261,18 @@
         "title": "OrwinIn",
         "type": "object"
       },
+      "PackageExportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "include_pdfs": {
+            "default": true,
+            "title": "Include Pdfs",
+            "type": "boolean"
+          }
+        },
+        "title": "PackageExportIn",
+        "type": "object"
+      },
       "PairedBinaryIn": {
         "additionalProperties": false,
         "properties": {
@@ -4915,6 +4983,21 @@
             "title": "Inclusion Criteria",
             "type": "array"
           },
+          "key_terms": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ProtocolKeyTermIn"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Terms"
+          },
           "pico": {
             "items": {
               "$ref": "#/components/schemas/ProtocolPICOIn"
@@ -4942,6 +5025,28 @@
           "pico"
         ],
         "title": "ProtocolIn",
+        "type": "object"
+      },
+      "ProtocolKeyTermIn": {
+        "description": "关键术语定义（2.1.5 W8；与 coscreen.protocol_designer.KeyTerm 同形）。",
+        "properties": {
+          "definition": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Definition",
+            "type": "string"
+          },
+          "term": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Term",
+            "type": "string"
+          }
+        },
+        "required": [
+          "term"
+        ],
+        "title": "ProtocolKeyTermIn",
         "type": "object"
       },
       "ProtocolPICOIn": {
@@ -9232,6 +9337,122 @@
         "summary": "Create Task"
       }
     },
+    "/api/tasks/import-package": {
+      "post": {
+        "operationId": "import_package_api_tasks_import_package_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_package_api_tasks_import_package_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Package Api Tasks Import Package Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Package"
+      }
+    },
+    "/api/tasks/import-package/preflight": {
+      "post": {
+        "operationId": "import_package_preflight_api_tasks_import_package_preflight_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_package_preflight_api_tasks_import_package_preflight_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Package Preflight Api Tasks Import Package Preflight Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Package Preflight"
+      }
+    },
     "/api/tasks/{task_id}": {
       "delete": {
         "operationId": "delete_task_api_tasks__task_id__delete",
@@ -10085,7 +10306,7 @@
     },
     "/api/tasks/{task_id}/al/rank": {
       "get": {
-        "description": "对当前筛选员的待筛队列做主动学习重排（复用 coscreen.al 全套实现）。",
+        "description": "对当前筛选员的待筛队列做主动学习重排（复用 coscreen.al 全套实现）。\n\n``strategy=\"cluster\"``（2.1.5 W6）走独立的近邻聚类分支：**不要求模型\n配置**、不训练、不查模型预设，标签再少也 ``available=True``；返回载荷\n键集与模型分支一致，只是 ``score`` 为 ``null``（聚类不产生“纳入概率”，\n不臆造分数）且 ``order`` 为聚类顺序。",
         "operationId": "al_rank_api_tasks__task_id__al_rank_get",
         "parameters": [
           {
@@ -22702,6 +22923,64 @@
         "summary": "Collaboration Revoke Role"
       }
     },
+    "/api/tasks/{task_id}/criteria-panel": {
+      "get": {
+        "description": "纳入/排除标准与关键术语的只读聚合（数据 = task.json 的 protocol）。",
+        "operationId": "criteria_panel_api_tasks__task_id__criteria_panel_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Criteria Panel Api Tasks  Task Id  Criteria Panel Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Criteria Panel"
+      }
+    },
     "/api/tasks/{task_id}/decisions": {
       "get": {
         "operationId": "list_decisions_api_tasks__task_id__decisions_get",
@@ -23616,6 +23895,76 @@
           }
         },
         "summary": "Apply Extraction"
+      }
+    },
+    "/api/tasks/{task_id}/fulltext/archive-export": {
+      "post": {
+        "operationId": "archive_export_api_tasks__task_id__fulltext_archive_export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ArchiveExportIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive Export"
       }
     },
     "/api/tasks/{task_id}/fulltext/fetch-batch": {
@@ -26365,6 +26714,143 @@
         "summary": "Living Review Search Records"
       }
     },
+    "/api/tasks/{task_id}/package/export": {
+      "post": {
+        "operationId": "package_export_api_tasks__task_id__package_export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PackageExportIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Package Export"
+      }
+    },
+    "/api/tasks/{task_id}/package/preflight": {
+      "get": {
+        "operationId": "package_preflight_api_tasks__task_id__package_preflight_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_pdfs",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Include Pdfs",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Package Preflight Api Tasks  Task Id  Package Preflight Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Package Preflight"
+      }
+    },
     "/api/tasks/{task_id}/pdf-fetch/settings": {
       "get": {
         "operationId": "get_settings_api_tasks__task_id__pdf_fetch_settings_get",
@@ -27809,7 +28295,7 @@
         "summary": "Get Protocol"
       },
       "post": {
-        "description": "保存方案到 task.json 并生成检索式（纯本地计算，不联网）。",
+        "description": "保存方案到 task.json 并生成检索式（纯本地计算，不联网）。\n\n2.1.5 W8：写闸 = 属主/can_manage（``_require_task_owner``，与任务改名/\n归档同一口径）。设计 §二.2「编辑只归属主/can_manage」；本写路径扩到\n``key_terms`` 后必须补闸——否则 coder/reconciler 可覆盖或清空全员共用\n的纳入/排除标准与关键术语。legacy 任务按模式区分：desktop 维持单机\n可管理，server 模式 409 属主迁移指引。",
         "operationId": "create_protocol_api_tasks__task_id__protocol_post",
         "parameters": [
           {
@@ -31339,7 +31825,7 @@
     },
     "/api/tasks/{task_id}/stage2/queue": {
       "get": {
-        "description": "复筛队列（mode=own：本人初筛纳入，双盲）。",
+        "description": "复筛队列（mode=own：本人初筛纳入，双盲）。\n\n2.1.5 W6：该筛选员的排序策略为 ``cluster`` 时按近邻聚类重排**顺序**\n（载荷形状不变）；已做复筛决定的条目冻结在原位置，只重排未决段。",
         "operationId": "stage2_queue_ep_api_tasks__task_id__stage2_queue_get",
         "parameters": [
           {

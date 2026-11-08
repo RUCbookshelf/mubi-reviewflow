@@ -38,8 +38,8 @@ DECISIONS = ("include", "exclude", "maybe")
 DECISION_LABELS = {"include": "纳入", "exclude": "排除", "maybe": "待定"}
 
 # ---- 主动学习排序（AL，借鉴 ASReview；Phase 1）----
-AL_DEFAULT_STRATEGY = "max"      # max | uncertainty | mixed
-AL_SEED = 42                     # mixed 策略随机种子（确定性）
+AL_DEFAULT_STRATEGY = "max"      # max | uncertainty | mixed | cluster（2.1.5 W6：cluster 不要求模型）
+AL_SEED = 42                     # mixed 策略随机种子；cluster 用作遍历起点（确定性）
 AL_MIN_LABELED = 5               # 开始训练前最少的 include+exclude 标签数
 AL_REORDER_INTERVAL = 20         # 每批有变化的文献决定后刷新排序（不改变模型算法）
 AL_MIXED_RANDOM_RATIO = 0.05     # mixed：随机抽样占比
