@@ -570,6 +570,58 @@ def _coding_matrix_columns(dims: list[dict]) -> list[tuple[dict, str]]:
     return out
 
 
+def coding_matrix_table(db_path: StrPath, *,
+                        include_keys: set[str] | list[str] | None = None) -> dict:
+    """编码矩阵的列与行（**单一事实源**：矩阵 CSV 与 2.1.5 W7 Table 1 共用）。
+
+    返回 ``{"columns": [...], "rows": [{列名: 值}], "dimensions": [...]}``：
+    列 = ``zotero_key`` / ``title`` + 每个维度一列（同名维度加 ``" [维度]"``
+    后缀，见 :func:`_coding_matrix_columns`）；``dimensions`` 逐列给出维度
+    id / 名称 / 列名 / 分区（section），供 Table 1 的分组表头与预览使用。
+
+    ``include_keys`` 给定时只保留这些文献（Table 1 的纳入过滤：初筛/复筛纳入
+    键），仍按 import_order 排序，**已确认重复条目一律排除**（与矩阵口径一致），
+    未编码但已纳入的文献保留为空行（Table 1 的「已纳入、未提取」行）；
+    ``None``（缺省）= 矩阵全量口径（与 :func:`export_coding_matrix` 完全一致）。
+    """
+    coding = _coding_layer()
+    dims = coding.list_dimensions(db_path)  # 已按 (section, position, id) 排序
+    notes = _notes_index(db_path)
+    titles = _coding_titles(db_path)
+    values_all = coding.get_coding_values_all(db_path)  # 单连接批量（P2-10）
+    dim_columns = _coding_matrix_columns(dims)
+    columns = CODING_MATRIX_HEAD_COLUMNS + [column for _dim, column in dim_columns]
+    if include_keys is None:
+        row_keys = _coding_row_keys(db_path, coding, notes)
+    else:
+        wanted = {str(key) for key in include_keys}
+        confirmed = _confirmed_duplicate_keys(db_path)
+        row_keys = [article.zotero_key
+                    for article in db_mod.list_articles(db_path, include_duplicates=True)
+                    if article.zotero_key in wanted and article.zotero_key not in confirmed]
+    rows = []
+    for key in row_keys:
+        values = values_all.get(key, {})
+        row = {"zotero_key": key, "title": titles.get(key, "")}
+        for dim, column in dim_columns:
+            row[column] = values.get(int(dim["id"]), "") or ""
+        rows.append(row)
+    return {
+        "columns": columns,
+        "rows": rows,
+        "dimensions": [
+            {
+                "id": int(dim["id"]),
+                "name": str(dim["name"]),
+                "column": column,
+                "section": str(dim.get("section") or ""),
+                "dtype": str(dim.get("dtype") or ""),
+            }
+            for dim, column in dim_columns
+        ],
+    }
+
+
 def export_coding_matrix(db_path: StrPath, out_csv: StrPath) -> Path:
     """编码矩阵 CSV（SPEC §15.3）：行 = 文献、列 = 维度；返回写入路径。
 
@@ -579,21 +631,8 @@ def export_coding_matrix(db_path: StrPath, out_csv: StrPath) -> Path:
     - 行序 = 文献 import_order（见 _coding_row_keys）；空值写空串；
     - utf-8-sig（Excel 直接打开中文不乱码）；同一数据库状态两次导出字节级一致。
     """
-    coding = _coding_layer()
-    dims = coding.list_dimensions(db_path)  # 已按 (section, position, id) 排序
-    notes = _notes_index(db_path)
-    titles = _coding_titles(db_path)
-    values_all = coding.get_coding_values_all(db_path)  # 单连接批量（P2-10）
-    dim_columns = _coding_matrix_columns(dims)
-    columns = CODING_MATRIX_HEAD_COLUMNS + [column for _dim, column in dim_columns]
-    rows = []
-    for key in _coding_row_keys(db_path, coding, notes):
-        values = values_all.get(key, {})
-        row = {"zotero_key": key, "title": titles.get(key, "")}
-        for dim, column in dim_columns:
-            row[column] = values.get(int(dim["id"]), "") or ""
-        rows.append(row)
-    df = pd.DataFrame(rows, columns=columns)
+    table = coding_matrix_table(db_path)  # 单一事实源（2.1.5 W7 Table 1 同一函数）
+    df = pd.DataFrame(table["rows"], columns=table["columns"])
     out = Path(out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False, encoding="utf-8-sig")

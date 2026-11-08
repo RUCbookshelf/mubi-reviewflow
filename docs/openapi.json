@@ -977,6 +977,106 @@
         "title": "ChannelConfigIn",
         "type": "object"
       },
+      "CharacteristicsIn": {
+        "description": "Table 1 请求体（设计 §三：``{fields, inclusion, format, sort}``）。",
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields"
+          },
+          "format": {
+            "default": "csv",
+            "enum": [
+              "csv",
+              "docx"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "inclusion": {
+            "default": "stage1_stage2",
+            "enum": [
+              "stage1_stage2",
+              "stage1",
+              "matrix"
+            ],
+            "title": "Inclusion",
+            "type": "string"
+          },
+          "sort": {
+            "default": "import_order",
+            "enum": [
+              "import_order",
+              "author_year"
+            ],
+            "title": "Sort",
+            "type": "string"
+          }
+        },
+        "title": "CharacteristicsIn",
+        "type": "object"
+      },
+      "CheckIn": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "scope": {
+            "default": "stage2_include",
+            "maxLength": 40,
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "title": "CheckIn",
+        "type": "object"
+      },
       "CleanupIn": {
         "properties": {
           "confirm": {
@@ -6308,6 +6408,77 @@
           }
         },
         "title": "SnapshotIn",
+        "type": "object"
+      },
+      "SofIn": {
+        "description": "SoF 请求体（设计 §三：``{outcomes?, format}`` + 合成/评价参数）。",
+        "properties": {
+          "ci_method": {
+            "default": "normal",
+            "enum": [
+              "normal",
+              "hksj"
+            ],
+            "title": "Ci Method",
+            "type": "string"
+          },
+          "format": {
+            "default": "csv",
+            "enum": [
+              "csv",
+              "docx"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "initial_design": {
+            "default": "rct",
+            "enum": [
+              "rct",
+              "observational",
+              "diagnostic"
+            ],
+            "title": "Initial Design",
+            "type": "string"
+          },
+          "model": {
+            "default": "fixed",
+            "enum": [
+              "fixed",
+              "random",
+              "random_pm",
+              "random_reml"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
+          "outcomes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcomes"
+          },
+          "rob_tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rob Tool"
+          }
+        },
+        "title": "SofIn",
         "type": "object"
       },
       "SourceIn": {
@@ -29101,6 +29272,253 @@
         "summary": "Undo State"
       }
     },
+    "/api/tasks/{task_id}/retraction-badge": {
+      "get": {
+        "operationId": "retraction_badge_api_tasks__task_id__retraction_badge_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retraction Badge Api Tasks  Task Id  Retraction Badge Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retraction Badge"
+      }
+    },
+    "/api/tasks/{task_id}/retraction-check": {
+      "post": {
+        "operationId": "retraction_check_api_tasks__task_id__retraction_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retraction Check Api Tasks  Task Id  Retraction Check Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retraction Check"
+      }
+    },
+    "/api/tasks/{task_id}/retraction-runs": {
+      "get": {
+        "operationId": "retraction_runs_api_tasks__task_id__retraction_runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retraction Runs Api Tasks  Task Id  Retraction Runs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retraction Runs"
+      }
+    },
+    "/api/tasks/{task_id}/retraction-runs/{run_id}": {
+      "get": {
+        "operationId": "retraction_run_detail_api_tasks__task_id__retraction_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retraction Run Detail Api Tasks  Task Id  Retraction Runs  Run Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retraction Run Detail"
+      }
+    },
     "/api/tasks/{task_id}/screening-arbitrations": {
       "post": {
         "description": "上传 2-9 份决策 CSV 保存仲裁记录（离线流程，行为原样保留）。\n\n服务器来源的保存走 ``POST .../screening-arbitrations/server-save``：\n不重传文件，由后端从任务目录现取合并表。",
@@ -31953,6 +32371,184 @@
           }
         },
         "summary": "Study Designs"
+      }
+    },
+    "/api/tasks/{task_id}/tables/characteristics": {
+      "post": {
+        "operationId": "tables_characteristics_api_tasks__task_id__tables_characteristics_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "screener",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Screener"
+            }
+          },
+          {
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Detail",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CharacteristicsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tables Characteristics"
+      }
+    },
+    "/api/tasks/{task_id}/tables/sof": {
+      "post": {
+        "operationId": "tables_sof_api_tasks__task_id__tables_sof_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "screener",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Screener"
+            }
+          },
+          {
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Detail",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SofIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tables Sof"
       }
     },
     "/api/tasks/{task_id}/team-progress": {
