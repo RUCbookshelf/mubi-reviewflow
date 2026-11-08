@@ -1465,6 +1465,17 @@
         "title": "DimensionUpdateIn",
         "type": "object"
       },
+      "DiscussionIn": {
+        "properties": {
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "DiscussionIn",
+        "type": "object"
+      },
       "DoseArmsIn": {
         "additionalProperties": false,
         "properties": {
@@ -2530,6 +2541,29 @@
         "title": "FreezeIn",
         "type": "object"
       },
+      "GoldIn": {
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "zotero_key": {
+            "title": "Zotero Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zotero_key",
+          "decision"
+        ],
+        "title": "GoldIn",
+        "type": "object"
+      },
       "GradeAssessmentIn": {
         "properties": {
           "comparison": {
@@ -3111,6 +3145,40 @@
         "title": "IqrArm",
         "type": "object"
       },
+      "ItemIn": {
+        "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "zotero_key": {
+            "title": "Zotero Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zotero_key",
+          "decision"
+        ],
+        "title": "ItemIn",
+        "type": "object"
+      },
       "KeyPutIn": {
         "additionalProperties": false,
         "properties": {
@@ -3184,7 +3252,7 @@
         "type": "object"
       },
       "LivingReviewCheckIn": {
-        "description": "check-now 请求体（W3 检索订阅复活）。\n\n- ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；\n  缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。\n- ``strategy_id``（2.1.5 W3）：统一检索式库条目 id；给出时按条目自带\n  ``database`` 分派（本波仅 PubMed，ERIC 在 W4）。旧客户端不传即走\n  query_string/首条回退的兼容路径。\n- 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，\n  受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。",
+        "description": "check-now 请求体（W3 检索订阅复活，2.1.5 W4 多源分派）。\n\n- ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；\n  缺省时回退到任务已保存的第一条**同源**检索式（及其 last_run_date）。\n  ``since_date`` 只对 PubMed 有意义（ERIC 无日期窗口，走 ID 差集）。\n- ``strategy_id``（2.1.5 W3）：统一检索式库条目 id；给出时按条目自带\n  ``database`` 分派（PubMed/ERIC）；与显式 ``source`` 冲突时 400。\n- ``source``（2.1.5 W4，可选）：显式指定本次检查的源（``pubmed``/\n  ``eric``）；不传时按条目自带 ``database``，再缺省按 PubMed 兼容路径。\n  旧客户端不传即走 query_string/首条回退的既有行为（零回归）。\n- 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，\n  受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。",
         "properties": {
           "comparison": {
             "default": "",
@@ -3215,6 +3283,21 @@
             "maxLength": 10,
             "title": "Since Date",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pubmed",
+                  "eric"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "strategy_id": {
             "anyOf": [
@@ -5904,6 +5987,70 @@
         "title": "SessionStageIn",
         "type": "object"
       },
+      "SetIn": {
+        "properties": {
+          "curated_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Curated Keys"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "sampling": {
+            "default": "random",
+            "title": "Sampling",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "thresholds": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thresholds"
+          }
+        },
+        "title": "SetIn",
+        "type": "object"
+      },
       "SingleGroupCountIn": {
         "properties": {
           "append": {
@@ -7623,6 +7770,34 @@
         "required": [
           "enabled"
         ],
+        "title": "SettingsIn",
+        "type": "object"
+      },
+      "custom_backend__pilot_screening_api__SettingsIn": {
+        "properties": {
+          "enforce_pass": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforce Pass"
+          },
+          "pilot_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pilot Enabled"
+          }
+        },
         "title": "SettingsIn",
         "type": "object"
       },
@@ -25685,7 +25860,7 @@
     },
     "/api/tasks/{task_id}/living-review/check-now": {
       "post": {
-        "description": "真实拉取 PubMed 增量 → 虚拟 RIS 文件 → 受保护导入（W3 复活）。\n\n治理红线：本端点是 living_review_plugin 的**唯一**生产调用方，且只在\n收到本请求时才延迟导入并联网（默认关闭；无后台服务）。拉取结果不直接\n入库——合成虚拟 RIS 文件（``_pubmed_updates_to_ris``，PMID 稳定键）走\n``review_imports.upload()`` 与手工上传同一条受保护管线：staged 待审、\n元数据/候选核验、显式激活、溯源与撤销全继承。虚拟文件名固定\n（``pubmed-update.ris``），与手工重复上传同名同字节文件同径：同批次\n再次拉回相同 PMID 集合时不新增源记录（batch 收据仍会新增，与手工重\n上传一致）；PMID 集合变化时按「改动过的同一文件重导」语义追加新行。\n不重算合并（激活后由分析页单独运行）；成功后追加 living_review 历史并\n推进检索式 last_run_date（不覆盖用户录入的 total_hits_last）。\n\n降级契约：**插件**任何失败（不可达/超时/重定向被拒/坏响应）统一\nPubMedPluginError → 409 ``pubmed_unavailable`` + 手动导入指引，绝不\n500、不中断离线功能。注意降级覆盖的是检索阶段；进入受保护导入管线后\n的失败与其他导入端点同语义（沿用管线既有错误映射）。",
+        "description": "真实拉取增量 → 虚拟 RIS 文件 → 受保护导入（W3 PubMed / W4 多源）。\n\n按检索式库条目的 ``database`` 分派：``pubmed`` 走下方既有 E-utilities\n日期窗链路（本函数主体，2.1.5 W3 行为逐字节保留）；``eric`` 走\n:func:`_eric_check_now` 的 ID 差集链路（ERIC API 无日期过滤参数，见\n``custom_backend/eric_incremental_api.py`` 模块文档）。其余库无公开\n增量 API → 409 ``source_unsupported``。\n\n治理红线（两源同口径）：本端点是唯一生产调用方，且只在收到本请求时\n才延迟导入并联网（默认关闭；无后台服务）。拉取结果不直接入库——合成\n虚拟 RIS 文件（PubMed ``PMID-…`` / ERIC ``EJ…`` 稳定键）走\n``review_imports.upload()`` 与手工上传同一条受保护管线：staged 待审、\n元数据/候选核验、显式激活、溯源与撤销全继承。成功后追加 living_review\n历史并推进检索式游标（不覆盖用户录入的 total_hits_last）。\n\n降级契约：**插件**任何失败（不可达/超时/重定向被拒/坏响应）统一\nPubMedPluginError → 409 ``pubmed_unavailable``（ERIC 为 ``eric_unavailable``，\n同形）+ 手动导入指引，绝不 500、不中断离线功能。注意降级覆盖的是检索\n阶段；进入受保护导入管线后的失败与其他导入端点同语义（沿用管线既有\n错误映射）。",
         "operationId": "living_review_check_now_api_tasks__task_id__living_review_check_now_post",
         "parameters": [
           {
@@ -25968,6 +26143,102 @@
         "summary": "Living Review Import Update"
       }
     },
+    "/api/tasks/{task_id}/living-review/preview": {
+      "get": {
+        "description": "ERIC 增量预览：差集大小 + 前若干条新题录（只读，不入库）。",
+        "operationId": "living_review_preview_api_tasks__task_id__living_review_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "default": "eric",
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 4000,
+              "title": "Query",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strategy_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Strategy Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Living Review Preview Api Tasks  Task Id  Living Review Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Living Review Preview"
+      }
+    },
     "/api/tasks/{task_id}/living-review/save-search": {
       "post": {
         "description": "保存/更新检索式（检索式记忆）——兼容层写入统一检索式库。\n\n旧客户端载荷与返回形状不变；条目落为 ``source=manual`` 草稿并立即\n订阅（活体综述面板的订阅视图立即可见）。同库同检索式的既有草稿就地\n更新；命中定稿/历史时只更新订阅游标与订阅位，绝不新建第二行、\n也不改写证据链（executed_at/hit_count 等由触发器锁定）。",
@@ -26214,6 +26485,1063 @@
           }
         },
         "summary": "Put Settings"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/my-history": {
+      "get": {
+        "operationId": "pilot_my_history_api_tasks__task_id__pilot_my_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot My History Api Tasks  Task Id  Pilot My History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot My History"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets": {
+      "get": {
+        "operationId": "pilot_set_list_api_tasks__task_id__pilot_sets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Set List Api Tasks  Task Id  Pilot Sets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Set List"
+      },
+      "post": {
+        "operationId": "pilot_set_create_api_tasks__task_id__pilot_sets_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Set Create Api Tasks  Task Id  Pilot Sets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Set Create"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}": {
+      "get": {
+        "operationId": "pilot_set_detail_api_tasks__task_id__pilot_sets__set_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Set Detail Api Tasks  Task Id  Pilot Sets  Set Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Set Detail"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/archive": {
+      "post": {
+        "operationId": "pilot_set_archive_api_tasks__task_id__pilot_sets__set_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Set Archive Api Tasks  Task Id  Pilot Sets  Set Id  Archive Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Set Archive"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/attempts": {
+      "post": {
+        "operationId": "pilot_attempt_start_api_tasks__task_id__pilot_sets__set_id__attempts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Attempt Start Api Tasks  Task Id  Pilot Sets  Set Id  Attempts Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Attempt Start"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/gold": {
+      "post": {
+        "operationId": "pilot_gold_save_api_tasks__task_id__pilot_sets__set_id__gold_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoldIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Gold Save Api Tasks  Task Id  Pilot Sets  Set Id  Gold Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Gold Save"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/my-attempt": {
+      "get": {
+        "operationId": "pilot_my_attempt_api_tasks__task_id__pilot_sets__set_id__my_attempt_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot My Attempt Api Tasks  Task Id  Pilot Sets  Set Id  My Attempt Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot My Attempt"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/my-attempt/item": {
+      "post": {
+        "operationId": "pilot_my_attempt_item_api_tasks__task_id__pilot_sets__set_id__my_attempt_item_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot My Attempt Item Api Tasks  Task Id  Pilot Sets  Set Id  My Attempt Item Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot My Attempt Item"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/my-attempt/submit": {
+      "post": {
+        "operationId": "pilot_my_attempt_submit_api_tasks__task_id__pilot_sets__set_id__my_attempt_submit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot My Attempt Submit Api Tasks  Task Id  Pilot Sets  Set Id  My Attempt Submit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot My Attempt Submit"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/my-result": {
+      "get": {
+        "operationId": "pilot_my_result_api_tasks__task_id__pilot_sets__set_id__my_result_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot My Result Api Tasks  Task Id  Pilot Sets  Set Id  My Result Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot My Result"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/my-result/enter-by-discussion": {
+      "post": {
+        "operationId": "pilot_my_result_enter_api_tasks__task_id__pilot_sets__set_id__my_result_enter_by_discussion_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscussionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot My Result Enter Api Tasks  Task Id  Pilot Sets  Set Id  My Result Enter By Discussion Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot My Result Enter"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/publish": {
+      "post": {
+        "operationId": "pilot_set_publish_api_tasks__task_id__pilot_sets__set_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Set Publish Api Tasks  Task Id  Pilot Sets  Set Id  Publish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Set Publish"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/sets/{set_id}/results": {
+      "get": {
+        "operationId": "pilot_set_results_api_tasks__task_id__pilot_sets__set_id__results_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Set Results Api Tasks  Task Id  Pilot Sets  Set Id  Results Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Set Results"
+      }
+    },
+    "/api/tasks/{task_id}/pilot/settings": {
+      "get": {
+        "operationId": "pilot_settings_get_api_tasks__task_id__pilot_settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Settings Get Api Tasks  Task Id  Pilot Settings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Settings Get"
+      },
+      "put": {
+        "operationId": "pilot_settings_put_api_tasks__task_id__pilot_settings_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/custom_backend__pilot_screening_api__SettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Pilot Settings Put Api Tasks  Task Id  Pilot Settings Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pilot Settings Put"
       }
     },
     "/api/tasks/{task_id}/prisma-metrics": {

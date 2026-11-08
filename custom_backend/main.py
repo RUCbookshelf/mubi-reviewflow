@@ -135,6 +135,7 @@ from coscreen.stats.prisma_form import (
 from coscreen.security import sanitize_component
 
 from custom_backend import auth
+from custom_backend import pilot_screening_api
 from custom_backend.events import BUS, notify_tasks_changed
 from custom_backend.update_check import check_latest_release, current_version
 from custom_backend.source_provenance import source_articles
@@ -976,6 +977,13 @@ def require_user(
                 raise HTTPException(403, {
                     "error_code": "task_forbidden",
                     "message_key": "search_strategy.task_forbidden",
+                    "params": {},
+                })
+            # 2.1.5 G2/W2：筛选训练端点同口径结构化（契约 §3 pilot.* 错误形状）。
+            if "/pilot/" in request.url.path:
+                raise HTTPException(403, {
+                    "error_code": "task_forbidden",
+                    "message_key": "pilot.task_forbidden",
                     "params": {},
                 })
             raise HTTPException(403, "当前账号不是该任务的参与者。")
@@ -3180,6 +3188,12 @@ def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
                                                body.expected_policy_version) as workflow:
         app.state.review_workflow.check_maybe(workflow, "screen", body.decision,
                                               body.zotero_key, db=db)
+        # 2.1.5 W2 筛选训练 enforce_pass 闸（设计 §六）：与 W1 的 maybe 409 闸
+        # 同入口共存（maybe 先拒、文案指训练；include/exclude 再判达标）。默认
+        # false 零行为差异；负责人豁免；任何存储故障降级放行（可选模块不阻断）。
+        blocked_set = pilot_screening_api.enforce_gate(info, user)
+        if blocked_set is not None:
+            raise pilot_screening_api.enforce_error(blocked_set)
         _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
     return {"saved": True, "progress": db_mod.get_progress(db)}
@@ -6254,6 +6268,16 @@ from custom_backend.eric_search_api import register_eric_search_routes
 
 register_eric_search_routes(app, require_user, _task_or_404, _task_visible_to)
 
+# W4 ERIC 增量（2.1.5 Wave G2）：Living Review 多源化。增量入口仍是既有
+# POST /living-review/check-now（按检索式库条目 database 分派，见上方
+# _eric_check_now，不新增路径）；本模块只新增只读预览端点
+# GET /living-review/preview（差集大小 + 前若干条新题录）。出站仅
+# api.ies.ed.gov（PubMed 链路仍是 eutils）；显式手动触发、短超时、拒绝
+# 重定向、读取上限全沿用 eric_search_api；失败 409 降级绝不 500。
+from custom_backend.eric_incremental_api import register_eric_incremental_routes
+
+register_eric_incremental_routes(app, require_user, _task_or_404, _task_visible_to)
+
 # 2.1.5 B1 逐条盲裁决会话：权限/双盲/503 全部复用上方既有守卫函数。
 from custom_backend.arbitration_session_api import register_arbitration_session_routes
 
@@ -6315,6 +6339,14 @@ register_search_strategy_routes(app, require_user, _task_or_404, _task_visible_t
 # （一次性、幂等、.pre-binary-reset.bak + 轨迹留痕）。属主读全员，成员只读本人。
 from custom_backend.binary_reset_api import register_binary_reset_routes
 register_binary_reset_routes(app, require_user, _task_or_404, _screener_db)
+
+# W2 筛选训练（2.1.5 Wave G2）：pilot_* 七表落在任务协作库 collaboration.db
+# （可加幂等、旧版忽略、与正式筛选库物理隔离——S5 零污染）；κ 复用
+# coscreen.coding_agreement。enforce_pass 默认 false，开启后在 POST /decisions
+# （stage1）写入口做 403 引导；负责人豁免、无已发布集/存储故障优雅放行。
+from custom_backend.pilot_screening_api import register_pilot_screening_routes
+register_pilot_screening_routes(app, require_user, _task_or_404, _task_visible_to,
+                                _server_mode, _screener_db, auth.get_user_by_id)
 
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
@@ -7220,18 +7252,22 @@ class LivingReviewAutoIn(BaseModel):
 
 
 class LivingReviewCheckIn(BaseModel):
-    """check-now 请求体（W3 检索订阅复活）。
+    """check-now 请求体（W3 检索订阅复活，2.1.5 W4 多源分派）。
 
     - ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；
-      缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。
+      缺省时回退到任务已保存的第一条**同源**检索式（及其 last_run_date）。
+      ``since_date`` 只对 PubMed 有意义（ERIC 无日期窗口，走 ID 差集）。
     - ``strategy_id``（2.1.5 W3）：统一检索式库条目 id；给出时按条目自带
-      ``database`` 分派（本波仅 PubMed，ERIC 在 W4）。旧客户端不传即走
-      query_string/首条回退的兼容路径。
+      ``database`` 分派（PubMed/ERIC）；与显式 ``source`` 冲突时 400。
+    - ``source``（2.1.5 W4，可选）：显式指定本次检查的源（``pubmed``/
+      ``eric``）；不传时按条目自带 ``database``，再缺省按 PubMed 兼容路径。
+      旧客户端不传即走 query_string/首条回退的既有行为（零回归）。
     - 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，
       受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。
     """
 
     strategy_id: int | None = Field(default=None, ge=1)
+    source: Literal["pubmed", "eric"] | None = None
     query_string: str = Field(default="", max_length=4000)
     since_date: str = Field(default="", max_length=10)
     comparison: str = Field(default="", max_length=300)
@@ -7583,47 +7619,206 @@ def _pubmed_unavailable(task_id: str, exc: Exception) -> HTTPException:
     })
 
 
+async def _eric_check_now(app, info: tasks_mod.TaskInfo, record, payload,
+                          user: dict, query: str, owner_db) -> dict:
+    """ERIC 增量链路（2.1.5 W4）：ID 差集 → 虚拟 RIS → 受保护导入待审。
+
+    与 PubMed 分支同口径，但增量口径不同：ERIC API 没有日期过滤参数，因此
+    增量 = 「检索式当前命中快照」减「任务目录已知 ERIC accession 键」
+    （``coscreen.eric_incremental.diff_new_records``）。差集天然排除重复键、
+    天然覆盖补录的旧文献；单次只比对前 ``ERIC_INCREMENT_LIMIT``（500）条，
+    超上限在响应里诚实披露（``scanned/limit/truncated`` + 结构化
+    ``living_review.eric.truncated`` warning），不静默截断。未比对的命中
+    因为没有「已读位置」游标，下次检查仍是未知键，不会被永久跳过。
+
+    - 待审口径：增量非空 → 合成虚拟 RIS（``eric-update.ris``，固定文件名
+      复用来源身份）→ ``review_imports.upload()``；已有研究的任务 staged
+      待审、绝不直入 articles，与手工上传/PubMed 增量同一条管线。
+    - 命中数口径：游标 ``last_count = 增量条数``（设计 §二.3），不是上游
+      numFound。
+    - 文案：不新增自由文案——响应/历史条目给 ``message_key`` + ``params``
+      （前端词典按 key 渲染），历史条目的旧 ``change_report`` 字段留空。
+    """
+    from custom_backend import eric_incremental_api as eric_inc
+    from custom_backend.eric_search_api import EricSearchError
+
+    query = (query or "").strip()
+    if not query:
+        raise HTTPException(400, {
+            "error_code": "eric_source_required",
+            "message_key": "living_review.eric_source_required",
+            "params": {},
+        })
+
+    known = eric_inc.collect_known_eric_keys(owner_db)
+    try:
+        snapshot = await run_in_threadpool(eric_inc.fetch_eric_incremental, query)
+    except EricSearchError as exc:
+        raise eric_inc.unavailable_error(info.task_id, exc) from exc
+    increment = eric_inc.diff_new_records(snapshot["records"], known["keys"])
+
+    name = eric_inc.VIRTUAL_FILENAME
+    import_result = None
+    if increment:
+        virtual = UploadFile(file=BytesIO(
+            eric_inc.increment_ris(increment).encode("utf-8")), filename=name)
+        import_result = await app.state.review_imports.upload(
+            info.task_id, user, [virtual], batch=False,
+            source_ids=None, job_id=None, screener=None)
+
+    when = datetime.now().isoformat(timespec="seconds")
+    result = import_result or {}
+    activated_new = int(result.get("n_new") or 0)
+    pending_new = int(result.get("pending_records") or 0)
+    staged = bool(result.get("staged"))
+    duplicates = int(result.get("duplicates_against_db") or 0)
+    batch_id = result.get("batch_id")
+    disclosure = {
+        "total_hits": snapshot["total_hits"],
+        "scanned": snapshot["scanned"],
+        "limit": snapshot["limit"],
+        "baseline": bool(known["baseline"]),
+    }
+    if not increment:
+        message_key = eric_inc.KEY_NONE
+        message_params = dict(disclosure)
+    elif known["baseline"]:
+        # 首查：建立基线键集，本次全部命中即增量（设计 §四 的前端提示依据）
+        message_key = eric_inc.KEY_BASELINE
+        message_params = {**disclosure, "increment": len(increment),
+                          "staged": staged, "pending": pending_new,
+                          "duplicates": duplicates, "batch_id": batch_id}
+    elif staged:
+        message_key = eric_inc.KEY_STAGED
+        message_params = {"increment": len(increment), "pending": pending_new,
+                          "duplicates": duplicates, "batch_id": batch_id}
+    else:
+        message_key = eric_inc.KEY_DIRECT
+        message_params = {"increment": len(increment),
+                          "activated_new": activated_new,
+                          "duplicates": duplicates, "batch_id": batch_id}
+
+    entry = {
+        "when": when, "source": "eric", "label": name if increment else "",
+        "comparison": payload.comparison, "outcome": payload.outcome,
+        "timepoint": payload.timepoint, "measure": payload.measure,
+        "fetched": len(increment),
+        "n_new": activated_new,
+        "pending_new": pending_new,
+        "duplicates_removed": duplicates,
+        "al_available": None, "conclusion_changed": False,
+        "meta_before": None, "meta_after": None,
+        # 结构化文案（本波新增源不用自由文案；旧字段留空保持历史条目形状）
+        "change_report": "",
+        "change_report_key": message_key,
+        "change_report_params": message_params,
+        "total_hits": snapshot["total_hits"],
+        "scanned": snapshot["scanned"],
+        "limit": snapshot["limit"],
+        "truncated": snapshot["truncated"],
+        "baseline": bool(known["baseline"]),
+    }
+
+    def _mutate(latest: dict) -> None:
+        latest["history"].append(entry)
+
+    _mutate_living_review_state(info, _mutate)
+
+    # 统一库游标推进：只在本次拉取可信时到达这里（失败/导入异常均已提前返回）。
+    strategy_id = None
+    if record is not None:
+        strategy_id = record.get("id") or record.get("strategy_id")
+    conn = _living_review_library(info)
+    try:
+        if strategy_id is not None:
+            search_strategy_core.record_check(
+                conn, int(strategy_id), fetched=len(increment), now=when)
+        search_records = search_strategy_core.compat_records(conn)
+    finally:
+        conn.close()
+
+    return {
+        "checked": True, "source": "eric",
+        "strategy_id": int(strategy_id) if strategy_id is not None else None,
+        "query_string": snapshot["query"], "since_date": "",
+        # 披露：ERIC 无日期窗口 + 单次比对上限 500（本波诚实披露字段）
+        "baseline": bool(known["baseline"]),
+        "total_hits": snapshot["total_hits"], "scanned": snapshot["scanned"],
+        "limit": snapshot["limit"], "truncated": snapshot["truncated"],
+        "unstable": snapshot["unstable"],
+        "known_keys": known["eric_keys"],
+        "fetched": len(increment),
+        "virtual_file": name if increment else None,
+        "activated_new": activated_new, "pending_new": pending_new,
+        "already_present": duplicates, "staged": staged,
+        "import": import_result,
+        "import_url": f"/api/tasks/{info.task_id}/import",
+        "review_url": f"/api/tasks/{info.task_id}/import-batches",
+        "message_key": message_key, "message_params": message_params,
+        "warnings": eric_inc.disclosure_warnings(snapshot, known),
+        "history_entry": entry,
+        "search_records": search_records,
+        "outbound": ["api.ies.ed.gov"],
+    }
+
+
 @app.post("/api/tasks/{task_id}/living-review/check-now")
 async def living_review_check_now(task_id: str,
                                   body: LivingReviewCheckIn | None = None,
                                   user: dict = Depends(require_user)) -> dict:
-    """真实拉取 PubMed 增量 → 虚拟 RIS 文件 → 受保护导入（W3 复活）。
+    """真实拉取增量 → 虚拟 RIS 文件 → 受保护导入（W3 PubMed / W4 多源）。
 
-    治理红线：本端点是 living_review_plugin 的**唯一**生产调用方，且只在
-    收到本请求时才延迟导入并联网（默认关闭；无后台服务）。拉取结果不直接
-    入库——合成虚拟 RIS 文件（``_pubmed_updates_to_ris``，PMID 稳定键）走
+    按检索式库条目的 ``database`` 分派：``pubmed`` 走下方既有 E-utilities
+    日期窗链路（本函数主体，2.1.5 W3 行为逐字节保留）；``eric`` 走
+    :func:`_eric_check_now` 的 ID 差集链路（ERIC API 无日期过滤参数，见
+    ``custom_backend/eric_incremental_api.py`` 模块文档）。其余库无公开
+    增量 API → 409 ``source_unsupported``。
+
+    治理红线（两源同口径）：本端点是唯一生产调用方，且只在收到本请求时
+    才延迟导入并联网（默认关闭；无后台服务）。拉取结果不直接入库——合成
+    虚拟 RIS 文件（PubMed ``PMID-…`` / ERIC ``EJ…`` 稳定键）走
     ``review_imports.upload()`` 与手工上传同一条受保护管线：staged 待审、
-    元数据/候选核验、显式激活、溯源与撤销全继承。虚拟文件名固定
-    （``pubmed-update.ris``），与手工重复上传同名同字节文件同径：同批次
-    再次拉回相同 PMID 集合时不新增源记录（batch 收据仍会新增，与手工重
-    上传一致）；PMID 集合变化时按「改动过的同一文件重导」语义追加新行。
-    不重算合并（激活后由分析页单独运行）；成功后追加 living_review 历史并
-    推进检索式 last_run_date（不覆盖用户录入的 total_hits_last）。
+    元数据/候选核验、显式激活、溯源与撤销全继承。成功后追加 living_review
+    历史并推进检索式游标（不覆盖用户录入的 total_hits_last）。
 
     降级契约：**插件**任何失败（不可达/超时/重定向被拒/坏响应）统一
-    PubMedPluginError → 409 ``pubmed_unavailable`` + 手动导入指引，绝不
-    500、不中断离线功能。注意降级覆盖的是检索阶段；进入受保护导入管线后
-    的失败与其他导入端点同语义（沿用管线既有错误映射）。
+    PubMedPluginError → 409 ``pubmed_unavailable``（ERIC 为 ``eric_unavailable``，
+    同形）+ 手动导入指引，绝不 500、不中断离线功能。注意降级覆盖的是检索
+    阶段；进入受保护导入管线后的失败与其他导入端点同语义（沿用管线既有
+    错误映射）。
     """
     info = _task_or_404(task_id)
-    app.state.review_imports.authorize(task_id, user, None)
+    ctx = app.state.review_imports.authorize(task_id, user, None)
     payload = body or LivingReviewCheckIn()
+    requested_source = (payload.source or "").strip().lower() or None
 
-    # 2.1.5 W3：条目解析改走统一检索式库（旧 living_review.json 已一次性并入）。
-    # 显式 strategy_id 按条目 database 分派；否则按 query_string 在 **PubMed**
-    # 订阅条目中精确匹配（HEAD 旧行为只匹配 pubmed，不能被同文本的 Embase/
-    # 其他条目抢占）；未匹配/未提供时回退第一条订阅的 PubMed 条目（旧行为）。
+    # 2.1.5 W3/W4：条目解析改走统一检索式库（旧 living_review.json 已一次性并入）。
+    # - 显式 strategy_id：按条目自带 database 分派（PubMed/ERIC）；
+    # - 未给 strategy_id 时按 query_string 在**指定源**的订阅条目中精确匹配：
+    #   不传 source 时保持 HEAD 行为只在 PubMed 中匹配（旧 save-search 客户端
+    #   的检索式不能被同文本的 Embase/ERIC 条目抢占）；显式 source=eric 才在
+    #   ERIC 条目中匹配。
+    # - 未匹配/未提供检索式时回退第一条订阅的**同源**条目（PubMed 分支为旧行为）。
+    match_database = (None if payload.strategy_id is not None
+                      else (requested_source or "pubmed"))
     conn = _living_review_library(info)
     try:
         record = search_strategy_core.resolve_check_target(
             conn, strategy_id=payload.strategy_id,
             query_text=payload.query_string or "",
-            database=None if payload.strategy_id is not None else "pubmed")
-        if record is None and not (payload.query_string or "").strip():
+            database=match_database)
+        if (record is None and payload.strategy_id is None
+                and not (payload.query_string or "").strip()):
             fallback = next((row for row in search_strategy_core.compat_records(conn)
-                             if row["database"] == "pubmed"
+                             if row["database"] == (requested_source or "pubmed")
                              and str(row["query_string"]).strip()), None)
             if fallback is None:
+                if requested_source == "eric":
+                    raise HTTPException(400, {
+                        "error_code": "eric_source_required",
+                        "message_key": "living_review.eric_source_required",
+                        "params": {},
+                    })
                 raise _bad("请先保存 PubMed 检索式（save-search）或在请求中提供 query_string。", 400)
             record = search_strategy_core.get_strategy(conn, fallback["strategy_id"])
     except search_strategy_core.SearchStrategyError as exc:
@@ -7636,22 +7831,28 @@ async def living_review_check_now(task_id: str,
         conn.close()
 
     query = (payload.query_string or "").strip()
+    database = requested_source or "pubmed"
     if record is not None:
         database = str(record.get("database") or "")
-        if database != "pubmed":
-            # 本波只分派既有 PubMed 链路；ERIC 增量在 W4，其余库无公开增量 API。
-            if database == "eric":
-                raise HTTPException(409, {
-                    "error_code": "eric_incremental_pending",
-                    "message_key": "living_review.eric_incremental_pending",
-                    "params": {"strategy_id": record.get("id")},
-                })
-            raise HTTPException(409, {
-                "error_code": "source_unsupported",
-                "message_key": "living_review.source_unsupported",
-                "params": {"database": database},
+        if requested_source is not None and requested_source != database:
+            # 条目自带源是权威（strategy_id 指向 ERIC 却声明 pubmed 是客户端错误）
+            raise HTTPException(400, {
+                "error_code": "source_conflict",
+                "message_key": "living_review.source_conflict",
+                "params": {"source": requested_source, "database": database},
             })
         query = query or str(record.get("query_text") or "").strip()
+    if database == "eric":
+        # 2.1.5 W4：ERIC 走 ID 差集（无日期窗口），不进入下方 PubMed 日期校验。
+        return await _eric_check_now(app, info, record, payload, user, query,
+                                     ctx.owner_db)
+    if database != "pubmed":
+        # 其余库无公开增量 API（Embase/Cochrane/WoS/Other）。
+        raise HTTPException(409, {
+            "error_code": "source_unsupported",
+            "message_key": "living_review.source_unsupported",
+            "params": {"database": database},
+        })
     since = (payload.since_date or "").strip()
     if not since and record is not None:
         # 订阅游标优先（旧客户端只录 last_run_date；executed_at 是定稿证据日期）
