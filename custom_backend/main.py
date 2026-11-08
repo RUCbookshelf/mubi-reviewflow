@@ -6491,6 +6491,18 @@ from custom_backend.task_package_api import register_task_package_routes
 register_task_package_routes(app, require_user, _task_or_404, _task_visible_to,
                              _server_mode, DATA_DIR, _UPLOAD_SIZE_RULES)
 
+# 2.1.5 W7：表生成（Table 1 / SoF）——只读装配 + 文件流导出；纳入过滤/字段
+# 勾选/排序与 docx 排版在本模块，编码值单一事实源 = coscreen.export.coding_matrix_table。
+from custom_backend.tables_api import register_tables_routes
+register_tables_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
+
+# 2.1.5 W9：撤稿/更正关注（Crossref works 的 update-to/updated-by；显式手动
+# 触发、分批游标、两表落协作库可加幂等、出站仅配置的 Crossref base）。
+# 触发=属主/can_manage，runs/详情/徽标=全员可读。
+from custom_backend.retraction_watch_api import register_retraction_routes
+register_retraction_routes(app, require_user, _task_or_404, _task_visible_to,
+                           _server_mode)
+
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
     ("research_trace_api", "register_research_trace_routes",

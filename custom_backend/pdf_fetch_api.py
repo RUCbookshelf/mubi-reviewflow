@@ -97,6 +97,9 @@ __all__ = [
     "DEFAULT_UNPAYWALL_BASE",
     "MAX_BATCH_KEYS",
     "OutboundError",
+    "crossref_base_for",
+    "crossref_works_url",
+    "fetch_crossref_work",
     "is_official_unpaywall",
     "normalize_doi",
     "register_pdf_fetch_routes",
@@ -739,6 +742,67 @@ def _metadata_suggestions(article: dict, settings: dict) -> dict:
         if abstract:
             suggestions["abstract"] = abstract
     return {"suggestions": suggestions, "matched_by": how, "source": "crossref"}
+
+
+# ---------------------------------------------------------------------------
+# 只读导出：供 W9 撤稿关注复用**同一套** Crossref 出站治理
+# ---------------------------------------------------------------------------
+# 2.1.5 W9（custom_backend/retraction_watch_api.py）必须复用本模块的
+# crossref_base_url 配置键、白名单 URL 构造、拒重定向 opener、15s 短超时与
+# 2 MiB 读取上限——**不得另建出站通道**。以下三个函数是 W9 唯一被允许使用的
+# 出站缝；它们只读、无副作用（不写设置文件、不建库、不落盘），其余 pdf_fetch
+# 行为零改动（既有套件 build/tests/test_pdf_fetch_api.py 全绿即证）。
+
+def crossref_base_for(info) -> str:
+    """任务级 Crossref base URL（只读）。
+
+    与 PDF 获取共用 ``pdf_fetch_settings.json`` 的 ``crossref_base_url``——同一
+    治理口径，不自建第二套配置。**不读取也不校验 ``enabled``**：撤稿检查是
+    独立功能（有自己的显式手动触发），不因 PDF 获取关闭而失效。
+
+    只回 base 字符串、**不回 email**：撤稿检查的出站载荷必须只有 DOI（题录
+    标识符），团队联系邮箱（负责人的个人 PII）不随请求发出。
+    """
+    settings = _load_settings(info)
+    return settings["crossref_base_url"]
+
+
+def crossref_works_url(base_url: str, doi: str) -> str:
+    """白名单 URL 构造：``{已校验 base}/works/{quote(doi, safe='')}``。
+
+    - base 经 :func:`_normalize_base_url`（仅 http/https、必须带主机、无查询/
+      锚点/userinfo），与设置读写同一校验函数；
+    - DOI 经 :func:`normalize_doi` 校验后**全量百分号编码**（``safe=''``），
+      因此 DOI 里任何 ``@`` / ``/`` / ``?`` / ``#`` 都不可能改变主机或路径结构
+      ——出站主机只可能等于配置 base 的主机（调用方可再断言，见 W9 测试）；
+    - **不带任何查询串**：出站载荷只有 DOI，不附加 ``mailto`` 等联系信息
+      （与 pdf_fetch 既有 Crossref 查询同一口径；礼貌性由请求间隔保证）。
+    """
+    normalized = normalize_doi(doi)
+    if not normalized:
+        raise OutboundError("invalid_doi", "不是合法 DOI，未发起出站请求。")
+    try:
+        base = _normalize_base_url(base_url, "crossref_base_url")
+    except ValueError:
+        # 与其它出站失败同型：调用方只需接住 OutboundError 即可降级。
+        raise OutboundError("unsafe_url", "配置的 Crossref 端点不合法，已拒绝出站。") from None
+    url = f"{base}/works/{quote(normalized, safe='')}"
+    if _host_identity(urlsplit(url).hostname) != _host_identity(urlsplit(base).hostname):
+        # 防御纵深：构造结果的主机必须仍等于配置 base 的主机。
+        raise OutboundError("unsafe_url", "出站地址主机与配置端点不一致，已拒绝。")
+    return url
+
+
+def fetch_crossref_work(base_url: str, doi: str) -> dict | None:
+    """查单个 DOI 的 Crossref works 记录：返回 ``message`` dict，未命中返回 None。
+
+    出站与解析中途的失败**向上抛** :class:`OutboundError`（单条失败由调用方
+    降级处理，绝不 500）。响应非 dict / ``message`` 非 dict 一律按「未命中」
+    返回 None（与 ``_crossref_message`` 的既有口径一致，避免 .get 抛 500）。
+    """
+    payload = _get_json(crossref_works_url(base_url, doi))
+    message = payload.get("message") if isinstance(payload, dict) else None
+    return message if isinstance(message, dict) else None
 
 
 # ---------------------------------------------------------------------------
