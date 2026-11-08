@@ -1,27 +1,38 @@
-# 预置研究设计分类器方法学与评估披露（W4 · v1）
+# 预置研究设计分类器方法学与评估披露（W4 · v2）
 
-- 版本：v1 · 2026-10-30 · 随 2.1.4 发布（W4 空白格泳道 · B3 竞品空白格核销）
+- 版本：v1 · 2026-10-30 · 随 2.1.4 发布（W4 空白格泳道 · B3 竞品空白格核销）；
+  v2 · 2026-11-08 · 2.1.5 泳道 D3：**类别由七类扩至十一类**（新增质性研究、
+  混合方法、调查研究、话语/语料分析），规则版本 1 → 2。临床七类的规则本体
+  与 48 篇夹具金标**一字未改**，§4/§5 的临床指标逐值不变（扩类只接管原本
+  归「未识别」的教育/社科题录，见 §7）。
 - 被描述实现：`coscreen/al/study_design.py`（纯本地分类函数）、
   `custom_backend/study_design_api.py`（只读端点 `GET /api/tasks/{id}/study-designs`）、
   `custom_frontend/study_design_badge.js`（初筛卡徽标 + 排除理由预填不代存）
-- 规则版本：`study_design.RULE_VERSION = 1`（判定因子变化时 bump，本文件 §5 的
-  评估表同步重测）
+- 规则版本：`study_design.RULE_VERSION = 2`（判定因子变化时 bump，本文件 §5 的
+  评估表同步重测；2.1.5 扩类时重测结果为**临床指标不变**）
 
 ---
 
 ## 1. 这是什么、不是什么
 
 预置分类器对**题名 + 摘要 + raw 出版类型字段**跑一组**精确优先的有序正则**
-（meta→系统综述→RCT→队列→病例对照→横断面→诊断准确性，先命中先归类，
-都不中归「未识别」），把结果显示为初筛卡上的分类徽标，并在判为
-**非 RCT 的已识别设计**时**预选**「研究设计不符」排除理由（只填控件，
+（临床七类：meta→系统综述→RCT→队列→病例对照→横断面→诊断准确性；
+教育/社科四类接在其后：混合方法→话语/语料分析→质性研究→调查研究；
+先命中先归类，都不中归「未识别」），把结果显示为初筛卡上的分类徽标，并在
+判为**非 RCT 的已识别设计**时**预选**「研究设计不符」排除理由（只填控件，
 绝不代存——沿用 AI 建议「采纳＝填控件」先例，用户改过则不打扰）。
 
-**它不是**：语义模型、机器学习分类器、或设计判定的权威来源。它是
-`evidence_mapper` 的 `study_design` 维度**同一套规则**（`_STUDY_DESIGN_RULES`，
-`coscreen/evidence_mapper.py:80-93`；规则优先级与方法学讨论见该模块
-docstring §78-94「精确优先，宁缺毋滥」）在初筛场景的复用——两处判定
-永不漂移。
+**它不是**：语义模型、机器学习分类器、或设计判定的权威来源。临床七类的
+规则对象直接复用 `evidence_mapper._STUDY_DESIGN_RULES`
+（`coscreen/evidence_mapper.py:121-135`；规则优先级与方法学讨论见该模块
+docstring「精确优先，宁缺毋滥」），**同一个 tuple 对象、无镜像实现**。
+
+**与证据地图的边界（2.1.5 泳道 D3 起显式化）**：证据地图的 `study_design`
+维度服务 GRADE 与研究缺口分析，保持**临床七类**口径；教育/社科四类是
+`study_design.py` 私有的 `_EXTENDED_DESIGN_RULES`，只用于初筛徽标与文献评价
+的「按设计推荐」。两处因此不再「完全同一套规则」——临床部分仍共用同一规则
+对象（改一处两边同时生效），扩类不外溢到证据地图。该边界由
+`build/tests/test_2_1_5_study_design_ext.py::ClinicalMapperBoundaryNails` 钉死。
 
 ## 2. 两路信号与加权
 
@@ -37,6 +48,15 @@ RCT（本评估 6 条中有 3 条）靠 PT 兜底找回。
 
 **未识别 ≠ 研究设计不符**：`other` 不产生任何排除建议。预填只发生在
 「识别为某个具体的非 RCT 设计」时。
+
+**跨类优先级（十一类）**：临床七类先于教育/社科四类。因此在题名/摘要出现
+「survey / qualitative / interviews / mixed methods」等词、但同时写了
+RCT / meta-analysis / systematic review / cohort / case-control /
+cross-sectional / diagnostic accuracy 的题录，仍按临床类别判定——
+扩类不会把临床语料抢走（48 篇 PubMed 夹具实测**零变化**）。
+组内顺序：混合方法 > 话语/语料分析 > 质性研究 > 调查研究；
+`cross-sectional survey` 仍归**横断面**（更具体的既有类别优先，
+2.1.5 的评估与推荐钉都建立在这一判定上）。
 
 ## 3. 评估夹具（公开样例，来源与许可）
 
@@ -92,7 +112,7 @@ RCT（本评估 6 条中有 3 条）靠 PT 兜底找回。
    tp=5/fp=15 表示 15 条**其他金标类别**的记录落入未识别（即各类 FN 的
    一部分），not 15 条病例报告被错标成设计类。
 
-## 4. 实测 precision / recall（2026-10-30，规则版本 1）
+## 4. 实测 precision / recall（2026-10-30 夹具，规则版本 2；临床七类）
 
 全管线（题名+摘要主信号 + raw 出版类型兜底）与消融（仅题名+摘要）：
 
@@ -134,7 +154,7 @@ RCT（本评估 6 条中有 3 条）靠 PT 兜底找回。
 
 ```json
 {
-  "rule_version": 1,
+  "rule_version": 2,
   "n": 48,
   "per_class": {
     "full": {
@@ -289,3 +309,53 @@ RCT（本评估 6 条中有 3 条）靠 PT 兜底找回。
   断言 3xx 被拒）守护。**复现口径如实声明**：重跑脚本生成的是**同构**清单
   而非同一批 PMID（PubMed 结果集随时间漂移）；数值结论锁定在本仓库已入库
   的这份夹具上。
+
+## 7. 设计类别扩至十一类（2.1.5 泳道 D3 · 规则版本 2）
+
+> 计数口径：任务书把目标写作「十类」，但同段明确列出**四**个新类别
+> （质性研究/混合方法/调查研究/话语·语料分析）；七加四为**十一**。本泳道
+> 按列出的类别实现，不为了对齐「十」删掉任一被点名的类别。
+
+### 7.1 动机
+
+2026-11-07 用户验证：既有七类全为**临床口径**，教育与社会科学的语料
+（narrative inquiry、ethnography、mixed methods、survey、discourse analysis…）
+几乎全部落入「未识别」，徽标与排除理由预填在非医学综述里形同虚设。
+
+### 7.2 新增四类与规则词（`_EXTENDED_DESIGN_RULES`，精确优先、宁缺毋滥）
+
+| 稳定代码 | 覆盖 | 规则词（大小写不敏感，`[-\s]?` 容忍连字符/空格变体） |
+|---|---|---|
+| `mixed_methods` | 混合方法 | `mixed methods` / `mixed-method(s)` |
+| `discourse` | 话语/语料分析 | `discourse analysis`、`conversation analysis`、`corpus-based` |
+| `qualitative` | 质性研究 | `qualitative`、`narrative inquiry`、`narrative analysis`、`ethnograph*`、`phenomenolog*`、`case study`/`case studies`、`grounded theory`、`interview study`/`interview studies` |
+| `survey` | 调查研究 | `survey(s)`（排除 `survey of the literature/evidence/trials` 这一叙述性综述说法）、`questionnaire(s)` |
+
+分组顺序即优先级：混合方法（其题名通常同时出现 qualitative/survey）>
+话语/语料分析（方法名比「质性」更具体）> 质性研究 > 调查研究（最泛的名词）。
+词界约束挡断裂变：`qualitatively`、`surveyed` 不命中。
+
+### 7.3 评估口径（诚实披露）
+
+- **临床侧零回归**：把新规则套到 W4 的 48 篇 PubMed 夹具上，逐条比对
+  主信号判定，**变化 0 条**（48 条题录中没有任何一条含新类别规则词）。
+  因此 §4/§5 的临床指标与规则版本 1 时期逐值相同，仅 `rule_version` 由
+  1 → 2。
+- **新类别没有 PubMed 金标**：本仓库不把教育/社科样本混入 48 篇夹具——
+  该夹具的每一类金标都对应一条 PubMed 检索式、摘要统一截断至 400 字符，
+  且 §5 机器块按「每类 6 条 / 共 48 条」逐值互锁；混入异构样本会同时破坏
+  取数溯源与这些互锁，却给不出可复现的金标。新类别的回归保障改为
+  **结构化的正/负例钉子**（每类 ≥4 条真实标题风格的正例 + 干扰词负例），
+  见 `build/tests/test_2_1_5_study_design_ext.py`；合成评估样本
+  `build/tests/study_design_ext_sample.json`（16 条 = 4 类 × 4 条，计数钉在
+  测试里，JSON 的 `honesty_note` 明写不作性能承诺）。**不对新类别报告任何
+  precision/recall 数值**——样本是合成的，报数会误导。
+- **已知取舍**：`case study` 在临床语料里也可能是病例报告式写法
+  （`case report` 不命中，已作负例钉住）；`survey` 的名词用法仍可能出现在
+  叙述性综述里，靠 `survey of the literature` 负向环视与「临床七类优先」
+  两道闸门降低误判。
+- **前端**：新类别的徽标显示名/配色需要前端补齐；后端只负责判定与稳定代码
+  （`label`）。未适配的前端把未知代码降级显示为「未识别」（不报错、
+  不出现空白徽标）。契约见 2.1.5 前端契约
+  `frontend_contract_2.1.5-appraisal.md` 的「设计类别扩类」一节。
+

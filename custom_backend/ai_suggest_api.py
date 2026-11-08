@@ -43,6 +43,7 @@ __all__ = [
     "PROMPT_VERSION",
     "ProviderError",
     "register_ai_suggest_routes",
+    "resolve_task_credentials",
 ]
 
 # ---------------------------------------------------------------------------
@@ -391,6 +392,28 @@ def _provider_http_error(exc: ProviderError, api_key: str) -> HTTPException:
     if api_key and api_key in message:
         message = message.replace(api_key, "***")
     return HTTPException(502, {"code": "ai_provider_error", "detail": message[:300]})
+
+
+def resolve_task_credentials(info, settings: dict, prefs: dict, user: dict,
+                             data_root: Path) -> tuple[dict | None, str | None]:
+    """R2 钥匙优先级（个人 > 任务共享 > 无）的模块级实现。
+
+    供本模块路由与导入复核 AI 助手（custom_backend/import_ai_assist_api.py）
+    共用同一条解析口径，避免两处各写一份优先级后分叉。只读钥匙柜
+    （custom_backend/ai_keys.py），不接触明文回显。
+    """
+    if prefs.get("use_personal_key", True):
+        env = ai_keys.env_key()
+        if env is not None:
+            return env, "personal"
+        record = ai_keys.load_personal_key(user["user_id"], data_root)
+        if record is not None:
+            return record, "personal"
+    if settings.get("key_mode") == "shared":
+        record = ai_keys.load_shared_key(info.task_id, data_root)
+        if record is not None:
+            return record, "shared"
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -881,18 +904,9 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
     # -- 钥匙解析（R2 优先级：个人 > 任务共享 > 无） ---------------------------
 
     def _resolve_credentials(info, settings: dict, prefs: dict, user: dict) -> tuple[dict | None, str | None]:
-        if prefs.get("use_personal_key", True):
-            env = ai_keys.env_key()
-            if env is not None:
-                return env, "personal"
-            record = ai_keys.load_personal_key(user["user_id"], data_root)
-            if record is not None:
-                return record, "personal"
-        if settings.get("key_mode") == "shared":
-            record = ai_keys.load_shared_key(info.task_id, data_root)
-            if record is not None:
-                return record, "shared"
-        return None, None
+        # 解析口径已提为模块级函数（resolve_task_credentials），导入复核 AI
+        # 助手共用同一实现；此处保留闭包只为既有调用点不改签名。
+        return resolve_task_credentials(info, settings, prefs, user, data_root)
 
     # -- 建议生成（B4 §3） ----------------------------------------------------
 

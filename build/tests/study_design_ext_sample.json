@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "purpose": "泳道 D3（2.1.5）教育/社科设计类别的结构性评估样本",
+    "source": "人工撰写（合成标题，非检索所得）· 2026-11-08",
+    "per_class": 4,
+    "n": 16,
+    "honesty_note": "合成样本，只验证规则覆盖与优先级；不得据此报告 precision/recall（无金标抽取过程，不作性能承诺）。临床七类的 P/R 仍以 build/tests/study_design_fixture.json（48 篇 PubMed 公开样例）为准。",
+    "gold_definition": "标题即类别（撰写时按类别命名），负例/干扰词见 test_2_1_5_study_design_ext.py 的 PrecedenceNails"
+  },
+  "items": [
+    {"zotero_key": "D3-QUAL-1", "gold": "qualitative", "title": "A narrative inquiry of an underprivileged student's mathematics identity"},
+    {"zotero_key": "D3-QUAL-2", "gold": "qualitative", "title": "Understanding teacher burnout: a qualitative study of secondary teachers"},
+    {"zotero_key": "D3-QUAL-3", "gold": "qualitative", "title": "An ethnographic study of classroom interaction in rural schools"},
+    {"zotero_key": "D3-QUAL-4", "gold": "qualitative", "title": "Grounded theory of teacher collaboration in professional learning communities"},
+    {"zotero_key": "D3-MIXED-1", "gold": "mixed_methods", "title": "A mixed methods study of classroom talk and student agency"},
+    {"zotero_key": "D3-MIXED-2", "gold": "mixed_methods", "title": "Mixed-methods evaluation of a reading intervention"},
+    {"zotero_key": "D3-MIXED-3", "gold": "mixed_methods", "title": "Using mixed methods to examine teacher feedback practices"},
+    {"zotero_key": "D3-MIXED-4", "gold": "mixed_methods", "title": "A mixed-method design for evaluating peer tutoring"},
+    {"zotero_key": "D3-SURVEY-1", "gold": "survey", "title": "A national survey of school principals' leadership practices"},
+    {"zotero_key": "D3-SURVEY-2", "gold": "survey", "title": "Questionnaire-based study of exam anxiety among high school students"},
+    {"zotero_key": "D3-SURVEY-3", "gold": "survey", "title": "Student perceptions of online learning: a survey study"},
+    {"zotero_key": "D3-SURVEY-4", "gold": "survey", "title": "A questionnaire study of teachers' assessment literacy"},
+    {"zotero_key": "D3-DISC-1", "gold": "discourse", "title": "Discourse analysis of classroom questioning sequences"},
+    {"zotero_key": "D3-DISC-2", "gold": "discourse", "title": "A conversation analysis of peer feedback turns in group work"},
+    {"zotero_key": "D3-DISC-3", "gold": "discourse", "title": "Corpus-based analysis of textbook vocabulary in primary English"},
+    {"zotero_key": "D3-DISC-4", "gold": "discourse", "title": "Discourse analysis of inclusive education policy documents"}
+  ]
+}

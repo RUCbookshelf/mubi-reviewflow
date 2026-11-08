@@ -22,9 +22,13 @@
    - CERQual：按"默认高置信 + 逐构件降级"的指导性规则给出**建议**值；
    - CASP / MMAT / AXIS：官方明确不打总分，输出逐条报告结构（无任何分数字段）。
 
-4. :func:`recommend` —— 复用 ``coscreen.al.study_design`` 的研究设计类别面，
-   在其未识别（``other``）时用本模块的补充关键词识别质性/混合方法/经济学
-   评价/预测规则；映射表 :data:`RECOMMENDATION_MAP` 可配置，返回值带理由键。
+4. :func:`recommend` —— 复用 ``coscreen.al.study_design`` 的研究设计类别面
+   （2.1.5 泳道 D3 起为**十一类**：临床七类 + 质性/混合方法/调查研究/话语分析），
+   在其未识别（``other``）时用本模块的补充关键词识别经济学评价/预测规则/
+   诊断补充措辞/患病率等；映射表 :data:`RECOMMENDATION_MAP` 可配置，
+   返回值带理由键。质性/混合方法/话语分析/调查研究自 D3 起由共享分类器
+   直接判定（``design.appraisal_source == "study_design"``），本模块的补充
+   规则只保留给共享分类器不覆盖的类别——避免同一设计在两处各有一套口径。
 
 治理约束：
 - 本模块不联网、不读写磁盘、零副作用；存储函数只接受调用方给出的
@@ -66,7 +70,8 @@ __all__ = [
 ]
 
 #: 注册表规则版本：条目/算法/映射变化时 bump（前端与文档按此对齐）。
-RULE_VERSION: int = 1
+#: 2 = 2.1.5 泳道 D3：推荐映射新增 survey / discourse 两个设计类别。
+RULE_VERSION: int = 2
 
 #: 单条评价记录允许的最大应答条目数（防御性上限）。
 MAX_RESPONSE_ITEMS: int = 300
@@ -2726,6 +2731,20 @@ RECOMMENDATION_MAP: dict[str, dict] = {
         "primary": "casp-qualitative",
         "alternatives": ["mmat"],
         "reason_key": "appraisal.recommend.qualitative",
+    },
+    "discourse": {
+        # 话语/语料分析是质性研究的方法学分支（2.1.5 泳道 D3 新类别）：
+        # 主选仍为 CASP 质性清单，MMAT 质性分量表作备选。
+        "primary": "casp-qualitative",
+        "alternatives": ["mmat"],
+        "reason_key": "appraisal.recommend.discourse",
+    },
+    "survey": {
+        # 调查研究（问卷/调查，2.1.5 泳道 D3 新类别）：横断面清单为主选，
+        # AXIS 为横断面研究的专用备选。
+        "primary": "casp-cross-sectional",
+        "alternatives": ["axis"],
+        "reason_key": "appraisal.recommend.survey",
     },
     "mixed_methods": {
         "primary": "mmat",
