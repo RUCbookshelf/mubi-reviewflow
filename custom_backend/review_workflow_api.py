@@ -34,9 +34,14 @@ class WorkflowContext:
 
 
 class WorkflowRuntime:
-    def __init__(self, task_lookup, screener_db, data_dir, visible) -> None:
+    def __init__(self, task_lookup, screener_db, data_dir, visible,
+                 queue_order=None) -> None:
         self.task_lookup, self.screener_db = task_lookup, screener_db
         self.data_dir, self.visible = Path(data_dir), visible
+        # 2.1.5 W6：可选的队列排序钩子 ``(ctx, stage, keys) -> keys | None``。
+        # 由宿主（custom_backend/main.py）注入近邻聚类排序；None = 保持既有
+        # 导入序/随机序行为不变。钩子返回 None 表示“不改顺序”。
+        self.queue_order = queue_order
         self._locks: dict[str, threading.RLock] = {}
         self._locks_guard = threading.Lock()
 
@@ -571,6 +576,15 @@ class WorkflowRuntime:
                 scope = json.dumps({"stage": stage, "source_id": source_id}, sort_keys=True)
                 keys = store.random_order(ctx.actor_db, str(user["user_id"]), task_id, scope, keys,
                                           {key for key in keys if not complete(key)}, shuffle=shuffle)
+            elif order == "import" and self.queue_order is not None:
+                # 2.1.5 W6：复筛队列的主题聚类排序（只换顺序，载荷不变）。
+                # 钩子自己兜底（出错返回 None / 原序），这里再校验一次排列，
+                # 保证队列绝不因排序失败而丢条目或重复。
+                reordered = self.queue_order(ctx, stage, keys)
+                if reordered is not None:
+                    candidate = list(reordered)
+                    if len(candidate) == len(keys) and sorted(candidate) == sorted(keys):
+                        keys = candidate
             by_key = {row["zotero_key"]: row for row in scoped}
             queue = [{"key": key, "zotero_key": key, **{name: by_key[key].get(name) for name in
                       ("title", "authors", "journal", "year", "doi", "item_type")}} for key in keys]
@@ -677,8 +691,10 @@ class ReasonIn(BaseModel):
     stage: Literal["screen", "fulltext"] | None = None
 
 
-def register_review_workflow_routes(app, require_user, task_lookup, screener_db, data_dir, visible) -> WorkflowRuntime:
-    runtime = WorkflowRuntime(task_lookup, screener_db, data_dir, visible)
+def register_review_workflow_routes(app, require_user, task_lookup, screener_db, data_dir, visible,
+                                    queue_order=None) -> WorkflowRuntime:
+    runtime = WorkflowRuntime(task_lookup, screener_db, data_dir, visible,
+                              queue_order=queue_order)
     app.state.review_workflow = runtime
 
     @app.get("/api/tasks/{task_id}/workflow-settings")

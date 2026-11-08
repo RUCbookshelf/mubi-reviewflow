@@ -1469,7 +1469,7 @@ class SchemeImportIn(BaseModel):
 class ALSettingsIn(BaseModel):
     """主动学习（AI 排序）设置：全部可选，缺省字段不覆盖已存值。"""
 
-    strategy: str | None = Field(default=None, pattern="^(max|uncertainty|mixed)$")
+    strategy: str | None = Field(default=None, pattern="^(max|uncertainty|mixed|cluster)$")
     seed: int | None = Field(default=None, ge=-(2**31), le=2**31)
     # Retain the old request field for compatibility; the server default governs training.
     min_labeled: int | None = Field(default=None, ge=1, le=1000, description="Legacy field; ignored. Training uses the system default.")
@@ -3229,11 +3229,24 @@ def save_stage2_decision(task_id: str, body: DecisionIn, screener: str | None = 
 @app.get("/api/tasks/{task_id}/stage2/queue")
 def stage2_queue_ep(task_id: str, screener: str | None = None,
                     user: dict = Depends(require_user)) -> dict:
-    """复筛队列（mode=own：本人初筛纳入，双盲）。"""
+    """复筛队列（mode=own：本人初筛纳入，双盲）。
+
+    2.1.5 W6：该筛选员的排序策略为 ``cluster`` 时按近邻聚类重排**顺序**
+    （载荷形状不变）；已做复筛决定的条目冻结在原位置，只重排未决段。
+    """
     info = _task_or_404(task_id)
-    db = _screener_db(info, screener or user["username"])
+    screener_name = screener or user["username"]
+    db = _screener_db(info, screener_name)
     keys = stage2_queue(db, mode="own")
     by_key = {a.zotero_key: a for a in db_mod.list_articles(db, include_duplicates=True)}
+    settings = _load_al_settings(info, screener_name)
+    if settings["strategy"] == _CLUSTER_STRATEGY and len(keys) > 1:
+        decided = {
+            r["zotero_key"] for r in list_stage2_decisions(db)
+            if r["decision"] in ("include", "exclude")
+        }
+        keys = _topic_cluster_order(
+            list(by_key.values()), decided, settings["seed"], keys)
     items = [
         {
             "zotero_key": k,
@@ -3251,7 +3264,11 @@ def stage2_queue_ep(task_id: str, screener: str | None = None,
 # 主动学习（AI 排序）：排序 / 状态 / 设置
 # ---------------------------------------------------------------------------
 
-_AL_STRATEGIES = ("max", "uncertainty", "mixed")
+# 2.1.5 W6：第四类排序方式 cluster（近邻聚类）。唯一**不要求模型配置**的策略
+# ——不训练、不读模型预设、不加载 sklearn、不写任何决定，只按题录文本
+# 的词法相似度重排阅读顺序（coscreen/topic_order.py，与 ML 同一特征表示）。
+_AL_STRATEGIES = ("max", "uncertainty", "mixed", "cluster")
+_CLUSTER_STRATEGY = "cluster"
 
 
 def _al_actor(screener, user):
@@ -3342,10 +3359,98 @@ def _al_n_labeled(db: Path) -> int:
     )
 
 
+# ---- 2.1.5 W6：近邻聚类排序（cluster）的接入层 ----
+# 计算全在 coscreen/topic_order.py（纯函数、零 IO、零联网、零模型）；本段只负责
+# 「按题录组装文本 → 取排序 → 只把顺序填回既有载荷」。任何异常都退回基准顺序
+# （导入序）：排序是阅读便利，绝不能把队列变成 500。
+
+def _topic_vectors(articles, keys):
+    """按 ``keys`` 顺序取题录文本并向量化（与 ML 同一 TfidfVectorizer 特征）。"""
+    from coscreen import topic_order
+
+    by_key = {article.zotero_key: article for article in articles}
+    texts = []
+    for key in keys:
+        article = by_key.get(key)
+        texts.append(
+            "" if article is None
+            else topic_order.topic_text(
+                article.title, article.abstract,
+                # 现库 Article 无独立关键词字段（coscreen/models.py）；如原生
+                # 记录里带了 keywords，一并计入题录文本。
+                _topic_keywords(article.raw),
+            )
+        )
+    return dict(zip(keys, topic_order.vectorize(texts)))
+
+
+def _topic_keywords(raw) -> str:
+    """原生记录中的关键词（若有）：list/tuple/str 均拼接为空格串，其余为空。"""
+    if not isinstance(raw, dict):
+        return ""
+    value = raw.get("keywords")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return " ".join(v for v in value if isinstance(v, str))
+    return ""
+
+
+def _topic_cluster_order(articles, decided_keys, seed, keys):
+    """聚类重排 ``keys``；出错或结果不是排列时退回原序（永不抛给调用方）。"""
+    from coscreen import topic_order
+
+    base = list(keys)
+    try:
+        vectors = _topic_vectors(articles, base)
+        order = topic_order.cluster_order(vectors, decided_keys, seed, base)
+    except Exception:  # noqa: BLE001 — 排序失败不得中断队列（失败优雅降级）
+        logger.warning("topic cluster ordering failed; keeping base order",
+                       exc_info=True)
+        return base
+    if len(order) != len(base) or sorted(order) != sorted(base):
+        logger.warning("topic cluster ordering returned a non-permutation; "
+                       "keeping base order")
+        return base
+    return order
+
+
+def _cluster_queue_order(ctx, stage, keys):
+    """工作队列排序钩子（2.1.5 W6）：该筛员策略为 cluster 时重排复筛队列。
+
+    只对 ``fulltext`` 生效——初筛/首页的 AI 顺序由 ``/al/rank`` 下发、前端按
+    已决冻结合并；复筛队列没有 AI 模式，故在这里接同一套聚类顺序（设计
+    §二.5“同一策略枚举天然适用于复筛队列”）。其他阶段/策略返回 ``None``，
+    队列保持既有导入序（W6 之前的行为逐位不变）。
+    """
+    if stage != "fulltext" or len(keys) <= 1:
+        return None
+    try:
+        settings = _load_al_settings(ctx.info, ctx.user["username"])
+        if settings["strategy"] != _CLUSTER_STRATEGY:
+            return None
+        articles = db_mod.list_articles(ctx.actor_db, include_duplicates=True)
+        decided = {
+            r["zotero_key"] for r in list_stage2_decisions(ctx.actor_db)
+            if r["decision"] in ("include", "exclude")
+        }
+        return _topic_cluster_order(articles, decided, settings["seed"], list(keys))
+    except Exception:  # noqa: BLE001 — 队列读取绝不因排序失败而 500
+        logger.warning("full-text queue cluster ordering failed; base order kept",
+                       exc_info=True)
+        return None
+
+
 @app.get("/api/tasks/{task_id}/al/rank")
 def al_rank(task_id: str, screener: str | None = None,
             user: dict = Depends(require_user)) -> dict:
-    """对当前筛选员的待筛队列做主动学习重排（复用 coscreen.al 全套实现）。"""
+    """对当前筛选员的待筛队列做主动学习重排（复用 coscreen.al 全套实现）。
+
+    ``strategy="cluster"``（2.1.5 W6）走独立的近邻聚类分支：**不要求模型
+    配置**、不训练、不查模型预设，标签再少也 ``available=True``；返回载荷
+    键集与模型分支一致，只是 ``score`` 为 ``null``（聚类不产生“纳入概率”，
+    不臆造分数）且 ``order`` 为聚类顺序。
+    """
     info = _task_or_404(task_id)
     screener_name = _al_actor(screener, user)
     db = _screener_db(info, screener_name)
@@ -3355,6 +3460,30 @@ def al_rank(task_id: str, screener: str | None = None,
         r["zotero_key"]: r["decision"] for r in db_mod.list_decisions(db)
     }
     stop_suggestion = _al_stop_payload(db, settings["stop_threshold"])
+    if settings["strategy"] == _CLUSTER_STRATEGY:
+        # 候选 = 未筛（无决定）或 maybe（视为尚未筛过），与 ranker 同口径；
+        # 已决键由前端按原序冻结在队列前段，故这里只对候选段聚类——遍历
+        # 顺序与“已决冻结 + 未决段重排”完全等价（冻结位不改变遍历序列）。
+        seen: set[str] = set()
+        base_keys: list[str] = []
+        for article in articles:
+            if article.zotero_key not in seen:
+                seen.add(article.zotero_key)
+                base_keys.append(article.zotero_key)
+        candidates = [
+            key for key in base_keys if decisions.get(key) not in ("include", "exclude")
+        ]
+        order = _topic_cluster_order(articles, (), settings["seed"], candidates)
+        return {
+            "available": True,
+            "n_labeled": _al_n_labeled(db),
+            "reorder_interval": settings["reorder_interval"],
+            "min_labeled": int(settings["min_labeled"]),
+            "strategy": _CLUSTER_STRATEGY,
+            "seed": int(settings["seed"]),
+            "order": [{"zotero_key": key, "score": None} for key in order],
+            "stop_suggestion": stop_suggestion,
+        }
     profile = _personal_al_profile(info, screener_name)
     if profile is not None:
         from coscreen.al.profiles import PROFILES
@@ -3416,7 +3545,9 @@ def al_status(task_id: str, screener: str | None = None,
     stop = _al_stop_payload(db, settings["stop_threshold"])
     n_labeled = _al_n_labeled(db)
     return {
-        "available": n_labeled >= int(settings["min_labeled"]),
+        # cluster 不训练：无需标签即“可用”（2.1.5 W6）。
+        "available": (settings["strategy"] == _CLUSTER_STRATEGY
+                      or n_labeled >= int(settings["min_labeled"])),
         "n_labeled": n_labeled,
         "strategy": settings["strategy"],
         "last_streak": stop["streak"],
@@ -6222,7 +6353,8 @@ def _trace_validate_subject(info, stage, subject_id):
 from custom_backend.workspace_undo_api import register_workspace_undo_routes
 from custom_backend.review_workflow_api import register_review_workflow_routes
 
-register_review_workflow_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR, _task_visible_to)
+register_review_workflow_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR, _task_visible_to,
+                                queue_order=_cluster_queue_order)
 from custom_backend.prisma_task_metrics import register_prisma_task_metrics
 register_prisma_task_metrics(app, require_user)
 
@@ -6348,6 +6480,17 @@ from custom_backend.pilot_screening_api import register_pilot_screening_routes
 register_pilot_screening_routes(app, require_user, _task_or_404, _task_visible_to,
                                 _server_mode, _screener_db, auth.get_user_by_id)
 
+# 2.1.5 W8：标准对照常驻卡（只读聚合，全员可读；无写入口、零出站）。
+from custom_backend.criteria_panel_api import register_criteria_panel_routes
+register_criteria_panel_routes(app, require_user, _task_or_404, _task_visible_to)
+
+# 2.1.5 W5：全文规范归档导出 + 任务整包导出/导入（命名纯函数在
+# coscreen.fulltext_archive；全离线、属主闸、整包 2GB 上限；上传预检规则随
+# 模块追加两条，不改其他端点）。
+from custom_backend.task_package_api import register_task_package_routes
+register_task_package_routes(app, require_user, _task_or_404, _task_visible_to,
+                             _server_mode, DATA_DIR, _UPLOAD_SIZE_RULES)
+
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
     ("research_trace_api", "register_research_trace_routes",
@@ -6397,12 +6540,22 @@ class ProtocolPICOIn(BaseModel):
     mesh_terms: list[str] = Field(default_factory=list, max_length=100)
 
 
+class ProtocolKeyTermIn(BaseModel):
+    """关键术语定义（2.1.5 W8；与 coscreen.protocol_designer.KeyTerm 同形）。"""
+
+    term: str = Field(min_length=1, max_length=200)
+    definition: str = Field(default="", max_length=2000)
+
+
 class ProtocolIn(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     research_question: str = Field(default="", max_length=4000)
     pico: list[ProtocolPICOIn] = Field(min_length=1, max_length=20)
     inclusion_criteria: list[str] = Field(default_factory=list, max_length=100)
     exclusion_criteria: list[str] = Field(default_factory=list, max_length=100)
+    # 2.1.5 W8：可加字段。None = 旧客户端未传（**继承既有值，不清空**）；
+    # [] = 显式清空；列表 = 整组覆盖（与纳入/排除标准同语义）。
+    key_terms: list[ProtocolKeyTermIn] | None = Field(default=None, max_length=200)
     date_from: str = Field(default="", max_length=20)
     date_to: str = Field(default="", max_length=20)
 
@@ -6419,11 +6572,18 @@ def _task_protocol(task_id: str) -> dict | None:
 @app.post("/api/tasks/{task_id}/protocol")
 def create_protocol(task_id: str, body: ProtocolIn,
                     user: dict = Depends(require_user)) -> dict:
-    """保存方案到 task.json 并生成检索式（纯本地计算，不联网）。"""
-    from coscreen import protocol_designer
-    from coscreen.protocol_designer import PICOElement, ProtocolDocument
+    """保存方案到 task.json 并生成检索式（纯本地计算，不联网）。
 
-    info = _task_or_404(task_id)
+    2.1.5 W8：写闸 = 属主/can_manage（``_require_task_owner``，与任务改名/
+    归档同一口径）。设计 §二.2「编辑只归属主/can_manage」；本写路径扩到
+    ``key_terms`` 后必须补闸——否则 coder/reconciler 可覆盖或清空全员共用
+    的纳入/排除标准与关键术语。legacy 任务按模式区分：desktop 维持单机
+    可管理，server 模式 409 属主迁移指引。
+    """
+    from coscreen import protocol_designer
+    from coscreen.protocol_designer import KeyTerm, PICOElement, ProtocolDocument
+
+    info = _require_task_owner(task_id, user)
     pico = [PICOElement(
         key=p.key,
         label=(p.label or p.key).strip(),
@@ -6437,6 +6597,10 @@ def create_protocol(task_id: str, body: ProtocolIn,
         pico=pico,
         inclusion_criteria=[c.strip() for c in body.inclusion_criteria if c and c.strip()],
         exclusion_criteria=[c.strip() for c in body.exclusion_criteria if c and c.strip()],
+        # 2.1.5 W8：None（旧客户端未传该字段）→ 在建文档时留空，随后在锁内继承
+        # 既有值（见下）；[] 仍是「清空」的显式语义。
+        key_terms=[KeyTerm(term=k.term.strip(), definition=k.definition.strip())
+                   for k in (body.key_terms or []) if k.term and k.term.strip()],
         search_strategies=protocol_designer.build_search_strategies(
             pico, date_from=body.date_from.strip(), date_to=body.date_to.strip()),
         created_at=datetime.now().isoformat(timespec="seconds"),
@@ -6448,6 +6612,15 @@ def create_protocol(task_id: str, body: ProtocolIn,
         raw = tasks_mod._read_task_json(info.dir)  # noqa: SLF001
         if not raw:
             raise _bad("任务描述文件已损坏，无法保存方案。", 409)
+        if body.key_terms is None:
+            # 未传该字段 = 老前端保存（2.1.5 W8 之前的设计器表单）：继承已保存的
+            # 关键术语，绝不静默清空。显式传 [] 才清空（声明式整组覆盖）。
+            previous = raw.get("protocol")
+            inherited = previous.get("key_terms") if isinstance(previous, dict) else None
+            payload["key_terms"] = [{"term": key_term.term,
+                                     "definition": key_term.definition}
+                                    for key_term in
+                                    protocol_designer.key_terms_from_dict(inherited)]
         raw["protocol"] = payload
         tasks_mod._write_task_json(info.dir, raw)  # noqa: SLF001  原子写
     return {"protocol": payload, "sources": {}}
@@ -7163,6 +7336,37 @@ def get_shared_ranking(
 
     # 2. 任务级模型预设（用户显式设置才生效；被篡改成未知名时显式 409，
     #    不静默回落——§0.4 第 4 条）
+    if settings["strategy"] == _CLUSTER_STRATEGY:
+        # 2.1.5 W6：共享排序同样支持 cluster——不训练、不需要模型预设；
+        # 合并标签只用于筛出待筛候选（与 /al/rank 的 cluster 分支同口径，
+        # 已决条目不进 order）。修复前该策略落到 query_order 抛
+        # “未知查询策略”→ 500。
+        seen: set[str] = set()
+        base_keys: list[str] = []
+        for article in articles:
+            if article.zotero_key not in seen:
+                seen.add(article.zotero_key)
+                base_keys.append(article.zotero_key)
+        candidates = [
+            key for key in base_keys if merged.get(key) not in ("include", "exclude")
+        ]
+        order = _topic_cluster_order(articles, (), settings["seed"], candidates)
+        entries = [{"zotero_key": key, "score": None} for key in order]
+        if top is not None:
+            entries = entries[:top]
+        return {
+            "available": True,
+            "n_labeled": sum(1 for v in merged.values()
+                             if v in ("include", "exclude")),
+            "order": entries,
+            "min_labeled": int(settings["min_labeled"]),
+            "strategy": _CLUSTER_STRATEGY,
+            "seed": int(settings["seed"]),
+            "stop_suggestion": stop_suggestion,
+            "al_profile": None,
+            "n_screeners": len(contributors),
+            "screeners": contributors,
+        }
     profile = _personal_al_profile(info, screener_name)
     if profile is not None and profile not in PROFILES:
         raise _bad(f"任务保存的 AI 模型预设无效：{profile}", 409)
