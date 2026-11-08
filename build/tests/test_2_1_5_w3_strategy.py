@@ -800,20 +800,45 @@ class EndpointPins(unittest.TestCase):
         self.assertEqual(response.json()["source"], "pubmed")
 
     def test_check_now_dispatches_by_library_database(self):
-        """本波仅 PubMed：ERIC 条目 409（W4），未知 id 404，均零出站。"""
+        """W3→W4 换钉（plan §〇.6「钉随行为」）：ERIC 条目分派到 ERIC 通道。
+
+        旧钉断言「ERIC 条目 409 eric_incremental_pending」是 W3 当波占位行为；
+        W4 落地后同批替换为等强度新钉：源分派正确 + 零 PubMed 出站（注入
+        快照）+ 未知 id 仍 404。
+        """
         from unittest import mock
 
-        eric = self._create(database="eric", query_text='title:("adults")')
+        from custom_backend import eric_incremental_api as eric_inc
         from custom_backend import living_review_plugin as lr_plugin
+        from custom_backend.eric_search_api import doc_to_article
 
-        with mock.patch.object(lr_plugin, "fetch_pubmed_updates") as fetch:
+        eric = self._create(database="eric", query_text='title:("adults")')
+        article = doc_to_article({
+            "id": "EJ5550001", "title": "ERIC dispatch pin",
+            "author": ["Doe, Jane"], "description": "abstract",
+            "publicationdateyear": "2024", "source": "Journal",
+            "url": "https://eric.ed.gov/?id=EJ5550001",
+            "publicationtype": ["Journal Articles"],
+        })
+        snapshot = {
+            "source": "eric", "endpoint": "https://api.ies.ed.gov/eric/",
+            "query": 'title:("adults")', "total_hits": 1, "scanned": 1,
+            "limit": eric_inc.ERIC_INCREMENT_LIMIT, "unstable": 0,
+            "truncated": False, "records": [article],
+        }
+        with mock.patch.object(eric_inc, "fetch_eric_incremental",
+                               return_value=snapshot) as eric_fetch, \
+             mock.patch.object(lr_plugin, "fetch_pubmed_updates") as pubmed_fetch:
             response = self.client.post(
                 f"/api/tasks/{self.task}/living-review/check-now",
                 headers=self.auth, json={"strategy_id": eric["id"]})
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["detail"]["message_key"],
-                         "living_review.eric_incremental_pending")
-        fetch.assert_not_called()
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["source"], "eric")
+        self.assertEqual(body["fetched"], 1)
+        self.assertEqual(body["query_string"], 'title:("adults")')
+        eric_fetch.assert_called_once()
+        pubmed_fetch.assert_not_called()
 
         missing = self.client.post(
             f"/api/tasks/{self.task}/living-review/check-now",
