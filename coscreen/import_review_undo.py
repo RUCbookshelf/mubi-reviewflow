@@ -59,6 +59,7 @@ def snapshot(conn, kind: str, subject: str) -> dict:
     candidate_ids = dict.fromkeys(candidate_parts)
     # 各 part 的记录 id 列表（candidate 取成员 record，其余取自身）
     members_by_candidate: dict[str, list] = {}
+    active_by_candidate: dict[str, list] = {}
     if candidate_ids:
         for candidate_id, ref_id in conn.execute(
                 "".join((
@@ -68,8 +69,17 @@ def snapshot(conn, kind: str, subject: str) -> dict:
                 )),
                 tuple(candidate_ids)):
             members_by_candidate.setdefault(candidate_id, []).append(ref_id)
+        # 已入任务成员的文献行也必须进快照：确认重复的「只补空」会改写保留条目
+        # （B3），撤销必须能把该行题录还原（NULL/空串保真）。
+        for candidate_id, ref_id in conn.execute(
+                "SELECT candidate_id,ref_id FROM workflow_import_candidate_members "
+                "WHERE ref_type='active'"):
+            if candidate_id in candidate_ids:
+                active_by_candidate.setdefault(candidate_id, []).append(ref_id)
         for candidate_id in members_by_candidate:
             members_by_candidate[candidate_id].sort()
+        for candidate_id in active_by_candidate:
+            active_by_candidate[candidate_id].sort()
     part_ids = []
     for action in parts:
         part_kind, part_id = action['kind'], action['id']
@@ -111,6 +121,20 @@ def snapshot(conn, kind: str, subject: str) -> dict:
         acceptance = conn.execute('SELECT * FROM workflow_metadata_acceptances WHERE zotero_key=?', (key,)).fetchone()
         if acceptance:
             acceptance_rows[part_id] = dict(acceptance)
+    # candidate part 的已入任务成员：确认重复补空会改写该文章行（B3），快照必须
+    # 含其题录与 acceptance，撤销才能一并恢复。
+    candidate_article_rows: dict[str, list] = {}
+    candidate_acceptance_rows: dict[str, list] = {}
+    for candidate_id, ref_ids in active_by_candidate.items():
+        for ref_id in ref_ids:
+            key = imports.canonical(conn, ref_id)
+            article = conn.execute('SELECT * FROM articles WHERE zotero_key=?', (key,)).fetchone()
+            if article:
+                candidate_article_rows.setdefault(candidate_id, []).append(
+                    {'zotero_key': key, **imports.metadata(dict(article))})
+            acceptance = conn.execute('SELECT * FROM workflow_metadata_acceptances WHERE zotero_key=?', (key,)).fetchone()
+            if acceptance:
+                candidate_acceptance_rows.setdefault(candidate_id, []).append(dict(acceptance))
     legacy_seq = conn.execute("SELECT COALESCE(MAX(seq),0) FROM title_duplicate_undo").fetchone()[0]
     # ---- 第二遍：按 part 顺序重建（行序与修复前逐位一致）----
     result = {'legacy_seq': legacy_seq, 'candidates': [], 'records': [], 'proposals': [],
@@ -121,6 +145,8 @@ def snapshot(conn, kind: str, subject: str) -> dict:
                 'proposals': [], 'articles': [], 'acceptances': []}
         if part_kind == 'candidate' and part_id in candidate_rows:
             part['candidates'] = [candidate_rows[part_id]]
+            part['articles'] = list(candidate_article_rows.get(part_id, []))
+            part['acceptances'] = list(candidate_acceptance_rows.get(part_id, []))
         for rid in ids:
             if rid in record_rows:
                 part['records'].append(record_rows[rid])
@@ -222,8 +248,14 @@ def restore(conn, batch: str, actor: str) -> dict:
     before, after = json.loads(row['before_json']), json.loads(row['after_json'])
     # Restore only the mutable fields of incoming source records.
     for record in before['records']:
-        conn.execute('''UPDATE workflow_source_records SET canonical_key=?,target_record_id=?,outcome=?,state=? WHERE id=?''',
-                     (record['canonical_key'], record['target_record_id'], record['outcome'], record['state'], record['id']))
+        if 'article_json' in record:
+            # 待审保留记录的题录载荷也随补空改写（B3），撤销必须一并还原。
+            conn.execute('''UPDATE workflow_source_records SET canonical_key=?,target_record_id=?,outcome=?,state=?,article_json=? WHERE id=?''',
+                         (record['canonical_key'], record['target_record_id'], record['outcome'],
+                          record['state'], record['article_json'], record['id']))
+        else:
+            conn.execute('''UPDATE workflow_source_records SET canonical_key=?,target_record_id=?,outcome=?,state=? WHERE id=?''',
+                         (record['canonical_key'], record['target_record_id'], record['outcome'], record['state'], record['id']))
     for candidate in before['candidates']:
         fields = ('status', 'keeper_key', 'keeper_record_id', 'decided_by', 'updated_at')
         conn.execute(
@@ -269,6 +301,11 @@ def restore(conn, batch: str, actor: str) -> dict:
                 conn.execute('''INSERT INTO workflow_metadata_acceptances VALUES(?,?,?,?) ON CONFLICT(zotero_key)
                     DO UPDATE SET revision=excluded.revision,metadata_json=excluded.metadata_json,record_id=excluded.record_id''',
                     (article['zotero_key'], revision, imports.dumps(imports.metadata(article)), source_record))
+    # 补空留痕随撤销**标记**（契约口径 chosen: mark, not delete）：留痕是审计
+    # 事实，撤销只把它标成 undone，不抹掉历史。
+    for candidate in before.get('candidates') or []:
+        conn.execute('UPDATE workflow_import_field_merges SET undone=1 '
+                     'WHERE undone=0 AND candidate_id=?', (candidate['id'],))
     conn.execute("UPDATE workflow_import_undo SET state='undone' WHERE id=?", (row['id'],))
     return {'undone': True, 'subject_id': row['subject_id'], 'kind': row['kind']}
 
