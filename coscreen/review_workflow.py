@@ -47,8 +47,8 @@ CREATE TRIGGER IF NOT EXISTS workflow_catalog_delete AFTER DELETE ON articles BE
 
 
 def defaults() -> dict:
-    return {stage: {"mode": "all", "source_ids": [], **({"show_maybe": True} if stage != "coding" else {})}
-            for stage in STAGES}
+    # 2.1.5 W1：show_maybe 已退役（两阶段全程二选一）；新库不再写该键。
+    return {stage: {"mode": "all", "source_ids": []} for stage in STAGES}
 
 
 def normalized(text: str) -> str:

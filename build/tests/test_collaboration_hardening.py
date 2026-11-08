@@ -504,13 +504,12 @@ class CollaborationHardeningTests(unittest.TestCase):
                                 headers=self.auth())
         self.assertEqual(r.status_code, 200, r.text)
 
-    def test_screening_rounds_works_for_owner_on_fresh_task(self):
-        """复审（d85841e 回归）：owner 即 actor 时 context() 曾整段跳过
-        screening_rounds.migrate——新任务无 workflow_screen_rounds 表，
-        POST /screening-rounds 的 start/finish 500（复现手法：新建任务＋
-        1 条 maybe 决策→work-queue remaining_uncertain=1→start/finish）。
-        G2-01：曾用不存在的 /screening/record 端点＋宽断言 (200,201,404)，
-        请求恒 404、maybe 分支从未执行；改走真实 /decisions 并收紧断言。"""
+    def test_screening_rounds_route_removed_and_maybe_rejected_on_fresh_task(self):
+        """2.1.5 W1 换钉（旧钉：新任务 POST /screening-rounds 200）。
+
+        旧回归（d85841e）验证 owner 即 actor 时轮次库迁移不再 500；轮次机制
+        移除后该入口不再注册（恒 404），新钉改为：真实 /decisions 的 maybe
+        被结构化 409、queue 载荷不再含轮次字段、设置不再含轮次标记。"""
         from coscreen import db as _db
         from coscreen.models import Article as _Article
         _db.upsert_articles(self.info.dir / (self._slug + ".db"),
@@ -518,19 +517,23 @@ class CollaborationHardeningTests(unittest.TestCase):
         r = self.client.post(f"/api/tasks/{self.task}/decisions",
                              json={"zotero_key": "K1", "decision": "maybe"},
                              headers=self.auth())
-        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "maybe_disabled")
+        self.assertEqual(r.json()["detail"]["message_key"], "workflow.maybe_disabled")
         r = self.client.get(f"/api/tasks/{self.task}/work-queue/screen",
                             headers=self.auth())
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()["remaining_uncertain"], 1, r.text)
+        self.assertNotIn("remaining_uncertain", r.json())
+        self.assertNotIn("screening_round", r.json())
         r = self.client.get(f"/api/tasks/{self.task}/workflow-settings",
                             headers=self.auth())
-        version = r.json()["version"]
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("screening_round_marker", r.json())
         r = self.client.post(f"/api/tasks/{self.task}/screening-rounds",
                              json={"action": "finish",
-                                   "expected_policy_version": version},
+                                   "expected_policy_version": r.json()["version"]},
                              headers=self.auth())
-        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.status_code, 404, r.text)
 
     def test_revoke_recycles_screener_registration(self):
         # 复审 R6-C1 验收 2：撤销后 task.json 的 screeners 登记回收

@@ -27,10 +27,14 @@ __all__ = [
     "PUBMED_URL_PREFIX",
     "EMBASE_URL_PREFIX",
     "COCHRANE_URL_PREFIX",
+    "ERIC_URL_PREFIX",
     "generate_pubmed_query",
     "generate_pubmed_url",
     "generate_embase_query",
     "generate_cochrane_query",
+    "generate_eric_query",
+    "generate_eric_url",
+    "generate_wos_query",
     "generate_generic_query",
     "build_search_strategies",
     "protocol_to_dict",
@@ -67,9 +71,9 @@ class PICOElement:
 class SearchStrategy:
     """一个数据库的检索式。"""
 
-    database: str  # "pubmed" | "embase" | "cochrane" | "wos" | "generic"
+    database: str  # "pubmed" | "embase" | "cochrane" | "eric" | "wos" | "generic"
     query_string: str  # 生成的检索式
-    url: str  # 可点击的检索链接（仅 PubMed/Embase/Cochrane 有公开 URL 格式）
+    url: str  # 可点击的检索链接（WoS/通用无公开查询 URL，为空串）
     line_count: int  # 检索式行数（用于报告）
 
 
@@ -90,6 +94,9 @@ class ProtocolDocument:
 PUBMED_URL_PREFIX = "https://pubmed.ncbi.nlm.nih.gov/?term="
 EMBASE_URL_PREFIX = "https://www.embase.com/search#?q="
 COCHRANE_URL_PREFIX = "https://www.cochranelibrary.com/search?q="
+#: ERIC 网站检索（官方 API 另见 custom_backend/eric_search_api.py；本前缀
+#: 只是浏览器导航链接，用于"到库内执行"）。
+ERIC_URL_PREFIX = "https://eric.ed.gov/?q="
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +183,67 @@ def generate_cochrane_query(pico: list[PICOElement]) -> str:
     return " AND ".join(groups)
 
 
+def generate_eric_query(pico: list[PICOElement]) -> str:
+    """ERIC 检索式（官方 API 字段语法：``title:("…")`` + 布尔）。
+
+    方法学锚：ERIC 的 ``search`` 参数接受字段限定布尔检索（字段 =
+    ``title`` / ``description`` / ``author`` / ``subject`` / ``source`` /
+    ``pubdate`` / ``publicationtype`` 等）。本生成器与 PubMed 同构：
+
+    - 自由词（value+synonyms）在标题与摘要两处匹配：
+      ``(title:("term") OR description:("term"))``；
+    - 主题词（mesh_terms，视作 ERIC 的 subject 描述符）：
+      ``subject:("term")``；
+    - 组内 OR、组间 AND、空要素跳过、词条去重（保序）。
+    """
+    groups: list[str] = []
+    for element in pico:
+        if not element.value and not element.synonyms and not element.mesh_terms:
+            continue
+        seen: set[str] = set()
+        terms: list[str] = []
+        for term in [element.value] + (element.synonyms or []):
+            if term and term not in seen:
+                seen.add(term)
+                terms.append(f'(title:("{term}") OR description:("{term}"))')
+        for subject in element.mesh_terms or []:
+            if subject and subject not in seen:
+                seen.add(subject)
+                terms.append(f'subject:("{subject}")')
+        if terms:
+            groups.append(f"({' OR '.join(terms)})")
+    return " AND ".join(groups)
+
+
+def generate_eric_url(query: str) -> str:
+    """ERIC 网站检索链接（导航用；不调用 API、不代表本模块联网）。"""
+    return _url(ERIC_URL_PREFIX, query)
+
+
+def generate_wos_query(pico: list[PICOElement]) -> str:
+    """Web of Science 专业语法：``TS=/TI=/AU=`` 字段限定 + 布尔。
+
+    - 自由词（value+synonyms）→ ``TS=("term")``（Topic = 标题/摘要/关键词）；
+    - 主题词（mesh_terms）→ ``TS=("term")``：WoS 无 MeSH 字段，按主题词在
+      Topic 字段降级匹配（与自定义检索式管理的 ``translate`` 同一口径）；
+    - 组内 OR、组间 AND、空要素跳过、词条去重（保序）。
+    """
+    groups: list[str] = []
+    for element in pico:
+        if not element.value and not element.synonyms and not element.mesh_terms:
+            continue
+        seen: set[str] = set()
+        terms: list[str] = []
+        for term in ([element.value] + (element.synonyms or [])
+                     + (element.mesh_terms or [])):
+            if term and term not in seen:
+                seen.add(term)
+                terms.append(f'TS=("{term}")')
+        if terms:
+            groups.append(f"({' OR '.join(terms)})")
+    return " AND ".join(groups)
+
+
 def generate_generic_query(pico: list[PICOElement]) -> str:
     """通用格式检索式：不限定数据库的纯文本描述（用户手动适配）。
 
@@ -243,14 +311,17 @@ def _url(prefix: str, query: str) -> str:
 def build_search_strategies(
     pico: list[PICOElement], date_from: str = "", date_to: str = ""
 ) -> list[SearchStrategy]:
-    """按四个数据库（PubMed/Embase/Cochrane/通用）生成完整检索式集合。
+    """按六个数据库（PubMed/Embase/Cochrane/ERIC/WoS/通用）生成检索式集合。
 
     Embase URL 为导航链接（``#?q=`` 片段，仅定位到检索页，不能直接执行）；
-    通用格式无公开 URL 模板，``url`` 为空串。
+    ERIC 为网站检索链接；WoS 与通用格式无公开查询 URL 模板，``url`` 为空串
+    （WoS 只给专业语法，执行在库内完成）。
     """
     pubmed = generate_pubmed_query(pico)
     embase = generate_embase_query(pico)
     cochrane = generate_cochrane_query(pico)
+    eric = generate_eric_query(pico)
+    wos = generate_wos_query(pico)
     generic = generate_generic_query(pico)
     return [
         SearchStrategy(
@@ -270,6 +341,18 @@ def build_search_strategies(
             query_string=cochrane,
             url=_url(COCHRANE_URL_PREFIX, cochrane),
             line_count=_line_count(cochrane),
+        ),
+        SearchStrategy(
+            database="eric",
+            query_string=eric,
+            url=_url(ERIC_URL_PREFIX, eric),
+            line_count=_line_count(eric),
+        ),
+        SearchStrategy(
+            database="wos",
+            query_string=wos,
+            url="",
+            line_count=_line_count(wos),
         ),
         SearchStrategy(
             database="generic",
@@ -368,6 +451,10 @@ def protocol_to_markdown(protocol: ProtocolDocument | dict) -> str:
         # 检测到日期过滤时在导出文档中同样明示，与前端 renderStrategies 的提示一致。
         if any(s.database == "pubmed" and "filter=dates." in s.url for s in doc.search_strategies):
             lines += ["注：日期窗仅适用于 PubMed 检索式；Embase 与 Cochrane 链接不含日期过滤。", ""]
+        # 2.1.5 W3：新增 ERIC/WoS 两库后补充同一条披露（保留上一行原文以兼容既有
+        # 导出钉；本行只做追加，不改既有句子）。
+        if any(s.database in {"eric", "wos"} for s in doc.search_strategies):
+            lines += ["注：ERIC 为网站检索链接；WoS 只提供专业语法（无公开查询 URL，需到库内执行）。", ""]
     if doc.inclusion_criteria:
         lines += ["## 纳入标准", ""] + [f"- {c}" for c in doc.inclusion_criteria] + [""]
     if doc.exclusion_criteria:
