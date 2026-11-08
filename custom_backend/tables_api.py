@@ -19,6 +19,11 @@
   同一规则：多人评价取最严重档）；四构件降级建议原样调用
   ``coscreen.grade_assessor.suggest_*``（不四舍五入、不改写理由）；
 - **缺数据格留空 + 脚注（未评价），绝不臆造、绝不填 0**；
+- **带 ``rob_tool`` 的 SoF 与 grade-input 同一权限闸**：研究局限性列跨全员
+  个人库聚合评价档位，故仅任务属主或 ``consensus:write`` 裁决员可读
+  （``_consensus_gate`` 直接复用宿主同一判定函数）；普通成员 403
+  ``tables.rob_requires_consensus`` 且响应不含任何档位。不带 ``rob_tool`` 的
+  SoF 与 Table 1 仍对全部可见成员开放、不含评价数据；
 - **不写业务数据**：不新建任务/筛选员库、不建表、不写轨迹、不改任何既有行；
   筛选员库缺失时 ``ensure=False``（不懒建库）。如实披露：读路径复用既有的
   ``coscreen.db._connect`` 连接工厂，对**已存在的旧库**它会执行幂等的自愈
@@ -105,6 +110,51 @@ def _error(code: str, message_key: str, *, params: dict | None = None,
            status: int = 400) -> HTTPException:
     return HTTPException(status, {"error_code": code, "message_key": message_key,
                                   "params": params or {}})
+
+
+def _consensus_gate(task_id: str, user: dict) -> None:
+    """带 ``rob_tool`` 的 SoF 的权限闸：与 ``GET /appraisal/grade-input`` 同一判定。
+
+    研究局限性列会跨全员个人库聚合评价档位（``_appraisal_levels``），而
+    grade-input 对同一聚合只允许属主/裁决员（``consensus:write``）。因此这里
+    **直接复用** ``main._arbitration_store`` 这一个判定函数（不复制、不另造
+    口径）：非属主且无 ``consensus:write`` → 403；server 模式 legacy 任务 →
+    既有 409 ``coding.collaboration_owner_unset``。
+
+    403 改写为本端点的结构化键 ``tables.rob_requires_consensus``（响应体只有
+    ``error_code/message_key/params``，不含任何档位）；409/503 原样透出。
+
+    说明：``main.py`` 的注册区在本波冻结（不改），tables 的注册签名因此拿不到
+    宿主注入的权限函数；在请求期从宿主模块取同一函数对象是唯一不产生第二份
+    权限口径的接法（grade-input 用的就是它）。
+    """
+    from custom_backend.main import _arbitration_store
+
+    try:
+        _arbitration_store(task_id, user)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise _error("tables_rob_requires_consensus",
+                         "tables.rob_requires_consensus", status=403) from exc
+        raise
+
+
+def _rob_tool_or_error(tool_id: str) -> dict:
+    """``rob_tool`` 校验：与 ``appraisal_api._tool_or_error`` 同口径。
+
+    已注册工具 → 定义；``link_only`` 工具没有条目模板（评价 §0，本就不会有
+    评价记录）→ 400 ``tables.rob_tool_link_only``；其余 → 400
+    ``tables.rob_tool_unknown``。
+    """
+    tool_def = appraisal_core.get_tool(tool_id)
+    if tool_def is not None:
+        return tool_def
+    link_only = {entry["id"] for entry in appraisal_core.LINK_ONLY}
+    if tool_id.strip() in link_only:
+        raise _error("tables_rob_tool_link_only", "tables.rob_tool_link_only",
+                     params={"tool": tool_id})
+    raise _error("tables_rob_tool_unknown", "tables.rob_tool_unknown",
+                 params={"tool": tool_id})
 
 
 def _today() -> str:
@@ -757,9 +807,11 @@ def register_tables_routes(
                    detail: int = Query(default=0),
                    user: dict = Depends(require_user)):
         info = _info(task_id, user)
-        if body.rob_tool and appraisal_core.get_tool(body.rob_tool) is None:
-            raise _error("tables_rob_tool_unknown", "tables.rob_tool_unknown",
-                         params={"tool": body.rob_tool})
+        if body.rob_tool:
+            # 研究局限性列聚合全员评价档位：权限与 grade-input 完全同一判定，
+            # 不通过时在校验工具之前就 403（响应中不含任何档位）。
+            _consensus_gate(task_id, user)
+            _rob_tool_or_error(body.rob_tool)
         db_path = screener_db(info, screener or user["username"], ensure=False)
         rows, notes, params = _sof_rows(Path(db_path), info, body)
         if detail:

@@ -1069,12 +1069,13 @@ class ResponseShapePins(W9Base):
         runs = self.client.get(f"/api/tasks/{self.task}/retraction-runs",
                                headers=self.oauth).json()
         self.assertEqual(set(runs),
-                         {"runs", "count", "active_run_id", "disclosure_keys"})
+                         {"runs", "count", "active_run_id", "can_manage",
+                          "disclosure_keys"})
         detail = self.client.get(
             f"/api/tasks/{self.task}/retraction-runs/{payload['run_id']}",
             headers=self.oauth).json()
         self.assertEqual(set(detail), {"run", "findings", "finding_count",
-                                       "disclosure_keys"})
+                                       "can_manage", "disclosure_keys"})
         self.assertEqual(detail["finding_count"], 1)
 
     def test_badge_is_empty_before_any_run(self):
@@ -1087,6 +1088,73 @@ class ResponseShapePins(W9Base):
                                headers=self.oauth).json()
         self.assertEqual(runs["runs"], [])
         self.assertIsNone(runs["active_run_id"])
+
+
+# ---------------------------------------------------------------------------
+# 12. I-23：can_manage（与触发闸同一判定）
+# ---------------------------------------------------------------------------
+
+class ManageFlagPins(W9Base):
+    def test_can_manage_matches_the_trigger_gate(self):
+        """属主 true / 普通成员 false；清单与详情同一布尔、同一判定函数。"""
+        self.seed(1, stage2=("include",))
+        stub = CrossrefStub().route("w9k001", updated_by(
+            "10.1000/w9k001", "10.1000/retract01", "retraction"))
+        with mock.patch.object(pdf_fetch_api, "_OPENER", stub):
+            payload = self.check({"scope": "stage2_include"}).json()
+        for headers, expected in ((self.oauth, True), (self.mauth, False)):
+            runs = self.client.get(f"/api/tasks/{self.task}/retraction-runs",
+                                   headers=headers)
+            self.assertEqual(runs.status_code, 200, runs.text)
+            self.assertIs(runs.json()["can_manage"], expected)
+            detail = self.client.get(
+                f"/api/tasks/{self.task}/retraction-runs/{payload['run_id']}",
+                headers=headers)
+            self.assertEqual(detail.status_code, 200, detail.text)
+            self.assertIs(detail.json()["can_manage"], expected)
+
+    def test_can_manage_is_false_on_empty_history(self):
+        runs = self.client.get(f"/api/tasks/{self.task}/retraction-runs",
+                               headers=self.mauth)
+        self.assertEqual(runs.status_code, 200, runs.text)
+        self.assertIs(runs.json()["can_manage"], False)
+
+
+# ---------------------------------------------------------------------------
+# 13. I-21：类型归一与类别文案（corrigendum / erratum 归 correction）
+# ---------------------------------------------------------------------------
+
+class TypeClassPins(unittest.TestCase):
+    def test_corrigendum_and_erratum_are_correction_class(self):
+        for name in ("correction", "erratum", "corrigendum"):
+            self.assertEqual(w9.update_class(name), "correction", name)
+            self.assertEqual(w9.severity_of(name), 1, name)
+
+    def test_expression_of_concern_spellings_normalize(self):
+        for raw in ("expression_of_concern", "expression-of-concern",
+                    "expressionofconcern", "Expression Of Concern"):
+            self.assertEqual(w9.canonical_type(raw), "expression_of_concern", raw)
+
+
+class CorrigendumBadgePins(W9Base):
+    def test_corrigendum_keeps_original_name_but_gets_correction_severity(self):
+        """types/update_type 保留原类型名（corrigendum），严重度 = correction 类。"""
+        self.seed(1, stage2=("include",))
+        stub = CrossrefStub().route("w9k001", updated_by(
+            "10.1000/w9k001", "10.1000/corr01", "corrigendum"))
+        with mock.patch.object(pdf_fetch_api, "_OPENER", stub):
+            payload, _ = self.run_to_end()
+        badge = self.client.get(f"/api/tasks/{self.task}/retraction-badge",
+                                headers=self.oauth).json()
+        item = badge["badges"]["K001"]
+        self.assertEqual(item["type"], "corrigendum")
+        self.assertEqual(item["severity"], 1)
+        self.assertEqual(w9.update_class(item["type"]), "correction")
+        self.assertEqual(item["types"], ["corrigendum"])
+        detail = self.client.get(
+            f"/api/tasks/{self.task}/retraction-runs/{payload['run_id']}",
+            headers=self.oauth).json()
+        self.assertEqual(detail["findings"][0]["update_type"], "corrigendum")
 
 
 if __name__ == "__main__":
