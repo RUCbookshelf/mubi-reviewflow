@@ -133,15 +133,20 @@ fs.mkdirSync(artifacts, { recursive: true });
     assert.ok(filled.highlighted > 0, '自动填充未高亮被改写的字段');
   });
 
-  // ---- F63：screening-rounds 版本冲突 → 结构化 code → 前端刷新到最新版本 ----
-  await check('F63 轮次 409 回 workflow_version_conflict 且前端刷新到最新版本', async () => {
+  // ---- F63：工作流版本冲突 → 结构化 code → 前端刷新到最新版本 ----
+  // 2.1.5 W1 移除了「再开一轮」路由（POST /screening-rounds 恒 404），原钉借它触发冲突已失效。
+  // 钉随行为等强度换钉：改用同一 write_guard 守卫的 PUT /workflow-settings 发过期 expected_version，
+  // 断言口径（409 + workflow_version_conflict + 最新版本 + 前端刷新 + 非旧英文串）一字不改。
+  await check('F63 版本冲突 409 回 workflow_version_conflict 且前端刷新到最新版本', async () => {
     const result = await page.evaluate(async () => {
       const base = taskApi();
       const live = await api(base + '/workflow-settings');
       let caught = null;
       try {
-        // 故意用过期版本触发冲突
-        await api(base + '/screening-rounds', { method: 'POST', body: { action: 'start', expected_policy_version: Math.max(1, live.version + 1) } });
+        // 故意用过期版本触发冲突（载荷按当前设置原样回送，只改版本号）
+        await api(base + '/workflow-settings', { method: 'PUT', body: {
+          stages: live.stages, evidence_required_field_ids: live.evidence_required_field_ids || [],
+          expected_version: Math.max(1, live.version + 1) } });
       } catch (error) {
         caught = { status: error.status, code: error.code, version: error.workflowSettings?.version, message: error.message };
       }
@@ -150,7 +155,7 @@ fs.mkdirSync(artifacts, { recursive: true });
     });
     assert.equal(result.caught?.status, 409, '过期版本必须回 409');
     assert.equal(result.caught?.code, 'workflow_version_conflict',
-      '轮次 409 未带 workflow_version_conflict code（前端无法自动刷新）：' + JSON.stringify(result.caught));
+      '版本冲突 409 未带 workflow_version_conflict code（前端无法自动刷新）：' + JSON.stringify(result.caught));
     assert.equal(result.caught?.version, result.liveVersion, '409 载荷必须带最新版本');
     assert.equal(result.controllerVersion, result.liveVersion, '刷新后 WorkflowControls.version() 必须是新值');
     assert.doesNotMatch(result.caught?.message || '', /Workflow policy changed\. Refresh and retry\.$/,
