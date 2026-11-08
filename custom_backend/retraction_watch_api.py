@@ -11,7 +11,8 @@
   分批游标式（每批 50 条），仅属主/can_manage 可触发。
 - ``GET  /api/tasks/{task_id}/retraction-runs``
 - ``GET  /api/tasks/{task_id}/retraction-runs/{run_id}``
-  run 清单/详情（含发现），**全员可读**——团队都该看到警示。
+  run 清单/详情（含发现），**全员可读**——团队都该看到警示；两处都返回
+  ``can_manage``（与触发闸同一判定），供前端决定历史视图丰富度/入口显隐。
 - ``GET  /api/tasks/{task_id}/retraction-badge``
   ``zotero_key -> 最新发现类型`` 映射（跨 run 去重）。
 
@@ -521,8 +522,19 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             raise _error(403, "task_forbidden")
         return info
 
-    def _owner(info: Any, user: dict) -> None:
-        """触发闸：属主/can_manage。legacy 无属主任务按模式区分（同既有口径）。"""
+    def _manage_state(info: Any, user: dict) -> tuple[bool, tuple[int, str] | None]:
+        """触发闸的**唯一判定源**：返回 ``(can_manage, 拒绝码|None)``。
+
+        ``POST retraction-check`` 的放行/拒绝与 ``GET runs`` / 详情里的
+        ``can_manage`` 布尔都由本函数给出（同一函数，不复制口径）：
+
+        - 属主 → ``(True, None)``；
+        - 普通成员 → ``(False, (403, "owner_required"))``；
+        - server 模式 legacy（无属主记录）→ ``(False, (409, "legacy_owner_unset"))``
+          （纵深防御：实际请求会先被全局闸门以 ``collaboration_owner_unset``
+          拦下，见 I-18）；
+        - desktop 模式 legacy → ``(True, None)``（既有口径：单机本人全权）。
+        """
         try:
             owner = task_collaboration.get_owner(
                 _store_path(info), task_id=info.task_id)
@@ -530,10 +542,18 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             raise _storage_error() from None
         if owner is None:
             if server_mode():
-                raise _error(409, "legacy_owner_unset")
-            return
+                return False, (409, "legacy_owner_unset")
+            return True, None
         if owner["owner_user_id"] != user["user_id"]:
-            raise _error(403, "owner_required")
+            return False, (403, "owner_required")
+        return True, None
+
+    def _owner(info: Any, user: dict) -> None:
+        """触发闸：属主/can_manage（判定见 :func:`_manage_state`）。"""
+        _, denial = _manage_state(info, user)
+        if denial is not None:
+            status, code = denial
+            raise _error(status, code)
 
     # ---- 存储小工具 -------------------------------------------------------
     def _run_row(conn: sqlite3.Connection, task_id: str, run_id: int):
@@ -808,6 +828,7 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
     def retraction_runs(task_id: str,
                         user: dict = Depends(require_user)) -> dict:
         info = _info(task_id, user)
+        can_manage, _ = _manage_state(info, user)
         path = _store_path(info)
         runs: list[dict] = []
         if path.is_file():
@@ -828,6 +849,9 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             "count": len(runs),
             "active_run_id": next((item["run_id"] for item in runs
                                    if item["status"] == "running"), None),
+            # 与 POST retraction-check 的属主/can_manage 闸同一判定函数；
+            # 前端据此决定 F5 历史视图的丰富度与 F1 入口显隐。
+            "can_manage": can_manage,
             "disclosure_keys": list(DISCLOSURE_KEYS),
         }
 
@@ -839,6 +863,7 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             raise _error(404, "run_not_found")
         run_id_int = int(run_id)
         info = _info(task_id, user)
+        can_manage, _ = _manage_state(info, user)
         path = _store_path(info)
         if not path.is_file():
             raise _error(404, "run_not_found")
@@ -868,6 +893,7 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             "run": _serialize_run(row),
             "findings": findings,
             "finding_count": len(findings),
+            "can_manage": can_manage,
             "disclosure_keys": list(DISCLOSURE_KEYS),
         }
 

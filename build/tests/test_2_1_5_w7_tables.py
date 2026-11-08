@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import sys
 import tempfile
@@ -645,6 +646,139 @@ class PermissionPins(W7TablesBase):
         response = self.client.post("/api/tasks/do-not-exist/tables/characteristics",
                                     json={"format": "csv"}, headers=self.auth)
         self.assertEqual(response.status_code, 404, response.text)
+
+
+# ---------------------------------------------------------------------------
+# 5. I-19 / I-20：带 rob_tool 的 SoF 权限 = grade-input 同一判定 + 工具校验
+# ---------------------------------------------------------------------------
+
+class ConsensusPermissionPins(W7TablesBase):
+    """I-19（权限漏洞）：研究局限性列跨全员个人库聚合评价档位，因此带
+    ``rob_tool`` 的 SoF 必须与 ``GET /appraisal/grade-input`` **同一判定**：
+    属主或带 ``consensus:write`` 的裁决员。普通成员带 ``rob_tool`` → 结构化
+    403 ``tables.rob_requires_consensus``，响应中不得出现任何档位/计数。
+
+    不带 ``rob_tool`` 的 SoF 与 Table 1 仍对可见成员开放，且不含任何评价数据。
+    """
+
+    PREFIX = "w7cons"
+
+    def _member_library(self, article="K1"):
+        path = self.info.dir / (tasks_mod.slugify_screener(self.member["username"])
+                                + ".db")
+        db_mod.init_db(path)
+        db_mod.upsert_articles(path, [
+            Article(zotero_key=article, title="Member study", authors="",
+                    year=2020)], [])
+        analysis_mod.save_study(path, "S1", "Study 1", [article])
+        analysis_mod.save_effect(path, "S1", "C", "O", "T", "MD", 0.5, 0.2, article)
+        return path
+
+    def _owner_rating(self):
+        self._seed()
+        self._seed_effects()
+        self._put_appraisal("K1", "high")   # high → GRADE serious
+
+    def _grant_reconciler(self):
+        response = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/roles",
+            json={"user_id": self.member["id"], "role": "reconciler"},
+            headers=self.auth)
+        self.assertEqual(response.status_code, 201, response.text)
+
+    def _member_sof(self, *, detail=0, **body):
+        payload = {"format": "csv"}
+        payload.update(body)
+        return self.client.post(
+            self.sof, json=payload,
+            params={"screener": self.member["username"], "detail": detail},
+            headers=self.member_auth)
+
+    def _rob_cell(self, rows):
+        header = rows[0]
+        for row in rows[1:]:
+            if row and row[0] != "脚注":
+                return dict(zip(header, row))["研究局限性"]
+        self.fail(f"未找到数据行：{rows!r}")
+
+    def test_member_with_rob_tool_is_403_and_leaks_no_levels(self):
+        self._owner_rating()
+        self._member_library()
+        for detail in (0, 1):
+            response = self._member_sof(detail=detail, rob_tool=TOOL)
+            self.assertEqual(response.status_code, 403, response.text)
+            body = response.json()["detail"]
+            self.assertEqual(body["error_code"], "tables_rob_requires_consensus")
+            self.assertEqual(body["message_key"], "tables.rob_requires_consensus")
+            # 响应体不得出现任何评价档位/计数（含 params 之外的一切）
+            for forbidden in ("levels", "counts", "risk_of_bias", "serious",
+                              "very_serious", "judgement"):
+                self.assertNotIn(forbidden, response.text, forbidden)
+
+    def test_owner_with_rob_tool_gets_levels(self):
+        self._owner_rating()
+        response = self._sof(rob_tool=TOOL)
+        self.assertEqual(response.status_code, 200, response.text)
+        cell = self._rob_cell(_read_csv(response.content))
+        self.assertIn(grade.DOWNGRADE_LABELS["serious"], cell)
+        # 与 grade-input 同源：档位聚合计数 = {serious: 1}
+        detail = self.client.post(
+            self.sof, json={"format": "csv", "rob_tool": TOOL},
+            params={"detail": 1}, headers=self.auth)
+        self.assertEqual(detail.status_code, 200, detail.text)
+        rob = detail.json()["rows"][0]["detail"]["rob"]
+        self.assertEqual(rob["counts"], {"serious": 1})
+        self.assertEqual(rob["tool"], TOOL)
+
+    def test_adjudicator_with_consensus_write_gets_levels(self):
+        """裁决员（consensus:write）与属主同权：可读跨成员聚合档位。"""
+        self._owner_rating()
+        self._member_library()
+        self._grant_reconciler()
+        response = self._member_sof(rob_tool=TOOL)
+        self.assertEqual(response.status_code, 200, response.text)
+        cell = self._rob_cell(_read_csv(response.content))
+        # 档位来自属主库的 appraisal（跨成员聚合），证明判定通过且聚合正常
+        self.assertIn(grade.DOWNGRADE_LABELS["serious"], cell)
+
+    def test_member_without_rob_tool_still_reads_and_has_no_appraisal_data(self):
+        self._owner_rating()
+        self._member_library()
+        response = self._member_sof(detail=1)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["rows"], body)
+        row = body["rows"][0]
+        self.assertEqual(row["cells"]["rob"], "")
+        self.assertEqual(row["detail"]["rob"]["counts"], {})
+        self.assertNotIn("levels", json.dumps(row["detail"]["rob"]))
+        self.assertIn("未选择评价工具", "\n".join(body["footnotes"]))
+        # 成员仍可打开 Table 1（不含任何评价数据）
+        table = self.client.post(self.table1, json={"format": "csv"},
+                                 params={"screener": self.member["username"]},
+                                 headers=self.member_auth)
+        self.assertEqual(table.status_code, 200, table.text)
+        self.assertNotIn("serious", table.text)
+
+    def test_unknown_rob_tool_is_structured_400(self):
+        self._seed()
+        response = self._sof(rob_tool="no-such-tool")
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "tables_rob_tool_unknown")
+        self.assertEqual(detail["message_key"], "tables.rob_tool_unknown")
+        self.assertEqual(detail["params"]["tool"], "no-such-tool")
+
+    def test_link_only_rob_tool_is_structured_400(self):
+        """link_only 工具没有条目模板（评价 §0），不能作为研究局限性来源。"""
+        link_only = appraisal_core.LINK_ONLY[0]["id"]
+        self._seed()
+        response = self._sof(rob_tool=link_only)
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "tables_rob_tool_link_only")
+        self.assertEqual(detail["message_key"], "tables.rob_tool_link_only")
+        self.assertEqual(detail["params"]["tool"], link_only)
 
 
 def tearDownModule():
