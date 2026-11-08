@@ -323,7 +323,9 @@ def test_mm7_02_team_prisma_static_runs_outside_a_git_checkout(tmp_path):
     still run validate_team_prisma_static.js - the validator degrades its git-diff
     augmentation, it must not crash - and it must still bite on a broken locale."""
     tree = tmp_path / "tree"
-    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+    # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
+                    ignore=shutil.ignore_patterns(".mimosa"))
     (tree / "build").mkdir()
     shutil.copyfile(
         REPO / "build" / "validate_team_prisma_static.js",

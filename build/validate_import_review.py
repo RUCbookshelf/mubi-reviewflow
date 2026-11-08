@@ -96,7 +96,16 @@ assert len(call('GET',path+'/candidates?view=completed&limit=20&offset=20')['can
 from coscreen import review_imports as store
 with sqlite3.connect(ctx.owner_db) as conn:
     conn.row_factory=sqlite3.Row
-    assert call('GET',path+'/candidates?limit=20')['candidates']==store.candidate_rows(conn,bid,limit=20)
+    # 2.1.5 G5：展示层在存储行之外只追加三项只读字段（批量判据单一事实源 + 建议保留者）。
+    # 去掉这三项后必须与存储行逐字一致；三项本身必须与后端判据同源（不允许第二份口径）。
+    from custom_backend.import_review_actions import bulk_eligibility
+    g5_keys=('bulk_eligible','bulk_ineligible_reason','suggested_keeper')
+    presented=call('GET',path+'/candidates?limit=20')['candidates']
+    base_rows=[{k:v for k,v in c.items() if k not in g5_keys} for c in presented]
+    assert base_rows==store.candidate_rows(conn,bid,limit=20)
+    for c,base_row in zip(presented,base_rows):
+        assert isinstance(c['bulk_eligible'],bool) and isinstance(c['suggested_keeper'],dict)
+        assert (c['bulk_eligible'],c['bulk_ineligible_reason'])==tuple(bulk_eligibility(base_row))
 client.headers['Authorization']='Bearer '+scope['member']['token']
 assert call('GET',path+'?view=attention&limit=1')['can_manage'] is False
 client.headers['Authorization']='Bearer '+outsider['token']

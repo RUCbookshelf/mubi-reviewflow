@@ -134,7 +134,9 @@ def _fake_tree(tmp_path: Path, *, digest_override: str | None = None) -> tuple[P
     (tree / "build" / "icon_256.png").write_bytes(b"\x89PNG stub icon\n")
     (tree / "LICENSE").write_text("license\n", encoding="utf-8")
     (tree / "THIRD_PARTY_NOTICES.md").write_text("notices\n", encoding="utf-8")
-    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+    # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
+                    ignore=shutil.ignore_patterns(".mimosa"))
     for validator in ("script_manifest.cjs", "validate_import_review_static.cjs",
                       "validate_team_prisma_static.js", "verify_release_payload.py"):
         shutil.copy2(REPO / "build" / validator, tree / "build" / validator)

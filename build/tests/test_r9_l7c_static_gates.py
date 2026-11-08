@@ -57,7 +57,9 @@ def _tree(tmp_path: Path, gates: tuple[str, ...]) -> Path:
     for attempt in range(20):
         if tree.exists():
             shutil.rmtree(tree)
-        shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+        # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+        shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
+                        ignore=shutil.ignore_patterns(".mimosa"))
         (tree / "build").mkdir()
         for name in (*gates, HELPER):
             shutil.copyfile(REPO / "build" / name, tree / "build" / name)

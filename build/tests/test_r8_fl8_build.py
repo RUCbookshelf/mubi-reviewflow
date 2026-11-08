@@ -153,7 +153,9 @@ def _fake_tree(tmp_path: Path, *, serve_stub_digest: bool = False) -> tuple[Path
     (tree / "build" / "icon_256.png").write_bytes(b"\x89PNG stub icon\n")
     (tree / "LICENSE").write_text("license\n", encoding="utf-8")
     (tree / "THIRD_PARTY_NOTICES.md").write_text("notices\n", encoding="utf-8")
-    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+    # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
+                    ignore=shutil.ignore_patterns(".mimosa"))
     for validator in ("script_manifest.cjs", "validate_import_review_static.cjs",
                       "validate_team_prisma_static.js", "verify_release_payload.py"):
         shutil.copy2(REPO / "build" / validator, tree / "build" / validator)
@@ -757,7 +759,9 @@ def test_mm9_09_reverse_rule_catches_substring_css_and_mjs(tmp_path):
     a dead top-level .mjs, and (separately) a missing required validator input.
     Each planted file must now be reported."""
     tree = tmp_path / "tree"
-    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend")
+    # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+    shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
+                    ignore=shutil.ignore_patterns(".mimosa"))
     (tree / "custom_frontend" / "concept.css").write_text("/*dead*/\n", encoding="utf-8")
     (tree / "custom_frontend" / "extra.mjs").write_text("export const x=1;\n", encoding="utf-8")
     code = (

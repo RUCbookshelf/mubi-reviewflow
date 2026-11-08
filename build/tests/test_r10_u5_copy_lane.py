@@ -306,7 +306,8 @@ class TestEvidenceLocaleGate:
     def test_validator_reds_on_an_unregistered_literal(self, tmp_path):
         """破坏：往证据模块里加一条未注册的中文串 → 门必须非零退出。"""
         tree = tmp_path / "tree"
-        shutil.copytree(FRONTEND, tree / "custom_frontend")
+        # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+        shutil.copytree(FRONTEND, tree / "custom_frontend", ignore=shutil.ignore_patterns(".mimosa"))
         target = tree / "custom_frontend" / "workflow_evidence.js"
         text = target.read_text(encoding="utf-8")
         target.write_text(text + "\n/* probe */\nfunction probeF48(){return '未注册的证据工作区文案';}\n",
@@ -320,7 +321,8 @@ class TestEvidenceLocaleGate:
     def test_validator_reds_on_a_one_character_near_miss(self, tmp_path):
         """破坏：写「尚无评估。」（注册键是「暂无评估。」）→ 必须点名一字之差。"""
         tree = tmp_path / "tree"
-        shutil.copytree(FRONTEND, tree / "custom_frontend")
+        # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
+        shutil.copytree(FRONTEND, tree / "custom_frontend", ignore=shutil.ignore_patterns(".mimosa"))
         target = tree / "custom_frontend" / "workflow_evidence.js"
         text = target.read_text(encoding="utf-8")
         target.write_text(text + "\n/* probe */\nfunction probeNear(){return '尚无评估。';}\n",
