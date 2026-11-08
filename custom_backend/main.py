@@ -894,7 +894,33 @@ def require_user(
     if auth.screener_storage_conflict(username):
         raise HTTPException(409, "多个旧账号映射到同一个筛选员数据库。已暂停访问，请先人工核对并拆分数据。")
     if any(name and name != username for name in request.query_params.getlist("screener")):
-        raise HTTPException(403, "只能访问自己的筛选员数据库。")
+        # 2.1.5 C2：每日打卡状态 / 目标建议允许**任务负责人**读取成员的只读
+        # 数字摘要（产品口径：本人或负责人可读）。仅放行这两条 GET 路径；其余
+        # 端点（决策/导出/进度等）维持"只能访问自己的筛选员数据库"的既有口径。
+        _daily_read = request.method == "GET" and request.url.path.endswith(
+            ("/screening/daily-status", "/screening/daily-status/suggestion"))
+        _owner_ok = False
+        if _daily_read:
+            _task_id = request.path_params.get("task_id")
+            if _task_id:
+                try:
+                    _info = _task_or_404(_task_id)
+                except HTTPException:  # 任务不存在/路径异常：维持隐私守卫 403
+                    _info = None
+                if _info is not None:
+                    # 属主状态暂时不可确认/协作库永久损坏：与端点级属主闸
+                    # （_require_task_owner）同口径交给全局处理器映射 503/409，
+                    # 不把可重试故障吞成硬 403。
+                    try:
+                        _store = _collaboration_store(_info)
+                    except HTTPException:
+                        _store = None
+                    if _store is not None:
+                        _owner = collaboration_mod.get_owner(
+                            _store, task_id=_info.task_id)
+                        _owner_ok = bool(_owner and _owner["owner_user_id"] == user_id)
+        if not _owner_ok:
+            raise HTTPException(403, "只能访问自己的筛选员数据库。")
     user = {"user_id": user_id, "username": username}
     request_id = request.headers.get("X-Request-ID")
     if request_id is not None:
@@ -6236,11 +6262,25 @@ register_study_design_routes(app, require_user, _task_or_404, _task_visible_to)
 from custom_backend.report_evidence_api import register_report_evidence_routes
 register_report_evidence_routes(app, require_user)
 
+# 2.1.5 C1 评价双评一致性 / 导出 / GRADE 衔接：建在 Wave B 的 appraisal_api
+# 之上；必须在 `GET .../appraisal/{article_key}` 通配路由**之前**注册，否则
+# /agreement、/export、/grade-input 会被当作 article_key 吞掉。权限复用
+# _arbitration_store（属主/裁决员），读全员库 503 口径复用筛选员库守则。
+from custom_backend.appraisal_agreement_api import register_appraisal_agreement_routes
+register_appraisal_agreement_routes(app, require_user, _task_or_404, _arbitration_store, _server_mode, _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
+
 # B2 文献评价（2.1.5 Wave B）：工具注册表 + 按设计推荐 + 个人库
 # {slug}.db 的 appraisal_records（新表、幂等、旧版忽略）；只读注册表，
 # 失败降级为 available=false / 4xx，绝不 500。
 from custom_backend.appraisal_api import register_appraisal_routes
 register_appraisal_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
+
+# C2 每日打卡与提醒（2.1.5 Wave C）：目标/连击纯计算（decisions 时间戳现算）、
+# ICS 只读订阅（认证外、令牌即能力、摘要只含数字）、通知通道抽象（默认关、
+# 负责人显式触发、出站只发数字）。每成员设置与令牌都是任务目录下可加 JSON
+# （缺失/损坏降级默认值）；本波不做定时调度。
+from custom_backend.streak_api import register_streak_routes
+register_streak_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db, _require_task_owner)
 
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
