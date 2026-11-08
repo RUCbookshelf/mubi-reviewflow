@@ -4,9 +4,9 @@
 # 占位符列表。这些位置拼入的内容不是外部输入，具体数据值仍全部通过参数绑定。
 # 每条对应源码处均已有注释说明。
 custom_backend/import_review_actions.py:118#IN(?) 占位符个数由 record_ids 数量决定，SQLite 不支持绑定占位符列表；拼入内容仅为 '?'，id 值经参数绑定
-custom_backend/research_trace_api.py:323#IN(?) 占位符个数由 subject_ids 数量决定，SQLite 不支持绑定占位符列表；拼入内容仅为 '?'，id 值经参数绑定
-custom_backend/research_trace_api.py:359#ATTACH 的 schema 别名是 SQLite 标识符无法绑定；值由内部整数序号生成 trace_store_<index>
-custom_backend/research_trace_api.py:381#跨库 UNION ALL 分支数随 store 数变化且分支内 schema 为 ATTACH 标识符；数据过滤值全部为 ? 参数
+custom_backend/research_trace_api.py:324#IN(?) 占位符个数由 subject_ids 数量决定，SQLite 不支持绑定占位符列表；拼入内容仅为 '?'，id 值经参数绑定
+custom_backend/research_trace_api.py:360#ATTACH 的 schema 别名是 SQLite 标识符无法绑定；值由内部整数序号生成 trace_store_<index>
+custom_backend/research_trace_api.py:382#跨库 UNION ALL 分支数随 store 数变化且分支内 schema 为 ATTACH 标识符；数据过滤值全部为 ? 参数
 # ---- 2.1.5 waveA 泳道 S1（coscreen）：仅 SQLite 语法无法绑定、且值来自内部
 # 元数据/固定常量的 3 处；每条对应源码处均已有注释说明。----
 coscreen/db.py:749#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）

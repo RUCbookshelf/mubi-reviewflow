@@ -22,6 +22,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from coscreen import coding, db, fulltext, research_trace
+from coscreen.dedup import is_journal_pattern_doi
 from coscreen.normalize import normalize_doi
 from coscreen.research_trace_export import (
     MAX_PACKAGE_BYTES,
@@ -918,6 +919,21 @@ def _package_preview(package: bytes, preview_id: str) -> dict[str, Any]:
 
 def _import_metadata(info: Any, actor_id: int | str, package: dict[str, Any], path: Any,
                      corpus_paths: dict[str, Any] | None = None) -> dict[str, Any]:
+    """为导入包建立主体→文献候选（预览与提交两个端点共用）。
+
+    DOI 关联口径（wave D4）：``baseline_item.after.doi`` 与库内 ``articles.doi``
+    的等值匹配**排除期刊样式 DOI**——``10.1002/(ISSN)1545-7249`` 这类出版社/
+    期刊级标识由同一期的不同文献共享，只标识刊物不标识文章，参与匹配会把一个
+    导入主体同时挂到该刊所有文献上（r17 已把它摘出 dedup/导入复核的身份键，
+    轨迹侧此前未同步）。判定统一复用 ``coscreen.dedup.is_journal_pattern_doi``
+    （NFKC + 小写后含 ``(issn)`` 片段），两侧同口径剔除，视同无 DOI。
+
+    输入来源与校验链：正常导出时 ``after.doi`` 直接取自 ``articles.doi``
+    （``coscreen/research_trace.py:_snapshot_articles_and_protocol``，不过滤），
+    导入时原样来自用户上传包——``validate_import_package`` 只校验事件字段的
+    类型/长度，不校验 DOI 语义，故两侧都必须在此处收口。``zotero_key`` 等值
+    关联（``match_basis='key'``）不受本口径影响。
+    """
     events = package["events"]
     actors = sorted(package["origin_actors"])
     origin = package["manifest"].get("origin", {})
@@ -947,7 +963,9 @@ def _import_metadata(info: Any, actor_id: int | str, package: dict[str, Any], pa
             after = event.get("after")
             if event.get("action") == "baseline_item" and isinstance(after, dict):
                 doi = normalize_doi(after.get("doi", ""))
-                if doi:
+                # 期刊样式 DOI（"(issn)" 形态）不是文章身份：同一期不同文献共享，
+                # 参与等值关联会把一个主体误挂到该刊全部文献（r17 遗留，见 docstring）。
+                if doi and not is_journal_pattern_doi(doi):
                     item["source_dois"].add(doi)
 
     candidates: dict[str, dict[str, dict[str, str]]] = {subject: {} for subject in subjects}
@@ -972,6 +990,10 @@ def _import_metadata(info: Any, actor_id: int | str, package: dict[str, Any], pa
                 "ON trace_import_dois(normalized_doi)"
             )
             conn.create_function("trace_normalize_doi", 1, normalize_doi, deterministic=True)
+            # 目标侧同口径剔除样式 DOI（与来源侧一致，见 _import_metadata docstring）。
+            conn.create_function("trace_is_journal_pattern_doi", 1,
+                                 lambda doi: 1 if is_journal_pattern_doi(doi) else 0,
+                                 deterministic=True)
             # Cap corpus rows before joining them to untrusted package subjects. A DOI can
             # be duplicated many times in either input; joining the raw article table
             # directly would multiply those counts before Python has a chance to dedupe.
@@ -987,7 +1009,8 @@ def _import_metadata(info: Any, actor_id: int | str, package: dict[str, Any], pa
                 "), ranked_targets AS ("
                 "SELECT normalized_doi,target_subject,title,ROW_NUMBER() OVER ("
                 "PARTITION BY normalized_doi ORDER BY target_subject) AS target_rank "
-                "FROM normalized_targets WHERE normalized_doi<>''"
+                "FROM normalized_targets WHERE normalized_doi<>'' "
+                "AND trace_is_journal_pattern_doi(normalized_doi)=0"
                 ") INSERT INTO trace_import_doi_targets(normalized_doi,target_subject,title) "
                 "SELECT normalized_doi,target_subject,title FROM ranked_targets WHERE target_rank<=20"
             )

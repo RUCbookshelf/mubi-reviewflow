@@ -6221,6 +6221,13 @@ from custom_backend.ai_suggest_api import register_ai_suggest_routes
 
 register_ai_suggest_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR)
 
+# D1 导入复核 AI 助手（2.1.5 Wave D，BYOK）：复用上面 ai_suggest 的钥匙柜与出站
+# 通道，只发题录/摘要级字段；任务级开关默认关、无钥匙 404 结构化 guidance；
+# 建议只读，确认仍走导入复核既有动作端点；逐条审计表 import_ai_suggestions 幂等。
+from custom_backend.import_ai_assist_api import register_import_ai_assist_routes
+
+register_import_ai_assist_routes(app, require_user, _task_or_404, DATA_DIR)
+
 # W1 Zotero 直连（B5）：只读本机回环 127.0.0.1:23119（Zotero 7 本地 API，无需
 # 钥匙，绝不触碰 Zotero 云）；默认关——无任何后台/定时请求，仅用户在导入页显式
 # 点击时出站；集合条目合成 RIS 虚拟文件经 app.state.review_imports.upload() 走
@@ -6281,6 +6288,12 @@ register_appraisal_routes(app, require_user, _task_or_404, _task_visible_to, _sc
 # （缺失/损坏降级默认值）；本波不做定时调度。
 from custom_backend.streak_api import register_streak_routes
 register_streak_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db, _require_task_owner)
+
+# D2 摘要关键词高亮（2.1.5 Wave D2）：本人关键词组/激活组的设置存储（个人库
+# 新表，可加幂等）+ 纯函数规则计算。前端只按返回的偏移范围渲染 <mark>，
+# 不再自行分词；读设置只用只读 URI，锁忙 503 / 损坏降级不 500。
+from custom_backend.highlight_api import register_highlight_routes
+register_highlight_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
 
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
