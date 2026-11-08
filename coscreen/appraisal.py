@@ -44,6 +44,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 __all__ = [
+    "GRADE_ROB_MAP",
+    "GRADE_RISK_LEVELS",
     "LINK_ONLY",
     "REGISTRY",
     "RECOMMENDATION_MAP",
@@ -54,9 +56,11 @@ __all__ = [
     "get_tool",
     "iter_items",
     "load_record",
+    "load_records_for_tool",
     "normalize_responses",
     "recommend",
     "save_record",
+    "study_rating_for_grade",
     "tool_summaries",
     "validate_article_key",
 ]
@@ -2491,6 +2495,185 @@ def aggregate(tool_id: object, responses: object, *,
 
 
 # ---------------------------------------------------------------------------
+# GRADE 衔接：每条文献的总体评价 → 研究局限性（risk of bias）档位
+# ---------------------------------------------------------------------------
+
+#: GRADE「研究局限性」三档（越靠后越严重）。
+GRADE_RISK_LEVELS = ("low", "serious", "very_serious")
+
+#: 工具总体判定 → GRADE 研究局限性档位（纯映射表，改表即改衔接，无需改端点）。
+#:
+#: 依据（``coscreen/grade_assessor.py`` 的 ``suggest_rob_downgrade`` 是既有
+#: 权威输入形状：它接受 ``{"overall": "<判定>"}``，把 ``high``/``serious``
+#: 降为 ``serious``、``critical`` 降为 ``very_serious``，其余不降级）：
+#:
+#: - **RoB 2**：注册表总体判定为 ``low`` / ``some_concerns`` / ``high``。
+#:   ``high`` → serious，``critical``（ROBINS-I 的同类判定，本表保留以兼容
+#:   直接传入的 overall 字符串）→ very_serious；``low`` 与 ``some_concerns``
+#:   → low（与 ``suggest_rob_downgrade`` 的"不降级"口径一致；多个域
+#:   some concerns 需人工上调时，记录里的人工 judgement 已是 ``high``，
+#:   自然落入 serious）。
+#: - **AMSTAR 2**：Box 2 置信度 high/moderate/low/critically_low 按严重度
+#:   递增 → low/serious/very_serious（低与极低都归 very_serious）。
+#: - **CASP / AXIS**：清单自带的总体质量 high/moderate/low 依次 →
+#:   low/serious/very_serious；没有人工总体判定时，按逐条 "Yes" 占比分档
+#:   （见 ``_PER_ITEM_QUALITY_BANDS``）。
+#: - **CERQual**：它评价的是"综述发现的可信度"而非原始研究偏倚；本表仅作
+#:   GRADE 起点锚（high/moderate/low/very_low → low/serious/serious/
+#:   very_serious），不修改 CERQual 记录本身。
+#: - **MMAT**：官方明确不建议合成总分，故只按逐条答案的 "Yes" 占比分档，
+#:   再套用同一质量档映射。
+GRADE_ROB_MAP: dict[str, dict[str, str]] = {
+    "rob2": {
+        "low": "low",
+        "some_concerns": "low",
+        "some concerns": "low",
+        "high": "serious",
+        "serious": "serious",
+        "critical": "very_serious",
+    },
+    "amstar2": {
+        "high": "low",
+        "moderate": "serious",
+        "low": "very_serious",
+        "critically_low": "very_serious",
+        "critically low": "very_serious",
+    },
+    "casp": {"high": "low", "moderate": "serious", "low": "very_serious"},
+    "axis": {"high": "low", "moderate": "serious", "low": "very_serious"},
+    "cerqual": {
+        "high": "low",
+        "moderate": "serious",
+        "low": "serious",
+        "very_low": "very_serious",
+        "very low": "very_serious",
+    },
+    "mmat": {"high": "low", "moderate": "serious", "low": "very_serious"},
+}
+
+#: 无算法总体判定时（CASP/AXIS/MMAT），逐条 "Yes" 占比 → 质量档（降序阈值）。
+_PER_ITEM_QUALITY_BANDS: tuple[tuple[float, str], ...] = (
+    (0.8, "high"), (0.5, "moderate"), (0.0, "low"))
+
+
+def _grade_tool_key(tool: Mapping[str, Any]) -> str:
+    """工具 → ``GRADE_ROB_MAP`` 的键（CASP 全系共用一个档表）。"""
+    tool_id = str(tool.get("id") or "")
+    if tool_id in GRADE_ROB_MAP:
+        return tool_id
+    family = str(tool.get("family") or "")
+    if family == "CASP":
+        return "casp"
+    if family == "GRADE-CERQual":
+        return "cerqual"
+    return tool_id
+
+
+def _tally_responses(aggregate: Mapping[str, Any]) -> dict[str, int]:
+    """从 no_score 聚合结果取应答计数（``answer_distribution`` 或逐条 items）。"""
+    tally = aggregate.get("answer_distribution")
+    if isinstance(tally, Mapping):
+        return {str(key): int(value) for key, value in tally.items()
+                if isinstance(value, int) and not isinstance(value, bool)}
+    counts: dict[str, int] = {}
+    items = aggregate.get("items")
+    if isinstance(items, list):
+        for entry in items:
+            if isinstance(entry, Mapping):
+                answer = entry.get("response")
+                if isinstance(answer, str) and answer:
+                    counts[answer] = counts.get(answer, 0) + 1
+    return counts
+
+
+def _per_item_quality(aggregate: Mapping[str, Any]) -> str | None:
+    """逐条报告归纳质量档：Yes 占比 ≥0.8 → high、≥0.5 → moderate、其余 low。"""
+    tally = _tally_responses(aggregate)
+    total = sum(tally.values())
+    if total <= 0:
+        return None
+    share = tally.get("Yes", 0) / total
+    for threshold, band in _PER_ITEM_QUALITY_BANDS:
+        if share >= threshold:
+            return band
+    return "low"
+
+
+def study_rating_for_grade(tool: object, overall: object) -> dict:
+    """把一条文献的总体评价折算成 GRADE「研究局限性」档位（纯函数、零副作用）。
+
+    输入 ``overall`` 接受两种形状（端点从 ``appraisal_records.overall_json``
+    读出后直接传入）：
+
+    - :func:`aggregate` 的返回 dict（含 ``mode`` 与工具特定字段）；
+    - 存储包装 ``{"aggregate": <上述 dict>, "override": ..., "variant": ...}``
+      —— 与 :func:`save_record` 落库的形状一致；
+    - 直接传入总体判定字符串（如 ``"high"``）。
+
+    返回 ``{"tool", "available", "risk_of_bias", "source_value", "source",
+    "rule"}``：
+
+    - ``risk_of_bias`` ∈ :data:`GRADE_RISK_LEVELS`，或 ``None``（缺总体判定）；
+    - ``source``：``algorithm`` / ``manual`` / ``per_item_report``；
+    - ``rule``：命中的映射键（``"<family>:<value>"``），便于审计。
+
+    映射依据见 :data:`GRADE_ROB_MAP`：与 ``coscreen/grade_assessor.py`` 的
+    ``suggest_rob_downgrade`` 同口径（high→serious、critical→very_serious、
+    low/some concerns 不降级）。本函数只读，不写、也不引用任何 GRADE 草稿。
+    """
+    tool_id = tool.strip() if isinstance(tool, str) else ""
+    tool_def = REGISTRY.get(tool_id) if tool_id else None
+    if tool_def is None:
+        raise ValueError(f"未注册的评价工具: {tool!r}")
+
+    aggregate = overall
+    if isinstance(overall, str):
+        # 直接传入总体判定字符串（如 ``"high"``）时按工具无关的 overall 处理。
+        aggregate = {"overall": overall}
+    elif isinstance(overall, Mapping) and isinstance(overall.get("aggregate"), Mapping):
+        aggregate = overall["aggregate"]
+    if not isinstance(aggregate, Mapping):
+        return {"tool": tool_id, "available": False, "risk_of_bias": None,
+                "source_value": None, "source": "none", "rule": "no_overall"}
+
+    family = _grade_tool_key(tool_def)
+    table = GRADE_ROB_MAP.get(family)
+    if table is None:  # 未登记映射的工具：如实报不可用，不猜档位
+        return {"tool": tool_id, "available": False, "risk_of_bias": None,
+                "source_value": None, "source": "none", "rule": "unsupported_tool"}
+
+    if family == "rob2":
+        value = aggregate.get("judgement")
+        if value is None:
+            value = aggregate.get("overall")
+        source = ("manual" if aggregate.get("judgement_source") == "manual"
+                  else "algorithm")
+    elif family in {"amstar2", "cerqual"}:
+        value = aggregate.get("confidence")
+        if value is None:
+            value = aggregate.get("overall")
+        source = ("manual" if aggregate.get("confidence_source") == "manual"
+                  else "algorithm")
+    else:  # CASP / AXIS / MMAT：优先人工总体判定，否则逐条报告归纳
+        value = aggregate.get("overall_judgement")
+        if value is None:
+            value = aggregate.get("overall")
+        source = "manual" if isinstance(value, str) else "per_item_report"
+        if value is None:
+            value = _per_item_quality(aggregate)
+
+    key = _normalize_option(value)
+    level = table.get(key) if key else None
+    if level is None:
+        return {"tool": tool_id, "available": False, "risk_of_bias": None,
+                "source_value": value if isinstance(value, str) else None,
+                "source": "none", "rule": "no_overall"}
+    return {"tool": tool_id, "available": True, "risk_of_bias": level,
+            "source_value": value, "source": source,
+            "rule": f"{family}:{key}"}
+
+
+# ---------------------------------------------------------------------------
 # 按设计推荐（复用 study_design 类别面 + 补充关键词）
 # ---------------------------------------------------------------------------
 
@@ -2714,15 +2897,8 @@ def ensure_appraisal_storage(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
 
 
-def load_record(conn: sqlite3.Connection, article_key: str, tool_id: str) -> dict | None:
-    """读取一条评价记录（不存在返回 ``None``）。"""
-    row = conn.execute(
-        "SELECT article_key, tool_id, responses_json, overall_json, note, updated_at "
-        "FROM appraisal_records WHERE article_key=? AND tool_id=?",
-        (article_key, tool_id),
-    ).fetchone()
-    if row is None:
-        return None
+def _record_from_row(row: tuple) -> dict:
+    """``appraisal_records`` 单行 → 记录 dict（JSON 损坏一律降级为空对象）。"""
     try:
         payload = json.loads(row[2]) if row[2] else {}
     except ValueError:
@@ -2747,6 +2923,33 @@ def load_record(conn: sqlite3.Connection, article_key: str, tool_id: str) -> dic
         "note": row[4],
         "updated_at": row[5],
     }
+
+
+def load_record(conn: sqlite3.Connection, article_key: str, tool_id: str) -> dict | None:
+    """读取一条评价记录（不存在返回 ``None``）。"""
+    row = conn.execute(
+        "SELECT article_key, tool_id, responses_json, overall_json, note, updated_at "
+        "FROM appraisal_records WHERE article_key=? AND tool_id=?",
+        (article_key, tool_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _record_from_row(row)
+
+
+def load_records_for_tool(conn: sqlite3.Connection, tool_id: str) -> list[dict]:
+    """读取某工具在单个个人库内的全部评价记录（按 article_key 排序）。
+
+    供双评一致性/导出/GRADE 衔接端点只读扫描全员库使用：SQL 为常量字面量
+    + ``?`` 绑定；空库/旧库无 ``appraisal_records`` 表时由调用方按
+    ``OperationalError('no such table')`` 视为「无记录」。
+    """
+    rows = conn.execute(
+        "SELECT article_key, tool_id, responses_json, overall_json, note, updated_at "
+        "FROM appraisal_records WHERE tool_id=? ORDER BY article_key",
+        (tool_id,),
+    ).fetchall()
+    return [_record_from_row(row) for row in rows]
 
 
 def save_record(conn: sqlite3.Connection, article_key: str, tool_id: str, *,

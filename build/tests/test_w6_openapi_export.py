@@ -460,7 +460,7 @@ def test_w6_documented_openapi_limits_stay_true(exported):
     schema, _summary, _f, _s = exported
 
     # ① 无 securitySchemes：鉴权以普通 header 参数暴露（文档已披露）。
-    #    公开面 5 条不带 authorization，其余全部带——两个方向都钉。
+    #    公开面 6 条不带 authorization，其余全部带——两个方向都钉。
     components = schema.get("components") or {}
     assert "securitySchemes" not in components, (
         "schema 现在有 securitySchemes 了——API_REFERENCE.md 的 Known limits "
@@ -472,6 +472,9 @@ def test_w6_documented_openapi_limits_stay_true(exported):
         "GET /api/app-update/check",
         "POST /api/auth/register",
         "POST /api/auth/login",
+        # 2.1.5 Wave C2：ICS 订阅以「令牌即能力」鉴权（令牌在 URL 中，
+        # 日历客户端无法带 header）；其余筛选/通知端点仍需 authorization。
+        "GET /api/tasks/{task_id}/screening/daily-status.ics",
     }
     operations = {
         f"{method.upper()} {path}": op
