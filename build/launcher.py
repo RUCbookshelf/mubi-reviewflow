@@ -328,6 +328,18 @@ def build_app():
     from fastapi.staticfiles import StaticFiles
 
     class CachedStaticFiles(StaticFiles):
+        async def __call__(self, scope, receive, send):
+            # 2.1.5 W1：未知的 /api/ 路径不得落到 SPA 静态兜底（StaticFiles
+            # 对非 GET/HEAD 会回 405）。已删除的 API 路由（如 screening-rounds）
+            # 必须表现为未注册——统一 404，而不是让旧前端收到误导性的 405。
+            if (scope.get("type") == "http"
+                    and str(scope.get("path") or "").startswith("/api/")):
+                from starlette.responses import JSONResponse
+                response = JSONResponse({"detail": "Not Found"}, status_code=404)
+                await response(scope, receive, send)
+                return
+            await super().__call__(scope, receive, send)
+
         def file_response(self, full_path, stat_result, scope, status_code=200):
             response = super().file_response(full_path, stat_result, scope, status_code)
             # Conditional 304 responses otherwise lose the resolved filename.

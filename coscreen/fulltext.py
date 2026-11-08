@@ -1026,7 +1026,8 @@ _ELIGIBLE_ARTICLE_SQL = (
 def get_stage2_progress(db_path: StrPath) -> dict:
     """复筛进度：只统计已纳入初筛且非重复的文献。
 
-    复筛队列是初筛纳入条目的子集，因此尚未开始初筛时 total 为 0；
+    复筛队列是初筛纳入条目的子集（2.1.5 W1 起仅 ``include``；``maybe`` 不再
+    入队），因此尚未开始初筛时 total 为 0；
     返回 {"total", "screened", "remaining", "include", "exclude", "maybe"}。
     进度与队列共用 :data:`_ELIGIBLE_ARTICLE_SQL`，两者统计到的文献集合一致。
     """
@@ -1034,7 +1035,7 @@ def get_stage2_progress(db_path: StrPath) -> dict:
     with closing(_connect(db_path)) as conn:
         total = conn.execute(
             "SELECT COUNT(*) FROM articles a "
-            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
             "WHERE a.is_duplicate_of IS NULL AND NOT EXISTS ("
             "SELECT 1 FROM title_duplicate_members m "
             "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
@@ -1044,7 +1045,7 @@ def get_stage2_progress(db_path: StrPath) -> dict:
         for decision, cnt in conn.execute(
             "SELECT s.decision, COUNT(*) FROM stage2_decisions s "
             "JOIN articles a ON a.zotero_key = s.zotero_key "
-            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision IN ('include','maybe') "
+            "JOIN decisions d ON d.zotero_key=a.zotero_key AND d.decision='include' "
             "WHERE a.is_duplicate_of IS NULL AND NOT EXISTS ("
             "SELECT 1 FROM title_duplicate_members m "
             "JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
@@ -1076,10 +1077,11 @@ def stage2_queue(
 ) -> list[str]:
     """构造复筛队列（zotero_key 列表，按文献导入顺序、确定性）。
 
-    - mode="own"（默认）：本人初筛 decisions 中 Include 或 Maybe 的键
-      （双盲：只用本人数据库），且只保留**可进入筛选序列**的文献——已确认
-      重复（is_duplicate_of 非空）与待人工复核的标题候选组成员不进复筛队列，
-      与 :func:`get_stage2_progress` 共用 :data:`_ELIGIBLE_ARTICLE_SQL`
+    - mode="own"（默认）：本人初筛 decisions 中 Include 的键
+      （2.1.5 W1：maybe 不再入复筛；双盲：只用本人数据库），且只保留**可进入
+      筛选序列**的文献——已确认重复（is_duplicate_of 非空）与待人工复核的标题
+      候选组成员不进复筛队列，与 :func:`get_stage2_progress` 共用
+      :data:`_ELIGIBLE_ARTICLE_SQL`
       （v06·F4-53：两处口径分裂时 pending 期进度 total 2 vs 队列 3、判 duplicate
       后队列仍含重复键而进度已排除）；
     - mode="arbitrated":外部传入的双方一致纳入键列表（UI 上传合并明细
@@ -1092,7 +1094,7 @@ def stage2_queue(
         # list_decisions 已按 (import_order, zotero_key) 排序；仅补一道
         # 「可进入筛选序列」过滤，保持原有顺序与双盲口径不变。
         decisions = list_decisions(db_path)
-        if not any(d["decision"] in {"include", "maybe"} for d in decisions):
+        if not any(d["decision"] == "include" for d in decisions):
             return []
         with closing(_connect(db_path)) as conn:
             eligible = {
@@ -1108,7 +1110,7 @@ def stage2_queue(
         return [
             d["zotero_key"]
             for d in decisions
-            if d["decision"] in {"include", "maybe"} and d["zotero_key"] in eligible
+            if d["decision"] == "include" and d["zotero_key"] in eligible
         ]
     if mode == "arbitrated":
         if arbitrated_keys is None:

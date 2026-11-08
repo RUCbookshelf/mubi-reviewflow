@@ -1,12 +1,14 @@
-"""R15 浏览器回归的账号/任务/文献准备（隔离实例专用，自包含）。
+"""2.1.5 W1 浏览器回归的账号/任务/文献准备（隔离实例专用，自包含）。
 
 对已启动的隔离实例（197xx 临时端口）执行：
 1) HTTP 注册一次性测试账号并创建固定名称任务；
-2) 直写 owner 库种入 2 篇未决策文献（K1/K2），让真实浏览器先看到第 1 轮
-   的「暂不确定」按钮；
-3) 清空该任务库里的决策与轮次快照（每次运行都必须使用全新数据目录）；
+2) 直写 owner 库种入 2 篇未决策文献（K1/K2），让真实浏览器看到正式初筛卡；
+3) 清空该任务库里的决策（每次运行都必须使用全新数据目录）；
 4) 写出 session.json（token/task/user_id/username）供
    build/tests/test_r15_round_maybe_browser.cjs 读取。
+
+轮次机制已于 2.1.5 W1 移除：不再创建/清理 workflow_screen_rounds（新任务
+库也没有该表）。
 
 用法（由 test_r15_round_maybe_browser.py 门控调用）：
 
@@ -93,7 +95,6 @@ def main() -> None:
     with closing(sqlite3.connect(ctx.owner_db)) as conn, conn:
         conn.execute('DELETE FROM decisions')
         conn.execute('DELETE FROM stage2_decisions')
-        conn.execute('DELETE FROM workflow_screen_rounds')
 
     Path(args.session_out).write_text(json.dumps({
         'token': token, 'task': task, 'user_id': user['id'], 'username': user['username'],

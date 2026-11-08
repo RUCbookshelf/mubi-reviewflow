@@ -14,7 +14,7 @@ from urllib.parse import quote
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from coscreen import screening_rounds, coding, coding_evidence, review_workflow as store, task_collaboration, tasks
+from coscreen import binary_reset, coding, coding_evidence, review_workflow as store, task_collaboration, tasks
 from coscreen.models import Article
 from custom_backend.events import BUS
 
@@ -122,27 +122,24 @@ class WorkflowRuntime:
                 actor_db = owner_db
             else:
                 actor_db = self.screener_db(info, user["username"])
-            # 同法：actor 库 v1/v6 齐全时跳过两个 migrate 的重复重查；
-            # 属主同人时 actor 库即 owner 库，直接复用 owner 的版本判定与
-            # ensure_fields 结果（省一次 migration_state 连接与两次 resolve）
+            # 同法：actor 库 v1/v8 齐全时跳过重复重查；属主同人时 actor 库
+            # 即 owner 库，直接复用 owner 的版本判定与 ensure_fields 结果。
             if actor_db is owner_db or actor_db.name == owner_db.name:
-                # 复审（HEAD 现态回归）：owner_versions 只判了 {1,4,5,3}——
-                # owner 即 actor 时复用它跳过 screening_rounds.migrate 会让
-                # 新任务缺 workflow_screen_rounds 表，POST screening-rounds
-                # start/finish 500。actor 判齐条件独立按 {1,6} 核对。
                 actor_versions = owner_versions
                 if actor_versions is None or not {
-                        store.SCHEMA_VERSION, screening_rounds.ROUNDS_VERSION,
+                        store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
                 } <= actor_versions:
                     store.migrate(actor_db)
-                    screening_rounds.migrate(actor_db)
+                    binary_reset.migrate(actor_db, task_id=task_id,
+                                         actor_id=user["user_id"])
             else:
                 actor_versions = store.migration_state(actor_db)
                 if actor_versions is None or not {
-                        store.SCHEMA_VERSION, screening_rounds.ROUNDS_VERSION,
+                        store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
                 } <= actor_versions:
                     store.migrate(actor_db)
-                    screening_rounds.migrate(actor_db)
+                    binary_reset.migrate(actor_db, task_id=task_id,
+                                         actor_id=user["user_id"])
                 coding_evidence.ensure_fields(actor_db)
             return WorkflowContext(info, user, owner, owner_db, actor_db,
                                    owner["owner_user_id"] == user["user_id"], kind, collab)
@@ -161,9 +158,14 @@ class WorkflowRuntime:
 
     def settings(self, ctx: WorkflowContext) -> dict:
         data = store.settings(ctx.owner_db)
-        return {key: data[key] for key in ("version", "stages", "evidence_required_field_ids")} | {
+        # 2.1.5 W1：show_maybe 与轮次标记退役——读取时剥离历史存储值，
+        # 载荷不再下发（PUT 端也忽略该键，见 set_settings）。
+        stages = {stage: {key: value for key, value in policy.items()
+                          if key != "show_maybe"}
+                  for stage, policy in data["stages"].items()}
+        return {key: data[key] for key in ("version", "evidence_required_field_ids")} | {
+            "stages": stages,
             "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": store.sources(ctx.owner_db),
-            "screening_round_marker":screening_rounds.marker(ctx.actor_db),
             "evidence_fields": [{**d, "dimension_id": d['id']}
                                 for d in coding_evidence.field_rows(ctx.owner_db)],
             "mapping_issues": coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1],
@@ -435,11 +437,10 @@ class WorkflowRuntime:
             rows = [row for row in rows if row["zotero_key"] not in blocked]
         saved = self.saved_rows(ctx.actor_db, stage)
         if stage == "fulltext":
+            # 2.1.5 W1：复筛只接收初筛 include；maybe 不再入队（轮次机制移除）。
             initial = self.saved_rows(ctx.actor_db, "screen")
-            round_state = screening_rounds.current(ctx.actor_db, initial)
-            held = set(round_state['keys']) if round_state else set()
-            rows = [row for row in rows if initial.get(row['zotero_key'], {}).get('decision') == 'include'
-                    or (initial.get(row['zotero_key'], {}).get('decision') == 'maybe' and row['zotero_key'] not in held)]
+            rows = [row for row in rows
+                    if initial.get(row['zotero_key'], {}).get('decision') == 'include']
         elif stage == "coding":
             initial = self.saved_rows(ctx.actor_db, "screen")
             second = self.saved_rows(ctx.actor_db, "fulltext")
@@ -480,11 +481,7 @@ class WorkflowRuntime:
             links = {entry[0] for entry in conn.execute("SELECT source_id FROM workflow_article_sources WHERE zotero_key=?", (key,))} if store.has_table(conn, "workflow_article_sources") else set()
         if not canonical_only and stage != "screen":
             initial = self.saved_item(ctx.actor_db, "screen", key) or {}
-            if stage == 'fulltext' and initial.get('decision') == 'maybe':
-                active = screening_rounds.current(ctx.actor_db, self.saved_rows(ctx.actor_db,'screen'))
-                if active and key in active['keys']:
-                    return 'article_pending_round'
-            if stage == "fulltext" and initial.get("decision") not in {"include", "maybe"}:
+            if stage == "fulltext" and initial.get("decision") != "include":
                 return "article_not_eligible"
             if stage == "coding":
                 second = self.saved_item(ctx.actor_db, "fulltext", key) or {}
@@ -531,23 +528,20 @@ class WorkflowRuntime:
 
     def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str,
                     key: str | None = None, *, db: Path | None = None) -> None:
-        """任务级 show_maybe 与「暂不确定只在初筛第一轮」的写闸门。
+        """2.1.5 W1 写闸门：初筛与复筛全程禁止新保存「暂不确定」。
 
-        ``key``/``db`` 是本次实际写入的文献与筛选员库：只要该文献进过该筛选员
-        任一复筛轮次快照（active/closed/released），初筛的 maybe 一律 409。
-        复筛（fulltext）不传 key，行为完全不变；撤销/回导不是本闸门路径。
+        任务级 ``show_maybe`` 开关已退役（设置载荷不再下发、PUT 忽略）；唯一
+        居所是筛选训练（W2，另行实现）。``key``/``db`` 参数保留仅为调用点
+        兼容，不再参与判定。撤销/回导不是本闸门路径（恢复既有 maybe 不受
+        影响；但存量 maybe 已由一次性迁移重置）。
         """
         if decision != "maybe":
             return
         state = store.settings(ctx.owner_db)
-        if not state["stages"][stage].get("show_maybe", True):
-            raise HTTPException(409, {"code": "maybe_disabled", "version": state["version"],
-                                      "workflow_settings": self.settings(ctx)})
-        if stage == "screen" and key is not None:
-            if key in screening_rounds.snapshot_keys(db or ctx.actor_db):
-                raise HTTPException(409, {"code": "maybe_first_round_only",
-                                          "version": state["version"],
-                                          "workflow_settings": self.settings(ctx)})
+        raise HTTPException(409, {"code": "maybe_disabled",
+                                  "message_key": "workflow.maybe_disabled",
+                                  "version": state["version"],
+                                  "workflow_settings": self.settings(ctx)})
 
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
         """Current owner requirements apply to every actor's current saved evidence."""
@@ -560,27 +554,16 @@ class WorkflowRuntime:
             ctx = self.context(task_id, user)
             self.sync_catalog(ctx)
             rows, saved = self.eligible(ctx, stage)
-            active_round = screening_rounds.current(ctx.actor_db, saved) if stage == 'screen' else None
-            if active_round:
-                source_id = active_round['source_id']
             scoped = self.scoped(ctx, stage, rows, source_id)
             overall = {'total':len(rows),'completed':sum(bool(saved.get(row['zotero_key'])) for row in rows)}
             overall['pending']=overall['total']-overall['completed']
             completed_coding = coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db,
                 [row['zotero_key'] for row in rows]) if stage == 'coding' else set()
             def complete(key: str) -> bool:
-                if stage == 'screen' and active_round:
-                    return key not in active_round['pending_keys']
                 return bool(saved.get(key)) if stage != "coding" else key in completed_coding
             def progress(items: list[dict]) -> dict:
                 done = sum(complete(row["zotero_key"]) for row in items)
                 return {"total": len(items), "completed": done, "pending": len(items) - done}
-            round_state = screening_rounds.current(ctx.actor_db, saved) if stage == 'screen' else None
-            if round_state and round_state['source_id'] == source_id:
-                round_keys = set(round_state['keys'])
-                scoped = [row for row in scoped if row['zotero_key'] in round_keys]
-            else:
-                round_state = None
             keys = [row["zotero_key"] for row in scoped]
             if order == "random" and ctx.owner is not None:
                 # UI selection identifies the journal; the current policy only
@@ -592,9 +575,9 @@ class WorkflowRuntime:
             queue = [{"key": key, "zotero_key": key, **{name: by_key[key].get(name) for name in
                       ("title", "authors", "journal", "year", "doi", "item_type")}} for key in keys]
             state = store.settings(ctx.owner_db)
-            second = self.saved_rows(ctx.actor_db, 'fulltext') if stage == 'screen' else {}
-            remaining = sum(saved.get(row['zotero_key'],{}).get('decision')=='maybe' and row['zotero_key'] not in second for row in scoped) if stage=='screen' else 0
-            return {"remaining_uncertain":remaining, "screening_round": round_state, "queue": queue, "total": len(queue), "pending": progress(scoped)["pending"],
+            # 2.1.5 W1：轮次机制移除——不再下发 remaining_uncertain /
+            # screening_round（表与历史快照保留，供回滚读取）。
+            return {"queue": queue, "total": len(queue), "pending": progress(scoped)["pending"],
                     "scope_progress": progress(scoped), "overall_progress": overall if stage == "screen" else progress(rows),
                     "policy_version": state["version"], "allowed_sources": self.allowed_sources(ctx, stage),
                     "paused": state["stages"][stage]["mode"] == "paused"}
@@ -657,10 +640,8 @@ class WorkflowRuntime:
                                               'required': mapped.get(dim['id']) in required,
                                               'writable': dim['id'] in mapped and reason is None}
                                              for dim in coding_evidence.field_rows(ctx.actor_db)]}
-            # 初筛：「暂不确定」只在第一轮（该文献从未进过本人任一复筛轮次快照）。
-            # 全文保持不变，恒为 True。
-            maybe_allowed = (stage != 'screen'
-                             or key not in screening_rounds.snapshot_keys(ctx.actor_db))
+            # 2.1.5 W1：正式两阶段全程二选一；maybe 只存在于筛选训练（W2）。
+            maybe_allowed = False
             return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
                     **(self.evidence_state(ctx, key) if stage == 'coding' else {}),
                     **submission,
@@ -682,12 +663,6 @@ class SettingsIn(BaseModel):
     expected_version: int = Field(ge=1)
     stages: dict
     evidence_required_field_ids: list[str] = Field(default_factory=list, max_length=1000)
-
-
-class RoundIn(BaseModel):
-    action: Literal['start','finish']
-    source_id: str | None = None
-    expected_policy_version: int = Field(ge=1)
 
 
 class SourceIn(BaseModel):
@@ -727,10 +702,8 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                 if raw["mode"] == "selected" and not ids:
                     raise HTTPException(400, "Selected mode requires at least one source.")
                 stages[stage] = {"mode": raw["mode"], "source_ids": sorted(set(ids))}
-                if stage != "coding":
-                    if type(raw.get("show_maybe", True)) is not bool:
-                        raise HTTPException(400, "show_maybe must be a boolean.")
-                    stages[stage]["show_maybe"] = raw.get("show_maybe", True)
+                # 2.1.5 W1：show_maybe 退役——旧前端携带该键时静默忽略
+                # （不 422、不落盘），不再参与任何读写语义。
             field_ids = body.evidence_required_field_ids
             dimensions = {dim['field_id']: dim for dim in coding_evidence.field_rows(ctx.owner_db)}
             if any(fid not in dimensions for fid in field_ids):
@@ -844,54 +817,6 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
     @app.get("/api/tasks/{task_id}/work-queue/{stage}")
     def queue(task_id: str, stage: Stage, source_id: str | None = None, order: Literal["import", "random"] = "import", user: dict = Depends(require_user)) -> dict:
         return runtime.queue(task_id, user, stage, source_id, order)
-
-    @app.post("/api/tasks/{task_id}/screening-rounds")
-    def change_round(task_id: str, body: RoundIn, user: dict = Depends(require_user)) -> dict:
-        # R6-C3（复审扫尾）：锁键用规范 task_id（尾点别名不得分键）
-        task_id = task_lookup(task_id).task_id
-        with runtime.lock(task_id):
-            ctx = runtime.context(task_id, user)
-            if ctx.owner is None or ctx.info.degraded:
-                raise HTTPException(403, 'Task is read-only.')
-            policy = store.settings(ctx.owner_db)
-            if body.expected_policy_version != policy['version']:
-                # F63（UX 批准单 §七）：同类「策略版本冲突」此前两套口径——
-                # write_guard 回 {code:'workflow_version_conflict', version,
-                # workflow_settings}，前端 W.error 据此自动刷新并保留草稿；
-                # screening-rounds 只回一句纯英文串、前端既不刷新也不更新版本，
-                # 重试必然再 409（死循环）。此处对齐 write_guard 的载荷形状，
-                # W.error→W.refresh('conflict') 生效后重试即通过。
-                raise HTTPException(409, {"code": "workflow_version_conflict",
-                                          "version": policy['version'],
-                                          "workflow_settings": runtime.settings(ctx)})
-            runtime.sync_catalog(ctx)
-            rows, saved = runtime.eligible(ctx, 'screen')
-            source_id = body.source_id or None
-            rows = runtime.scoped(ctx, 'screen', rows, source_id)
-            action = body.action
-            if action == 'finish':
-                screening_rounds.finish(ctx.actor_db)
-            elif action == 'start':
-                active = screening_rounds.current(ctx.actor_db, saved)
-                if active and active['pending_keys']:
-                    # 余下三条 409 保持纯字符串 error 形状（前端不按 code 做动作），
-                    # 但文案改由 RFLang 双键词典命中（screening_rounds.js 注册十语言），
-                    # errOf 的 detail -> T() 即输出当前界面语言。
-                    raise HTTPException(409, 'Finish the current round or proceed to full-text screening first.')
-                if any(not saved.get(row['zotero_key']) for row in rows):
-                    raise HTTPException(409, 'Complete the current title-and-abstract queue first.')
-                second = runtime.saved_rows(ctx.actor_db, 'fulltext')
-                keys = [row['zotero_key'] for row in rows
-                        if saved.get(row['zotero_key'],{}).get('decision') == 'maybe'
-                        and row['zotero_key'] not in second
-                        and not runtime.writable_reason(ctx,'screen',row['zotero_key'])]
-                if not keys:
-                    raise HTTPException(409, 'No unresolved articles are available for another round.')
-                screening_rounds.start(ctx.actor_db, source_id, saved, keys)
-            else:
-                raise HTTPException(400, 'Choose start or finish.')
-            BUS.publish(user['user_id'], {'type':'task-workflow-changed','task_id':task_id,'reason':'screening-round-changed'})
-            return runtime.queue(task_id,user,'screen',source_id)
 
     @app.post("/api/tasks/{task_id}/work-queue/screen/shuffle")
     def shuffle(task_id: str, source_id: str | None = None, user: dict = Depends(require_user)) -> dict:

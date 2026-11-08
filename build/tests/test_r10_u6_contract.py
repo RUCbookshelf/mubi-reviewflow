@@ -515,30 +515,18 @@ with TestClient(app) as client:
 print(json.dumps(out))
 """
         result = json.loads(_run_py(script))
-        stale = result["stale"]
-        self.assertEqual(stale["status"], 409)
-        payload = stale["detail"]
-        self.assertIsInstance(payload, dict, "版本冲突必须回结构化载荷（而非纯英文串）")
-        self.assertEqual(payload["code"], "workflow_version_conflict")
-        self.assertEqual(payload["version"], stale["live_version"])
-        self.assertEqual(payload["workflow_settings"]["version"], stale["live_version"])
-        self.assertNotEqual(payload.get("message"), self.CONFLICT_TEXT)
-        self.assertNotEqual(payload.get("details"), self.CONFLICT_TEXT)
-        # 对照组：非版本冲突的 409 仍是纯字符串（前端不按 code 触发刷新）
-        self.assertEqual(result["control"]["status"], 409)
-        self.assertIsInstance(result["control"]["detail"], str)
+        # 2.1.5 W1 换钉：轮次路由已删除，旧前端（F63 版本冲突等待刷新）不再
+        # 有可调用的后端；无论版本是否过期一律 404（未注册），绝不 500/409。
+        self.assertEqual(result["stale"]["status"], 404)
+        self.assertEqual(result["control"]["status"], 404)
 
-    def test_three_non_conflict_409_texts_registered_ten_languages(self):
-        from custom_backend import review_workflow_api as api
+    def test_round_route_removed_and_binary_maybe_contract_present(self):
         src = (BACKEND / "review_workflow_api.py").read_text(encoding="utf-8")
-        for message in ("Finish the current round or proceed to full-text screening first.",
-                        "Complete the current title-and-abstract queue first.",
-                        "No unresolved articles are available for another round."):
-            self.assertIn("'" + message + "'", src)
-            row = _registered(message)
-            self.assertIsNotNone(row, "轮次 409 文案未注册十语言：%r" % message)
-            self.assertEqual(len(row), 10)
-            self.assertFalse(row[1] == row[0] and row[5] == row[1], "外语槽回退即未翻译")
+        self.assertNotIn('@app.post("/api/tasks/{task_id}/screening-rounds")', src,
+                         "轮次路由必须删除（2.1.5 W1）")
+        self.assertIn('"message_key": "workflow.maybe_disabled"', src,
+                      "两阶段 maybe 拒绝必须带新 message_key")
+        self.assertIn('"code": "maybe_disabled"', src)
 
     def test_frontend_awaits_refresh_before_releasing_busy(self):
         out = json.loads(_run_node(_F63_HARNESS, argv=[str(FRONTEND / "screening_rounds.js")]))

@@ -969,6 +969,15 @@ def require_user(
                         return user
                     raise HTTPException(403, "仅任务参与者可重新登记属主。")
                 raise _legacy_owner_migration_error()
+            # 2.1.5 W3：检索式管理与 living-review 兼容层的端点错误体统一为
+            # {error_code, message_key, params}；其余既有端点保持历史裸文案。
+            if any(marker in request.url.path for marker in
+                   ("/search-strategy/", "/living-review/")):
+                raise HTTPException(403, {
+                    "error_code": "task_forbidden",
+                    "message_key": "search_strategy.task_forbidden",
+                    "params": {},
+                })
             raise HTTPException(403, "当前账号不是该任务的参与者。")
     return user
 
@@ -6295,6 +6304,18 @@ register_streak_routes(app, require_user, _task_or_404, _task_visible_to, _scree
 from custom_backend.highlight_api import register_highlight_routes
 register_highlight_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
 
+# W3 检索式管理（2.1.5 Wave G1）：任务级协作库 {task_dir}/search_strategies.sqlite3
+# （translate 纯计算；preview-counts 仅 eutils/api.ies.ed.gov 两域、显式触发、
+# 失败降级；草稿→定稿→历史 + 版本链；快照 append-only；W13 旧 saved_searches
+# 一次性并入）。写权限=属主/can_manage，读=参与者。
+from custom_backend.search_strategy_api import register_search_strategy_routes
+register_search_strategy_routes(app, require_user, _task_or_404, _task_visible_to, _server_mode)
+
+# W1 二选一存量重置摘要（2.1.5 W1）：只读端点；迁移本体在 coscreen.binary_reset
+# （一次性、幂等、.pre-binary-reset.bak + 轨迹留痕）。属主读全员，成员只读本人。
+from custom_backend.binary_reset_api import register_binary_reset_routes
+register_binary_reset_routes(app, require_user, _task_or_404, _screener_db)
+
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
     ("research_trace_api", "register_research_trace_routes",
@@ -7180,6 +7201,11 @@ _LR_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: 更新历史条数上限（最新在后写入，超限从头裁剪，防 living_review.json 无界增长）
 _LR_HISTORY_LIMIT = 50
 
+# 2.1.5 W3：已保存检索式改存统一检索式库（任务级 search_strategies.sqlite3）。
+# 本段只做兼容层——旧 living_review.json 的 search_records 在首次访问时由
+# coscreen.search_strategy 一次性并入（备份+幂等+留痕）；history 仍留旧文件。
+from coscreen import search_strategy as search_strategy_core  # noqa: E402
+
 
 class LivingReviewSearchIn(BaseModel):
     database: str = Field(pattern="^(pubmed|embase|cochrane|manual)$")
@@ -7198,10 +7224,14 @@ class LivingReviewCheckIn(BaseModel):
 
     - ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；
       缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。
+    - ``strategy_id``（2.1.5 W3）：统一检索式库条目 id；给出时按条目自带
+      ``database`` 分派（本波仅 PubMed，ERIC 在 W4）。旧客户端不传即走
+      query_string/首条回退的兼容路径。
     - 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，
       受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。
     """
 
+    strategy_id: int | None = Field(default=None, ge=1)
     query_string: str = Field(default="", max_length=4000)
     since_date: str = Field(default="", max_length=10)
     comparison: str = Field(default="", max_length=300)
@@ -7298,6 +7328,52 @@ def _mutate_living_review_state(info: tasks_mod.TaskInfo, mutate) -> dict:
         return state
 
 
+def _living_review_library(info: tasks_mod.TaskInfo):
+    """2.1.5 W3 兼容层：打开统一检索式库；迁移/备份失败降级为可读 409（不 500）。"""
+    try:
+        return search_strategy_core.ensure_library(info.dir)
+    except search_strategy_core.SearchStrategyError as exc:
+        logger.warning("检索式库迁移失败（降级 503）：%s", exc)
+        raise HTTPException(503, {
+            "error_code": "storage_unavailable",
+            "message_key": "search_strategy.storage_unavailable",
+            "params": {},
+        }) from exc
+    except sqlite3.DatabaseError as exc:
+        logger.warning("检索式库不可读（降级 503）：%s", exc)
+        raise HTTPException(503, {
+            "error_code": "storage_unavailable",
+            "message_key": "search_strategy.storage_unavailable",
+            "params": {},
+        }) from exc
+
+
+def _living_review_write_gate(info: tasks_mod.TaskInfo, user: dict) -> None:
+    """兼容层 save-search 与统一库同一写闸（设计 §二.C：新增=属主/can_manage）。
+
+    旧版 save-search 无写闸；2.1.5 W3 起成员不得经兼容层绕过
+    ``POST /search-strategy/strategies`` 的权限闸。server 模式 legacy 任务
+    维持既有 409 口径，desktop legacy 单机本人全权。
+    """
+    owner = collaboration_mod.get_owner(
+        _collaboration_store(info), task_id=info.task_id)
+    if owner is None:
+        if _server_mode():
+            # 与 /search-strategy 写闸同一错误码/形状（契约 §〇/§七）。
+            raise HTTPException(409, {
+                "error_code": "legacy_owner_unset",
+                "message_key": "search_strategy.legacy_owner_unset",
+                "params": {},
+            })
+        return
+    if owner["owner_user_id"] != user["user_id"]:
+        raise HTTPException(403, {
+            "error_code": "write_forbidden",
+            "message_key": "search_strategy.write_forbidden",
+            "params": {},
+        })
+
+
 def _lr_validate_measure(measure: str) -> str:
     """指标代码校验：必须是合并引擎接受的指标（review_analysis.MEASURES）。"""
     if measure not in analysis_mod.MEASURES:
@@ -7343,9 +7419,24 @@ def _lr_ranker_for_task(info: tasks_mod.TaskInfo, screener: str) -> ActiveLearni
 @app.get("/api/tasks/{task_id}/living-review/search-records")
 def living_review_search_records(task_id: str,
                                  user: dict = Depends(require_user)) -> dict:
-    """获取检索式列表和自动监控设置（纯读，不建筛选员库）。"""
+    """获取检索式列表和自动监控设置（纯读，不建筛选员库）。
+
+    2.1.5 W3 兼容层：条目改读任务级统一检索式库（订阅视图），返回旧
+    ``search_records`` 字段形状；旧 living_review.json 在首次访问时一次性
+    并入（备份 + 幂等 + 留痕），本端点不再读写旧 ``search_records``。
+    """
     info = _task_or_404(task_id)
-    state = _read_living_review_state(info)
+    if not _task_visible_to(info, user):
+        raise HTTPException(403, {
+            "error_code": "task_forbidden",
+            "message_key": "search_strategy.task_forbidden",
+            "params": {},
+        })
+    conn = _living_review_library(info)
+    try:
+        records = search_strategy_core.compat_records(conn)
+    finally:
+        conn.close()
     raw = tasks_mod._read_task_json(info.dir) or {}  # noqa: SLF001
     auto = raw.get("living_review_auto")
     if not isinstance(auto, dict):
@@ -7353,7 +7444,7 @@ def living_review_search_records(task_id: str,
     enabled = auto.get("enabled")
     interval_days = auto.get("interval_days", 30)
     return {
-        "search_records": state["search_records"],
+        "search_records": records,
         "living_review_auto": {
             "enabled": enabled if isinstance(enabled, bool) else False,
             "interval_days": (interval_days if isinstance(interval_days, int)
@@ -7365,36 +7456,36 @@ def living_review_search_records(task_id: str,
 @app.post("/api/tasks/{task_id}/living-review/save-search")
 def living_review_save_search(task_id: str, body: LivingReviewSearchIn,
                               user: dict = Depends(require_user)) -> dict:
-    """保存/更新检索式（检索式记忆）。URL 仅对 PubMed 生成（拼字符串，不联网）。"""
-    from coscreen.living_review import SearchRecord, record_to_dict
-    from coscreen.protocol_designer import generate_pubmed_url
+    """保存/更新检索式（检索式记忆）——兼容层写入统一检索式库。
 
+    旧客户端载荷与返回形状不变；条目落为 ``source=manual`` 草稿并立即
+    订阅（活体综述面板的订阅视图立即可见）。同库同检索式的既有草稿就地
+    更新；命中定稿/历史时只更新订阅游标与订阅位，绝不新建第二行、
+    也不改写证据链（executed_at/hit_count 等由触发器锁定）。
+    """
     info = _task_or_404(task_id)
+    if not _task_visible_to(info, user):
+        raise HTTPException(403, {
+            "error_code": "task_forbidden",
+            "message_key": "search_strategy.task_forbidden",
+            "params": {},
+        })
+    _living_review_write_gate(info, user)
     if body.last_run_date and not _LR_DATE_RE.match(body.last_run_date):
         raise _bad("last_run_date 必须为 YYYY-MM-DD。", 400)
-    record = SearchRecord(
-        database=body.database,
-        query_string=body.query_string.strip(),
-        last_run_date=body.last_run_date.strip(),
-        url=(generate_pubmed_url(body.query_string.strip())
-             if body.database == "pubmed" else ""),
-        total_hits_last=body.total_hits_last,
-        saved_at=datetime.now().isoformat(timespec="seconds"),
-    )
-    payload = record_to_dict(record)
-
-    def _upsert(state: dict) -> None:
-        kept = [
-            row for row in state["search_records"]
-            if not (row.get("database") == record.database
-                    and row.get("query_string") == record.query_string)
-        ]
-        kept.append(payload)
-        state["search_records"] = kept
-
-    _mutate_living_review_state(info, _upsert)
-    return {"search_record": payload, "search_records":
-            _read_living_review_state(info)["search_records"]}
+    conn = _living_review_library(info)
+    try:
+        record = search_strategy_core.compat_upsert(
+            conn, database=body.database,
+            query_string=body.query_string.strip(),
+            last_run_date=body.last_run_date.strip(),
+            total_hits_last=body.total_hits_last)
+        records = search_strategy_core.compat_records(conn)
+    except search_strategy_core.SearchStrategyError as exc:
+        raise _bad(str(exc), 400) from exc
+    finally:
+        conn.close()
+    return {"search_record": record, "search_records": records}
 
 
 @app.post("/api/tasks/{task_id}/living-review/import-update")
@@ -7518,22 +7609,54 @@ async def living_review_check_now(task_id: str,
     app.state.review_imports.authorize(task_id, user, None)
     payload = body or LivingReviewCheckIn()
 
-    state = _read_living_review_state(info)
-    pubmed_records = [row for row in state["search_records"]
-                      if isinstance(row, dict)
-                      and row.get("database") == "pubmed"
-                      and str(row.get("query_string") or "").strip()]
+    # 2.1.5 W3：条目解析改走统一检索式库（旧 living_review.json 已一次性并入）。
+    # 显式 strategy_id 按条目 database 分派；否则按 query_string 在 **PubMed**
+    # 订阅条目中精确匹配（HEAD 旧行为只匹配 pubmed，不能被同文本的 Embase/
+    # 其他条目抢占）；未匹配/未提供时回退第一条订阅的 PubMed 条目（旧行为）。
+    conn = _living_review_library(info)
+    try:
+        record = search_strategy_core.resolve_check_target(
+            conn, strategy_id=payload.strategy_id,
+            query_text=payload.query_string or "",
+            database=None if payload.strategy_id is not None else "pubmed")
+        if record is None and not (payload.query_string or "").strip():
+            fallback = next((row for row in search_strategy_core.compat_records(conn)
+                             if row["database"] == "pubmed"
+                             and str(row["query_string"]).strip()), None)
+            if fallback is None:
+                raise _bad("请先保存 PubMed 检索式（save-search）或在请求中提供 query_string。", 400)
+            record = search_strategy_core.get_strategy(conn, fallback["strategy_id"])
+    except search_strategy_core.SearchStrategyError as exc:
+        raise HTTPException(404, {
+            "error_code": exc.code,
+            "message_key": "search_strategy." + exc.code,
+            "params": exc.params,
+        }) from exc
+    finally:
+        conn.close()
+
     query = (payload.query_string or "").strip()
-    record = next((row for row in pubmed_records
-                   if str(row.get("query_string")).strip() == query), None)
-    if not query:
-        if not pubmed_records:
-            raise _bad("请先保存 PubMed 检索式（save-search）或在请求中提供 query_string。", 400)
-        record = pubmed_records[0]
-        query = str(record["query_string"]).strip()
+    if record is not None:
+        database = str(record.get("database") or "")
+        if database != "pubmed":
+            # 本波只分派既有 PubMed 链路；ERIC 增量在 W4，其余库无公开增量 API。
+            if database == "eric":
+                raise HTTPException(409, {
+                    "error_code": "eric_incremental_pending",
+                    "message_key": "living_review.eric_incremental_pending",
+                    "params": {"strategy_id": record.get("id")},
+                })
+            raise HTTPException(409, {
+                "error_code": "source_unsupported",
+                "message_key": "living_review.source_unsupported",
+                "params": {"database": database},
+            })
+        query = query or str(record.get("query_text") or "").strip()
     since = (payload.since_date or "").strip()
     if not since and record is not None:
-        since = str(record.get("last_run_date") or "").strip()
+        # 订阅游标优先（旧客户端只录 last_run_date；executed_at 是定稿证据日期）
+        since = str(record.get("last_run_date")
+                    or record.get("executed_at") or "").strip()[:10]
     if since and not _LR_DATE_RE.match(since):
         raise _bad("since_date 必须为 YYYY-MM-DD。", 400)
     if not since:
@@ -7611,25 +7734,21 @@ async def living_review_check_now(task_id: str,
             "meta_before": None, "meta_after": None,
             "change_report": change_report,
         })
-        for row in latest["search_records"]:
-            if (isinstance(row, dict) and row.get("database") == "pubmed"
-                    and str(row.get("query_string") or "").strip() == query):
-                # R3（禁止静默覆盖）：total_hits_last 是用户录入的检索式总命中，
-                # 不因一次增量拉取被改写；本次拉取条数另记 last_fetched_count。
-                #
-                # 游标推进（r8-r3 评审 medium）：只有「本次拉取可信且未截断」才
-                # 推进 last_run_date。可信性由三件事保证：① 服务端按
-                # mindate+maxdate 成对过滤（真网实测取效，且有钉子）；
-                # ② 命中数未达 RETMAX（截断已在上方直接 409，不入库不推进）；
-                # ③ 插件任一批失败即整次抛错（不会半截入库）。
-                # 不用「发表年份 >= 起始年」作判据：真网实测 3531 条
-                # 2026-10 录入的检索里存在 DP=2022 的记录（在线优先/回溯标引
-                # 时 DP 早于 EDAT 属正常），用年份判定会把正常结果误判成失真。
-                row["last_fetched_count"] = len(articles)
-                row["last_checked_at"] = when
-                row["last_run_date"] = when[:10]
 
     state = _mutate_living_review_state(info, _mutate)
+
+    # 统一库游标推进（2.1.5 W3；原 living_review.json 的 last_fetched_count/
+    # last_checked_at/last_run_date 三列映射为 last_count/last_check_at/
+    # executed_at）：只在本次拉取可信且未截断时推进——截断/插件失败/导入
+    # 管线异常都在上方提前返回，不会走到这里。
+    conn = _living_review_library(info)
+    try:
+        if record is not None:
+            search_strategy_core.record_check(
+                conn, int(record["id"]), fetched=len(articles), now=when)
+        search_records = search_strategy_core.compat_records(conn)
+    finally:
+        conn.close()
     history_entry = next((entry for entry in reversed(state["history"])
                           if entry.get("label") == name), None)
     return {
@@ -7642,7 +7761,8 @@ async def living_review_check_now(task_id: str,
         "import_url": f"/api/tasks/{task_id}/import",
         "review_url": f"/api/tasks/{task_id}/import-batches",
         "history_entry": history_entry,
-        "search_records": state["search_records"],
+        "search_records": search_records,
+        "strategy_id": record.get("id") if record is not None else None,
     }
 
 

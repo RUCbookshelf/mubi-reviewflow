@@ -237,10 +237,14 @@ class Stage2QueueMatchesProgress(unittest.TestCase):
         db_mod.save_decision(str(self.db), "K3", "exclude")
         self.assertNotIn("K3", fulltext_mod.stage2_queue(str(self.db), mode="own"))
 
-    def test_maybe_decision_still_queued(self):
-        """对照组：Maybe 仍入复筛队列（既有语义不变）。"""
+    def test_maybe_decision_not_queued(self):
+        """2.1.5 W1 换钉：maybe 不再进复筛队列（旧钉为「Maybe 仍入队」）。"""
         db_mod.save_decision(str(self.db), "K3", "maybe")
-        self.assertIn("K3", fulltext_mod.stage2_queue(str(self.db), mode="own"))
+        self.assertNotIn("K3", fulltext_mod.stage2_queue(str(self.db), mode="own"))
+        # 进度 total 与队列同口径（仅 include）
+        self.assertEqual(
+            fulltext_mod.get_stage2_progress(str(self.db))["total"],
+            len(fulltext_mod.stage2_queue(str(self.db), mode="own")))
 
 
 class AddHighlightRectsConcurrency(unittest.TestCase):

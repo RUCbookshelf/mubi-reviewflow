@@ -1,5 +1,18 @@
 # Screening rounds and filename sources — 2.0.5.2 replacement
 
+> **2.1.5 update — repeat rounds and Not Sure Now have been removed from formal screening.**
+> The “start another round” mechanism described below is **no longer available** in 2.1.5
+> (the `POST /api/tasks/{id}/screening-rounds` route is gone and round fields are no longer
+> returned by queue/settings endpoints). Both initial and full-text screening are now strictly
+> binary (include/exclude); saving `maybe` returns a structured 409 (`maybe_disabled`,
+> `message_key=workflow.maybe_disabled`). Not Sure Now remains only in pilot screening (W2).
+> Existing `workflow_screen_rounds` tables and historical snapshots are **preserved unchanged**
+> for rollback/read compatibility; no new rounds are created. On first upgrade, existing
+> `maybe` decisions in initial and full-text stage decisions are reset to unscreened once,
+> idempotently, with a `.pre-binary-reset.bak` backup per affected reviewer database; coding,
+> extraction and evidence data are retained (dormant until a record qualifies again).
+> The historical description below documents the pre-2.1.5 behaviour only.
+
 ## Scope
 
 The decision strip remains one horizontal row in initial and full-text screening, including the optional uncertainty button, custom reason and reusable-reason save. The full-text page's old four-column grid was the cause of wrapping.

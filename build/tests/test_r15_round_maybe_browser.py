@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
-"""R15 · 「暂不确定只在初筛第一轮」真浏览器门控。
+"""2.1.5 W1 · 正式两阶段二选一 + 轮次移除真浏览器门控。
 
 起停一个隔离实例（默认 19701，197xx 段避开其他泳道），先用
 build/tests/test_r15_round_maybe_prep.py 准备账号/任务/两篇未决策文献，再跑
-build/tests/test_r15_round_maybe_browser.cjs。断言只看用户可见结果：
+build/tests/test_r15_round_maybe_browser.cjs。旧 r15 钉（第 1 轮暂不确定可用 /
+第 2 轮隐藏）已换为 W1 新钉：
 
-1. 第 1 轮：初筛卡片「2 暂不确定」按钮存在且可用；
-2. 第 2 轮：按钮消失、work item maybe_allowed=false；
-3. 第 2 轮键盘 2 不保存（无 POST /decisions）且出现专门说明；
-4. 轮次提示可见，切英文后同提示显示英文；
-5. 全文筛选 #ftMay 仍在。
+1. 初筛卡不再显示「2 暂不确定」，work item maybe_allowed=false；
+2. 初筛按键盘 2 不保存（无 POST /decisions）；
+3. 复筛卡同样不再显示暂不确定；
+4. 轮次条 #wf-round-controls 整块移除/隐藏；
+5. work-queue 载荷不再含 screening_round / remaining_uncertain。
 
-未配置 playwright 环境时如实 skip，不冒充通过：
+前端轨（custom_frontend）按契约完成后才应转绿；后端波次默认跳过，需显式
+REVIEWFLOW_W1_BROWSER=1 启用，绝不冒充通过：
 
-    REVIEWFLOW_PLAYWRIGHT=E:/rf214-playwright/node_modules/playwright
+    REVIEWFLOW_W1_BROWSER=1 \
+    REVIEWFLOW_PLAYWRIGHT=E:/rf214-playwright/node_modules/playwright \
     PLAYWRIGHT_BROWSERS_PATH=C:/Users/16073/AppData/Local/ms-playwright
 """
 from __future__ import annotations
@@ -65,8 +68,10 @@ def _healthy(port: int) -> bool:
 
 
 class RoundMaybeBrowserTests(unittest.TestCase):
-    @unittest.skipUnless(os.environ.get("REVIEWFLOW_PLAYWRIGHT") and os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
-                         "playwright runtime not configured")
+    @unittest.skipUnless(os.environ.get("REVIEWFLOW_W1_BROWSER") == "1"
+                         and os.environ.get("REVIEWFLOW_PLAYWRIGHT")
+                         and os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+                         "W1 browser gate is opt-in after the frontend lane lands")
     def test_round_maybe_browser_nails(self):
         node = _node_exe()
         if node is None:

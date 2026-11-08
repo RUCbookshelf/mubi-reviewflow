@@ -2372,6 +2372,44 @@
         "title": "ExtractionApplyIn",
         "type": "object"
       },
+      "FinalizeIn": {
+        "properties": {
+          "executed_at": {
+            "default": "",
+            "title": "Executed At",
+            "type": "string"
+          },
+          "hit_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hit Count"
+          },
+          "hit_source": {
+            "default": "",
+            "title": "Hit Source",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "FinalizeIn",
+        "type": "object"
+      },
       "FormatEffectIn": {
         "properties": {
           "append": {
@@ -3146,7 +3184,7 @@
         "type": "object"
       },
       "LivingReviewCheckIn": {
-        "description": "check-now 请求体（W3 检索订阅复活）。\n\n- ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；\n  缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。\n- 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，\n  受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。",
+        "description": "check-now 请求体（W3 检索订阅复活）。\n\n- ``query_string``/``since_date``：本次增量拉取的检索式与起始日期；\n  缺省时回退到任务已保存的第一条 PubMed 检索式（及其 last_run_date）。\n- ``strategy_id``（2.1.5 W3）：统一检索式库条目 id；给出时按条目自带\n  ``database`` 分派（本波仅 PubMed，ERIC 在 W4）。旧客户端不传即走\n  query_string/首条回退的兼容路径。\n- 结局层四字段（comparison/outcome/timepoint/measure）保留兼容旧客户端，\n  受保护导入路径不重算合并（激活后由分析页单独运行），仅随历史条目回显。",
         "properties": {
           "comparison": {
             "default": "",
@@ -3177,6 +3215,18 @@
             "maxLength": 10,
             "title": "Since Date",
             "type": "string"
+          },
+          "strategy_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Id"
           },
           "timepoint": {
             "default": "",
@@ -3220,6 +3270,31 @@
           "query_string"
         ],
         "title": "LivingReviewSearchIn",
+        "type": "object"
+      },
+      "ManualCountIn": {
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "source": {
+            "default": "manual",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "title": "ManualCountIn",
         "type": "object"
       },
       "ManuscriptIn": {
@@ -4218,6 +4293,41 @@
         "title": "PairedIntervalIn",
         "type": "object"
       },
+      "PicoBlock": {
+        "properties": {
+          "key": {
+            "default": "",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "mesh_terms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mesh Terms",
+            "type": "array"
+          },
+          "synonyms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Synonyms",
+            "type": "array"
+          },
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "title": "PicoBlock",
+        "type": "object"
+      },
       "PrefsIn": {
         "additionalProperties": false,
         "properties": {
@@ -4254,6 +4364,61 @@
           }
         },
         "title": "PrefsIn",
+        "type": "object"
+      },
+      "PreviewIn": {
+        "properties": {
+          "items": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PreviewItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Items"
+          },
+          "strategies": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PreviewItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategies"
+          },
+          "timeout_seconds": {
+            "default": 10.0,
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "title": "PreviewIn",
+        "type": "object"
+      },
+      "PreviewItem": {
+        "properties": {
+          "database": {
+            "default": "",
+            "title": "Database",
+            "type": "string"
+          },
+          "query_text": {
+            "default": "",
+            "title": "Query Text",
+            "type": "string"
+          }
+        },
+        "title": "PreviewItem",
         "type": "object"
       },
       "PriorSpec": {
@@ -4573,6 +4738,17 @@
           "form"
         ],
         "title": "PrismaGenerateIn",
+        "type": "object"
+      },
+      "PrismaIn": {
+        "properties": {
+          "only_with_counts": {
+            "default": true,
+            "title": "Only With Counts",
+            "type": "boolean"
+          }
+        },
+        "title": "PrismaIn",
         "type": "object"
       },
       "PrismaReasonIn": {
@@ -5508,40 +5684,6 @@
         "title": "RosenbergIn",
         "type": "object"
       },
-      "RoundIn": {
-        "properties": {
-          "action": {
-            "enum": [
-              "start",
-              "finish"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "expected_policy_version": {
-            "minimum": 1.0,
-            "title": "Expected Policy Version",
-            "type": "integer"
-          },
-          "source_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Id"
-          }
-        },
-        "required": [
-          "action",
-          "expected_policy_version"
-        ],
-        "title": "RoundIn",
-        "type": "object"
-      },
       "SchemeImportIn": {
         "properties": {
           "replace": {
@@ -5858,6 +6000,64 @@
         "title": "SingleGroupCountIn",
         "type": "object"
       },
+      "SnapshotIn": {
+        "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "counts_source": {
+            "default": "",
+            "title": "Counts Source",
+            "type": "string"
+          },
+          "make_current": {
+            "default": false,
+            "title": "Make Current",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "pico": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Pico",
+            "type": "array"
+          },
+          "strategies": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Strategies",
+            "type": "array"
+          }
+        },
+        "title": "SnapshotIn",
+        "type": "object"
+      },
       "SourceIn": {
         "properties": {
           "active": {
@@ -5907,6 +6107,130 @@
           "name"
         ],
         "title": "SourceIn",
+        "type": "object"
+      },
+      "StrategyIn": {
+        "properties": {
+          "database": {
+            "default": "",
+            "title": "Database",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "query_text": {
+            "default": "",
+            "title": "Query Text",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "source": {
+            "default": "manual",
+            "title": "Source",
+            "type": "string"
+          },
+          "subscribe": {
+            "default": false,
+            "title": "Subscribe",
+            "type": "boolean"
+          },
+          "syntax_note": {
+            "default": "",
+            "title": "Syntax Note",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "StrategyIn",
+        "type": "object"
+      },
+      "StrategyUpdateIn": {
+        "properties": {
+          "database": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "query_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Text"
+          },
+          "subscribe": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscribe"
+          },
+          "syntax_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Syntax Note"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "StrategyUpdateIn",
         "type": "object"
       },
       "StudyIn": {
@@ -6126,6 +6450,17 @@
           "zotero_key"
         ],
         "title": "SubmissionEvidenceIn",
+        "type": "object"
+      },
+      "SubscribeIn": {
+        "properties": {
+          "subscribe": {
+            "default": false,
+            "title": "Subscribe",
+            "type": "boolean"
+          }
+        },
+        "title": "SubscribeIn",
         "type": "object"
       },
       "SuggestIn": {
@@ -6616,6 +6951,29 @@
         "title": "TitleDuplicateDecisionIn",
         "type": "object"
       },
+      "ToStrategyIn": {
+        "properties": {
+          "databases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Databases",
+            "type": "array"
+          },
+          "subscribe": {
+            "default": false,
+            "title": "Subscribe",
+            "type": "boolean"
+          },
+          "title_prefix": {
+            "default": "",
+            "title": "Title Prefix",
+            "type": "string"
+          }
+        },
+        "title": "ToStrategyIn",
+        "type": "object"
+      },
       "TraceExportFilters": {
         "additionalProperties": false,
         "properties": {
@@ -6824,6 +7182,47 @@
           "expected_version"
         ],
         "title": "TraceSettingsIn",
+        "type": "object"
+      },
+      "TranslateIn": {
+        "properties": {
+          "date_from": {
+            "default": "",
+            "title": "Date From",
+            "type": "string"
+          },
+          "date_to": {
+            "default": "",
+            "title": "Date To",
+            "type": "string"
+          },
+          "pico": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PicoBlock"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pico"
+          },
+          "query_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Text"
+          }
+        },
+        "title": "TranslateIn",
         "type": "object"
       },
       "TrimFillIn": {
@@ -19593,6 +19992,63 @@
         "summary": "List Articles"
       }
     },
+    "/api/tasks/{task_id}/binary-reset-summary": {
+      "get": {
+        "operationId": "binary_reset_summary_api_tasks__task_id__binary_reset_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Binary Reset Summary Api Tasks  Task Id  Binary Reset Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Binary Reset Summary"
+      }
+    },
     "/api/tasks/{task_id}/coding/agreement": {
       "post": {
         "operationId": "agreement_api_tasks__task_id__coding_agreement_post",
@@ -25514,7 +25970,7 @@
     },
     "/api/tasks/{task_id}/living-review/save-search": {
       "post": {
-        "description": "保存/更新检索式（检索式记忆）。URL 仅对 PubMed 生成（拼字符串，不联网）。",
+        "description": "保存/更新检索式（检索式记忆）——兼容层写入统一检索式库。\n\n旧客户端载荷与返回形状不变；条目落为 ``source=manual`` 草稿并立即\n订阅（活体综述面板的订阅视图立即可见）。同库同检索式的既有草稿就地\n更新；命中定稿/历史时只更新订阅游标与订阅位，绝不新建第二行、\n也不改写证据链（executed_at/hit_count 等由触发器锁定）。",
         "operationId": "living_review_save_search_api_tasks__task_id__living_review_save_search_post",
         "parameters": [
           {
@@ -25582,7 +26038,7 @@
     },
     "/api/tasks/{task_id}/living-review/search-records": {
       "get": {
-        "description": "获取检索式列表和自动监控设置（纯读，不建筛选员库）。",
+        "description": "获取检索式列表和自动监控设置（纯读，不建筛选员库）。\n\n2.1.5 W3 兼容层：条目改读任务级统一检索式库（订阅视图），返回旧\n``search_records`` 字段形状；旧 living_review.json 在首次访问时一次性\n并入（备份 + 幂等 + 留痕），本端点不再读写旧 ``search_records``。",
         "operationId": "living_review_search_records_api_tasks__task_id__living_review_search_records_get",
         "parameters": [
           {
@@ -27457,73 +27913,6 @@
         "summary": "Screening Arbitration"
       }
     },
-    "/api/tasks/{task_id}/screening-rounds": {
-      "post": {
-        "operationId": "change_round_api_tasks__task_id__screening_rounds_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "task_id",
-            "required": true,
-            "schema": {
-              "title": "Task Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RoundIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Change Round Api Tasks  Task Id  Screening Rounds Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Change Round"
-      }
-    },
     "/api/tasks/{task_id}/screening/daily-status": {
       "get": {
         "operationId": "daily_status_api_tasks__task_id__screening_daily_status_get",
@@ -28173,6 +28562,1099 @@
           }
         },
         "summary": "Test Notify Channel"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/appendix": {
+      "get": {
+        "operationId": "search_strategy_appendix_api_tasks__task_id__search_strategy_appendix_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "text",
+              "title": "Format",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Appendix"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/preview-counts": {
+      "post": {
+        "description": "真命中数：仅 PubMed/ERIC 出站；其余如实标 ``manual_required``。",
+        "operationId": "search_strategy_preview_api_tasks__task_id__search_strategy_preview_counts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Preview Api Tasks  Task Id  Search Strategy Preview Counts Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Preview"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/prisma-prefill": {
+      "post": {
+        "operationId": "search_strategy_prisma_api_tasks__task_id__search_strategy_prisma_prefill_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PrismaIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Prisma Api Tasks  Task Id  Search Strategy Prisma Prefill Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Prisma"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/snapshots": {
+      "get": {
+        "operationId": "search_strategy_snapshots_api_tasks__task_id__search_strategy_snapshots_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Snapshots Api Tasks  Task Id  Search Strategy Snapshots Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Snapshots"
+      },
+      "post": {
+        "operationId": "search_strategy_snapshot_create_api_tasks__task_id__search_strategy_snapshots_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Snapshot Create Api Tasks  Task Id  Search Strategy Snapshots Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Snapshot Create"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/snapshots/{sid}/current": {
+      "put": {
+        "operationId": "search_strategy_snapshot_current_api_tasks__task_id__search_strategy_snapshots__sid__current_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Snapshot Current Api Tasks  Task Id  Search Strategy Snapshots  Sid  Current Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Snapshot Current"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/snapshots/{sid}/manual-count": {
+      "put": {
+        "operationId": "search_strategy_snapshot_count_api_tasks__task_id__search_strategy_snapshots__sid__manual_count_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualCountIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Snapshot Count Api Tasks  Task Id  Search Strategy Snapshots  Sid  Manual Count Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Snapshot Count"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/snapshots/{sid}/to-strategy": {
+      "post": {
+        "operationId": "search_strategy_snapshot_to_strategy_api_tasks__task_id__search_strategy_snapshots__sid__to_strategy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToStrategyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Snapshot To Strategy Api Tasks  Task Id  Search Strategy Snapshots  Sid  To Strategy Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Snapshot To Strategy"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/strategies": {
+      "get": {
+        "operationId": "search_strategy_list_api_tasks__task_id__search_strategy_strategies_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy List Api Tasks  Task Id  Search Strategy Strategies Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy List"
+      },
+      "post": {
+        "operationId": "search_strategy_create_api_tasks__task_id__search_strategy_strategies_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StrategyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Create Api Tasks  Task Id  Search Strategy Strategies Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Create"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/strategies/{sid}": {
+      "delete": {
+        "operationId": "search_strategy_delete_api_tasks__task_id__search_strategy_strategies__sid__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Delete Api Tasks  Task Id  Search Strategy Strategies  Sid  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Delete"
+      },
+      "put": {
+        "operationId": "search_strategy_update_api_tasks__task_id__search_strategy_strategies__sid__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StrategyUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Update Api Tasks  Task Id  Search Strategy Strategies  Sid  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Update"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/strategies/{sid}/finalize": {
+      "post": {
+        "operationId": "search_strategy_finalize_api_tasks__task_id__search_strategy_strategies__sid__finalize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Finalize Api Tasks  Task Id  Search Strategy Strategies  Sid  Finalize Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Finalize"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/strategies/{sid}/revise": {
+      "post": {
+        "operationId": "search_strategy_revise_api_tasks__task_id__search_strategy_strategies__sid__revise_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Revise Api Tasks  Task Id  Search Strategy Strategies  Sid  Revise Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Revise"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/strategies/{sid}/subscribe": {
+      "put": {
+        "operationId": "search_strategy_subscribe_api_tasks__task_id__search_strategy_strategies__sid__subscribe_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "title": "Sid",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscribeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Subscribe Api Tasks  Task Id  Search Strategy Strategies  Sid  Subscribe Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Subscribe"
+      }
+    },
+    "/api/tasks/{task_id}/search-strategy/translate": {
+      "post": {
+        "description": "纯计算转写/生成（零 IO、零联网）。",
+        "operationId": "search_strategy_translate_api_tasks__task_id__search_strategy_translate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Strategy Translate Api Tasks  Task Id  Search Strategy Translate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Strategy Translate"
       }
     },
     "/api/tasks/{task_id}/sources": {

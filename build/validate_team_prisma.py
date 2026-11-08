@@ -113,7 +113,8 @@ assert metrics['fields']['duplicates_removed']==0
 assert metrics['fields']['reports_not_retrieved_db'] is None
 call('POST',base+'/import',files={'file':('mixed.ris',first.encode(),'application/x-research-info-systems')})
 assert sum(r['n'] for r in call('GET',base+'/prisma-metrics')['fields']['identified_rows_db'])==2
-call('POST',base+'/decisions',json={'zotero_key':'one','decision':'maybe'})
+# 2.1.5 W1：复筛入队仅 include（maybe 已被正式场景拒绝）。
+call('POST',base+'/decisions',json={'zotero_key':'one','decision':'include'})
 queue=call('GET',base+'/work-queue/fulltext')
 assert 'one' in [a['zotero_key'] for a in queue['queue']],queue
 call('POST',base+'/import',files={'file':('unknown.ris',ris('three','Forest biodiversity restoration').encode(),'application/x-research-info-systems')})
@@ -147,14 +148,15 @@ runtime=client.app.state.review_workflow;ctx=runtime.context(tid,{'user_id':team
 import pandas as pd
 from coscreen.screening_arbitration import append_decision_arbitration, merge_decision_packages
 frames={
-    'preview.owner':pd.DataFrame([{'zotero_key':'one','decision':'maybe','exclusion_reason':'','notes':''}]),
+    'preview.owner':pd.DataFrame([{'zotero_key':'one','decision':'include','exclusion_reason':'','notes':''}]),
     'preview.member':pd.DataFrame([{'zotero_key':'one','decision':'exclude','exclusion_reason':'Outside scope','notes':''}])}
 append_decision_arbitration(ctx.collaboration_db,stage='stage1',merged=merge_decision_packages(frames),resolutions=[{'zotero_key':'one','decision':'include'}],arbitrator_id=team['owner_user_id'])
 team_metrics=call('GET',base+'/prisma-metrics?mode=team')
 assert team_metrics['fields']['reports_sought_db']==1,team_metrics
 call('POST',base+'/decisions',json={'zotero_key':'one','decision':'exclude','reason':'Outside scope'})
 client.headers['Authorization']='Bearer '+member['token']
-call('POST',base+'/decisions',json={'zotero_key':'one','decision':'maybe'})
+# 2.1.5 W1：maybe 不能新存；用 exclude 达到「不计入 sought」的同口径终点。
+call('POST',base+'/decisions',json={'zotero_key':'one','decision':'exclude','reason':'Outside scope'})
 client.headers['Authorization']='Bearer '+owner['token']
 assert call('GET',base+'/prisma-metrics?mode=team')['fields']['reports_sought_db']==0
 

@@ -264,9 +264,10 @@ class LongKeyImportDecisionE2ETests(unittest.TestCase):
         self.assertEqual(r_ghost.status_code, 200, r_ghost.text)
         self.assertTrue(r_ghost.json().get("saved"))
         # 对照：保留原键的 295 字符行决策可用（复审 C 段对照，两态恒绿）
+        # 2.1.5 W1：maybe 已全拒，改用 include 验证同一长键写入路径。
         r_keep = self.client.post(
             f"/api/tasks/{self.task}/decisions",
-            json={"zotero_key": long_key, "decision": "maybe"},
+            json={"zotero_key": long_key, "decision": "include"},
             headers=self.auth())
         self.assertEqual(r_keep.status_code, 200, r_keep.text)
 

@@ -1,15 +1,20 @@
-"""R15（2026-11-07 用户裁定）：暂不确定只在初筛第一轮提供。
+"""R15 换钉（2.1.5 W1）：暂不确定正式两阶段全拒、轮次移除、子模块保留。
 
-语义：某文献只要进过当前筛选员的任一复筛轮次快照
-（workflow_screen_rounds.snapshot_json 的键，active/closed/released 都算），
-该筛选员对它就不能再保存「暂不确定」；之后新导入、从未进过轮次的文献仍算
-第一轮，按钮照常。第 2 轮里没处理完的文献进入全文筛选时按原决定带过去；
-撤销恢复到 maybe 不受影响（撤销不是新决定）。任务级 show_maybe 开关语义
-不变：show_maybe=false 仍回 maybe_disabled。
-
-本文件先于实现写成（红钉先行）：在修复前，`screening_rounds.snapshot_keys`
-不存在、`work_item.maybe_allowed` 未下发、第 2 轮 maybe 仍能保存，因此以下
-用例按现状为红。
+旧钉（2.1.4 r15）→ 新钉（2.1.5 W1）对照：
+- 旧：第 1 轮可存 maybe，第 2 轮起 409 ``maybe_first_round_only``
+  → 新：初筛与复筛**全程** 409 ``maybe_disabled`` +
+    ``message_key='workflow.maybe_disabled'``，决定不落盘。
+- 旧：``show_maybe=false`` 才回 maybe_disabled
+  → 新：``show_maybe`` 退役（GET 剥离 / PUT 忽略），maybe 恒拒。
+- 旧：``POST /screening-rounds`` start/finish 200，queue 带
+  ``screening_round`` / ``remaining_uncertain``
+  → 新：路由 404，queue/settings 载荷无轮次字段。
+- 旧：复筛 maybe 合法（全文 maybe_allowed=true）
+  → 新：全文同样 maybe_allowed=false、maybe 保存 409。
+- 旧：``screening_rounds`` 快照决定 maybe 可用性
+  → 新：轮次机制移除，但 ``coscreen.screening_rounds`` 模块与历史表**保留**，
+    marker/snapshot 读取对缺失库/表不崩（回滚兼容）。
+- 撤销恢复历史 maybe 不是新决定：不受写闸影响（旧语义保留）。
 """
 from __future__ import annotations
 
@@ -38,7 +43,7 @@ from coscreen.models import Article
 KEYS = ("K1", "K2")
 
 
-class RoundMaybeTests(unittest.TestCase):
+class BinaryScreeningTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
@@ -72,6 +77,9 @@ class RoundMaybeTests(unittest.TestCase):
         db_mod.init_db(self.db)
         db_mod.upsert_articles(
             self.db, [Article(zotero_key=key, title=f"Study {key}") for key in KEYS], [])
+        # 让 actor 库先完成 v8 标记：之后直接种入的 maybe 属于「历史数据」，
+        # 用于验证读路径/撤销边界，不会被一次性迁移清掉。
+        self.assertIsInstance(self.settings().get("version"), int)
 
     # ---- 夹具 ---------------------------------------------------------
 
@@ -85,18 +93,6 @@ class RoundMaybeTests(unittest.TestCase):
     def settings(self, index=0):
         return self.client.get(
             f"/api/tasks/{self.task}/workflow-settings", headers=self.auth(index)).json()
-
-    def start_round(self, index=0):
-        return self.client.post(
-            f"/api/tasks/{self.task}/screening-rounds",
-            json={"action": "start", "expected_policy_version": self.settings(index)["version"]},
-            headers=self.auth(index))
-
-    def finish_round(self, index=0):
-        return self.client.post(
-            f"/api/tasks/{self.task}/screening-rounds",
-            json={"action": "finish", "expected_policy_version": self.settings(index)["version"]},
-            headers=self.auth(index))
 
     def decisions(self, index=0):
         rows = self.client.get(
@@ -114,115 +110,79 @@ class RoundMaybeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    def assert_maybe_rejected(self, key, *, index=0):
-        response = self.decide(key, "maybe", index=index)
+    def assert_maybe_rejected(self, key, *, index=0, stage="screen"):
+        response = self.decide(key, "maybe", index=index, stage=stage)
         self.assertEqual(response.status_code, 409, response.text)
         detail = response.json()["detail"]
         self.assertIsInstance(detail, dict, detail)
-        self.assertEqual(detail.get("code"), "maybe_first_round_only", detail)
+        self.assertEqual(detail.get("code"), "maybe_disabled", detail)
+        self.assertEqual(detail.get("message_key"), "workflow.maybe_disabled", detail)
         self.assertEqual(detail.get("version"), self.settings(index)["version"], detail)
         self.assertEqual(detail["workflow_settings"]["version"], detail["version"], detail)
         return detail
 
-    # ---- 1. 第 1 轮可存 -------------------------------------------------
+    # ---- 1. 两阶段全拒 --------------------------------------------------
 
-    def test_first_round_stores_maybe_and_advertises_it(self):
-        for key in KEYS:
-            response = self.decide(key, "maybe")
-            self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.decisions(), {"K1": "maybe", "K2": "maybe"})
-        # 尚未有轮次快照，工作项明确告知「可暂不确定」。
-        self.assertEqual(screening_rounds.snapshot_keys(self.db), set())
-        self.assertIs(self.work_item("K1").get("maybe_allowed"), True)
-
-    # ---- 2. 第 2 轮起 409，决定不变 ------------------------------------
-
-    def test_second_round_rejects_maybe_without_changing_decision(self):
-        for key in KEYS:
-            self.assertEqual(self.decide(key, "maybe").status_code, 200)
-        started = self.start_round()
-        self.assertEqual(started.status_code, 200, started.text)
-        self.assertEqual(started.json()["screening_round"]["number"], 2)
-        self.assertEqual(set(started.json()["screening_round"]["pending_keys"]), set(KEYS))
-        # 轮次进行中：原 maybe 被扣留，全文队列为空。
-        self.assertFalse(self.fulltext_keys())
-        self.assertFalse(self.work_item("K1").get("maybe_allowed"))
+    def test_maybe_is_rejected_in_both_formal_stages(self):
         self.assert_maybe_rejected("K1")
-        self.assertEqual(self.decisions()["K1"], "maybe", "被拒时决定必须原样保留")
-
-    # ---- 3. released 之后仍 409 -----------------------------------------
-
-    def test_released_round_still_rejects_maybe_for_same_article(self):
-        for key in KEYS:
-            self.assertEqual(self.decide(key, "maybe").status_code, 200)
-        self.assertEqual(self.start_round().status_code, 200)
-        self.assertEqual(self.finish_round().status_code, 200)
-        # finish 后原 maybe 仍可进全文；但对同一文献不能再存 maybe。
-        self.assertEqual(self.fulltext_keys(), set(KEYS))
-        self.assert_maybe_rejected("K1")
-        self.assertEqual(self.decisions()["K1"], "maybe")
-        self.assertFalse(self.work_item("K1").get("maybe_allowed"))
-
-    # ---- 4. 之后新导入、从未进过轮次的文献仍算第一轮 --------------------
-
-    def test_new_article_never_in_a_round_can_still_store_maybe(self):
-        self.assertEqual(self.decide("K1", "maybe").status_code, 200)
+        self.assertEqual(self.decisions(), {}, "被拒的初筛 maybe 不得落盘")
         self.assertEqual(self.decide("K2", "include").status_code, 200)
-        self.assertEqual(self.start_round().status_code, 200)  # 快照只有 K1
-        db_mod.upsert_articles(
-            self.db, [Article(zotero_key="K3", title="Study K3")], [])
-        response = self.decide("K3", "maybe")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.decisions()["K3"], "maybe")
-        self.assertIs(self.work_item("K3").get("maybe_allowed"), True)
-        # K1 仍在快照里，照常被拒。
-        self.assert_maybe_rejected("K1")
-
-    # ---- 5. 全文筛选不受影响 ---------------------------------------------
-
-    def test_fulltext_maybe_is_unaffected(self):
-        self.assertEqual(self.decide("K1", "maybe").status_code, 200)
-        self.assertEqual(self.decide("K2", "include").status_code, 200)
-        self.assertEqual(self.start_round().status_code, 200)
-        self.assertEqual(self.finish_round().status_code, 200)
-        response = self.decide("K1", "maybe", stage="fulltext")
-        self.assertEqual(response.status_code, 200, response.text)
+        self.assert_maybe_rejected("K2", stage="fulltext")
         rows = self.client.get(
-            f"/api/tasks/{self.task}/stage2/decisions", headers=self.auth()).json()["decisions"]
-        self.assertEqual({row["zotero_key"]: row["decision"] for row in rows}["K1"], "maybe")
-        self.assertIs(self.work_item("K1", stage="fulltext").get("maybe_allowed"), True)
+            f"/api/tasks/{self.task}/stage2/decisions",
+            headers=self.auth()).json()["decisions"]
+        self.assertEqual(rows, [], "被拒的复筛 maybe 不得落盘")
+        self.assertFalse(self.work_item("K1").get("maybe_allowed"))
+        self.assertFalse(self.work_item("K2", stage="fulltext").get("maybe_allowed"))
 
-    # ---- 6. show_maybe=false 仍是 maybe_disabled -------------------------
+    # ---- 2. 复筛入队仅 include ------------------------------------------
 
-    def test_show_maybe_false_still_reports_maybe_disabled(self):
-        for key in KEYS:
-            self.assertEqual(self.decide(key, "maybe").status_code, 200)
-        self.assertEqual(self.start_round().status_code, 200)
+    def test_fulltext_queue_is_include_only(self):
+        db_mod.save_decision(self.db, "K1", "maybe")
+        db_mod.save_decision(self.db, "K2", "include")
+        self.assertEqual(self.fulltext_keys(), {"K2"})
+        self.assertFalse(self.work_item("K1", stage="fulltext").get("maybe_allowed"))
+
+    # ---- 3. 轮次路由 404 / 载荷字段下线 ----------------------------------
+
+    def test_round_route_is_unregistered_and_payloads_have_no_round_fields(self):
+        removed = self.client.post(
+            f"/api/tasks/{self.task}/screening-rounds",
+            json={"action": "start", "expected_policy_version": self.settings()["version"]},
+            headers=self.auth())
+        self.assertEqual(removed.status_code, 404, removed.text)
+        queue = self.client.get(
+            f"/api/tasks/{self.task}/work-queue/screen",
+            headers=self.auth()).json()
+        self.assertNotIn("screening_round", queue)
+        self.assertNotIn("remaining_uncertain", queue)
+        settings = self.settings()
+        self.assertNotIn("screening_round_marker", settings)
+        for stage in ("screen", "fulltext"):
+            self.assertNotIn("show_maybe", settings["stages"][stage])
+
+    def test_show_maybe_put_is_ignored_not_422(self):
         current = self.settings()
         stages = {name: dict(value) for name, value in current["stages"].items()}
         stages["screen"]["show_maybe"] = False
+        stages["fulltext"]["show_maybe"] = False
         response = self.client.put(
             f"/api/tasks/{self.task}/workflow-settings",
             json={"expected_version": current["version"], "stages": stages,
                   "evidence_required_field_ids": current["evidence_required_field_ids"]},
             headers=self.auth())
         self.assertEqual(response.status_code, 200, response.text)
-        # 同时在快照内且开关关闭：开关语义优先，仍回既有 maybe_disabled。
-        refused = self.decide("K1", "maybe")
-        self.assertEqual(refused.status_code, 409, refused.text)
-        self.assertEqual(refused.json()["detail"].get("code"), "maybe_disabled",
-                         refused.json()["detail"])
+        self.assertNotIn("show_maybe", response.json()["stages"]["screen"])
+        self.assert_maybe_rejected("K1")
 
-    # ---- 7. 撤销恢复到 maybe 不受影响 ------------------------------------
+    # ---- 4. 撤销恢复历史 maybe 不是新决定 --------------------------------
 
-    def test_undo_restore_to_maybe_is_not_blocked(self):
-        for key in KEYS:
-            self.assertEqual(self.decide(key, "maybe").status_code, 200)
-        self.assertEqual(self.start_round().status_code, 200)
+    def test_undo_restore_of_legacy_maybe_is_not_blocked(self):
+        db_mod.save_decision(self.db, "K1", "maybe")
         self.assertEqual(self.decide("K1", "include").status_code, 200)
         status = self.client.get(
             f"/api/tasks/{self.task}/undo/screen", headers=self.auth()).json()
-        entry = status.get("latest") or {}
+        entry = status.get("latest") or status.get("entry") or {}
         self.assertTrue(entry.get("entry_id"), status)
         restored = self.client.post(
             f"/api/tasks/{self.task}/undo/screen",
@@ -231,39 +191,31 @@ class RoundMaybeTests(unittest.TestCase):
             headers=self.auth())
         self.assertEqual(restored.status_code, 200, restored.text)
         self.assertEqual(self.decisions()["K1"], "maybe", "撤销恢复的是原决定，不是新决定")
-        # 恢复成 maybe 之后，新的「暂不确定」决定仍被拒绝（语义不因撤销放宽）。
-        self.assert_maybe_rejected("K1")
 
-    # ---- 8. 成员 A 的轮次不影响成员 B ------------------------------------
+    # ---- 5. 成员独立（写闸不因他人轮次/决定变化） -------------------------
 
-    def test_member_round_does_not_affect_another_member(self):
+    def test_member_isolation_is_preserved(self):
         for index in (1, 2):
             invited = self.client.post(
                 f"/api/tasks/{self.task}/collaboration/invite",
                 json={"username": self.users[index]["username"], "role": "coder"},
                 headers=self.auth())
             self.assertEqual(invited.status_code, 201, invited.text)
-        # 成员 A（index=1）：存 maybe 并开启自己的第 2 轮。
-        for key in KEYS:
-            self.assertEqual(self.decide(key, "maybe", index=1).status_code, 200)
-        self.assertEqual(self.start_round(1).status_code, 200)
-        self.assertFalse(self.work_item("K1", index=1).get("maybe_allowed"))
-        # 成员 B（index=2）的库从未进过轮次：照常可存 maybe。
-        for key in KEYS:
-            response = self.decide(key, "maybe", index=2)
-            self.assertEqual(response.status_code, 200, response.text)
-        self.assertIs(self.work_item("K1", index=2).get("maybe_allowed"), True)
-        # 属主（index=0）同样不受成员轮次影响。
-        self.assertEqual(self.decide("K1", "maybe").status_code, 200)
+        for index in (0, 1, 2):
+            self.assert_maybe_rejected("K1", index=index)
 
 
 class SnapshotKeysReadOnlyTests(unittest.TestCase):
+    """轮次机制移除但模块保留：读取历史快照不得因缺表/缺库崩溃。"""
+
     def test_snapshot_keys_empty_without_table_or_file(self):
         with tempfile.TemporaryDirectory(prefix="rf_r15_rounds_unit_") as tmp:
             path = Path(tmp) / "no-rounds.db"
             db_mod.init_db(path)
+            self.assertEqual(screening_rounds.marker(path), None)
             self.assertEqual(screening_rounds.snapshot_keys(path), set())
             self.assertEqual(screening_rounds.snapshot_keys(Path(tmp) / "missing.db"), set())
+            self.assertEqual(screening_rounds.marker(Path(tmp) / "missing.db"), None)
 
 
 if __name__ == "__main__":
