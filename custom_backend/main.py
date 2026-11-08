@@ -6212,6 +6212,11 @@ from custom_backend.eric_search_api import register_eric_search_routes
 
 register_eric_search_routes(app, require_user, _task_or_404, _task_visible_to)
 
+# 2.1.5 B1 逐条盲裁决会话：权限/双盲/503 全部复用上方既有守卫函数。
+from custom_backend.arbitration_session_api import register_arbitration_session_routes
+
+register_arbitration_session_routes(app, require_user, _task_or_404, _arbitration_store, _arbitration_double_blind_guard, _coding_owner_db, _server_mode, _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
+
 # W2 PDF 自动获取（DOI→Unpaywall（email 参数）→开放 PDF→check_pdf_bytes→save_pdf
 # 落盘+轨迹）：联网默认关（任务级 pdf_fetch_settings.json 缺省 enabled=false，
 # 未启用一律 403 且零出站）；出站仅 stdlib urllib（_NoRedirectHandler 先例、
@@ -6230,6 +6235,12 @@ register_study_design_routes(app, require_user, _task_or_404, _task_visible_to)
 
 from custom_backend.report_evidence_api import register_report_evidence_routes
 register_report_evidence_routes(app, require_user)
+
+# B2 文献评价（2.1.5 Wave B）：工具注册表 + 按设计推荐 + 个人库
+# {slug}.db 的 appraisal_records（新表、幂等、旧版忽略）；只读注册表，
+# 失败降级为 available=false / 4xx，绝不 500。
+from custom_backend.appraisal_api import register_appraisal_routes
+register_appraisal_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
 
 app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [

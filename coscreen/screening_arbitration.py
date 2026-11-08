@@ -310,6 +310,36 @@ def _validated_merge(merged: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return out, names
 
 
+def validate_arbitration_decision(
+    decision: Any,
+    rationale: Any = "",
+    *,
+    zotero_key: str | None = None,
+) -> tuple[str, str]:
+    """r18 两道闸的单条校验：二选一 + 排除必须附非空理由。
+
+    2.1.5 逐条盲裁决会话（``coscreen.arbitration_session``）与 CSV /
+    server-save 汇总提交共用本函数，拒绝语义、``error_code``、
+    ``message_key`` 与文案逐字一致（复用，不重写）。返回规范化后的
+    ``(decision, rationale)``；``rationale`` 为 ``None`` 时按空串处理。
+    """
+    if not isinstance(decision, str) or decision.strip().lower() not in ARBITRATION_DECISIONS:
+        raise ArbitrationDecisionInvalid(
+            "仲裁决定必须为「纳入」或「排除」，不能保存为「暂不确定」或其他值。",
+            zotero_key=zotero_key,
+        )
+    if rationale is None:
+        rationale = ""
+    if not isinstance(rationale, str) or len(rationale) > 4000:
+        raise ValueError(f"{zotero_key} 的仲裁说明最多 4000 个字符")
+    if decision.strip().lower() == "exclude" and not rationale.strip():
+        raise ArbitrationReasonRequired(
+            "仲裁决定为「排除」时必须填写仲裁理由后再保存。",
+            zotero_key=zotero_key,
+        )
+    return decision.strip().lower(), rationale
+
+
 def resolve_decision_conflicts(
     merged: pd.DataFrame,
     resolutions: list[dict[str, Any]],
@@ -340,21 +370,9 @@ def resolve_decision_conflicts(
             raise ValueError(f"仅可仲裁 conflict 行: {key}")
         if key in by_key:
             raise ValueError(f"仲裁键重复: {key}")
-        if not isinstance(decision, str) or decision.strip().lower() not in ARBITRATION_DECISIONS:
-            raise ArbitrationDecisionInvalid(
-                "仲裁决定必须为「纳入」或「排除」，不能保存为「暂不确定」或其他值。",
-                zotero_key=key,
-            )
-        if rationale is None:
-            rationale = ""
-        if not isinstance(rationale, str) or len(rationale) > 4000:
-            raise ValueError(f"{key} 的仲裁说明最多 4000 个字符")
-        if decision.strip().lower() == "exclude" and not rationale.strip():
-            raise ArbitrationReasonRequired(
-                "仲裁决定为「排除」时必须填写仲裁理由后再保存。",
-                zotero_key=key,
-            )
-        by_key[key] = (decision.strip().lower(), rationale)
+        normalized_decision, rationale = validate_arbitration_decision(
+            decision, rationale, zotero_key=key)
+        by_key[key] = (normalized_decision, rationale)
 
     finals: list[str] = []
     statuses: list[str] = []
