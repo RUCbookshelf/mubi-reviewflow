@@ -177,12 +177,19 @@ def build_daily_ics(
     remind_time: object = DEFAULT_REMIND_TIME,
     timezone_name: object = "",
     numbers: Mapping[str, object] | None = None,
+    member: str = "",
     now_utc: datetime | None = None,
 ) -> str:
     """生成每日提醒 ICS 文本（默认未来 90 天，事件数 = ``days``）。
 
     ``numbers`` 只读取 :data:`_NUMBER_FIELDS` 白名单键并强制转 int；其余键
     一律忽略——这是"日历里绝不含文献内容"的最后一道闸。
+
+    ``member``（终审 #17）：事件 UID 混入成员标识哈希前缀——同任务不同
+    成员的订阅源不再生成相同 UID（RFC 5545 全局唯一要求；两个订阅进同
+    一日历账户时数字不会被互相覆盖）。UID 只含任务 ID 与成员标识的
+    SHA-256 前缀，不含成员名明文（隐私口径不变）；同成员同任务同日
+    UID 恒定（重复拉取幂等），跨日/跨任务规则不变。
     """
     numbers = numbers or {}
     try:
@@ -203,7 +210,11 @@ def build_daily_ics(
     stamp = _fmt_utc(now_utc or datetime.now(timezone.utc))
     summary = _SUMMARY_TEMPLATE.format(**{key: _num(numbers, key) for key in _NUMBER_FIELDS})
     description = ";".join(f"{key}={_num(numbers, key)}" for key in _NUMBER_FIELDS)
-    uid_base = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(task_id.encode("utf-8"))
+    if member:
+        digest.update(b"\x1f")
+        digest.update(hashlib.sha256(member.encode("utf-8")).digest()[:8])
+    uid_base = digest.hexdigest()[:16]
 
     lines = [
         "BEGIN:VCALENDAR",

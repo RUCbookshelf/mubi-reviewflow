@@ -193,6 +193,46 @@ class IcsGenerationTests(unittest.TestCase):
         assert "\r\nDTSTART:20261108T090000\r\n" in text
         assert "\r\nDTSTART:20261109T090000\r\n" in text
 
+    def test_uid_mixes_member_hash_and_rules_intact(self):
+        """终审 #17：UID 混入成员标识哈希；跨成员不同、跨日/跨任务规则不变。
+
+        修复前 ``uid_base = sha256(task_id)[:16]``：同任务所有成员同日 UID
+        完全相同（探针 u2-deepseek-c8/probe_uid.py），两个订阅进同一日历
+        账户时按 UID 去重会合并/覆盖彼此数字。
+        """
+        def uid(task, member, day, **extra):
+            text = ics_feed.build_daily_ics(
+                task_id=task, start=date(2026, 11, day), days=1,
+                remind_time="09:00", timezone_name="", member=member,
+                numbers={}, now_utc=datetime(2026, 11, day, tzinfo=timezone.utc),
+                **extra)
+            line = next(l for l in text.split("\r\n") if l.startswith("UID:"))
+            return line.strip()
+
+        # 同任务同日：两成员 UID 不同
+        uid_a = uid("task-x", "alice@example.test", 8)
+        uid_b = uid("task-x", "bob@example.test", 8)
+        assert uid_a != uid_b
+        # UID 不含成员名明文（隐私口径不变）
+        assert "alice" not in uid_a.lower() and "bob" not in uid_b.lower()
+        # 同成员同任务：确定性（重复拉取幂等，客户端不重复建事件）
+        assert uid("task-x", "alice@example.test", 8) == uid_a
+        # 同成员跨日：UID 不同（每日一事件）
+        assert uid("task-x", "alice@example.test", 9) != uid_a
+        assert uid_a.endswith("20261108@reviewflow.invalid")
+        assert uid("task-x", "alice@example.test", 9).endswith(
+            "20261109@reviewflow.invalid")
+        # 同成员跨任务：UID 不同
+        assert uid("task-y", "alice@example.test", 8) != uid_a
+        # 旧调用形状（不传 member，如测试/嵌入方）仍按任务哈希（向后兼容）
+        legacy = ics_feed.build_daily_ics(
+            task_id="task-x", start=date(2026, 11, 8), days=1,
+            remind_time="09:00", timezone_name="", numbers={},
+            now_utc=datetime(2026, 11, 8, tzinfo=timezone.utc))
+        legacy_uid = next(l for l in legacy.split("\r\n")
+                          if l.startswith("UID:")).strip()
+        assert legacy_uid != uid_a and legacy_uid != uid_b
+
 
 class NotifyTransportTests(unittest.TestCase):
     class _RaisingOpener:
@@ -468,6 +508,80 @@ class DailyNudgeApiTests(unittest.TestCase):
         response = self.client.get(
             f"/api/tasks/{self.task}/screening/daily-status.ics?token=" + "a" * 300)
         self.assertEqual(response.status_code, 404, response.text)
+
+    # ---- 终审 #17/#21（用户裁定）------------------------------------------
+
+    def test_ics_uids_differ_per_member_with_own_numbers(self):
+        """#17：同任务两成员同日 UID 不同、各自 SUMMARY 数字正确。"""
+        invite2 = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.users[2]["username"], "role": "coder"},
+            headers=self.auth())
+        self.assertEqual(invite2.status_code, 201, invite2.text)
+        db_mod.init_db(self._member_db(2))  # setUp 只初始化 0/1
+        db_mod.upsert_articles(self._member_db(2), self.articles, [])
+        for index, screened in ((1, 1), (2, 4)):
+            self._put_target(index, daily_target=5)
+            self._seed(index, [(f"K{i}", "2026-11-08T08:00:00")
+                               for i in range(screened)])
+        feeds = {}
+        for index in (1, 2):
+            created = self.client.post(
+                f"/api/tasks/{self.task}/screening/ics-tokens",
+                headers=self.auth(index))
+            self.assertEqual(created.status_code, 200, created.text)
+            feeds[index] = created.json()["feed_path"]
+        texts = {index: self.client.get(path).content.decode("utf-8")
+                 for index, path in feeds.items()}
+
+        def uids(text):
+            return [line.strip() for line in text.split("\r\n")
+                    if line.startswith("UID:")]
+
+        uids_1, uids_2 = uids(texts[1]), uids(texts[2])
+        self.assertTrue(uids_1 and uids_2)
+        # 同日 UID 不同（跨订阅不合并/覆盖）
+        self.assertNotEqual(uids_1[0], uids_2[0])
+        self.assertFalse(set(uids_1) & set(uids_2))
+        # 各自 SUMMARY 数字正确（成员 1：1/5；成员 2：4/5）
+        self.assertIn("1/5 screened", texts[1])
+        self.assertIn("4/5 screened", texts[2])
+        # 不含成员名明文
+        for text in texts.values():
+            self.assertNotIn(self.users[1]["username"], text)
+            self.assertNotIn(self.users[2]["username"], text)
+
+    def test_ics_unknown_task_and_bad_token_share_identical_404(self):
+        """#21：未知任务与「已知任务+坏令牌」的 404 逐字节一致（无存在性 oracle）。
+
+        修复前：未知任务 → ``{"detail":"任务不存在。"}``，坏令牌 →
+        ``{"detail":"Not Found"}``（探针 u2-glm-c4/probe_ics_oracle.py 扫
+        16 个后缀即可区分任务存在性）。
+        """
+        prefix, _, _ = self.task.rpartition("-")
+        unknown = prefix + "-ffff"
+        self.assertNotEqual(unknown, self.task)
+
+        def fetch(task_id, token):
+            response = self.client.get(
+                f"/api/tasks/{task_id}/screening/daily-status.ics?token={token}")
+            return (response.status_code, response.content,
+                    response.headers.get("content-type"))
+
+        unknown_resp = fetch(unknown, "bad-token")
+        bad_token_resp = fetch(self.task, "bad-token")
+        no_token_resp = fetch(self.task, "")
+        self.assertEqual(unknown_resp[0], 404)
+        self.assertEqual(unknown_resp, bad_token_resp,
+                         "未知任务与坏令牌必须逐字节同形（状态码+响应体+类型）")
+        # 形状非法的 id（目录逃逸类）同一路径同形状
+        malformed = self.client.get(
+            "/api/tasks/..%2F..%2Fetc/screening/daily-status.ics?token=bad-token")
+        self.assertEqual((malformed.status_code, malformed.content,
+                          malformed.headers.get("content-type")), unknown_resp)
+        # 无令牌分支也同形（同状态码同体；query 缺省与空串等价）
+        self.assertEqual(no_token_resp[0], 404)
+        self.assertEqual(no_token_resp[1], unknown_resp[1])
 
     def test_ics_token_dies_when_member_removed_and_owner_can_revoke(self):
         invited = self.client.post(

@@ -18,6 +18,10 @@
 - S6/S7 三档结论与"新批重训"：每次尝试独立存档，publish 后金标准只读；
 - S8 阈值随结果快照存档（报告口径可追溯，绝不事后重算）；
 - S9/S10 maybe 只在训练里存在；任一方 maybe 或分歧 → borderline 边界案例。
+- 只认首次成绩（终审 #19 用户裁定）：交卷后同集仍可新开尝试（练习价值），
+  但 enforce 准入（``cleared``）、负责人看板结论计数、结果视图
+  ``my_result`` 与其方法学段、「讨论后进入」只认每套题的**首次** submitted
+  尝试；后续尝试带 ``counts_for_clearance=False`` / ``practice=True`` 标记。
 
 SQL 纪律：全部语句为固定字面量 + ``?`` 参数绑定，无 f-string/format/拼接。
 """
@@ -900,6 +904,10 @@ def _result_payload(conn: sqlite3.Connection, attempt: Mapping[str, Any]) -> dic
     entered = bool(row["entered_by_discussion"])
     view = dict(snapshot)
     view["entered_by_discussion"] = entered
+    # #19：该尝试是否本人本集的首次交卷（练习尝试 False，前端按结构化标记渲染）。
+    counting = _first_submitted_id(conn, int(attempt["set_id"]),
+                                   int(attempt["trainee_user_id"]))
+    counts = counting is not None and counting == int(attempt["id"])
     return {
         "attempt_id": int(attempt["id"]),
         "set_id": int(attempt["set_id"]),
@@ -911,6 +919,8 @@ def _result_payload(conn: sqlite3.Connection, attempt: Mapping[str, Any]) -> dic
         "thresholds": snapshot.get("thresholds") or dict(DEFAULT_THRESHOLDS),
         "items": snapshot.get("items") or [],
         "entered_by_discussion": entered,
+        "counts_for_clearance": counts,
+        "practice": not counts,
         "discussion_note": row["discussion_note"] or "",
         "discussed_at": row["discussed_at"] or "",
         "methodology": {"zh": methodology_text(view, lang="zh"),
@@ -962,11 +972,16 @@ def submit_attempt(conn: sqlite3.Connection, set_id: int, *,
 
 def my_result(conn: sqlite3.Connection, set_id: int, *,
               user_id: int) -> dict[str, Any]:
-    """本人最近一次已交卷结果（未交卷 → 409 ``attempt_not_submitted``）。"""
+    """本人**首次**已交卷结果（未交卷 → 409 ``attempt_not_submitted``）。
+
+    #19 裁定「只认首次成绩」：结果视图与方法学报告段只引用首次成绩——
+    同集后续交卷是练习（其即时结果随交卷响应给出并标 ``practice=true``，
+    历史里可见，但不改写结果视图）。
+    """
     _set_row(conn, set_id)
     rows = [dict(row) for row in conn.execute(
         "SELECT * FROM pilot_attempts WHERE set_id = ? AND trainee_user_id = ?"
-        " AND status = 'submitted' ORDER BY id DESC LIMIT 1",
+        " AND status = 'submitted' ORDER BY id ASC LIMIT 1",
         (int(set_id), int(user_id)))]
     if not rows:
         raise PilotScreeningError("attempt_not_submitted")
@@ -975,13 +990,16 @@ def my_result(conn: sqlite3.Connection, set_id: int, *,
 
 def enter_by_discussion(conn: sqlite3.Connection, set_id: int, *,
                         user_id: int, note: str = "") -> dict[str, Any]:
-    """临界档"讨论后进入"留痕（S7）：只有 borderline 需要/允许该动作。"""
+    """临界档"讨论后进入"留痕（S7）：只有 borderline 需要/允许该动作。
+
+    只作用于**首次**已交卷尝试（#19：练习尝试的 borderline 不构成准入）。
+    """
     _set_row(conn, set_id)
     attempt = None
     for row in conn.execute(
             "SELECT a.* FROM pilot_attempts a JOIN pilot_results r"
             " ON r.attempt_id = a.id WHERE a.set_id = ? AND a.trainee_user_id = ?"
-            " AND a.status = 'submitted' ORDER BY a.id DESC LIMIT 1",
+            " AND a.status = 'submitted' ORDER BY a.id ASC LIMIT 1",
             (int(set_id), int(user_id))):
         attempt = dict(row)
     if attempt is None:
@@ -1015,17 +1033,35 @@ def member_state(conn: sqlite3.Connection, *, set_id: int,
         " LEFT JOIN pilot_results r ON r.attempt_id = a.id"
         " WHERE a.set_id = ? AND a.trainee_user_id = ?"
         " ORDER BY a.id DESC LIMIT 1", (int(set_id), int(user_id))).fetchone()
+    # #19：计入门的结论只认本集首次交卷（加法键；``verdict`` 仍是最新档案的）。
+    first = conn.execute(
+        "SELECT r.verdict, r.entered_by_discussion FROM pilot_attempts a"
+        " JOIN pilot_results r ON r.attempt_id = a.id"
+        " WHERE a.set_id = ? AND a.trainee_user_id = ? AND a.status = 'submitted'"
+        " ORDER BY a.id ASC LIMIT 1", (int(set_id), int(user_id))).fetchone()
+    clearance = {
+        "clearance_verdict": first["verdict"] if first is not None else None,
+        "clearance_entered_by_discussion": (
+            bool(first["entered_by_discussion"]) if first is not None else False),
+    }
     if row is None:
         return {"attempt_id": None, "attempt_status": None, "verdict": None,
-                "entered_by_discussion": False}
+                "entered_by_discussion": False, **clearance}
     return {"attempt_id": int(row["attempt_id"]),
             "attempt_status": row["attempt_status"],
             "verdict": row["verdict"],
-            "entered_by_discussion": bool(row["entered_by_discussion"])}
+            "entered_by_discussion": bool(row["entered_by_discussion"]),
+            **clearance}
 
 
 def results_board(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
-    """负责人看板：每人最新 + 历史结论（只给结论，不给逐条原答案）。"""
+    """负责人看板：每人首次（计入门）+ 最新 + 全部历史（只给结论与指标）。
+
+    #19 裁定「只认首次成绩」：``summary`` 的三档结论计数与每成员的
+    ``first``/``clearance_verdict`` 只统计每人**首次** submitted 尝试；
+    ``latest`` 与逐条 ``attempts`` 仍完整保留（练习档案带
+    ``counts_for_clearance=False`` 标注，不给逐条原答案）。
+    """
     _set_row(conn, set_id)
     rows = [dict(row) for row in conn.execute(
         "SELECT a.id AS attempt_id, a.trainee_user_id, a.status, a.started_at,"
@@ -1033,20 +1069,36 @@ def results_board(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
         " FROM pilot_attempts a LEFT JOIN pilot_results r ON r.attempt_id = a.id"
         " WHERE a.set_id = ? ORDER BY a.trainee_user_id, a.id",
         (int(set_id),))]
+    # 每成员首次 submitted 尝试 id（结论计数只认它）。
+    first_ids: dict[int, int] = {}
+    for row in rows:
+        if row["status"] == "submitted":
+            member_id = int(row["trainee_user_id"])
+            attempt_id = int(row["attempt_id"])
+            if member_id not in first_ids or attempt_id < first_ids[member_id]:
+                first_ids[member_id] = attempt_id
     members: dict[int, dict[str, Any]] = {}
-    summary = {"attempts": 0, "submitted": 0, "passed": 0, "borderline": 0,
-               "failed": 0}
+    summary = {"attempts": 0, "submitted": 0, "practice_submitted": 0,
+               "passed": 0, "borderline": 0, "failed": 0, "cleared": 0}
     for row in rows:
         summary["attempts"] += 1
-        entry = members.setdefault(int(row["trainee_user_id"]), {
-            "user_id": int(row["trainee_user_id"]), "attempts": [],
-            "latest": None})
+        member_id = int(row["trainee_user_id"])
+        # #19：练习标记只落在「已交卷且非首次」的行；in_progress 行既不计入门
+        # 也不是练习（一旦交卷即正式首考）。
+        counts = (row["status"] == "submitted"
+                  and first_ids.get(member_id) == int(row["attempt_id"]))
+        practice = row["status"] == "submitted" and not counts
+        entry = members.setdefault(member_id, {
+            "user_id": member_id, "attempts": [], "latest": None,
+            "first": None, "clearance_verdict": None, "cleared": False})
         attempt = {"attempt_id": int(row["attempt_id"]),
                    "status": row["status"],
                    "started_at": row["started_at"],
                    "submitted_at": row["submitted_at"] or "",
                    "verdict": row["verdict"],
-                   "entered_by_discussion": bool(row["entered_by_discussion"])}
+                   "entered_by_discussion": bool(row["entered_by_discussion"]),
+                   "counts_for_clearance": bool(counts),
+                   "practice": bool(practice)}
         if row["snapshot_json"]:
             snapshot = json.loads(row["snapshot_json"] or "{}")
             metrics = snapshot.get("metrics") or {}
@@ -1060,36 +1112,65 @@ def results_board(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
         entry["attempts"].append(attempt)
         if row["status"] == "submitted":
             summary["submitted"] += 1
-            verdict = row["verdict"]
-            if verdict == "pass":
-                summary["passed"] += 1
-            elif verdict == "borderline":
-                summary["borderline"] += 1
-            elif verdict == "fail":
-                summary["failed"] += 1
+            if not counts:
+                summary["practice_submitted"] += 1
             entry["latest"] = attempt
+            if counts:
+                # 方法学结论只认首次交卷（#19）。
+                entry["first"] = attempt
+                verdict = row["verdict"]
+                entry["clearance_verdict"] = verdict
+                if verdict == "pass":
+                    summary["passed"] += 1
+                elif verdict == "borderline":
+                    summary["borderline"] += 1
+                elif verdict == "fail":
+                    summary["failed"] += 1
+                if verdict == "pass" or attempt["entered_by_discussion"]:
+                    entry["cleared"] = True
+                    summary["cleared"] += 1
     return {"members": [members[key] for key in sorted(members)],
             "summary": summary}
 
 
 def member_history(conn: sqlite3.Connection, *, user_id: int) -> list[dict[str, Any]]:
-    """本人全部训练尝试（跨训练集，最新在前）——进步对比用。"""
+    """本人全部训练尝试（跨训练集，最新在前）——进步对比用。
+
+    #19：每行带 ``counts_for_clearance``（本集首次交卷才 True）与
+    ``practice``（练习标记，前端用词典键 ``pilot.attempt_practice`` 渲染
+    「练习，不计入门」）；练习尝试照常列出（保留练习价值）。
+    """
     rows = conn.execute(
         "SELECT a.id AS attempt_id, a.set_id, a.status, a.started_at,"
         " a.submitted_at, s.status AS set_status, s.sampling, s.size,"
         " r.snapshot_json, r.verdict, r.entered_by_discussion"
         " FROM pilot_attempts a JOIN pilot_sets s ON s.id = a.set_id"
         " LEFT JOIN pilot_results r ON r.attempt_id = a.id"
-        " WHERE a.trainee_user_id = ? ORDER BY a.id DESC", (int(user_id),))
+        " WHERE a.trainee_user_id = ? ORDER BY a.id DESC", (int(user_id),)).fetchall()
+    first_ids: dict[int, int] = {}
+    for row in rows:
+        if row["status"] == "submitted":
+            set_id = int(row["set_id"])
+            attempt_id = int(row["attempt_id"])
+            if set_id not in first_ids or attempt_id < first_ids[set_id]:
+                first_ids[set_id] = attempt_id
     history = []
     for row in rows:
-        item = {"attempt_id": int(row["attempt_id"]), "set_id": int(row["set_id"]),
+        attempt_id = int(row["attempt_id"])
+        # #19：练习标记只对「已交卷且非首次」为 True；in_progress 行
+        # counts_for_clearance=False 且 practice=False（交卷后才定性）。
+        counts = (row["status"] == "submitted"
+                  and first_ids.get(int(row["set_id"])) == attempt_id)
+        practice = row["status"] == "submitted" and not counts
+        item = {"attempt_id": attempt_id, "set_id": int(row["set_id"]),
                 "status": row["status"], "set_status": row["set_status"],
                 "sampling": row["sampling"], "size": int(row["size"]),
                 "started_at": row["started_at"],
                 "submitted_at": row["submitted_at"] or "",
                 "verdict": row["verdict"],
                 "entered_by_discussion": bool(row["entered_by_discussion"]),
+                "counts_for_clearance": bool(counts),
+                "practice": bool(practice),
                 "kappa_binary": None, "agreement": None, "pabak": None}
         if row["snapshot_json"]:
             metrics = (json.loads(row["snapshot_json"] or "{}").get("metrics") or {})
@@ -1104,12 +1185,34 @@ def member_history(conn: sqlite3.Connection, *, user_id: int) -> list[dict[str, 
 # enforce_pass 拦截（S2）：正式初筛写入口的三态判定
 # ---------------------------------------------------------------------------
 
+def _first_submitted_id(conn: sqlite3.Connection, set_id: int,
+                        user_id: int) -> int | None:
+    """某成员在某训练集的**首次已交卷尝试** id（无交卷 → None）。
+
+    终审 #19 裁定「只认首次成绩」：准入（cleared/enforce）、负责人看板的
+    方法学结论与方法学报告段一律以这个尝试为准；后续尝试是练习档案，
+    在历史里以 ``counts_for_clearance=False`` 标注。
+    """
+    row = conn.execute(
+        "SELECT MIN(id) FROM pilot_attempts"
+        " WHERE set_id = ? AND trainee_user_id = ? AND status = 'submitted'",
+        (int(set_id), int(user_id))).fetchone()
+    return int(row[0]) if row is not None and row[0] is not None else None
+
+
 def cleared(conn: sqlite3.Connection, *, user_id: int) -> bool:
-    """本任务是否已有"达标或已留痕讨论进入"记录（跨训练集）。"""
+    """本任务是否已有"达标或已留痕讨论进入"记录（跨训练集）。
+
+    只认每套题的**首次** submitted 尝试（终审 #19）：交卷揭示金标准后
+    同集照抄重得的 pass 不再解锁 enforce 闸。
+    """
     row = conn.execute(
         "SELECT 1 FROM pilot_results r JOIN pilot_attempts a"
         " ON a.id = r.attempt_id"
         " WHERE a.trainee_user_id = ?"
+        " AND a.id = (SELECT MIN(a2.id) FROM pilot_attempts a2"
+        "  WHERE a2.set_id = a.set_id AND a2.trainee_user_id = a.trainee_user_id"
+        "  AND a2.status = 'submitted')"
         " AND (r.verdict = 'pass' OR r.entered_by_discussion = 1) LIMIT 1",
         (int(user_id),)).fetchone()
     return row is not None

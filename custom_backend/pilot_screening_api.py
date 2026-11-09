@@ -9,6 +9,10 @@
   publish/archive/看板）；desktop 模式 legacy 任务（无属主记录）本人全权，
   server 模式 legacy 任务写 409 ``legacy_owner_unset``；
 - 学员只能读自己的尝试/结果；负责人可看看板（结论，不含逐条原答案）。
+- 题录池（建集抽样/my-attempt 题录）= 属主个人库；desktop legacy 任务回退
+  本人库（终审 #12）。
+- 只认首次成绩（终审 #19）：enforce 准入、看板结论、my-result 与方法学段
+  只认每套题的首次交卷；后续交卷是练习（``practice=true``）。
 
 盲纪律（评审红线，设计 §六）：``my-attempt`` 载荷只有题录字段与本人作答；
 未交卷取结果 409；publish 后金标准只读；成员互不可见他人在途尝试。
@@ -244,12 +248,32 @@ def register_pilot_screening_routes(
             raise _error(503, "storage_unavailable") from None
 
     # ---- 文献目录（题录元数据与 random 抽样池） --------------------------
-    def _catalog(info) -> dict[str, dict[str, Any]]:
-        owner = _owner_record(info)
-        if owner is None or screener_db is None:
+    def _catalog(info, user: dict) -> dict[str, dict[str, Any]]:
+        """题录池 = 属主个人库；属主解析失败且非 server 模式时回退本人库。
+
+        终审 #12（用户裁定「回退本人库」）：desktop 模式 legacy 任务（无
+        协作库/无属主记录）权限层按本人全权放行，题录池也必须落在本人库，
+        否则 curated/random/mixed 建集全部 400（池恒空）。模式对齐
+        ``highlight_api._find_article`` 的属主→本人回退；只拼路径
+        （``ensure=False``），不建库。server 模式 legacy 不回退（全局闸门
+        先行 409 ``collaboration_owner_unset``，此处保持空池防御口径）。
+        """
+        if screener_db is None:
             return {}
         try:
-            path = screener_db(info, owner["owner_username"], ensure=False)
+            owner = _owner_record(info)
+        except HTTPException:
+            if _server():
+                raise  # server：属主不可读仍是可重试 503，不回退
+            owner = None
+        if owner is not None:
+            username = str(owner["owner_username"])
+        elif not _server():
+            username = str(user["username"])
+        else:
+            return {}
+        try:
+            path = screener_db(info, username, ensure=False)
         except (HTTPException, OSError):
             return {}
         if not Path(path).is_file():
@@ -299,7 +323,7 @@ def register_pilot_screening_routes(
                          user: dict = Depends(require_user)) -> dict:
         info = _owner_info(task_id, user)
         with closing(_open(info, write=True)) as conn:
-            catalog = _catalog(info)
+            catalog = _catalog(info, user)
             created = _run(core.create_set, conn, actor_id=user["user_id"],
                            available_keys=sorted(catalog), size=body.size,
                            sampling=body.sampling, seed=body.seed,
@@ -403,7 +427,7 @@ def register_pilot_screening_routes(
         with closing(_open(info)) as conn:
             queue = _run(core.attempt_queue, conn, set_id,
                          user_id=user["user_id"])
-        catalog = _catalog(info)
+        catalog = _catalog(info, user)
         for item in queue["items"]:
             article = catalog.get(item["zotero_key"])
             for field in ATTEMPT_ITEM_FIELDS:

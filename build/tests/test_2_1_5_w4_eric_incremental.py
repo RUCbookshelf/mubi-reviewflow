@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -48,7 +49,7 @@ from coscreen import review_imports as review_store  # noqa: E402
 from coscreen import review_workflow as wf  # noqa: E402
 from coscreen.parsers.ris_parser import parse_ris  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
-from custom_backend.main import app  # noqa: E402
+from custom_backend.main import DATA_DIR, app  # noqa: E402
 
 # 未实现前下面这行即红：W4 的 ERIC 增量模块与纯函数。
 from coscreen.eric_incremental import diff_new_records, normalize_key  # noqa: E402
@@ -100,6 +101,12 @@ def eric_payload(docs, total=None):
         "start": 0,
         "docs": docs,
     }}).encode("utf-8")
+
+
+def _request_start(url: str) -> int:
+    """从 ERIC 请求 URL 里取 start 参数（断点续查钉的页起点断言用）。"""
+    parsed = urllib.parse.urlsplit(url)
+    return int(urllib.parse.parse_qs(parsed.query).get("start", ["0"])[0])
 
 
 class FakeEricChannel:
@@ -373,6 +380,11 @@ class _Base(unittest.TestCase):
         return self.client.get(f"/api/tasks/{self.task}/import-batches",
                                headers=self.auth).json()["total"]
 
+    def _task_dir(self) -> Path:
+        from coscreen import tasks as tasks_mod
+
+        return tasks_mod.find_task(self.task, DATA_DIR).dir
+
 
 class CheckNowEricEndpointPins(_Base):
     def test_eri_increment_stages_protected_import(self):
@@ -527,11 +539,261 @@ class CheckNowEricEndpointPins(_Base):
         self.assertEqual(body["limit"], 500)
         self.assertEqual(body["scanned"], 500)
         self.assertEqual(body["total_hits"], 800)
+        # 旧 → 新（#61 断点续查）：warning params 追加 ``remaining``（剩余未
+        # 比对条数），旧三键原样保留；响应新增 scan_start/remaining_hits/
+        # scan_next（测试替身快照无 scan_next → 按剩余量推导）。
         self.assertIn({"message_key": "living_review.eric.truncated",
                        "params": {"scanned": 500, "limit": 500,
-                                  "total_hits": 800}},
+                                  "total_hits": 800, "remaining": 300}},
                       body["warnings"])
         self.assertTrue(body["history_entry"]["truncated"])
+
+    def test_truncation_breakpoint_resumes_and_exhausts(self):
+        """终审 #61（用户裁定：断点续查）：505 条 → 首查 500+剩余 5 → 续查只查 5。
+
+        修复前：无持久化断点，每次 check-now 恒从 start=0 拉前 500 条
+        （探针 u7-deepseek-c4/probe_eric_trunc.py：三次检查请求全为
+        start=0/200/400，rank≥500 永不请求）；修复后断点落在
+        living_review.json 的 ``eric_scan``，续查从 500 起且差集正确。
+        """
+        strategy = self._eric_strategy(query='title:("wide")')
+        self._mark_researched()
+        docs = [eric_doc(f"EJ{6000000 + i}") for i in range(505)]
+        channel = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", channel):
+            first = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                     json={"strategy_id": strategy["id"]})
+        self.assertEqual(first.status_code, 200, first.text)
+        body = first.json()
+        self.assertTrue(body["baseline"])
+        self.assertEqual(body["scanned"], 500)
+        self.assertTrue(body["truncated"])
+        self.assertEqual(body["remaining_hits"], 5)
+        self.assertEqual(body["scan_start"], 0)
+        self.assertEqual(body["scan_next"], 500)
+        self.assertEqual(body["fetched"], 500)
+        self.assertEqual(body["import"]["pending_records"], 500)
+        # 断点已持久化在 living_review.json（既有存储落点，幂等可重写）
+        state = json.loads((self._task_dir() / "living_review.json")
+                           .read_text(encoding="utf-8"))
+        cursor = state["eric_scan"][f"s{strategy['id']}"]
+        self.assertEqual(cursor["offset"], 500)
+        self.assertEqual(cursor["total_hits"], 505)
+        # 首查只请求 0/200/400 三页
+        self.assertEqual([_request_start(url) for url in channel.calls],
+                         [0, 200, 400])
+
+        # 续查：从断点 500 继续，只请求 5 条；差集只含尾部 5 条（前 500
+        # 已在待审源记录里 = 已知键，不重复）
+        channel2 = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", channel2):
+            second = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                      json={"strategy_id": strategy["id"]})
+        self.assertEqual(second.status_code, 200, second.text)
+        tail = second.json()
+        self.assertEqual(tail["scan_start"], 500)
+        self.assertEqual(tail["scanned"], 5)
+        self.assertFalse(tail["truncated"])
+        self.assertEqual(tail["remaining_hits"], 0)
+        self.assertEqual(tail["scan_next"], 0)
+        self.assertEqual(tail["fetched"], 5)
+        self.assertEqual([_request_start(url) for url in channel2.calls], [500])
+        keys = [row["incoming_key"] for row in self._source_records()]
+        self.assertEqual(len(keys), 505)
+        self.assertEqual(len(set(keys)), 505, "已知键不得重复导入")
+        # 整段比完 → 游标清零（下次回头部捕获新命中）
+        state = json.loads((self._task_dir() / "living_review.json")
+                           .read_text(encoding="utf-8"))
+        self.assertEqual(state.get("eric_scan"), {})
+        # 预览与 check-now 同一起点：此刻游标已清零 → 预览从 0 起且只读不推进
+        channel3 = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", channel3):
+            preview = self.client.get(
+                f"{self.base}/preview", headers=self.auth,
+                params={"source": "eric", "strategy_id": strategy["id"]})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["scan_start"], 0)
+        self.assertEqual([_request_start(url) for url in channel3.calls],
+                         [0, 200, 400])
+
+    def test_shrunk_hits_clear_stale_cursor_without_error(self):
+        """上游命中数缩到断点之下：不 409、增量 0、陈旧游标自愈清零。"""
+        strategy = self._eric_strategy(query='title:("shrink")')
+        self._mark_researched()
+        docs = [eric_doc(f"EJ{7000000 + i}") for i in range(520)]
+        channel = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", channel):
+            first = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                     json={"strategy_id": strategy["id"]})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["remaining_hits"], 20)
+        # 上游重组后只剩 300 条（< 断点 500）：续查空页 → 增量 0、游标清零
+        channel2 = FakeEricChannel(docs[:300], total=300)
+        with mock.patch.object(eric_api, "_open", channel2):
+            second = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                      json={"strategy_id": strategy["id"]})
+        self.assertEqual(second.status_code, 200, second.text)
+        body = second.json()
+        self.assertEqual(body["scanned"], 0)
+        self.assertFalse(body["truncated"])
+        self.assertEqual(body["message_key"], "living_review.eric.increment_none")
+        state = json.loads((self._task_dir() / "living_review.json")
+                           .read_text(encoding="utf-8"))
+        self.assertEqual(state.get("eric_scan"), {})
+
+    def test_preview_query_only_uses_same_cursor_as_check_now(self):
+        """终审第 7 波复审（阻断）：query-only 预览与 check-now 同一起点。
+
+        修复前（R1 实现）：check-now 把 query 精确匹配到订阅条目用 ``s<id>``
+        游标键，preview(query only) 却用 ``q<指纹>`` 键 → 预览显示「从第 1 条
+        起、预计新增 0 条」而紧接着的 check-now 从断点 500 续查并导入 5 条
+        （复审探针 probe_61_preview_consistency.py 实测 RED）。
+        """
+        strategy = self._eric_strategy(query='title:("wide-rev")')
+        self._mark_researched()
+        docs = [eric_doc(f"EJ{6100000 + i}") for i in range(505)]
+        channel = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", channel):
+            first = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                     json={"strategy_id": strategy["id"]})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["scan_next"], 500)
+        # preview(strategy_id) 与 preview(query only) 与 check-now(query only)
+        # 三者必须同一断点起点（500）
+        for params, want_start, want_requests in (
+                ({"source": "eric", "strategy_id": strategy["id"]}, 500, [500]),
+                ({"source": "eric", "query": 'title:("wide-rev")'}, 500, [500])):
+            ch = FakeEricChannel(docs)
+            with mock.patch.object(eric_api, "_open", ch):
+                preview = self.client.get(f"{self.base}/preview",
+                                          headers=self.auth, params=params)
+            self.assertEqual(preview.status_code, 200, preview.text)
+            body = preview.json()
+            self.assertEqual(body["scan_start"], want_start, params)
+            self.assertEqual([_request_start(url) for url in ch.calls],
+                             want_requests, params)
+        ch = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", ch):
+            check = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                     json={"source": "eric",
+                                           "query_string": 'title:("wide-rev")'})
+        self.assertEqual(check.status_code, 200, check.text)
+        self.assertEqual(check.json()["scan_start"], 500)
+        self.assertEqual([_request_start(url) for url in ch.calls], [500])
+
+    def test_edited_query_text_resets_breakpoint(self):
+        """终审第 7 波复审（残留）：条目 query_text 原地修改 → 旧断点失效。
+
+        修复前（R1 实现）：游标只按 strategy id 键控、不绑定文本；改检索式后
+        旧断点（500）仍生效，新命中集被从头跳过 500 条。
+        """
+        strategy = self._eric_strategy(query='title:("before-edit")')
+        self._mark_researched()
+        docs = [eric_doc(f"EJ{6200000 + i}") for i in range(520)]
+        channel = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", channel):
+            first = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                     json={"strategy_id": strategy["id"]})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["scan_next"], 500)
+        state = json.loads((self._task_dir() / "living_review.json")
+                           .read_text(encoding="utf-8"))
+        self.assertEqual(state["eric_scan"][f"s{strategy['id']}"]["offset"], 500)
+        # 条目检索式原地修改（同一 id、不同文本 → 不同命中集）
+        from coscreen.search_strategy import store_path as strategy_store_path
+
+        lib = strategy_store_path(self._task_dir())
+        with closing(sqlite3.connect(lib)) as conn:
+            conn.execute("UPDATE search_strategies SET query_text = ?"
+                         " WHERE id = ?", ('title:("after-edit")', strategy["id"]))
+            conn.commit()
+        ch = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", ch):
+            second = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                      json={"strategy_id": strategy["id"]})
+        self.assertEqual(second.status_code, 200, second.text)
+        body = second.json()
+        # 新检索式的首次检查从第 1 条起（旧断点不属于这份命中集）
+        self.assertEqual(body["scan_start"], 0)
+        self.assertEqual([_request_start(url) for url in ch.calls], [0, 200, 400])
+        # 改回原文：每条目单槽游标已被改文本那次的断点覆盖（500/after-edit），
+        # 指纹不匹配 → 头部重扫（安全自愈：重扫的是已知键，增量 0，不漏尾部）
+        with closing(sqlite3.connect(lib)) as conn:
+            conn.execute("UPDATE search_strategies SET query_text = ?"
+                         " WHERE id = ?", ('title:("before-edit")', strategy["id"]))
+            conn.commit()
+        ch2 = FakeEricChannel(docs)
+        with mock.patch.object(eric_api, "_open", ch2):
+            third = self.client.post(f"{self.base}/check-now", headers=self.auth,
+                                     json={"strategy_id": strategy["id"]})
+        self.assertEqual(third.status_code, 200, third.text)
+        self.assertEqual(third.json()["scan_start"], 0)
+        self.assertEqual([_request_start(url) for url in ch2.calls], [0, 200, 400])
+        state = json.loads((self._task_dir() / "living_review.json")
+                           .read_text(encoding="utf-8"))
+        cursor = state["eric_scan"][f"s{strategy['id']}"]
+        self.assertEqual(cursor["offset"], 500)
+        self.assertEqual(cursor["query_sha"],
+                         eric_inc.scan_query_fingerprint('title:("before-edit")'))
+
+    def test_preview_storage_failure_maps_503_both_addressings(self):
+        """终审第 7 波 R3：检索式库损坏时 query-only 预览不得 500。
+
+        R2 引入 match_subscribed_eric_strategy 后未包 ensure_library 的
+        SearchStrategyError/sqlite3.Error：strategy_id 预览 503
+        ``storage_unavailable`` 而 query-only 预览落到全局兜底 500
+        （复审探针 probe_61_preview_broken_lib.py 实测）。
+        """
+        strategy = self._eric_strategy(query='title:("broken-lib")')
+        from coscreen.search_strategy import store_path as strategy_store_path
+
+        lib = strategy_store_path(self._task_dir())
+        self.assertTrue(lib.is_file())
+        lib.write_bytes(b"this is not a sqlite database" * 10)
+        by_id = self.client.get(
+            f"{self.base}/preview", headers=self.auth,
+            params={"source": "eric", "strategy_id": strategy["id"]})
+        self.assertEqual(by_id.status_code, 503, by_id.text)
+        self.assertEqual(by_id.json()["detail"]["error_code"],
+                         "storage_unavailable")
+        by_query = self.client.get(
+            f"{self.base}/preview", headers=self.auth,
+            params={"source": "eric", "query": 'title:("broken-lib")'})
+        # 同一存储故障：两种寻址同一 503 形状，绝不 500
+        self.assertEqual(by_query.status_code, 503, by_query.text)
+        self.assertEqual(by_query.json()["detail"], by_id.json()["detail"])
+
+    def test_preview_query_only_library_side_effect_is_disclosed(self):
+        """R3 披露钉：query-only 预览与 check-now 同解析（必要时建/迁检索式库）。
+
+        预览是 GET 但与 check-now 用同一 writable ensure_library（保证条目
+        匹配与断点键恒一致）；副作用 = 幂等建库/迁移，契约 §四已如实披露。
+        """
+        fresh = self.client.post(
+            "/api/tasks", json={"name": "w4-preview-lib-side-effect"},
+            headers=self.auth).json()["task_id"]
+        from coscreen.search_strategy import store_path as strategy_store_path
+        from coscreen import tasks as tasks_mod
+
+        task_dir = tasks_mod.find_task(fresh, DATA_DIR).dir
+        lib = strategy_store_path(task_dir)
+        self.assertFalse(lib.is_file())
+        channel = FakeEricChannel([eric_doc("EJ6300001")])
+        with mock.patch.object(eric_api, "_open", channel):
+            response = self.client.get(
+                f"/api/tasks/{fresh}/living-review/preview", headers=self.auth,
+                params={"source": "eric", "query": 'title:("any")'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(lib.is_file(), "契约披露的建库副作用必须如实发生")
+        first_mtime = lib.stat().st_mtime_ns
+        with mock.patch.object(eric_api, "_open", FakeEricChannel(
+                [eric_doc("EJ6300001")])):
+            again = self.client.get(
+                f"/api/tasks/{fresh}/living-review/preview", headers=self.auth,
+                params={"source": "eric", "query": 'title:("any")'})
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(lib.stat().st_mtime_ns, first_mtime,
+                         "二次预览零额外写入（幂等）")
 
     def test_failure_409_shape_matches_pubmed(self):
         eric_strategy = self._eric_strategy()

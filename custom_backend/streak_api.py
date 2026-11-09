@@ -17,7 +17,10 @@
   ``DELETE …/{token_id}`` 撤销。
 - ``GET  /api/tasks/{task_id}/screening/daily-status.ics?token=``
   **认证外只读** ICS（未来 90 天每日提醒）；摘要只含数字，绝不含文献内容；
-  令牌缺失/超长/无效/撤销/属主已非任务成员一律 404（同一形状）。
+  任务不存在与令牌缺失/超长/无效/撤销/属主已非任务成员一律 404——状态码、
+  响应体逐字节同一形状（#21：认证外端点不得成为任务存在性 oracle）。
+  事件 UID 混入成员标识哈希前缀（#17）：同任务不同成员 UID 不同、
+  不含成员名明文。
 - ``GET/PUT /api/tasks/{task_id}/screening/notify/channels``
   负责人级通知通道配置（默认关）；凭据只存环境变量名。
 - ``POST /api/tasks/{task_id}/screening/notify/test``
@@ -562,14 +565,24 @@ def register_streak_routes(
     @app.get("/api/tasks/{task_id}/screening/daily-status.ics")
     def daily_status_ics(task_id: str,
                          token: str = Query("")) -> Response:
-        """认证外的只读订阅源：令牌即能力；无效/撤销/属主已非成员一律 404。
+        """认证外的只读订阅源：令牌即能力；一律同一 404 形状。
 
+        任务不存在与令牌缺失/超长/无效/撤销/属主已非成员全部返回逐字节相同
+        的 ``404 {"detail":"Not Found"}``（#21 统一形状：不泄露任务存在性）。
         长度在 handler 内判定（不用 Query 校验），保证任何坏令牌都得到同一个
         404 形状，而不是 422。
         """
         if not token or len(token) > 256:
             raise HTTPException(404, "Not Found")
-        info = task_or_404(task_id)
+        # #21（裁定：统一形状）：任务不存在与令牌错误走同一 404 形状
+        # （同状态码、同响应体），否则认证外端点成为任务存在性 oracle
+        # （任务 id = 任务名 slug + 4 位十六进制，~65536 次尝试即可枚举）。
+        # 先查任务、后验令牌的顺序保持不变——只是把 task_or_404 的
+        # ``{"detail":"任务不存在。"}`` 改写成与令牌侧一致的 ``"Not Found"``。
+        try:
+            info = task_or_404(task_id)
+        except HTTPException:
+            raise HTTPException(404, "Not Found") from None
         try:
             records = _load_tokens(info)
         except HTTPException:
@@ -606,6 +619,7 @@ def register_streak_routes(
             remind_time=payload["remind_time"],
             timezone_name=payload["timezone"] or "",
             numbers=numbers,
+            member=screener,
             now_utc=datetime.now(timezone.utc),
         )
         return Response(

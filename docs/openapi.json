@@ -30382,7 +30382,7 @@
     },
     "/api/tasks/{task_id}/screening/daily-status.ics": {
       "get": {
-        "description": "认证外的只读订阅源：令牌即能力；无效/撤销/属主已非成员一律 404。\n\n长度在 handler 内判定（不用 Query 校验），保证任何坏令牌都得到同一个\n404 形状，而不是 422。",
+        "description": "认证外的只读订阅源：令牌即能力；一律同一 404 形状。\n\n任务不存在与令牌缺失/超长/无效/撤销/属主已非成员全部返回逐字节相同\n的 ``404 {\"detail\":\"Not Found\"}``（#21 统一形状：不泄露任务存在性）。\n长度在 handler 内判定（不用 Query 校验），保证任何坏令牌都得到同一个\n404 形状，而不是 422。",
         "operationId": "daily_status_ics_api_tasks__task_id__screening_daily_status_ics_get",
         "parameters": [
           {

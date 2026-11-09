@@ -31,6 +31,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -592,6 +593,17 @@ class StateMachinePins(PilotApiBase):
         self.assertEqual(blocked.json()["detail"]["error_code"], "set_archived")
 
     def test_multiple_attempts_are_isolated(self):
+        """多尝试隔离 + 只认首次成绩（终审 #19 用户裁定，等强度换钉）。
+
+        旧 → 新（逐条对应，断言条数不减）：
+        - 旧：第二次交卷后 my-result「切到最新」= last.attempt_id
+          → 新：my-result **恒为首次交卷**（first.attempt_id，counts_for_clearance=True）；
+        - 旧：history["cleared"] is True（首考 fail、重考照抄 pass 即放行）
+          → 新：history["cleared"] is False（只认首次；首考 fail 不因练习 pass 解锁）；
+        - 新增：第二次交卷响应 practice=True / counts_for_clearance=False；
+          历史两次都在且标记正确（首次 counts=True，练习 counts=False）。
+        其余断言（新档案 id 不同、答案从零开始、未交卷不覆盖已交卷结果）原样保留。
+        """
         set_id = self.ready_set()
         gold = self.gold_map(set_id)
         self.start_attempt(set_id)
@@ -601,28 +613,47 @@ class StateMachinePins(PilotApiBase):
         self.answer_items(set_id, wrong)
         first = self.submit(set_id)
         self.assertEqual(first["verdict"], "fail")
-        # 第二次：新档案，答案从零开始
+        self.assertTrue(first["counts_for_clearance"])
+        self.assertFalse(first["practice"])
+        # 第二次：新档案，答案从零开始（交卷后仍可同集新开尝试——保留练习价值）
         second = self.start_attempt(set_id)
         self.assertNotEqual(second["attempt"]["id"], first["attempt_id"])
         queue = self.api(f"/pilot/sets/{set_id}/my-attempt", index=1).json()
         self.assertTrue(all(item["answer"] is None for item in queue["items"]))
         self.assertEqual(queue["progress"]["answered"], 0)
+        # R2 复审：in_progress 行不是练习（practice=False；交卷后才定性）
+        inprogress = self.api("/pilot/my-history", index=1).json()["attempts"][0]
+        self.assertEqual(inprogress["status"], "in_progress")
+        self.assertEqual((inprogress["counts_for_clearance"],
+                          inprogress["practice"]), (False, False))
+        board_mid = self.api(f"/pilot/sets/{set_id}/results").json()
+        self.assertEqual(
+            [(row["status"], row["counts_for_clearance"], row["practice"])
+             for row in board_mid["members"][0]["attempts"]],
+            [("submitted", True, False), ("in_progress", False, False)])
         # 未交卷的新尝试不覆盖已交卷结果：my-result 仍是第一次的历史归档
         still_first = self.api(f"/pilot/sets/{set_id}/my-result", index=1)
         self.assertEqual(still_first.status_code, 200, still_first.text)
         self.assertEqual(still_first.json()["result"]["attempt_id"],
                          first["attempt_id"])
-        # 交卷第二次后切到最新
+        # 交卷第二次（照抄金标准 → pass）：只是练习，结果视图仍是首次
         self.answer_items(set_id, dict(gold))
         last = self.submit(set_id)
         self.assertEqual(last["verdict"], "pass")
-        self.assertEqual(self.api(f"/pilot/sets/{set_id}/my-result",
-                                  index=1).json()["result"]["attempt_id"],
-                         last["attempt_id"])
+        self.assertTrue(last["practice"])
+        self.assertFalse(last["counts_for_clearance"])
+        official = self.api(f"/pilot/sets/{set_id}/my-result", index=1).json()["result"]
+        self.assertEqual(official["attempt_id"], first["attempt_id"])
+        self.assertEqual(official["verdict"], "fail")
+        self.assertTrue(official["counts_for_clearance"])
         history = self.api("/pilot/my-history", index=1).json()
         self.assertEqual([row["attempt_id"] for row in history["attempts"]],
                          [last["attempt_id"], first["attempt_id"]])
-        self.assertTrue(history["cleared"])
+        flags = {row["attempt_id"]: (row["counts_for_clearance"], row["practice"])
+                 for row in history["attempts"]}
+        self.assertEqual(flags, {first["attempt_id"]: (True, False),
+                                 last["attempt_id"]: (False, True)})
+        self.assertFalse(history["cleared"])
 
     def test_submit_requires_every_item_answered(self):
         set_id = self.ready_set()
@@ -761,6 +792,121 @@ class EnforcePins(PilotApiBase):
         response = self.post("/decisions",
                              {"zotero_key": "K02", "decision": "exclude"}, index=1)
         self.assertEqual(response.status_code, 200, response.text)
+
+    # ---- 终审 #19（用户裁定：只认首次成绩）---------------------------------
+    def _wrong_answers(self, set_id: int) -> dict[str, str]:
+        return {key: ("exclude" if decision == "include" else "include")
+                for key, decision in self.gold_map(set_id).items()}
+
+    def test_first_fail_then_copied_retake_pass_stays_blocked(self):
+        """首考 fail → 照抄金标准重考 pass：enforce 仍拦截、看板结论仍 fail。
+
+        修复前：cleared() 认任意一次 pass → 重考后 POST /decisions 200（探针
+        u2-glm-c1/probe_pilot_retake.py 实测），看板 summary.passed=1。
+        """
+        self.enable_pilot(enforce=True)
+        set_id = self.ready_set()
+        self.start_attempt(set_id)
+        self.answer_items(set_id, self._wrong_answers(set_id))
+        first = self.submit(set_id)
+        self.assertEqual(first["verdict"], "fail")
+        # 交卷后揭示金标准 → 同集新开尝试照抄（练习，允许）
+        revealed = self.api(f"/pilot/sets/{set_id}/my-result", index=1).json()
+        copied = {row["zotero_key"]: row["gold_decision"]
+                  for row in revealed["result"]["items"]}
+        self.assertEqual(copied, self.gold_map(set_id))
+        self.start_attempt(set_id)
+        self.answer_items(set_id, copied)
+        retake = self.submit(set_id)
+        self.assertEqual(retake["verdict"], "pass")
+        self.assertTrue(retake["practice"])
+        # enforce 仍拦截
+        blocked = self.post("/decisions",
+                            {"zotero_key": "K01", "decision": "include"}, index=1)
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+        self.assertEqual(blocked.json()["detail"]["error_code"], "enforce_blocked")
+        self.assertEqual(blocked.json()["detail"]["params"]["set_id"], set_id)
+        self.assertEqual(self.api("/decisions", index=1).json()["decisions"], [])
+        # 负责人看板：方法学结论仍 fail；练习 pass 在历史里但不计数
+        board = self.api(f"/pilot/sets/{set_id}/results").json()
+        self.assertEqual(board["summary"]["passed"], 0)
+        self.assertEqual(board["summary"]["failed"], 1)
+        self.assertEqual(board["summary"]["submitted"], 2)
+        self.assertEqual(board["summary"]["practice_submitted"], 1)
+        self.assertEqual(board["summary"]["cleared"], 0)
+        member = board["members"][0]
+        self.assertEqual(member["clearance_verdict"], "fail")
+        self.assertFalse(member["cleared"])
+        self.assertEqual(member["first"]["attempt_id"], first["attempt_id"])
+        self.assertEqual(member["first"]["verdict"], "fail")
+        self.assertEqual(member["latest"]["attempt_id"], retake["attempt_id"])
+        self.assertEqual(
+            [(row["attempt_id"], row["counts_for_clearance"], row["practice"])
+             for row in member["attempts"]],
+            [(first["attempt_id"], True, False), (retake["attempt_id"], False, True)])
+        # 方法学报告段（中英）只引用首次成绩
+        official = self.api(f"/pilot/sets/{set_id}/my-result", index=1).json()["result"]
+        self.assertEqual(official["attempt_id"], first["attempt_id"])
+        self.assertIn("结论：未达标", official["methodology"]["zh"])
+        self.assertIn("below the calibration floor", official["methodology"]["en"])
+        self.assertIn("κ=-1.00", official["methodology"]["zh"])
+        # 成员清单：加法键 clearance_verdict 恒为首考结论
+        row = next(r for r in self.api("/pilot/sets", index=1).json()["sets"]
+                   if r["id"] == set_id)
+        self.assertEqual(row["clearance_verdict"], "fail")
+        self.assertEqual(row["verdict"], "pass")  # 最新档案（练习）状态原样
+        history = self.api("/pilot/my-history", index=1).json()
+        self.assertFalse(history["cleared"])
+
+    def test_first_pass_clears_and_practice_fail_does_not_revoke(self):
+        """首考 pass → enforce 放行；之后练习 fail 不撤销准入（只认首次）。"""
+        self.enable_pilot(enforce=True)
+        set_id = self.ready_set()
+        first = self.member_copy_gold(set_id)
+        self.assertTrue(first["counts_for_clearance"])
+        allowed = self.post("/decisions",
+                            {"zotero_key": "K02", "decision": "exclude"}, index=1)
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.start_attempt(set_id)
+        self.answer_items(set_id, self._wrong_answers(set_id))
+        practice = self.submit(set_id)
+        self.assertEqual(practice["verdict"], "fail")
+        self.assertTrue(practice["practice"])
+        again = self.post("/decisions",
+                          {"zotero_key": "K03", "decision": "exclude"}, index=1)
+        self.assertEqual(again.status_code, 200, again.text)
+        board = self.api(f"/pilot/sets/{set_id}/results").json()
+        self.assertEqual(board["summary"]["passed"], 1)
+        self.assertEqual(board["summary"]["failed"], 0)
+        self.assertEqual(board["members"][0]["clearance_verdict"], "pass")
+
+    def test_discussion_entry_targets_first_attempt_only(self):
+        """首考 borderline → 练习 pass 不放行；讨论留痕落在首次尝试上才放行。"""
+        self.enable_pilot(enforce=True)
+        gold = {f"K{i:02d}": ("include" if i <= 6 else "exclude")
+                for i in range(1, 13)}
+        set_id = self.ready_set(gold)
+        trainee = dict(gold)
+        trainee["K07"] = "include"
+        trainee["K08"] = "include"
+        self.start_attempt(set_id)
+        self.answer_items(set_id, trainee)
+        first = self.submit(set_id)
+        self.assertEqual(first["verdict"], "borderline")
+        self.start_attempt(set_id)
+        self.answer_items(set_id, dict(gold))
+        self.assertEqual(self.submit(set_id)["verdict"], "pass")
+        blocked = self.post("/decisions",
+                            {"zotero_key": "K01", "decision": "include"}, index=1)
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+        entered = self.post(f"/pilot/sets/{set_id}/my-result/enter-by-discussion",
+                            {"note": "与导师讨论"}, index=1)
+        self.assertEqual(entered.status_code, 200, entered.text)
+        self.assertEqual(entered.json()["result"]["attempt_id"], first["attempt_id"])
+        self.assertTrue(entered.json()["result"]["entered_by_discussion"])
+        allowed = self.post("/decisions",
+                            {"zotero_key": "K01", "decision": "include"}, index=1)
+        self.assertEqual(allowed.status_code, 200, allowed.text)
 
     def test_borderline_needs_discussion_record_to_enter(self):
         self.enable_pilot(enforce=True)
@@ -993,9 +1139,73 @@ class SnapshotPins(PilotApiBase):
         self.assertEqual(member["latest"]["verdict"], "pass")
         self.assertEqual(member["latest"]["kappa_binary"], 1.0)
         self.assertEqual(member["latest"]["thresholds"], dict(pilot.DEFAULT_THRESHOLDS))
+        # #19：唯一一次交卷即首次（计入门）；无练习档案
+        self.assertEqual(member["first"], member["latest"])
+        self.assertTrue(member["latest"]["counts_for_clearance"])
+        self.assertEqual(member["clearance_verdict"], "pass")
+        self.assertTrue(member["cleared"])
+        self.assertEqual(board["summary"]["practice_submitted"], 0)
+        self.assertEqual(board["summary"]["cleared"], 1)
         # 看板不含成员逐条作答（盲纪律只对成员；看板给结论不给原答案）
         self.assertNotIn("items", member["latest"])
         self.assertEqual(gold, self.gold_map(self.set_id))
+
+
+class LegacyDesktopCatalogPins(PilotApiBase):
+    """终审 #12（用户裁定：回退本人库）：desktop legacy 任务建集题录池非空。
+
+    修复前 ``_catalog`` 在属主为 None 时无条件返回空池：curated 400
+    ``curated_key_unknown``、random/mixed 400 ``insufficient_articles``
+    (available:0)（探针 u2-deepseek-c3/probe_legacy_catalog.py）。
+    """
+
+    def setUp(self):
+        self.new_task(invite=0)
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(str(self.collab_db) + suffix)
+            if path.exists():
+                path.unlink()
+        patcher = mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_curated_random_mixed_sets_build_from_own_library(self):
+        keys = [f"K{i:02d}" for i in range(1, 13)]
+        enabled = self.put("/pilot/settings", {"pilot_enabled": True})
+        self.assertEqual(enabled.status_code, 200, enabled.text)
+        curated = self.post("/pilot/sets", {"sampling": "curated",
+                                            "curated_keys": keys, "size": 12})
+        self.assertEqual(curated.status_code, 201, curated.text)
+        self.assertEqual(curated.json()["set"]["item_count"], 12)
+        random_set = self.post("/pilot/sets", {"sampling": "random", "size": 10,
+                                               "seed": 7})
+        self.assertEqual(random_set.status_code, 201, random_set.text)
+        self.assertEqual(random_set.json()["set"]["item_count"], 10)
+        mixed = self.post("/pilot/sets", {"sampling": "mixed", "size": 10,
+                                          "curated_keys": ["K01"], "seed": 7})
+        self.assertEqual(mixed.status_code, 201, mixed.text)
+        # 池真的来自本人库：不在库里的键仍按 curated_key_unknown 拒绝
+        unknown = self.post("/pilot/sets", {"sampling": "curated",
+                                            "curated_keys": ["NOPE"], "size": 10})
+        self.assertEqual(unknown.status_code, 400, unknown.text)
+        self.assertEqual(unknown.json()["detail"]["error_code"], "curated_key_unknown")
+        # my-attempt 题录元数据也来自本人库（不再是空字符串）
+        set_id = curated.json()["set"]["id"]
+        for key in keys:
+            self.post(f"/pilot/sets/{set_id}/gold",
+                      {"zotero_key": key, "decision": "include"})
+        self.assertEqual(self.post(f"/pilot/sets/{set_id}/publish").status_code, 200)
+        self.assertEqual(self.post(f"/pilot/sets/{set_id}/attempts", {}).status_code, 200)
+        queue = self.api(f"/pilot/sets/{set_id}/my-attempt").json()
+        self.assertEqual(queue["items"][0]["title"], "Study 01")
+
+    def test_server_mode_legacy_keeps_empty_pool_guard(self):
+        """server 模式不回退（全局闸 409 collaboration_owner_unset 优先级不变）。"""
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "server"}):
+            response = self.post("/pilot/sets", {"sampling": "random", "size": 10})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["error_code"],
+                         "collaboration_owner_unset")
 
 
 class LegacyEnforcePins(unittest.TestCase):

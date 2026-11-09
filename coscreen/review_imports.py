@@ -674,6 +674,16 @@ def apply_keeper_fill(conn: sqlite3.Connection, *, batch_id: str, candidate_id: 
     if applied_fields:
         if keeper_kind == 'active':
             _write_articles(conn, keeper_ref, written)
+            # 终审 #22（用户 2026-11-09 裁定）：补空改写属主库 articles 后必须
+            # 同步发布 metadata acceptance（与 decide_metadata 两条写路径同口径，
+            # revision 取当前 catalog_revision——articles 的 AFTER UPDATE 触发器
+            # 已在上一句内把目录版本抬起）。否则补空之后才首次同步目录的成员
+            # （新受邀/成员库重建）会被旧 acceptance 把补全字段冲回 NULL，且被记
+            # 为已应用该 revision。待审记录保留者尚无 articles 行、acceptance 无
+            # 从挂键：其补全随激活后的 articles 行走正常目录同步，不在此发布。
+            first_source = next(write['source_record_id'] for write in writes
+                                if write['field'] in applied_fields)
+            _publish_metadata_acceptance(conn, keeper_ref, first_source, written)
         else:
             conn.execute('UPDATE workflow_source_records SET article_json=? WHERE id=?',
                          (dumps(written), keeper_ref))
@@ -840,7 +850,11 @@ def decide_metadata(conn: sqlite3.Connection, batch_id: str, rid: str, action: s
     if row is None:
         raise KeyError('No metadata proposal for this source record.')
     if row['action'] == action:
-        return
+        # 终审 #26（用户 2026-11-09 裁定）：同 action 重复提交 = 幂等 noop——
+        # 不报错、不写库（policy_version 不增、不记撤销），但响应携带结构化
+        # 标记 metadata_noop=True，前端据此提示「上次选择未变更」。不同 action
+        # 仍走下方「already reviewed」409（现状不变）。
+        return {'metadata_noop': True}
     if row['action'] is not None:
         raise ValueError('This metadata proposal has already been reviewed.')
     key = canonical(conn, row['canonical_key'])

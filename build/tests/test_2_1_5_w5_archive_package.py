@@ -31,6 +31,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -676,6 +677,27 @@ def _bomb_members(member_mib: int = 16, pad: int = 48 * 1024) -> dict:
 
 _BOMB_COMPRESS = {"db/x.db": zipfile.ZIP_BZIP2,
                   "fulltext/pad.pdf": zipfile.ZIP_STORED}
+
+
+def _rename_members(data: bytes, rename: dict, manifest_transform=None) -> bytes:
+    """重打包：按 ``rename`` 改成员名；``manifest_transform`` 就地改 manifest。"""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(
+            buffer, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            payload = src.read(info.filename)
+            name = rename.get(info.filename, info.filename)
+            if info.filename == "manifest.json" and manifest_transform is not None:
+                manifest = json.loads(payload.decode("utf-8"))
+                manifest_transform(manifest)
+                payload = (json.dumps(manifest, ensure_ascii=False, indent=2,
+                                      sort_keys=True) + "\n").encode("utf-8")
+                name = "manifest.json"
+            new_info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            new_info.compress_type = zipfile.ZIP_DEFLATED
+            new_info.external_attr = 0o600 << 16
+            dst.writestr(new_info, payload)
+    return buffer.getvalue()
 
 
 class SecurityLimitsPins(_ApiBase):
@@ -1562,6 +1584,311 @@ class ForgedCentralDirectoryPins(_ApiBase):
         leftovers = [] if not root.is_dir() else [
             p.name for p in root.iterdir() if p.name.startswith(".import-")]
         self.assertEqual(leftovers, [], "拒绝后必须清场")
+
+
+class RelativePackagePathPins(_ApiBase):
+    """终审 #43（用户 2026-11-09 裁定「相对化」）：导出包内零绝对路径。
+
+    修复前 ``_snapshot_sqlite`` 纯 backup 后 db 成员原样入包——fulltexts.path
+    携带源机器绝对路径（盘符/用户名/目录布局）。修复后 db 成员内一律任务目录
+    相对（``pdfs/<名>.pdf``）；旧格式包（绝对路径）导入保持兼容。
+    """
+
+    _ABS_DRIVE_RE = re.compile(rb"[A-Za-z]:[\\/]")
+
+    def test_exported_db_members_carry_task_relative_paths_only(self):
+        self.new_task()
+        for key in ("K01", "K02"):
+            self.add_pdf(key)
+        response = self.package()
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.content
+        source_dir = str(Path(self.info.dir).resolve())
+
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for name in archive.namelist():
+                payload = archive.read(name)
+                if name in ("manifest.json", "task.sanitized.json"):
+                    text = payload.decode("utf-8")
+                    self.assertNotIn(source_dir, text, f"{name} 含源任务目录")
+                    self.assertNotIn(source_dir.replace("\\", "/"), text,
+                                     f"{name} 含源任务目录（POSIX 形式）")
+                    self.assertIsNone(self._ABS_DRIVE_RE.search(payload),
+                                      f"{name} 含盘符绝对路径字面量")
+                if not (name.startswith("db/") and name.endswith(".db")):
+                    continue
+                handle = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+                try:
+                    handle.write(payload)
+                    handle.close()
+                    with closing(sqlite3.connect(handle.name)) as conn:
+                        rows = conn.execute(
+                            "SELECT zotero_key, path FROM fulltexts").fetchall()
+                finally:
+                    os.unlink(handle.name)
+                self.assertTrue(rows, "导出 db 成员应保留 fulltexts 登记")
+                for key, path in rows:
+                    if not path:
+                        continue
+                    self.assertFalse(
+                        Path(path).is_absolute(),
+                        f"{name}:{key} 不得携带源机器绝对路径（终审 #43）: {path}")
+                    self.assertTrue(
+                        path.replace("\\", "/").startswith("pdfs/"),
+                        f"{name}:{key} 应为任务目录相对形式: {path}")
+
+    def test_legacy_absolute_path_package_imports_fine(self):
+        """兼容钉：旧格式包（db 内 fulltexts.path 为源机器绝对路径）导入仍成功。"""
+        self.new_task()
+        originals = {key: self.add_pdf(key) for key in ("K01", "K02")}
+        data = self.package().content
+        source_dir = Path(self.info.dir).resolve()
+
+        renamed = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as src:
+            db_name = next(n for n in src.namelist()
+                           if n.startswith("db/") and n.endswith(".db"))
+            handle = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+            handle.write(src.read(db_name))
+            handle.close()
+            try:
+                with closing(sqlite3.connect(handle.name)) as conn, conn:
+                    for key, path in conn.execute(
+                            "SELECT zotero_key, path FROM fulltexts").fetchall():
+                        if path:
+                            conn.execute(
+                                "UPDATE fulltexts SET path=? WHERE zotero_key=?",
+                                (str(source_dir / "pdfs" / Path(path).name), key))
+                member_bytes = Path(handle.name).read_bytes()
+            finally:
+                os.unlink(handle.name)
+            with zipfile.ZipFile(renamed, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+                for info in src.infolist():
+                    payload = member_bytes if info.filename == db_name \
+                        else src.read(info.filename)
+                    if info.filename == "manifest.json":
+                        manifest = json.loads(payload.decode("utf-8"))
+                        for member in manifest["members"]:
+                            if member["path"] == db_name:
+                                member["sha256"] = hashlib.sha256(member_bytes).hexdigest()
+                                member["size"] = len(member_bytes)
+                        payload = (json.dumps(manifest, ensure_ascii=False, indent=2,
+                                              sort_keys=True) + "\n").encode("utf-8")
+                    new_info = zipfile.ZipInfo(info.filename,
+                                               date_time=(1980, 1, 1, 0, 0, 0))
+                    new_info.compress_type = zipfile.ZIP_DEFLATED
+                    new_info.external_attr = 0o600 << 16
+                    dst.writestr(new_info, payload)
+
+        imported = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("legacy.zip", renamed.getvalue(), "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+        result = imported.json()
+        self.assertEqual(result["fulltexts_restored"], 2)
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        new_db = new_info.dir / f"{tasks_mod.slugify_screener(self.users[0]['username'])}.db"
+        with closing(sqlite3.connect(str(new_db))) as conn:
+            for key, path in conn.execute(
+                    "SELECT zotero_key, path FROM fulltexts").fetchall():
+                resolved = tasks_mod.resolve_fulltext_raw(path, new_db, data_dir=DATA_DIR)
+                self.assertIsNotNone(resolved, f"{key} 旧格式包导入后必须可解析")
+                self.assertEqual(Path(resolved).read_bytes(), originals[key])
+
+    def test_relativize_hostile_schema_fails_as_package_member_invalid(self):
+        """终审 #43 失败路径钉（r2 复核统一口径）：源库 fulltexts 被挂触发器
+        （对抗改写）→ 导出结构化 400 ``package_member_invalid``
+        ``{member, reason=fulltext_relativize_failed}``——与契约错误表一致
+        （`_snapshot_sqlite` 的 ``sqlite_unreadable`` 同族）；绝不 500、绝不
+        静默带出绝对路径（错误体是 JSON，不是 zip 流）。"""
+        self.new_task()
+        self.add_pdf("K01")
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute(
+                "CREATE TRIGGER evil_fulltexts_rewrite AFTER UPDATE ON fulltexts "
+                "BEGIN UPDATE fulltexts SET path='C:\\\\evil\\\\abs.pdf'; END")
+        response = self.package()
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertNotIn("zip", response.headers.get("content-type", ""))
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_member_invalid")
+        self.assertEqual(detail["message_key"],
+                         "task_package.package_member_invalid")
+        self.assertEqual(detail["params"]["reason"], "fulltext_relativize_failed")
+        self.assertEqual(detail["params"]["member"], self.owner_db.name)
+        # 拒绝后零临时残留（rf-package-export-* 工作目录即刻清理）。
+        leftovers = [p.name for p in Path(tempfile.gettempdir()).iterdir()
+                     if p.name.startswith("rf-package-export-")]
+        self.assertEqual(leftovers, [], "相对化失败后必须清场")
+
+    def test_mutation_relativize_removed_pin_goes_red(self):
+        """破坏性变异：跳过相对化改写 → 包内出现绝对路径，主钉必红。"""
+        self.new_task()
+        self.add_pdf("K01")
+        with mock.patch.object(task_package_api, "_relativize_snapshot_fulltexts",
+                               lambda *args, **kwargs: 0):
+            response = self.package()
+        self.assertEqual(response.status_code, 200, response.text)
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            db_name = next(n for n in archive.namelist()
+                           if n.startswith("db/") and n.endswith(".db"))
+            handle = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+            handle.write(archive.read(db_name))
+            handle.close()
+            try:
+                with closing(sqlite3.connect(handle.name)) as conn:
+                    paths = [row[0] for row in conn.execute(
+                        "SELECT path FROM fulltexts").fetchall()]
+            finally:
+                os.unlink(handle.name)
+        self.assertTrue(paths and all(Path(p).is_absolute() for p in paths),
+                        "去掉相对化后导出包必须携带绝对路径（否则主钉是假钉）")
+
+
+class ArchiveExportLimitPins(_ApiBase):
+    """终审 #44（用户 2026-11-09 裁定「加上限」）：归档导出总量上限与整包导出
+    对齐（同一常量口径 MAX_PACKAGE_BYTES=2GB）——超限结构化 413
+    ``task_package.archive_too_large`` 且零文件流开始；体检处提前提示。"""
+
+    def test_over_limit_returns_structured_413_before_any_stream(self):
+        self.new_task()
+        self.add_pdf("K01")
+        before = sorted(p.name for p in Path(tempfile.gettempdir()).iterdir()
+                        if p.name.startswith("rf-archive-export-"))
+        with mock.patch.object(task_package_api, "MAX_ARCHIVE_EXPORT_BYTES", 1):
+            response = self.archive()
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertIn("application/json", response.headers["content-type"],
+                      "超限时绝不能开始流 zip")
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "archive_too_large")
+        self.assertEqual(detail["message_key"], "task_package.archive_too_large")
+        self.assertEqual(detail["params"]["limit_bytes"], 1)
+        self.assertIn("total_bytes", detail["params"])
+        after = sorted(p.name for p in Path(tempfile.gettempdir()).iterdir()
+                       if p.name.startswith("rf-archive-export-"))
+        self.assertEqual(after, before, "超限拒绝后不得残留归档工作目录")
+
+    def test_preflight_reports_archive_export_limit_hint(self):
+        self.new_task()
+        originals = {key: self.add_pdf(key) for key in ("K01", "K02")}
+        response = self.client.get(
+            f"/api/tasks/{self.task}/package/preflight", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        hint = response.json()["archive_export"]
+        self.assertEqual(hint["limit_bytes"],
+                         task_package_api.MAX_ARCHIVE_EXPORT_BYTES)
+        self.assertEqual(hint["limit_bytes"], task_package_api.MAX_PACKAGE_BYTES,
+                         "归档上限必须与整包导出同一常量口径")
+        self.assertEqual(hint["bytes"], sum(len(blob) for blob in originals.values()))
+        self.assertFalse(hint["over_limit"])
+
+    def test_within_limit_export_is_normal_zip(self):
+        self.new_task()
+        self.add_pdf("K01")
+        response = self.archive()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["x-archive-summary"], "1/0")
+
+
+class MemberNameParityPins(_ApiBase):
+    """终审 #45（用户 2026-11-09 裁定「统一按预检」）：导入落地层与预检共用
+    同一成员名判定函数——合法带点名（``db/u5..c9.db``、带点 zotero_key 的规范
+    PDF 名）预检放行 → 导入必成功（应用自导出的整包可往返）；非法名
+    （``../`` 上跳、绝对、反斜杠、NUL）两处一致拒绝。"""
+
+    def test_dotted_member_names_preflight_and_import_agree_and_roundtrip(self):
+        self.new_task()
+        original = self.add_pdf("K01")
+        data = self.package().content
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            db_name = next(n for n in archive.namelist()
+                           if n.startswith("db/") and n.endswith(".db"))
+            pdf_name = next(n for n in archive.namelist() if n.startswith("fulltext/"))
+        rename = {db_name: "db/u5..c9.db", pdf_name: "fulltext/A..B-Wang-2020.pdf"}
+
+        def transform(manifest):
+            for member in manifest["members"]:
+                member["path"] = rename.get(member["path"], member["path"])
+            for entry in manifest["fulltexts"]:
+                entry["archive_path"] = rename.get(entry["archive_path"],
+                                                   entry["archive_path"])
+                entry["archive_name"] = entry["archive_path"][len("fulltext/"):]
+
+        dotted = _rename_members(data, rename, transform)
+        preview = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("pkg.zip", dotted, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["slug_map"], {"u5..c9": "u5..c9"})
+
+        imported = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", dotted, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200,
+                         f"预检放行的合法带点成员名导入必须成功（口径一致）: {imported.text}")
+        result = imported.json()
+        self.assertEqual(result["fulltexts_restored"], 1)
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        new_db = new_info.dir / "u5..c9.db"
+        self.assertTrue(new_db.is_file(), "带点 slug 的库文件必须落地")
+        with closing(sqlite3.connect(str(new_db))) as conn:
+            path = conn.execute(
+                "SELECT path FROM fulltexts WHERE zotero_key='K01'").fetchone()[0]
+        resolved = tasks_mod.resolve_fulltext_raw(path, new_db, data_dir=DATA_DIR)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(Path(resolved).read_bytes(), original)
+
+    def test_illegal_member_names_rejected_at_both_layers(self):
+        for bad in ("db/../evil.db", "/abs.db", "db\\x.db", "db/bad\x00name.db"):
+            with self.subTest(member=bad):
+                payload = _build_raw_package({
+                    "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+                    bad: _SQLITE_MAGIC + os.urandom(64),
+                })
+                for endpoint in ("import-package/preflight", "import-package"):
+                    response = self.client.post(
+                        f"/api/tasks/{endpoint}",
+                        files={"package": ("pkg.zip", payload, "application/zip")},
+                        headers=self.auth(2))
+                    self.assertEqual(response.status_code, 400,
+                                     f"{endpoint} 必须拒绝 {bad!r}")
+                    detail = response.json()["detail"]
+                    self.assertEqual(detail["error_code"], "package_invalid")
+                    self.assertEqual(detail["params"]["reason"],
+                                     "member_name_invalid")
+
+    def test_extract_member_shares_preflight_predicate(self):
+        """函数级单一事实源钉：_extract_member 与 _validate_member_name 对同一
+        名字集合给出同一判定（带点放行、非法拒绝）。"""
+        import inspect
+
+        source = inspect.getsource(task_package_api._extract_member)
+        self.assertIn("_validate_member_name", source,
+                      "落地层必须直接调用预检判定函数（不得复制口径）")
+        names_ok = ["db/u5..c9.db", "db/plain.db"]
+        names_bad = ["db/../evil.db", "/abs.db", "db\\x.db", "db/bad\x00name.db"]
+        with tempfile.TemporaryDirectory(prefix="rf_215w5_parity_") as tmp:
+            zip_path = Path(tmp) / "pkg.zip"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                for name in names_ok + names_bad:
+                    archive.writestr(name, b"x")
+            base = Path(tmp) / "out"
+            base.mkdir()
+            with zipfile.ZipFile(zip_path, "r") as archive:
+                for name in names_ok:
+                    target = task_package_api._extract_member(
+                        archive, name, base, "plain-land.db"
+                        if name != names_ok[0] else "u5..c9.db")
+                    self.assertTrue(target.is_file())
+                for name in names_bad:
+                    with self.assertRaises(task_package_api.TaskPackageError) as ctx:
+                        task_package_api._extract_member(archive, name, base, "x.db")
+                    self.assertEqual(ctx.exception.params.get("reason"),
+                                     "member_name_invalid")
 
 
 def tearDownModule():
