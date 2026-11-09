@@ -140,6 +140,122 @@ class PilotMathPins(unittest.TestCase):
                         result["metrics"])
         self.assertEqual(result["verdict"], "borderline")
 
+    def test_methodology_kappa_display_keeps_three_decimals(self):
+        # 终审 #51：κ∈[0.605,0.61) 两位小数展示成 0.61 与底线同值，配上
+        # 「未达标」结论自相矛盾。报告段计算指标必须保留 3 位小数；判定
+        # 仍用原始值（本例 κ=34/56≈0.6071 < 0.61 → fail 不变）。
+        gold, trainee = _binary_counts(3, 1, 1, 6)
+        snapshot = pilot.evaluate(gold, trainee)
+        self.assertAlmostEqual(snapshot["metrics"]["kappa_binary"],
+                               34 / 56, places=12)
+        self.assertEqual(snapshot["verdict"], "fail")
+        text_zh = pilot.methodology_text(snapshot, lang="zh")
+        text_en = pilot.methodology_text(snapshot, lang="en")
+        self.assertIn("κ=0.607（底线 0.61，目标 0.70）", text_zh)
+        self.assertNotIn("κ=0.61（底线 0.61", text_zh)
+        self.assertIn("一致率=0.818", text_zh)
+        self.assertIn("PABAK=0.636", text_zh)
+        self.assertIn("结论：未达标", text_zh)
+        self.assertIn("kappa=0.607 (floor 0.61, target 0.70)", text_en)
+        self.assertNotIn("kappa=0.61 (floor 0.61", text_en)
+        self.assertIn("below the calibration floor", text_en)
+        # 无取整同串冲突时不附原始值括注
+        self.assertNotIn("原始值", text_zh)
+        self.assertNotIn("unrounded", text_en)
+
+    def test_methodology_rounding_tie_appends_raw_value(self):
+        # 终审 #51 残余（第 2 轮评审点名）：(3,1,1,19) 的 κ 精确 = 0.7，
+        # 浮点算出 0.6999999999999998 < 0.70 → 临界；3 位展示 "0.700" 与
+        # 目标 "0.70" 视觉同值。取整串与阈值同串而原始值低于阈值时必须
+        # 附未取整原始值，判定链（用原始值）不动。
+        gold, trainee = _binary_counts(3, 1, 1, 19)
+        snapshot = pilot.evaluate(gold, trainee)
+        self.assertEqual(snapshot["metrics"]["kappa_binary"],
+                         0.6999999999999998)
+        self.assertEqual(snapshot["verdict"], "borderline")
+        text_zh = pilot.methodology_text(snapshot, lang="zh")
+        text_en = pilot.methodology_text(snapshot, lang="en")
+        self.assertIn("κ=0.700（原始值 0.6999999999999998）"
+                      "（底线 0.61，目标 0.70）", text_zh)
+        self.assertIn("kappa=0.700 (unrounded 0.6999999999999998) "
+                      "(floor 0.61, target 0.70)", text_en)
+        self.assertIn("结论：临界", text_zh)
+        # 一致率远高于底线，无冲突 → 不括注
+        self.assertIn("一致率=0.917（底线 0.75）", text_zh)
+        self.assertNotIn("一致率=0.917（原始值", text_zh)
+
+    def test_methodology_threshold_display_keeps_configured_precision(self):
+        # 终审 #51 第 3 轮（阻断）：S8 允许建集配 3 位阈值，恒两位展示把
+        # 0.614 显示成 0.61——κ=0.6098 展示 0.610，「κ=0.610（底线 0.61）
+        # …未达标」伪矛盾再现。阈值必须按配置原精度（至少两位）展示。
+        gold, trainee = _binary_counts(5, 0, 4, 15)
+        snapshot = pilot.evaluate(gold, trainee, {
+            "min_kappa": 0.614, "target_kappa": 0.70,
+            "agreement_floor": 0.75})
+        self.assertEqual(snapshot["verdict"], "fail")
+        self.assertAlmostEqual(snapshot["metrics"]["kappa_binary"],
+                               0.6097560975609757, places=12)
+        text_zh = pilot.methodology_text(snapshot, lang="zh")
+        text_en = pilot.methodology_text(snapshot, lang="en")
+        self.assertIn("κ=0.610（底线 0.614，目标 0.70）", text_zh)
+        self.assertIn("kappa=0.610 (floor 0.614, target 0.70)", text_en)
+        # 0.610 < 0.614 视觉可辨 → 无需原始值括注；也不得把阈值压回两位
+        self.assertNotIn("底线 0.61，", text_zh)
+        self.assertNotIn("(floor 0.61,", text_en)
+        self.assertNotIn("原始值", text_zh)
+        self.assertNotIn("unrounded", text_en)
+        # 默认阈值（两位配置）展示形态不变：0.7 → 0.70、0.75 → 0.75
+        default_zh = pilot.methodology_text(
+            pilot.evaluate(*_binary_counts(3, 1, 1, 6)), lang="zh")
+        self.assertIn("底线 0.61，目标 0.70）", default_zh)
+        self.assertIn("（底线 0.75）", default_zh)
+
+    def test_methodology_four_decimal_threshold_rounding_tie_appends_raw(self):
+        # 终审 #51 第 4 轮（阻断）：4 位阈值 0.6098 下 κ=0.6098 附近展示
+        # 成 0.610——**显示上高于底线**却判未达标，且 != 比较不触发括注。
+        # 触发条件必须是「展示值 ≥ 阈值展示值」（below 已蕴含原始值更低）。
+        gold, trainee = _binary_counts(5, 0, 4, 15)
+        snapshot = pilot.evaluate(gold, trainee, {
+            "min_kappa": 0.6098, "target_kappa": 0.70,
+            "agreement_floor": 0.75})
+        self.assertEqual(snapshot["verdict"], "fail")
+        self.assertAlmostEqual(snapshot["metrics"]["kappa_binary"],
+                               0.6097560975609757, places=12)
+        text_zh = pilot.methodology_text(snapshot, lang="zh")
+        text_en = pilot.methodology_text(snapshot, lang="en")
+        self.assertIn("κ=0.610（原始值 0.6097560975609757）"
+                      "（底线 0.6098，目标 0.70）", text_zh)
+        self.assertIn("kappa=0.610 (unrounded 0.6097560975609757) "
+                      "(floor 0.6098, target 0.70)", text_en)
+        # 反例：同阈值下 κ 明显更低（0.538 < 0.6098 视觉可辨）→ 不括注
+        low = pilot.evaluate(*_binary_counts(5, 0, 5, 14), {
+            "min_kappa": 0.6098, "target_kappa": 0.70,
+            "agreement_floor": 0.75})
+        self.assertEqual(low["verdict"], "fail")
+        low_zh = pilot.methodology_text(low, lang="zh")
+        self.assertIn("κ=0.538（底线 0.6098，目标 0.70）", low_zh)
+        self.assertNotIn("原始值", low_zh)
+        self.assertNotIn("unrounded",
+                         pilot.methodology_text(low, lang="en"))
+
+    def test_methodology_english_discussion_sentence_is_complete(self):
+        # 终审 #18：entered=True 的英文方法学段不得再出现 "pre-screening"
+        # 截断残留 "tening discussion was recorded…"；两形态句子都要完整。
+        gold, trainee = _binary_counts(3, 1, 1, 6)
+        snapshot = pilot.evaluate(gold, trainee)
+        entered = dict(snapshot)
+        entered["entered_by_discussion"] = True
+        text_en = pilot.methodology_text(entered, lang="en")
+        self.assertIn("a discussion entry was recorded before entering "
+                      "formal screening", text_en)
+        self.assertNotIn("tening", text_en)
+        self.assertIn("已留痕讨论后进入正式筛选",
+                      pilot.methodology_text(entered, lang="zh"))
+        not_entered = dict(snapshot)
+        not_entered["entered_by_discussion"] = False
+        self.assertIn("no discussion entry was recorded",
+                      pilot.methodology_text(not_entered, lang="en"))
+
     def test_agreement_floor_boundary_exact(self):
         # 一致率恰好 0.75：二分类完美（maybe 归非 include），原始三分类
         # 5 条 maybe/exclude 分歧 → 一致率 15/20 = 0.75 压线 → 达标。
@@ -1113,9 +1229,13 @@ class SnapshotPins(PilotApiBase):
         self.assertIn("0.70", text_zh)
         self.assertIn("0.61", text_zh)
         self.assertIn("0.75", text_zh)
-        self.assertIn(f"{metrics['kappa_binary']:.2f}", text_zh)
-        self.assertIn(f"{metrics['agreement']:.2f}", text_zh)
-        self.assertIn(f"{metrics['pabak']:.2f}", text_zh)
+        # 终审 #51：计算指标 3 位小数（阈值仍按配置两位）。
+        self.assertIn(f"{metrics['kappa_binary']:.3f}", text_zh)
+        self.assertIn(f"{metrics['agreement']:.3f}", text_zh)
+        self.assertIn(f"{metrics['pabak']:.3f}", text_zh)
+        # 终审 #18：未 entered 形态的英文讨论句完整。
+        self.assertIn("no discussion entry was recorded", text_en)
+        self.assertNotIn("tening", text_en)
         self.assertIn("kappa", text_en.lower())
         self.assertIn("PABAK", text_en)
         self.assertIn("0.70", text_en)

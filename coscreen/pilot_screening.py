@@ -525,25 +525,76 @@ def methodology_text(snapshot: Mapping[str, Any], *, lang: str = "zh") -> str:
     verdict = str(snapshot.get("verdict") or "")
     entered = bool(snapshot.get("entered_by_discussion"))
 
-    def fmt(value: Any) -> str:
+    def fmt_threshold(value: Any) -> str:
+        # 阈值按配置原精度展示（至少两位小数）：默认 0.61/0.70/0.75 两位，
+        # 建集自定义的 0.614 三位、0.6145 四位——恒 .2f 会把 0.614 显示成
+        # 0.61，令 κ=0.610 与底线「视觉同值」再现伪矛盾（终审 #51 第 3 轮）。
         try:
-            return f"{float(value):.2f}"
+            number = float(value)
         except (TypeError, ValueError):
             return "—"
+        head, _, tail = repr(number).partition(".")
+        if not tail or "e" in tail or "E" in tail:  # 整数/科学计数 → 两位
+            return f"{number:.2f}"
+        if len(tail) < 2:
+            tail = tail.ljust(2, "0")
+        return f"{head}.{tail}"
+
+    def fmt_metric(value: Any) -> str:
+        # 计算指标保留 3 位小数：两位会把 κ∈[0.605,0.61) 展示成与底线同值
+        # 的 0.61，与「未达标」结论自相矛盾（终审 #51）。判定仍用原始值。
+        try:
+            return f"{float(value):.3f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _below(value: Any, limit: Any) -> bool:
+        try:
+            return float(value) < float(limit)
+        except (TypeError, ValueError):
+            return False
+
+    # 取整伪矛盾（终审 #51）：指标 3 位展示值不低于阈值展示值、而原始值
+    # 低于阈值时（同值：κ 0.610 vs 0.61、0.700 vs 0.70；反超：4 位阈值
+    # 0.6098 下 κ=0.6098 附近展示 0.610），附未取整原始值消除视觉矛盾；
+    # 判定链始终用原始值，不受展示影响。
+    kappa_limit = (limits["min_kappa"] if verdict == "fail"
+                   else limits["target_kappa"])
+    kappa_below = (verdict in ("fail", "borderline")
+                   and _below(metrics.get("kappa_binary"), kappa_limit))
+    agreement_below = (verdict != "pass"
+                       and _below(metrics.get("agreement"),
+                                  limits["agreement_floor"]))
+
+    def metric_display(value: Any, limit: Any, below: bool, *,
+                       note: str) -> str:
+        shown = fmt_metric(value)
+        try:
+            # 取整伪矛盾按「展示值不低于阈值展示值」判定（below 已蕴含
+            # 原始值更低）：0.610 == 0.61、0.700 == 0.70（同值），以及
+            # 4 位阈值下的 0.610 > 0.6098（3 位舍入后反超）都附原始值；
+            # 0.610 < 0.614、0.538 < 0.6098 视觉可辨则不附。
+            if below and float(shown) >= float(fmt_threshold(limit)):
+                return shown + note.format(repr(float(value)))
+        except (TypeError, ValueError):
+            pass
+        return shown
 
     if lang == "en":
         label = _SAMPLING_LABELS.get(sampling, (sampling, sampling))[1]
         verdict_label = _VERDICT_LABELS.get(verdict, (verdict, verdict))[1]
-        discussion = ("tening discussion was recorded before entering formal "
+        discussion = ("a discussion entry was recorded before entering formal "
                       "screening" if entered else "no discussion entry was recorded")
         return (
             f"Calibration: before formal screening, {n_items} records sampled by "
             f"{label} were independently screened blind by all screeners and "
             f"compared with the pre-registered gold standard: binary kappa="
-            f"{fmt(metrics.get('kappa_binary'))} (floor {fmt(limits['min_kappa'])}, "
-            f"target {fmt(limits['target_kappa'])}), agreement="
-            f"{fmt(metrics.get('agreement'))} (floor {fmt(limits['agreement_floor'])}), "
-            f"PABAK={fmt(metrics.get('pabak'))}. Verdict: {verdict_label}; "
+            f"{metric_display(metrics.get('kappa_binary'), kappa_limit, kappa_below, note=' (unrounded {0})')} "
+            f"(floor {fmt_threshold(limits['min_kappa'])}, "
+            f"target {fmt_threshold(limits['target_kappa'])}), agreement="
+            f"{metric_display(metrics.get('agreement'), limits['agreement_floor'], agreement_below, note=' (unrounded {0})')} "
+            f"(floor {fmt_threshold(limits['agreement_floor'])}), "
+            f"PABAK={fmt_metric(metrics.get('pabak'))}. Verdict: {verdict_label}; "
             f"{discussion}. Formal screening {'did' if entered or verdict == 'pass' else 'did not'} "
             "use the revised criteria."
         )
@@ -553,11 +604,13 @@ def methodology_text(snapshot: Mapping[str, Any], *, lang: str = "zh") -> str:
                   else "未记录讨论后进入")
     return (
         f"校准：正式筛选前，{n_items} 条按{label}抽取的题录（含边界案例）由全部筛员"
-        f"独立盲筛，与预登记金标准比较：二分类 κ={fmt(metrics.get('kappa_binary'))}"
-        f"（底线 {fmt(limits['min_kappa'])}，目标 {fmt(limits['target_kappa'])}），"
-        f"一致率={fmt(metrics.get('agreement'))}"
-        f"（底线 {fmt(limits['agreement_floor'])}），"
-        f"PABAK={fmt(metrics.get('pabak'))}。结论：{verdict_label}；"
+        f"独立盲筛，与预登记金标准比较：二分类 κ="
+        f"{metric_display(metrics.get('kappa_binary'), kappa_limit, kappa_below, note='（原始值 {0}）')}"
+        f"（底线 {fmt_threshold(limits['min_kappa'])}，目标 {fmt_threshold(limits['target_kappa'])}），"
+        f"一致率="
+        f"{metric_display(metrics.get('agreement'), limits['agreement_floor'], agreement_below, note='（原始值 {0}）')}"
+        f"（底线 {fmt_threshold(limits['agreement_floor'])}），"
+        f"PABAK={fmt_metric(metrics.get('pabak'))}。结论：{verdict_label}；"
         f"{discussion}。正式筛选"
         f"{'采用' if entered or verdict == 'pass' else '未采用'}修订后标准。"
     )

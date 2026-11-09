@@ -38,8 +38,9 @@ MAX_ITEMS_PER_RESPONSE = 20_000
 
 #: 导入失败时降级响应里的规则版本兜底（导入不可用时无从读取真实常量；
 #: 响应同时带 available=false，前端不使用任何判定）。与
-#: ``study_design.RULE_VERSION`` 同值维护：2.1.5 扩类（七类 → 十一类）后为 2。
-_RULE_VERSION_FALLBACK = 2
+#: ``study_design.RULE_VERSION`` 同值维护：扩类（七类 → 十一类）后为 2，
+#: survey 负向环视扩修饰词（终审 #52）后为 3。
+_RULE_VERSION_FALLBACK = 3
 
 
 def _degraded(error: str = "study design classification unavailable") -> dict:

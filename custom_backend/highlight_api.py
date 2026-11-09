@@ -28,6 +28,11 @@ GET 产生建库/建表副作用。
 - 写失败 / 路径不可用 → 409 结构化错误；校验失败 → 400；未知文献 → 404。
 - 错误体只有 ``error_code`` / ``message_key`` / ``params``，界面文案由
   前端词条渲染。
+- 资源红线（终审 #11/#54）：词条保存前按**匹配等价**判定去重
+  （``core.term_dedup_key`` 分组 + ``core.terms_match_identically`` 校验，
+  与 ``_term_pattern`` 的词边界判定同源），等价同词只存一次；compute 对
+  候选命中总数设硬预算 ``core.MAX_CANDIDATE_MATCHES``，超限 → 400
+  ``highlight_too_many_matches``。
 """
 
 from __future__ import annotations
@@ -249,6 +254,7 @@ def register_highlight_routes(
                              {"set_index": index,
                               "max": core.MAX_TERMS_PER_SET})
             terms: list[str] = []
+            seen_terms: dict[tuple, list[str]] = {}
             for raw_term in raw_terms:
                 if not isinstance(raw_term, str):
                     raise _error(400, "highlight_term_invalid",
@@ -259,6 +265,18 @@ def register_highlight_routes(
                     raise _error(400, "highlight_term_invalid",
                                  {"set_index": index,
                                   "max_chars": core.MAX_TERM_LENGTH})
+                # 同词只存一次（终审 #11），但只合并**匹配语义完全等价**的
+                # 词条（core.terms_match_identically：词边界标志 + 小写折叠
+                # + 忽略大小写双向全匹配，与 _term_pattern 同源）。纯 lower
+                # 键会把 U+212A KELVIN / U+0130 这类 lower 相同而词边界语义
+                # 不同的近形词误合并，改变命中结果（评审更正）；等价组合并
+                # 保留首次出现（贪心并列取 term_id 最小 = 首次出现，结果与
+                # 未去重基线逐段一致）。
+                peers = seen_terms.setdefault(core.term_dedup_key(term), [])
+                if any(core.terms_match_identically(peer, term)
+                       for peer in peers):
+                    continue
+                peers.append(term)
                 terms.append(term)
 
             set_id = entry.get("set_id")
@@ -459,7 +477,13 @@ def register_highlight_routes(
 
         selected = _active_terms(info, user)
         terms = selected["terms"]
-        ranges = core.compute_highlights(text, terms)
+        try:
+            ranges = core.compute_highlights(text, terms)
+        except core.HighlightMatchBudgetExceeded as exc:
+            # 候选命中总数超硬预算（词条数 × 命中数乘积放大，终审 #11）：
+            # 结构化 400，文案走 message_key，params 携带 limit/count。
+            raise _error(400, "highlight_too_many_matches",
+                         {"limit": exc.limit, "count": exc.count}) from exc
         return {
             "available": True,
             "source": source,

@@ -16,6 +16,12 @@
 5. compute 两种输入形态：``{text}`` 与 ``{article_key, field}``（服务端从
    题录权威库取 title/abstract 文本后计算），并校验错误降级（未知字段/
    未知文献/缺输入/超长文本都是结构化 4xx，绝不 500）。
+6. 资源放大钉（终审 #11/#54）：保存侧按规范化形式（去首尾空白 + 小写）
+   去重词条——500 个重复词条只存 1 条；compute 对候选命中总数设硬预算，
+   超限结构化 400 ``highlight_too_many_matches``；500 重复词条 × 200k 文本
+   的耗时/内存与单词条同量级（修复前实测 100 重复词条即 38.36s / 峰值
+   1325.5MB，500 条 32.18s，见 sweep_2.1.5_report.md #11）；单组词条数
+   上限 500 有红钉（501 → 400 ``highlight_terms_too_many``）。
 
 注意：本文件在实现落地前应当整体红（模块不存在 → 导入/收集失败），
 这正是「红钉先行」的证据。
@@ -27,6 +33,8 @@ import json
 import os
 import sys
 import tempfile
+import time
+import tracemalloc
 import unittest
 from pathlib import Path
 
@@ -48,6 +56,23 @@ from custom_backend.main import app, DATA_DIR  # noqa: E402
 TITLE = "A Meta-Analysis of Randomized Trials 随机对照试验"
 ABSTRACT = ("This randomized study covers meta-analysis methods. "
             "Category-level results and concatenate checks. 随机分组。")
+
+#: #11 预算钉语料：周期 3 文本「随机a」的所有旋转子串（长度 2..15），
+#: 共 39 条互不相同的词条——既不会被保存侧去重合并，又各自高频命中
+#: （finditer 不取重叠匹配，实测每条 13,333–66,666 次），候选总数实测
+#: 1,129,974，超过硬预算 1,000,000。词条全含 CJK，不触发英文词边界
+#: （纯 "a"*n 词表会被词边界全部拒掉）。
+_PERIOD3 = "随机a"
+
+
+def _overlap_terms() -> list[str]:
+    terms: list[str] = []
+    for length in range(2, 16):
+        for start in range(3):
+            term = (_PERIOD3 * 5)[start:start + length]
+            if term not in terms:
+                terms.append(term)
+    return terms
 
 
 def _slice(text: str, item: dict) -> str:
@@ -146,6 +171,53 @@ class HighlightComputeTests(unittest.TestCase):
         ranges = highlight_core.compute_highlights(text, ["cat", "CAT"])
         assert len(ranges) == 2, ranges
         assert {item["term_id"] for item in ranges} == {0}
+
+    def test_terms_match_identically_boundary_aware(self):
+        """#11 评审更正：去重等价判定必须与词边界判定同源。
+
+        纯 lower 键会把 U+212A KELVIN SIGN / U+0130 与 ASCII 孪生词误合并
+        （lower 相等而 _term_pattern 的首/末词边界判定不同），从而改变命中
+        结果；等价判定加入边界标志后这类近形词不再等价。
+        """
+        same = highlight_core.terms_match_identically
+        assert same("randomized", "Randomized") is True  # 大小写对仍合并
+        assert same("k", "K") is True                     # ASCII 大小写对
+        assert same("(p<0.05)", "(P<0.05)") is True       # 正则元字符按字面量
+        assert same("Å", "å") is True                     # 非 ASCII 大小写对
+        assert same("randomized", "randomised") is False  # 不同词
+        assert same("cat", "category") is False           # 子串不是等价词
+        assert same("a随", "机a") is False
+        # 近形词：lower 相同但词边界语义不同 → 不等价（双向皆 False）。
+        assert same("k", "K") is False
+        assert same("K", "k") is False
+        assert same("i̇", "İ") is False
+        assert same("İ", "i̇") is False
+
+    def test_candidate_budget_exceeded_raises(self):
+        """#11：候选命中总数超硬预算 → 抛 HighlightMatchBudgetExceeded。
+
+        修复前无预算：~1.3M 候选照常收集/排序并返回 200（探针实测
+        range_count=13334、0.77s，内存随词条数 × 命中数线性放大）。
+        """
+        text = _PERIOD3 * 66666  # 199,998 chars
+        budget = highlight_core.MAX_CANDIDATE_MATCHES
+        with self.assertRaises(
+                highlight_core.HighlightMatchBudgetExceeded) as ctx:
+            highlight_core.compute_highlights(text, _overlap_terms())
+        # 超限即刻熔断：count 恒为 limit + 1，不等候选收集完毕。
+        assert ctx.exception.limit == budget, ctx.exception.limit
+        assert ctx.exception.count == budget + 1, ctx.exception.count
+
+    def test_overlapping_distinct_terms_within_budget(self):
+        """预算不误伤正常重度重叠：互不相同的重叠词条照常贪心取最长。
+
+        （纯 ASCII 词表会被英文词边界整段拒掉，故用 CJK 子串构造重叠。）
+        """
+        text = "随机" * 10000  # 20,000 chars
+        ranges = highlight_core.compute_highlights(text, ["随机", "机随", "随机随"])
+        # 最长者「随机随」胜出：finditer 不取重叠，命中起点 0,4,8,... → 5000 条。
+        assert len(ranges) == 5000, len(ranges)
+        assert {item["term_id"] for item in ranges} == {2}
 
     def test_astral_codepoint_offsets(self):
         """增补平面字符：start/end 是码点偏移（≠ JS UTF-16 下标），byte_* 是 UTF-8。"""
@@ -263,7 +335,8 @@ class HighlightApiTests(unittest.TestCase):
         fetched = self.client.get(self._sets_url(), headers=self.auth(0)).json()
         assert fetched["active_set_id"] == active, fetched
         assert [item["set_id"] for item in fetched["sets"]] == ids
-        assert fetched["sets"][0]["terms"] == ["randomized", "Randomized", "随机"]
+        # 规范化去重（#11）：randomized/Randomized 匹配等价，只保留首次形式。
+        assert fetched["sets"][0]["terms"] == ["randomized", "随机"]
 
     def test_put_is_idempotent(self):
         body = self._body()
@@ -320,6 +393,92 @@ class HighlightApiTests(unittest.TestCase):
             {"set_id": "dup", "name": "B", "terms": []},
         ], None)
         self.assertEqual(response.status_code, 400, response.text)
+
+    # ---- 词条规范化去重 / 词条数上限（终审 #11 / #54） ---------------------
+
+    def test_duplicate_terms_deduplicated_on_save(self):
+        """#11 保存侧钉：同词（规范化 = 去首尾空白 + 小写）只存一次。
+
+        修复前：500 个相同词条 → 200 且 term_count=500，compute 的候选数
+        = 词条数 × 命中数被放大 500 倍（探针实测 100 条即 38.36s/1325.5MB）。
+        """
+        response = self._put_sets(0, [{"name": "重复", "terms": ["随机"] * 500}],
+                                  None)
+        self.assertEqual(response.status_code, 200, response.text)
+        saved = response.json()["sets"][0]
+        assert saved["term_count"] == 1, saved
+        assert saved["terms"] == ["随机"], saved
+
+        # 仅大小写不同的词条同样视为重复；保留首次出现的大小写形式。
+        response = self._put_sets(
+            0, [{"name": "大小写", "terms": ["randomized", "Randomized",
+                                             "RANDOMIZED", "随机"]}], None)
+        self.assertEqual(response.status_code, 200, response.text)
+        saved = response.json()["sets"][0]
+        assert saved["term_count"] == 2, saved
+        assert saved["terms"] == ["randomized", "随机"], saved
+
+        # 去重后的保存结果再读回一致（GET 不做二次变换）。
+        fetched = self.client.get(self._sets_url(), headers=self.auth(0)).json()
+        assert fetched["sets"][0]["terms"] == ["randomized", "随机"]
+
+    def test_boundary_sensitive_near_twins_not_merged(self):
+        """#11 评审更正钉：词边界语义不同的近形词不去重，结果不随提交顺序变。
+
+        修复前（纯 lower 去重键）：['k','K(U+212A)'] 只存 ['k']，
+        compute('ak') → 0 段；未去重基线为 1 段（来自无词边界的 U+212A
+        词条，term_id=1）——去重改变了命中结果，且结果依赖提交顺序。
+        修复后两条都保留，API 结果与未去重纯函数基线逐段一致（含 term_id）。
+        """
+        kelvin = "K"
+        cases = [
+            (["k", kelvin], "ak"),        # U+212A 小写折叠为 k，但不加词边界
+            ([kelvin, "k"], "ak"),        # 提交顺序不应影响结果
+            (["i̇", "İ"], "ai̇"),  # U+0130 小写为 i+U+0307，首字符边界判定不同
+        ]
+        for terms, text in cases:
+            set_id = self._activate_first_set(0, terms)
+            response = self.client.post(
+                self._compute_url(), json={"text": text}, headers=self.auth(0))
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()
+            assert payload["set_id"] == set_id
+            # 近形词不合并：保存的就是提交的两条。
+            assert payload["terms"] == [
+                {"term_id": i, "term": t} for i, t in enumerate(terms)], \
+                payload["terms"]
+            # API 结果 == 未去重纯函数基线（逐段含 term_id 一致）。
+            expected = highlight_core.compute_highlights(text, terms)
+            assert payload["ranges"] == expected, (terms, payload["ranges"],
+                                                   expected)
+            assert len(expected) == 1, (terms, expected)
+
+    def test_terms_per_set_limit_pinned(self):
+        """#54 上限钉：单组词条数上限 500——501 → 400，500 → 200。
+
+        该闸门是 compute 匹配开销的第一道防线；此前 build/tests 对
+        MAX_TERMS_PER_SET / highlight_terms_too_many 零命中（变异置
+        10^9 后全套仍绿）。上限按**提交条数**（去重前）判定。
+        """
+        terms_500 = [f"t{i:04d}" for i in range(500)]
+        response = self._put_sets(0, [{"name": "满配", "terms": terms_500}], None)
+        self.assertEqual(response.status_code, 200, response.text)
+        assert response.json()["sets"][0]["term_count"] == 500
+
+        terms_501 = [f"t{i:04d}" for i in range(501)]
+        response = self._put_sets(0, [{"name": "超限", "terms": terms_501}], None)
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        assert detail["error_code"] == "highlight_terms_too_many", detail
+        assert detail["message_key"] == "highlight.terms_too_many", detail
+        assert detail["params"] == {"set_index": 0,
+                                    "max": highlight_core.MAX_TERMS_PER_SET}
+
+        # 提交条数判定的边界：501 条即使全部同词（去重后只剩 1 条）也 400。
+        response = self._put_sets(0, [{"name": "重复超限",
+                                       "terms": ["随机"] * 501}], None)
+        self.assertEqual(response.status_code, 400, response.text)
+        assert response.json()["detail"]["error_code"] == "highlight_terms_too_many"
 
     # ---- compute --------------------------------------------------------
 
@@ -438,6 +597,59 @@ class HighlightApiTests(unittest.TestCase):
             headers={**self.auth(0), "Content-Type": "application/json"})
         self.assertEqual(response.status_code, 400, response.text)
         assert response.json()["detail"]["error_code"] == "highlight_text_invalid"
+
+    # ---- 资源放大钉（终审 #11） ------------------------------------------
+
+    def test_compute_duplicate_terms_scale(self):
+        """#11 规模钉：500 重复词条 × 200k 文本 → 与单词条同量级。
+
+        修复前（保存侧不去重）实测：100 重复词条 × 66,666 命中 → 38.36s /
+        tracemalloc 峰值 1325.5MB，500 条 32.18s（GB 级，外推 ~6.6GB）；
+        修复后去重为 1 条，实测 ~1.6s / ~40MB。上限取 8s / 400MB——
+        对修复后留 ~5×/10× 余量，修复前的 1/5 规模（100 条）也已超限。
+        """
+        self._activate_first_set(0, ["随机"] * 500)
+        text = "随机a" * 66666  # 199,998 chars；「随机」命中 66,666 次
+        tracemalloc.start()
+        t0 = time.perf_counter()
+        response = self.client.post(
+            self._compute_url(), json={"text": text}, headers=self.auth(0))
+        elapsed = time.perf_counter() - t0
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        assert payload["range_count"] == 66666, payload["range_count"]
+        assert payload["terms"] == [{"term_id": 0, "term": "随机"}], \
+            payload["terms"]
+        assert elapsed < 8.0, f"elapsed {elapsed:.2f}s"
+        assert peak < 400 * 1024 * 1024, f"peak {peak / 1048576:.1f}MB"
+
+    def test_compute_too_many_matches_structured_400(self):
+        """#11 预算钉：候选命中总数超硬预算 → 结构化 400，绝不放大计算。
+
+        39 条互不相同的高频重叠词条（~1.3M 候选，保存侧去重无法合并）；
+        修复前返回 200（探针实测 range_count=13334、0.77s 收集全程）。
+        """
+        set_id = self._activate_first_set(0, _overlap_terms())
+        response = self.client.post(
+            self._compute_url(), json={"text": _PERIOD3 * 66666},
+            headers=self.auth(0))
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        assert detail["error_code"] == "highlight_too_many_matches", detail
+        assert detail["message_key"] == "highlight.too_many_matches", detail
+        budget = highlight_core.MAX_CANDIDATE_MATCHES
+        assert detail["params"]["limit"] == budget, detail["params"]
+        assert detail["params"]["count"] == budget + 1, detail["params"]
+
+        # 同一激活组对正常长度文本不受影响：预算按候选数计，不按词条数。
+        response = self.client.post(
+            self._compute_url(), json={"text": _PERIOD3 * 30},
+            headers=self.auth(0))
+        self.assertEqual(response.status_code, 200, response.text)
+        assert response.json()["set_id"] == set_id
+        assert response.json()["ranges"], response.json()
 
     # ---- 权限 -----------------------------------------------------------
 
