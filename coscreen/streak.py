@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timedelta, tzinfo
@@ -87,11 +88,91 @@ def resolve_timezone(name: str | None) -> tzinfo | None:
 
 
 def local_timezone() -> tzinfo | None:
-    """服务器当前本地时区（用于把带偏移的时间戳换算成本地日）。"""
+    """服务器本地时区（用于把 naive 本地墙钟时间戳换算成本地日）。
+
+    优先返回**带 DST 规则**的真实时区（IANA 名 / ``ZoneInfo``）：
+    ``astimezone().tzinfo`` 只带当前偏移、``dst()`` 恒 ``None``，拿它解释
+    跨 DST 的历史 naive 时间戳会错移一小时（终审 #50）。解析不到 IANA 名
+    （或该名不可用）时退回固定偏移——无 DST 的服务器上两者等价。
+    """
+    name = _local_zone_name()
+    if name:
+        zone = resolve_timezone(name)
+        if zone is not None:
+            return zone
     try:
         return datetime.now().astimezone().tzinfo
     except Exception:  # noqa: BLE001 - 极端环境降级为 naive
         return None
+
+
+#: Windows 注册表时区名 → IANA 名。只列**有 DST 规则**的常见区域：无 DST
+#: 的区域用固定偏移兜底与真实时区逐刻等价，不进表也能算对。
+_WINDOWS_ZONE_MAP = {
+    "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Alaskan Standard Time": "America/Anchorage",
+    "Atlantic Standard Time": "America/Halifax",
+    "Newfoundland Standard Time": "America/St_Johns",
+    "GMT Standard Time": "Europe/London",
+    "Irish Standard Time": "Europe/Dublin",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Prague",
+    "Romance Standard Time": "Europe/Paris",
+    "E. Europe Standard Time": "Europe/Bucharest",
+    "FLE Standard Time": "Europe/Helsinki",
+    "GTB Standard Time": "Europe/Athens",
+    "Israel Standard Time": "Asia/Jerusalem",
+    "Egypt Standard Time": "Africa/Cairo",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+    "Cen. Australia Standard Time": "Australia/Adelaide",
+    "Tasmania Standard Time": "Australia/Hobart",
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "Paraguay Standard Time": "America/Asuncion",
+    "Pacific SA Standard Time": "America/Santiago",
+}
+
+
+def _local_zone_name() -> str | None:
+    """尽力把「服务器本地时区」解析成 IANA 名；解析不到返回 ``None``。
+
+    依序尝试：``TZ`` 环境变量（部署显式指定，POSIX 路径形态取 zoneinfo/
+    之后）→ POSIX 惯例文件（``/etc/timezone``、``/etc/localtime`` 软链）→
+    Windows 注册表 ``TimeZoneKeyName``（常见 DST 区域映射）。任何一步失败
+    都静默落到下一层，绝不抛错。
+    """
+    name = os.environ.get("TZ", "").strip().lstrip(":")
+    if name.startswith("/"):
+        marker = "zoneinfo/"
+        name = name[name.rindex(marker) + len(marker):] if marker in name else ""
+    if name:
+        return name
+    try:
+        text = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if text:
+            return text.splitlines()[0].strip()
+    except OSError:
+        pass
+    try:
+        target = os.readlink("/etc/localtime")
+        marker = "zoneinfo/"
+        if marker in target:
+            return target[target.rindex(marker) + len(marker):]
+    except OSError:
+        pass
+    try:
+        import winreg  # noqa: WPS433 - 仅 Windows 存在
+
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation") as key:
+            windows_name = str(winreg.QueryValueEx(key, "TimeZoneKeyName")[0])
+        return _WINDOWS_ZONE_MAP.get(windows_name)
+    except (OSError, ImportError, ValueError):
+        pass
+    return None
 
 
 def today_in(tz: tzinfo | None = None) -> date:

@@ -27,7 +27,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -132,6 +132,42 @@ class StreakComputationTests(unittest.TestCase):
         assert streak_core.parse_local_date(
             "2026-11-07T17:00:00+00:00",
             streak_core.resolve_timezone("UTC")) == date(2026, 11, 7)
+
+    def test_local_timezone_resolves_dst_aware_zone(self):
+        """终审 #50：本地时区必须解析成带 DST 规则的真实时区（TZ 可解析时），
+        而不是「当前偏移」的固定时区——否则跨 DST 的历史 naive 时间戳会按
+        当前季节的偏移解释，错移一小时。"""
+        with mock.patch.dict(os.environ, {"TZ": "Europe/Berlin"}):
+            tz = streak_core.local_timezone()
+            assert tz is not None
+            january = datetime(2025, 1, 15, 12, 0)
+            july = datetime(2025, 7, 15, 12, 0)
+            assert tz.utcoffset(january) == timedelta(hours=1)   # CET
+            assert tz.utcoffset(july) == timedelta(hours=2)      # CEST
+            assert tz.dst(july) == timedelta(hours=1)
+        # 解析不了的 TZ 名不得抛错：降级回固定偏移（原行为保留）
+        with mock.patch.dict(os.environ, {"TZ": "Not/AZone"}):
+            assert streak_core.local_timezone() is not None
+
+    def test_parse_local_date_uses_dst_rules_for_naive_stamps(self):
+        """柏林墙钟的 naive 时间戳按 DST 规则归属本地日（终审 #50）。
+
+        不打桩 ``local_timezone``——用 ``TZ`` 驱动真实解析链。区分性用例：
+        夏季 16:30（CEST=UTC+2）→ 东京（UTC+9）当天 23:30，归 06-15；
+        若本地时区被当固定偏移解释（冬令时 +1、无 DST 服务器当前偏移、
+        或 TZ 被忽略），同一时间戳会错移一小时归到 06-16。"""
+        tokyo = streak_core.resolve_timezone("Asia/Tokyo")
+        with mock.patch.dict(os.environ, {"TZ": "Europe/Berlin"}):
+            # CEST(+2)：16:30 → 14:30 UTC → 东京 23:30 当天
+            assert streak_core.parse_local_date("2025-06-15T16:30:00",
+                                                tokyo) == date(2025, 6, 15)
+            # 冬季 CET(+1)：16:30 → 15:30 UTC → 东京次日 00:30
+            assert streak_core.parse_local_date("2025-01-15T16:30:00",
+                                                tokyo) == date(2025, 1, 16)
+            # 春季切换日（2025-03-30 02:00 柏林拨快）当晚 23:30 已是
+            # CEST：目标时区=本地时，本地日不错移到 03-31
+            assert streak_core.parse_local_date(
+                "2025-03-30T23:30:00") == date(2025, 3, 30)
 
     def test_suggest_daily_target_ceiling_and_edges(self):
         assert streak_core.suggest_daily_target(10, 3)["suggested_target"] == 4

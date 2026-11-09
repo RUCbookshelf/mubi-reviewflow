@@ -31,8 +31,9 @@
    ``build/tests/study_design_ext_sample.json``（16 条 = 4 类 × 4，计数与
    逐条判定钉在本文件；不作 P/R 承诺）。
 
-规则版本：``study_design.RULE_VERSION`` 由 **1 → 2**（判定因子变化必须 bump，
-与 ``docs/methodology/study_design_classifier.md`` §5 机器块同步）。
+规则版本：``study_design.RULE_VERSION`` 由 **1 → 2**（扩类）再 **2 → 3**
+（终审 #52：survey 负向环视扩常见修饰词；判定因子变化必须 bump，与
+``docs/methodology/study_design_classifier.md`` §5 机器块同步）。
 """
 
 from __future__ import annotations
@@ -197,6 +198,46 @@ class PrecedenceNails(unittest.TestCase):
             self.assertEqual(result["label"], "other", title)
             self.assertFalse(result["recognized"], title)
 
+    def test_survey_lookahead_tolerates_common_modifier_words(self):
+        # 终审 #52：「survey of the current/published/… literature」等带常见
+        # 修饰词的叙述性综述写法不得误标为调查研究（recognized=True 并预填
+        # 「研究设计不符」）。原环视只容忍可选 of/the。
+        for title in (
+            "A survey of the current literature on formative assessment",
+            "A survey of the published literature on formative assessment",
+            "A survey of the existing literature on formative assessment",
+            "A survey of recent literature on formative assessment",
+            "A survey of available evidence on formative assessment",
+            "A survey of the recent international evidence",
+            "A survey of current trials of formative assessment",
+            "A survey of the previously published trials",
+            # 第 2 轮评审点名残余：most/latest/up-to-date 也进表
+            "A survey of the most recent literature on formative assessment",
+            "A survey of the latest evidence on formative assessment",
+            "A survey of up-to-date evidence on formative assessment",
+            # 第 3 轮评审观察：more/very/and 程度与连接词变体
+            "A survey of more recent literature on X",
+            "A survey of the recent and current literature on X",
+            "A survey of the very latest evidence on X",
+        ):
+            result = _classify(title)
+            self.assertEqual(result["label"], "other", title)
+            self.assertFalse(result["recognized"], title)
+            self.assertIsNone(result["suggest_exclusion_reason"], title)
+        # 环视扩大不得误伤真调查研究：modifier 后面不是 literature/evidence/
+        # trials 语块时 survey 照常命中。
+        for title in (
+            "A national survey of school principals' leadership practices",
+            "A survey of patients with chronic pain",
+            "An online survey of teacher burnout",
+            "A survey of current smokers about quitting",
+            "A survey of most hospital pharmacies",
+            # and 进表只影响「整串以 literature/evidence/trials 结尾」的
+            # 语块：并列人群照常命中
+            "A survey of teachers and students",
+        ):
+            self.assertEqual(_classify(title)["label"], "survey", title)
+
 
 class UnrecognizedShapeNails(unittest.TestCase):
     """未识别输出逐键不变（前端只读 label/recognized/suggest_exclusion_reason）。"""
@@ -210,11 +251,12 @@ class UnrecognizedShapeNails(unittest.TestCase):
         self.assertIsNone(result["source"])
         self.assertIsNone(result["matched_keyword"])
         self.assertIsNone(result["suggest_exclusion_reason"])
-        self.assertEqual(result["rule_version"], 2)
+        self.assertEqual(result["rule_version"], 3)
 
     def test_rule_version_bumped_for_extended_categories(self):
-        # 旧值 1（七类）→ 新值 2（十一类）：判定因子变化必须 bump
-        self.assertEqual(sd.RULE_VERSION, 2)
+        # 旧值 1（七类）→ 2（十一类）→ 3（终审 #52 survey 环视扩修饰词）：
+        # 判定因子变化必须 bump
+        self.assertEqual(sd.RULE_VERSION, 3)
 
     def test_api_degraded_rule_version_matches_rule_version(self):
         """导入失败降级响应里的兜底版本号必须与真实常量同值（防漂移）。"""

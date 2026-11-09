@@ -38,7 +38,7 @@
       "suggest_exclusion_reason": null,  # 识别为非 RCT 设计时为
                                   #   "研究设计不符"（与初筛下拉选项值同串），
                                   #   供前端**预填不代存**；其余为 None
-      "rule_version": 2
+      "rule_version": 3
     }
 
 精确优先的边界（诚实披露，详见 ``docs/methodology/study_design_classifier.md``）：
@@ -79,8 +79,9 @@ __all__ = [
 
 #: 规则版本：判定因子（规则本体/加权策略）变化时必须 bump，
 #: 前端徽标与文档披露按此对齐。2 = 七类 → 十一类（2.1.5 泳道 D3 扩类；
-#: 任务书写作「十类」，按列出的四类新增与既有七类相加实为十一类）。
-RULE_VERSION: int = 2
+#: 任务书写作「十类」，按列出的四类新增与既有七类相加实为十一类）；
+#: 3 = survey 负向环视扩修饰词（终审 #52，临床七类规则零变化）。
+RULE_VERSION: int = 3
 
 #: 随机对照试验的稳定代码（与 evidence_mapper 标签族一致）。
 RCT_LABEL: str = "rct"
@@ -117,10 +118,17 @@ _EXTENDED_DESIGN_RULES: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
         re.compile(r"\binterview\s+stud(?:y|ies)\b", re.IGNORECASE),
     )),
     ("survey", (
-        # 「survey of the literature/evidence/trials」是叙述性综述的习惯说法，
-        # 不是调查研究——负向环视把它挡在门外（宁缺毋滥）。
+        # 「survey of the (current/published/…) literature/evidence/trials」是
+        # 叙述性综述的习惯说法，不是调查研究——负向环视把这些常见修饰词
+        # 写法一并挡在门外（宁缺毋滥；终审 #52 修正：原环视只容忍可选
+        # of/the，漏掉 current/published/recent/existing/available 等）。
         re.compile(
-            r"\bsurveys?\b(?!\s+(?:of\s+)?(?:the\s+)?(?:literature|evidence|trials)\b)",
+            r"\bsurveys?\b(?!\s+(?:of\s+|the\s+)*"
+            r"(?:(?:current|currently|published|recent|recently|existing|"
+            r"available|prior|previous|previously|past|relevant|related|"
+            r"growing|extensive|extensively|international|scientific|"
+            r"medical|clinical|most|latest|up-to-date|more|very|and)\s+)*"
+            r"(?:literature|evidence|trials)\b)",
             re.IGNORECASE),
         re.compile(r"\bquestionnaires?\b", re.IGNORECASE),
     )),

@@ -1,15 +1,23 @@
-# 预置研究设计分类器方法学与评估披露（W4 · v2）
+# 预置研究设计分类器方法学与评估披露（W4 · v3）
 
 - 版本：v1 · 2026-10-30 · 随 2.1.4 发布（W4 空白格泳道 · B3 竞品空白格核销）；
   v2 · 2026-11-08 · 2.1.5 泳道 D3：**类别由七类扩至十一类**（新增质性研究、
   混合方法、调查研究、话语/语料分析），规则版本 1 → 2。临床七类的规则本体
   与 48 篇夹具金标**一字未改**，§4/§5 的临床指标逐值不变（扩类只接管原本
   归「未识别」的教育/社科题录，见 §7）。
+  v3 · 2026-11-09 · 终审 #52：`survey` 负向环视扩常见修饰词，规则版本 2 → 3。
+  词表（终稿）：current/currently/published/recent/recently/existing/
+  available/prior/previous/previously/past/relevant/related/growing/
+  extensive/extensively/international/scientific/medical/clinical/most/
+  latest/up-to-date/more/very/and（含程度与连接词，可叠用）。
+  临床七类规则本体与 48 篇夹具金标仍**一字未改**，§4/§5 临床指标逐值不变
+  （受影响的只有「survey of the 修饰词 literature/evidence/trials」这类
+  叙述性综述写法：由误标 `survey` 改判 `other`）。
 - 被描述实现：`coscreen/al/study_design.py`（纯本地分类函数）、
   `custom_backend/study_design_api.py`（只读端点 `GET /api/tasks/{id}/study-designs`）、
   `custom_frontend/study_design_badge.js`（初筛卡徽标 + 排除理由预填不代存）
-- 规则版本：`study_design.RULE_VERSION = 2`（判定因子变化时 bump，本文件 §5 的
-  评估表同步重测；2.1.5 扩类时重测结果为**临床指标不变**）
+- 规则版本：`study_design.RULE_VERSION = 3`（判定因子变化时 bump，本文件 §5 的
+  评估表同步重测；2.1.5 扩类与终审 #52 环视修正的重测结果均为**临床指标不变**）
 
 ---
 
@@ -154,7 +162,7 @@ cross-sectional / diagnostic accuracy 的题录，仍按临床类别判定——
 
 ```json
 {
-  "rule_version": 2,
+  "rule_version": 3,
   "n": 48,
   "per_class": {
     "full": {
@@ -329,7 +337,7 @@ cross-sectional / diagnostic accuracy 的题录，仍按临床类别判定——
 | `mixed_methods` | 混合方法 | `mixed methods` / `mixed-method(s)` |
 | `discourse` | 话语/语料分析 | `discourse analysis`、`conversation analysis`、`corpus-based` |
 | `qualitative` | 质性研究 | `qualitative`、`narrative inquiry`、`narrative analysis`、`ethnograph*`、`phenomenolog*`、`case study`/`case studies`、`grounded theory`、`interview study`/`interview studies` |
-| `survey` | 调查研究 | `survey(s)`（排除 `survey of the literature/evidence/trials` 这一叙述性综述说法）、`questionnaire(s)` |
+| `survey` | 调查研究 | `survey(s)`（排除 `survey of the (修饰词) literature/evidence/trials` 这一叙述性综述说法，修饰词表见文件头 v3 条目；终审 #52 扩修饰词）、`questionnaire(s)` |
 
 分组顺序即优先级：混合方法（其题名通常同时出现 qualitative/survey）>
 话语/语料分析（方法名比「质性」更具体）> 质性研究 > 调查研究（最泛的名词）。
@@ -338,9 +346,10 @@ cross-sectional / diagnostic accuracy 的题录，仍按临床类别判定——
 ### 7.3 评估口径（诚实披露）
 
 - **临床侧零回归**：把新规则套到 W4 的 48 篇 PubMed 夹具上，逐条比对
-  主信号判定，**变化 0 条**（48 条题录中没有任何一条含新类别规则词）。
-  因此 §4/§5 的临床指标与规则版本 1 时期逐值相同，仅 `rule_version` 由
-  1 → 2。
+  主信号判定，**变化 0 条**（48 篇题录中没有任何一条含新类别规则词）。
+  因此 §4/§5 的临床指标与规则版本 1 时期逐值相同；`rule_version` 的变化
+  为**历史沿革**：扩类时 1 → 2（本节记录的当时口径），v3 修 survey 环视
+  时 2 → 3（见文件头版本史）——两次均不触碰临床指标。
 - **新类别没有 PubMed 金标**：本仓库不把教育/社科样本混入 48 篇夹具——
   该夹具的每一类金标都对应一条 PubMed 检索式、摘要统一截断至 400 字符，
   且 §5 机器块按「每类 6 条 / 共 48 条」逐值互锁；混入异构样本会同时破坏
@@ -352,8 +361,16 @@ cross-sectional / diagnostic accuracy 的题录，仍按临床类别判定——
   precision/recall 数值**——样本是合成的，报数会误导。
 - **已知取舍**：`case study` 在临床语料里也可能是病例报告式写法
   （`case report` 不命中，已作负例钉住）；`survey` 的名词用法仍可能出现在
-  叙述性综述里，靠 `survey of the literature` 负向环视与「临床七类优先」
-  两道闸门降低误判。
+  叙述性综述里，靠 `survey of the (修饰词) literature/evidence/trials`
+  负向环视（终审 #52，修饰词全表以文件头 v3 条目为准——穷举式词表，
+  评审第 3 轮后已含 more/very/and 等程度与连接词；钉在
+  `test_survey_lookahead_tolerates_common_modifier_words`）
+  与「临床七类优先」两道闸门降低误判。词表外的罕见修饰写法仍可能
+  误标（穷举法的固有边界）。环视扩大的代价是**同向的**：
+  「survey of clinical trials units」这类 modifier 后恰接
+  literature/evidence/trials 语块的真调查研究也会被挡成 `other`
+  （宁缺毋滥——漏标不预填排除理由、可人工改；误标才会把综述预填成
+  「研究设计不符」）。
 - **前端**：新类别的徽标显示名/配色需要前端补齐；后端只负责判定与稳定代码
   （`label`）。未适配的前端把未知代码降级显示为「未识别」（不报错、
   不出现空白徽标）。契约见 2.1.5 前端契约
