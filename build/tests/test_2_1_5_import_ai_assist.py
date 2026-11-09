@@ -494,5 +494,61 @@ class ImportAIAssistApiTests(unittest.TestCase):
         self.assertEqual({row["status"] for row in rows}, {"degraded"})
 
 
+
+
+class OpenerProxyPins(unittest.TestCase):
+    """终审 #31：导入 AI 的 provider opener 必须忽略 HTTP(S)_PROXY
+    （沿 test_pdf_fetch_api.py:892 钉型——否则代理环境下 API Key 与六字段
+    载荷整包发往代理主机，本地 Ollama 回环端点也功能性失效）。"""
+
+    def test_opener_ignores_proxy_environment(self):
+        import urllib.request as _urllib
+
+        def proxy_routing(opener):
+            return sorted(name for name, _func in opener.handle_open.items()
+                          for _h in opener.handle_open[name]
+                          if type(_h).__name__ == "ProxyHandler")
+
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9",
+                                          "HTTPS_PROXY": "http://127.0.0.1:9",
+                                          "http_proxy": "http://127.0.0.1:9"}):
+            default_opener = _urllib.build_opener()
+            self.assertTrue(proxy_routing(default_opener),
+                            "前提：默认 opener 在代理环境下会走代理（漏洞形态）")
+            our_opener = ai_suggest_api._build_opener()
+            self.assertEqual(proxy_routing(our_opener), [],
+                             "provider opener 必须忽略 HTTP(S)_PROXY（空 ProxyHandler）")
+        self.assertTrue(any(type(h).__name__ == "_NoRedirectHandler"
+                            for h in our_opener.handlers),
+                        "拒绝重定向 handler 仍需保留")
+
+
+class FulltextPathContainmentPins(unittest.TestCase):
+    """终审 #39 r3：ai_suggest 全文读取的包含性判定直测（端到端钉与变异钉
+    在 build/tests/test_ai_suggest.py::AISuggestTests 的 r3 用例）。"""
+
+    def test_pool_path_rejected_and_task_dir_allowed(self):
+        import shutil as _shutil
+
+        base = Path(tempfile.mkdtemp(prefix="sec2-ai-contain-"))
+        self.addCleanup(lambda: _shutil.rmtree(base, ignore_errors=True))
+        task_dir = base / "tasks" / "t1"
+        (task_dir / "pdfs").mkdir(parents=True)
+        pool = base / "pdfs"
+        pool.mkdir()
+        inside = task_dir / "pdfs" / "ok.pdf"
+        inside.write_bytes(b"%PDF-1.4 ok")
+        outside = pool / "legacy.pdf"
+        outside.write_bytes(b"%PDF-1.4 secret")
+        owner_db = task_dir / "owner.db"
+        self.assertTrue(ai_suggest_api._fulltext_path_allowed(inside, owner_db))
+        self.assertFalse(ai_suggest_api._fulltext_path_allowed(outside, owner_db),
+                         "共享平铺池路径必须被拒")
+        self.assertFalse(
+            ai_suggest_api._fulltext_path_allowed(task_dir / ".." / ".." / "pdfs"
+                                                  / "legacy.pdf", owner_db),
+            "上跳写法解析后同样在任务目录外")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

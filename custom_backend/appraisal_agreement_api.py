@@ -48,6 +48,10 @@ from coscreen.screening_arbitration import (
     SCREENER_READ_TIMEOUT,
     ScreenerLibraryUnavailableError,
 )
+# 终审 #02：CSV 公式注入防护复用 tables_api._csv_cell（MM-05 同一实现），
+# 不在评价导出里复制第三份口径——带符号纯数值豁免等语义随源函数演进。
+from custom_backend.tables_api import _csv_cell  # noqa: E402
+
 
 __all__ = ["register_appraisal_agreement_routes"]
 
@@ -383,8 +387,12 @@ def register_appraisal_agreement_routes(
                   "overall", "rater", "updated_at"]
 
         def render(values: list[str]) -> str:
+            # 每个单元格（含表头）过 _csv_cell：成员可控文本（article_key、
+            # 题录 title）不得以公式形状落格（终审 #02；=HYPERLINK/@SUM/-2+3
+            # 一律加 ' 前缀，普通文本与带符号纯数值原样输出）。
             buffer = io.StringIO()
-            csv.writer(buffer, lineterminator="\r\n").writerow(values)
+            csv.writer(buffer, lineterminator="\r\n").writerow(
+                [_csv_cell(value) for value in values])
             return buffer.getvalue()
 
         yield "\ufeff" + render(header)

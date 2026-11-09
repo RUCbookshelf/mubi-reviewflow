@@ -58,7 +58,15 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_COUNT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+#: 终审 #31：显式空 ProxyHandler（口径同 pdf_fetch_api._build_opener）——否则
+#: 代理环境下检索式会整包发往代理主机。拒重定向 handler 保留。独立成工厂
+#: 便于测试在代理环境下重建断言 handler 组成。
+def _build_count_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                       _NoRedirectHandler)
+
+
+_COUNT_OPENER = _build_count_opener()
 
 
 class PubmedCountError(RuntimeError):

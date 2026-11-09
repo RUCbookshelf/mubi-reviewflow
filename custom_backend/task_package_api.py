@@ -30,6 +30,20 @@ legacy 任务（无属主记录）本人操作放行，server 模式 legacy 任�
 成员 sha256/尺寸校验、解压总量与压缩比上限、拒绝加密成员与重复成员；
 落盘目标一律由服务器端生成/校验（成员名只做白名单匹配，绝不直接拼路径）；
 锁忙/IO 故障 → 503；损坏包/校验不符 → 400/409；绝不 500。
+
+终审 #41 加固（用户 2026-11-09 裁定）：
+
+* **流式解压 + 三限额**：逐成员 ``ZipFile.open`` 流式写出，杜绝
+  ``archive.read`` 整块入内存；单成员 100MB / 解压总量 2GB / 压缩比 2000x
+  在声明值与实际字节两道各查一次，超限结构化 400/413 并清场。
+* **60 分钟临时保留上限**：上传 zip、解压暂存、导出/归档/体检工作目录都是
+  分钟级路过文件——操作结束（成功/失败/客户端中断下载）即刻删除；每次触达
+  任一整包端点惰性清扫超过 ``PACKAGE_TEMP_TTL_SECONDS`` 的全部前缀残留。
+* **全局整包操作互斥**：导入/整包导出/归档导出共用一把进程级锁，同一时刻
+  只允许一个整包操作在途，第二个请求 409 ``task_package.operation_busy``；
+  磁盘峰值恒定 ≤4GB 瞬态（导入 zip 2GB + 解压 2GB）。导出锁在下载送完或
+  客户端中断时释放（下载在途也算操作在途）。
+* 上传 zip 落盘照旧（受 2GB 上传上限），但解压完成（成功或失败）立即删除。
 """
 
 from __future__ import annotations
@@ -42,6 +56,8 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import threading
+import time
 import zipfile
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
@@ -63,8 +79,10 @@ from coscreen.screening_arbitration import latest_decision_arbitration
 
 __all__ = [
     "MAX_PACKAGE_BYTES",
+    "MAX_MEMBER_BYTES",
     "MAX_UNCOMPRESSED_BYTES",
     "PACKAGE_SCHEMA",
+    "PACKAGE_TEMP_TTL_SECONDS",
     "TaskPackageError",
     "register_task_package_routes",
     "validate_import_package",
@@ -75,24 +93,100 @@ logger = logging.getLogger(__name__)
 PACKAGE_SCHEMA = "reviewflow.task-package/1"
 #: 整包单 zip 上限（设计 §二.B.4 / task_package v1.0 §三）。
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
-#: 解压后总量上限（PDF 基本不可压缩，DB 可压缩；留 2 倍余量防 zip 炸弹）。
-MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
+#: 解压总量上限（终审 #41 收紧为与单包 2GB 同额）：zip 在解压完成前仍在盘，
+#: 峰值 = zip + 解压内容 ≤ 2GB + 2GB = 4GB 瞬态（用户 2026-11-09 裁定的
+#: 空间承诺）；导出侧 total_bytes 同样受 2GB 上限约束，往返不会撞差异。
+MAX_UNCOMPRESSED_BYTES = MAX_PACKAGE_BYTES
+#: 单个解压成员实际上限（终审 #41）：db/协作库/历史库/PDF 一律 100MB——
+#: 与单 PDF 上限同口径；恶意/超大会员在校验与解压两阶段按声明值+实际字节
+#: 双重拦截（写盘数 MB 内即结构化 413/400 并清场）。
+MAX_MEMBER_BYTES = 100 * 1024 * 1024
 #: 成员数上限（正常任务远低于此）。
 MAX_MEMBERS = 20_000
-#: 解压/压缩比上限（沿 research_trace_export 纪律）。
+#: 解压/压缩比上限（沿 research_trace_export 纪律；终审 #41 起逐成员声明值
+#: 与实际字节各查一次，垫片抬高总压缩尺寸不再能掩护单个炸弹成员）。
 MAX_COMPRESSION_RATIO = 2_000
 #: manifest.json 上限。
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+#: task.sanitized.json 独立上限（终审 #41：preflight 阶段曾整读无上限）。
+MAX_TASK_JSON_BYTES = 8 * 1024 * 1024
 #: 单个 PDF 上限与既有上传端点一致（100MB）。
 MAX_PDF_BYTES = 100 * 1024 * 1024
+#: 整包临时文件保留上限（用户裁定 60 分钟；导出/归档/上传/预检/导入的
+#: 一切临时残留惰性清扫兜底）。
+PACKAGE_TEMP_TTL_SECONDS = 3600
 #: 上传读取余量（multipart 开销）。
 _UPLOAD_SLACK_BYTES = 1024 * 1024
 #: 流式读写块大小。
 _CHUNK = 1024 * 1024
 #: 导入临时目录前缀（位于 tasks_root 内，保证最终 os.replace 同盘原子）。
 _IMPORT_TMP_PREFIX = ".import-"
+#: 导出/归档/体检工作目录与上传暂存文件前缀（系统临时目录内；TTL 清扫对象
+#: ——目录与文件一律按 mtime 清扫，前缀共用一个元组）。
+_PACKAGE_TEMP_DIR_PREFIXES = ("rf-package-export-", "rf-archive-export-",
+                              "rf-package-preflight-", "rf-package-upload-")
+_PACKAGE_UPLOAD_PREFIX = "rf-package-upload-"
 #: 固定 zip 时间戳：导出副本不带本机 mtime（减少环境信息、便于比对）。
 _ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+
+#: 全局整包操作互斥（导入/整包导出/归档导出共用一把锁，用户 2026-11-09
+#: 裁定）：同一时刻全服务器（进程内）只允许一个整包操作在途——磁盘峰值从
+#: 「并发数 × 2GB」封死为恒定 ≤4GB 瞬态（导入 2+2 或导出 2）。第二个请求
+#: 结构化 409 ``task_package.operation_busy``。导出侧锁在下载完成/客户端
+#: 中断（流式生成器 finally）时释放，避免「下载中 + 新导入」的 6GB 叠加。
+_PACKAGE_OP_LOCK = threading.Lock()
+
+
+def _acquire_package_op_lock() -> None:
+    """非阻塞抢占整包操作锁；被占即结构化 409（绝不排队放大占用）。"""
+    if not _PACKAGE_OP_LOCK.acquire(blocking=False):
+        raise TaskPackageError("operation_busy", status=409)
+
+
+def _acquire_package_op_lock_or_409() -> None:
+    """端点用的抢锁缝：抢不到直接映射结构化 409（HTTPException）。"""
+    try:
+        _acquire_package_op_lock()
+    except TaskPackageError as exc:
+        raise _error(exc) from exc
+
+
+def _sweep_stale_package_temp(tasks_root: Path | None = None, *,
+                              ttl: int = PACKAGE_TEMP_TTL_SECONDS,
+                              now: float | None = None) -> int:
+    """惰性清扫：删除修改时间超过 TTL 的整包临时残留（进程崩溃孤儿兜底）。
+
+    覆盖系统临时目录里的导出/归档/体检工作目录与上传暂存文件，以及
+    ``tasks_root`` 内的 ``.import-*`` 解压暂存目录。60 分钟内在途文件不误删
+    （目录 mtime 随内部写文件刷新）。清扫是尽力而为：任何 OSError 静默跳过，
+    绝不让清扫失败变成端点 500。返回删除条目数。
+    """
+    cutoff = (time.time() if now is None else now) - ttl
+    removed = 0
+    roots: list[tuple[Path, tuple[str, ...]]] = [
+        (Path(tempfile.gettempdir()), _PACKAGE_TEMP_DIR_PREFIXES),
+    ]
+    if tasks_root is not None:
+        roots.append((Path(tasks_root), (_IMPORT_TMP_PREFIX,)))
+    for root, prefixes in roots:
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.name.startswith(prefixes):
+                continue
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink(missing_ok=True)
+            except OSError:
+                continue
+            removed += 1
+    return removed
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -384,17 +478,28 @@ def _article_meta(info: Any) -> dict[str, dict[str, Any]]:
     return meta
 
 
-def _safe_fulltext_path(info: Any, data_dir: str | Path, raw: str, db_file: Path) -> Path | None:
-    """解析 fulltexts.path 并做包含性校验（与 ``fulltext_pdf`` 端点同口径）。
+def _fulltext_allowed_roots(info: Any) -> list[Path]:
+    """fulltexts.path 的合法根：**仅任务目录**（终审 #39 r2 收窄）。
 
-    只允许任务目录内或 ``{data_dir}/pdfs`` 内的真实文件——被篡改/恶意导入的
-    库行不能把任意本机文件读进导出包。
+    旧口径还接受共享平铺池 ``{data_dir}/pdfs``——正是跨任务/跨用户读文件
+    链路的出口。导入侧重写 + 恶意 schema 拒绝（见
+    :func:`_neutralize_unrestored_fulltexts`）之外，这里再做一道与导入无关
+    的纵深：指向任务目录之外的行一律按 missing_file 跳过（含存量未迁移
+    平铺池行——行为变化已在契约披露）。
+    """
+    return [Path(info.dir).resolve()]
+
+
+def _safe_fulltext_path(info: Any, data_dir: str | Path, raw: str, db_file: Path) -> Path | None:
+    """解析 fulltexts.path 并做包含性校验（合法根 = 任务目录，见
+    :func:`_fulltext_allowed_roots`）——被篡改/恶意导入的库行不能把任意
+    本机文件读进导出包。
     """
     resolved = tasks_mod.resolve_fulltext_raw(raw, db_file, data_dir=data_dir)
     if resolved is None:
         return None
     actual = Path(resolved).resolve()
-    for root in (Path(info.dir).resolve(), (Path(data_dir) / "pdfs").resolve()):
+    for root in _fulltext_allowed_roots(info):
         try:
             actual.relative_to(root)
             return actual
@@ -438,7 +543,7 @@ def _archive_candidates(info: Any, data_dir: str | Path, scope: str
     skipped: list[str] = []
     reasons: dict[str, int] = {"missing_file": 0, "unreadable": 0}
     taken: set[str] = set()
-    allowed_roots = [Path(info.dir).resolve(), (Path(data_dir) / "pdfs").resolve()]
+    allowed_roots = _fulltext_allowed_roots(info)   # 仅任务目录（终审 #39 r2）
     for key in keys:
         entry = entries[key]
         resolved = entry.get("resolved")
@@ -686,8 +791,7 @@ def _build_package_zip(info: Any, data_dir: str | Path, include_pdfs: bool,
         raise _package_limit_error(collected["total_bytes"], pdf_bytes,
                                    len(collected["fulltexts"]))
 
-    allowed_roots = [workdir.resolve(), Path(info.dir).resolve(),
-                     (Path(data_dir) / "pdfs").resolve()]
+    allowed_roots = [workdir.resolve()] + _fulltext_allowed_roots(info)
     members: list[dict[str, Any]] = []
     zip_path = _contained(workdir, "package.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
@@ -793,17 +897,74 @@ def _validate_member_name(name: str) -> None:
         raise TaskPackageError("package_invalid", params={"reason": "member_name_invalid"})
 
 
-def _stream_member_digest(archive: zipfile.ZipFile, info: zipfile.ZipInfo
-                          ) -> tuple[str, int]:
+def _check_member_declared(info: zipfile.ZipInfo) -> None:
+    """三限额的声明值预检（写盘前零成本拦截，终审 #41）。
+
+    zip 头部声明的单成员尺寸/压缩比先于任何解压 IO 检查：诚实申报的炸弹
+    在这里零字节写盘即被拒；谎报者在 :func:`_check_member_actual` 的实际
+    字节流里被拦。压缩比用「每成员」口径——垫高其他成员的压缩总量不再能
+    掩护单个 58 万倍压缩比的炸弹成员。
+    """
+    if info.file_size > MAX_MEMBER_BYTES:
+        raise TaskPackageError("package_invalid",
+                               params={"reason": "member_too_large",
+                                       "member": info.filename})
+    if info.file_size > max(1, info.compress_size) * MAX_COMPRESSION_RATIO:
+        raise TaskPackageError("package_invalid",
+                               params={"reason": "compression_ratio",
+                                       "member": info.filename})
+
+
+def _check_member_actual(info: zipfile.ZipInfo, size_so_far: int,
+                         total_so_far: int) -> None:
+    """三限额的实际字节执行（流式解压逐块核对，终审 #41）。"""
+    if size_so_far > MAX_MEMBER_BYTES:
+        raise TaskPackageError("package_invalid",
+                               params={"reason": "member_too_large",
+                                       "member": info.filename})
+    if size_so_far > max(1, info.compress_size) * MAX_COMPRESSION_RATIO:
+        raise TaskPackageError("package_invalid",
+                               params={"reason": "compression_ratio",
+                                       "member": info.filename})
+    if total_so_far > MAX_UNCOMPRESSED_BYTES:
+        raise TaskPackageError("package_invalid",
+                               params={"reason": "uncompressed_too_large"})
+
+
+#: 伪造 central directory / CRC 不符（zipfile 在流读中途抛 BadZipFile）→
+#: 结构化 400（r2 复核：旧实现未捕获 → 500，违反「绝不 500」承诺）。
+def _zip_corrupt_error(member: str) -> TaskPackageError:
+    return TaskPackageError("package_invalid",
+                            params={"reason": "zip_corrupt", "member": member})
+
+
+def _read_member_bounded(archive: zipfile.ZipFile, info: zipfile.ZipInfo,
+                         limit: int, *, reason: str) -> bytes:
+    """流式有界读取单个成员（杜绝 archive.read 整块入内存，终审 #41）。"""
+    buffer = bytearray()
+    try:
+        with archive.open(info, "r") as handle:
+            while chunk := handle.read(_CHUNK):
+                buffer.extend(chunk)
+                if len(buffer) > limit:
+                    raise TaskPackageError("package_invalid", params={"reason": reason})
+    except zipfile.BadZipFile as exc:
+        raise _zip_corrupt_error(info.filename) from exc
+    return bytes(buffer)
+
+
+def _stream_member_digest(archive: zipfile.ZipFile, info: zipfile.ZipInfo,
+                          *, total_before: int = 0) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
-    with archive.open(info, "r") as handle:
-        while chunk := handle.read(_CHUNK):
-            size += len(chunk)
-            if size > MAX_UNCOMPRESSED_BYTES:
-                raise TaskPackageError("package_invalid",
-                                       params={"reason": "uncompressed_too_large"})
-            digest.update(chunk)
+    try:
+        with archive.open(info, "r") as handle:
+            while chunk := handle.read(_CHUNK):
+                size += len(chunk)
+                _check_member_actual(info, size, total_before + size)
+                digest.update(chunk)
+    except zipfile.BadZipFile as exc:
+        raise _zip_corrupt_error(info.filename) from exc
     return digest.hexdigest(), size
 
 
@@ -852,6 +1013,7 @@ def validate_import_package(path: str | Path, *, package_sha256: str | None = No
                 raise TaskPackageError("package_invalid", params={"reason": "directory_member"})
             if info.flag_bits & 0x1:
                 raise TaskPackageError("package_invalid", params={"reason": "encrypted_member"})
+            _check_member_declared(info)   # 终审 #41：单成员/压缩比声明值预检
             names.append(info.filename)
         if len(names) != len(set(names)):
             raise TaskPackageError("package_invalid", params={"reason": "duplicate_member"})
@@ -867,8 +1029,10 @@ def validate_import_package(path: str | Path, *, package_sha256: str | None = No
         manifest_info = archive.getinfo("manifest.json")
         if manifest_info.file_size > MAX_MANIFEST_BYTES:
             raise TaskPackageError("package_invalid", params={"reason": "manifest_too_large"})
-        with archive.open(manifest_info, "r") as handle:
-            manifest = _strict_json(handle.read())
+        # 终审 #41：manifest 不在 members 清单内、无摘要交叉校验——实际字节
+        # 必须有界读取（伪造 central directory 谎报小尺寸不能换整块入内存）。
+        manifest = _strict_json(_read_member_bounded(
+            archive, manifest_info, MAX_MANIFEST_BYTES, reason="manifest_too_large"))
         if not isinstance(manifest, dict) or manifest.get("schema") != PACKAGE_SCHEMA:
             raise TaskPackageError("package_invalid", params={"reason": "schema_unsupported"})
 
@@ -893,15 +1057,26 @@ def validate_import_package(path: str | Path, *, package_sha256: str | None = No
         if set(expected) != actual:
             raise TaskPackageError("package_invalid", params={"reason": "member_set_mismatch"})
 
+        actual_total = 0
         for name, declared in expected.items():
             _validate_member_name(name)
-            digest, size = _stream_member_digest(archive, archive.getinfo(name))
+            digest, size = _stream_member_digest(
+                archive, archive.getinfo(name), total_before=actual_total)
+            actual_total += size
             if size != declared["size"] or digest != declared["sha256"]:
                 raise TaskPackageError("package_checksum_mismatch", status=409,
                                        params={"member": name})
 
-        with archive.open("task.sanitized.json", "r") as handle:
-            task_payload = _strict_json(handle.read(), reason="task_json_unreadable")
+        # 终审 #41：task.sanitized.json 独立上限（曾无上限整读，preflight 阶段
+        # 128MiB 声明即整块入内存）；有界流式读取。
+        task_info = archive.getinfo("task.sanitized.json")
+        if task_info.file_size > MAX_TASK_JSON_BYTES:
+            raise TaskPackageError("package_invalid",
+                                   params={"reason": "task_json_too_large"})
+        task_payload = _strict_json(
+            _read_member_bounded(archive, task_info, MAX_TASK_JSON_BYTES,
+                                 reason="task_json_too_large"),
+            reason="task_json_unreadable")
         if not isinstance(task_payload, dict):
             raise TaskPackageError("package_invalid", params={"reason": "task_json_unreadable"})
         display_name = task_payload.get("display_name")
@@ -955,6 +1130,13 @@ def validate_import_package(path: str | Path, *, package_sha256: str | None = No
                                        params={"member": archive_path})
             if not isinstance(size, int) or size < 0 or size > MAX_PDF_BYTES:
                 raise TaskPackageError("package_invalid", params={"reason": "pdf_too_large"})
+            # 终审 #41：fulltexts[].size 必须与成员清单声明的实际尺寸一致——
+            # 旧口径只查「≤100MB」，谎报 size=1 的 2MiB 成员照单全收（实测
+            # MAX_PDF_BYTES 猴补为 1024 后仍 ACCEPTED）。
+            if size != expected[archive_path]["size"]:
+                raise TaskPackageError("package_invalid",
+                                       params={"reason": "pdf_size_mismatch",
+                                               "member": archive_path})
             pdf_keys.add(key)
             pdf_names.add(archive_name)
 
@@ -1072,21 +1254,116 @@ def _update_fulltext_row(base: Path, name: str, *, key: str, path: str,
                          filename: str, sha256: str, n_pages: int) -> None:
     try:
         with closing(_open_rw(base, name)) as conn, conn:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE fulltexts SET path=?, filename=?, sha256=?, n_pages=? "
                 "WHERE zotero_key=?",
                 (path, filename, sha256, n_pages, key),
             )
+            if cursor.rowcount < 1:
+                # r2 复核：包内库可装 BEFORE UPDATE 触发器使改写静默失效——
+                # manifest 覆盖的 key 必须真实改写，否则拒绝（绝不假 200）。
+                raise TaskPackageError("import_failed",
+                                       params={"reason": "fulltext_rewrite"})
     except sqlite3.Error as exc:
         raise TaskPackageError("import_failed", params={"reason": "fulltext_rewrite"}) from exc
 
 
-def _extract_member(archive: zipfile.ZipFile, member_name: str, base: Path,
-                    target_name: str) -> Path:
-    """把包成员解压到 ``base`` 内（成员名/目标名就地校验，防 zip-slip）。
+def _fulltexts_schema_hostile(conn: sqlite3.Connection) -> bool:
+    """fulltexts 是否被做了手脚：是视图，或其上挂有任意触发器（r3）。
 
-    目标文件名由服务器端从**已校验 slug**派生（不以包内任意字符串直接做路径）；
-    写入用 ``Path.write_bytes``，不使用可被重定向的 open()。
+    产品自身的筛选员库 fulltexts 永远是普通表、无触发器（coscreen.db.init_db）；
+    出现视图/触发器只可能来自自造包。BEFORE ``RAISE(IGNORE)``、``AFTER UPDATE``
+    把 path 写回、``INSTEAD OF`` 等任何形态都能让「UPDATE rowcount=1 但行未
+    清空」——在 schema 层直接拒绝，不逐一猜触发器写法。
+    """
+    rows = conn.execute(
+        "SELECT type FROM sqlite_master "
+        "WHERE (type='view' AND lower(name)='fulltexts') "
+        "OR (type='trigger' AND lower(tbl_name)='fulltexts')").fetchall()
+    return bool(rows)
+
+
+def _neutralize_unrestored_fulltexts(base: Path, names: Iterable[str],
+                                     covered_paths: Mapping[str, str]) -> int:
+    """终审 #39：manifest 未覆盖的 fulltexts 行 ``path`` 一律清空。
+
+    导入的库成员可能携带指向共享 ``{data_dir}/pdfs`` 池（或其他本机路径）的
+    旧行；原样保留会让导出/下载出口把其他任务/遗留任务的文件当作本任务全文
+    读出（跨任务读文件）。只有 manifest 覆盖、已改写到新任务目录的 key 保留
+    path；其余行 path 清空。返回实际清空的行数。
+
+    对抗口径（攻击者完全控制包内 .db）：
+    * r2：UPDATE 参数用 SELECT 返回的**原始对象**（BLOB 键 str() 后永不匹配），
+      逐行校验 ``rowcount``；
+    * r3：``AFTER UPDATE`` 触发器可把 path 写回而外层 rowcount 仍为 1——因此
+      ① fulltexts 是视图或挂有任何触发器即拒绝（:func:`_fulltexts_schema_hostile`）；
+      ② commit 后**重新 SELECT 全部行逐行断言**：覆盖 key 的 path 必须等于本次
+      写入的新任务目录路径、其余行 path 必须为空。任一不符 → 结构化 400
+      （``fulltext_neutralize_failed`` / 覆盖 key 为 ``import_failed`` +
+      ``fulltext_rewrite``），由 _apply_import 的异常路径清场。绝不给
+      「假 200 + 行保留」。
+    """
+    covered = {str(key): str(path) for key, path in covered_paths.items()}
+    cleared = 0
+    for name in names:
+        try:
+            with closing(_open_rw(base, name)) as conn:
+                try:
+                    rows = conn.execute(
+                        "SELECT zotero_key, path FROM fulltexts").fetchall()
+                except sqlite3.Error:
+                    # 打不开/缺表/坏库：SELECT 读不出任何行 → 无行可泄露
+                    # （导出侧 _fulltext_rows 同口径降级为空），跳过不阻断。
+                    logger.warning(
+                        "导入库 fulltexts 处置跳过（不可读/缺表）: %s", name)
+                    continue
+                if _fulltexts_schema_hostile(conn):
+                    raise TaskPackageError("package_invalid", params={
+                        "reason": "fulltext_neutralize_failed", "member": name})
+                pending = [row for row in rows
+                           if row and row[0] is not None
+                           and str(row[0]) not in covered and row[1]]
+                for row in pending:
+                    cursor = conn.execute(
+                        "UPDATE fulltexts SET path='' WHERE zotero_key=? AND path<>''",
+                        (row[0],),        # 原始对象做参数：BLOB 键类型才匹配
+                    )
+                    if cursor.rowcount != 1:
+                        raise TaskPackageError("package_invalid", params={
+                            "reason": "fulltext_neutralize_failed", "member": name})
+                    cleared += cursor.rowcount
+                conn.commit()
+                # 事后核验（不信任 rowcount）：提交后的真实状态必须成立。
+                for key, path in conn.execute(
+                        "SELECT zotero_key, path FROM fulltexts").fetchall():
+                    if key is None:
+                        continue
+                    expected = covered.get(str(key))
+                    actual = "" if path is None else str(path)
+                    if expected is not None:
+                        if actual != expected:
+                            raise TaskPackageError(
+                                "import_failed", params={"reason": "fulltext_rewrite"})
+                    elif actual != "":
+                        raise TaskPackageError("package_invalid", params={
+                            "reason": "fulltext_neutralize_failed", "member": name})
+        except TaskPackageError:
+            raise
+        except sqlite3.Error as exc:
+            # UPDATE/commit/核验阶段失败：SELECT 已读到行、清洗必须成立——拒绝。
+            raise TaskPackageError("package_invalid", params={
+                "reason": "fulltext_neutralize_failed", "member": name}) from exc
+    return cleared
+
+
+def _extract_member(archive: zipfile.ZipFile, member_name: str, base: Path,
+                    target_name: str, *, total_before: int = 0) -> Path:
+    """把包成员**流式**解压到 ``base`` 内（成员名/目标名就地校验，防 zip-slip）。
+
+    目标文件名由服务器端从**已校验 slug**派生（不以包内任意字符串直接做路径）。
+    终审 #41：逐块写出（杜绝 ``archive.read`` 整块入内存——旧实现实测 64MiB
+    成员峰值 141MiB、数 GB 成员可 OOM）；单成员上限/压缩比/解压总量三限额在
+    声明值与实际字节两道各查一次，超限抛结构化错误由调用方清场。
     """
     if not isinstance(member_name, str) or not _MEMBER_NAME_RE.match(member_name):
         raise TaskPackageError("package_invalid", params={"reason": "member_name_invalid"})
@@ -1102,7 +1379,21 @@ def _extract_member(archive: zipfile.ZipFile, member_name: str, base: Path,
         raise TaskPackageError("package_invalid",
                                params={"reason": "member_name_invalid"}) from None
     info = archive.getinfo(member_name)
-    target.write_bytes(archive.read(info))
+    _check_member_declared(info)
+    size = 0
+    try:
+        with archive.open(info, "r") as source, open(target, "wb") as sink:
+            while chunk := source.read(_CHUNK):
+                size += len(chunk)
+                _check_member_actual(info, size, total_before + size)
+                sink.write(chunk)
+    except zipfile.BadZipFile as exc:
+        raise _zip_corrupt_error(member_name) from exc
+    if size != info.file_size:
+        # 声明与实际不符（校验后文件被换/并发写坏）：按不一致拒绝并清场。
+        raise TaskPackageError("package_invalid",
+                               params={"reason": "member_size_mismatch",
+                                       "member": member_name})
     return target
 
 
@@ -1140,11 +1431,14 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
         raise TaskPackageError("import_failed", params={"reason": "temp_outside_tasks"}) from None
     try:
         db_names: list[str] = []
+        extracted_total = 0
         with zipfile.ZipFile(package_path, "r") as archive:
             for name in parsed["db_members"]:
                 source_slug = PurePosixPath(name).stem
                 target_name = f"{slug_map[source_slug]}.db"
-                _extract_member(archive, name, temp_dir, target_name)
+                _extract_member(archive, name, temp_dir, target_name,
+                                total_before=extracted_total)
+                extracted_total += archive.getinfo(name).file_size
                 db_names.append(target_name)
 
             collab_target = _contained(temp_dir, "collaboration.db")
@@ -1171,6 +1465,7 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                 )
 
             restored = 0
+            covered_paths: dict[str, str] = {}
             if parsed["fulltexts"]:
                 rows_by_key = _fulltext_rows_by_key(temp_dir, db_names)
                 for entry in parsed["fulltexts"]:
@@ -1190,7 +1485,11 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                         raise TaskPackageError("package_invalid", params={
                             "reason": "fulltext_key_missing", "zotero_key": key})
                     info = archive.getinfo(archive_path)
-                    data = archive.read(info)
+                    # 终审 #41：PDF 有界流式读取（≤MAX_PDF_BYTES；旧实现
+                    # archive.read 整块入内存且上限只查声明值）。
+                    _check_member_declared(info)
+                    data = _read_member_bounded(archive, info, MAX_PDF_BYTES,
+                                                reason="pdf_too_large")
                     first_db = _contained(temp_dir, targets[0])
                     try:
                         meta = fulltext_mod.save_pdf(
@@ -1212,7 +1511,18 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                             temp_dir, db_name, key=key, path=final_path,
                             filename=display_filename, sha256=meta.sha256,
                             n_pages=meta.n_pages)
+                    covered_paths[key] = final_path
                     restored += 1
+
+            # 终审 #39：manifest 未覆盖的 fulltexts 行（含指向共享 pdfs 池的
+            # 旧行）path 一律清空——绝不把其他任务/遗留文件当本任务全文导出。
+            neutralized = _neutralize_unrestored_fulltexts(
+                temp_dir, db_names, covered_paths)
+
+        # 解压完成（成功或失败都走得到这里/异常路径）：上传 zip 立即删除
+        # （用户裁定不做「zip 不落盘」，落盘副本只活到解压结束；峰值 =
+        # zip ≤2GB + 解压内容 ≤2GB = ≤4GB 瞬态，全局互斥下全服务器恒定）。
+        package_path.unlink(missing_ok=True)
 
         task_payload.update({
             "task_id": new_id,
@@ -1238,6 +1548,7 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
         "member_slug_map": slug_map,
         "db_count": len(db_names),
         "fulltexts_restored": restored,
+        "fulltexts_neutralized": neutralized,
         "fulltexts_skipped": len(parsed.get("skipped_fulltexts") or []),
         "package_sha256": parsed["package_sha256"],
     }
@@ -1309,17 +1620,25 @@ def register_task_package_routes(
         return info
 
     def _stream_file(path: Path, media_type: str, headers: dict[str, str],
-                     cleanup_dir: Path | None = None) -> StreamingResponse:
+                     cleanup_dir: Path | None = None,
+                     finally_hook: Callable[[], None] | None = None) -> StreamingResponse:
         actual = Path(path).resolve()
         root = Path(tempfile.gettempdir()).resolve()
         try:
             actual.relative_to(root)
         except ValueError:
+            if finally_hook is not None:
+                finally_hook()
             raise _error(TaskPackageError("storage_unavailable", status=503)) from None
         if not actual.is_file():
+            if finally_hook is not None:
+                finally_hook()
             raise _error(TaskPackageError("storage_unavailable", status=503))
 
         def generator():
+            # finally 同时覆盖：正常送完、客户端中断下载（生成器被关闭）、
+            # 读取中途 IO 故障——zip/工作目录即刻删除、整包操作锁即刻释放
+            # （终审 #41：下载在途也算操作在途，否则「下载中 + 新导入」可叠 6GB）。
             try:
                 with open(actual, "rb") as handle:
                     while chunk := handle.read(_CHUNK):
@@ -1328,6 +1647,8 @@ def register_task_package_routes(
                 actual.unlink(missing_ok=True)
                 if cleanup_dir is not None:
                     shutil.rmtree(cleanup_dir, ignore_errors=True)
+                if finally_hook is not None:
+                    finally_hook()
 
         return StreamingResponse(generator(), media_type=media_type, headers=headers)
 
@@ -1337,13 +1658,14 @@ def register_task_package_routes(
                              user: dict = Depends(require_user)):
         info = _manage_info(task_id, user)
         scope = body.scope if body is not None else "all"
+        _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
 
         def _build() -> tuple[Path, dict[str, int], Path]:
             items, _skipped_keys, reasons = _archive_candidates(info, data_dir, scope)
             workdir = Path(tempfile.mkdtemp(prefix="rf-archive-export-"))
             try:
                 zip_path = _contained(workdir, "archive.zip")
-                allowed_roots = [Path(info.dir).resolve(), (Path(data_dir) / "pdfs").resolve()]
+                allowed_roots = _fulltext_allowed_roots(info)
                 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
                                      compresslevel=6) as archive:
                     for item in items:
@@ -1359,7 +1681,14 @@ def register_task_package_routes(
                 "unreadable": reasons["unreadable"],
             }, workdir
 
-        zip_path, summary, workdir = await _run_or_error(_build)
+        # 全局整包操作互斥（导入/整包导出/归档导出共用一把锁，终审 #41）；
+        # 抢不到锁直接 409（在 try 外——不进释放分支）。
+        _acquire_package_op_lock_or_409()
+        try:
+            zip_path, summary, workdir = await _run_or_error(_build)
+        except BaseException:
+            _PACKAGE_OP_LOCK.release()
+            raise
         filename = _ascii_filename(f"fulltext_archive_{info.task_id}.zip",
                                    "fulltext_archive.zip")
         headers = {
@@ -1374,13 +1703,16 @@ def register_task_package_routes(
             ),
         }
         # 摘要响应头是契约的一部分：无法用消息体承载（响应体必须是合法 zip）。
-        return _stream_file(zip_path, "application/zip", headers, cleanup_dir=workdir)
+        # 锁在流式生成器 finally（送完/客户端中断/IO 故障）释放。
+        return _stream_file(zip_path, "application/zip", headers, cleanup_dir=workdir,
+                            finally_hook=_PACKAGE_OP_LOCK.release)
 
     # ---- 整包导出体检 ----------------------------------------------------
     @app.get("/api/tasks/{task_id}/package/preflight")
     async def package_preflight(task_id: str, include_pdfs: bool = Query(default=True),
                                 user: dict = Depends(require_user)) -> dict:
         info = _manage_info(task_id, user)
+        _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
         return await _run_or_error(_package_inventory, info, data_dir, include_pdfs)
 
     # ---- 整包导出 --------------------------------------------------------
@@ -1389,6 +1721,7 @@ def register_task_package_routes(
                              user: dict = Depends(require_user)):
         info = _manage_info(task_id, user)
         include_pdfs = True if body is None else bool(body.include_pdfs)
+        _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
 
         def _build() -> tuple[Path, dict[str, Any], Path]:
             workdir = Path(tempfile.mkdtemp(prefix="rf-package-export-"))
@@ -1400,8 +1733,15 @@ def register_task_package_routes(
                 raise
             return zip_path, summary, workdir
 
-        zip_path, summary, workdir = await _run_or_error(_build)
-        digest = await _run_or_error(_sha256_file, zip_path)
+        # 全局整包操作互斥（导入/整包导出/归档导出共用一把锁，终审 #41）；
+        # 抢不到锁直接 409（在 try 外——不进释放分支）。
+        _acquire_package_op_lock_or_409()
+        try:
+            zip_path, summary, workdir = await _run_or_error(_build)
+            digest = await _run_or_error(_sha256_file, zip_path)
+        except BaseException:
+            _PACKAGE_OP_LOCK.release()
+            raise
         filename = _ascii_filename(f"task_package_{info.task_id}.zip", "task_package.zip")
         headers = {
             "Content-Disposition": f'attachment; filename="{filename}"',
@@ -1412,7 +1752,8 @@ def register_task_package_routes(
             "X-Package-Pdfs-Skipped": str(summary["summary"]["pdf_skipped"]),
             "X-Package-Bytes": str(summary["total_bytes"]),
         }
-        return _stream_file(zip_path, "application/zip", headers, cleanup_dir=workdir)
+        return _stream_file(zip_path, "application/zip", headers, cleanup_dir=workdir,
+                            finally_hook=_PACKAGE_OP_LOCK.release)
 
     # ---- 导入体检 --------------------------------------------------------
     @app.post("/api/tasks/import-package/preflight")
@@ -1420,6 +1761,7 @@ def register_task_package_routes(
         package: UploadFile = File(..., alias="package"),
         user: dict = Depends(require_user),
     ) -> dict:
+        _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
         upload_path: Path | None = None
         try:
             upload_path = await _read_upload_bounded(
@@ -1453,6 +1795,10 @@ def register_task_package_routes(
         preview_sha256: str | None = Form(default=None),
         user: dict = Depends(require_user),
     ) -> dict:
+        _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
+        # 全局整包操作互斥：读上传之前抢锁——两个并发导入不会各自缓冲 2GB；
+        # 抢不到直接 409（在 try 外，不进 finally 释放分支）。
+        _acquire_package_op_lock_or_409()
         upload_path: Path | None = None
         try:
             upload_path = await _read_upload_bounded(
@@ -1472,6 +1818,7 @@ def register_task_package_routes(
         finally:
             if upload_path is not None:
                 upload_path.unlink(missing_ok=True)
+            _PACKAGE_OP_LOCK.release()
         return result
 
     # 上传中间件预检规则：整包可到 2GB，必须在 multipart 解析前放行同一上限

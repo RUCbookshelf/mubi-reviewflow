@@ -1206,6 +1206,104 @@ class AISuggestTests(unittest.TestCase):
         self.assertNotIn(FAKE_KEY, r.text)
 
 
+    def test_r3_pool_path_fulltext_not_sent_to_provider(self):
+        """终审 #39 r3：fulltexts 行指向共享平铺池 → 该文件文本绝不进 provider。
+
+        断言两层：① provider 收到的 user 消息不含池内文件的文本标记；
+        ② 该 key 仍按「无全文」处理（摘要仍可用，端点不 500）。
+        """
+        import hashlib as _hashlib
+
+        self.enable_task(key_mode="personal")
+        self.put_personal_key()
+        from coscreen import fulltext as fulltext_mod
+        from coscreen import tasks as tasks_mod
+
+        info = tasks_mod.find_task(self.task, str(DATA_ROOT))
+        owner_db = info.dir / (self._slug + ".db")
+        marker = "R3-POOL-FULLTEXT-SECRET-MARKER"
+        pool = Path(DATA_ROOT) / "pdfs"
+        pool.mkdir(parents=True, exist_ok=True)
+        victim = pool / ("legacy_r3_" + self._testMethodName + ".pdf")
+        # 可解析的真实 PDF：正文页里放不可误认的标记文本
+        from pypdf import PdfWriter
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.add_metadata({"/Title": marker})
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        victim.write_bytes(buffer.getvalue())
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+        with closing(sqlite3.connect(owner_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('A1', 'A1.pdf', ?, ?, 1, '2026-01-01')",
+                (str(victim), _hashlib.sha256(buffer.getvalue()).hexdigest()))
+        captured = {}
+
+        def spy_generate(system, user, *, api_key, base_url, model, timeout=60.0):
+            captured["user"] = user
+            return {"content": json.dumps({}), "usage": {}, "model": model}
+
+        read_calls = []
+
+        def spy_pdf_text(path):
+            read_calls.append(str(path))
+            return ["page text " + marker]
+
+        with mock.patch.object(ai_suggest_api.fulltext_mod, "pdf_text", spy_pdf_text),              mock.patch.object(ai_suggest_api, "_provider_generate", spy_generate):
+            response = self.suggestions()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(read_calls, [], "池内文件绝不被读取（包含性校验先于读取）")
+        self.assertNotIn(str(victim), captured.get("user", ""),
+                         "池内文件路径不得出现在 provider 消息中")
+        self.assertNotIn(marker, captured.get("user", ""),
+                         "池内文件内容标记不得进入 provider 消息")
+
+    def test_r3_mutation_containment_removed_pin_goes_red(self):
+        """破坏性变异：包含性恒 True（防护删掉）→ 池内文本真实进入 provider。"""
+        import hashlib as _hashlib
+
+        self.enable_task(key_mode="personal")
+        self.put_personal_key()
+        from coscreen import tasks as tasks_mod
+
+        info = tasks_mod.find_task(self.task, str(DATA_ROOT))
+        owner_db = info.dir / (self._slug + ".db")
+        marker = "R3-POOL-MUT-MARKER"
+        pool = Path(DATA_ROOT) / "pdfs"
+        pool.mkdir(parents=True, exist_ok=True)
+        victim = pool / ("legacy_r3mut_" + self._testMethodName + ".pdf")
+        from pypdf import PdfWriter
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.add_metadata({"/Title": marker})
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        victim.write_bytes(buffer.getvalue())
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+        with closing(sqlite3.connect(owner_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('A1', 'A1.pdf', ?, ?, 1, '2026-01-01')",
+                (str(victim), _hashlib.sha256(buffer.getvalue()).hexdigest()))
+        captured = {}
+
+        def spy_generate(system, user, *, api_key, base_url, model, timeout=60.0):
+            captured["user"] = user
+            return {"content": json.dumps({}), "usage": {}, "model": model}
+
+        def spy_pdf_text(path):
+            return ["page text " + marker]
+
+        with mock.patch.object(ai_suggest_api, "_fulltext_path_allowed",
+                               lambda path, db: True),              mock.patch.object(ai_suggest_api.fulltext_mod, "pdf_text", spy_pdf_text),              mock.patch.object(ai_suggest_api, "_provider_generate", spy_generate):
+            response = self.suggestions()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(marker, captured.get("user", ""),
+                      "无防护时池内文件文本真实进入 provider（钉必红）")
+
+
 class FrontendStaticGuardTests(unittest.TestCase):
     """B8 浏览器回归发现的成员生成缺陷的源码钉子（不启动浏览器）。"""
 

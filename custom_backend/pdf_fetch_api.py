@@ -353,6 +353,92 @@ def _is_private_address(value: str) -> bool:
     return not ip.is_global
 
 
+#: 终审 #30：可配置 base_url 的被拦主机集合（保存与出站两处共用同一判定，
+#: 不复制口径）。对照 ai_keys._clean_base_url 既有先例（B9 F12/R-6）。
+_METADATA_HOSTS = frozenset({
+    "metadata.google.internal", "metadata.goog",
+    "100.100.100.100", "100.100.100.200",
+})
+_CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
+#: IPv6 ULA fc00::/7（r2 复核补齐：AWS IMDSv6 `fd00:ec2::254` 属云元数据面；
+#: 与 ai_keys._ULA_V6 同一常量口径）。
+_ULA_V6 = ipaddress.ip_network("fc00::/7")
+
+
+def _blocked_host_reason(host: str | None) -> str | None:
+    """链路本地/CGNAT/云元数据/IPv6-ULA 主机判定（字面量级，无 DNS）。
+
+    被拦集合与 :func:`custom_backend.ai_keys._clean_base_url` 一致：云元数据
+    主机名、169.254.0.0/16、fe80::/10（含 IPv4 映射形态）、100.64.0.0/10
+    （RFC 6598 CGNAT）、fc00::/7（ULA，含 fd00:: 云元数据端点）。
+    **回环与 RFC1918 明确放行**——本地自托管端点是既有卖点（回环正钉
+    test_pdf_fetch_api 不得红）；本函数只拦「按设计就不该由用户配置触达」的
+    链路本地/运营商级 NAT/云元数据/ULA 面。
+    """
+    identity = _host_identity(host)
+    if not identity:
+        return "invalid_host"
+    if identity in _METADATA_HOSTS:
+        return "metadata_host"
+    try:
+        addr = ipaddress.ip_address(identity.split("%", 1)[0])
+    except ValueError:
+        return None                     # 域名：字面量层不拦，交给 DNS 复核
+    mapped = getattr(addr, "ipv4_mapped", None)     # ::ffff:a.b.c.d → 检查内层 v4
+    target = mapped if mapped is not None else addr
+    if target.is_link_local:
+        return "link_local"
+    if target.version == 4 and target in _CGNAT_V4:
+        return "cgnat"
+    if target.version == 6 and target in _ULA_V6:
+        return "ula"
+    return None
+
+
+def _resolved_blocked_reason(base_url: str) -> str | None:
+    """DNS 复核：域名解析到被拦段同样拒绝；解析失败不拦（回退给出站网络错误）。
+
+    与 ``_validate_and_pin`` 的 fail-closed 不同：这里的 base_url 是任务级
+    配置（可能是隔离网络里的合法自托管域名），解析不出来不能当攻击拦。
+    """
+    parts = urlsplit(base_url or "")
+    host = _host_identity(parts.hostname)
+    if not host:
+        return "invalid_host"
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    if port in (None, -1):
+        port = 443 if parts.scheme == "https" else 80
+    try:
+        addresses = _resolve_host(host, port)
+    except (OSError, ValueError):
+        return None
+    for address in addresses or []:
+        reason = _blocked_host_reason(address)
+        if reason:
+            return reason
+    return None
+
+
+def _base_url_block_reason(base_url: str) -> str | None:
+    """保存/出站共用的完整判定：字面量 + DNS 复核（终审 #30）。"""
+    return _blocked_host_reason(urlsplit(base_url or "").hostname) \
+        or _resolved_blocked_reason(base_url)
+
+
+def _guard_base_url_outbound(base_url: str) -> None:
+    """出站侧二次闸：构造查询 URL 前拒绝被拦 base（存量文件/手改库兜底）。
+
+    抛 :class:`OutboundError`（unsafe_url），调用方按既有口径降级——绝不 500。
+    """
+    if _base_url_block_reason(base_url) is not None:
+        raise OutboundError(
+            "unsafe_url", "配置端点指向链路本地/云元数据地址，已拒绝出站。")
+
+
+
 def _validate_and_pin(hostname: str, port: int) -> tuple[list[str] | None, str | None]:
     """字面规则 + **单次** DNS 解析 + 公网校验：``(已校验地址列表, 拒绝原因)``。
 
@@ -660,6 +746,7 @@ def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[dict], lis
     逐个钉住（``address`` 保留字典序首个，兼容旧调用方）。
     """
     base = settings["unpaywall_base_url"]
+    _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
     email = settings["email"]
     query = f"?email={quote(email, safe='')}" if email else ""
     url = f"{base}/v2/{quote(doi, safe='')}{query}"
@@ -696,6 +783,7 @@ def _crossref_message(article: dict, settings: dict) -> tuple[dict | None, str]:
     返回 ``(message, how)``：``how`` ∈ {"doi","title",""}（""=未命中）。
     """
     base = settings["crossref_base_url"]
+    _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
     doi = normalize_doi(article.get("doi"))
     if doi:
         payload = _get_json(f"{base}/works/{quote(doi, safe='')}")
@@ -786,6 +874,7 @@ def crossref_works_url(base_url: str, doi: str) -> str:
     except ValueError:
         # 与其它出站失败同型：调用方只需接住 OutboundError 即可降级。
         raise OutboundError("unsafe_url", "配置的 Crossref 端点不合法，已拒绝出站。") from None
+    _guard_base_url_outbound(base)      # 终审 #30：W9 撤稿检查共用同一出站闸
     url = f"{base}/works/{quote(normalized, safe='')}"
     if _host_identity(urlsplit(url).hostname) != _host_identity(urlsplit(base).hostname):
         # 防御纵深：构造结果的主机必须仍等于配置 base 的主机。
@@ -1084,6 +1173,14 @@ def register_pdf_fetch_routes(app, require_user, task_lookup, screener_db,
             # 官方端点强制 https 且 443（r3 复审③：端口换 80/8443 不得绕过）。
             raise HTTPException(422, {"code": "pdf_fetch_base_url_insecure",
                                       "detail": "官方 Unpaywall 端点必须使用 https:// 与 443 端口。"})
+        for field, base in (("unpaywall_base_url", unpaywall_base),
+                            ("crossref_base_url", crossref_base)):
+            # 终审 #30：保存侧拒绝链路本地/CGNAT/云元数据（字面量 + DNS 复核）；
+            # 回环与 RFC1918 放行（自托管正钉）。存量坏值由出站侧二道闸兜底。
+            if _base_url_block_reason(base) is not None:
+                raise HTTPException(400, {
+                    "code": "pdf_fetch_base_url_blocked",
+                    "detail": f"{field} 不允许指向链路本地/CGNAT/云元数据地址。"})
         official = is_official_unpaywall(unpaywall_base)
         if body.enabled or email:
             email_error = _email_error(email, official)

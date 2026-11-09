@@ -972,5 +972,31 @@ class EndpointPins(unittest.TestCase):
         self.assertEqual(len(saved.json()["search_records"]), 2)
 
 
+class OpenerProxyPins(unittest.TestCase):
+    """终审 #31：PubMed 计数 opener 必须忽略 HTTP(S)_PROXY（沿 test_pdf_fetch_api.py:892 钉型）。"""
+
+    def test_count_opener_ignores_proxy_environment(self):
+        import urllib.request as _urllib
+        from unittest import mock
+
+        def proxy_routing(opener):
+            return sorted(name for name, _func in opener.handle_open.items()
+                          for _h in opener.handle_open[name]
+                          if type(_h).__name__ == "ProxyHandler")
+
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9",
+                                          "HTTPS_PROXY": "http://127.0.0.1:9",
+                                          "http_proxy": "http://127.0.0.1:9"}):
+            default_opener = _urllib.build_opener()
+            self.assertTrue(proxy_routing(default_opener),
+                            "前提：默认 opener 在代理环境下会走代理（漏洞形态）")
+            our_opener = search_strategy_api._build_count_opener()
+            self.assertEqual(proxy_routing(our_opener), [],
+                             "PubMed 计数 opener 必须忽略 HTTP(S)_PROXY")
+        self.assertTrue(any(type(h).__name__ == "_NoRedirectHandler"
+                            for h in our_opener.handlers),
+                        "拒绝重定向 handler 仍需保留")
+
+
 if __name__ == "__main__":
     unittest.main()

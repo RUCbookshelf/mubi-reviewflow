@@ -397,5 +397,35 @@ class EnvNamePrefixApiPins(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
 
+class OpenerProxyPins(unittest.TestCase):
+    """终审 #31：notify 出站 opener 必须忽略 HTTP(S)_PROXY 环境变量。
+
+    沿 test_pdf_fetch_api.py:892 既有钉型：在代理环境下重建模块 opener，
+    断言没有任何代理路由方法（模块级 _OPENER 在测试进程导入期不带代理环境，
+    只有工厂重建能如实反映「生产进程带代理环境启动」的漏洞形态）。
+    """
+
+    def test_opener_ignores_proxy_environment(self):
+        import urllib.request as _urllib
+
+        def proxy_routing(opener):
+            return sorted(name for name, _func in opener.handle_open.items()
+                          for _h in opener.handle_open[name]
+                          if type(_h).__name__ == "ProxyHandler")
+
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9",
+                                          "HTTPS_PROXY": "http://127.0.0.1:9",
+                                          "http_proxy": "http://127.0.0.1:9"}):
+            default_opener = _urllib.build_opener()
+            self.assertTrue(proxy_routing(default_opener),
+                            "前提：默认 opener 在代理环境下会走代理（漏洞形态）")
+            our_opener = notify_core._build_opener()
+            self.assertEqual(proxy_routing(our_opener), [],
+                             "notify opener 必须忽略 HTTP(S)_PROXY（空 ProxyHandler）")
+        self.assertTrue(any(type(h).__name__ == "_NoRedirectHandler"
+                            for h in our_opener.handlers),
+                        "拒绝重定向 handler 仍需保留")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

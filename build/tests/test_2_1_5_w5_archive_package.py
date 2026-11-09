@@ -31,13 +31,17 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -629,6 +633,935 @@ class PackagePins(_ApiBase):
             task_package_api.MAX_PACKAGE_BYTES = original
         # 恢复上限后同一任务仍可正常导出（降级不破坏状态）。
         self.assertEqual(self.package().status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# 终审 #41 / #39 安全钉（流式解压三限额 · 60 分钟 TTL 清扫 · 全局整包互斥 ·
+# 未覆盖 fulltexts 行处置）。变异钉沿 test_2_1_5_notify_sec_pins.py 既有型：
+# 运行期 monkeypatch 去掉防护 → 对应绿钉描述的行为必然翻红（危险真会发生）。
+# ---------------------------------------------------------------------------
+
+_MIB = 1024 * 1024
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _build_raw_package(members: dict, *, fulltexts=None, compress=None) -> bytes:
+    """直接构造整包 zip（manifest 可选谎报 fulltexts 尺寸——攻击者可控面）。"""
+    manifest = {
+        "schema": task_package_api.PACKAGE_SCHEMA,
+        "source_task": {"task_id": "src", "display_name": "s",
+                        "screeners": ["member"]},
+        "members": [{"path": name, "sha256": hashlib.sha256(blob).hexdigest(),
+                     "size": len(blob)} for name, blob in members.items()],
+        "fulltexts": fulltexts or [],
+        "skipped_fulltexts": [],
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, blob in members.items():
+            archive.writestr(name, blob, compress_type=(
+                compress or {}).get(name, zipfile.ZIP_DEFLATED))
+        archive.writestr("manifest.json", json.dumps(manifest).encode())
+    return buffer.getvalue()
+
+
+def _bomb_members(member_mib: int = 16, pad: int = 48 * 1024) -> dict:
+    """高压缩比 db 成员 + stored 垫片（垫高头部总压缩量，掩护单成员炸弹）。"""
+    return {
+        "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+        "db/x.db": _SQLITE_MAGIC + b"\x00" * (member_mib * _MIB - 16),
+        "fulltext/pad.pdf": os.urandom(pad),
+    }
+
+
+_BOMB_COMPRESS = {"db/x.db": zipfile.ZIP_BZIP2,
+                  "fulltext/pad.pdf": zipfile.ZIP_STORED}
+
+
+class SecurityLimitsPins(_ApiBase):
+    """三限额各一钉 + 谎报 PDF 尺寸 + 流式内存上界 + 变异钉。"""
+
+    def _import_raw(self, payload: bytes):
+        return self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+
+    def test_bomb_package_rejected_structured_and_cleaned(self):
+        self.new_task()
+        before = _task_dir_count()
+        bomb = _build_raw_package(_bomb_members(16), compress=_BOMB_COMPRESS)
+        response = self._import_raw(bomb)
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["message_key"], "task_package.package_invalid")
+        self.assertEqual(detail["params"]["reason"], "compression_ratio")
+        self.assertEqual(_task_dir_count(), before)
+        root = tasks_mod.tasks_root(DATA_DIR)
+        self.assertEqual([p for p in root.iterdir() if p.name.startswith(".import-")],
+                         [], "恶意包拒绝后必须清场（零 .import- 残留）")
+
+    def test_member_cap_limit_pinned(self):
+        self.new_task()
+        members = {
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(32 * 1024),
+            "fulltext/big.pdf": os.urandom(8 * _MIB + 512 * 1024),
+        }
+        payload = _build_raw_package(members)
+        original = task_package_api.MAX_MEMBER_BYTES
+        task_package_api.MAX_MEMBER_BYTES = 8 * _MIB
+        try:
+            response = self._import_raw(payload)
+        finally:
+            task_package_api.MAX_MEMBER_BYTES = original
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["params"]["reason"],
+                         "member_too_large")
+        self.assertEqual(response.json()["detail"]["params"]["member"],
+                         "fulltext/big.pdf")
+
+    def test_total_uncompressed_limit_pinned(self):
+        self.new_task()
+        members = {
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(2 * _MIB),
+            "fulltext/p1.pdf": os.urandom(2 * _MIB),
+            "fulltext/p2.pdf": os.urandom(2 * _MIB),
+        }
+        payload = _build_raw_package(members)
+        original = task_package_api.MAX_UNCOMPRESSED_BYTES
+        task_package_api.MAX_UNCOMPRESSED_BYTES = 5 * _MIB
+        try:
+            response = self._import_raw(payload)
+        finally:
+            task_package_api.MAX_UNCOMPRESSED_BYTES = original
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["params"]["reason"],
+                         "uncompressed_too_large")
+
+    def test_ratio_limit_pinned(self):
+        self.new_task()
+        payload = _build_raw_package(_bomb_members(8), compress=_BOMB_COMPRESS)
+        original = task_package_api.MAX_COMPRESSION_RATIO
+        task_package_api.MAX_COMPRESSION_RATIO = 500
+        try:
+            response = self._import_raw(payload)
+        finally:
+            task_package_api.MAX_COMPRESSION_RATIO = original
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["params"]["reason"],
+                         "compression_ratio")
+
+    def test_actual_byte_limit_enforced_beyond_declared(self):
+        """实际字节这道闸独立成立：声明值预检被绕过（猴补为 no-op）时，
+        流式解压仍按实际字节拒绝——去掉实际闸这颗钉必红。"""
+        self.new_task()
+        members = {
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(6 * _MIB),
+        }
+        payload = _build_raw_package(members)
+        original_cap = task_package_api.MAX_MEMBER_BYTES
+        task_package_api.MAX_MEMBER_BYTES = 3 * _MIB
+        try:
+            with mock.patch.object(task_package_api, "_check_member_declared",
+                                   lambda info: None):
+                response = self._import_raw(payload)
+        finally:
+            task_package_api.MAX_MEMBER_BYTES = original_cap
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["params"]["reason"],
+                         "member_too_large")
+
+    def test_pdf_size_lie_rejected(self):
+        """fulltexts[].size 谎报（1 vs 实际成员 512KiB）→ pdf_size_mismatch。"""
+        self.new_task()
+        real = os.urandom(512 * 1024)
+        members = {
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(32 * 1024),
+            "fulltext/big.pdf": real,
+        }
+        payload = _build_raw_package(members, fulltexts=[{
+            "zotero_key": "K1", "archive_path": "fulltext/big.pdf",
+            "sha256": hashlib.sha256(real).hexdigest(), "size": 1,
+            "original_filename": "big.pdf"}])
+        response = self._import_raw(payload)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["params"]["reason"],
+                         "pdf_size_mismatch")
+
+    def test_streaming_import_memory_bounded(self):
+        """诚实 8MiB 成员导入：流式解压内存峰值不得随成员尺寸线性放大。"""
+        self.new_task()
+        members = {
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/alice.db": _SQLITE_MAGIC + b"\x00" * (8 * _MIB - 16),
+        }
+        payload = _build_raw_package(members)
+        import tracemalloc
+        tracemalloc.start()
+        try:
+            response = self._import_raw(payload)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertLess(peak, 6 * _MIB,
+                        f"流式解压峰值应保持块级（实测 {peak / _MIB:.1f}MiB；"
+                        f"整块读 8MiB 成员至少翻倍到 ≥8MiB）")
+
+    def test_mutation_limits_removed_pin_goes_red(self):
+        """破坏性变异：三限额两道闸全删（声明/实际检查 no-op）→ 炸弹包导入
+        200 且 16MiB 落盘——test_bomb_package_rejected… 必红（防护是承重墙）。"""
+        self.new_task()
+        payload = _build_raw_package(_bomb_members(16), compress=_BOMB_COMPRESS)
+        before = _task_dir_count()
+        with mock.patch.object(task_package_api, "_check_member_declared",
+                               lambda info: None), \
+             mock.patch.object(task_package_api, "_check_member_actual",
+                               lambda info, size, total: None):
+            response = self._import_raw(payload)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(_task_dir_count(), before + 1, "无防护时炸弹真实落盘")
+
+
+class TempTTLAndMutexPins(_ApiBase):
+    """60 分钟临时保留上限（惰性清扫）+ 全局整包操作互斥 + 变异钉。"""
+
+    def _stale_mtime(self):
+        return time.time() - (task_package_api.PACKAGE_TEMP_TTL_SECONDS + 60)
+
+    def test_ttl_sweep_removes_stale_keeps_fresh(self):
+        self.new_task()
+        temp_root = Path(tempfile.gettempdir())
+        stale = []
+        for prefix in task_package_api._PACKAGE_TEMP_DIR_PREFIXES:
+            path = temp_root / (prefix + "sec2-w5-stale")
+            path.mkdir(exist_ok=True)
+            (path / "package.zip").write_bytes(b"stale")
+            os.utime(path, (self._stale_mtime(), self._stale_mtime()))
+            stale.append(path)
+        tasks_root = Path(tasks_mod.tasks_root(DATA_DIR))
+        stale_import = tasks_root / ".import-sec2-w5-stale"
+        stale_import.mkdir(parents=True, exist_ok=True)
+        (stale_import / "x.db").write_bytes(b"stale")
+        os.utime(stale_import, (self._stale_mtime(), self._stale_mtime()))
+        stale.append(stale_import)
+        fresh = temp_root / "rf-package-export-sec2-w5-fresh"
+        fresh.mkdir(exist_ok=True)
+        (fresh / "in-flight.zip").write_bytes(b"fresh")
+        fresh_time = time.time() - (
+            task_package_api.PACKAGE_TEMP_TTL_SECONDS - 60)
+        os.utime(fresh, (fresh_time, fresh_time))
+        try:
+            response = self.client.get(f"/api/tasks/{self.task}/package/preflight",
+                                       headers=self.auth())
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([p for p in stale if p.exists()], [],
+                             "61 分钟孤儿必须被任一整包端点触达后的清扫删除")
+            self.assertTrue(fresh.exists(), "60 分钟内在途文件不得误删")
+        finally:
+            for path in [*stale, fresh]:
+                shutil.rmtree(path, ignore_errors=True)
+
+    def test_mutation_sweep_removed_pin_goes_red(self):
+        """破坏性变异：清扫删掉（no-op）→ 孤儿全在——上一颗钉必红。"""
+        self.new_task()
+        temp_root = Path(tempfile.gettempdir())
+        stale = temp_root / "rf-package-export-sec2-w5-mut"
+        stale.mkdir(exist_ok=True)
+        (stale / "package.zip").write_bytes(b"stale")
+        os.utime(stale, (self._stale_mtime(), self._stale_mtime()))
+        try:
+            with mock.patch.object(task_package_api, "_sweep_stale_package_temp",
+                                   lambda *args, **kwargs: 0):
+                response = self.client.get(
+                    f"/api/tasks/{self.task}/package/preflight", headers=self.auth())
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(stale.exists(), "无清扫时 61 分钟孤儿真实残留")
+        finally:
+            shutil.rmtree(stale, ignore_errors=True)
+
+    def test_import_mutex_second_operation_409_shared_with_exports(self):
+        self.new_task()
+        lock = task_package_api._PACKAGE_OP_LOCK
+        self.assertTrue(lock.acquire(blocking=False))
+        try:
+            import_response = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("p.zip", b"anything", "application/zip")},
+                headers=self.auth(2))
+            self.assertEqual(import_response.status_code, 409, import_response.text)
+            self.assertEqual(
+                import_response.json()["detail"]["message_key"],
+                "task_package.operation_busy")
+            export = self.package()
+            archive = self.archive("all")
+            self.assertEqual(export.status_code, 409, export.text)
+            self.assertEqual(archive.status_code, 409, archive.text)
+        finally:
+            lock.release()
+        # 锁释放后操作恢复正常（互斥不留下永久占用）。
+        self.assertEqual(self.package().status_code, 200)
+
+    def test_concurrent_second_import_409_first_ok(self):
+        self.new_task()
+        self.add_pdf("K01")
+        data, _headers = self.package(), None
+        payload = data.content
+        entered = threading.Event()
+        release = threading.Event()
+        original = task_package_api._apply_import
+        results = {}
+
+        def slow_apply(*args, **kwargs):
+            entered.set()
+            release.wait(timeout=30)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(task_package_api, "_apply_import", slow_apply):
+            thread = threading.Thread(target=lambda: results.__setitem__(
+                "first", self.client.post(
+                    "/api/tasks/import-package",
+                    files={"package": ("pkg.zip", payload, "application/zip")},
+                    headers=self.auth(2))))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(timeout=15), "第一个导入未进入落盘阶段")
+                results["second"] = self.client.post(
+                    "/api/tasks/import-package",
+                    files={"package": ("pkg2.zip", payload, "application/zip")},
+                    headers=self.auth(2))
+            finally:
+                release.set()
+                thread.join(timeout=60)
+        self.assertEqual(results["second"].status_code, 409, results["second"].text)
+        self.assertEqual(results["first"].status_code, 200, results["first"].text)
+
+    def test_mutation_mutex_removed_pin_goes_red(self):
+        """破坏性变异：互斥锁换成恒成功假锁（acquire 恒 True / release 空转）→
+        第二导入并发放行（200）——test_concurrent_second_import_409_first_ok 必红。"""
+        self.new_task()
+        self.add_pdf("K01")
+        payload = self.package().content
+        entered = threading.Event()
+        release = threading.Event()
+        original = task_package_api._apply_import
+        results = {}
+
+        class _BrokenLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        def slow_apply(*args, **kwargs):
+            entered.set()
+            release.wait(timeout=30)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(task_package_api, "_PACKAGE_OP_LOCK",
+                               _BrokenLock()), \
+             mock.patch.object(task_package_api, "_apply_import", slow_apply):
+            thread = threading.Thread(target=lambda: results.__setitem__(
+                "first", self.client.post(
+                    "/api/tasks/import-package",
+                    files={"package": ("pkg.zip", payload, "application/zip")},
+                    headers=self.auth(2))))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(timeout=15))
+                results["second"] = self.client.post(
+                    "/api/tasks/import-package",
+                    files={"package": ("pkg2.zip", payload, "application/zip")},
+                    headers=self.auth(2))
+            finally:
+                release.set()
+                thread.join(timeout=60)
+        # 无互斥时第二个导入被放行（危险行为真实发生——并发放大 + 6GB 叠加）。
+        self.assertEqual(results["second"].status_code, 200, results["second"].text)
+
+    def test_client_interrupt_cleans_workdir_and_releases_lock(self):
+        """客户端中断下载：zip/工作目录即刻删除、互斥锁即刻释放。"""
+        self.new_task()
+        self.add_pdf("K01")
+        lock = task_package_api._PACKAGE_OP_LOCK
+        with self.client.stream("POST",
+                                f"/api/tasks/{self.task}/package/export",
+                                json={"include_pdfs": True},
+                                headers=self.auth()) as response:
+            self.assertEqual(response.status_code, 200)
+            for _chunk in response.iter_bytes(chunk_size=1024):
+                break  # 拿到首块即中断（模拟客户端断开）
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if lock.acquire(blocking=False):
+                lock.release()
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("客户端中断后整包操作锁未释放（10s 内）")
+        leftovers = [p.name for p in Path(tempfile.gettempdir()).iterdir()
+                     if p.name.startswith("rf-package-export-")
+                     and p.stat().st_mtime > time.time() - 60]
+        self.assertEqual(leftovers, [], "中断后工作目录必须即刻删除")
+        # 锁已回来：下一个整包操作立即可用。
+        self.assertEqual(self.package().status_code, 200)
+
+
+class UncoveredFulltextsPins(_ApiBase):
+    """终审 #39：manifest 未覆盖的 fulltexts 行不得指向共享池读他人文件。
+
+    攻击面 = 攻击者**自造**整包（db 里塞指向 {data_dir}/pdfs 共享平铺池的
+    fulltexts 行，manifest 只诚实覆盖一个无害 key）——导入后两个导出出口都
+    会把池内他人/遗留文件当作本任务全文导出。
+    """
+
+    def _attacker_package(self, victim_name: str) -> tuple[bytes, bytes]:
+        victim = Path(DATA_DIR) / "pdfs" / victim_name
+        victim.parent.mkdir(parents=True, exist_ok=True)
+        victim_bytes = ("%PDF-1.4\nLEGACY-SECRET-"
+                        + victim_name + "\n%%EOF\n").encode()
+        victim.write_bytes(victim_bytes)
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+
+        db_path = Path(self.info.dir) / "sec2-attacker.db"
+        db_mod.init_db(db_path)
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            for key, authors, year in (("A1", "Legit, L", 2021),
+                                       ("VICTIM", "Victim, V", 2019),
+                                       ("GHOST", "Ghost, G", 2018)):
+                conn.execute(
+                    "INSERT INTO articles (zotero_key, title, authors, year) "
+                    "VALUES (?, 't', ?, ?)", (key, authors, year))
+
+            def ft(key, path):
+                conn.execute(
+                    "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                    "n_pages, added_at) VALUES (?, ?, ?, ?, 1, '2026-01-01')",
+                    (key, key + ".pdf", path, "0" * 64))
+            ft("A1", "pdfs/placeholder.pdf")
+            # VICTIM 用绝对路径（存储层 fulltexts.path 的真实形态，#43 证实），
+            # GHOST 用 data/pdfs 相对写法——两种历史形态都要被中和。
+            ft("VICTIM", str(victim))
+            ft("GHOST", f"data/pdfs/missing_{victim_name}")
+        legit = make_pdf("A1")
+        members = {
+            "task.sanitized.json": json.dumps(
+                {"task_id": "src", "display_name": "s"}).encode(),
+            "db/sec2-attacker.db": db_path.read_bytes(),
+            "fulltext/A1-Legit-2021.pdf": legit,
+        }
+        payload = _build_raw_package(members, fulltexts=[{
+            "zotero_key": "A1", "archive_path": "fulltext/A1-Legit-2021.pdf",
+            "sha256": hashlib.sha256(legit).hexdigest(), "size": len(legit),
+            "original_filename": "A1.pdf"}])
+        return payload, victim_bytes
+
+    def test_uncovered_fulltexts_rows_neutralized(self):
+        self.new_task()
+        payload, victim_bytes = self._attacker_package("legacy_sec2_K9.pdf")
+        imported = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+        result = imported.json()
+        self.assertEqual(result["fulltexts_restored"], 1)
+        self.assertGreaterEqual(result["fulltexts_neutralized"], 2,
+                                "VICTIM 与 GHOST 两行未覆盖路径必须被中和")
+
+        new_task = result["task_id"]
+        new_info = tasks_mod.find_task(new_task, DATA_DIR)
+        new_slug = result["member_slug_map"]["sec2-attacker"]
+        with closing(sqlite3.connect(str(new_info.dir / f"{new_slug}.db"))) as conn:
+            rows = dict(conn.execute(
+                "SELECT zotero_key, path FROM fulltexts").fetchall())
+        self.assertEqual(rows.get("VICTIM"), "", "共享池相对路径必须清空")
+        self.assertEqual(rows.get("GHOST"), "")
+        self.assertTrue(rows.get("A1"), "manifest 覆盖的 key 不受影响")
+
+        for export_path, kwargs in (
+                (f"/api/tasks/{new_task}/package/export", {"json": {"include_pdfs": True}}),
+                (f"/api/tasks/{new_task}/fulltext/archive-export", {"json": {"scope": "all"}})):
+            exported = self.client.post(export_path, headers=self.auth(2), **kwargs)
+            self.assertEqual(exported.status_code, 200, exported.text)
+            with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+                blob = b"".join(archive.read(name) for name in archive.namelist())
+            self.assertNotIn(victim_bytes, blob,
+                             f"共享池他人文件绝不被导出：{export_path}")
+
+    def test_mutation_neutralize_removed_pin_goes_red(self):
+        """破坏性变异：中和删掉（no-op）→ 未覆盖行原样保留（fulltexts_neutralized=0）——
+        test_uncovered_fulltexts_rows_neutralized 的行清空/计数断言必红。导出侧的
+        纵深（仅任务目录根）由 HostileSchemaAndExportRootPins 单独钉住。"""
+        self.new_task()
+        payload, victim_bytes = self._attacker_package("legacy_sec2_mut.pdf")
+        with mock.patch.object(task_package_api,
+                               "_neutralize_unrestored_fulltexts",
+                               lambda base, names, keys: 0):
+            imported = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("pkg.zip", payload, "application/zip")},
+                headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+        result = imported.json()
+        self.assertEqual(result["fulltexts_neutralized"], 0)
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        new_slug = result["member_slug_map"]["sec2-attacker"]
+        with closing(sqlite3.connect(str(new_info.dir / f"{new_slug}.db"))) as conn:
+            rows = dict(conn.execute(
+                "SELECT zotero_key, path FROM fulltexts").fetchall())
+        self.assertTrue(rows.get("VICTIM"), "无中和时共享池路径真实保留（钉必红）")
+
+
+def _patch_central(raw: bytes, member: str, *, file_size=None) -> bytes:
+    """伪造 central directory 的声明尺寸（评审 rev_41_zipcorrupt.py 同技法）。"""
+    import struct
+
+    data = bytearray(raw)
+    idx = 0
+    while True:
+        sig = data.find(b"PK\x01\x02", idx)
+        assert sig >= 0, f"central entry {member} not found"
+        name_len = struct.unpack_from("<H", data, sig + 28)[0]
+        name = bytes(data[sig + 46:sig + 46 + name_len]).decode("utf-8", "replace")
+        if name == member:
+            struct.pack_into("<I", data, sig + 24, file_size)
+            break
+        idx = sig + 4
+    return bytes(data)
+
+
+class HostileSchemaAndExportRootPins(_ApiBase):
+    """终审 #39 r2（对抗复核）：自造库 trigger/view/BLOB 对抗 + 导出根收窄。"""
+
+    def _hostile_package(self, mode, *, cover=False):
+        db_path = Path(self.info.dir) / f"sec2-{mode}-{int(cover)}.db"
+        db_mod.init_db(db_path)
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES (?, 't', 'Victim, V', 2019)", ("VICTIM",))
+            row = ("VICTIM", "V.pdf", "data/pdfs/legacy_sec2_hostile.pdf",
+                   "0" * 64, 1, "2026-01-01")
+            if mode in ("plain", "trigger"):
+                conn.execute(
+                    "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                    "n_pages, added_at) VALUES (?,?,?,?,?,?)", row)
+            if mode == "trigger":
+                conn.execute(
+                    "CREATE TRIGGER blk BEFORE UPDATE ON fulltexts "
+                    "BEGIN SELECT RAISE(IGNORE); END")
+            elif mode == "view":
+                conn.execute(
+                    "CREATE TABLE evil_ft (zotero_key TEXT PRIMARY KEY, "
+                    "filename TEXT, path TEXT, sha256 TEXT, n_pages INTEGER, "
+                    "added_at TEXT)")
+                conn.execute("INSERT INTO evil_ft VALUES (?,?,?,?,?,?)", row)
+                conn.execute("DROP TABLE fulltexts")
+                conn.execute(
+                    "CREATE VIEW fulltexts AS SELECT zotero_key, filename, path, "
+                    "sha256, n_pages, added_at FROM evil_ft")
+        members = {
+            "task.sanitized.json": json.dumps(
+                {"task_id": "src", "display_name": "s"}).encode(),
+            "db/sec2-attacker.db": db_path.read_bytes(),
+        }
+        fulltexts = []
+        if cover:
+            legit = make_pdf("A1")
+            members["fulltext/A1.pdf"] = legit
+            fulltexts = [{"zotero_key": "VICTIM",
+                          "archive_path": "fulltext/A1.pdf",
+                          "sha256": hashlib.sha256(legit).hexdigest(),
+                          "size": len(legit), "original_filename": "A1.pdf"}]
+        return _build_raw_package(members, fulltexts=fulltexts)
+
+    def _import_leftovers(self):
+        root = tasks_mod.tasks_root(DATA_DIR)
+        if not root.is_dir():
+            return []
+        return [p.name for p in root.iterdir() if p.name.startswith(".import-")]
+
+    def test_trigger_and_view_schemas_rejected_not_silently_bypassed(self):
+        self.new_task()
+        for mode in ("trigger", "view"):
+            with self.subTest(mode=mode):
+                response = self.client.post(
+                    "/api/tasks/import-package",
+                    files={"package": ("pkg.zip", self._hostile_package(mode),
+                                       "application/zip")},
+                    headers=self.auth(2))
+                self.assertEqual(response.status_code, 400, response.text)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["error_code"], "package_invalid")
+                self.assertEqual(detail["message_key"],
+                                 "task_package.package_invalid")
+                self.assertEqual(detail["params"]["reason"],
+                                 "fulltext_neutralize_failed")
+                self.assertEqual(self._import_leftovers(), [],
+                                 "拒绝后必须清场")
+
+    def test_covered_key_rewrite_resists_trigger(self):
+        """manifest 覆盖的 key 改写被触发器挡住 → 拒绝（rowcount 校验）。"""
+        self.new_task()
+        response = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip",
+                               self._hostile_package("trigger", cover=True),
+                               "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertIn(detail["params"]["reason"],
+                      ("fulltext_rewrite", "fulltext_neutralize_failed"))
+        self.assertEqual(self._import_leftovers(), [])
+
+    def test_blob_key_rows_neutralized_with_honest_count(self):
+        """BLOB 形态 zotero_key：原始对象做参数 → 行真实清空、计数如实（r2）。"""
+        self.new_task()
+        db_path = Path(self.info.dir) / "sec2-blob.db"
+        db_mod.init_db(db_path)
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES (?, 't', 'B, B', 2020)", (b"AB",))
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES (?,?,?,?,?,?)",
+                (b"AB", "B.pdf", "data/pdfs/legacy_sec2_blob.pdf", "0" * 64,
+                 1, "2026-01-01"))
+        members = {
+            "task.sanitized.json": json.dumps(
+                {"task_id": "src", "display_name": "s"}).encode(),
+            "db/sec2-attacker.db": db_path.read_bytes(),
+        }
+        response = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", _build_raw_package(members),
+                               "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["fulltexts_neutralized"], 1,
+                         "计数必须等于实际清空的行数（r2 计数 bug 修复）")
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        new_slug = result["member_slug_map"]["sec2-attacker"]
+        with closing(sqlite3.connect(str(new_info.dir / f"{new_slug}.db"))) as conn:
+            rows = conn.execute(
+                "SELECT typeof(zotero_key), path FROM fulltexts").fetchall()
+        self.assertEqual(rows, [("blob", "")], "BLOB 键行 path 必须真实清空")
+
+    def test_export_skips_rows_pointing_outside_task_dir(self):
+        """导出纵深：fulltexts.path 指向共享平铺池的真实文件 → 两出口一律
+        missing_file 跳过、绝不带出字节（合法根=仅任务目录，r2 收窄）。"""
+        self.new_task()
+        self.add_pdf("K01")
+        pool = Path(DATA_DIR) / "pdfs"
+        pool.mkdir(parents=True, exist_ok=True)
+        secret = b"%PDF-1.4\nR2-POOL-SECRET\n%%EOF\n"
+        victim = pool / "legacy_sec2_pool.pdf"
+        victim.write_bytes(secret)
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES ('POOLX', 'T2', 'Wang, A', 2021)")
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('POOLX', 'POOLX.pdf', ?, ?, 1, "
+                "'2026-01-01')", (str(victim), "0" * 64))
+        for path, kwargs in (
+                (f"/api/tasks/{self.task}/fulltext/archive-export",
+                 {"json": {"scope": "all"}}),
+                (f"/api/tasks/{self.task}/package/export",
+                 {"json": {"include_pdfs": True}})):
+            with self.subTest(outlet=path):
+                response = self.client.post(path, headers=self.auth(), **kwargs)
+                self.assertEqual(response.status_code, 200, response.text)
+                with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                    blob = b"".join(archive.read(n) for n in archive.namelist())
+                self.assertNotIn(secret, blob)
+        archive = self.client.post(
+            f"/api/tasks/{self.task}/fulltext/archive-export",
+            json={"scope": "all"}, headers=self.auth())
+        self.assertEqual(archive.headers["x-archive-summary"], "1/1",
+                         "池内行必须计 missing_file 跳过")
+
+    def test_mutation_rowcheck_removed_pin_goes_red(self):
+        """破坏性变异：中和换成无 rowcount 校验版（str 参数 + 不查行数）→
+        trigger 包导入 200 且行保留——test_trigger_and_view… 必红。"""
+        self.new_task()
+
+        def _no_check(base, names, restored_keys):
+            keep = {str(key) for key in restored_keys}
+            for name in names:
+                try:
+                    target = task_package_api._contained(Path(base), name)
+                    with closing(sqlite3.connect(str(target))) as conn:
+                        rows = conn.execute(
+                            "SELECT zotero_key, path FROM fulltexts").fetchall()
+                        for row in rows:
+                            if (row and row[0] is not None
+                                    and str(row[0]) not in keep and row[1]):
+                                conn.execute(
+                                    "UPDATE fulltexts SET path='' "
+                                    "WHERE zotero_key=? AND path<>''",
+                                    (str(row[0]),))
+                        conn.commit()
+                except sqlite3.Error:
+                    pass
+            return 0
+
+        with mock.patch.object(task_package_api,
+                               "_neutralize_unrestored_fulltexts", _no_check):
+            response = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("pkg.zip", self._hostile_package("trigger"),
+                                   "application/zip")},
+                headers=self.auth(2))
+        self.assertEqual(response.status_code, 200, response.text)
+        new_task = response.json()["task_id"]
+        new_info = tasks_mod.find_task(new_task, DATA_DIR)
+        with closing(sqlite3.connect(str(new_info.dir / "sec2-attacker.db"))) as conn:
+            rows = dict(conn.execute(
+                "SELECT zotero_key, path FROM fulltexts").fetchall())
+        self.assertTrue(rows.get("VICTIM"),
+                        "无 rowcount 校验时触发器包真实带行落库（钉必红）")
+
+    def test_mutation_export_roots_widened_pin_goes_red(self):
+        """破坏性变异：合法根放宽回（任务目录 + 共享平铺池）→ 池内文件真实
+        进归档导出——test_export_skips_rows… 必红。"""
+        self.new_task()
+        self.add_pdf("K01")
+        pool = Path(DATA_DIR) / "pdfs"
+        pool.mkdir(parents=True, exist_ok=True)
+        secret = b"%PDF-1.4\nR2-POOL-MUT\n%%EOF\n"
+        victim = pool / "legacy_sec2_poolmut.pdf"
+        victim.write_bytes(secret)
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES ('POOLX', 'T2', 'Wang, A', 2021)")
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('POOLX', 'POOLX.pdf', ?, ?, 1, "
+                "'2026-01-01')", (str(victim), "0" * 64))
+
+        def widened(info):
+            return [Path(info.dir).resolve(), pool.resolve()]
+
+        with mock.patch.object(task_package_api, "_fulltext_allowed_roots",
+                               widened):
+            response = self.client.post(
+                f"/api/tasks/{self.task}/fulltext/archive-export",
+                json={"scope": "all"}, headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            blob = b"".join(archive.read(n) for n in archive.namelist())
+        self.assertIn(secret, blob, "根放宽时共享池文件真实泄露（钉必红）")
+
+
+class AfterTriggerAndGetLeakPins(_ApiBase):
+    """终审 #39 r3：AFTER UPDATE 写回触发器 + GET /fulltext 读侧泄露。"""
+
+    def _after_trigger_package(self):
+        db_path = Path(self.info.dir) / "sec2-after.db"
+        db_mod.init_db(db_path)
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES ('K', 't', 'V, V', 2019)")
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('K', 'K.pdf', "
+                "'data/pdfs/legacy_sec2_after.pdf', ?, 1, '2026-01-01')",
+                ("0" * 64,))
+            # r3 对抗形态：外层 UPDATE rowcount=1，触发器把 path 写回旧值。
+            conn.execute(
+                "CREATE TRIGGER revert_path AFTER UPDATE OF path ON fulltexts "
+                "BEGIN UPDATE fulltexts SET path=OLD.path "
+                "WHERE zotero_key=NEW.zotero_key; END")
+        members = {
+            "task.sanitized.json": json.dumps(
+                {"task_id": "src", "display_name": "s"}).encode(),
+            "db/sec2-attacker.db": db_path.read_bytes(),
+        }
+        return _build_raw_package(members)
+
+    def test_after_update_trigger_rejected(self):
+        """AFTER UPDATE 写回触发器：schema 层拒绝（fulltexts 不得挂任何
+        触发器），commit 后重 SELECT 断言兜底——绝不给假 200 + 行保留。"""
+        self.new_task()
+        before = _task_dir_count()
+        response = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", self._after_trigger_package(),
+                               "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["params"]["reason"], "fulltext_neutralize_failed")
+        self.assertEqual(_task_dir_count(), before)
+        root = tasks_mod.tasks_root(DATA_DIR)
+        leftovers = [] if not root.is_dir() else [
+            p.name for p in root.iterdir() if p.name.startswith(".import-")]
+        self.assertEqual(leftovers, [])
+
+    def test_schema_guard_detects_trigger_and_view(self):
+        """schema 守卫直测：普通 fulltexts 表 → False；触发器/视图 → True。"""
+        base = Path(tempfile.mkdtemp(prefix="sec2-schema-guard-"))
+        self.addCleanup(lambda: shutil.rmtree(base, ignore_errors=True))
+        plain = base / "plain.db"
+        db_mod.init_db(plain)
+        with closing(sqlite3.connect(plain)) as conn:
+            self.assertFalse(task_package_api._fulltexts_schema_hostile(conn))
+        tricky = base / "tricky.db"
+        db_mod.init_db(tricky)
+        with closing(sqlite3.connect(tricky)) as conn, conn:
+            conn.execute(
+                "CREATE TRIGGER t1 AFTER UPDATE ON fulltexts "
+                "BEGIN SELECT 1; END")
+        with closing(sqlite3.connect(tricky)) as conn:
+            self.assertTrue(task_package_api._fulltexts_schema_hostile(conn))
+        viewed = base / "viewed.db"
+        db_mod.init_db(viewed)
+        with closing(sqlite3.connect(viewed)) as conn, conn:
+            conn.execute("ALTER TABLE fulltexts RENAME TO real_ft")
+            conn.execute("CREATE VIEW fulltexts AS SELECT * FROM real_ft")
+        with closing(sqlite3.connect(viewed)) as conn:
+            self.assertTrue(task_package_api._fulltexts_schema_hostile(conn))
+
+    def test_mutation_neutralize_naive_pin_goes_red(self):
+        """破坏性变异：中和换成朴素版（无 schema/rowcount/事后核验）→
+        AFTER 触发器包导入 200 且行保留——test_after_update_trigger_rejected 必红。"""
+        self.new_task()
+
+        def _naive(base, names, covered_paths):
+            for name in names:
+                try:
+                    target = task_package_api._contained(Path(base), name)
+                    with closing(sqlite3.connect(str(target))) as conn:
+                        rows = conn.execute(
+                            "SELECT zotero_key, path FROM fulltexts").fetchall()
+                        for row in rows:
+                            if row and row[0] is not None and row[1]:
+                                conn.execute(
+                                    "UPDATE fulltexts SET path='' "
+                                    "WHERE zotero_key=?", (str(row[0]),))
+                        conn.commit()
+                except sqlite3.Error:
+                    pass
+            return 1
+
+        with mock.patch.object(task_package_api,
+                               "_neutralize_unrestored_fulltexts", _naive):
+            response = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("pkg.zip", self._after_trigger_package(),
+                                   "application/zip")},
+                headers=self.auth(2))
+        self.assertEqual(response.status_code, 200, response.text)
+        new_info = tasks_mod.find_task(response.json()["task_id"], DATA_DIR)
+        with closing(sqlite3.connect(str(new_info.dir / "sec2-attacker.db"))) as conn:
+            rows = dict(conn.execute(
+                "SELECT zotero_key, path FROM fulltexts").fetchall())
+        self.assertTrue(rows.get("K"),
+                        "无防护时 AFTER 触发器包真实带池路径落库（钉必红）")
+
+    def test_get_fulltext_rejects_pool_paths(self):
+        """读侧纵深：fulltexts 行指向共享平铺池 → GET /fulltext/{key} 404，
+        任务目录内正常文献照常 200（终审 #39 r3）。"""
+        self.new_task()
+        legit = self.add_pdf("K01")
+        pool = Path(DATA_DIR) / "pdfs"
+        pool.mkdir(parents=True, exist_ok=True)
+        secret = b"%PDF-1.4\nR3-POOL-GET\n%%EOF\n"
+        victim = pool / "legacy_sec2_get.pdf"
+        victim.write_bytes(secret)
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES ('POOLK', 'T', 'Wang, A', 2021)")
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('POOLK', 'P.pdf', ?, ?, 1, "
+                "'2026-01-01')", (str(victim), "0" * 64))
+        absolute = self.client.get(f"/api/tasks/{self.task}/fulltext/POOLK",
+                                   headers=self.auth())
+        self.assertEqual(absolute.status_code, 404, absolute.text)
+        self.assertNotEqual(absolute.content, secret)
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute(
+                "UPDATE fulltexts SET path='data/pdfs/legacy_sec2_get.pdf' "
+                "WHERE zotero_key='POOLK'")
+        relative = self.client.get(f"/api/tasks/{self.task}/fulltext/POOLK",
+                                   headers=self.auth())
+        self.assertEqual(relative.status_code, 404, relative.text)
+        ok = self.client.get(f"/api/tasks/{self.task}/fulltext/K01",
+                             headers=self.auth())
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(ok.content, legit, "任务目录内正常文献不受影响")
+
+    def test_mutation_fulltext_pdf_guard_widened_pin_goes_red(self):
+        """破坏性变异：main.is_within 恒 True（读侧包含性删掉）→ 池内文件
+        被 GET 逐字节读出——test_get_fulltext_rejects_pool_paths 必红。"""
+        from custom_backend import main as main_mod
+        self.new_task()
+        pool = Path(DATA_DIR) / "pdfs"
+        pool.mkdir(parents=True, exist_ok=True)
+        secret = b"%PDF-1.4\nR3-POOL-MUTGET\n%%EOF\n"
+        victim = pool / "legacy_sec2_mutget.pdf"
+        victim.write_bytes(secret)
+        self.addCleanup(lambda: victim.unlink(missing_ok=True))
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO articles (zotero_key, title, authors, year) "
+                "VALUES ('POOLK', 'T', 'Wang, A', 2021)")
+            conn.execute(
+                "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                "n_pages, added_at) VALUES ('POOLK', 'P.pdf', ?, ?, 1, "
+                "'2026-01-01')", (str(victim), "0" * 64))
+        with mock.patch.object(main_mod, "is_within", lambda child, root: True):
+            response = self.client.get(f"/api/tasks/{self.task}/fulltext/POOLK",
+                                       headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.content, secret, "读侧防护删掉后真实泄露（钉必红）")
+
+
+class ForgedCentralDirectoryPins(_ApiBase):
+    """终审 #41 r2：central directory 谎报尺寸（zip64/CRC 伪造）→ 结构化 400。"""
+
+    def test_declared_smaller_than_actual_is_zip_corrupt_400(self):
+        self.new_task()
+        members = {
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(64 * 1024),
+        }
+        payload = _patch_central(_build_raw_package(members), "db/a.db",
+                                 file_size=10)
+        before = _task_dir_count()
+        response = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["params"]["reason"], "zip_corrupt")
+        self.assertEqual(_task_dir_count(), before)
+        root = tasks_mod.tasks_root(DATA_DIR)
+        leftovers = [] if not root.is_dir() else [
+            p.name for p in root.iterdir() if p.name.startswith(".import-")]
+        self.assertEqual(leftovers, [], "拒绝后必须清场")
 
 
 def tearDownModule():

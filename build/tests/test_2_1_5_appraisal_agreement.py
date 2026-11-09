@@ -380,5 +380,110 @@ class GradeMappingPureTests(unittest.TestCase):
         assert result["rule"] == "no_overall"
 
 
+class ExportFormulaInjectionPins(unittest.TestCase):
+    """终审 #02：评价导出 CSV 公式注入防护（成员可控 article_key 落格）。"""
+
+    FORMULA_KEYS = [
+        '=HYPERLINK("http: spoofed.evilexample.net","click")',  # 无斜杠形态
+        "@SUM(A1:A9)",
+        "-2+3",
+        "=1+1",
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app, raise_server_exceptions=False)
+        cls.client.__enter__()
+        # r2 测试卫生：用户名按次随机（先例模块的环境泄漏会让 data/ 落 cwd、
+        # 固定用户名跨根复跑撞「筛选员数据路径冲突」——随机后任何文件顺序、
+        # 任何残留状态下都成立）。
+        import uuid as _uuid
+
+        suffix = _uuid.uuid4().hex[:6]
+        cls.owner = auth_mod.create_user(
+            f"r215c-csv-owner-{suffix}@example.test", "R215C-CSV-2026!")
+        cls.peer = auth_mod.create_user(
+            f"r215c-csv-peer-{suffix}@example.test", "R215C-CSV-Peer-2026!")
+        cls.owner_auth = {"Authorization": "Bearer " + auth_mod.create_access_token(
+            cls.owner["id"], cls.owner["username"])}
+        cls.peer_auth = {"Authorization": "Bearer " + auth_mod.create_access_token(
+            cls.peer["id"], cls.peer["username"])}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def setUp(self):
+        response = self.client.post(
+            "/api/tasks", json={"name": f"csv-formula-{self._testMethodName}"},
+            headers=self.owner_auth)
+        assert response.status_code in (200, 201), response.text
+        self.task = response.json()["task_id"]
+        self.base = f"/api/tasks/{self.task}/appraisal"
+        invite = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.peer["username"], "role": "coder"},
+            headers=self.owner_auth)
+        assert invite.status_code == 201, invite.text
+        ctx = app.state.review_workflow.context(
+            self.task, {"user_id": self.owner["id"],
+                        "username": self.owner["username"]})
+        db_mod.upsert_articles(Path(ctx.owner_db), ARTICLES, [])
+
+    def _export_rows(self):
+        response = self.client.get(f"{self.base}/export", params={"tool": TOOL},
+                                   headers=self.owner_auth)
+        assert response.status_code == 200, response.text
+        text = response.content.decode("utf-8-sig")
+        import csv as _csv
+        import io as _io
+        return list(_csv.reader(_io.StringIO(text)))
+
+    def test_formula_shaped_article_keys_are_prefixed(self):
+        for key in self.FORMULA_KEYS:
+            with self.subTest(key=key):
+                put = self.client.put(f"{self.base}/{key}",
+                                      json={"tool": TOOL,
+                                            "responses": OWNER_RESPONSES["K1"],
+                                            "note": ""},
+                                      headers=self.peer_auth)
+                assert put.status_code == 200, put.text
+        rows = self._export_rows()
+        by_key = {row[0]: row for row in rows[1:]}
+        for key in self.FORMULA_KEYS:
+            cell = by_key.get(key, by_key.get("'" + key, [None]))[0]
+            self.assertIsNotNone(cell, f"{key!r} 未出现在导出")
+            self.assertTrue(cell.startswith("'"),
+                            f"公式形状单元格必须以 ' 开头：{cell!r}")
+        # 表头同样过防护（无公式形状则原样）。
+        self.assertEqual(rows[0][0], "zotero_key")
+
+    def test_plain_cells_not_prefixed(self):
+        put = self.client.put(f"{self.base}/K1",
+                              json={"tool": TOOL, "responses": OWNER_RESPONSES["K1"],
+                                    "note": ""},
+                              headers=self.owner_auth)
+        assert put.status_code == 200, put.text
+        rows = self._export_rows()
+        by_key = {row[0]: row for row in rows[1:]}
+        self.assertEqual(by_key["K1"][0], "K1", "普通文本不加前缀")
+        self.assertEqual(by_key["K1"][1], "Alpha qualitative study")
+
+    def test_mutation_csv_guard_removed_pin_goes_red(self):
+        """破坏性变异：_csv_cell 换成恒等函数 → 公式键无前缀落格——上面的钉必红。"""
+        from custom_backend import appraisal_agreement_api as api_mod
+        key = "=1+1"
+        put = self.client.put(f"{self.base}/{key}",
+                              json={"tool": TOOL, "responses": OWNER_RESPONSES["K1"],
+                                    "note": ""},
+                              headers=self.peer_auth)
+        assert put.status_code == 200, put.text
+        with mock.patch.object(api_mod, "_csv_cell", lambda value: str(value)):
+            rows = self._export_rows()
+        by_key = {row[0]: row for row in rows[1:]}
+        self.assertEqual(by_key["=1+1"][0], "=1+1",
+                         "无防护时公式形状原样落格（钉必红）")
+
+
 if __name__ == "__main__":
     unittest.main()
