@@ -447,7 +447,11 @@ class SofPins(W7TablesBase):
 
         rows = _read_csv(self._sof(rob_tool=TOOL).content)
         row = self._sof_row(rows)
-        self.assertIn(grade.DOWNGRADE_LABELS["serious"], row["研究局限性"])
+        # 终审 #01（旧→新）：风险档位改用专门的风险量表（低/严重/非常严重），
+        # 不再用降级级别标签表索引——旧期望是 assertIn("严重(-1)")（降级语义
+        # 文案恰好同名），新期望为风险语义「严重（1/2 项研究）」打头。
+        self.assertTrue(row["研究局限性"].startswith("严重（1/2 项研究）"),
+                        row["研究局限性"])
         self.assertIn("1/2", row["研究局限性"])
 
         expected_level, expected_signal = grade.suggest_rob_downgrade(
@@ -720,7 +724,9 @@ class ConsensusPermissionPins(W7TablesBase):
         response = self._sof(rob_tool=TOOL)
         self.assertEqual(response.status_code, 200, response.text)
         cell = self._rob_cell(_read_csv(response.content))
-        self.assertIn(grade.DOWNGRADE_LABELS["serious"], cell)
+        # 终审 #01（旧→新）：风险档位打头标签由降级语义「严重(-1)」改为
+        # 风险语义「严重（1/2 项研究）」（K1 已评价 serious、K2 未评价）。
+        self.assertTrue(cell.startswith("严重（1/2 项研究）"), cell)
         # 与 grade-input 同源：档位聚合计数 = {serious: 1}
         detail = self.client.post(
             self.sof, json={"format": "csv", "rob_tool": TOOL},
@@ -738,8 +744,10 @@ class ConsensusPermissionPins(W7TablesBase):
         response = self._member_sof(rob_tool=TOOL)
         self.assertEqual(response.status_code, 200, response.text)
         cell = self._rob_cell(_read_csv(response.content))
-        # 档位来自属主库的 appraisal（跨成员聚合），证明判定通过且聚合正常
-        self.assertIn(grade.DOWNGRADE_LABELS["serious"], cell)
+        # 档位来自属主库的 appraisal（跨成员聚合），证明判定通过且聚合正常。
+        # 终审 #01（旧→新）：风险语义「严重（1/1 项研究）」打头（裁决员读
+        # 自己的分析库 = 1 项研究，其中 1 项有跨库聚合档位）。
+        self.assertTrue(cell.startswith("严重（1/1 项研究）"), cell)
 
     def test_member_without_rob_tool_still_reads_and_has_no_appraisal_data(self):
         self._owner_rating()
@@ -779,6 +787,212 @@ class ConsensusPermissionPins(W7TablesBase):
         self.assertEqual(detail["error_code"], "tables_rob_tool_link_only")
         self.assertEqual(detail["message_key"], "tables.rob_tool_link_only")
         self.assertEqual(detail["params"]["tool"], link_only)
+
+
+# ---------------------------------------------------------------------------
+# 6. 终审 2.1.5 第 2 波「SoF/GRADE 计算正确性」红钉（#01/#46/#55/#08）
+# ---------------------------------------------------------------------------
+
+class SofGradeCorrectnessPins(W7TablesBase):
+    """sweep_2.1.5_report.md §二 #01/#46/#55/#08：直接影响研究产出数字
+    （SoF 导出与 grade-input）的四类计算错误，逐条带「修复前必红」的数值锚。"""
+
+    PREFIX = "w7sec3"
+
+    def _sof_row(self, rows, outcome="疼痛"):
+        header = rows[0]
+        for row in rows[1:]:
+            if row and row[0].startswith(outcome):
+                return dict(zip(header, row))
+        self.fail(f"未找到结局行：{outcome}；实际 {rows!r}")
+
+    def _detail(self, **body):
+        payload = {"format": "csv"}
+        payload.update(body)
+        response = self.client.post(self.sof, json=payload,
+                                    params={"detail": 1}, headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_all_low_risk_band_renders_three_outlets(self):
+        """#01：全低风险数据（worst='low'）三出口全 200。
+
+        旧：``grade.DOWNGRADE_LABELS['low']`` KeyError → csv/docx/detail=1
+        全 500。新（旧→新）：风险档位改用专门量表——all-low 格 =
+        「低（2/2 项研究）｜无降级｜rule=no_high_risk_studies…」；此前
+        serious/very_serious 恰好同名时显示降级语义文案「严重(-1)（x/y 项
+        研究）」，一并校正为风险语义。
+        """
+        self._seed()
+        self._seed_effects()
+        self._put_appraisal("K1", "low")
+        self._put_appraisal("K2", "some_concerns")
+        for fmt in ("csv", "docx"):
+            response = self._sof(format=fmt, rob_tool=TOOL)
+            self.assertEqual(response.status_code, 200,
+                             f"{fmt} 出口不得 500：{response.text[:200]}")
+        payload = self._detail(rob_tool=TOOL)
+        row = payload["rows"][0]
+        rob_detail = row["detail"]["rob"]
+        self.assertEqual(rob_detail["worst"], "low")
+        self.assertEqual(rob_detail["counts"], {"low": 2})
+        self.assertTrue(row["cells"]["rob"].startswith("低（2/2 项研究）"),
+                        row["cells"]["rob"])
+        self.assertIn("rule=no_high_risk_studies", row["cells"]["rob"])
+        # 风险档位格不得再以降级级别文案打头（两套量表分家）
+        self.assertFalse(row["cells"]["rob"].startswith(("严重", "非常严重")))
+        # 数值锚：全构件无降级（rob=low 不降级；CI [0.116, 0.728] 不含 0 且
+        # 宽度比 6.3 < 10；n=2 不判发表偏倚）→ RCT 起点 → 高 ⊕⊕⊕⊕。
+        self.assertEqual(row["cells"]["certainty"], "高 ⊕⊕⊕⊕")
+        csv_row = self._sof_row(_read_csv(self._sof(rob_tool=TOOL).content))
+        self.assertTrue(csv_row["研究局限性"].startswith("低（2/2 项研究）"),
+                        csv_row["研究局限性"])
+
+    def test_imprecision_ratio_measures_use_display_scale(self):
+        """#46：不精确性「同号上下限比>10」必须用**展示尺度** CI（与
+        ``/analysis/grade/auto-suggest`` 同口径）。比值类（OR）的分析尺度是
+        log 值，下限逼近 0 时比值急剧放大，不是尺度不变的量。
+
+        方向一（旧→新）：OR 1.449（95%CI ≈ 1.05–2.00，log 尺度比 ≈ 14）
+        曾误判 ci_too_wide、置信度「中」→ 现无降级、「高 ⊕⊕⊕⊕」；
+        方向二（旧→新）：OR 展示尺度 CI ≈ 20–400（log 尺度比 ≈ 2）曾漏判
+        ci_too_wide → 现降级、「中 ⊕⊕⊕○」。两方向与 auto-suggest 一致。
+        """
+        self._seed()
+        analysis_mod.save_study(self.db, "S1", "Study 1", ["K1"])
+        analysis_mod.save_study(self.db, "S2", "Study 2", ["K2"])
+        for outcome, (estimate, se) in {"O_narrow": (1.449, 0.2324),
+                                        "O_wide": (89.4427, 1.0805)}.items():
+            for sid, key in (("S1", "K1"), ("S2", "K2")):
+                analysis_mod.save_effect(self.db, sid, "C", outcome, "T",
+                                         "OR", estimate, se, key)
+
+        payload = self._detail()
+        rows = {row["outcome"]: row for row in payload["rows"]}
+        expectations = {"O_narrow": (False, "高 ⊕⊕⊕⊕"),
+                        "O_wide": (True, "中 ⊕⊕⊕○")}
+        for outcome, (expect_wide, expect_certainty) in expectations.items():
+            row = rows[outcome]
+            result = analysis_mod.synthesize(self.db, "C", outcome, "T", "OR")
+            display_ratio = result["ci_high"] / result["ci_low"]
+            signal = row["detail"]["grade"]["suggestions"]["imprecision"]["signal"]
+            # 数值锚：signal 的宽度比必须是展示尺度比值（不是 log 尺度）
+            self.assertAlmostEqual(signal["ci_width_ratio"], display_ratio,
+                                   places=6, msg=outcome)
+            self.assertIs("ci_too_wide" in str(signal.get("rule")), expect_wide,
+                          f"{outcome}: {signal}")
+            self.assertEqual(row["cells"]["certainty"], expect_certainty, outcome)
+            # 同分层两出口（SoF vs auto-suggest）结论一致
+            auto = self.client.get(
+                f"/api/tasks/{self.task}/analysis/grade/auto-suggest",
+                params={"comparison": "C", "outcome": outcome, "timepoint": "T",
+                        "initial_design": "rct", "model": "fixed"},
+                headers=self.auth)
+            self.assertEqual(auto.status_code, 200, auto.text)
+            suggestion = auto.json()
+            self.assertIn(suggestion["final_quality_label"] + " ",
+                          row["cells"]["certainty"], outcome)
+            self.assertEqual(
+                suggestion["signal_sources"]["imprecision"].get("rule"),
+                signal.get("rule"), outcome)
+
+    def test_unselected_variant_studies_stay_in_denominator(self):
+        """#55：分层下仅有未选变体（selected=0，整包导入可达）的研究不得从
+        研究数/研究局限性分母消失。
+
+        旧→新：S3（双变体全未选）+ S4（已选）曾导出「纳入研究数 1」、
+        「严重(-1)（1/1 项研究）」→ 现为 2、「严重（1/2 项研究）」，
+        counts={low:1, serious:1}（S3 的评价记录参与汇总）。
+        """
+        from contextlib import closing
+
+        self._seed()
+        analysis_mod.save_study(self.db, "S3", "Study 3", ["K3"])
+        analysis_mod.save_study(self.db, "S4", "Study 4", ["K4"])
+        analysis_mod.save_effect(self.db, "S3", "干预 vs 对照", "疼痛", "12 周",
+                                 "MD", 0.2, 0.1, "K3")
+        analysis_mod.save_effect(self.db, "S3", "干预 vs 对照", "疼痛", "12 周",
+                                 "MD", 0.4, 0.2, "K3", append=True)
+        with closing(db_mod._connect(self.db)) as conn, conn:
+            conn.execute("UPDATE review_effects SET selected=0 WHERE study_id='S3'")
+        analysis_mod.save_effect(self.db, "S4", "干预 vs 对照", "疼痛", "12 周",
+                                 "MD", 0.6, 0.25, "K4")
+        self._put_appraisal("K3", "low")
+        self._put_appraisal("K4", "high")
+
+        payload = self._detail(rob_tool=TOOL)
+        row = payload["rows"][0]
+        # 数值锚：分母 = 本分层全部研究（S3+S4 = 2），两研究评价都计入
+        self.assertEqual(row["n_studies"], 2)
+        rob_detail = row["detail"]["rob"]
+        self.assertEqual(rob_detail["counts"], {"low": 1, "serious": 1})
+        self.assertEqual(rob_detail["n_studies"], 2)
+        self.assertEqual(rob_detail["n_rated"], 2)
+        self.assertEqual(rob_detail["worst"], "serious")
+        self.assertTrue(row["cells"]["rob"].startswith("严重（1/2 项研究）"),
+                        row["cells"]["rob"])
+        # 选择异常仍如实披露：效应格留空 + 脚注，绝不冒充合并结果
+        self.assertEqual(row["cells"]["effect"], "")
+        self.assertIn("效应选择异常", "\n".join(row["footnotes"]))
+        csv_row = self._sof_row(_read_csv(self._sof(rob_tool=TOOL).content))
+        self.assertEqual(csv_row["纳入研究数"], "2")
+        self.assertTrue(csv_row["研究局限性"].startswith("严重（1/2 项研究）"))
+
+    def test_purely_unselected_stratum_row_is_kept(self):
+        """#55（同根因更强形态）：整层只有未选变体时结局行不得被整行吞掉、
+        全局脚注不得误写「还没有已保存的分析条目」。"""
+        from contextlib import closing
+
+        self._seed()
+        analysis_mod.save_study(self.db, "S5", "Study 5", ["K4"])
+        analysis_mod.save_effect(self.db, "S5", "c", "o", "t", "MD", 0.2, 0.1, "K4")
+        analysis_mod.save_effect(self.db, "S5", "c", "o", "t", "MD", 0.4, 0.2,
+                                 "K4", append=True)
+        with closing(db_mod._connect(self.db)) as conn, conn:
+            conn.execute("UPDATE review_effects SET selected=0 WHERE study_id='S5'")
+
+        payload = self._detail()
+        self.assertEqual(len(payload["rows"]), 1, payload["rows"])
+        row = payload["rows"][0]
+        self.assertEqual(row["outcome"], "o")
+        self.assertEqual(row["n_studies"], 1)
+        self.assertEqual(row["cells"]["effect"], "")
+        self.assertTrue(any("效应选择异常" in note or "未选定" in note
+                            for note in row["footnotes"]), row["footnotes"])
+        self.assertNotIn("还没有已保存的分析条目", "\n".join(payload["footnotes"]))
+
+    def test_rob_tool_whitespace_aggregates_as_canonical_id(self):
+        """#08：rob_tool 带首尾空白必须与规范 id 聚合结果逐字段相等。
+
+        旧→新：'rob2 ' 曾通过校验（get_tool 内部 strip）但聚合按未规范化
+        原串命中 0 条 → 研究局限性空、总体置信度被静默上调为「高 ⊕⊕⊕⊕」；
+        现端点使用注册表规范 id，带空白请求的响应与 'rob2' 逐字段相等。
+        """
+        self._seed()
+        self._seed_effects()
+        self._put_appraisal("K1", "high")
+        self._put_appraisal("K2", "high")
+
+        baseline = self._detail(rob_tool=TOOL)
+        base_row = baseline["rows"][0]
+        # 规范 id 基线（数值锚）：counts={serious:2}、置信度 低 ⊕⊕○○
+        self.assertEqual(base_row["detail"]["rob"]["counts"], {"serious": 2})
+        self.assertEqual(base_row["cells"]["certainty"], "低 ⊕⊕○○")
+        self.assertEqual(baseline["params"]["rob_tool"], TOOL)
+
+        for tool in ("rob2 ", " rob2", "rob2\t"):
+            payload = self._detail(rob_tool=tool)
+            self.assertEqual(payload["params"]["rob_tool"], TOOL, tool)
+            self.assertEqual(payload["rows"], baseline["rows"],
+                             f"rob_tool={tool!r} 与规范 id 逐字段不等")
+            self.assertNotEqual(payload["rows"][0]["cells"]["rob"], "")
+
+        # CSV 出口同口径：带空白的总体置信度不得被上调
+        spaced = self._sof_row(_read_csv(self._sof(rob_tool="rob2 ").content))
+        canonical = self._sof_row(_read_csv(self._sof(rob_tool=TOOL).content))
+        self.assertEqual(spaced["总体置信度"], canonical["总体置信度"])
+        self.assertEqual(spaced["研究局限性"], canonical["研究局限性"])
+        self.assertNotEqual(spaced["总体置信度"], "高 ⊕⊕⊕⊕")
 
 
 def tearDownModule():

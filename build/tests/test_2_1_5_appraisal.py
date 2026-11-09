@@ -289,6 +289,53 @@ class TestRob2Algorithm:
         assert result["domains"]["D2"]["part_2"] == "some_concerns"
         assert result["domains"]["D2"]["judgement"] == "some_concerns"
 
+    def test_domain2_ni_awareness_follows_official_routing(self):
+        """终审 #47：2.1/2.2 答 NI（无信息）必须与 Y/PY 同路进入 2.3 分支
+        （官方决策表『If Y/PY/NI to 2.1 or 2.2: (answer 2.3)』），只有两者
+        都是 N/PN 才算「不知情 → 直接 Low」。
+
+        旧→新：NI/NI + 2.3Y/2.4Y/2.5N 曾与 N/PN 同路直接判 Low（域 Low、
+        suggested_overall low、GRADE 不降级，偏倚风险被静默低估）→ 现与
+        2.1=Y 同组合完全同路（High）；NI + 2.3=NI 至少 Some concerns；
+        不知情对照（N/N）保持 Low 不受影响。
+        """
+        ni = _rob2(**{"2.1": "NI", "2.2": "NI", "2.3": "Y", "2.4": "Y",
+                      "2.5": "N"})
+        aware = _rob2(**{"2.1": "Y", "2.2": "Y", "2.3": "Y", "2.4": "Y",
+                         "2.5": "N"})
+        assert ni["domains"]["D2"] == aware["domains"]["D2"]
+        assert ni["domains"]["D2"]["part_1"] == "high"
+        assert ni["domains"]["D2"]["judgement"] == "high"
+        assert ni["suggested_overall"] == "high"
+        # GRADE 衔接同步：rob2 high → serious（不再是 low 的不降级）
+        assert core.study_rating_for_grade(
+            "rob2", ni)["risk_of_bias"] == "serious"
+
+        no_info_deviation = _rob2(**{"2.1": "NI", "2.2": "N", "2.3": "NI"})
+        assert no_info_deviation["domains"]["D2"]["judgement"] == "some_concerns"
+
+        unaware = _rob2()  # 2.1/2.2 = N/N → 不知情 → Low（既有行为）
+        assert unaware["domains"]["D2"]["judgement"] == "low"
+
+    def test_domain2_adhering_ni_awareness_follows_official_routing(self):
+        """终审 #47（adhering 变体同口径）：2.1/2.2=NI 不得折叠进「不知情」
+        分支在无实施失败/不依从时产出 Low；NI 与 Y/PY 同路。"""
+
+        def adhering(**overrides):
+            responses = {key: value for key, value in ROB2_LOW.items()
+                         if key not in {"2.7"}}
+            responses.update(overrides)
+            return core.aggregate("rob2", responses, variant="adhering")
+
+        ni = adhering(**{"2.1": "NI", "2.2": "NI", "2.3": "N", "2.4": "Y",
+                         "2.5": "Y", "2.6": "N"})
+        aware = adhering(**{"2.1": "Y", "2.2": "Y", "2.3": "N", "2.4": "Y",
+                            "2.5": "Y", "2.6": "N"})
+        assert ni["domains"]["D2"]["judgement"] == \
+            aware["domains"]["D2"]["judgement"] == "high"
+        # 不知情对照：无实施失败/不依从（2.4/2.5=NA）→ 保守 Low 不变
+        assert adhering()["domains"]["D2"]["judgement"] == "low"
+
     def test_domain3_unclear_dependence_is_some_concerns(self):
         """3.3 = NI 不构成 High 的「could depend」，保守归 Some concerns。"""
         result = _rob2(**{"3.1": "N", "3.2": "N", "3.3": "NI", "3.4": "Y"})
@@ -477,6 +524,57 @@ class TestNoScoreNegative:
         assert result["complete"] is False
         assert result["answered"] == 2
         assert len(result["unanswered"]) == 8
+
+
+class TestAxisReverseItemScoring:
+    """终审 #06：AXIS 第 19 条（资助/利益冲突）是 ``reverse_direction`` 反向
+    条目，无人工总体判定时逐条归纳必须按「答 No=正向」计分。
+
+    旧→新（修复前按正向题数 Yes）：19=No 曾得 moderate（risk_of_bias
+    serious）、19=Yes 曾得 high（risk_of_bias low）——答「有利益冲突顾虑」
+    反而抬高质量档、答「无顾虑」反而压低，方向完全颠倒。
+    """
+
+    @staticmethod
+    def _axis_responses(item19, yes_base=15):
+        responses = {str(i): ("Yes" if i <= yes_base else "No")
+                     for i in range(1, 21)}
+        responses["19"] = item19
+        return responses
+
+    def test_item19_no_counts_positive_low_risk(self):
+        # 数值锚：正向 16/20 = 0.8 → high → risk_of_bias low
+        aggregate = core.aggregate("axis", self._axis_responses("No"),
+                                   comments={}, overall=None)
+        assert core._per_item_quality(aggregate, core.REGISTRY["axis"]) == "high"
+        rating = core.study_rating_for_grade("axis", aggregate)
+        assert rating["risk_of_bias"] == "low"
+        assert rating["source"] == "per_item_report"
+        assert rating["rule"] == "axis:high"
+        # 存储包装形状（save_record 落库形状）同源
+        wrapped = core.study_rating_for_grade(
+            "axis", {"aggregate": aggregate, "override": None, "variant": None})
+        assert wrapped["risk_of_bias"] == "low"
+
+    def test_item19_yes_downgrades_one_tier(self):
+        # 数值锚：正向 15/20 = 0.75 → moderate → risk_of_bias serious（恰升一档）
+        aggregate = core.aggregate("axis", self._axis_responses("Yes"),
+                                   comments={}, overall=None)
+        assert core._per_item_quality(aggregate, core.REGISTRY["axis"]) == "moderate"
+        rating = core.study_rating_for_grade("axis", aggregate)
+        assert rating["risk_of_bias"] == "serious"
+        assert rating["source"] == "per_item_report"
+        assert rating["rule"] == "axis:moderate"
+
+    def test_manual_overall_still_takes_priority(self):
+        """人工总体判定优先：逐条计分口径变化不影响（回归钉）。"""
+        aggregate = core.aggregate("axis", self._axis_responses("Yes"),
+                                   comments={},
+                                   overall={"judgement": "high",
+                                            "reason": "reviewer judged overall"})
+        rating = core.study_rating_for_grade("axis", aggregate)
+        assert rating["risk_of_bias"] == "low"
+        assert rating["source"] == "manual"
 
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,14 @@ SOF_COLUMNS = (
 #: 这里做的是**逆向的同带映射**，只用于把聚合档位喂给既有建议器。
 _ROB_LEVEL_TO_JUDGEMENT = {"low": "low", "serious": "high", "very_serious": "critical"}
 
+#: SoF「研究局限性」列的**风险档位**显示标签（评价模块 ``GRADE_RISK_LEVELS``
+#: 三档）。这是风险语义（研究本身的偏倚风险有多严重），与 GRADE 降级级别标签
+#: （``grade_assessor.DOWNGRADE_LABELS``：none/serious/… 的扣分步数语义，如
+#: 「严重(-1)」）是两套量表，不得互用（终审 #01）：曾用降级标签表索引风险档位，
+#: ``'low'`` 不在该表中导致全低风险数据三出口 500；serious/very_serious 两档
+#: 恰好同名时显示的也是降级语义文案「严重(-1)」而非风险语义。
+_RISK_LEVEL_LABELS = {"low": "低", "serious": "严重", "very_serious": "非常严重"}
+
 _DEFAULT_INITIAL_DESIGN = "rct"
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -449,11 +457,17 @@ def _appraisal_levels(info: Any, tool_id: str) -> dict:
     return {"levels": levels, "skipped": skipped}
 
 
-def _selected_strata(db_path: Path) -> dict[tuple[str, str, str, str], list[dict]]:
+def _effect_strata(db_path: Path) -> dict[tuple[str, str, str, str], list[dict]]:
+    """该库**全部效应行**（含未选变体）按 (comparison, outcome, timepoint, measure)
+    分层。
+
+    分层的研究数与研究局限性分母取该分层下全部效应行按 ``study_id`` 去重
+    （终审 #55）：只有未选变体（selected=0，经整包导入等路径可达）的研究不能
+    从分母里消失，整层未选的结局行也不能被整行吞掉——效应格按「选择异常」
+    留空并脚注披露，但表内数字仍要如实反映分层里的研究。
+    """
     strata: dict[tuple[str, str, str, str], list[dict]] = {}
     for effect in analysis_mod.list_effects(str(db_path)):
-        if not effect.get("selected"):
-            continue
         key = (effect["comparison"], effect["outcome"], effect["timepoint"], effect["measure"])
         strata.setdefault(key, []).append(effect)
     return strata
@@ -513,6 +527,28 @@ def _publication_bias_signal(rows: list[dict], measure: str, n_studies: int) -> 
         {"p_value": diagnosis["p_value"], "n_studies": n_studies})
 
 
+def _imprecision_signal(result: dict, measure: str) -> dict:
+    """不精确性建议输入：**展示尺度** CI + 展示尺度无效值（终审 #46）。
+
+    与 ``GET /analysis/grade/auto-suggest`` 同口径：比值类（OR/RR/HR…）的展示
+    尺度是自然尺度、无效值 1；logit 比例是概率尺度、无效值 0.5；差值类无效值
+    0——即分析尺度无效值 0 经展示变换（严格单调）得到的像。「CI 是否跨无效值」
+    在单调变换下不变，与分析尺度（null=0）判定完全等价；而「同号上下限比>10」
+    这类宽度比值只有在展示尺度上才是尺度不变的量：分析（log）尺度下限逼近 0
+    时比值急剧放大，OR 1.449（CI 1.05–2.00）会被误判极宽、OR 20–400 反而漏判。
+    展示界溢出（``ci_low/ci_high`` 为 None，如 exp 超出可表示范围）时退回分析
+    尺度 CI + 无效值 0（跨线判定不变，宽度比按可表示的分析尺度计）。
+    """
+    null_value = _display_value(0.0, measure)
+    if null_value is None or not isinstance(null_value, (int, float)):
+        null_value = 0.0
+    if result.get("ci_low") is not None and result.get("ci_high") is not None:
+        return {"ci_low": result["ci_low"], "ci_high": result["ci_high"],
+                "null_value": null_value}
+    return {"ci_low": result["ci_analysis_low"], "ci_high": result["ci_analysis_high"],
+            "null_value": 0.0}
+
+
 def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[str], dict]:
     """装配 SoF 行；返回 (rows, 全局脚注, 参数回显)。"""
     notes: list[str] = []
@@ -524,7 +560,7 @@ def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[s
         notes.append("效应：未评价（该任务还没有分析库）。")
         return [], notes, params
 
-    strata = _selected_strata(db_path)
+    strata = _effect_strata(db_path)
     if not strata:
         notes.append(f"自动生成于 {_today()}。")
         notes.append("效应：未评价（还没有已保存的分析条目）。")
@@ -563,10 +599,21 @@ def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[s
         n_studies = len({str(item["study_id"]) for item in group})
         effect_detail["n_studies"] = n_studies
 
-        # 研究局限性：档位聚合 + GRADE rob 建议（两者都为空则如实留空）
-        source_keys = [row["source_key"] for row in selected if row.get("source_key")]
-        if not source_keys:  # 选择异常时退回整层来源，仍按研究匹配评价记录
-            source_keys = [row["source_key"] for row in group if row.get("source_key")]
+        # 研究局限性：档位聚合 + GRADE rob 建议（两者都为空则如实留空）。
+        # 来源按**研究**去重、取该分层全部效应行（终审 #55）：优先该研究已选定
+        # 的变体，未选/选择异常时取其任一变体（同一研究的变体共享来源文献）。
+        # 只看已选行会让仅有未选变体的研究从分母与档位汇总里消失。
+        selected_by_study = {str(row["study_id"]): row for row in selected}
+        source_keys: list[str] = []
+        seen_studies: set[str] = set()
+        for row in group:
+            study = str(row["study_id"])
+            if study in seen_studies:
+                continue
+            seen_studies.add(study)
+            chosen = selected_by_study.get(study) or row
+            if chosen.get("source_key"):
+                source_keys.append(str(chosen["source_key"]))
         counts: dict[str, int] = {}
         for source_key in source_keys:
             level = rob["levels"].get(str(source_key))
@@ -584,7 +631,10 @@ def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[s
             n_rated = sum(counts.values())
             # 分母用**本行全部研究**：只给已评价者的比例会让读者误以为全覆盖
             # （评审 r1 项：4 项研究只 1 项有评价时曾写「1/1」）。
-            rob_cell = (f"{grade.DOWNGRADE_LABELS[worst]}（{counts[worst]}/{n_studies} 项研究）"
+            # 风险档位标签用专门的风险量表（_RISK_LEVEL_LABELS），旧实现误用
+            # 降级级别标签表索引风险档位：'low' 缺档 → 全低风险数据 500，
+            # serious/very_serious 同名时显示降级语义文案「严重(-1)」（终审 #01）。
+            rob_cell = (f"{_RISK_LEVEL_LABELS[worst]}（{counts[worst]}/{n_studies} 项研究）"
                         f"｜{_grade_signal_text(level, signal)}")
             rob_detail = {"counts": counts, "judgement_counts": judgement_counts,
                           "worst": worst, "n_rated": n_rated, "n_studies": n_studies,
@@ -609,9 +659,11 @@ def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[s
         if result:
             inconsistency = grade.suggest_inconsistency_downgrade(
                 {"i2_percent": result["i2_percent"], "q_p": result["q_p"]})
+            # 不精确性用**展示尺度** CI + 展示尺度无效值（与 auto-suggest 同口径，
+            # 终审 #46：分析/log 尺度的上下限比不是尺度不变量，比值类结局会被
+            # 系统性误判/漏判 ci_too_wide）。
             imprecision = grade.suggest_imprecision_downgrade(
-                {"ci_low": result["ci_analysis_low"],
-                 "ci_high": result["ci_analysis_high"], "null_value": 0.0})
+                _imprecision_signal(result, measure))
             publication_bias = _publication_bias_signal(selected, measure, len(selected))
         else:
             inconsistency = grade.suggest_inconsistency_downgrade(None)
@@ -811,7 +863,11 @@ def register_tables_routes(
             # 研究局限性列聚合全员评价档位：权限与 grade-input 完全同一判定，
             # 不通过时在校验工具之前就 403（响应中不含任何档位）。
             _consensus_gate(task_id, user)
-            _rob_tool_or_error(body.rob_tool)
+            # 后续聚合/回显一律用注册表返回的**规范 id**（终审 #08）：get_tool
+            # 内部 strip 使带首尾空白的 rob_tool 通过校验，但评价聚合按 tool_id
+            # 精确匹配，未规范化的原串会命中 0 条 → 研究局限性全空、总体置信度
+            # 被静默上调为「高」。规范 id 与 grade-input 侧同一取值。
+            body.rob_tool = _rob_tool_or_error(body.rob_tool)["id"]
         db_path = screener_db(info, screener or user["username"], ensure=False)
         rows, notes, params = _sof_rows(Path(db_path), info, body)
         if detail:
