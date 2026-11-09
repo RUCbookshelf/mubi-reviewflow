@@ -102,6 +102,12 @@ def fake_resolve(host, port=443):
         "example.test": ["93.184.216.35"],
         # 域名解析到回环：模拟 DNS 层面的内网指向（rebinding 常见形态）
         "sneaky.example": ["127.0.0.1"],
+        # 终审 #30：域名解析回链路本地（云元数据常见形态）
+        "metadata-ish.example": ["169.254.169.254"],
+        # r2：域名解析回 IPv6 ULA（AWS IMDSv6 形态）
+        "ula-ish.example": ["fd00:ec2::254"],
+        # 自托管正钉：RFC1918 域名
+        "selfhost.example": ["192.168.1.10"],
     }
     if host in mapping:
         return list(mapping[host])
@@ -1276,6 +1282,104 @@ class PdfFetchRound4Tests(PdfFetchFixture, unittest.TestCase):
                                  f"{path} 不得把永久损坏标成可重试")
                 self.assertIn("已损坏", json.dumps(r.json(), ensure_ascii=False))
         self.assertEqual(self.opener.calls, [], "损坏状态绝不得到出站")
+
+
+class PdfFetchBaseUrlGovernanceTests(PdfFetchFixture, unittest.TestCase):
+    """终审 #30：可配置 base_url 拦链路本地/CGNAT/云元数据（保存+出站两处）。
+
+    回环与 RFC1918 放行（自托管正钉既有，见 test_self_hosted_loopback_base_url_is_used
+    与本类正钉）——被拦集合与 ai_keys._clean_base_url 同口径。
+    """
+
+    TAG = "w2b30"
+
+    def test_blocked_base_urls_rejected_at_save(self):
+        for base in ("http://169.254.169.254", "http://100.100.100.200",
+                     "http://metadata.google.internal", "http://metadata.goog",
+                     "http://[fe80::1]", "http://metadata-ish.example",
+                     "http://[fd00:ec2::254]",    # r2：IPv6 ULA（AWS IMDSv6）
+                     "http://ula-ish.example"):    # r2：DNS 解析回 ULA
+            with self.subTest(base=base):
+                resp = self.enable(unpaywall_base_url=base, email="")
+                self.assertEqual(resp.status_code, 400, f"{base}: {resp.text[:160]}")
+                detail = resp.json()["detail"]
+                self.assertEqual(detail["code"], "pdf_fetch_base_url_blocked")
+        # Crossref base 同样受拦（两个字段共用同一判定）。
+        resp = self.enable(crossref_base_url="http://169.254.169.254")
+        self.assertEqual(resp.status_code, 400, resp.text[:160])
+        self.assertEqual(resp.json()["detail"]["code"], "pdf_fetch_base_url_blocked")
+
+    def test_loopback_and_rfc1918_self_hosted_still_allowed(self):
+        for index, base in enumerate(("http://127.0.0.1:8787",
+                                      "http://192.168.1.10:8787",
+                                      "http://10.1.2.3:8787",
+                                      "http://selfhost.example")):
+            with self.subTest(base=base):
+                resp = self.enable(unpaywall_base_url=base, email="",
+                                   expected_version=index)
+                self.assertEqual(resp.status_code, 200, f"{base}: {resp.text[:160]}")
+
+    def test_stored_blocked_base_never_opens_outbound(self):
+        """存量文件指向链路本地（绕过保存闸）→ 出站零次 + 结构化降级。"""
+        self.write_settings_file(unpaywall_base_url="http://169.254.169.254")
+        self.set_routes(crossref_json({"message": {}}))
+        self.opener.calls.clear()
+        resp = self.client.post(f"/api/tasks/{self.task}/fulltext/A1/fetch",
+                                headers=self.auth(0))
+        self.assertEqual(resp.status_code, 502, resp.text[:200])
+        detail = resp.json()["detail"]
+        self.assertEqual(detail["reason"], "unsafe_url")
+        self.assertEqual(self.opener.calls, [],
+                         "被拦 base 绝不出站（含 Crossref 查询）")
+
+    def test_w9_crossref_seam_rejects_blocked_base(self):
+        """W9 撤稿检查复用的 crossref_works_url 同一出口闸（fetch_crossref_work）。"""
+        with self.assertRaises(pdf_fetch_api.OutboundError) as raised:
+            pdf_fetch_api.fetch_crossref_work("http://100.100.100.200", "10.9999/x")
+        self.assertEqual(raised.exception.reason, "unsafe_url")
+        self.assertEqual(self.opener.calls, [])
+
+    def test_dns_resolving_to_linklocal_rejected(self):
+        """域名解析回链路本地（metadata-ish.example → 169.254.169.254）同样拒。"""
+        self.assertEqual(
+            pdf_fetch_api._base_url_block_reason("http://metadata-ish.example"),
+            "link_local")
+
+    def test_ula_addresses_blocked_like_ai_keys_precedent(self):
+        """r2：fc00::/7（含 fd00:: 云元数据端点）按 ai_keys._ULA_V6 同口径拦；
+        回环 ::1 与 fe80 的区分不受影响。"""
+        self.assertEqual(pdf_fetch_api._base_url_block_reason("http://[fd00:ec2::254]"),
+                         "ula")
+        self.assertEqual(pdf_fetch_api._base_url_block_reason("http://[fc00::1]"),
+                         "ula")
+        self.assertIsNone(pdf_fetch_api._base_url_block_reason("http://[::1]"),
+                          "回环必须放行（自托管正钉）")
+        self.assertIsNone(pdf_fetch_api._base_url_block_reason("http://127.0.0.1:8787"))
+
+    def test_mutation_save_guard_removed_pin_goes_red(self):
+        """破坏性变异：保存侧判定删掉（恒 None）→ 坏地址保存 200——第一颗钉必红。"""
+        with mock.patch.object(pdf_fetch_api, "_base_url_block_reason",
+                               lambda base: None):
+            resp = self.enable(unpaywall_base_url="http://169.254.169.254",
+                               email="")
+        self.assertEqual(resp.status_code, 200, resp.text[:160])
+
+    def test_mutation_outbound_guard_removed_pin_goes_red(self):
+        """破坏性变异：出站闸删掉（no-op）→ 出站真的发往 169.254.169.254。"""
+        self.write_settings_file(unpaywall_base_url="http://169.254.169.254")
+        self.set_routes(
+            (lambda url: url.startswith("http://169.254.169.254/v2/"),
+             json.dumps(OA_NO).encode("utf-8")),
+            crossref_json({"message": {}}))
+        self.opener.calls.clear()
+        with mock.patch.object(pdf_fetch_api, "_guard_base_url_outbound",
+                               lambda base: None):
+            resp = self.client.post(f"/api/tasks/{self.task}/fulltext/A1/fetch",
+                                    headers=self.auth(0))
+        self.assertEqual(resp.status_code, 200, resp.text[:200])
+        self.assertTrue(any(url.startswith("http://169.254.169.254/")
+                            for url, _t, _h in self.opener.calls),
+                        "无出站闸时真的把 DOI+email 发往链路本地地址（钉必红）")
 
 
 if __name__ == "__main__":

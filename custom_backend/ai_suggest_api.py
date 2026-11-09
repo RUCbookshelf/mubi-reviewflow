@@ -306,7 +306,16 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+#: 终审 #31：显式空 ProxyHandler（口径同 pdf_fetch_api._build_opener）——否则
+#: 代理环境下 API Key 与六字段载荷会整包发往代理主机（本地 Ollama 回环端点
+#: 在代理环境也会功能性失效）。拒重定向 handler 保留。独立成工厂便于测试在
+#: 代理环境下重建断言 handler 组成。
+def _build_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                       _NoRedirectHandler)
+
+
+_OPENER = _build_opener()
 
 
 def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
@@ -419,6 +428,20 @@ def resolve_task_credentials(info, settings: dict, prefs: dict, user: dict,
 # ---------------------------------------------------------------------------
 # 提示词组装与解析
 # ---------------------------------------------------------------------------
+
+def _fulltext_path_allowed(meta_path: str | os.PathLike, owner_db: str | os.PathLike) -> bool:
+    """全文路径包含性校验（终审 #39 r3）：只允许任务目录内的真实文件。
+
+    fulltexts.path 是库内数据（自造/恶意导入库行可指向共享平铺池等任意本机
+    路径）；不校验会把他人 PDF 的文本送进可配置 provider。口径与
+    main.fulltext_pdf / 整包导出一致：owner_db 所在目录 = 任务目录。
+    """
+    try:
+        Path(meta_path).resolve().relative_to(Path(owner_db).resolve().parent)
+    except (ValueError, OSError):
+        return False
+    return True
+
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip().casefold()
@@ -950,13 +973,19 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                                       "detail": "文献不存在或不是有效主记录。"})
         abstract = str(article.get("abstract") or "")
         page_texts: list[str] = []
+        # 终审 #39 r3：全文读取加任务目录包含性校验（与 fulltext_pdf / 整包导出
+        # 同口径）。fulltexts.path 是库内数据（自造/恶意导入库行可控），不校验
+        # 会把本机任意 PDF 的文本送进可配置 provider。
         for source_db in (ctx.actor_db, ctx.owner_db):
             meta = fulltext_mod.get_fulltext(source_db, body.zotero_key)
-            if meta is not None and Path(meta.path).is_file():
-                page_texts = fulltext_mod.pdf_text(meta.path)
-                if page_texts and page_texts[0] != fulltext_mod.EXTRACT_FAILED_TEXT:
-                    break
-                page_texts = []
+            if meta is None or not Path(meta.path).is_file():
+                continue
+            if not _fulltext_path_allowed(meta.path, ctx.owner_db):
+                continue
+            page_texts = fulltext_mod.pdf_text(meta.path)
+            if page_texts and page_texts[0] != fulltext_mod.EXTRACT_FAILED_TEXT:
+                break
+            page_texts = []
         if not page_texts and not abstract.strip():
             raise HTTPException(409, {"code": "ai_no_source_text",
                                       "detail": "该文献既无全文 PDF 也无摘要可用。"})

@@ -6077,12 +6077,16 @@ def fulltext_pdf(task_id: str, zotero_key: str, screener: str | None = None,
     meta = get_fulltext(db, zotero_key)
     if meta is None:
         raise _bad("该文献尚未上传 PDF。", 404)
-    data = load_pdf_bytes(meta)
     resolved = Path(meta.path).resolve()
-    inside = is_within(resolved, info.dir.resolve()) or is_within(
-        resolved, (DATA_DIR / "pdfs").resolve()
-    )
-    if data is None or not inside:
+    # 终审 #39 r3：全文读取合法根收窄为**仅任务目录**（与 task_package 导出侧
+    # 同口径）。旧口径还接受共享平铺池 {data_dir}/pdfs——自造/恶意导入库行
+    # 可把行 path 指向池内他人文件，借本端点逐字节读出（r3 实测复现）。
+    # 现行写入端（upload/pdf_fetch）都落在 info.dir/pdfs，正常文献不受影响；
+    # 存量未迁移平铺池行将得到 404（先迁移到任务目录即恢复，契约已披露）。
+    if not is_within(resolved, info.dir.resolve()):
+        raise _bad("PDF 文件不存在或已移动。", 404)
+    data = load_pdf_bytes(meta)
+    if data is None:
         raise _bad("PDF 文件不存在或已移动。", 404)
     # U5-P6：inline PDF 的文件名同样走「ASCII 回退 + 百分号编码 UTF-8」双写
     # （对齐 download_import_file 的既有正确写法），中文文献键不再 500。

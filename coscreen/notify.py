@@ -119,7 +119,17 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+#: 终审 #31：显式空 ProxyHandler——urllib 默认在 opener 构建期读 http(s)_proxy
+#: 环境变量，企业/校园网代理会把「已校验公网主机」的请求（连同 Bearer 凭据与
+#: 摘要载荷）整包发往代理主机。口径与 custom_backend/pdf_fetch_api._build_opener
+#: 一致（2.1.4 安全收紧项同款）。独立成工厂便于测试在代理环境下重建断言
+#: handler 组成（模块级 _OPENER 在用例里会被替换成受控桩）。
+def _build_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                       _NoRedirectHandler)
+
+
+_OPENER = _build_opener()
 
 
 # ---------------------------------------------------------------------------
