@@ -7846,10 +7846,15 @@ async def _eric_check_now(app, info: tasks_mod.TaskInfo, record, payload,
     与 PubMed 分支同口径，但增量口径不同：ERIC API 没有日期过滤参数，因此
     增量 = 「检索式当前命中快照」减「任务目录已知 ERIC accession 键」
     （``coscreen.eric_incremental.diff_new_records``）。差集天然排除重复键、
-    天然覆盖补录的旧文献；单次只比对前 ``ERIC_INCREMENT_LIMIT``（500）条，
-    超上限在响应里诚实披露（``scanned/limit/truncated`` + 结构化
-    ``living_review.eric.truncated`` warning），不静默截断。未比对的命中
-    因为没有「已读位置」游标，下次检查仍是未知键，不会被永久跳过。
+    天然覆盖补录的旧文献；单次只比对 ``ERIC_INCREMENT_LIMIT``（500）条，
+    超上限在响应里诚实披露（``scanned/limit/truncated/remaining`` + 结构化
+    ``living_review.eric.truncated`` warning），不静默截断。
+
+    断点续查（终审 #61 用户裁定）：上次截断的位置持久化在
+    ``living_review.json`` 的 ``eric_scan`` 游标（既有存储落点，幂等），
+    本次检查从断点继续（``start``），尾部未比对部分给 ``remaining_hits``
+    「剩余 N 条」与 ``scan_next``；整段比完则游标清零、下次回到头部捕获
+    新命中。失败零副作用：不写历史、不推进游标。
 
     - 待审口径：增量非空 → 合成虚拟 RIS（``eric-update.ris``，固定文件名
       复用来源身份）→ ``review_imports.upload()``；已有研究的任务 staged
@@ -7870,9 +7875,20 @@ async def _eric_check_now(app, info: tasks_mod.TaskInfo, record, payload,
             "params": {},
         })
 
+    strategy_id = None
+    if record is not None:
+        strategy_id = record.get("id") or record.get("strategy_id")
+    cursor_key = eric_inc.scan_cursor_key(
+        int(strategy_id) if strategy_id is not None else None, query)
+    # 游标按指纹绑定本次实际使用的检索式文本（条目 query_text 原地修改后
+    # 旧断点不再适用，自动回到头部起查）。
+    scan_start = eric_inc.read_scan_offset(
+        _read_living_review_state(info), cursor_key, query=query)
+
     known = eric_inc.collect_known_eric_keys(owner_db)
     try:
-        snapshot = await run_in_threadpool(eric_inc.fetch_eric_incremental, query)
+        snapshot = await run_in_threadpool(
+            eric_inc.fetch_eric_incremental, query, start=scan_start)
     except EricSearchError as exc:
         raise eric_inc.unavailable_error(info.task_id, exc) from exc
     increment = eric_inc.diff_new_records(snapshot["records"], known["keys"])
@@ -7898,6 +7914,7 @@ async def _eric_check_now(app, info: tasks_mod.TaskInfo, record, payload,
         "scanned": snapshot["scanned"],
         "limit": snapshot["limit"],
         "baseline": bool(known["baseline"]),
+        **eric_inc.remaining_hint(snapshot),
     }
     if not increment:
         message_key = eric_inc.KEY_NONE
@@ -7937,17 +7954,21 @@ async def _eric_check_now(app, info: tasks_mod.TaskInfo, record, payload,
         "limit": snapshot["limit"],
         "truncated": snapshot["truncated"],
         "baseline": bool(known["baseline"]),
+        # 断点续查（#61）：本次从哪条起比对 / 还剩多少条 / 下次从哪条继续。
+        **eric_inc.remaining_hint(snapshot),
     }
 
     def _mutate(latest: dict) -> None:
         latest["history"].append(entry)
+        # 游标推进与历史写入同一原子读-改-写（失败路径不会到这里）。
+        # ``scan_next`` 用 get（测试替身的旧形状快照无此键 → 视作无断点）。
+        eric_inc.apply_scan_cursor(
+            latest, cursor_key, offset=int(snapshot.get("scan_next") or 0),
+            total_hits=int(snapshot["total_hits"]), now=when, query=query)
 
     _mutate_living_review_state(info, _mutate)
 
     # 统一库游标推进：只在本次拉取可信时到达这里（失败/导入异常均已提前返回）。
-    strategy_id = None
-    if record is not None:
-        strategy_id = record.get("id") or record.get("strategy_id")
     conn = _living_review_library(info)
     try:
         if strategy_id is not None:
@@ -7966,6 +7987,8 @@ async def _eric_check_now(app, info: tasks_mod.TaskInfo, record, payload,
         "total_hits": snapshot["total_hits"], "scanned": snapshot["scanned"],
         "limit": snapshot["limit"], "truncated": snapshot["truncated"],
         "unstable": snapshot["unstable"],
+        # 断点续查（#61）：本次起点 / 剩余未比对 / 下次起点
+        **eric_inc.remaining_hint(snapshot),
         "known_keys": known["eric_keys"],
         "fetched": len(increment),
         "virtual_file": name if increment else None,

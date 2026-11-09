@@ -6,7 +6,9 @@
   只导出 PDF 的 zip；条目名 = ``{key}-{一作姓氏}-{年份}.pdf``；
   ``scope`` 三选一（all / stage1_include / stage2_include），纳入口径 =
   **当前生效决定**（见 ``_effective_decisions``）；响应头带成功/跳过摘要。
-  零全文 = 合法空 zip（不报错、不臆造）。
+  零全文 = 合法空 zip（不报错、不臆造）。总量上限与整包导出对齐
+  （``MAX_ARCHIVE_EXPORT_BYTES``=2GB；终审 #44）：超限结构化 413
+  ``archive_too_large``，且在写第一个文件字节之前拒绝。
 * ``POST /api/tasks/{id}/package/export``
   任务整包 zip：task.json（脱敏重写）+ 各 ``{slug}.db`` 一致性快照 +
   collaboration.db（属主改写）+ import_history.sqlite3 + 可选全文
@@ -78,6 +80,7 @@ from coscreen.fulltext_archive import archive_filename
 from coscreen.screening_arbitration import latest_decision_arbitration
 
 __all__ = [
+    "MAX_ARCHIVE_EXPORT_BYTES",
     "MAX_PACKAGE_BYTES",
     "MAX_MEMBER_BYTES",
     "MAX_UNCOMPRESSED_BYTES",
@@ -112,6 +115,11 @@ MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_TASK_JSON_BYTES = 8 * 1024 * 1024
 #: 单个 PDF 上限与既有上传端点一致（100MB）。
 MAX_PDF_BYTES = 100 * 1024 * 1024
+#: 归档导出（archive-export）zip 总量上限（终审 #44，用户 2026-11-09 裁定
+#: 「加上限」）：与整包导出同一常量口径（MAX_PACKAGE_BYTES=2GB）——归档 zip
+#: 在系统临时目录生成，超限结构化 413 ``task_package.archive_too_large``，
+#: 且在写第一个文件字节之前拒绝（预检提前提示见 _package_inventory）。
+MAX_ARCHIVE_EXPORT_BYTES = MAX_PACKAGE_BYTES
 #: 整包临时文件保留上限（用户裁定 60 分钟；导出/归档/上传/预检/导入的
 #: 一切临时残留惰性清扫兜底）。
 PACKAGE_TEMP_TTL_SECONDS = 3600
@@ -711,6 +719,78 @@ def _snapshot_sqlite(source: Path, base: Path, name: str, *,
     return destination
 
 
+def _relativize_snapshot_fulltexts(snapshot: Path, info: Any, data_dir: str | Path,
+                                   live_db: Path) -> int:
+    """终审 #43（用户裁定「相对化」）：导出快照内 fulltexts.path 一律任务目录相对。
+
+    修复前 ``_snapshot_sqlite`` 纯 backup 后 db 成员原样入包——fulltexts.path
+    存源机器绝对路径（含盘符/用户名/目录布局），与设计「整包不含任何环境
+    信息」口径不符。改写规则（只动快照、绝不动源库）：
+
+    * 行 path 可解析且位于任务目录内 → ``pdfs/<名>.pdf`` 形式的 POSIX 相对
+      路径（``resolve_fulltext_raw`` 本就支持任务目录相对形态，导入/读取侧
+      无需改动）；
+    * 其余非空 path（指向共享平铺池/任意本机路径/文件已缺失）→ 清空——与
+      终审 #39 的导出口径一致（这些行在导出/归档出口本就按 missing 跳过）。
+
+    对抗口径与导入侧 :func:`_neutralize_unrestored_fulltexts` 同纪律：fulltexts
+    是视图或挂触发器即拒绝（防 AFTER UPDATE 把 path 写回）；提交后重新 SELECT
+    逐行断言零绝对路径，任一不符 → 结构化拒绝（绝不静默带出源机器路径）。
+    """
+    rewritten = 0
+    with closing(sqlite3.connect(str(snapshot), timeout=15)) as conn:
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(fulltexts)")}
+        except sqlite3.Error:
+            return 0          # 无 fulltexts 表（协作库/历史库）：无需改写
+        if "path" not in columns or "zotero_key" not in columns:
+            return 0
+        if _fulltexts_schema_hostile(conn):
+            raise TaskPackageError("package_member_invalid", params={
+                "member": Path(snapshot).name, "reason": "fulltext_relativize_failed"})
+        task_root = Path(info.dir).resolve()
+        rows = conn.execute("SELECT zotero_key, path FROM fulltexts").fetchall()
+        updates: list[tuple[str, object]] = []
+        for row in rows:
+            if not row or row[0] is None:
+                continue
+            raw = row[1]
+            new_path = ""
+            if isinstance(raw, str) and raw:
+                resolved = tasks_mod.resolve_fulltext_raw(raw, live_db, data_dir=data_dir)
+                if resolved is not None:
+                    actual = Path(resolved).resolve()
+                    try:
+                        actual.relative_to(task_root)
+                    except ValueError:
+                        pass
+                    else:
+                        new_path = actual.relative_to(task_root).as_posix()
+            if new_path != (raw or ""):
+                updates.append((new_path, row[0]))
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for new_path, key in updates:
+                conn.execute("UPDATE fulltexts SET path=? WHERE zotero_key=?",
+                             (new_path, key))   # 原始对象做参数：BLOB 键类型才匹配
+            conn.commit()
+        except sqlite3.Error as exc:
+            conn.rollback()
+            raise TaskPackageError("package_member_invalid", params={
+                "member": Path(snapshot).name,
+                "reason": "fulltext_relativize_failed"}) from exc
+        rewritten = len(updates)
+        # 事后核验（不信任 rowcount/触发器）：快照内零绝对路径、零上跳。
+        for key, path in conn.execute("SELECT zotero_key, path FROM fulltexts").fetchall():
+            if key is None or not path:
+                continue
+            if Path(str(path)).is_absolute() or str(path).replace("\\", "/").startswith("../"):
+                raise TaskPackageError("package_member_invalid", params={
+                    "member": Path(snapshot).name,
+                    "reason": "fulltext_relativize_failed"})
+    return rewritten
+
+
 def _collect_package_sources(info: Any, data_dir: str | Path, include_pdfs: bool,
                              workdir: Path) -> dict[str, Any]:
     """把整包成员落到 ``workdir`` 并返回成员清单（大小/路径/全文映射）。"""
@@ -727,6 +807,9 @@ def _collect_package_sources(info: Any, data_dir: str | Path, include_pdfs: bool
         source_slug = db_file.stem
         snapshot = _snapshot_sqlite(
             db_file, workdir, f"{source_slug}.db", allowed_roots=task_roots)
+        # 终审 #43：db 成员的 fulltexts.path 相对化（快照内零源机器绝对路径；
+        # 尺寸在改写后重读）。
+        _relativize_snapshot_fulltexts(snapshot, info, data_dir, db_file)
         sources.append({"arcname": f"db/{source_slug}.db", "path": snapshot,
                         "size": snapshot.stat().st_size})
 
@@ -829,7 +912,10 @@ def _build_package_zip(info: Any, data_dir: str | Path, include_pdfs: bool,
                 # 轨迹事件与设置存放在 {slug}.db / collaboration.db 内部，
                 # 已随成员原样携带；不重复打包 trace/ 以免包体翻倍。
                 "trace_members": "embedded_in_db_members",
-                "fulltext_paths": "archive_names_only",
+                # 终审 #43（2.1.5-sec7 起）：db 成员内 fulltexts.path 一律任务
+                # 目录相对（pdfs/<名>.pdf）；旧版包可能携带源机器绝对路径，
+                # 导入侧两种格式都兼容（覆盖 key 重写、其余清空）。
+                "fulltext_paths": "task_relative",
             },
             "summary": {
                 "members": len(members),
@@ -854,6 +940,11 @@ def _package_inventory(info: Any, data_dir: str | Path, include_pdfs: bool
         shutil.rmtree(workdir, ignore_errors=True)
     pdf_bytes = sum(entry["size"] for entry in collected["fulltexts"])
     total = collected["total_bytes"]
+    # 终审 #44：归档导出上限的预检提前提示（archive-export 只打 PDF，scope=all
+    # 的全文量是任意 scope 的上界；导出/体检共用 _archive_candidates 的同一计数）。
+    archive_items, _archive_skipped, _archive_reasons = _archive_candidates(
+        info, data_dir, "all")
+    archive_bytes = sum(item["path"].stat().st_size for item in archive_items)
     return {
         "schema": PACKAGE_SCHEMA,
         "source_task": {"task_id": info.task_id, "display_name": info.display_name,
@@ -874,6 +965,11 @@ def _package_inventory(info: Any, data_dir: str | Path, include_pdfs: bool
         "limit_bytes": MAX_PACKAGE_BYTES,
         "over_limit": total > MAX_PACKAGE_BYTES,
         "suggest_exclude_pdfs": total > MAX_PACKAGE_BYTES and include_pdfs,
+        "archive_export": {
+            "limit_bytes": MAX_ARCHIVE_EXPORT_BYTES,
+            "bytes": archive_bytes,
+            "over_limit": archive_bytes > MAX_ARCHIVE_EXPORT_BYTES,
+        },
         "redacted_fields": collected["redacted_fields"],
     }
 
@@ -1361,14 +1457,18 @@ def _extract_member(archive: zipfile.ZipFile, member_name: str, base: Path,
     """把包成员**流式**解压到 ``base`` 内（成员名/目标名就地校验，防 zip-slip）。
 
     目标文件名由服务器端从**已校验 slug**派生（不以包内任意字符串直接做路径）。
+    终审 #45（用户裁定「统一按预检」）：成员名判定**直接调用预检同一函数**
+    ``_validate_member_name``（parts 级 '..' 检查）——修复前这里内联子串级
+    ``".." in name`` 更严，合法带点名（``db/u5..c9.db``、带点 zotero_key 的
+    规范 PDF 名）预检放行、导入被拒，应用自导出的整包无法再导入。非法名
+    （``../`` 上跳、绝对路径、反斜杠、NUL）两处仍同一拒绝。
     终审 #41：逐块写出（杜绝 ``archive.read`` 整块入内存——旧实现实测 64MiB
     成员峰值 141MiB、数 GB 成员可 OOM）；单成员上限/压缩比/解压总量三限额在
     声明值与实际字节两道各查一次，超限抛结构化错误由调用方清场。
     """
-    if not isinstance(member_name, str) or not _MEMBER_NAME_RE.match(member_name):
+    if not isinstance(member_name, str):
         raise TaskPackageError("package_invalid", params={"reason": "member_name_invalid"})
-    if ".." in member_name or member_name.startswith("/") or "\\" in member_name:
-        raise TaskPackageError("package_invalid", params={"reason": "member_name_invalid"})
+    _validate_member_name(member_name)
     safe_name = os.path.basename(target_name)
     if safe_name != target_name or not _SLUG_RE.match(PurePosixPath(safe_name).stem):
         raise TaskPackageError("package_invalid", params={"reason": "member_name_invalid"})
@@ -1471,15 +1571,11 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                 for entry in parsed["fulltexts"]:
                     key = entry["zotero_key"]
                     archive_path = entry["archive_path"]
-                    # 就地校验：成员名白名单 + 禁止上跳/绝对路径/反斜杠。
-                    if not isinstance(archive_path, str) \
-                            or not _MEMBER_NAME_RE.match(archive_path):
+                    # 就地校验：与预检同一判定函数（终审 #45「统一按预检」）。
+                    if not isinstance(archive_path, str):
                         raise TaskPackageError("package_invalid",
                                                params={"reason": "member_name_invalid"})
-                    if ".." in archive_path or archive_path.startswith("/") \
-                            or "\\" in archive_path:
-                        raise TaskPackageError("package_invalid",
-                                               params={"reason": "member_name_invalid"})
+                    _validate_member_name(archive_path)
                     targets = rows_by_key.get(key)
                     if not targets:
                         raise TaskPackageError("package_invalid", params={
@@ -1662,15 +1758,33 @@ def register_task_package_routes(
 
         def _build() -> tuple[Path, dict[str, int], Path]:
             items, _skipped_keys, reasons = _archive_candidates(info, data_dir, scope)
+            # 终审 #44：总量上限与整包导出对齐（MAX_PACKAGE_BYTES=2GB）。预检在
+            # 打开 zip **之前**完成——超限时零文件字节流开始、零临时 zip 落盘。
+            declared_total = sum(item["path"].stat().st_size for item in items)
+            if declared_total > MAX_ARCHIVE_EXPORT_BYTES:
+                raise TaskPackageError("archive_too_large", status=413, params={
+                    "limit_bytes": MAX_ARCHIVE_EXPORT_BYTES,
+                    "total_bytes": declared_total,
+                })
             workdir = Path(tempfile.mkdtemp(prefix="rf-archive-export-"))
             try:
                 zip_path = _contained(workdir, "archive.zip")
                 allowed_roots = _fulltext_allowed_roots(info)
+                written_total = 0
                 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
                                      compresslevel=6) as archive:
                     for item in items:
-                        _add_file_to_zip(archive, item["archive_name"], item["path"],
-                                         allowed_roots=allowed_roots)
+                        _digest, size = _add_file_to_zip(
+                            archive, item["archive_name"], item["path"],
+                            allowed_roots=allowed_roots)
+                        written_total += size
+                        # 流中复核（预检后文件仍在长大/被替换的兜底）：超限即刻
+                        # 中止并清场（上方 except 分支删 workdir）。
+                        if written_total > MAX_ARCHIVE_EXPORT_BYTES:
+                            raise TaskPackageError("archive_too_large", status=413, params={
+                                "limit_bytes": MAX_ARCHIVE_EXPORT_BYTES,
+                                "total_bytes": written_total,
+                            })
             except Exception:
                 shutil.rmtree(workdir, ignore_errors=True)
                 raise

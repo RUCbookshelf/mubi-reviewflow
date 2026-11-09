@@ -25,6 +25,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import closing
 from pathlib import Path
 
@@ -416,6 +417,98 @@ class ResetSummaryApiPins(W1BinaryBase):
 
         refused = self.api("/binary-reset-summary", index=2)
         self.assertEqual(refused.status_code, 403, refused.text)
+
+
+class LegacyOpenTriggersResetPins(W1BinaryBase):
+    """终审 #25（用户裁定：打开即触发）：legacy 任务常规端点也补跑 W1 迁移。
+
+    修复前 context() 的 owner is None 分支直接 return：desktop legacy 任务
+    GET workflow-settings 等常规端点 200 但版本仍 [1]、maybe 原样保留，只有
+    GET /binary-reset-summary 才补跑（探针 u3-deepseek-c4/probe_legacy_w1_c4.py）。
+    """
+
+    def _make_legacy(self):
+        """server 模式建任务 → 种 v1+maybe 的个人库 → 删 collaboration.db。"""
+        self.new_task()
+        own_db = self.info.dir / (
+            tasks_mod.slugify_screener(self.users[0]["username"]) + ".db")
+        db_mod.init_db(own_db)
+        store.migrate(own_db)  # 版本 {1}：binary_reset（v8）从未跑过
+        db_mod.upsert_articles(
+            own_db, [Article(zotero_key=key, title=f"Study {key}")
+                     for key in ("K1", "K2", "K3")], [])
+        db_mod.save_decision(own_db, "K1", "maybe")
+        fulltext_mod.save_stage2(own_db, "K1", "include")
+        db_mod.save_decision(own_db, "K2", "include")
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(str(self.info.dir / "collaboration.db") + suffix)
+            if path.exists():
+                path.unlink()
+        return own_db
+
+    def _snapshot(self, db: Path) -> dict:
+        with closing(store.connect(db, read_only=True)) as conn:
+            return {
+                "versions": sorted(int(r[0]) for r in conn.execute(
+                    "SELECT version FROM workflow_migrations")),
+                "maybe1": conn.execute(
+                    "SELECT COUNT(*) FROM decisions"
+                    " WHERE zotero_key='K1'").fetchone()[0],
+                "stage2": sorted(tuple(r) for r in conn.execute(
+                    "SELECT zotero_key, decision FROM stage2_decisions")),
+            }
+
+    def test_legacy_first_open_runs_w1_migration(self):
+        own_db = self._make_legacy()
+        before = self._snapshot(own_db)
+        self.assertEqual(before["versions"], [1])
+        self.assertEqual(before["maybe1"], 1)
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            settings = self.api("/workflow-settings")
+        self.assertEqual(settings.status_code, 200, settings.text)
+        after = self._snapshot(own_db)
+        # maybe 行重置为未筛、级联复筛清空、版本补齐 v8、备份存在
+        self.assertEqual(after["maybe1"], 0)
+        self.assertEqual(after["stage2"], [])
+        self.assertIn(binary_reset.RESET_VERSION, after["versions"])
+        backup = own_db.with_name(own_db.name + binary_reset.BACKUP_SUFFIX)
+        self.assertTrue(backup.is_file(), "升级首次打开必须留可校验备份")
+        # 幂等：第二次打开零重复（重置账本恰一行、备份不再被覆盖）
+        with closing(store.connect(own_db, read_only=True)) as conn:
+            ledger = conn.execute(
+                "SELECT stage1_reset, stage2_reset FROM workflow_binary_reset"
+            ).fetchall()
+        first_sha = _sha256(backup)
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            self.assertEqual(self.api("/work-queue/screen").status_code, 200)
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(_sha256(backup), first_sha)
+
+    def test_legacy_missing_db_is_not_created_by_open(self):
+        """「legacy 只读不建库」边界保留：库不存在时打开任务不得建库/迁移。"""
+        self._make_legacy()
+        own_db = self.info.dir / (
+            tasks_mod.slugify_screener(self.users[0]["username"]) + ".db")
+        own_db.unlink()
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            response = self.api("/workflow-settings")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(own_db.is_file(), "legacy 打开不建库（迁移只作用于既有库）")
+        self.assertFalse(
+            own_db.with_name(own_db.name + binary_reset.BACKUP_SUFFIX).is_file(),
+            "无库可迁也不得产生备份文件")
+
+    def test_server_mode_legacy_409_priority_unchanged(self):
+        """server 模式：全局 409 collaboration_owner_unset 优先于任何迁移。"""
+        own_db = self._make_legacy()
+        response = self.api("/workflow-settings")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["error_code"],
+                         "collaboration_owner_unset")
+        # 被拒请求不得顺手迁移（迁移只发生在请求被放行的 desktop legacy 路径）
+        after = self._snapshot(own_db)
+        self.assertEqual(after["versions"], [1])
+        self.assertEqual(after["maybe1"], 1)
 
 
 if __name__ == "__main__":

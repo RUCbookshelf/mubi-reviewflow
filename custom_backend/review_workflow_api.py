@@ -96,9 +96,25 @@ class WorkflowRuntime:
                 raise HTTPException(403, "Task access denied.")
         elif not self.visible(info, user):
             raise HTTPException(403, "Task access denied.")
-        # Legacy reads must not initialize databases or create backup files.
+        # Legacy（无属主记录）分支：打开不**新建**数据库；但已存在的库在版本
+        # 不齐时会按 #25 补跑 W1 迁移（含备份文件），见下方 legacy 分支。
         actor_db = info.dir / (tasks.slugify_screener(user["username"]) + ".db")
         if owner is None:
+            # 2.1.5 终审 #25（裁定：打开即触发）：legacy（无属主记录）任务的
+            # 筛选库**已存在**且版本不齐时，与属主/成员分支同一处理——补跑
+            # store.migrate + binary_reset.migrate，兑现「升级首次打开即重置」
+            # 的设计承诺（design_2.1.5_binary_screening.md §一）。「legacy 只读
+            # 不建库」边界保留：库不存在时不建、不迁移（版本探针先查文件）。
+            # 幂等：binary_reset.migrate 外层版本判定 + 事务内复检，二跑空操作。
+            with self.lock(task_id):
+                if actor_db.is_file():
+                    legacy_versions = store.migration_state(actor_db)
+                    if legacy_versions is None or not {
+                            store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
+                    } <= legacy_versions:
+                        store.migrate(actor_db)
+                        binary_reset.migrate(actor_db, task_id=task_id,
+                                             actor_id=user["user_id"])
             return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
         with self.lock(task_id):
             owner_db = self.screener_db(info, owner["owner_username"])

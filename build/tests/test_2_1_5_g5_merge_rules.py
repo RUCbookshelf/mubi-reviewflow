@@ -573,6 +573,11 @@ class MergeFillTests(_ApiCase):
         构造「规划快照 vs 当前行」不一致，钉住逐字段条件写本身。
         """
         self.add_active("K1", title=LONG_TITLE, doi="10.keep/1", abstract="Someone else wrote")
+        # 终审 #22 起补空成功会发布 acceptance（record_id 外键指向来源记录），
+        # 夹具按真实形态补一条来源记录（生产路径由 _candidate_merged_members
+        # 从 workflow_source_records 读出，天然满足外键）。
+        self.add_record("R1", title=LONG_TITLE, doi="10.keep/1",
+                        abstract="Merged abstract", journal="J", row_index=2)
         keeper_meta = {"title": LONG_TITLE, "doi": "10.keep/1", "abstract": None,
                        "journal": None, "authors": "Rivera, Ana", "year": 2023,
                        "item_type": "", "url": ""}
@@ -745,6 +750,59 @@ class MergeFillUndoTests(_ApiCase):
         self.assertIsNone(payload["abstract"], "待审保留记录的载荷必须完整恢复")
 
 
+class MergeFillAcceptancePins(_ApiCase):
+    """终审 #22（用户 2026-11-09 裁定）：补空写库后按当前 catalog_revision 发布
+    ``workflow_metadata_acceptances``（与 decide_metadata 两条写路径同口径）——
+    补空之后才首次同步目录的成员（新受邀/成员库重建）必须一次就拿到补全字段，
+    不被补空前的旧 acceptance 冲回 NULL。"""
+
+    def test_fill_publishes_acceptance_new_member_first_sync_sees_fill(self):
+        import sqlite3
+
+        from coscreen import tasks as tasks_mod
+        from custom_backend import shared_corpus
+        from custom_backend.main import DATA_DIR
+
+        self.add_active("K", title="Old Title", journal=None, abstract=None,
+                        year=2023, doi="10.k/1")
+        self.add_record("m0", title="New Title", journal=None, abstract=None,
+                        doi="10.k/1", canonical="K")
+        with closing(wf.connect(self.db)) as conn, conn:
+            store.proposal(conn, "m0", "K")
+        first = self.post("/metadata/m0", {"action": "field_picks",
+                                           "picks": {"title": "incoming"}})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.add_record("R1", title=LONG_TITLE, journal="Journal Filled",
+                        abstract="Abstract Filled", doi="10.k/1", row_index=2)
+        self.add_group("g", [("active", "K"), ("record", "R1")])
+        decided = self.decide("g", keeper_key="K")
+        self.assertEqual(decided.status_code, 200, decided.text)
+        self.assertEqual(self.article("K")["journal"], "Journal Filled")
+
+        with closing(wf.connect(self.db)) as conn:
+            revision, metadata_json = conn.execute(
+                "SELECT revision, metadata_json FROM workflow_metadata_acceptances "
+                "WHERE zotero_key='K'").fetchone()
+            catalog = conn.execute(
+                "SELECT catalog_revision FROM workflow_state WHERE singleton=1"
+            ).fetchone()[0]
+        self.assertEqual(revision, catalog,
+                         "acceptance 必须按补空后的当前 catalog_revision 发布")
+        self.assertEqual(json.loads(metadata_json)["journal"], "Journal Filled")
+        self.assertEqual(json.loads(metadata_json)["abstract"], "Abstract Filled")
+
+        info = tasks_mod.find_task(self.task, DATA_DIR)
+        shared_corpus.sync_shared_articles(
+            info.dir, owner_username=self.user["username"],
+            member_username="sec7b-newbie", catalog_revision=catalog)
+        member_db = info.dir / (tasks_mod.slugify_screener("sec7b-newbie") + ".db")
+        with closing(sqlite3.connect(str(member_db))) as conn:
+            row = conn.execute(
+                "SELECT journal, abstract FROM articles WHERE zotero_key='K'").fetchone()
+        self.assertEqual(row, ("Journal Filled", "Abstract Filled"),
+                         "新成员首次同步必须拿到补全字段（旧 acceptance 不得冲回 NULL）")
+
+
 # ---------------------------------------------------------------------------
 # B5 逐字段采用 field_picks（含 DOI 守卫与撤销）
 # ---------------------------------------------------------------------------
@@ -786,6 +844,45 @@ class FieldPicksTests(_ApiCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.article("K")["journal"], "Old Journal")
         self.assertEqual(self.article("K")["title"], "Old Title")
+
+    def test_same_action_resubmit_is_structured_noop(self):
+        """终审 #26（用户 2026-11-09 裁定）：同 action 重复提交（不同 picks）→
+        200 + ``metadata_noop=true`` 标记；不写库（题录/accepted_json/acceptance
+        不变、policy_version 不增）；不同 action 仍 409。"""
+        self._seed()
+        first = self.post("/metadata/m0", {"action": "field_picks",
+                                           "picks": {"title": "incoming"}})
+        self.assertEqual(first.status_code, 200, first.text)
+        version_after_first = first.json()["policy_version"]
+        with closing(wf.connect(self.db)) as conn:
+            accepted_1 = conn.execute(
+                "SELECT accepted_json FROM workflow_import_metadata "
+                "WHERE record_id='m0'").fetchone()[0]
+            acceptance_1 = conn.execute(
+                "SELECT revision, record_id, metadata_json FROM "
+                "workflow_metadata_acceptances WHERE zotero_key='K'").fetchone()
+
+        second = self.post("/metadata/m0", {"action": "field_picks",
+                                            "picks": {"journal": "incoming"}})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertIs(second.json().get("metadata_noop"), True,
+                      "重复提交必须携带结构化 noop 标记（前端据此提示未生效）")
+        self.assertEqual(second.json()["policy_version"], version_after_first,
+                         "幂等重放不得抬 policy_version")
+        with closing(wf.connect(self.db)) as conn:
+            accepted_2 = conn.execute(
+                "SELECT accepted_json FROM workflow_import_metadata "
+                "WHERE record_id='m0'").fetchone()[0]
+            acceptance_2 = conn.execute(
+                "SELECT revision, record_id, metadata_json FROM "
+                "workflow_metadata_acceptances WHERE zotero_key='K'").fetchone()
+        self.assertEqual(accepted_2, accepted_1, "accepted_json 不得变")
+        self.assertEqual(acceptance_2, acceptance_1, "acceptance 不得变")
+        self.assertEqual(self.article("K")["journal"], "Old Journal",
+                         "第二次的 picks 不得生效")
+
+        different = self.post("/metadata/m0", {"action": "accept_incoming"})
+        self.assertEqual(different.status_code, 409, different.text)
 
     def test_field_picks_concurrency_check(self):
         self._seed()
