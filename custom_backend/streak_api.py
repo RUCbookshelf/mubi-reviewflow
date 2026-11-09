@@ -387,7 +387,14 @@ def register_streak_routes(
 
     # ---- 令牌库 ------------------------------------------------------------
     def _load_tokens(info) -> list[dict]:
-        stored = _read_json(_tokens_path(info))
+        try:
+            stored = _read_json(_tokens_path(info))
+        except ValueError as exc:
+            # 终审 #10：JSONDecodeError（半写/手工编辑/磁盘坏块）此前穿透四个
+            # 调用点 → 全局 500。按契约 §6 处理：生成/撤销 409（本函数抛出）、
+            # 列表降级 available=false、认证外订阅源 fail-closed 404——三个
+            # 调用点均已只捕 HTTPException，409 在它们处即被折叠为契约形状。
+            raise _error(409, "daily_nudge_storage_unavailable") from exc
         if stored is None:
             return []
         if not isinstance(stored, dict) or not isinstance(stored.get("tokens"), list):

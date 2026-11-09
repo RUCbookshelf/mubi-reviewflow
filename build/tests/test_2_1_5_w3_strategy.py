@@ -156,6 +156,122 @@ class TranslatePins(unittest.TestCase):
         self.assertEqual(by_db["eric"]["warnings"][0]["code"],
                          "search_strategy.query_unbalanced")
 
+    def test_apostrophes_are_plain_characters_not_phrase_quotes(self):
+        """终审 #48：PubMed 短语只用双引号；撇号（Alzheimer's/O'Brien）是
+        词条普通字符，不得被判「引号不配对」而整体降级。"""
+        # 带字段标签的单撇号词条：正常转写、零降级零警告
+        payload = core.translate_pubmed_query("Alzheimer's[tiab]")
+        by_db = self._by_db(payload)
+        self.assertEqual(by_db["eric"]["query_text"],
+                         "(title:(Alzheimer's) OR description:(Alzheimer's))")
+        self.assertEqual(by_db["wos"]["query_text"], "TS=(Alzheimer's)")
+        for database in ("eric", "wos"):
+            self.assertFalse(by_db[database]["degraded"], database)
+            self.assertEqual(by_db[database]["warnings"], [], database)
+        # 作者字段同理
+        au = self._by_db(core.translate_pubmed_query("O'Brien[au]"))
+        self.assertEqual(au["eric"]["query_text"], "author:(O'Brien)")
+        self.assertEqual(au["wos"]["query_text"], "AU=(O'Brien)")
+        self.assertFalse(au["wos"]["degraded"])
+        # 单个裸撇号词条照常转写
+        bare = self._by_db(core.translate_pubmed_query("O'Brien"))
+        self.assertEqual(bare["wos"]["query_text"], "TS=(O'Brien)")
+        self.assertFalse(bare["wos"]["degraded"])
+        # 双引号短语内含撇号：短语定界不受影响
+        phrase = self._by_db(core.translate_pubmed_query(
+            "\"women's health\"[tiab]"))
+        self.assertEqual(phrase["wos"]["query_text"], 'TS=("women\'s health")')
+        self.assertFalse(phrase["wos"]["degraded"])
+        # 多个裸撇号词条相邻：保留隐式 AND + 短语歧义降级（与无撇号行为一致）
+        both = self._by_db(core.translate_pubmed_query(
+            "women's health AND menopause"))
+        self.assertIn("TS=(women's)", both["wos"]["query_text"])
+        self.assertIn(" AND ", both["wos"]["query_text"])
+        self.assertTrue(both["wos"]["degraded"])
+        self.assertIn({"code": "search_strategy.implicit_phrase_ambiguous",
+                       "params": {"database": "wos"}},
+                      both["wos"]["warnings"])
+        # 未闭合**双引号**仍按 query_unbalanced 降级（撇号改动不得弱化该钉）
+        unbalanced = self._by_db(core.translate_pubmed_query(
+            '"heart failure[tiab]'))
+        self.assertTrue(unbalanced["eric"]["degraded"])
+        self.assertEqual(unbalanced["eric"]["warnings"][0]["code"],
+                         "search_strategy.query_unbalanced")
+
+    def test_quoted_phrase_field_tag_after_space_no_empty_operand(self):
+        """终审 #49：引号短语与 [field] 之间的空格照常读取字段标签，
+        不得把 [field] 解析成空操作数（title:()/TS=()）。"""
+        spaced = self._by_db(core.translate_pubmed_query(
+            '"heart failure" [tiab]'))
+        tight = self._by_db(core.translate_pubmed_query(
+            '"heart failure"[tiab]'))
+        self.assertEqual(spaced["eric"]["query_text"],
+                         tight["eric"]["query_text"])
+        self.assertEqual(spaced["wos"]["query_text"],
+                         tight["wos"]["query_text"])
+        self.assertEqual(spaced["wos"]["query_text"], 'TS=("heart failure")')
+        for database in ("eric", "wos"):
+            self.assertFalse(spaced[database]["degraded"], database)
+            self.assertEqual(spaced[database]["warnings"], [], database)
+        # 短语后空格 + [ti]：字段跟随短语本身，不再漂移成 tiab
+        ti = self._by_db(core.translate_pubmed_query('"heart failure" [ti]'))
+        self.assertEqual(ti["eric"]["query_text"], 'title:("heart failure")')
+        self.assertEqual(ti["wos"]["query_text"], 'TI=("heart failure")')
+        self.assertFalse(ti["wos"]["degraded"])
+
+    def test_bare_field_tag_or_empty_term_degrades_as_incomplete(self):
+        """终审 #49：裸 [field]（空词条）/ 空引号词条不得生成空操作数，
+        按既有 query_incomplete 口径整体降级原样返回。"""
+        for query in ("[tiab] AND cancer", '""[tiab] OR x[tiab]'):
+            with self.subTest(query=query):
+                payload = core.translate_pubmed_query(query)
+                by_db = self._by_db(payload)
+                for database in ("eric", "wos"):
+                    entry = by_db[database]
+                    self.assertTrue(entry["degraded"], (database, entry))
+                    self.assertEqual(entry["query_text"], query)
+                    self.assertNotIn(":()", entry["query_text"])
+                    self.assertNotIn("=()", entry["query_text"])
+                    self.assertEqual(entry["warnings"][0]["code"],
+                                     "search_strategy.query_incomplete")
+
+    def test_dp_year_range_transcribes_and_other_shapes_degrade(self):
+        """终审 #57：[dp] 年限区间 2010:2020 转目标库连字符区间；带月/日、
+        斜杠等无法等价表达的形态必须降级 + 结构化警告，不得静默产出
+        非法年份表达式。"""
+        payload = core.translate_pubmed_query("cancer[tiab] AND 2010:2020[dp]")
+        by_db = self._by_db(payload)
+        self.assertEqual(by_db["wos"]["query_text"],
+                         "(TS=(cancer) AND PY=(2010-2020))")
+        self.assertFalse(by_db["wos"]["degraded"])
+        self.assertEqual(by_db["wos"]["warnings"], [])
+        self.assertEqual(by_db["eric"]["query_text"],
+                         "((title:(cancer) OR description:(cancer))"
+                         " AND pubdate:(2010-2020))")
+        self.assertFalse(by_db["eric"]["degraded"])
+        # 方括号前带空格的常见写法同样转区间（非引号分支本就跳空白）
+        spaced = self._by_db(core.translate_pubmed_query(
+            "cancer[tiab] AND 2010:2020 [dp]"))
+        self.assertEqual(spaced["wos"]["query_text"],
+                         "(TS=(cancer) AND PY=(2010-2020))")
+        self.assertFalse(spaced["wos"]["degraded"])
+        # 单年份（含引号形态）保持既有映射
+        year = self._by_db(core.translate_pubmed_query('Smith[au] AND "2020"[dp]'))
+        self.assertEqual(year["wos"]["query_text"], "(AU=(Smith) AND PY=(2020))")
+        self.assertFalse(year["wos"]["degraded"])
+        # 倒序区间（2020:2010）无法等价转写：降级 + 结构化警告
+        # 带月/日/斜杠、PubMed 未定义的连字符区间形态：降级 + 结构化警告
+        for query in ("cancer[tiab] AND 2020/01/01:2020/12/31[dp]",
+                      "cancer[tiab] AND 2010-2020[dp]",
+                      "cancer[tiab] AND 2020:2010[dp]"):
+            with self.subTest(query=query):
+                entry = self._by_db(core.translate_pubmed_query(query))["wos"]
+                self.assertTrue(entry["degraded"], entry)
+                self.assertIn({"code": "search_strategy.field_value_unmapped",
+                               "params": {"field": "dp", "database": "wos"}},
+                              entry["warnings"])
+                self.assertIn("PY=(", entry["query_text"])
+
     def test_translate_is_pure_and_pico_generates_five_databases(self):
         payload = core.translate_pico([{
             "key": "population", "value": "adults",
@@ -970,6 +1086,56 @@ class EndpointPins(unittest.TestCase):
                   "last_run_date": "2025-01-01", "total_hits_last": 0})
         self.assertEqual(saved.status_code, 200, saved.text)
         self.assertEqual(len(saved.json()["search_records"]), 2)
+
+    def test_mismatched_legacy_backup_is_409_and_marker_unset(self):
+        """终审 #27（负向钉）：任务目录预置内容不一致的 .bak → 409
+        legacy_backup_failed（非 503）、幂等标记未置、迁移轨迹零行；
+        移除 .bak 后重试迁移成功。撤掉 sha 校验（search_strategy.py 的
+        backup_sha != source_sha 分支）此钉必红。"""
+        info = tasks_mod.find_task(self.task, DATA_DIR)
+        self.assertIsNotNone(info)
+        legacy = {"search_records": [
+            {"database": "pubmed", "query_string": "bad[tiab]",
+             "last_run_date": "2024-01-01", "total_hits_last": 3,
+             "saved_at": "2024-01-02T00:00:00"}], "history": []}
+        legacy_path = Path(info.dir) / core.LEGACY_FILENAME
+        legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+        backup_path = Path(info.dir) / (core.LEGACY_FILENAME
+                                        + core.LEGACY_BACKUP_SUFFIX)
+        backup_path.write_text('{"search_records": []}', encoding="utf-8")
+
+        # 两次访问均 409（标记未置 → 每次打开重抛，无静默自愈）
+        for attempt in (1, 2):
+            blocked = self.client.get(f"{self.base}/strategies",
+                                      headers=self.auth)
+            self.assertEqual(blocked.status_code, 409, blocked.text)
+            detail = blocked.json()["detail"]
+            self.assertEqual(detail["error_code"], "legacy_backup_failed")
+            self.assertEqual(detail["message_key"],
+                             "search_strategy.legacy_backup_failed")
+
+        # 失败发生在写事务与幂等标记之前：标记未置、轨迹零行、策略零行
+        conn = sqlite3.connect(core.store_path(info.dir))
+        conn.row_factory = sqlite3.Row
+        try:
+            self.assertIsNone(core._meta_get(conn, core.LEGACY_MARKER_KEY))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) AS n FROM search_strategy_migrations"
+            ).fetchone()["n"], 0)
+            self.assertEqual(core._legacy_row_count(conn), 0)
+        finally:
+            conn.close()
+
+        # 移除内容不一致的 .bak → 重新备份（sha 一致）→ 迁移成功
+        backup_path.unlink()
+        recovered = self.client.get(f"{self.base}/strategies", headers=self.auth)
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+        body = recovered.json()
+        self.assertEqual(body["migration"]["rows_before"], 1)
+        self.assertEqual(body["migration"]["rows_migrated"], 1)
+        self.assertEqual(body["counts"]["total"], 1)
+        self.assertEqual(backup_path.read_bytes(), legacy_path.read_bytes(),
+                         "重试后备份必须是旧文件的逐字节快照")
 
 
 class OpenerProxyPins(unittest.TestCase):

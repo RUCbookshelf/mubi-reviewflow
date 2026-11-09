@@ -1236,5 +1236,104 @@ class LegacyEnforcePins(unittest.TestCase):
         self.assertIsNone(pilot_screening_api.enforce_gate(info, {"user_id": 2}))
 
 
+# ---------------------------------------------------------------------------
+# 终审 #20：seed / {set_id} 超出 SQLite INTEGER 域不再 OverflowError → 500
+# ---------------------------------------------------------------------------
+class SeedAndSetIdBoundsPins(PilotApiBase):
+    """seed 域收敛到 [0, 2^31)（与 _new_seed 自生成域一致）；set_id 越界与
+    「正常不存在」同形 404 set_not_found。修复前分别为 OverflowError 500。"""
+
+    def setUp(self):
+        self.new_task()
+
+    def test_seed_out_of_range_is_structured_400(self):
+        for seed in (9223372036854775808,        # 2^63（int64 上界 +1）
+                     99999999999999999999,       # 20 位数字（粘贴来的种子）
+                     -(2 ** 63) - 1,             # int64 下界 -1
+                     -1):                        # 域外（自生成域从 0 起）
+            with self.subTest(seed=seed):
+                response = self.post("/pilot/sets", {
+                    "sampling": "random", "size": 5, "seed": seed})
+                self.assertEqual(response.status_code, 400, response.text)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["error_code"], "seed_invalid")
+                self.assertEqual(detail["message_key"], "pilot.seed_invalid")
+                self.assertEqual(detail["params"], {"limit": (1 << 31) - 1})
+
+    def test_seed_domain_upper_boundary_is_accepted(self):
+        # 与后端自生成域一致的上界 2^31-1 → 201（登记值原样可读）。
+        response = self.post("/pilot/sets", {
+            "sampling": "random", "size": 10, "seed": (1 << 31) - 1})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["set"]["seed"], (1 << 31) - 1)
+
+    def test_oversized_set_id_is_404_same_shape_as_missing(self):
+        normal = self.api("/pilot/sets/999999")
+        self.assertEqual(normal.status_code, 404, normal.text)
+        normal_shape = normal.json()["detail"]
+        for set_id in ("9223372036854775808", "99999999999999999999"):
+            with self.subTest(set_id=set_id):
+                response = self.api(f"/pilot/sets/{set_id}")
+                self.assertEqual(response.status_code, 404, response.text)
+                # 与「正常不存在」完全同形（不泄露越界这一事实）
+                self.assertEqual(response.json()["detail"], normal_shape)
+        # POST …/gold 的 {set_id} 路径同样收敛（修复前 OverflowError 500）
+        response = self.client.post(
+            f"/api/tasks/{self.task}/pilot/sets/9223372036854775808/gold",
+            json={"zotero_key": "K01", "decision": "include"},
+            headers=self.auth())
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json()["detail"]["error_code"], "set_not_found")
+
+
+class OverflowScopePins(PilotApiBase):
+    """复审 r2（#20 收窄）：只折叠 SQLite INTEGER 绑定越界；其余 OverflowError
+    不吞——thresholds 数值越界按契约 400 threshold_invalid，无关 OverflowError
+    照常上抛（绝不伪装成 set_not_found）。"""
+
+    def setUp(self):
+        self.new_task()
+
+    def test_threshold_int_overflow_is_threshold_invalid_not_404(self):
+        # 10**400 是合法 int，_number 的 float() 抛 OverflowError（此前被
+        # _run 误折叠 404 set_not_found——按契约应为 400 threshold_invalid）。
+        response = self.post("/pilot/sets", {
+            "sampling": "random", "size": 10, "seed": 1,
+            "thresholds": {"min_kappa": 10 ** 400}})
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "threshold_invalid")
+        self.assertEqual(detail["message_key"], "pilot.threshold_invalid")
+        self.assertEqual(detail["params"], {"field": "min_kappa"})
+
+    def test_unrelated_overflow_not_disguised_as_set_not_found(self):
+        # GET /pilot/sets（无 set_id 路径）注入无关 OverflowError：不得折叠成
+        # 404 set_not_found，应照常上抛（缺陷可见，日志可查）。
+        with TestClient(app, raise_server_exceptions=False) as probe_client:
+            with mock.patch.object(
+                    pilot, "list_sets",
+                    side_effect=OverflowError("int too large to convert to float")):
+                response = probe_client.get(
+                    f"/api/tasks/{self.task}/pilot/sets", headers=self.auth())
+        self.assertEqual(response.status_code, 500, response.text)
+        detail = response.json().get("detail")
+        if isinstance(detail, dict):  # 500 兜底可能是裸字符串文案
+            self.assertNotEqual(detail.get("error_code"), "set_not_found",
+                                "无关 OverflowError 不得伪装成训练集不存在")
+
+    def test_bool_seed_rejected_not_coerced(self):
+        # pydantic 此前把 true/false 强转 1/0 建集成功（core 的 bool 防护
+        # 在 HTTP 路径不可达）；r2 起 seed 字段拒绝布尔（422），不再静默换值。
+        response = self.post("/pilot/sets", {
+            "sampling": "random", "size": 10, "seed": True})
+        self.assertEqual(response.status_code, 422, response.text)
+        # 对照：字符串 "abc"/浮点 1.5 仍由 pydantic 422 先行拦截
+        for bad in ("abc", 1.5):
+            with self.subTest(seed=bad):
+                response = self.post("/pilot/sets", {
+                    "sampling": "random", "size": 10, "seed": bad})
+                self.assertEqual(response.status_code, 422, response.text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

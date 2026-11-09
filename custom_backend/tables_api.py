@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import date
@@ -46,6 +47,8 @@ from typing import Any, Callable, Literal
 
 from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from coscreen import appraisal as appraisal_core
 from coscreen import coding as coding_mod
@@ -278,7 +281,15 @@ def _resolve_fields(dimensions: list[dict], fields: list[str | int] | None) -> l
             dim = by_id.get(raw)
         else:
             text = str(raw).strip()
-            dim = by_id.get(int(text)) if text.isdigit() else None
+            # 终审 #09：``str.isdigit()`` 对 Unicode 数字（上标 '²' 等）为 True
+            # 但 ``int()`` 只认 ASCII/全角十进制数字——'²'.isdigit() 走 id 分支
+            # 直接 ValueError → 全局 500。改为 try 解析：可解析（含全角 '２'）
+            # 按值查 id，不可解析（'²'/'2²'）落到名字匹配，未命中一律
+            # 400 tables_field_unknown（与未知中文字段同形）。
+            try:
+                dim = by_id.get(int(text)) if text.isdigit() else None
+            except ValueError:
+                dim = None
             if dim is None:
                 dim = by_name.get(text)
         if dim is None:
@@ -812,14 +823,42 @@ def register_tables_routes(
     task_or_404: Callable[[str], Any],
     task_visible: Callable[[Any, dict], bool],
     screener_db: Callable[..., Path],
+    library_unavailable_message: str,
 ) -> None:
-    """在 ``app`` 上注册 W7 两个表生成端点（main.py 注册区一行调用）。"""
+    """在 ``app`` 上注册 W7 两个表生成端点（main.py 注册区一行调用）。
+
+    ``library_unavailable_message`` = ``main.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE``
+    （终审 #05）：个人库被外部进程持锁/暂时不可读时两端点 503 复用该既有
+    十语言词条，与仲裁/一致性端点同一口径，不另造文案。
+    """
 
     def _info(task_id: str, user: dict) -> Any:
         info = task_or_404(task_id)
         if not task_visible(info, user):
             raise _error("tables_task_forbidden", "tables.task_forbidden", status=403)
         return info
+
+    def _library_unavailable() -> HTTPException:
+        """库被占用/损坏（sqlite 异常）→ 503 稍后重试（终审 #05）。
+
+        读路径绝不落全局 500 兜底；文案沿用既有词条（前端 T() 直渲染）。
+        复审 r2：仅覆盖 OperationalError（locked/busy）与损坏类 DatabaseError；
+        ``sqlite3.ProgrammingError``（调用写法缺陷）由调用点显式上抛，不吞。
+        """
+        return HTTPException(503, library_unavailable_message)
+
+    def _map_library_db_error(scope: str, exc: sqlite3.DatabaseError) -> HTTPException:
+        """sqlite 异常 → 503（带日志）；ProgrammingError（缺陷）原样上抛。
+
+        口径对齐仲裁先例（coscreen/screening_arbitration.py:498/:520：
+        ``except sqlite3.ProgrammingError: raise`` 再捕父类降级）——锁忙/
+        损坏是运行环境问题（503 可重试），绑定/写法错误是代码缺陷，必须
+        冒泡可见，不得冒充「库不可用」。
+        """
+        if isinstance(exc, sqlite3.ProgrammingError):
+            raise exc
+        logger.warning("W7 表生成读库失败（%s，降级 503）：%r", scope, exc)
+        return _library_unavailable()
 
     @app.post("/api/tasks/{task_id}/tables/characteristics")
     def tables_characteristics(task_id: str, body: CharacteristicsIn,
@@ -829,7 +868,12 @@ def register_tables_routes(
         info = _info(task_id, user)
         # 只读：ensure=False，库不存在时不懒建（零写入；缺库 = 空表）
         db_path = screener_db(info, screener or user["username"], ensure=False)
-        payload = _table1_payload(Path(db_path), body)
+        try:
+            payload = _table1_payload(Path(db_path), body)
+        except sqlite3.DatabaseError as exc:
+            # 终审 #05：外部工具持锁（OperationalError locked/busy）或库损坏
+            # 不再落全局 500——契约 §四「库被占用」承诺 503 稍后重试。
+            raise _map_library_db_error("characteristics", exc) from exc
         if detail:
             return {
                 "table": "characteristics",
@@ -869,7 +913,11 @@ def register_tables_routes(
             # 被静默上调为「高」。规范 id 与 grade-input 侧同一取值。
             body.rob_tool = _rob_tool_or_error(body.rob_tool)["id"]
         db_path = screener_db(info, screener or user["username"], ensure=False)
-        rows, notes, params = _sof_rows(Path(db_path), info, body)
+        try:
+            rows, notes, params = _sof_rows(Path(db_path), info, body)
+        except sqlite3.DatabaseError as exc:
+            # 终审 #05：与 Table 1 同口径——库被持锁/损坏 → 503，不落全局 500。
+            raise _map_library_db_error("sof", exc) from exc
         if detail:
             return {
                 "table": "sof",

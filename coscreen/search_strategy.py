@@ -435,7 +435,9 @@ def _balanced(text: str) -> bool:
             if char == quote:
                 quote = None
             continue
-        if char in "\"'":
+        if char == '"':
+            # PubMed 短语只用双引号；单引号（撇号词条如 Alzheimer's）是
+            # 普通字符，绝不当短语定界（终审 #48）。
             quote = char
         elif char == "(":
             depth += 1
@@ -476,7 +478,7 @@ def _scan_tokens(text: str) -> list[tuple[str, str, str | None]]:
             tokens.append(("rparen", ")", None))
             i += 1
             continue
-        if char in "\"'":
+        if char == '"':
             quote = char
             j = i + 1
             while j < n:
@@ -488,9 +490,14 @@ def _scan_tokens(text: str) -> list[tuple[str, str, str | None]]:
                 j += 1
             end = min(j + 1, n)
             value = text[i:end]
+            # 与非引号分支同口径：闭引号后跳过空白再读 [field]，否则
+            # `"phrase" [tiab]` 会把 [tiab] 解析成空操作数（终审 #49）。
+            saved = end
+            while end < n and text[end].isspace():
+                end += 1
             field, nxt = _read_field(text, end)
+            i = nxt if field is not None else saved
             tokens.append(("term", value, field))
-            i = nxt
             continue
         j = i
         while j < n and not text[j].isspace() and text[j] not in "()":
@@ -517,6 +524,39 @@ def _scan_tokens(text: str) -> list[tuple[str, str, str | None]]:
     return tokens
 
 
+_DP_YEAR_RE = re.compile(r"\d{4}")
+_DP_RANGE_RE = re.compile(r"(\d{4}):(\d{4})")
+
+
+def _translate_dp_term(term: str, database: str,
+                       warnings: list[dict[str, Any]]) -> tuple[str, bool]:
+    """``[dp]`` 值形态转写（终审 #57）。
+
+    PubMed 年限区间 ``2010:2020`` 在目标库无同形语法：转连字符区间
+    （WoS ``PY=(2010-2020)``）；带月/日/斜杠、倒序区间等无法等价表达的
+    形态保留原词但显式 ``degraded`` + ``field_value_unmapped`` 结构化警告，
+    不再静默产出非法年份表达式。
+    """
+    value = str(term).strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1].strip()
+    fragment = str(term)
+    degraded = False
+    if _DP_YEAR_RE.fullmatch(value) is not None:
+        fragment = value
+    else:
+        low_high = _DP_RANGE_RE.fullmatch(value)
+        if low_high is not None and low_high.group(1) <= low_high.group(2):
+            fragment = f"{low_high.group(1)}-{low_high.group(2)}"
+        else:
+            degraded = True
+            warnings.append({"code": "search_strategy.field_value_unmapped",
+                             "params": {"field": "dp", "database": database}})
+    if database == "eric":
+        return f"pubdate:({fragment})", degraded
+    return f"PY=({fragment})", degraded
+
+
 def _translate_term(term: str, field: str | None, database: str,
                     warnings: list[dict[str, Any]]) -> tuple[str, bool]:
     """单个词条 → 目标库片段；返回 ``(fragment, degraded)``。"""
@@ -530,6 +570,8 @@ def _translate_term(term: str, field: str | None, database: str,
         normalized = "tiab"
     if normalized is None:
         normalized = "tiab"
+    if normalized == "dp":
+        return _translate_dp_term(term, database, warnings)
     if database == "eric":
         mapping = {
             "tiab": f"(title:({term}) OR description:({term}))",
@@ -663,9 +705,12 @@ def _transcribe(query: str, database: str) -> dict[str, Any]:
         }
     tokens = _scan_tokens(query)
     node, pos, ok = _parse_expr(tokens, 0)
-    if node is None or not ok or pos < len(tokens) or _contains_unary_not(node):
-        # 解析不完整（尾随运算符/空操作数）或一元 NOT（PubMed/WoS 均非法）：
-        # 原样返回 + 结构化警告，绝不猜语义或输出非法语法。
+    if (node is None or not ok or pos < len(tokens) or _contains_unary_not(node)
+            or any(kind == "term" and not value.strip('"').strip()
+                   for kind, value, _field in tokens)):
+        # 解析不完整（尾随/前导运算符、空操作数、裸 [field]/空引号词条）或
+        # 一元 NOT（PubMed/WoS 均非法）：原样返回 + 结构化警告，绝不猜语义
+        # 或输出空操作数（title:()/TS=()）。
         warnings.append({"code": "search_strategy.query_incomplete",
                          "params": {"database": database}})
         return {
@@ -697,8 +742,11 @@ def _transcribe(query: str, database: str) -> dict[str, Any]:
 def translate_pubmed_query(query: object) -> dict[str, Any]:
     """PubMed 既有语法 → PubMed（原样）/ ERIC / WoS 转写（纯函数、零 IO）。
 
-    - 括号/引号不配对：三库条目均降级返回原文 + ``query_unbalanced`` 警告；
+    - 括号/双引号不配对：三库条目均降级返回原文 + ``query_unbalanced`` 警告
+      （单引号/撇号是词条普通字符，PubMed 短语只用双引号）；
     - 未映射字段（如 ``[cp]``）：按自由词降级 + ``field_unmapped`` 警告；
+    - ``[dp]`` 年限区间 ``2010:2020`` 转连字符区间；带月/日/斜杠等其余值
+      形态降级 + ``field_value_unmapped`` 警告（不静默产出非法年份表达式）；
     - WoS 无 MeSH 字段：``[mh]`` 按 ``TS=`` 降级 + ``mesh_unmapped`` 警告；
     - 任何输入都不抛异常（空输入返回空策略 + 警告），由 API 层做 400 校验。
     """

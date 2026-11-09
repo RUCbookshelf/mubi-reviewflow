@@ -260,7 +260,14 @@ def _dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 def _number(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PilotScreeningError("threshold_invalid", params={"field": name})
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        # 复审 r2（终审 #20 收窄）：10**400 这类合法 int 在 float() 转换时抛
+        # OverflowError——按契约（threshold_invalid：越界/非数值 → 400）折叠，
+        # 不再上抛被 _run 误当 set_id 越界折叠成 404。
+        raise PilotScreeningError(
+            "threshold_invalid", params={"field": name}) from exc
     if number != number or number in (float("inf"), float("-inf")):
         raise PilotScreeningError("threshold_invalid", params={"field": name})
     return number
@@ -651,6 +658,12 @@ def create_set(conn: sqlite3.Connection, *, actor_id: int,
     limits = normalize_thresholds(thresholds)
     if isinstance(seed, bool) or (seed is not None and not isinstance(seed, int)):
         raise PilotScreeningError("seed_invalid")
+    if seed is not None and not 0 <= seed < (1 << 31):
+        # 终审 #20：pydantic 不给 int 设 64 位上限——19~20 位数字 seed 此前
+        # 在 sqlite 绑定时抛 OverflowError（非 DatabaseError）→ 全局 500。
+        # 收敛到与 _new_seed 相同的自生成域 [0, 2^31)，越界 400 seed_invalid
+        # （params.limit 说明上界，前端可提示）。
+        raise PilotScreeningError("seed_invalid", params={"limit": (1 << 31) - 1})
     if seed is None and sampling in ("random", "mixed"):
         seed = _new_seed()
     keys = sample_keys(available_keys, size=size, sampling=sampling, seed=seed,

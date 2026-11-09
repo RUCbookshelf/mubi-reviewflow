@@ -244,7 +244,13 @@ def _year_value(value: Any) -> int | str:
     if isinstance(value, int):
         return value
     text = _clip(value, 20)
-    return int(text) if text.isdigit() else text
+    # 终审 #09 附带观察：'²'.isdigit() 为 True 但 int() 抛 ValueError（与
+    # tables._resolve_fields 同形状）——不可解析的 Unicode 数字串原样作为
+    # 字符串返回，绝不 500。
+    try:
+        return int(text) if text.isdigit() else text
+    except ValueError:
+        return text
 
 
 def _bibliographic(article: dict | None) -> dict:
@@ -302,6 +308,18 @@ def _item_unavailable(detail: str, **params) -> HTTPException:
 def _keeper_invalid(detail: str, reason: str) -> HTTPException:
     return _error(400, "import_ai_assist_keeper_invalid",
                   "import_ai_assist.keeper_invalid", {"reason": reason}, detail)
+
+
+_STORAGE_UNAVAILABLE_DETAIL = (
+    "任务数据库暂时不可用（可能正被其他操作占用，或磁盘只读/已满），请稍后重试。")
+
+
+def _storage_unavailable() -> HTTPException:
+    """sqlite/IO 故障 → 结构化 503（终审 #32，与 pdf_fetch._storage_http_error
+    同语义；出站前后两个阶段的存储故障都不再落全局 500 兜底）。"""
+    return _error(503, "import_ai_assist_storage_unavailable",
+                  "import_ai_assist.storage_unavailable", {},
+                  _STORAGE_UNAVAILABLE_DETAIL)
 
 
 # ---------------------------------------------------------------------------
@@ -969,7 +987,14 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
         return app.state.review_workflow
 
     def _context(task_id: str, user: dict):
-        ctx = _workflow().context(task_id, user)  # 非任务成员 → 403
+        try:
+            ctx = _workflow().context(task_id, user)  # 非任务成员 → 403
+        except HTTPException:
+            raise
+        except (sqlite3.Error, OSError) as exc:
+            # 终审 #32（场景 A）：工作流上下文要开协作库 + 属主/个人库并可能跑
+            # 迁移，锁忙/损坏此前未捕获 → 三端点全局 500。结构化 503（可重试）。
+            raise _storage_unavailable() from exc
         if ctx.owner is None:
             # 导入复核数据按属主库权威（与 review_imports_api.read_context 同口径）。
             raise _error(403, "import_ai_assist_owner_required",
@@ -1091,9 +1116,14 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                          str(exc)) from None
 
         # 4) 审计表与既有导入复核表就位（幂等；先于出站，出站前失败不花预算）。
-        store.migrate(ctx.owner_db)
-        with closing(workflow.connect(ctx.owner_db)) as conn:
-            _ensure_audit_schema(conn)
+        try:
+            store.migrate(ctx.owner_db)
+            with closing(workflow.connect(ctx.owner_db)) as conn:
+                _ensure_audit_schema(conn)
+        except (sqlite3.Error, OSError) as exc:
+            # 终审 #32（场景 B）：migrate/审计建表在 try 外——锁属主库时未捕获
+            # → 500。同样 503（此刻仍零出站，额度未消耗）。
+            raise _storage_unavailable() from exc
 
         # 5) 一次性解析全部条目（只读）：任何无效引用 → 404，绝不部分出站。
         try:
@@ -1104,8 +1134,11 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                     if ref.kind == "merge_conflict"
                     else load_item_payload(conn, ref.batch_id, ref.kind, ref.item_id)
                     for ref in body.items]
-        except sqlite3.OperationalError as exc:
-            raise _item_not_found("导入复核数据不可用，请刷新后重试。") from exc
+        except sqlite3.Error as exc:
+            # 终审 #32：解析阶段的锁忙/库故障此前误映射 404（说成"条目不
+            # 存在"）；存储类故障一律 503 可重试，条目真正缺失仍走各 loader
+            # 自己的结构化 404。
+            raise _storage_unavailable() from exc
 
         def _touch_key() -> None:
             if key_source == "personal":
@@ -1196,28 +1229,34 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
         # 7) 审计留痕（唯一索引幂等；这里是本端点对库的唯一写入）。
         now = _utc_now_iso()
         provider = credentials.get("provider") or ""
-        with closing(workflow.connect(ctx.owner_db)) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
-            for entry in results:
-                status = "degraded" if entry["degraded"] else "ok"
-                stored = entry.get("audit_payload")
-                if stored is not None:
-                    stored_json = json.dumps(stored, ensure_ascii=False)
-                elif entry["field_picks"] is not None:
-                    stored_json = json.dumps(entry["field_picks"], ensure_ascii=False)
-                else:
-                    stored_json = None
-                conn.execute(_AUDIT_UPSERT, (
-                    info.task_id, entry["batch_id"], entry["kind"], entry["item_id"],
-                    provider, model, entry["prompt_version"], entry["request_digest"],
-                    entry["verdict"] or MERGE_VERDICT,
-                    entry["confidence"], entry["rationale_zh"], stored_json,
-                    json.dumps(entry["warnings"], ensure_ascii=False), status,
-                    now, now))
-                audit_row = conn.execute(_AUDIT_LOOKUP, (
-                    info.task_id, entry["batch_id"], entry["kind"], entry["item_id"],
-                    entry["request_digest"])).fetchone()
-                entry["audit_id"] = int(audit_row[0])
+        try:
+            with closing(workflow.connect(ctx.owner_db)) as conn, conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for entry in results:
+                    status = "degraded" if entry["degraded"] else "ok"
+                    stored = entry.get("audit_payload")
+                    if stored is not None:
+                        stored_json = json.dumps(stored, ensure_ascii=False)
+                    elif entry["field_picks"] is not None:
+                        stored_json = json.dumps(entry["field_picks"], ensure_ascii=False)
+                    else:
+                        stored_json = None
+                    conn.execute(_AUDIT_UPSERT, (
+                        info.task_id, entry["batch_id"], entry["kind"], entry["item_id"],
+                        provider, model, entry["prompt_version"], entry["request_digest"],
+                        entry["verdict"] or MERGE_VERDICT,
+                        entry["confidence"], entry["rationale_zh"], stored_json,
+                        json.dumps(entry["warnings"], ensure_ascii=False), status,
+                        now, now))
+                    audit_row = conn.execute(_AUDIT_LOOKUP, (
+                        info.task_id, entry["batch_id"], entry["kind"], entry["item_id"],
+                        entry["request_digest"])).fetchone()
+                    entry["audit_id"] = int(audit_row[0])
+        except (sqlite3.Error, OSError) as exc:
+            # 终审 #32（场景 C）：出站后的审计写未收敛——撞锁时 500 且这一次
+            # 已消耗额度的建议整批丢失。映射 503（诚实告知"请稍后重试"，
+            # 不假 200；额度损耗在契约披露）。
+            raise _storage_unavailable() from exc
 
         counts = {"same": 0, "different": 0, "unsure": 0}
         for entry in results:

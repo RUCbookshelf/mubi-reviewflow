@@ -1896,5 +1896,104 @@ def tearDownModule():
     fixture.cleanup()
 
 
+# ---------------------------------------------------------------------------
+# 终审 #40 剩余分支（sec8）：缺 task.sanitized.json / 深嵌套 JSON / 旧 schema
+# 三类「结构自洽但畸形」的包不再触发未捕获异常（KeyError / RecursionError /
+# sqlite3.OperationalError）→ 500；统一 400 package_invalid（reason 区分），
+# 原子回滚清场（对照：模块 docstring「绝不 500」承诺）。
+# ---------------------------------------------------------------------------
+
+class MalformedPackagePins(_ApiBase):
+    """三种畸形包各一：preflight/import 的形状与清场。"""
+
+    def _post_package(self, endpoint: str, package: bytes):
+        return self.client.post(
+            endpoint,
+            files={"package": ("pkg.zip", package, "application/zip")},
+            headers=self.auth(0))
+
+    def _assert_invalid(self, response, reason: str):
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["message_key"], "task_package.package_invalid")
+        self.assertEqual(detail["params"]["reason"], reason)
+
+    def _import_leftovers(self):
+        root = tasks_mod.tasks_root(DATA_DIR)
+        if not root.is_dir():
+            return []
+        return [p.name for p in root.iterdir() if p.name.startswith(".import-")]
+
+    def test_manifest_consistent_package_without_task_json_is_400(self):
+        # manifest 只声明 db/x.db，zip 成员也恰只有 db/x.db（集合自洽）——
+        # 修复前 archive.getinfo("task.sanitized.json") KeyError → 500。
+        self.new_task()
+        package = _build_raw_package({"db/x.db": _SQLITE_MAGIC + b"\x00" * 64})
+        for endpoint in ("/api/tasks/import-package/preflight",
+                         "/api/tasks/import-package"):
+            with self.subTest(endpoint=endpoint):
+                response = self._post_package(endpoint, package)
+                self._assert_invalid(response, "task_json_missing")
+        self.assertEqual(self._import_leftovers(), [], "拒绝后必须清场")
+
+    def test_deeply_nested_task_json_is_400_not_recursion_crash(self):
+        # 约 80KB 的深嵌套 JSON（远小于 8MB 成员上限）：json.loads 抛
+        # RecursionError（非 ValueError 子类）——修复前穿透 → 500。
+        self.new_task()
+        deep = b"[" * 40000 + b"]" * 40000
+        package = _build_raw_package({
+            "task.sanitized.json": deep,
+            "db/x.db": _SQLITE_MAGIC + b"\x00" * 64,
+        })
+        for endpoint in ("/api/tasks/import-package/preflight",
+                         "/api/tasks/import-package"):
+            with self.subTest(endpoint=endpoint):
+                response = self._post_package(endpoint, package)
+                self._assert_invalid(response, "task_json_unreadable")
+        self.assertEqual(self._import_leftovers(), [])
+
+    def test_legacy_fulltexts_schema_is_400_on_import(self):
+        # 包内 db 的 fulltexts 缺 n_pages/added_at 列（旧 schema）：save_pdf
+        # 的 SELECT/INSERT 抛 OperationalError "no such column"——修复前 500
+        # （导入日志可见该 SQL 错误）；现按坏包拒绝，且清场原子。
+        self.new_task()
+        with tempfile.TemporaryDirectory(prefix="rf_sec8_old_schema_") as tmp:
+            old_db = Path(tmp) / "old.db"
+            db_mod.init_db(old_db)
+            with closing(sqlite3.connect(old_db)) as conn, conn:
+                conn.execute(
+                    "INSERT INTO articles (zotero_key, title, authors, year) "
+                    "VALUES ('OLD1', 'Old schema', 'A, B', 2019)")
+                # 先按现 schema 插全列，再 DROP 成旧形态（缺 n_pages/added_at）
+                conn.execute(
+                    "INSERT INTO fulltexts (zotero_key, filename, path, sha256, "
+                    "n_pages, added_at) VALUES ('OLD1', 'A.pdf', "
+                    "'data/pdfs/legacy.pdf', '" + "0" * 64 + "', 1, '2026-01-01')")
+                conn.execute("ALTER TABLE fulltexts DROP COLUMN n_pages")
+                conn.execute("ALTER TABLE fulltexts DROP COLUMN added_at")
+            legit = make_pdf("SEC8")
+            package = _build_raw_package(
+                {
+                    "task.sanitized.json": json.dumps(
+                        {"task_id": "src", "display_name": "s"}).encode(),
+                    "db/old.db": old_db.read_bytes(),
+                    "fulltext/A.pdf": legit,
+                },
+                fulltexts=[{"zotero_key": "OLD1",
+                            "archive_path": "fulltext/A.pdf",
+                            "sha256": hashlib.sha256(legit).hexdigest(),
+                            "size": len(legit),
+                            "original_filename": "A.pdf"}])
+        # preflight 只做静态校验（schema 问题不可见）→ 通过；
+        response = self._post_package("/api/tasks/import-package/preflight", package)
+        self.assertEqual(response.status_code, 200, response.text)
+        # 落地阶段才触碰包内库 → 结构化 400（reason 区分）+ 零残留。
+        response = self._post_package("/api/tasks/import-package", package)
+        self._assert_invalid(response, "fulltext_schema_unsupported")
+        self.assertEqual(response.json()["detail"]["params"]["zotero_key"], "OLD1")
+        self.assertEqual(self._import_leftovers(), [], "失败导入必须原子清场")
+
+
 if __name__ == "__main__":
     unittest.main()
