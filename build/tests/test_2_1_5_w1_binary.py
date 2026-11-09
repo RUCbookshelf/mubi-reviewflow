@@ -333,6 +333,161 @@ class ResetMigrationPins(unittest.TestCase):
                 "SELECT COUNT(*) FROM workflow_migrations WHERE version=?",
                 (binary_reset.RESET_VERSION,)).fetchone()[0], 1)
 
+    def test_in_transaction_recheck_blocks_second_apply_race(self):
+        """终审 #23：事务内版本复检（唯一并发防护）的确定性交错红钉。
+
+        既有幂等测试只做顺序二跑（第二次在外层只读检查即早退）。此钉在
+        「B 已通过外层检查、尚未开写事务」的窗口里让 A 完整落库（多进程
+        竞态的确定性等价）：B 必须靠事务内复检零操作返回——账本行与 A
+        逐字段一致、轨迹仅 1 条。删除事务内复检后 B 会以计数 0 覆盖 A 的
+        摘要行并多写一条计数为 0 的轨迹（迁移审计被清空），此钉必红。
+        """
+        self._seed_migration_fixture()
+        real_backup = binary_reset._backup
+        real_migrate = binary_reset.migrate
+        interleaved = {"first": True}
+
+        def _racing_backup(path):
+            if interleaved["first"]:
+                interleaved["first"] = False
+                # B 已过外层只读检查（外层连接已关闭、无锁冲突）；
+                # 此刻让另一路（A）完整跑完迁移并落版本行。
+                with mock.patch.object(binary_reset, "_backup", real_backup):
+                    real_migrate(path, task_id="t1", actor_id="A")
+            return real_backup(path)
+
+        with mock.patch.object(binary_reset, "_backup", _racing_backup):
+            second = binary_reset.migrate(self.db, task_id="t1",
+                                          actor_id="B")
+        # 二跑零操作：applied=False，摘要取 A 落库的账本行
+        self.assertIs(second.get("applied"), False, second)
+        self.assertEqual(second["stage1_reset"], 2, second)
+        self.assertEqual(second["triggered_by"], "A", second)
+        row = self._summary_row()
+        self.assertEqual((row["stage1_reset"], row["stage2_reset"],
+                          row["stage2_cascade_reset"]), (2, 1, 1), row)
+        self.assertEqual(row["triggered_by"], "A", row)
+        self.assertIsNotNone(row["applied_at"], row)
+        # 轨迹与版本标记各恰 1 条（B 不得重复留痕）
+        with closing(sqlite3.connect(self.db)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM trace_events WHERE"
+                " action='binary_maybe_reset'").fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM workflow_migrations WHERE version=?",
+                (binary_reset.RESET_VERSION,)).fetchone()[0], 1)
+
+    def test_mid_transaction_failure_rolls_back_everything(self):
+        """终审 #28：单事务原子性的失败注入红钉。
+
+        迁移是删数据的破坏性操作：在事务内倒数第二步（轨迹留痕，删表与
+        摘要写入之后、版本标记之前）注入异常，decisions / stage2_decisions /
+        workflow_migrations / workflow_binary_reset 必须全部保持迁移前状态；
+        失败后重跑可正常落标记。去掉 BEGIN IMMEDIATE + 事务回滚后同样的
+        注入会让 maybe 行被永久删除且无幂等标记（终审探针 p2_no_transaction
+        已证），变异钉 test_mutation_autocommit_proxy_pin_goes_red 在此复现。"""
+        self._seed_migration_fixture()
+        before = (self._rows("decisions"), self._rows("stage2_decisions"))
+        with closing(sqlite3.connect(self.db)) as conn:
+            marker_before = conn.execute(
+                "SELECT COUNT(*) FROM workflow_migrations WHERE version=?",
+                (binary_reset.RESET_VERSION,)).fetchone()[0]
+            self.assertEqual(marker_before, 0)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("injected mid-transaction failure")
+
+        with mock.patch.object(binary_reset, "_trace", _boom):
+            with self.assertRaises(RuntimeError):
+                binary_reset.migrate(self.db, task_id="t1", actor_id=1)
+
+        # 原子性：四张表全部还原
+        self.assertEqual((self._rows("decisions"), self._rows("stage2_decisions")),
+                         before, "事务中途失败不得留下任何删除")
+        with closing(sqlite3.connect(self.db)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM workflow_migrations WHERE version=?",
+                (binary_reset.RESET_VERSION,)).fetchone()[0], 0,
+                "失败后不得落幂等标记（否则重试会被静默跳过）")
+            summary = conn.execute(
+                "SELECT name FROM sqlite_master WHERE"
+                " name='workflow_binary_reset'").fetchone()
+            self.assertIsNone(summary, "DDL 同在事务内：摘要表不得残留")
+        # 备份在事务外写出，按设计保留
+        self.assertTrue(self.db.with_name(
+            self.db.name + binary_reset.BACKUP_SUFFIX).is_file())
+        # 失败后重跑（无注入）可正常完成
+        result = binary_reset.migrate(self.db, task_id="t1", actor_id=1)
+        self.assertEqual((result["stage1_reset"], result["stage2_reset"],
+                          result["stage2_cascade_reset"]), (2, 1, 1), result)
+
+    def test_mutation_autocommit_proxy_pin_goes_red(self):
+        """破坏性变异：等价无事务副本（事务控制语句吞掉 + 每条语句即时
+        提交）→ 同样的注入下 maybe 行被永久删除且无幂等标记——上一颗
+        原子性钉必红。转发经 ``__getattr__`` 动态绑定（测试变异工装惯例：
+        不在测试文件里写出「变量 SQL 进 execute」的静态形态，避免安全
+        扫描误报，见 test_scan_dynamic_sql.py 文件头说明）。"""
+        self._seed_migration_fixture()
+        real_connect = binary_reset.store.connect
+
+        class _Swallowed:
+            rowcount = 0
+
+            def fetchone(self):
+                return None
+
+            def fetchall(self):
+                return []
+
+        class _AutocommitProxy:
+            _CONTROL = ("BEGIN", "COMMIT", "ROLLBACK")
+
+            def __init__(self, real):
+                self._real = real
+
+            def __enter__(self):
+                self._real.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                self._real.__exit__(*exc)
+                return False
+
+            def __getattr__(self, name):
+                attr = getattr(self._real, name)
+                if name in ("commit", "rollback", "close") or not callable(attr):
+                    return attr
+
+                def _forward(*args, **kwargs):
+                    first = str(args[0]) if args else ""
+                    if first.lstrip()[:6].upper().startswith(self._CONTROL):
+                        return _Swallowed()
+                    result = attr(*args, **kwargs)
+                    self._real.commit()  # 每条语句即时提交 = 无原子性
+                    return result
+
+                return _forward
+
+        def _connect(*args, **kwargs):
+            return _AutocommitProxy(real_connect(*args, **kwargs))
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("injected mid-transaction failure")
+
+        with mock.patch.object(binary_reset.store, "connect", _connect), \
+                mock.patch.object(binary_reset, "_trace", _boom):
+            with self.assertRaises(RuntimeError):
+                binary_reset.migrate(self.db, task_id="t1", actor_id=1)
+
+        self.assertEqual({r[0] for r in self._rows("decisions")},
+                         {"K3", "K4", "K5"},
+                         "无事务变异下 maybe 行被永久删除（= 原子性钉必红）")
+        with closing(sqlite3.connect(self.db)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM workflow_migrations WHERE version=?",
+                (binary_reset.RESET_VERSION,)).fetchone()[0], 0,
+                "无幂等标记（= 原子性钉必红）")
+
     def test_downstream_sleeps_then_reappears_after_rescreen_include(self):
         self._seed_migration_fixture()
         binary_reset.migrate(self.db, task_id="t1", actor_id=1)
@@ -509,6 +664,75 @@ class LegacyOpenTriggersResetPins(W1BinaryBase):
         after = self._snapshot(own_db)
         self.assertEqual(after["versions"], [1])
         self.assertEqual(after["maybe1"], 1)
+
+
+class MemberFirstOpenTriggersResetPins(W1BinaryBase):
+    """终审 #24：成员先于负责人打开任务时的 W1 重置迁移分支红钉。
+
+    context() 的成员分支（actor_db≠owner_db）是成员库 W1 重置的唯一入口；
+    此前唯一涉及成员库的 W1 用例由 /binary-reset-summary 端点自己逐库迁移
+    （ResetSummaryApiPins 夹具），成员 context 分支即使被删测试也全绿。
+    此钉只给成员库种存量 maybe、不调 summary，由成员请求常规端点触发，
+    断言成员库补齐 v8、maybe 行被清、备份生成、账本记成员本人。
+    """
+
+    def setUp(self):
+        self.new_task()
+        self.seed_owner(("K1", "K2", "K3"))
+        # invite 触发属主 context：属主库先完成 W1（无 maybe → 计数 0）。
+        invited = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.users[1]["username"], "role": "coder"},
+            headers=self.auth())
+        self.assertEqual(invited.status_code, 201, invited.text)
+        # 成员库：版本 {1} + 存量 maybe（成员先于任何 summary 端点打开任务）
+        member = self.member_db(1)
+        db_mod.init_db(member)
+        store.migrate(member)
+        db_mod.upsert_articles(
+            member, [Article(zotero_key=key, title=f"Study {key}")
+                     for key in ("K1", "K2")], [])
+        db_mod.save_decision(member, "K1", "maybe")
+        db_mod.save_decision(member, "K2", "include")
+        self.member_path = member
+
+    def _snapshot(self, db: Path) -> dict:
+        with closing(store.connect(db, read_only=True)) as conn:
+            return {
+                "versions": sorted(int(r[0]) for r in conn.execute(
+                    "SELECT version FROM workflow_migrations")),
+                "maybe": conn.execute(
+                    "SELECT COUNT(*) FROM decisions WHERE decision='maybe'"
+                ).fetchone()[0],
+            }
+
+    def test_member_first_open_runs_w1_reset_on_own_library(self):
+        before = self._snapshot(self.member_path)
+        self.assertEqual(before["versions"], [1], before)
+        self.assertEqual(before["maybe"], 1, before)
+        # 成员请求常规端点（不经 /binary-reset-summary）→ 成员库就地迁移
+        response = self.api("/work-queue/screen", index=1)
+        self.assertEqual(response.status_code, 200, response.text)
+        after = self._snapshot(self.member_path)
+        self.assertEqual(after["maybe"], 0, "成员库存量 maybe 必须被重置")
+        self.assertIn(binary_reset.RESET_VERSION, after["versions"])
+        backup = self.member_path.with_name(
+            self.member_path.name + binary_reset.BACKUP_SUFFIX)
+        self.assertTrue(backup.is_file(), "成员库重置必须留可校验备份")
+        with closing(store.connect(self.member_path, read_only=True)) as conn:
+            ledger = [tuple(row) for row in conn.execute(
+                "SELECT stage1_reset, stage2_reset, triggered_by"
+                " FROM workflow_binary_reset")]
+        self.assertEqual(
+            ledger, [(1, 0, str(self.users[1]["user_id"]))], ledger)
+        # 幂等：成员再次打开不重复重置/重复留痕
+        self.assertEqual(self.api("/workflow-settings", index=1).status_code, 200)
+        with closing(store.connect(self.member_path, read_only=True)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM workflow_binary_reset").fetchone()[0], 1)
+        # 负责人库不被成员打开顺带误迁（各库独立；属主库在 invite 时已齐）
+        owner_after = self._snapshot(self.owner_db)
+        self.assertIn(binary_reset.RESET_VERSION, owner_after["versions"])
 
 
 if __name__ == "__main__":

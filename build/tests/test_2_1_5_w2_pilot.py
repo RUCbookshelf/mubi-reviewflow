@@ -651,6 +651,43 @@ class BlindDisciplinePins(PilotApiBase):
             self.assertEqual(response.json()["detail"]["error_code"],
                              "owner_required", path)
 
+    def test_member_set_detail_items_are_blind_projection(self):
+        """终审 #13：成员详情 items 恰为 {zotero_key, position}（盲态投影钉）。
+
+        成员分支把 core.get_set 的全量 items（每条带 gold decision/reason）
+        裁剪为仅键位元数据；此前测试只断言 set 的 status——镜像变异
+        （成员分支直接返回 data["items"]）下整套测试仍绿。此钉复用
+        _walk_keys 断言整个响应（含嵌套键名）零金标准/结果字段。
+        """
+        gold = self.gold_map(self.set_id)
+        self.assertTrue(gold, "夹具自检：金标准必须已入库（否则本钉是假绿）")
+        detail = self.api(f"/pilot/sets/{self.set_id}", index=1)
+        self.assertEqual(detail.status_code, 200, detail.text)
+        body = detail.json()
+        self.assertFalse(body["can_manage"])
+        for item in body["items"]:
+            self.assertEqual(set(item), {"zotero_key", "position"}, item)
+        # 成员看到的条目恰为集合成员表（作答所需元数据齐全、不加不减）。
+        self.assertEqual({item["zotero_key"] for item in body["items"]}, set(gold))
+        # 整响应键名零金标准/结果字段（与 my-attempt 钉同口径；verdict/
+        # clearance_verdict 是成员本人的达标口径回显，属成员可见元数据）。
+        keys = _walk_keys(body)
+        self.assertFalse([key for key in keys if "gold" in key.lower()], keys)
+        self.assertFalse(keys & {"decision", "reason", "kappa_binary",
+                                 "kappa_raw", "pabak", "agreement",
+                                 "snapshot_json"}, keys)
+        # 金标准理由字符串（answer_gold 的唯一指纹）不得出现在响应文本。
+        text = json.dumps(body, ensure_ascii=False)
+        self.assertNotIn("gold include", text)
+        self.assertNotIn("gold exclude", text)
+        # 成员清单端点同样零泄露（列表不含 items/金标准/逐条字段）。
+        listing = self.api("/pilot/sets", index=1).json()
+        listing_keys = _walk_keys(listing)
+        self.assertFalse([key for key in listing_keys if "gold" in key.lower()],
+                         listing_keys)
+        self.assertFalse(listing_keys & {"items", "decision", "reason",
+                                         "zotero_key", "position"}, listing_keys)
+
 
 # ---------------------------------------------------------------------------
 # 状态机 + 多尝试隔离
@@ -786,6 +823,46 @@ class StateMachinePins(PilotApiBase):
         again = self.post(f"/pilot/sets/{set_id}/my-attempt/submit", index=1)
         self.assertEqual(again.status_code, 409, again.text)
         self.assertEqual(again.json()["detail"]["error_code"], "attempt_submitted")
+
+    def test_stale_attempt_id_is_rejected_and_new_attempt_untouched(self):
+        """终审 #16：并发前值校验——过期 attempt_id 作答 409 attempt_mismatch。
+
+        多标签页/旧页面迟到答案不得静默写进新尝试。此前测试从未在请求体
+        发送过 attempt_id（grep 零命中），删除 core 的两行守卫时全套仍绿。
+        """
+        set_id = self.ready_set()
+        first = self.start_attempt(set_id)
+        self.answer_items(
+            set_id, {key: "include" for key in self.gold_map(set_id)})
+        self.submit(set_id)
+        second = self.start_attempt(set_id)
+        self.assertNotEqual(first["attempt"]["id"], second["attempt"]["id"])
+        # 旧页面带着过期 attempt_id 迟到提交 → 409，绝不落库
+        stale = self.post(
+            f"/pilot/sets/{set_id}/my-attempt/item",
+            {"zotero_key": "K02", "decision": "exclude",
+             "reason": "stale page answer",
+             "attempt_id": first["attempt"]["id"]}, index=1)
+        self.assertEqual(stale.status_code, 409, stale.text)
+        detail = stale.json()["detail"]
+        self.assertEqual(detail["error_code"], "attempt_mismatch", stale.text)
+        self.assertEqual(detail["message_key"], "pilot.attempt_mismatch",
+                         stale.text)
+        # 新尝试未被写入：K02 仍未作答、无理由
+        queue = self.api(f"/pilot/sets/{set_id}/my-attempt", index=1).json()
+        k02 = next(item for item in queue["items"]
+                   if item["zotero_key"] == "K02")
+        self.assertIsNone(k02["answer"], queue["items"])
+        self.assertEqual(k02["reason"], "", k02)
+        self.assertEqual(queue["progress"]["answered"], 0, queue["progress"])
+        # 对照腿：带正确 attempt_id 的作答不误伤
+        ok = self.post(
+            f"/pilot/sets/{set_id}/my-attempt/item",
+            {"zotero_key": "K02", "decision": "include",
+             "attempt_id": second["attempt"]["id"]}, index=1)
+        self.assertEqual(ok.status_code, 200, ok.text)
+        after = self.api(f"/pilot/sets/{set_id}/my-attempt", index=1).json()
+        self.assertEqual(after["progress"]["answered"], 1, after["progress"])
 
 
 # ---------------------------------------------------------------------------

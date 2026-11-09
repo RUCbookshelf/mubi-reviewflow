@@ -535,6 +535,72 @@ class ArbitrationSessionTests(unittest.TestCase):
             response = self._open()
         self.assertEqual(response.status_code, 404, response.text)
 
+    # ---- 7b. 终审 #07：三个子端点守卫逐端点红钉 ------------------------
+    # 权限/双盲守卫此前只在 GET /session 上有钉，且 403 用例用非成员
+    # （其 403 来自 require_user 的参与者检查，删掉 _context 里的
+    # arbitration_store 仍绿）。以下逐端点钉住 /item、/reveal、/finish。
+
+    def _subendpoint_actions(self):
+        """三个子端点调用闭包（actor 可指定）。"""
+        return {
+            "/item": lambda actor: self._decide("K1", "include", actor=actor),
+            "/reveal": lambda actor: self._reveal("K1", actor=actor),
+            "/finish": lambda actor: self._finish(actor=actor),
+        }
+
+    def test_participant_coder_is_forbidden_on_every_subendpoint(self):
+        """角色闸逐端点：受邀 coder（参与者，无 consensus:write）→ 403。"""
+        self._seed_three()
+        for name, action in self._subendpoint_actions().items():
+            with self.subTest(endpoint=name):
+                response = action(2)
+                self.assertEqual(response.status_code, 403, (name, response.text))
+                # 拒绝体绝不携带成员决定/理由（盲态不因 403 泄露）。
+                self.assertNotIn('"include"', response.text)
+                self.assertNotIn('"exclude"', response.text)
+                self.assertNotIn("人群不符", response.text)
+
+    def test_double_blind_guard_blocks_every_subendpoint_without_leak(self):
+        """双盲 409 逐端点：未暂停时 /item、/reveal、/finish 全拒且不落会话。
+
+        断言 409 的身份（双盲守卫的引导文案，而非会话层错误码）——
+        只看状态码会把「会话未开」的 409 误当双盲闸仍在。
+        """
+        self._seed_three(pause=False)
+        for name, action in self._subendpoint_actions().items():
+            with self.subTest(endpoint=name):
+                response = action(0)  # 属主过角色闸，被双盲 409 拦下
+                self.assertEqual(response.status_code, 409, (name, response.text))
+                detail = response.json()["detail"]
+                self.assertIsInstance(detail, str, (name, detail))
+                self.assertIn("尚未全部暂停", detail)
+                self.assertNotIn("K1", response.text)
+                self.assertNotIn('"include"', response.text)
+                self.assertNotIn('"exclude"', response.text)
+                self.assertNotIn("decision_", response.text)
+                self.assertNotIn("人群不符", response.text)
+                for user in self.users[:3]:
+                    self.assertNotIn(user["slug"], response.text)
+        self.assertEqual(self._session_rows(), 0, "双盲未暂停时任何子端点不得落会话")
+        self.assertEqual(self._arbitration_record_count(), 0,
+                         "双盲未暂停时 finish 不得落 append-only 记录")
+
+    def test_legacy_server_task_subendpoints_are_structured_409(self):
+        """legacy 腿：server 模式无属主记录 → 三子端点 409 collaboration_owner_unset。"""
+        self._seed_three()
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(str(self._store_path()) + suffix)
+            if path.exists():
+                path.unlink()
+        for name, action in self._subendpoint_actions().items():
+            with self.subTest(endpoint=name):
+                response = action(0)
+                self.assertEqual(response.status_code, 409, (name, response.text))
+                detail = response.json()["detail"]
+                self.assertEqual(detail["error_code"], "collaboration_owner_unset",
+                                 (name, detail))
+                self.assertNotIn('"include"', response.text)
+
     def test_locked_screener_library_returns_503_without_partial_session(self):
         self._seed_three()
         with self._exclusive_lock(self._screener_db(2)), mock.patch.object(

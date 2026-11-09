@@ -1138,6 +1138,56 @@ class EndpointPins(unittest.TestCase):
                          "重试后备份必须是旧文件的逐字节快照")
 
 
+    # ---- 终审 #34：preview-counts 的 timeout_seconds 钳制（≤20s） --------
+    def test_endpoint_timeout_clamped_to_cap(self):
+        """端点把 ``max(1.0, min(timeout_seconds, _COUNT_TIMEOUT_CAP))`` 下发
+        给 count_pubmed_hits；钳制被删时上游可让本服务阻塞任意久。"""
+        from unittest import mock
+
+        seen = {}
+
+        def _record(query, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return 5
+
+        with mock.patch.object(search_strategy_api, "count_pubmed_hits",
+                               side_effect=_record) as fake, \
+             mock.patch.object(search_strategy_api, "search_eric_preview",
+                               return_value={"total_hits": 0}):
+            response = self.client.post(
+                f"{self.base}/preview-counts", headers=self.auth,
+                json={"items": [{"database": "pubmed", "query_text": "q"}],
+                      "timeout_seconds": 999})
+        self.assertEqual(response.status_code, 200, response.text)
+        fake.assert_called_once()
+        self.assertEqual(seen["timeout"],
+                         search_strategy_api._COUNT_TIMEOUT_CAP,
+                         "端点必须把 timeout_seconds 钳到 _COUNT_TIMEOUT_CAP")
+
+    def test_mutation_clamp_neutered_pin_goes_red(self):
+        """破坏性变异：钳制的 min 恒等化 → 999 原样下发——上一颗钉必红。"""
+        from unittest import mock
+
+        seen = {}
+
+        def _record(query, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return 5
+
+        with mock.patch.object(search_strategy_api, "count_pubmed_hits",
+                               side_effect=_record), \
+             mock.patch.object(search_strategy_api, "search_eric_preview",
+                               return_value={"total_hits": 0}), \
+             mock.patch("builtins.min", lambda *args: args[0]):
+            response = self.client.post(
+                f"{self.base}/preview-counts", headers=self.auth,
+                json={"items": [{"database": "pubmed", "query_text": "q"}],
+                      "timeout_seconds": 999})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(seen["timeout"], 999.0,
+                         "钳制被中性化时 999 原样下发（= 钳制钉必红）")
+
+
 class OpenerProxyPins(unittest.TestCase):
     """终审 #31：PubMed 计数 opener 必须忽略 HTTP(S)_PROXY（沿 test_pdf_fetch_api.py:892 钉型）。"""
 
@@ -1162,6 +1212,142 @@ class OpenerProxyPins(unittest.TestCase):
         self.assertTrue(any(type(h).__name__ == "_NoRedirectHandler"
                             for h in our_opener.handlers),
                         "拒绝重定向 handler 仍需保留")
+
+
+class PubmedCountOutboundPins(unittest.TestCase):
+    """终审 #34：count_pubmed_hits 出站防护红钉（拒重定向 / 1MiB 读取
+    上限）。全部零真实出站。
+
+    既有用例把 count_pubmed_hits 整个 mock 掉（函数体从未被测试执行）；
+    把防护拆掉（默认 opener 跟 3xx、read 不限量）时测试全绿。本类直接
+    驱动函数本体：注入 opener 抛 302 → PubmedCountError；生产
+    ``_COUNT_OPENER`` 装有拒重定向 handler 且 redirect_request 恒 None；
+    响应超 ``_MAX_COUNT_BYTES`` → 「读取上限」错误；默认 opener 路径
+    ``read`` 收到的 limit 恒为 ``_MAX_COUNT_BYTES+1``（内存上界）。"""
+
+    def test_injected_opener_http_302_maps_to_pubmed_count_error(self):
+        import urllib.error
+        from unittest import mock
+
+        def opener(url, timeout=None):
+            raise urllib.error.HTTPError(url, 302, "Found", {}, None)
+
+        with mock.patch.object(search_strategy_api, "_COUNT_OPENER"):
+            with self.assertRaises(search_strategy_api.PubmedCountError) as ctx:
+                search_strategy_api.count_pubmed_hits("q", url_opener=opener)
+        self.assertIn("302", str(ctx.exception))
+
+    def test_production_count_opener_refuses_redirects(self):
+        handlers = [h for h in search_strategy_api._COUNT_OPENER.handlers
+                    if type(h).__name__ == "_NoRedirectHandler"]
+        self.assertEqual(len(handlers), 1,
+                         "生产 opener 必须装有拒重定向 handler")
+        for code in (301, 302, 303, 307, 308):
+            with self.subTest(code=code):
+                request = handlers[0].redirect_request(
+                    None, None, code, "Moved", {},
+                    "http://attacker.example/x")
+                self.assertIsNone(request, f"{code} 一律不跟跳")
+
+    def test_response_over_cap_raises_read_limit_error(self):
+        from unittest import mock
+
+        cap = search_strategy_api._MAX_COUNT_BYTES
+
+        def opener(url, timeout=None):
+            return ("x" * (cap + 1)).encode()
+
+        with mock.patch.object(search_strategy_api, "_COUNT_OPENER"):
+            with self.assertRaises(search_strategy_api.PubmedCountError) as ctx:
+                search_strategy_api.count_pubmed_hits("q", url_opener=opener)
+        self.assertIn("读取上限", str(ctx.exception))
+
+    def test_mutation_cap_widened_pin_goes_red(self):
+        """破坏性变异：上限放宽到 1GiB → 同样的超限响应不再触发「读取
+        上限」错误，而是落到解析失败——上一颗钉必红。"""
+        from unittest import mock
+
+        real_cap = search_strategy_api._MAX_COUNT_BYTES
+
+        def opener(url, timeout=None):
+            return ("x" * (real_cap + 1)).encode()
+
+        with mock.patch.object(search_strategy_api, "_COUNT_OPENER"), \
+                mock.patch.object(search_strategy_api, "_MAX_COUNT_BYTES",
+                                  1 << 30):
+            with self.assertRaises(search_strategy_api.PubmedCountError) as ctx:
+                search_strategy_api.count_pubmed_hits("q", url_opener=opener)
+        self.assertIn("不可解析", str(ctx.exception))
+        self.assertNotIn("读取上限", str(ctx.exception))
+
+    def test_default_opener_path_reads_bounded_and_targets_pubmed(self):
+        """默认 opener 路径：read 的 limit == _MAX_COUNT_BYTES+1；URL 只会
+        是声明常量 PUBMED_COUNT_URL（host/scheme 不可被查询参数带偏）。"""
+        from unittest import mock
+
+        recorded = {}
+        payload = json.dumps({"esearchresult": {"count": "3"}}).encode()
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                recorded["read"] = limit
+                return payload
+
+        class _Opener:
+            def open(self, request, timeout=None):
+                recorded["url"] = request.full_url
+                recorded["timeout"] = timeout
+                return _Resp()
+
+        with mock.patch.object(search_strategy_api, "_COUNT_OPENER", _Opener()):
+            value = search_strategy_api.count_pubmed_hits("q", timeout=7.0)
+        self.assertEqual(value, 3)
+        self.assertEqual(recorded["read"],
+                         search_strategy_api._MAX_COUNT_BYTES + 1,
+                         "读取上限是内存上界：read 必须带 limit")
+        self.assertEqual(
+            recorded["url"],
+            search_strategy_api.PUBMED_COUNT_URL
+            + "?db=pubmed&term=q&retmode=json&retmax=0&tool=ReviewFlow",
+            recorded["url"])
+        self.assertEqual(recorded["timeout"], 7.0)
+
+    def test_mutation_cap_changed_read_limit_pin_goes_red(self):
+        """破坏性变异：常量被改 → read 的 limit 跟着变（钉断言精确值
+        ``_MAX_COUNT_BYTES+1``，任何去限量/换常量的改动即红）。"""
+        from unittest import mock
+
+        recorded = {}
+        payload = json.dumps({"esearchresult": {"count": "1"}}).encode()
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                recorded["read"] = limit
+                return payload[:limit]
+
+        class _Opener:
+            def open(self, request, timeout=None):
+                return _Resp()
+
+        with mock.patch.object(search_strategy_api, "_COUNT_OPENER", _Opener()), \
+                mock.patch.object(search_strategy_api, "_MAX_COUNT_BYTES", 16):
+            with self.assertRaises(search_strategy_api.PubmedCountError):
+                # 17 字节 > 16：读取上限错误（本钉只看 read 收到的 limit）
+                search_strategy_api.count_pubmed_hits("q")
+        self.assertEqual(recorded["read"], 17,
+                         "read limit 必须跟随 _MAX_COUNT_BYTES（钉活体）")
 
 
 if __name__ == "__main__":

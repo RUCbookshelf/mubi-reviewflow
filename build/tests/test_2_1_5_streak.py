@@ -654,6 +654,46 @@ class DailyNudgeApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(feed_b).status_code, 404)
         self.assertIn("revoked", removed.json())
 
+    def test_ics_token_list_shows_only_own_tokens(self):
+        """终审 #15：GET /screening/ics-tokens「只列本人」过滤红钉。
+
+        令牌登记表是任务级共享 JSON；此前该 GET 端点在测试里零调用，
+        过滤被删时任一成员可枚举他人 token_id/创建时间。三人各建一枚
+        令牌后各自列表必须恰含本人 token_id，且响应不携带任何明文令牌。
+        """
+        invited = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.users[2]["username"], "role": "coder"},
+            headers=self.auth())
+        self.assertEqual(invited.status_code, 201, invited.text)
+        plaintexts = {}
+        token_ids = {}
+        for index in (0, 1, 2):  # 负责人 + 成员 1 + 成员 2
+            created = self.client.post(
+                f"/api/tasks/{self.task}/screening/ics-tokens",
+                headers=self.auth(index))
+            self.assertEqual(created.status_code, 200, created.text)
+            token_ids[index] = created.json()["token_id"]
+            plaintexts[index] = created.json()["token"]
+        self.assertEqual(len(set(token_ids.values())), 3, token_ids)
+
+        for index in (0, 1, 2):
+            response = self.client.get(
+                f"/api/tasks/{self.task}/screening/ics-tokens",
+                headers=self.auth(index))
+            self.assertEqual(response.status_code, 200, response.text)
+            body = response.json()
+            self.assertTrue(body["available"], body)
+            self.assertEqual({row["token_id"] for row in body["tokens"]},
+                             {token_ids[index]}, (index, body))
+            for row in body["tokens"]:
+                self.assertEqual(set(row), {"token_id", "created_at",
+                                            "revoked_at"}, row)
+                self.assertIsNone(row["revoked_at"], row)
+            # 响应绝不携带任何人的明文令牌（表内只存 sha256）。
+            for plaintext in plaintexts.values():
+                self.assertNotIn(plaintext, response.text)
+
     # ---- 通知通道 ------------------------------------------------------
 
     def test_channel_default_disabled(self):
@@ -679,6 +719,43 @@ class DailyNudgeApiTests(unittest.TestCase):
             json={"enabled": True, "type": "webhook", "url": "https://example.test/hook"},
             headers=self.auth(1))
         self.assertEqual(response.status_code, 403, response.text)
+
+    def test_member_and_outsider_cannot_fire_notify_test(self):
+        """终审 #14：唯一真实出站端点 notify/test 的属主闸红钉。
+
+        三处既有 POST notify/test 用例全用属主；属主闸（_owner_gate）被
+        误删后任意成员可用负责人配置的 webhook 外发并选取他人摘要。此钉
+        断言成员/非成员 POST 一律 403 且出站调用次数为 0。
+        """
+        self._seed(1, [("K0", "2026-11-08T09:00:00")])
+        self._put_target(1, daily_target=2)
+        opened: list[str] = []
+
+        class _TripwireOpener:
+            """零真实出站：任何 open() 都被记录（变异下即证据）。"""
+
+            def open(self, req, timeout=None):
+                opened.append(req.full_url)
+                raise AssertionError("notify/test 出站被触发")
+
+        with mock.patch.object(notify_core, "_resolve_host",
+                               lambda host, port=443: ["93.184.216.34"]), \
+             mock.patch.object(notify_core, "_OPENER", _TripwireOpener()):
+            # 通道保存同样走公网解析（DNS 桩指向公网 IP，零真实解析）
+            saved = self._put_channel({"enabled": True, "type": "webhook",
+                                       "url": "https://hooks.example.test/hook"})
+            self.assertEqual(saved.status_code, 200, saved.text)
+            member = self.client.post(
+                f"/api/tasks/{self.task}/screening/notify/test",
+                json={"screener": self.users[1]["username"]},
+                headers=self.auth(1))
+            other_member = self.client.post(
+                f"/api/tasks/{self.task}/screening/notify/test",
+                json={"screener": self.users[1]["username"]},
+                headers=self.auth(2))
+        self.assertEqual(member.status_code, 403, member.text)
+        self.assertEqual(other_member.status_code, 403, other_member.text)
+        self.assertEqual(opened, [], "非属主请求不得产生任何出站调用")
 
     def test_webhook_payload_is_numbers_only(self):
         """载荷钉（2.1.5 安全修复后不再恒放行）：URL 公网校验真跑（DNS 解析
@@ -843,6 +920,125 @@ class CorruptTokensFilePins(unittest.TestCase):
             f"/api/tasks/{self.task}/screening/ics-tokens", headers=self.auth(1))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["token"])
+
+
+class _TargetValidationMixin:
+    """终审 #56 的独立类环境（不继承 DailyNudgeApiTests，避免其用例重复收集）。
+
+    唯一 PUT 用例（_put_target）此前恒用合法 body 断言 200；把两处条件
+    改 ``if False`` 后 24 passed 全绿且 -1/10001/"25:00" 原样落盘
+    （终审 u6-glm-c7）。有效钉（复核修正）：「非整数」钉不住——pydantic
+    先 422 并把 "5"→5/True→1 强转；只能是 daily_target=-1/10001 与非法
+    remind_time 的 400 断言。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        cls.users = []
+        for i in range(3):
+            user = auth_mod.create_user(f"r215target{i}@example.test",
+                                        "R215C-Target-2026")
+            cls.users.append({
+                "user_id": user["id"],
+                "username": user["username"],
+                "token": auth_mod.create_access_token(user["id"],
+                                                      user["username"]),
+            })
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def auth(self, index=0):
+        return {"Authorization": "Bearer " + self.users[index]["token"]}
+
+    def setUp(self):
+        self._today_patch = mock.patch.object(
+            streak_api, "_today", lambda tz=None: TODAY)
+        self._today_patch.start()
+        self.task = self.client.post(
+            "/api/tasks", json={"name": self._testMethodName},
+            headers=self.auth()).json()["task_id"]
+        response = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.users[1]["username"], "role": "coder"},
+            headers=self.auth())
+        self.assertEqual(response.status_code, 201, response.text)
+
+    def tearDown(self):
+        self._today_patch.stop()
+
+    def _put_target_raw(self, **overrides):
+        body = {"daily_target": 3, "remind_time": "09:00",
+                "remind_enabled": True, "deadline": "", "timezone": ""}
+        body.update(overrides)
+        return self.client.put(
+            f"/api/tasks/{self.task}/screening/daily-target",
+            json=body, headers=self.auth(1))
+
+    def _read_settings(self):
+        response = self.client.get(
+            f"/api/tasks/{self.task}/screening/daily-status",
+            headers=self.auth(1))
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        return {"daily_target": body["daily_target"],
+                "remind_time": body["remind_time"]}
+
+
+class TargetValidationPinsStandalone(_TargetValidationMixin, unittest.TestCase):
+    """终审 #56 实钉：越界 daily_target / 非法 remind_time 的 400 与边界 200。"""
+
+    def test_daily_target_out_of_range_is_400(self):
+        for bad in (-1, streak_api.MAX_DAILY_TARGET + 1):
+            with self.subTest(daily_target=bad):
+                response = self._put_target_raw(daily_target=bad)
+                self.assertEqual(response.status_code, 400, response.text)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["message_key"],
+                                 "daily_nudge.invalid_daily_target", detail)
+                self.assertEqual(detail["params"]["max"],
+                                 streak_api.MAX_DAILY_TARGET, detail)
+
+    def test_remind_time_shape_is_400(self):
+        # 空串不在列：实现把空值回退 DEFAULT_REMIND_TIME（= 用户缺省）。
+        for bad in ("25:00", "9:00", "0900", "09:00:00"):
+            with self.subTest(remind_time=bad):
+                response = self._put_target_raw(remind_time=bad)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(response.json()["detail"]["message_key"],
+                                 "daily_nudge.invalid_remind_time",
+                                 response.json()["detail"])
+
+    def test_boundary_values_are_accepted(self):
+        """恰在边界内的值必须 200：0、MAX_DAILY_TARGET 与 HH:MM 形状。"""
+        for good_target in (0, streak_api.MAX_DAILY_TARGET):
+            with self.subTest(daily_target=good_target):
+                response = self._put_target_raw(daily_target=good_target,
+                                                remind_time="23:59")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["saved"])
+
+    def test_mutation_validation_removed_pin_goes_red(self):
+        """破坏性变异：上限放开到 10^9 + 形状正则恒匹配（= 两处校验 if
+        False 的运行期等价；_validate_target 是注册闭包内的嵌套函数，无法
+        整体替换，故等价改写其依赖的模块级常量）→ 10001/"25:00" 200 落盘
+        ——上面两颗钉必红（-1 仍被下界拦住：变异只放开上限侧）。"""
+        import re as _re
+        widened = streak_api.MAX_DAILY_TARGET
+        with mock.patch.object(streak_api, "MAX_DAILY_TARGET", 10 ** 9), \
+                mock.patch.object(streak_api, "_REMIND_TIME_RE",
+                                  _re.compile(r"^.*$")):
+            response = self._put_target_raw(daily_target=widened + 1,
+                                            remind_time="25:00")
+            self.assertEqual(response.status_code, 200, response.text)
+            saved = response.json()["settings"]
+        # PUT 响应直接回显落盘的设置（读取端另有截断兜底，不回显原值）
+        self.assertEqual(saved["daily_target"], widened + 1,
+                         "变异下非法值真的落盘（= 校验钉必红）")
+        self.assertEqual(saved["remind_time"], "25:00",
+                         "变异下非法 remind_time 真的落盘（= 校验钉必红）")
 
 
 if __name__ == "__main__":  # pragma: no cover

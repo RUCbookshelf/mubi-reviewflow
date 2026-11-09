@@ -896,3 +896,170 @@ class TestAppraisalEndpoints(unittest.TestCase):
         assert response.status_code == 200, response.text
         assert response.json()["available"] is False
         assert response.json()["message_key"] == "appraisal.unavailable"
+
+    # ---- 终审 #04：评价记录逐人隔离（双评揭示前互不可见） ---------------
+
+    def test_appraisal_records_are_isolated_per_user(self):
+        """A 写 K-RCT、B 写 K-QUAL 后互相 GET 必须 saved=false、note 为空。
+
+        「双评揭示前不得看到他人评分」的唯一实现点是个人库 {slug}.db 解析
+        （_db_path → screener_db），此钉钉住跨用户读不到；再钉 B 改写
+        K-RCT 不影响 A 已存记录（各存各的，绝不共库）。
+        """
+        invite = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.peer["username"], "role": "coder"},
+            headers=self.auth)
+        assert invite.status_code == 201, invite.text
+        owner_put = self.client.put(
+            f"{self.base}/K-RCT", headers=self.auth,
+            json={"tool": "rob2", "responses": ROB2_LOW,
+                  "note": "owner private note"})
+        assert owner_put.status_code == 200, owner_put.text
+        peer_put = self.client.put(
+            f"{self.base}/K-QUAL", headers=self.peer_auth,
+            json={"tool": "casp-qualitative",
+                  "responses": _all_answered("casp-qualitative"),
+                  "note": "peer private note"})
+        assert peer_put.status_code == 200, peer_put.text
+
+        # 属主读成员的 K-QUAL：无记录、无 note、无应答。
+        owner_reads_peer = self.client.get(
+            f"{self.base}/K-QUAL", headers=self.auth,
+            params={"tool": "casp-qualitative"})
+        assert owner_reads_peer.status_code == 200, owner_reads_peer.text
+        assert owner_reads_peer.json()["saved"] is False, owner_reads_peer.text
+        assert owner_reads_peer.json()["note"] == "", owner_reads_peer.text
+        assert owner_reads_peer.json()["responses"] == {}, owner_reads_peer.text
+        # 成员读属主的 K-RCT：同样无记录、无 note（盲评：不见他人应答）。
+        peer_reads_owner = self.client.get(
+            f"{self.base}/K-RCT", headers=self.peer_auth,
+            params={"tool": "rob2"})
+        assert peer_reads_owner.status_code == 200, peer_reads_owner.text
+        assert peer_reads_owner.json()["saved"] is False, peer_reads_owner.text
+        assert peer_reads_owner.json()["note"] == "", peer_reads_owner.text
+        assert peer_reads_owner.json()["responses"] == {}, peer_reads_owner.text
+
+        # 成员对同篇 PUT 不得影响属主已存记录（两库物理隔离）。
+        peer_overwrite = self.client.put(
+            f"{self.base}/K-RCT", headers=self.peer_auth,
+            json={"tool": "rob2", "responses": _all_answered("rob2"),
+                  "note": "peer overwrite attempt"})
+        assert peer_overwrite.status_code == 200, peer_overwrite.text
+        owner_again = self.client.get(
+            f"{self.base}/K-RCT", headers=self.auth, params={"tool": "rob2"})
+        assert owner_again.json()["saved"] is True, owner_again.text
+        assert owner_again.json()["note"] == "owner private note"
+        assert owner_again.json()["overall"]["judgement"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# 终审 #53：评价模块输入上限防护红钉（此前三类上限的 message_key 与常量在
+# build/tests 零命中——变异放开后 102 passed 全绿）。每颗负钉配一条恰在
+# 阈值内的 200 正例；变异钉证明校验承重。
+# ---------------------------------------------------------------------------
+
+
+class TestAppraisalInputLimitPins(unittest.TestCase):
+    """responses 条数 / note 长度 / comment 长度 / article_key 形状的边界。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app, raise_server_exceptions=False)
+        cls.client.__enter__()
+        user = auth_mod.create_user("r215b-limits@example.test",
+                                    "R215B-Limits-2026!")
+        cls.user = {"user_id": user["id"], "username": user["username"]}
+        cls.token = auth_mod.create_access_token(user["id"], user["username"])
+        cls.auth = {"Authorization": "Bearer " + cls.token}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def setUp(self):
+        response = self.client.post(
+            "/api/tasks",
+            json={"name": f"appraisal-limits-{self._testMethodName}"},
+            headers=self.auth)
+        assert response.status_code in (200, 201), response.text
+        self.task = response.json()["task_id"]
+        self.base = f"/api/tasks/{self.task}/appraisal"
+        ctx = app.state.review_workflow.context(self.task, self.user)
+        db_mod.upsert_articles(ctx.owner_db, [
+            Article(zotero_key="K-RCT", title="A randomised controlled trial"),
+        ], [])
+        self.known_item = next(iter(core.iter_items(core.REGISTRY["rob2"])))["id"]
+
+    def _put(self, key="K-RCT", **body):
+        return self.client.put(f"{self.base}/{key}", headers=self.auth,
+                               json={"tool": "rob2", **body})
+
+    def test_response_count_boundary(self):
+        """301 条应答 → 400 responses_too_large（分界在 300：300 条进
+        item_unknown 分支而非条数分支）。"""
+        too_many = {f"x{i}": "Y" for i in range(core.MAX_RESPONSE_ITEMS + 1)}
+        response = self._put(responses=too_many)
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        assert detail["message_key"] == "appraisal.responses_too_large"
+        assert detail["params"]["max_items"] == core.MAX_RESPONSE_ITEMS
+        # 恰在阈值内：条数闸放行、落到未知条目闸（证明分界在 300）
+        at_edge = {f"x{i}": "Y" for i in range(core.MAX_RESPONSE_ITEMS)}
+        edge = self._put(responses=at_edge)
+        assert edge.status_code == 400, edge.text
+        assert edge.json()["detail"]["message_key"] == "appraisal.item_unknown"
+
+    def test_note_length_boundary(self):
+        """20001 字 note → 400 note_invalid；20000 字恰好可用。"""
+        response = self._put(note="n" * (core.MAX_NOTE_CHARS + 1))
+        assert response.status_code == 400, response.text
+        detail = response.json()["detail"]
+        assert detail["message_key"] == "appraisal.note_invalid"
+        assert detail["params"]["max_chars"] == core.MAX_NOTE_CHARS
+        at_edge = self._put(note="n" * core.MAX_NOTE_CHARS)
+        assert at_edge.status_code == 200, at_edge.text
+
+    def test_comment_length_boundary(self):
+        """20001 字评论（挂在真实条目上）→ 400 comment_invalid；阈值内 200。"""
+        too_long = "c" * (core.MAX_NOTE_CHARS + 1)
+        response = self._put(comments={self.known_item: too_long})
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["message_key"] == \
+            "appraisal.comment_invalid"
+        at_edge = self._put(comments={self.known_item:
+                                      "c" * core.MAX_NOTE_CHARS})
+        assert at_edge.status_code == 200, at_edge.text
+
+    def test_article_key_shape_boundary(self):
+        """256 字键 / 含控制字符键 → 400 article_key_invalid；255 字键 200。"""
+        long_key = "k" * (core.MAX_ARTICLE_KEY_CHARS + 1)
+        response = self._put(key=long_key)
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["message_key"] == \
+            "appraisal.article_key_invalid"
+        control_key = "bad%01key"  # URL 解码后含 \x01
+        response = self.client.put(f"{self.base}/{control_key}",
+                                   headers=self.auth,
+                                   json={"tool": "rob2"})
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["message_key"] == \
+            "appraisal.article_key_invalid"
+        at_edge = "k" * core.MAX_ARTICLE_KEY_CHARS
+        edge = self._put(key=at_edge)
+        assert edge.status_code == 200, edge.text
+
+    def test_mutation_limits_widened_pin_goes_red(self):
+        """破坏性变异：三类上限同时放开到 10^9 → 超限 note/评论/键全部 200
+        落盘（终审 u6-glm-c4 mutate_limits 的运行期等价）——上面几颗钉必红。"""
+        from unittest import mock
+
+        with mock.patch.object(core, "MAX_RESPONSE_ITEMS", 10 ** 9), \
+                mock.patch.object(core, "MAX_NOTE_CHARS", 10 ** 9), \
+                mock.patch.object(core, "MAX_ARTICLE_KEY_CHARS", 10 ** 9):
+            response = self._put(
+                note="n" * 20_001,
+                comments={self.known_item: "c" * 20_001})
+            assert response.status_code == 200, response.text
+            edge = self._put(key="k" * 256)
+            assert edge.status_code == 200, edge.text

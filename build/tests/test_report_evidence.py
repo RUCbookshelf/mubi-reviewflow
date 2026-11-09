@@ -1093,4 +1093,108 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(legacy_result['duplicates'],0)
 
 
+class ScreenerParamGuardPins(unittest.TestCase):
+    """终审 #58：全局 ``?screener=`` 跨筛选员守卫的「daily-status 属主例外
+    收窄」负向红钉。
+
+    此前唯一断言带 screener 403 的用例（本文件 test_personal_ml… 的 PUT
+    /al/settings）其 403 来自端点自身 _al_actor——去掉全局守卫该用例仍过
+    （代偿）。本类钉：属主带 ``?screener=<成员>`` 访问 daily-status 之外的
+    GET 端点（/decisions、/articles、/export/decisions、/progress）必须
+    403；唯二例外（daily-status 与 /suggestion）对属主放行；变异钉以依赖
+    覆盖剥掉请求中的 screener 参数（终审 u7-deepseek-c1 mutplugin 的运行
+    期等价）证明 403 完全由全局守卫承重。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        from custom_backend import auth as auth_mod
+        cls.users = []
+        for i in range(2):
+            user = auth_mod.create_user(f'guard58-{i}@example.test',
+                                        'Guard58-Test-Pass')
+            cls.users.append({'user_id': user['id'],
+                              'username': user['username'],
+                              'token': auth_mod.create_access_token(
+                                  user['id'], user['username'])})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        fixture.cleanup()
+
+    def auth(self, i=0):
+        return {'Authorization': 'Bearer ' + self.users[i]['token']}
+
+    def setUp(self):
+        self.task = self.client.post(
+            '/api/tasks', json={'name': self._testMethodName},
+            headers=self.auth()).json()['task_id']
+        # 建立协作关系（属主 + 成员），让 daily-status 例外路径可走到放行。
+        ctx = app.state.review_workflow.context(self.task, self.users[0])
+        task_collaboration.grant_role(
+            ctx.collaboration_db, actor_user_id=self.users[0]['user_id'],
+            user_id=self.users[1]['user_id'], role='coder', task_id=self.task)
+        db.upsert_articles(ctx.owner_db, [
+            Article(zotero_key='G1', title='Guard study')], [])
+
+    def _member_param(self):
+        return '?screener=' + self.users[1]['username']
+
+    def test_owner_cannot_read_member_data_via_screener_param(self):
+        member = self._member_param()
+        for path in (f'/api/tasks/{self.task}/decisions{member}',
+                     f'/api/tasks/{self.task}/articles{member}',
+                     f'/api/tasks/{self.task}/export/decisions{member}',
+                     f'/api/tasks/{self.task}/progress{member}'):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers=self.auth())
+                self.assertEqual(response.status_code, 403,
+                                 f'{path} -> {response.status_code}（双盲阶段'
+                                 '属主不得经 screener 参数读成员数据）')
+
+    def test_daily_status_exception_is_the_only_get_readthrough(self):
+        """唯二例外：daily-status 与 /suggestion 对属主放行（非 403）。"""
+        for suffix in ('/screening/daily-status',
+                       '/screening/daily-status/suggestion'):
+            with self.subTest(suffix=suffix):
+                response = self.client.get(
+                    f'/api/tasks/{self.task}{suffix}{self._member_param()}',
+                    headers=self.auth())
+                self.assertNotEqual(response.status_code, 403, response.text)
+
+    def test_mutation_guard_bypassed_pin_goes_red(self):
+        """破坏性变异：依赖覆盖剥掉请求中的 screener 参数（= 删守卫的运行期
+        等价，终审探针同法）→ /decisions 等从 403 变 200——上一颗钉必红。"""
+        from fastapi import Request, Header
+        from custom_backend.main import require_user
+        from unittest import mock
+
+        def _stripped(request: Request,
+                      authorization: str | None = Header(default=None)):
+            real_getlist = request.query_params.getlist
+
+            def _getlist(key):
+                values = real_getlist(key)
+                if key == 'screener':
+                    return [value for value in values if not value]
+                return values
+
+            with mock.patch.object(request.query_params, 'getlist', _getlist):
+                return require_user(request, authorization)
+
+        app.dependency_overrides[require_user] = _stripped
+        try:
+            for path in (f'/api/tasks/{self.task}/decisions',
+                         f'/api/tasks/{self.task}/articles'):
+                with self.subTest(path=path):
+                    response = self.client.get(
+                        path + self._member_param(), headers=self.auth())
+                    self.assertEqual(response.status_code, 200,
+                                     f'无守卫时 {path} 真的放行（= 钉必红）')
+        finally:
+            app.dependency_overrides.pop(require_user, None)
+
+
 if __name__=='__main__': unittest.main(verbosity=2)

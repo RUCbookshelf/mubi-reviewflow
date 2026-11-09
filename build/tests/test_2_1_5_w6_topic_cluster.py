@@ -742,5 +742,124 @@ class AuditDecisionSetNails(unittest.TestCase):
         self.assertEqual(before, [])
 
 
+class QueueOrderGuardPins(unittest.TestCase):
+    """终审 #29：queue() 层钩子排列校验（第二道防线）的红钉。
+
+    生产钩子 ``_cluster_queue_order`` 自带同型校验且有纯函数钉
+    （TopicOrderUnitNails / main.py:3410-3415）；本类钉 queue() 这一层：
+    注入「丢尾键 / 重复键 / 幽灵键 / None」钩子，``/work-queue/fulltext``
+    必须仍返回与基线完全相同的完整键集（守卫丢弃坏序、保持基序，total 与
+    条目数不矛盾）。删掉排列校验后 drop-last 会静默丢条目、duplicate 出
+    重复键、extra-key 直接 500（终审探针 probe_mutation_run / probe_bad_hook
+    / probe_mut_drop 已证），变异钉以「校验被中性化」的运行期等价复现。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app, raise_server_exceptions=False)
+        cls.client.__enter__()
+        try:
+            user = auth_mod.create_user("w6guard@example.test",
+                                        "W6-Guard-Test-2026")
+        except auth_mod.AuthError:
+            user = auth_mod.get_user("w6guard@example.test")
+        cls.username = user["username"]
+        cls.auth = {"Authorization": "Bearer " +
+                    auth_mod.create_access_token(user["id"], user["username"])}
+        cls.created_tasks: list[str] = []
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def _new_task(self, name: str) -> str:
+        response = self.client.post("/api/tasks", json={"name": name},
+                                    headers=self.auth)
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()["task_id"]
+        self.created_tasks.append(task_id)
+        self.task = task_id
+        return task_id
+
+    def _seed(self) -> None:
+        self._new_task(self._testMethodName)
+        info = tasks_mod.find_task(self.task, str(main_mod.DATA_DIR))
+        db = main_mod._screener_db(info, self.username)
+        db_mod.upsert_articles(
+            db, [_article(f"G{i}", topic) for i, topic in
+                 enumerate(["rct", "qual", "ml"] * 3)], [])
+        for i in range(9):
+            db_mod.save_decision(db, f"G{i}", "include", "", "", [])
+
+    def _queue(self):
+        response = self.client.get(
+            f"/api/tasks/{self.task}/work-queue/fulltext", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_bad_hooks_cannot_drop_duplicate_or_add_keys(self):
+        """四种坏钩子（丢尾/重复/幽灵/None）下队列键集与基线逐一相同。"""
+        self._seed()
+        baseline_keys = [row["zotero_key"] for row in self._queue()["queue"]]
+        self.assertEqual(len(baseline_keys), 9, baseline_keys)
+
+        runtime = app.state.review_workflow
+        self.assertIsNotNone(runtime.queue_order, "前提：生产钩子已接线")
+        bad_hooks = {
+            "drop_last": lambda ctx, stage, keys: keys[:-1],
+            "duplicate": lambda ctx, stage, keys: keys + [keys[0]],
+            "extra_key": lambda ctx, stage, keys: keys + ["GHOST"],
+            "none": lambda ctx, stage, keys: None,
+        }
+        for name, hook in bad_hooks.items():
+            with self.subTest(hook=name):
+                with mock.patch.object(runtime, "queue_order", hook):
+                    payload = self._queue()
+                keys = [row["zotero_key"] for row in payload["queue"]]
+                self.assertEqual(keys, baseline_keys,
+                                 f"{name} 钩子必须被守卫丢弃、保持基序")
+                self.assertEqual(payload["total"], len(baseline_keys))
+
+    def test_mutation_permutation_check_neutered_pin_goes_red(self):
+        """破坏性变异：排列校验的两道比较被中性化（值保真的「恒等」len /
+        sorted——模块内唯一的 len(...)==/sorted(...)== 比较就是守卫本体的
+        两道，等效删除守卫）→ drop-last 钩子照单全收，队列静默丢一条——
+        上一颗钉必红。"""
+        import builtins as _builtins
+        from custom_backend import review_workflow_api
+
+        real_len, real_sorted = _builtins.len, _builtins.sorted
+
+        class _EqAnyInt(int):
+            def __eq__(self, other):
+                return True
+
+            def __ne__(self, other):
+                return False
+
+        class _EqAnyList(list):
+            def __eq__(self, other):
+                return True
+
+            def __ne__(self, other):
+                return False
+
+        self._seed()
+        baseline_keys = [row["zotero_key"] for row in self._queue()["queue"]]
+        runtime = app.state.review_workflow
+        with mock.patch.object(runtime, "queue_order",
+                               lambda ctx, stage, keys: keys[:-1]), \
+                mock.patch.object(review_workflow_api, "len",
+                                  lambda seq: _EqAnyInt(real_len(seq)),
+                                  create=True), \
+                mock.patch.object(review_workflow_api, "sorted",
+                                  lambda seq: _EqAnyList(real_sorted(seq)),
+                                  create=True):
+            payload = self._queue()
+        keys = [row["zotero_key"] for row in payload["queue"]]
+        self.assertEqual(keys, baseline_keys[:-1], keys)
+        self.assertEqual(len(keys), 8,
+                         "守卫被中性化时队列丢条目（= 排列校验钉必红）")
+
+
 if __name__ == "__main__":
     unittest.main()

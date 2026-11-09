@@ -1196,6 +1196,18 @@ class UploadSecurityTests(unittest.TestCase):
         screening, screening_files = limits[r"^/api/tasks/[^/]+/screening-arbitrations$"]
         self.assertEqual(screening, 9 * 100 * 1024 * 1024 + 1024 * 1024)  # 2..9 文件
         self.assertEqual(screening_files, 9)
+        # 终审 #42 ③：import-package 两条规则的限值此前无人钉（drift_rule
+        # 探针把预检 limit 改 MAX+2MiB 也能 50 passed）。端点把
+        # MAX_PACKAGE_BYTES + _UPLOAD_SLACK_BYTES 下发给 _read_upload_bounded，
+        # 预检必须与其同值，且单端点单文件。
+        from custom_backend.task_package_api import (
+            MAX_PACKAGE_BYTES as TASK_PKG_MAX, _UPLOAD_SLACK_BYTES as TASK_PKG_SLACK)
+        for rule in (r"^/api/tasks/import-package/preflight$",
+                     r"^/api/tasks/import-package$"):
+            pkg_limit, pkg_files = limits[rule]
+            self.assertEqual(pkg_limit, TASK_PKG_MAX + TASK_PKG_SLACK,
+                             f"{rule} 预检限值必须与端点有界读取同值")
+            self.assertEqual(pkg_files, 1, rule)
         batch, batch_files = limits[r"^/api/tasks/[^/]+/import-batch$"]
         self.assertEqual(batch_files, 20)                           # review_imports 20 文件上限
         single, single_files = limits[r"^/api/tasks/[^/]+/import$"]

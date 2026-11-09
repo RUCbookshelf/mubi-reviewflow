@@ -1382,5 +1382,97 @@ class PdfFetchBaseUrlGovernanceTests(PdfFetchFixture, unittest.TestCase):
                         "无出站闸时真的把 DOI+email 发往链路本地地址（钉必红）")
 
 
+class GetBytesTooLargePins(unittest.TestCase):
+    """终审 #35：``_get_bytes`` 出站响应体积上限（JSON 2MiB / PDF 100MiB）
+    的 too_large 红钉（纯函数级，零真实出站）。
+
+    既有测试的 FakeResponse 只按调用方给的 limit 裁切，从未构造超限响应；
+    删掉超限判定（pdf_fetch_api ``len(data) > max_bytes`` → too_large）或把
+    ``read(max_bytes+1)`` 改成不限量读取时全部测试仍绿。本类构造「无视
+    limit 的超限响应」：
+    - 超限 → ``OutboundError(reason='too_large')``；
+    - ``read`` 收到的 limit 恒等于 ``max_bytes+1``（内存上界；上限被改即红）；
+    - JSON 路径超限 → too_large 而非 bad_response（未进入 JSON 解析）。"""
+
+    URL = "https://api.example.test/endpoint"
+
+    def test_over_limit_raises_too_large_and_reads_bounded(self):
+        recorded = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                recorded["read"] = limit
+                return b"x" * 17  # 无视 limit：模拟真实超大响应
+
+        def _open(request, timeout=None):
+            return _Resp()
+
+        with mock.patch.object(pdf_fetch_api, "_open", _open):
+            with self.assertRaises(pdf_fetch_api.OutboundError) as ctx:
+                pdf_fetch_api._get_bytes(self.URL, timeout=3.0,
+                                         max_bytes=16, accept="*/*")
+        self.assertEqual(ctx.exception.reason, "too_large",
+                         str(ctx.exception))
+        self.assertEqual(recorded["read"], 17,
+                         "read 必须带 max_bytes+1 的 limit（内存上界）")
+
+    def test_json_path_over_cap_is_too_large_not_bad_response(self):
+        """``_get_json``（MAX_JSON_BYTES）超限 → too_large，绝不进入解析。"""
+        cap = pdf_fetch_api.MAX_JSON_BYTES
+        recorded = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                recorded["read"] = limit
+                return b"x" * (cap + 1)
+
+        def _open(request, timeout=None):
+            return _Resp()
+
+        with mock.patch.object(pdf_fetch_api, "_open", _open):
+            with self.assertRaises(pdf_fetch_api.OutboundError) as ctx:
+                pdf_fetch_api._get_json(self.URL)
+        self.assertEqual(ctx.exception.reason, "too_large",
+                         str(ctx.exception))
+        self.assertEqual(recorded["read"], cap + 1)
+
+    def test_mutation_cap_widened_pin_goes_red(self):
+        """破坏性变异：上限放宽 → 同样的超限响应落到 bad_response（进入
+        解析）而不是 too_large——上一组钉必红。"""
+        real_cap = pdf_fetch_api.MAX_JSON_BYTES
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                return b"x" * (real_cap + 1)
+
+        def _open(request, timeout=None):
+            return _Resp()
+
+        with mock.patch.object(pdf_fetch_api, "_open", _open), \
+                mock.patch.object(pdf_fetch_api, "MAX_JSON_BYTES", 1 << 30):
+            with self.assertRaises(pdf_fetch_api.OutboundError) as ctx:
+                pdf_fetch_api._get_json(self.URL)
+        self.assertEqual(ctx.exception.reason, "bad_response",
+                         str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

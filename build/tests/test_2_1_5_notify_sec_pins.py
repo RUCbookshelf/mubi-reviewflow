@@ -483,5 +483,140 @@ class AppriseTimeoutPins(unittest.TestCase):
         self.assertEqual(added, [carrying + "&cto=5&rto=5"])
 
 
+# ---------------------------------------------------------------------------
+# 终审 #33 缺口补钉：SMTP 私网 host 与 Apprise 字面量私网拦截
+# （F2 已覆盖 webhook 三道；fix_hint 剩余两条在此补齐）
+# ---------------------------------------------------------------------------
+
+class SmtpPrivateHostPins(unittest.TestCase):
+    """SMTP 通道：私网 host 在任何 socket 建立之前即拒（零出站）。"""
+
+    CONFIG = {"enabled": True, "type": "smtp", "port": 587,
+              "from_addr": "rf@example.test", "to_addr": "to@example.test"}
+
+    def _send(self, host, smtp_stub):
+        with mock.patch.object(notify_core.smtplib, "SMTP", smtp_stub):
+            return notify_core.send({**self.CONFIG, "host": host}, _summary())
+
+    def test_private_smtp_host_rejected_before_any_socket(self):
+        for host in ("127.0.0.1", "10.1.2.3", "192.168.1.5",
+                     "169.254.169.254", "100.100.100.200"):
+            with self.subTest(host=host):
+                created = []
+
+                def _smtp(*args, **kwargs):
+                    created.append((args, kwargs))
+                    raise AssertionError("私网 host 不得建立 SMTP 连接")
+
+                result = self._send(host, _smtp)
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["status"], "private_host", result)
+                self.assertEqual(result["channel"], "smtp", result)
+                self.assertEqual(created, [], host)
+
+    def test_dns_resolving_private_smtp_host_rejected(self):
+        """域名解析回私网（DNS rebinding）→ 同样拒；公网解析放行到 stub。"""
+        with mock.patch.object(notify_core, "_resolve_host",
+                               lambda host, port=443: ["192.168.0.9"]):
+            result = self._send("smtp.internal.example.test",
+                                lambda *a, **k: (_ for _ in ()).throw(
+                                    AssertionError("不得建立连接")))
+            self.assertEqual(result["status"], "private_host", result)
+
+    def test_mutation_public_hostname_neutered_pin_goes_red(self):
+        """破坏性变异：validate_public_hostname 恒放行 → 私网 SMTP 真的
+        建连（stub 被触达）——上一颗钉必红。"""
+        reached = []
+
+        class _FakeSmtp:
+            def __init__(self, *args, **kwargs):
+                reached.append(args[0] if args else None)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def ehlo(self):
+                return (250, b"ok")
+
+            def starttls(self):
+                return (220, b"ready")
+
+            def sendmail(self, *a, **k):
+                return {}
+
+            def send_message(self, message):
+                return {}
+
+            def login(self, *a, **k):
+                return (235, b"ok")
+
+            def quit(self):
+                return (221, b"bye")
+
+        with mock.patch.object(notify_core, "validate_public_hostname",
+                               lambda *a, **k: None):
+            result = self._send("127.0.0.1", _FakeSmtp)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(reached, ["127.0.0.1"],
+                         "防护被拆时私网 SMTP 真的建连（= 钉必红）")
+
+
+class AppriseLiteralPrivatePins(unittest.TestCase):
+    """Apprise 通道：URL 字面量私网 host 在引擎加载之前即拒。"""
+
+    ENV = "REVIEWFLOW_NOTIFY_TEST_APPRISE_URL"
+
+    def _send(self, url):
+        loaded = []
+
+        class _FakeApprise:
+            def __init__(self):
+                loaded.append("ctor")
+
+            def add(self, target):
+                loaded.append(target)
+                return True
+
+            def notify(self, **kwargs):
+                loaded.append("notify")
+                return True
+
+        class _FakeModule:
+            Apprise = _FakeApprise
+
+        with mock.patch.dict(os.environ, {self.ENV: url}), \
+                mock.patch.dict(sys.modules, {"apprise": _FakeModule}):
+            result = notify_core.send(
+                {"enabled": True, "type": "apprise", "url_env": self.ENV},
+                _summary())
+        return result, loaded
+
+    def test_literal_private_apprise_url_rejected_before_engine(self):
+        for url in ("json://127.0.0.1:8050/hook", "json://10.1.2.3/x",
+                    "mailto://127.0.0.1", "json://100.100.100.200/x",
+                    "json://169.254.169.254/latest"):
+            with self.subTest(url=url):
+                result, loaded = self._send(url)
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["status"], "private_host", result)
+                self.assertEqual(result["channel"], "apprise", result)
+                self.assertEqual(loaded, [], "Apprise 引擎绝不得被加载")
+
+    def test_mutation_literal_check_neutered_pin_goes_red(self):
+        """破坏性变异：_check_host_literal 恒放行 → Apprise 引擎被加载并
+        接收私网 URL——上一颗钉必红。"""
+        with mock.patch.object(notify_core, "_check_host_literal",
+                               lambda host: None):
+            result, loaded = self._send("json://127.0.0.1:8050/hook")
+        self.assertTrue(result["ok"], result)
+        self.assertIn("ctor", loaded, "防护被拆时 Apprise 引擎真的被加载"
+                      "（= 钉必红）")
+        self.assertIn("json://127.0.0.1:8050/hook?cto=5&rto=5", loaded,
+                      loaded)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
