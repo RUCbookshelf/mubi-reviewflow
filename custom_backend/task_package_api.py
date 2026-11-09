@@ -981,7 +981,10 @@ def _package_inventory(info: Any, data_dir: str | Path, include_pdfs: bool
 def _strict_json(raw: bytes, *, reason: str = "manifest_unreadable") -> Any:
     try:
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        # 终审 #40：深嵌套 JSON（约 400KB 即可，远小于 8MB 上限）此前让
+        # RecursionError（非 ValueError 子类）穿透 → 500；一并折进同一个
+        # package_invalid{reason} 结构化 400。
         raise TaskPackageError("package_invalid", params={"reason": reason}) from exc
 
 
@@ -1165,6 +1168,12 @@ def validate_import_package(path: str | Path, *, package_sha256: str | None = No
 
         # 终审 #41：task.sanitized.json 独立上限（曾无上限整读，preflight 阶段
         # 128MiB 声明即整块入内存）；有界流式读取。
+        # 终审 #40（剩余分支①）：manifest 与成员集合自洽但**缺
+        # task.sanitized.json** 时 getinfo 抛 KeyError → 500；显式断言成员
+        # 存在，按坏包拒绝（结构化 400，reason 区分）。
+        if "task.sanitized.json" not in actual:
+            raise TaskPackageError("package_invalid",
+                                   params={"reason": "task_json_missing"})
         task_info = archive.getinfo("task.sanitized.json")
         if task_info.file_size > MAX_TASK_JSON_BYTES:
             raise TaskPackageError("package_invalid",
@@ -1596,6 +1605,19 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                     except sqlite3.IntegrityError as exc:
                         raise TaskPackageError("package_invalid", params={
                             "reason": "fulltext_key_missing", "zotero_key": key}) from exc
+                    except sqlite3.OperationalError as exc:
+                        # 终审 #40（剩余分支④）：包内库是旧/残缺 schema
+                        # （fulltexts 缺 n_pages/added_at 列 → "no such column"）
+                        # 此前未捕获 → 500。锁忙类保持 503 重试语义
+                        # （与 _fulltext_key_rows 同口径），其余按坏包拒绝；
+                        # 外层 except Exception 清场原子回滚不变。
+                        text = str(exc).lower()
+                        if "locked" in text or "busy" in text:
+                            raise TaskPackageError(
+                                "storage_unavailable", status=503) from exc
+                        raise TaskPackageError("package_invalid", params={
+                            "reason": "fulltext_schema_unsupported",
+                            "zotero_key": key}) from exc
                     final_path = str(final_dir / "pdfs" / Path(meta.path).name)
                     # filename 列是**展示名**：优先还原 manifest 记录的原名
                     # （旧库可能保留自定义展示名）；磁盘路径始终是 save_pdf

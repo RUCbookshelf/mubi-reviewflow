@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -52,6 +53,7 @@ from coscreen.models import Article  # noqa: E402
 from custom_backend import ai_keys  # noqa: E402
 from custom_backend import ai_suggest_api  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
+from custom_backend import import_ai_assist_api  # noqa: E402
 from custom_backend.main import DATA_DIR, app  # noqa: E402
 
 FAKE_KEY = "sk-import-assist-abcdef123456"
@@ -548,6 +550,204 @@ class FulltextPathContainmentPins(unittest.TestCase):
             ai_suggest_api._fulltext_path_allowed(task_dir / ".." / ".." / "pdfs"
                                                   / "legacy.pdf", owner_db),
             "上跳写法解析后同样在任务目录外")
+
+
+class StorageFailurePins(unittest.TestCase):
+    """终审 #32：三端点 sqlite 故障 → 结构化 503 storage_unavailable（不 500）。
+
+    场景 A（workflow.context）/ B（store.migrate，出站前）/ C（出站后审计写）
+    分别钉；A/B 保持零出站；payload 解析阶段的锁不再误映射 404。
+    """
+
+    @classmethod
+    def _auth(cls, index=0):
+        return {"Authorization": "Bearer " + cls.users[index]["token"]}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        cls.users = []
+        for i in range(2):
+            user = auth_mod.create_user(
+                f"r215sec8ai{i}@example.test", "R215Sec8-AIStorage-2026")
+            cls.users.append({"user_id": user["id"], "username": user["username"],
+                              "token": auth_mod.create_access_token(
+                                  user["id"], user["username"])})
+        # 与 ImportAIAssistApiTests 同款模板库（来源/批次/文件静态种子）。
+        cls._slug = tasks_mod.slugify_screener(cls.users[0]["username"])
+        template = cls.client.post("/api/tasks", json={"name": "import-ai-sec8-tpl"},
+                                   headers=cls._auth(0)).json()["task_id"]
+        ctx0 = app.state.review_workflow.context(template, cls.users[0])
+        db_mod.init_db(ctx0.owner_db)
+        store.migrate(ctx0.owner_db)
+        with closing(wf.connect(ctx0.owner_db)) as conn, conn:
+            conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,?,?)",
+                         ("s", "01-Wiley.ris", "01-wiley.ris", 1, "now"))
+            conn.execute("INSERT INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)",
+                         ("b", str(cls.users[0]["user_id"]), "h", "batch", 1, "staged", "now"))
+            conn.execute("INSERT INTO workflow_import_files VALUES(?,?,?,?,?)",
+                         ("b", 0, "01-Wiley.ris", "d", "s"))
+        cls._template_db_bytes = Path(ctx0.owner_db).read_bytes()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def setUp(self):
+        os.environ.pop("REVIEWFLOW_AI_KEY", None)
+        for user in self.users:
+            ai_keys.delete_personal_key(user["user_id"], DATA_ROOT)
+        _ModelProbe.received = []
+        _ModelProbe.replies = []
+        self.task = self.client.post("/api/tasks", json={"name": self._testMethodName},
+                                     headers=self._auth(0)).json()["task_id"]
+        info = tasks_mod.find_task(self.task, DATA_DIR)
+        self.db = info.dir / (self._slug + ".db")
+        Path(self.db).write_bytes(self._template_db_bytes)
+        self.base = f"/api/tasks/{self.task}/import-review/ai-assist"
+
+    # -- 夹具（与 ImportAIAssistApiTests 同款） ----------------------------
+
+    def seed(self, *, metadata: bool = True) -> None:
+        with closing(wf.connect(self.db)) as conn, conn:
+            for key, journal in (("r1", "J Test"), ("r2", "J Test")):
+                article = _article(key, title=f"Synthetic {key} therapy trial", journal=journal)
+                conn.execute(
+                    "INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key, "s", key, 1, "01-Wiley.ris", json.dumps(article), json.dumps(article),
+                     key, key, None, None, "new", "staged", "now"))
+                conn.execute("INSERT INTO workflow_import_members VALUES(?,?,?)", ("b", key, 0))
+            conn.execute(
+                "INSERT INTO workflow_import_candidates(id,signature,kind,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)", ("c1", "sig-c1", "title", "pending", "now", "now"))
+            for key in ("r1", "r2"):
+                conn.execute("INSERT INTO workflow_import_candidate_members VALUES(?,?,?)",
+                             ("c1", "record", key))
+            if metadata:
+                incoming = _article("m1", title="Synthetic m1 therapy trial",
+                                    journal="J New", doi="10.test/a")
+                before = _article("EXIST", title="Synthetic m1 therapy trial",
+                                  journal="J Old", doi="10.test/a")
+                conn.execute(
+                    "INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("m1", "s", "m1", 2, "01-Wiley.ris", json.dumps(incoming),
+                     json.dumps(incoming), "m1", "m1", "EXIST", None, "new", "staged", "now"))
+                conn.execute("INSERT INTO workflow_import_members VALUES(?,?,?)", ("b", "m1", 0))
+                conn.execute(
+                    "INSERT INTO workflow_import_metadata(record_id,canonical_key,before_json,incoming_json) "
+                    "VALUES(?,?,?,?)", ("m1", "EXIST", json.dumps(before), json.dumps(incoming)))
+
+    def probe(self) -> tuple[HTTPServer, str]:
+        server = HTTPServer(("127.0.0.1", 0), _ModelProbe)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server, f"http://127.0.0.1:{server.server_port}/v1"
+
+    def save_key(self, base_url: str) -> None:
+        response = self.client.put(
+            "/api/ai/key",
+            json={"provider": "openai", "key": FAKE_KEY, "model": "probe-model",
+                  "base_url": base_url},
+            headers=self._auth(0))
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def enable(self) -> None:
+        settings = self.client.get(f"{self.base}/settings", headers=self._auth(0)).json()
+        response = self.client.put(
+            f"{self.base}/settings",
+            json={"expected_version": settings["version"], "enabled": True},
+            headers=self._auth(0))
+        self.assertEqual(response.status_code, 200, response.text)
+
+    @staticmethod
+    def duplicate_item(item_id: str = "c1") -> dict:
+        return {"batch_id": "b", "kind": "duplicate_group", "item_id": item_id}
+
+    def ask(self, items):
+        return self.client.post(f"{self.base}", json={"items": items},
+                                headers=self._auth(0))
+
+    def audit_rows(self) -> list[dict]:
+        with closing(wf.connect(self.db, read_only=True)) as conn:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "import_ai_suggestions" not in tables:
+                return []
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM import_ai_suggestions ORDER BY id")]
+
+    def _assert_503(self, response):
+        self.assertEqual(response.status_code, 503, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "import_ai_assist_storage_unavailable")
+        self.assertEqual(detail["message_key"], "import_ai_assist.storage_unavailable")
+
+    def _arm_zero_outbound_guard(self):
+        guard = mock.patch.object(
+            ai_suggest_api, "_provider_generate",
+            side_effect=AssertionError("存储故障阶段不得出站"))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def test_context_failure_503_on_all_three_endpoints_zero_outbound(self):
+        self.seed()
+        _server, base = self.probe()
+        self.save_key(base)
+        self.enable()
+        self._arm_zero_outbound_guard()
+        with mock.patch.object(
+                app.state.review_workflow, "context",
+                side_effect=sqlite3.OperationalError("database is locked")):
+            self._assert_503(self.client.get(f"{self.base}/settings",
+                                             headers=self._auth(0)))
+            self._assert_503(self.client.put(
+                f"{self.base}/settings",
+                json={"expected_version": 0, "enabled": True},
+                headers=self._auth(0)))
+            self._assert_503(self.ask([self.duplicate_item()]))
+        self.assertEqual(_ModelProbe.received, [])
+
+    def test_migrate_failure_503_zero_outbound(self):
+        self.seed()
+        _server, base = self.probe()
+        self.save_key(base)
+        self.enable()
+        self._arm_zero_outbound_guard()
+        with mock.patch.object(
+                import_ai_assist_api.store, "migrate",
+                side_effect=sqlite3.OperationalError("database is locked")):
+            self._assert_503(self.ask([self.duplicate_item()]))
+        self.assertEqual(_ModelProbe.received, [])
+
+    def test_payload_read_lock_is_503_not_404(self):
+        self.seed()
+        _server, base = self.probe()
+        self.save_key(base)
+        self.enable()
+        self._arm_zero_outbound_guard()
+        with mock.patch.object(
+                import_ai_assist_api, "load_item_payload",
+                side_effect=sqlite3.OperationalError("database is locked")):
+            # 修复前该阶段误映射 404 item_not_found（把存储故障说成条目不存在）
+            self._assert_503(self.ask([self.duplicate_item()]))
+        self.assertEqual(_ModelProbe.received, [])
+
+    def test_audit_write_failure_after_outbound_is_503_never_fake_200(self):
+        self.seed()
+        _server, base = self.probe()
+        self.save_key(base)
+        self.enable()
+        broken_upsert = ("INSERT INTO import_ai_suggestions_no_such VALUES ("
+                         + ",".join(["?"] * 16) + ")")
+        with mock.patch.object(import_ai_assist_api, "_AUDIT_UPSERT", broken_upsert):
+            response = self.ask([self.duplicate_item()])
+        self._assert_503(response)
+        # 出站已真实发生（该次建议的额度已消耗）——503 如实告知，绝不假 200。
+        self.assertGreaterEqual(len(_ModelProbe.received), 1)
+        # 审计零行落库（唯一写入点失败即整批丢弃，不半写）。
+        self.assertEqual(self.audit_rows(), [])
 
 
 if __name__ == "__main__":  # pragma: no cover

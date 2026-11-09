@@ -3606,8 +3606,19 @@ def export_stage2_ep(task_id: str, screener: str | None = None,
 def export_matrix_ep(task_id: str, screener: str | None = None,
                      user: dict = Depends(require_user)) -> Response:
     info = _task_or_404(task_id)
-    db = _screener_db(info, screener or user["username"])
-    data = _run_export(lambda out: export_coding_matrix(db, out), ".csv")
+    try:
+        # 终审 #05（既有顺带修，2.1.4 起同源 500）：个人库被外部进程持锁/
+        # 损坏时与 W7 表端点同口径 503（既有词条），不再落全局 500 兜底。
+        # 库解析（ensure=True 会开库跑 WAL pragma）与导出读取一并纳入。
+        # 复审 r2：ProgrammingError（调用写法缺陷）不吞——仲裁先例口径
+        # （screening_arbitration.py:498/:520），缺陷照常上抛。
+        db = _screener_db(info, screener or user["username"])
+        data = _run_export(lambda out: export_coding_matrix(db, out), ".csv")
+    except sqlite3.ProgrammingError:
+        raise
+    except sqlite3.DatabaseError as exc:
+        logger.warning("编码矩阵导出读库失败（降级 503）：%r", exc)
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
     return _file_response(data, "text/csv; charset=utf-8", "coding_matrix.csv")
 
 
@@ -6498,7 +6509,8 @@ register_task_package_routes(app, require_user, _task_or_404, _task_visible_to,
 # 2.1.5 W7：表生成（Table 1 / SoF）——只读装配 + 文件流导出；纳入过滤/字段
 # 勾选/排序与 docx 排版在本模块，编码值单一事实源 = coscreen.export.coding_matrix_table。
 from custom_backend.tables_api import register_tables_routes
-register_tables_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
+register_tables_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db,
+                       SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
 
 # 2.1.5 W9：撤稿/更正关注（Crossref works 的 update-to/updated-by；显式手动
 # 触发、分批游标、两表落协作库可加幂等、出站仅配置的 Crossref base）。

@@ -720,5 +720,94 @@ class DailyNudgeApiTests(unittest.TestCase):
         self.assertEqual(body["channel"], "apprise")
 
 
+class CorruptTokensFilePins(unittest.TestCase):
+    """终审 #10：daily_nudge_tokens.json 损坏 → 四端点按契约形状，绝不 500。
+
+    契约 §6（frontend_contract_2.1.5-daily-nudge.md）：损坏时生成/撤销 409、
+    列表降级（available=false）、认证外订阅源 404。修复前 JSONDecodeError
+    穿透四个调用点 → 全局 500。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        cls.users = []
+        for i in range(2):
+            user = auth_mod.create_user(
+                f"r215sec8tok{i}@example.test", "R215Sec8-Tokens-2026")
+            cls.users.append({
+                "user_id": user["id"],
+                "username": user["username"],
+                "token": auth_mod.create_access_token(user["id"], user["username"]),
+            })
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def auth(self, index=0):
+        return {"Authorization": "Bearer " + self.users[index]["token"]}
+
+    def setUp(self):
+        self.task = self.client.post(
+            "/api/tasks", json={"name": self._testMethodName},
+            headers=self.auth()).json()["task_id"]
+        self.info = tasks_mod.find_task(self.task, DATA_DIR)
+        invited = self.client.post(
+            f"/api/tasks/{self.task}/collaboration/invite",
+            json={"username": self.users[1]["username"], "role": "coder"},
+            headers=self.auth())
+        self.assertEqual(invited.status_code, 201, invited.text)
+
+    def test_corrupt_tokens_file_matches_contract_on_all_four_endpoints(self):
+        tokens_path = self.info.dir / "daily_nudge_tokens.json"
+        # 先正常生成一枚令牌（文件此时合法），供订阅源/撤销用例取值。
+        created = self.client.post(
+            f"/api/tasks/{self.task}/screening/ics-tokens", headers=self.auth(1))
+        self.assertEqual(created.status_code, 200, created.text)
+        token = created.json()["token"]
+        token_id = created.json()["token_id"]
+
+        # 半写/手工编辑后的坏 JSON（应用自身 _atomic_write 不会产生）。
+        tokens_path.write_text('{"version": 1, "tokens": [', encoding="utf-8")
+
+        # 生成 → 409 daily_nudge_storage_unavailable（结构化 message_key）
+        response = self.client.post(
+            f"/api/tasks/{self.task}/screening/ics-tokens", headers=self.auth(1))
+        self.assertEqual(response.status_code, 409, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "daily_nudge_storage_unavailable")
+        self.assertEqual(detail["message_key"], "daily_nudge.storage_unavailable")
+
+        # 撤销 → 409 同形状
+        response = self.client.delete(
+            f"/api/tasks/{self.task}/screening/ics-tokens/{token_id}",
+            headers=self.auth(1))
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["error_code"],
+                         "daily_nudge_storage_unavailable")
+
+        # 列表 → 200 降级（空表 + available=false）
+        response = self.client.get(
+            f"/api/tasks/{self.task}/screening/ics-tokens", headers=self.auth(1))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"tokens": [], "available": False})
+
+        # 认证外订阅源 → 与「令牌无效」逐字节同形的 404（fail-closed）
+        response = self.client.get(
+            f"/api/tasks/{self.task}/screening/daily-status.ics?token={token}")
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json(), {"detail": "Not Found"})
+
+        # 恢复（文件修好）后生成立即回到 200 —— 降级不留残留状态。
+        tokens_path.write_text(
+            json.dumps({"version": 1, "tokens": []}), encoding="utf-8")
+        response = self.client.post(
+            f"/api/tasks/{self.task}/screening/ics-tokens", headers=self.auth(1))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["token"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

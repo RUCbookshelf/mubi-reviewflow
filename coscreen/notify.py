@@ -34,7 +34,10 @@ smtp 在连接前做 host 公网校验，但 DNS 校验与真正连接之间存�
 rebinding 窗口（与既有 ERIC 出站实现同口径，靠短超时 + 禁止重定向收窄；
 PDF 获取另做了地址钉扎）。Apprise 由第三方引擎按 owner 提供的 URL 自行
 投递（其 service 标识不一定是主机名），我们只拦截**字面量**本机/私网
-地址，其余传输策略由 Apprise 负责。
+地址；超时经 Apprise 全局 URL 参数 ``cto``/``rto`` 下发（终审 #36，秒级、
+与 webhook/smtp 同一 ``timeout`` 入参；用户 URL 已显式带 ``cto=/rto=`` 时
+不覆盖），其余传输策略由 Apprise 负责（个别不做网络访问的插件忽略该
+参数，契约已披露）。
 """
 
 from __future__ import annotations
@@ -384,6 +387,24 @@ def _send_serverchan(config: Mapping[str, Any], text: str, *,
         raise NotifyError("upstream_rejected")
 
 
+def _apprise_url_with_timeouts(url: str, timeout: float) -> str:
+    """把超时写进 Apprise URL 的全局参数 ``cto``/``rto``（终审 #36）。
+
+    ``cto``（Socket Connect Timeout）/``rto``（Socket Read Timeout）是 Apprise
+    URL 框架层的全局参数（1.x 与 2.x 的 ``apprise/url.py`` template_args 同一
+    定义，float 秒），HTTP/socket 类插件通用；个别不做网络访问的插件自然
+    忽略（契约如实披露）。用户 URL 已显式带 ``cto=``/``rto=`` 时不覆盖其
+    选择；``timeout<=0`` 视为未配置。
+    """
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        return url
+    base, marker, fragment = url.partition("#")
+    if re.search(r"[?&](cto|rto)=", base):
+        return url
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}cto={timeout:g}&rto={timeout:g}{marker}{fragment}"
+
+
 def _send_apprise(config: Mapping[str, Any], text: str, *, timeout: float) -> None:
     url = _env_credential(config.get("url_env"))
     # Apprise URL 的 host 位置随 scheme 而异（discord://<id>/<token> 的 <id>
@@ -402,7 +423,10 @@ def _send_apprise(config: Mapping[str, Any], text: str, *, timeout: float) -> No
         raise NotifyError("channel_unavailable", reason="apprise_missing") from None
     try:
         client = apprise.Apprise()
-        if not client.add(url):
+        # 终审 #36：timeout 参数此前声明即丢（add/notify 均不传）。经 Apprise
+        # 全局 URL 参数 cto/rto 真正下发（版本核实：1.9.2 与 2.2.0 的
+        # template_args 都定义；2.x 的 notify(timeout=) 不向下兼容 1.x，不用）。
+        if not client.add(_apprise_url_with_timeouts(url, timeout)):
             raise NotifyError("credential_missing", reason="apprise_url_invalid")
         if not client.notify(body=text, title="ReviewFlow daily screening"):
             raise NotifyError("upstream_rejected")

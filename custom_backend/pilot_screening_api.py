@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from coscreen import db as db_mod
 from coscreen import pilot_screening as core
@@ -127,6 +127,16 @@ class SetIn(BaseModel):
     curated_keys: list[str] | None = None
     thresholds: dict | None = None
     note: str = ""
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _reject_bool_seed(cls, value):
+        """复审 r2：pydantic 宽松模式会把 true/false 强转 1/0 静默建集——
+        core.create_set 的 bool 防御在 HTTP 路径不可达。这里在强制转换前
+        拒绝布尔（422），seed 只接受真正的整数（含可解析数字串）。"""
+        if isinstance(value, bool):
+            raise ValueError("seed 必须是 0 到 2147483647 之间的整数，不接受布尔值。")
+        return value
 
 
 class GoldIn(BaseModel):
@@ -240,6 +250,17 @@ def register_pilot_screening_routes(
             return func(*args, **kwargs)
         except core.PilotScreeningError as exc:
             raise _translate(exc) from None
+        except OverflowError as exc:
+            # 终审 #20：仅 {set_id} 路径参数超出 SQLite INTEGER 域（sqlite3
+            # 绑定时抛 "Python int too large to convert to SQLite INTEGER"）
+            # 折叠为与"正常不存在"同形的 404 set_not_found。复审 r2：其余
+            # OverflowError（如 thresholds 数值 float() 越界——已在
+            # core._number 折叠为 400 threshold_invalid；或任何无关来源）
+            # 不吞、照常上抛，绝不伪装成训练集不存在。
+            if "SQLite INTEGER" not in str(exc):
+                raise
+            logger.warning("筛选训练 set_id 超出 SQLite INTEGER 范围（按不存在处理）：%s", exc)
+            raise _error(404, "set_not_found") from None
         except sqlite3.OperationalError as exc:
             logger.warning("筛选训练库操作失败（降级 503）：%s", exc)
             raise _error(503, "storage_unavailable") from None

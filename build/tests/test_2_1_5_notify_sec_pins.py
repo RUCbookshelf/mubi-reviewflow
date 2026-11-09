@@ -427,5 +427,61 @@ class OpenerProxyPins(unittest.TestCase):
                         "拒绝重定向 handler 仍需保留")
 
 
+class AppriseTimeoutPins(unittest.TestCase):
+    """终审 #36：apprise 的 timeout 参数经全局 URL 参数 cto/rto 真正下发。
+
+    修复前签名里的 ``timeout`` 声明即丢（add/notify 均不收到任何超时），
+    实际阻塞完全依赖 Apprise 内建默认。cto/rto 是 Apprise URL 框架层的
+    全局参数（1.9.2 与 2.2.0 的 ``apprise/url.py`` template_args 同一
+    定义），HTTP/socket 类插件通用；用户 URL 已显式带 cto=/rto= 时不覆盖。
+    """
+
+    URL = "json://user@example.com/hook"
+
+    def _send_with_fake_apprise(self, url: str, timeout: float) -> tuple[dict, list]:
+        added: list = []
+
+        class _FakeApprise:
+            def add(self, target):
+                added.append(target)
+                return True
+
+            def notify(self, *, body, title):
+                return True
+
+        class _FakeModule:
+            Apprise = _FakeApprise
+
+        config = {"type": "apprise", "enabled": True,
+                  "url_env": "REVIEWFLOW_NOTIFY_TEST_APPRISE_URL"}
+        with mock.patch.dict(os.environ,
+                             {"REVIEWFLOW_NOTIFY_TEST_APPRISE_URL": url}),                 mock.patch.dict(sys.modules, {"apprise": _FakeModule}):
+            result = notify_core.send(config, _summary(), timeout=timeout)
+        return result, added
+
+    def test_timeout_reaches_apprise_via_cto_rto_url_params(self):
+        result, added = self._send_with_fake_apprise(self.URL, 5.0)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(added, [self.URL + "?cto=5&rto=5"],
+                         "timeout 必须经 Apprise 全局 URL 参数下发（修复前 "
+                         "add() 收到的 URL 不含任何超时参数）")
+        # 小数超时原样保留（g 格式，无尾零）
+        result, added = self._send_with_fake_apprise(self.URL, 0.5)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(added, [self.URL + "?cto=0.5&rto=0.5"])
+
+    def test_user_supplied_cto_rto_not_overridden(self):
+        tuned = self.URL + "?cto=1&rto=9"
+        result, added = self._send_with_fake_apprise(tuned, 5.0)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(added, [tuned], "URL 已显式带 cto=/rto= 时不覆盖用户选择")
+
+    def test_query_carrying_url_gets_ampersand_join(self):
+        carrying = self.URL + "?format=text"
+        result, added = self._send_with_fake_apprise(carrying, 5.0)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(added, [carrying + "&cto=5&rto=5"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

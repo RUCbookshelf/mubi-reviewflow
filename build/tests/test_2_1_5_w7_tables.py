@@ -31,10 +31,12 @@ import csv
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -993,6 +995,143 @@ class SofGradeCorrectnessPins(W7TablesBase):
         self.assertEqual(spaced["总体置信度"], canonical["总体置信度"])
         self.assertEqual(spaced["研究局限性"], canonical["研究局限性"])
         self.assertNotEqual(spaced["总体置信度"], "高 ⊕⊕⊕⊕")
+
+
+# ---------------------------------------------------------------------------
+# 终审 #09：Unicode 数字串 fields（'²'.isdigit()=True 但 int() 抛 ValueError）
+# ---------------------------------------------------------------------------
+def _fullwidth_digits(value: int) -> str:
+    """123 → '１２３'（int() 可解析的全角数字串）。"""
+    return str(value).translate(
+        {ord(d): chr(ord(d) + 0xFEE0) for d in "0123456789"})
+
+
+class UnicodeDigitFieldPins(W7TablesBase):
+    """上标/全角数字串不再 ValueError → 500；未命中一律 400 tables_field_unknown。"""
+
+    PREFIX = "w7uni"
+
+    def test_superscript_digit_string_is_structured_400(self):
+        self._seed()
+        # '²'.isdigit() 为 True、int('²') 抛 ValueError——修复前直接 500。
+        response = self._table1(fields=["²"])
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "tables_field_unknown")
+        self.assertEqual(detail["message_key"], "tables.field_unknown")
+        self.assertEqual(detail["params"]["field"], "²")
+        # 混合串 '2²' 同形状（修复前同样 500）。
+        response = self._table1(fields=["2²"])
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["error_code"],
+                         "tables_field_unknown")
+
+    def test_fullwidth_digits_parse_as_id_when_present_else_400(self):
+        d1, d2, d3 = self._seed()
+        # 全角数字可被 int() 解析 → 按值查 id：存在即 200（语义保持，含在
+        # 列输出里），不存在 → 400 tables_field_unknown（不 500）。
+        response = self._table1(fields=[_fullwidth_digits(int(d2))])
+        self.assertEqual(response.status_code, 200, response.text)
+        rows = _read_csv(response.content)
+        self.assertTrue(any("样本" in cell for cell in rows[0]),
+                        f"全角 id 应选中「样本量」维度：{rows[0]}")
+        missing = _fullwidth_digits(max(int(d1), int(d2), int(d3)) + 1)
+        response = self._table1(fields=[missing])
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "tables_field_unknown")
+        self.assertEqual(detail["params"]["field"], missing)
+        # detail=1 出口同口径（同走 _resolve_fields）。
+        response = self.client.post(
+            f"{self.table1}?detail=1", json={"fields": ["²"], "inclusion": "matrix"},
+            headers=self.auth)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["error_code"],
+                         "tables_field_unknown")
+
+
+# ---------------------------------------------------------------------------
+# 终审 #05：个人库 sqlite 故障（外部持锁/损坏）→ 503 既有词条，不落全局 500
+# ---------------------------------------------------------------------------
+class LibraryLockDegradationPins(W7TablesBase):
+    """Table 1 / SoF / export·matrix 三读端点的库故障统一 503（含顺带修）。"""
+
+    PREFIX = "w7lock"
+
+    def test_sqlite_failure_maps_to_503_library_unavailable(self):
+        from custom_backend import main as main_mod
+        from custom_backend import tables_api
+
+        self._seed()
+        self._seed_effects()
+        message = main_mod.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE
+        locked = sqlite3.OperationalError("database is locked")
+
+        with mock.patch.object(tables_api, "_table1_payload", side_effect=locked):
+            response = self._table1()
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertEqual(response.json()["detail"], message)
+            detail_response = self.client.post(
+                f"{self.table1}?detail=1",
+                json={"format": "csv", "inclusion": "stage1_stage2"},
+                headers=self.auth)
+            self.assertEqual(detail_response.status_code, 503, detail_response.text)
+            self.assertEqual(detail_response.json()["detail"], message)
+
+        with mock.patch.object(tables_api, "_sof_rows", side_effect=locked):
+            response = self._sof()
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertEqual(response.json()["detail"], message)
+
+        # 同源既有 500（报告标注 preexisting，顺带修）：/export/matrix。
+        with mock.patch.object(main_mod, "export_coding_matrix", side_effect=locked):
+            response = self.client.get(
+                f"/api/tasks/{self.task}/export/matrix", headers=self.auth)
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertEqual(response.json()["detail"], message)
+
+        # 库恢复后同请求回到 200（故障源移除即恢复，无残留状态）。
+        self.assertEqual(self._table1().status_code, 200)
+        self.assertEqual(self._sof().status_code, 200)
+        self.assertEqual(
+            self.client.get(f"/api/tasks/{self.task}/export/matrix",
+                            headers=self.auth).status_code, 200)
+
+    def test_corrupt_database_error_also_structured_503(self):
+        self._seed()
+        from custom_backend import tables_api
+
+        with mock.patch.object(
+                tables_api, "_table1_payload",
+                side_effect=sqlite3.DatabaseError("file is not a database")):
+            response = self._table1()
+            self.assertEqual(response.status_code, 503, response.text)
+
+    def test_programming_error_is_never_swallowed_as_503(self):
+        """复审 r2（#05 收窄）：ProgrammingError 是调用写法缺陷，不得吞成
+        503「库不可用」——先例 coscreen/screening_arbitration.py:498/:520
+        （``except sqlite3.ProgrammingError: raise``）。缺陷照常上抛可见。
+        """
+        from custom_backend import main as main_mod
+        from custom_backend import tables_api
+
+        self._seed()
+        self._seed_effects()
+        message = main_mod.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE
+        defect = sqlite3.ProgrammingError("Cannot operate on a closed database")
+        with mock.patch.object(tables_api, "_table1_payload", side_effect=defect):
+            table1 = self._table1()
+        with mock.patch.object(tables_api, "_sof_rows", side_effect=defect):
+            sof = self._sof()
+        with mock.patch.object(main_mod, "export_coding_matrix", side_effect=defect):
+            matrix = self.client.get(
+                f"/api/tasks/{self.task}/export/matrix", headers=self.auth)
+        for label, response in (("Table 1", table1), ("SoF", sof),
+                                ("export/matrix", matrix)):
+            with self.subTest(endpoint=label):
+                self.assertEqual(response.status_code, 500, response.text)
+                self.assertNotEqual(response.json().get("detail"), message,
+                                    "ProgrammingError 不得被映射成库不可用 503")
 
 
 def tearDownModule():
