@@ -58,7 +58,8 @@ from coscreen.streak import DEFAULT_REMIND_TIME, MAX_DAILY_TARGET
 __all__ = ["register_streak_routes"]
 
 _REMIND_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+# 凭据环境变量名的形状+专用前缀判定统一走 notify.validate_env_name
+# （REVIEWFLOW_NOTIFY_ 白名单前缀，保存侧与发送侧同一口径，不复制正则）。
 _USERNAME_MAX = 64
 
 _DEFAULT_SETTINGS: dict[str, Any] = {
@@ -676,9 +677,19 @@ def register_streak_routes(
         })
         for field in _ENV_FIELDS:
             value = config[field]
-            if value and not _ENV_NAME_RE.fullmatch(value):
+            if not value:
+                continue
+            try:
+                notify.validate_env_name(value)
+            except notify.NotifyError as exc:
+                if exc.reason == "env_name_forbidden":
+                    # 专用前缀（REVIEWFLOW_NOTIFY_）之外的任何环境变量名一律
+                    # 拒绝：防止属主把通道凭据指向服务器任意环境变量（如
+                    # JWT 秘钥）→ 值被发往属主自填的外部地址。
+                    raise _error(400, "daily_nudge_channel_env_forbidden",
+                                 params={"name": value}) from None
                 raise _error(400, "daily_nudge_channel_env_invalid",
-                             params={"field": field})
+                             params={"field": field}) from None
         if not 1 <= config["port"] <= 65535:
             raise _error(400, "daily_nudge_channel_incomplete",
                          params={"field": "port"})

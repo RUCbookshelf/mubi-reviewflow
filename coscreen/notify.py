@@ -18,6 +18,10 @@
 
 - **凭据零落盘**：配置文件只保存环境变量名，不保存 sendkey / SMTP 密码 /
   Apprise URL；示例与测试均不写可用凭据字面量。
+- **环境变量名白名单前缀**（2.1.5 安全修复）：``*_env`` 字段只能引用以
+  ``REVIEWFLOW_NOTIFY_`` 开头的环境变量（:func:`validate_env_name`，
+  保存侧与发送侧同一口径）——属主不能借此读取服务器任意环境变量
+  （如 JWT 秘钥）外发。
 - **数据最小化**：出站载荷只包含 ``screened_today / daily_target /
   remaining / streak / longest_streak`` 等整数与事件码/日期数字；绝不包含
   文献题录、摘要、全文、筛选决定或排除理由。
@@ -51,12 +55,14 @@ from typing import Any, Callable, Mapping
 __all__ = [
     "CHANNEL_TYPES",
     "DEFAULT_TIMEOUT_SECONDS",
+    "ENV_NAME_PREFIX",
     "MAX_RESPONSE_BYTES",
     "NotifyError",
     "USER_AGENT",
     "build_summary",
     "send",
     "summary_text",
+    "validate_env_name",
     "validate_public_hostname",
     "validate_public_url",
 ]
@@ -88,6 +94,13 @@ _EVENT_TEST = 2
 _BLOCKED_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+#: 凭据环境变量专用前缀（2.1.5 安全修复）：属主只能引用以它开头的环境
+#: 变量。形状合法但无此前缀的名字一律拒绝——否则任务属主可把通道凭据
+#: 指向服务器任意环境变量（如 JWT 秘钥），发送侧会把值发往属主自填的
+#: 外部地址（开放注册下 = 全站机密外带）。保存侧（PUT 通道配置）与
+#: 发送侧共用 :func:`validate_env_name` 这同一判定，不复制口径。
+ENV_NAME_PREFIX = "REVIEWFLOW_NOTIFY_"
 
 
 class NotifyError(Exception):
@@ -261,10 +274,24 @@ def validate_public_url(
 # 环境变量凭据（只读名字，不落盘值）
 # ---------------------------------------------------------------------------
 
-def _env_credential(name: object) -> str:
+def validate_env_name(name: object) -> str:
+    """校验凭据环境变量名（保存侧与发送侧共用的唯一判定口径）。
+
+    规则：①形状合法（``[A-Za-z_][A-Za-z0-9_]{0,127}``）；②必须以专用前缀
+    :data:`ENV_NAME_PREFIX`（``REVIEWFLOW_NOTIFY_``）开头。违规抛
+    :class:`NotifyError`（``credential_missing``，reason 区分
+    ``invalid_env_name`` / ``env_name_forbidden``）；成功返回原名。
+    """
     env_name = name if isinstance(name, str) else ""
     if not _ENV_NAME_RE.fullmatch(env_name):
         raise NotifyError("credential_missing", reason="invalid_env_name")
+    if not env_name.startswith(ENV_NAME_PREFIX):
+        raise NotifyError("credential_missing", reason="env_name_forbidden")
+    return env_name
+
+
+def _env_credential(name: object) -> str:
+    env_name = validate_env_name(name)
     value = os.environ.get(env_name, "")
     if not value:
         raise NotifyError("credential_missing", reason="env_not_set")

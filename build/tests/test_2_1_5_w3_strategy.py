@@ -4,6 +4,10 @@
 覆盖方案书 W3 红钉清单：
 1. translate 纯函数形状钉（PubMed→ERIC/WoS 各 ≥4 例 + 不可译项降级）；
 2. preview-counts 仅 PubMed/ERIC 两域 + 单库失败降级（永不 500）；
+   2.1.5 安全修复补钉：items+strategies 去重合计上限 10（超限 400
+   ``search_strategy.preview_too_many`` 且零出站；同项重复按 1 计；10 项
+   边界通过）——撤闸必红（无上限时普通成员一次请求可触发任意多次逐项
+   串行出站，终审探针实测 300 次）；
 3. 快照不可变（内容列改写/删除被 SQLite 触发器拒绝；命中数回填是唯一写）；
 4. 状态机钉（draft→final→historical 版本链；final/historical 不可删、
    不可回退编辑；revise 开新草稿）；
@@ -550,6 +554,72 @@ class EndpointPins(unittest.TestCase):
         self.assertEqual(results["pubmed"]["error_code"], "pubmed_unavailable")
         self.assertEqual(results["eric"]["status"], "unavailable")
         self.assertEqual(results["eric"]["error_code"], "eric_timeout")
+
+    # ---- preview 条数闸门（2.1.5 安全修复 fix/2.1.5-sec1 F3） -----------
+    def test_preview_too_many_items_rejected_zero_outbound(self):
+        """F3 红钉：超限 → 400 结构化且零出站（去防护必红——无上限时终审
+        探针实测 300 次逐项出站，上游限流/封 IP）。"""
+        from unittest import mock
+
+        calls = {"pubmed": 0, "eric": 0}
+
+        def fake_pubmed(query, *, timeout=10.0, url_opener=None):
+            calls["pubmed"] += 1
+            return 1
+
+        def fake_eric(query, page, *, timeout=10.0):
+            calls["eric"] += 1
+            return {"total_hits": 1}
+
+        with mock.patch.object(search_strategy_api, "count_pubmed_hits",
+                               fake_pubmed), \
+             mock.patch.object(search_strategy_api, "search_eric_preview",
+                               fake_eric):
+            # 300 项（普通成员视角）→ 400 + 零出站
+            response = self.client.post(
+                f"{self.base}/preview-counts", headers=self.member_auth,
+                json={"items": [{"database": "pubmed", "query_text": f"q{i}"}
+                                for i in range(300)],
+                      "timeout_seconds": 99999})
+            self.assertEqual(response.status_code, 400, response.text)
+            detail = response.json()["detail"]
+            self.assertEqual(detail["error_code"], "preview_too_many", detail)
+            self.assertEqual(detail["message_key"],
+                             "search_strategy.preview_too_many", detail)
+            self.assertEqual(detail["params"],
+                             {"limit": 10, "requested": 300}, detail)
+            self.assertEqual(calls, {"pubmed": 0, "eric": 0})
+
+            # 边界：恰好 10 个不同项 → 200，出站恰 10 次
+            response = self.client.post(
+                f"{self.base}/preview-counts", headers=self.member_auth,
+                json={"items": [{"database": "pubmed", "query_text": f"b{i}"}
+                                for i in range(10)]})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(response.json()["results"]), 10)
+            self.assertEqual(calls, {"pubmed": 10, "eric": 0})
+
+            # 去重：同一项重复 3 次按 1 计（出站 1 次、结果 1 条）
+            calls.update(pubmed=0, eric=0)
+            response = self.client.post(
+                f"{self.base}/preview-counts", headers=self.member_auth,
+                json={"items": [{"database": "pubmed", "query_text": "same"}] * 3})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(response.json()["results"]), 1)
+            self.assertEqual(calls, {"pubmed": 1, "eric": 0})
+
+            # items+strategies 合计去重后超限 → 400 + 零出站
+            calls.update(pubmed=0, eric=0)
+            response = self.client.post(
+                f"{self.base}/preview-counts", headers=self.member_auth,
+                json={"items": [{"database": "pubmed", "query_text": f"c{i}"}
+                                for i in range(8)],
+                      "strategies": [{"database": "eric", "query_text": f"d{i}"}
+                                     for i in range(3)]})
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertEqual(response.json()["detail"]["error_code"],
+                             "preview_too_many")
+            self.assertEqual(calls, {"pubmed": 0, "eric": 0})
 
     # ---- 状态机 + 权限 ---------------------------------------------------
     def test_finalize_chain_and_delete_guard_via_http(self):
