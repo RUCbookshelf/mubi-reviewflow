@@ -44,6 +44,12 @@ _PUBMED_USER_AGENT = "ReviewFlow-SearchStrategy/2.1.5 (offline-first; contact: l
 _MAX_COUNT_BYTES = 1024 * 1024
 _COUNT_TIMEOUT_CAP = 20.0
 
+#: preview-counts 单请求条数上限（2.1.5 安全修复）：``items``+``strategies``
+#: 去重后合计最多 :data:`PREVIEW_MAX_ITEMS` 条。此前无上限，普通成员一次
+#: 请求可触发任意多次逐项串行出站（终审探针实测 300 次 PubMed 调用）→
+#: 上游限流/封 IP。超限 400 ``search_strategy.preview_too_many``。
+PREVIEW_MAX_ITEMS = 10
+
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """拒绝跟随 3xx（先例：custom_backend/ai_suggest_api.py）。"""
@@ -309,11 +315,36 @@ def register_search_strategy_routes(
         items = body.items if body.items is not None else body.strategies
         if items is None:
             raise _error(400, "preview_items_required")
+        # 条数闸门（2.1.5 安全修复）：items+strategies 合并、按
+        # (database, query_text) 去重后合计不得超过 PREVIEW_MAX_ITEMS，
+        # 超限 400 且零出站；处理列表同样只保留去重后的条目（重复项只算
+        # 一次，不重复出站）。
+        def _item_key(item: PreviewItem) -> tuple[str, str]:
+            return (str(item.database or "").strip().lower(),
+                    str(item.query_text or "").strip())
+
+        seen: set[tuple[str, str]] = set()
+        unique_items: list[PreviewItem] = []
+        for item in items:
+            key = _item_key(item)
+            if key not in seen:
+                seen.add(key)
+                unique_items.append(item)
+        requested = len(unique_items)
+        if body.items is not None and body.strategies is not None:
+            for extra in body.strategies:
+                key = _item_key(extra)
+                if key not in seen:
+                    seen.add(key)
+                    requested += 1
+        if requested > PREVIEW_MAX_ITEMS:
+            raise _error(400, "preview_too_many",
+                         {"limit": PREVIEW_MAX_ITEMS, "requested": requested})
         timeout = max(1.0, min(float(body.timeout_seconds or 10.0),
                                _COUNT_TIMEOUT_CAP))
         results: list[dict[str, Any]] = []
         counts: dict[str, int | None] = {}
-        for item in items:
+        for item in unique_items:
             database = str(item.database or "").strip().lower()
             query = str(item.query_text or "").strip()
             if database not in core.DATABASES:

@@ -12,8 +12,10 @@
 4. ICS 生成钉：事件数 = 90；摘要/描述只含数字（无题录/摘要/筛选决定）；
    令牌明文不落盘、撤销后 404、无效令牌 404；DST 切换窗口内仍是同一本地
    墙钟时间（VTIMEZONE 观测段）。
-5. 通道抽象钉：默认关；webhook 用本地探针服务断言载荷只含数字字段；
-   Apprise 未安装 → 结构化 ``channel_unavailable/apprise_missing``（不崩）。
+5. 通道抽象钉：默认关；webhook 载荷经捕获型假 opener 断言只含数字字段
+   （URL 公网校验真跑，DNS 解析桩指向公网 IP——2.1.5 安全修复后不再把
+   ``validate_public_url`` mock 成恒放行）；Apprise 未安装 → 结构化
+   ``channel_unavailable/apprise_missing``（不崩）。
 """
 
 from __future__ import annotations
@@ -23,11 +25,9 @@ import os
 import sqlite3
 import sys
 import tempfile
-import threading
 import unittest
 from contextlib import closing
 from datetime import date, datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -208,7 +208,11 @@ class NotifyTransportTests(unittest.TestCase):
              "streak": 0, "longest_streak": 0})
         config = {"enabled": True, "type": "webhook",
                   "url": "https://example.test/hook"}
-        with mock.patch.object(notify_core, "validate_public_url", lambda url, **kw: url):
+        # 2.1.5 安全修复：不再把 validate_public_url mock 成恒放行——只桩
+        # DNS 解析（指向公网 IP），URL 校验本身（scheme/内嵌凭据/私网字
+        # 面量）真跑（F2 钉组见 test_2_1_5_notify_sec_pins.py）。
+        with mock.patch.object(notify_core, "_resolve_host",
+                               lambda host, port=443: ["93.184.216.34"]):
             return notify_core.send(config, summary,
                                     opener=self._RaisingOpener(exc))
 
@@ -224,23 +228,6 @@ class NotifyTransportTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 2/3/5. API 集成（权限 / 建议 / ICS / 通道）
 # ---------------------------------------------------------------------------
-
-class _WebhookProbe(BaseHTTPRequestHandler):
-    received: list[dict] = []
-
-    def do_POST(self):  # noqa: N802
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        raw = self.rfile.read(length)
-        type(self).received.append({
-            "headers": {key.lower(): value for key, value in self.headers.items()},
-            "raw": raw.decode("utf-8", "replace"),
-            "json": json.loads(raw.decode("utf-8")),
-        })
-        self.send_response(204)
-        self.end_headers()
-
-    def log_message(self, *args):  # noqa: A003 - 静默探针日志
-        return
 
 
 class DailyNudgeApiTests(unittest.TestCase):
@@ -269,7 +256,6 @@ class DailyNudgeApiTests(unittest.TestCase):
         self._today_patch = mock.patch.object(
             streak_api, "_today", lambda tz=None: TODAY)
         self._today_patch.start()
-        _WebhookProbe.received = []
         self.task = self.client.post(
             "/api/tasks", json={"name": self._testMethodName},
             headers=self.auth()).json()["task_id"]
@@ -545,16 +531,38 @@ class DailyNudgeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403, response.text)
 
     def test_webhook_payload_is_numbers_only(self):
-        server = HTTPServer(("127.0.0.1", 0), _WebhookProbe)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        url = f"http://127.0.0.1:{server.server_port}/hook"
+        """载荷钉（2.1.5 安全修复后不再恒放行）：URL 公网校验真跑（DNS 解析
+        桩指向公网 IP），出站经捕获型假 opener（零真实出站），断言载荷仍
+        只含整数白名单字段——出站防护钉组见 test_2_1_5_notify_sec_pins.py。"""
+        captured: list[dict] = []
+
+        class _CaptureOpener:
+            class _Resp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self, n):
+                    return b"{}"
+
+            def open(self, req, timeout=None):
+                captured.append({
+                    "url": req.full_url,
+                    "headers": {key.lower(): value
+                                for key, value in req.header_items()},
+                    "raw": (req.data or b"").decode("utf-8", "replace"),
+                })
+                return self._Resp()
+
         self._seed(1, [("K0", "2026-11-08T09:00:00")])
         self._put_target(1, daily_target=2)
-        with mock.patch.object(notify_core, "validate_public_url", lambda url, **kw: url):
-            saved = self._put_channel({"enabled": True, "type": "webhook", "url": url})
+        with mock.patch.object(notify_core, "_resolve_host",
+                               lambda host, port=443: ["93.184.216.34"]), \
+             mock.patch.object(notify_core, "_OPENER", _CaptureOpener()):
+            saved = self._put_channel({"enabled": True, "type": "webhook",
+                                       "url": "https://hooks.example.test/hook"})
             self.assertEqual(saved.status_code, 200, saved.text)
             response = self.client.post(
                 f"/api/tasks/{self.task}/screening/notify/test",
@@ -563,9 +571,9 @@ class DailyNudgeApiTests(unittest.TestCase):
         body = response.json()
         self.assertTrue(body["ok"], body)
         self.assertEqual(body["status"], "sent")
-        self.assertEqual(len(_WebhookProbe.received), 1)
-        received = _WebhookProbe.received[0]
-        payload = received["json"]
+        self.assertEqual(len(captured), 1)
+        received = captured[0]
+        payload = json.loads(received["raw"])
         self.assertEqual(set(payload), {
             "event_code", "date_yyyymmdd", "screened_today", "daily_target",
             "remaining", "streak", "longest_streak"})
@@ -579,11 +587,13 @@ class DailyNudgeApiTests(unittest.TestCase):
         self.assertNotIn(SECRET_ABSTRACT, received["raw"])
 
     def test_apprise_missing_degrades_instead_of_crashing(self):
-        os.environ["RF_TEST_APPRISE_URL"] = "json://example.test"
-        self.addCleanup(os.environ.pop, "RF_TEST_APPRISE_URL", None)
+        # 2.1.5 安全修复后凭据环境变量名必须以 REVIEWFLOW_NOTIFY_ 开头
+        # （F1；非法前缀保存即 400，见 test_2_1_5_notify_sec_pins.py）。
+        os.environ["REVIEWFLOW_NOTIFY_TEST_APPRISE_URL"] = "json://example.test"
+        self.addCleanup(os.environ.pop, "REVIEWFLOW_NOTIFY_TEST_APPRISE_URL", None)
         saved = self._put_channel({
             "enabled": True, "type": "apprise",
-            "url_env": "RF_TEST_APPRISE_URL"})
+            "url_env": "REVIEWFLOW_NOTIFY_TEST_APPRISE_URL"})
         self.assertEqual(saved.status_code, 200, saved.text)
         response = self.client.post(
             f"/api/tasks/{self.task}/screening/notify/test",
