@@ -2020,7 +2020,13 @@ def _rob2_d1(a: Mapping[str, str]) -> str:
 
 
 def _rob2_d2_assignment(a: Mapping[str, str]) -> dict:
-    aware = _in(a.get("2.1"), "Y", "PY") or _in(a.get("2.2"), "Y", "PY")
+    # 官方决策表（条目路由文本：『If Y/PY/NI to 2.1 or 2.2: (answer 2.3)』）：
+    # 只有 2.1 与 2.2 **都是 N/PN** 才算「不知情→直接 Low」；NI（无信息）与
+    # Y/PY 同路进入 2.3 分支（终审 #47：旧实现把 NI 折进 not aware，与 N/PN
+    # 同路直接判 Low，偏倚风险被静默低估——与其他域把 NI 归 some_concerns 的
+    # 实现也不一致）。
+    aware = (_in(a.get("2.1"), "Y", "PY", "NI")
+             or _in(a.get("2.2"), "Y", "PY", "NI"))
     deviations = _in(a.get("2.3"), "Y", "PY")
     no_deviations = _in(a.get("2.3"), "N", "PN")
     affected = _in(a.get("2.4"), "Y", "PY")
@@ -2057,7 +2063,10 @@ def _rob2_d2_assignment(a: Mapping[str, str]) -> dict:
 
 
 def _rob2_d2_adhering(a: Mapping[str, str]) -> str:
-    aware = _in(a.get("2.1"), "Y", "PY") or _in(a.get("2.2"), "Y", "PY")
+    # 与 assignment 变体同一口径：NI 与 Y/PY 同路进入 2.3 分支（官方
+    # 『If Y/PY/NI to 2.1 or 2.2』），只有两者都是 N/PN 才算不知情（终审 #47）。
+    aware = (_in(a.get("2.1"), "Y", "PY", "NI")
+             or _in(a.get("2.2"), "Y", "PY", "NI"))
     balanced = _in(a.get("2.3"), "Y", "PY", "NA")
     not_balanced = _in(a.get("2.3"), "N", "PN")
     failures = _in(a.get("2.4"), "Y", "PY")
@@ -2521,8 +2530,10 @@ GRADE_RISK_LEVELS = ("low", "serious", "very_serious")
 #: - **AMSTAR 2**：Box 2 置信度 high/moderate/low/critically_low 按严重度
 #:   递增 → low/serious/very_serious（低与极低都归 very_serious）。
 #: - **CASP / AXIS**：清单自带的总体质量 high/moderate/low 依次 →
-#:   low/serious/very_serious；没有人工总体判定时，按逐条 "Yes" 占比分档
-#:   （见 ``_PER_ITEM_QUALITY_BANDS``）。
+#:   low/serious/very_serious；没有人工总体判定时，按逐条**正向**占比分档
+#:   （见 ``_PER_ITEM_QUALITY_BANDS``）——普通条目答 Yes 记正向，
+#:   ``reverse_direction`` 条目（AXIS 第 19 条利益冲突）答 **No** 记正向
+#:   （终审 #06）。
 #: - **CERQual**：它评价的是"综述发现的可信度"而非原始研究偏倚；本表仅作
 #:   GRADE 起点锚（high/moderate/low/very_low → low/serious/serious/
 #:   very_serious），不修改 CERQual 记录本身。
@@ -2591,13 +2602,53 @@ def _tally_responses(aggregate: Mapping[str, Any]) -> dict[str, int]:
     return counts
 
 
-def _per_item_quality(aggregate: Mapping[str, Any]) -> str | None:
-    """逐条报告归纳质量档：Yes 占比 ≥0.8 → high、≥0.5 → moderate、其余 low。"""
-    tally = _tally_responses(aggregate)
-    total = sum(tally.values())
-    if total <= 0:
-        return None
-    share = tally.get("Yes", 0) / total
+def _reverse_item_ids(tool: Mapping[str, Any] | None) -> frozenset[str]:
+    """工具注册表中标记 ``reverse_direction`` 的条目号（AXIS 第 19 条利益冲突）。"""
+    if not isinstance(tool, Mapping):
+        return frozenset()
+    items = tool.get("items")
+    if not isinstance(items, list):
+        return frozenset()
+    return frozenset(str(item.get("id")) for item in items
+                     if isinstance(item, Mapping) and item.get("reverse_direction"))
+
+
+def _per_item_quality(aggregate: Mapping[str, Any],
+                      tool: Mapping[str, Any] | None = None) -> str | None:
+    """逐条报告归纳质量档：正向占比 ≥0.8 → high、≥0.5 → moderate、其余 low。
+
+    正向口径：普通条目答 ``Yes`` 记正向；``reverse_direction`` 条目（AXIS 第
+    19 条「是否存在可能影响解释的资助/利益冲突」）答 **No** 记正向——答 Yes
+    表示存在顾虑，计分方向相反（终审 #06：旧实现按正向题数 Yes，答「有利益
+    冲突顾虑」反而抬高质量档、答「无顾虑」反而压低）。聚合缺逐条 ``items``
+    （只有 ``answer_distribution``，不含条目号）时退回 Yes 占比口径——该形态
+    无法识别反向题（现网仅 AXIS 有反向条目，且其聚合恒带 items）。
+    """
+    reverse = _reverse_item_ids(tool)
+    items = aggregate.get("items")
+    if reverse and isinstance(items, list):
+        positive = 0
+        total = 0
+        for entry in items:
+            if not isinstance(entry, Mapping):
+                continue
+            answer = entry.get("response")
+            if not isinstance(answer, str) or not answer:
+                continue
+            total += 1
+            item_id = str(entry.get("id") or "")
+            is_positive = (answer == "No") if item_id in reverse else (answer == "Yes")
+            if is_positive:
+                positive += 1
+        if total <= 0:
+            return None
+        share = positive / total
+    else:
+        tally = _tally_responses(aggregate)
+        total = sum(tally.values())
+        if total <= 0:
+            return None
+        share = tally.get("Yes", 0) / total
     for threshold, band in _PER_ITEM_QUALITY_BANDS:
         if share >= threshold:
             return band
@@ -2665,7 +2716,9 @@ def study_rating_for_grade(tool: object, overall: object) -> dict:
             value = aggregate.get("overall")
         source = "manual" if isinstance(value, str) else "per_item_report"
         if value is None:
-            value = _per_item_quality(aggregate)
+            # 带工具上下文：reverse_direction 条目（AXIS 第 19 条）按 No=正向
+            # 计入（终审 #06），与注册表 aggregation_notes 的自述一致。
+            value = _per_item_quality(aggregate, tool_def)
 
     key = _normalize_option(value)
     level = table.get(key) if key else None
