@@ -6609,7 +6609,7 @@ register_task_package_routes(app, require_user, _task_or_404, _task_visible_to,
 # 勾选/排序与 docx 排版在本模块，编码值单一事实源 = coscreen.export.coding_matrix_table。
 from custom_backend.tables_api import register_tables_routes
 register_tables_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db,
-                       SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
+                       SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, _arbitration_store)
 
 # 2.1.5 W9：撤稿/更正关注（Crossref works 的 update-to/updated-by；显式手动
 # 触发、分批游标、两表落协作库可加幂等、出站仅配置的 Crossref base）。

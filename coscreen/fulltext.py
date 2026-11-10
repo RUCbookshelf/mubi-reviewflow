@@ -235,13 +235,33 @@ def _page_count_from_bytes(data: bytes) -> int:
         return 0
 
 
+def _page_count_from_path(path: Path) -> int:
+    """pypdf 按**文件句柄**统计页数；损坏按 0 处理（与 bytes 入口同口径）。
+
+    必须传 open() 句柄、不能传 str/Path：pypdf 6.x 的 ``PdfReader`` 对
+    str/Path 入参会 ``open`` 后整个读进 ``BytesIO``（整文件入内存，见
+    ``pypdf/_reader.py`` ``_initialize_stream``）。
+
+    实测（r3，48MiB 成员）：正常 PDF（内嵌 48MiB 附件）/随机字节尾部 →
+    峰值 0.02MiB 级；**对抗性构造**（EOF 后 48MiB 单行注释 ``%AAA...``）→
+    峰值 96.77MiB ≈ 2× 成员——pypdf 句柄模式的词法层仍会把这类巨量
+    注释/字面量 token 读入内存，见 save_pdf 文档的残差披露。
+    """
+    try:
+        with open(path, "rb") as handle:
+            return len(PdfReader(handle).pages)
+    except Exception:  # noqa: BLE001  与 _page_count_from_bytes 同口径
+        return 0
+
+
 def save_pdf(
     db_path: StrPath,
     key: str,
-    data: bytes,
+    data: bytes | None,
     pdfs_dir: StrPath = "data/pdfs",
     *,
     trace_context: TraceContext | None = None,
+    data_path: StrPath | None = None,
 ) -> FulltextMeta:
     """保存一篇文献的 PDF：校验文件头 -> 落盘 -> upsert 元数据。
 
@@ -257,13 +277,41 @@ def save_pdf(
     - 文件替换发生在 SQLite 事务提交**之前**（轨迹/非轨迹两条分支同口径，
       MM3-02）：替换失败 → 事务回滚，元数据与磁盘文件保持一致；
     - ``n_pages`` 用 pypdf 统计；
-    - zotero_key 不在 articles 表时因外键约束抛 sqlite3.IntegrityError。
+    - zotero_key 不在 articles 表时因外键约束抛 sqlite3.IntegrityError；
+    - **D1（2.1.5 收尾清债）流式入口**：``data_path``（与 ``data`` 二选一）
+      指向磁盘上的 PDF（task_package 整包导入恢复的有界解压产物）。magic
+      只读头部、页数用**文件句柄**喂 pypdf（seek 式解析，见
+      ``_page_count_from_path``）、落盘与 sha256 在同一条 _CHUNK 拷贝循环里
+      **边拷边算（Tee）**——sha256 与落盘字节必然同源（无先算后拷的
+      TOCTOU 窗口），且不在内存里整块持有成员字节（旧路径
+      ``_read_member_bounded`` ≤100MB 整块 bytearray）。两个入口的校验闸
+      （magic、≥1 页、单射名、占用拒绝）与产物逐字段一致。
+    - **残差披露（r3 实测）**：正常 PDF 下整条 ``data_path`` 保存路径峰值
+      2.03MiB（48MiB 成员）；**对抗性 PDF**（EOF 后 48MiB 单行注释）下
+      pypdf 词法层仍会把巨量注释 token 读入内存，峰值 96.77MiB ≈ 2× 成员
+      ——与旧整块路径（97.50MiB）同量级、无恶化；成员受导入侧
+      100MB 上限约束，故该残差上限 ≈200MB 瞬态（契约已知边界已披露）。
     """
-    if not (data or b"").startswith(PDF_MAGIC):
+    if data is not None and data_path is not None:
+        raise ValueError("data 与 data_path 只能二选一。")
+    if data_path is None and not (data or b"").startswith(PDF_MAGIC):
         raise ValueError("不是有效的 PDF 文件（缺少 %PDF- 文件头）")
     if not (key or "").strip():
         raise ValueError("zotero_key 不能为空")
-    n_pages = _page_count_from_bytes(data)
+    if data_path is not None:
+        source = Path(data_path)
+        with open(source, "rb") as handle:
+            if not handle.read(len(PDF_MAGIC)).startswith(PDF_MAGIC):
+                raise ValueError("不是有效的 PDF 文件（缺少 %PDF- 文件头）")
+        n_pages = _page_count_from_path(source)
+        # sha256 不在此处单独算：与落盘在同一条拷贝循环里 Tee（见下），
+        # 消除「先算后拷」两遍之间文件被并发改写导致元数据与字节不一致的
+        # 窗口（D1 复审意见）。
+    else:
+        if data is None:
+            raise ValueError("data 与 data_path 必须提供其一。")
+        n_pages = _page_count_from_bytes(data)
+        sha_hex = hashlib.sha256(data).hexdigest()
     if n_pages <= 0:
         raise ValueError(
             "PDF 内容无法解析（pypdf 未识别出任何页面），请确认文件未损坏后重试。"
@@ -281,14 +329,7 @@ def save_pdf(
     # restore the previous file if commit/capture fails.
     staging = None
     now = _now()
-    meta = FulltextMeta(
-        zotero_key=key,
-        filename=filename,
-        path=str(path),
-        sha256=hashlib.sha256(data).hexdigest(),
-        n_pages=n_pages,
-        added_at=now,
-    )
+    meta: FulltextMeta | None = None
     backup = None
     replaced = False
     had_file = path.exists()
@@ -296,8 +337,26 @@ def save_pdf(
         with tempfile.NamedTemporaryFile(
             mode="wb", prefix=path.name + ".", suffix=".tmp", dir=directory, delete=False,
         ) as temp_file:
-            temp_file.write(data)
+            if data_path is not None:
+                # D1：_CHUNK 拷贝（1MiB/块），不整块入内存；sha256 在同一
+                # 循环里边拷边算（Tee）——与落盘字节必然同源，无 TOCTOU 窗口。
+                digest = hashlib.sha256()
+                with open(source, "rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        digest.update(chunk)
+                        temp_file.write(chunk)
+                sha_hex = digest.hexdigest()
+            else:
+                temp_file.write(data)
             staging = Path(temp_file.name)
+        meta = FulltextMeta(
+            zotero_key=key,
+            filename=filename,
+            path=str(path),
+            sha256=sha_hex,
+            n_pages=n_pages,
+            added_at=now,
+        )
         with closing(_connect(db_path)) as conn, conn:
             if trace_context is not None:
                 from coscreen.research_trace import begin_capture_transaction, begin_write_request
