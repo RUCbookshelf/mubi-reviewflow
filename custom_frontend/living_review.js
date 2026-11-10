@@ -67,8 +67,13 @@
     ].join('\n');
     (document.head || document.documentElement).appendChild(style);
 
-    const DB_LABELS = { pubmed: 'PubMed', embase: 'Embase', cochrane: 'Cochrane Library', manual: '手动 / 其他来源' };
-    const SOURCE_LABELS = { manual: '手动导入', pubmed: 'PubMed 插件' };
+    const DB_LABELS = { pubmed: 'living_review.source.pubmed', eric: 'living_review.source.eric', embase: 'Embase', wos: 'Web of Science', cochrane: 'Cochrane Library', manual: '手动 / 其他来源' };
+    const SOURCE_LABELS = { manual: '手动导入', pubmed: 'living_review.source.pubmed', eric: 'living_review.source.eric' };
+    const sourceLabel = source => T(SOURCE_LABELS[source] || source);
+    const messageText = (key, params) => key ? globalThis.RFServerMessage?.(key, params) : null;
+    let canManage = false;
+    const ericProgress = new Map();
+    const ericPreviews = new Map();
 
     /* ---- 十语言词条（模块自包含；列序 zh-CN/en/fr/ru/es/ja/pt/de/sr/ko） ---- */
     if (typeof RFLang !== 'undefined' && typeof RFLang.register === 'function') {
@@ -101,7 +106,7 @@
     let records = [];             // 已保存检索式
     let history = [];             // 更新历史（最新在前）
     let viewEntry = null;         // 当前展示的变更报告条目
-    let checkBusy = false;        // 手动/自动检查互斥（防重叠拉取）
+    let checkTicket = null;       // 同任务手动/自动检查互斥；切换任务作废旧票据
 
     /* ---- 面板骨架（静态文案节点集中持有，语言切换时重填） ---- */
     const heading = el('h3', { text: T('活体综述') });
@@ -111,6 +116,10 @@
     const recCaption = el('b', { class: 'sub', text: T('检索式管理') });
     const recEmpty = el('p', { class: 'hint', text: T('尚未保存检索式。') });
     const recBox = el('div', {});
+    const strategyBtn = el('button', { type: 'button', class: 'btn b-out sm',
+      text: T('search_strategy.entry'), onclick: () => window.SearchStrategyManager?.open() });
+    const noEric = el('p', { class: 'hint', text: T('living_review.eric_source_required') });
+    const readonly = el('p', { class: 'hint', text: T('search_strategy.readonly'), hidden: true });
 
     function disclosure(id, label) {
       const content = el('div', { id, hidden: true });
@@ -124,6 +133,7 @@
     const saveDetails = disclosure('rfLivingSearchForm', '保存 / 更新检索式');
     const dbSel = el('select', { class: 'input', 'aria-label': T('数据库') },
       Object.entries(DB_LABELS).map(([v, label]) => el('option', { value: v, text: T(label) })));
+    dbSel.addEventListener('change', () => { dateInput.closest('label').hidden = dbSel.value === 'eric'; });
     const queryInput = el('textarea', { class: 'input', rows: '3', 'aria-label': T('检索式'),
       placeholder: T('粘贴数据库检索式（如 PubMed 检索框中的完整检索式）') });
     const dateInput = el('input', { class: 'input', type: 'date', 'aria-label': T('上次检索日期（可选）') });
@@ -184,7 +194,7 @@
     const statusLine = el('p', { class: 'rf-lr-status hint', role: 'status' });
     const panel = el('section', { class: 'card rf-living', id: 'rfLivingReviewPanel', 'aria-label': T('活体综述') },
       heading, hint,
-      recCaption, recBox, recEmpty, saveDetails,
+      recCaption, strategyBtn, recBox, recEmpty, noEric, readonly, saveDetails,
       importCaption, importForm,
       reportCaption, reportEmpty, reportBox, histDetails,
       autoDetails, statusLine);
@@ -198,28 +208,125 @@
     }
 
     /* ---- 检索式列表渲染 ---- */
+    function recordIdentity(rec) {
+      return JSON.stringify([rec.strategy_id ?? null, rec.query_string]);
+    }
+
+    function ericAddress(rec) {
+      return rec.strategy_id != null ? { strategy_id: rec.strategy_id } : { query: rec.query_string };
+    }
+
+    function ericNavigation(url) {
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:' && parsed.hostname === 'eric.ed.gov' ? parsed.href : null;
+      } catch (_) { return null; }
+    }
+
+    function progressText(data) {
+      if (!data.truncated) return '';
+      return T('living_review.eric.continuation', {
+        start: data.scan_start + 1, scanned: data.scanned, total: data.total_hits,
+        remaining: data.remaining_hits,
+      });
+    }
+
+    function renderEricOutput(host, data) {
+      const message = messageText(data.message_key, data.message_params);
+      const progress = progressText(data);
+      if (message) host.append(el('span', { class: 'hint', style: 'display:block', text: message }));
+      if (progress) host.append(el('span', { class: 'hint', style: 'display:block', text: progress }));
+      for (const warning of data.warnings || []) {
+        if (warning.message_key === 'living_review.eric.truncated' && progress) continue;
+        const text = messageText(warning.message_key, warning.params);
+        if (text) host.append(el('span', { class: 'hint', style: 'display:block', text }));
+      }
+    }
+
+    function renderCheckError(host, error, source) {
+      if (source === 'pubmed') {
+        host.textContent = T('PubMed 检查失败：') + error.message
+          + (error.code === 'pubmed_unavailable' ? ' ' + T('网络不可达，请手动导出文件后导入。') : '');
+        return;
+      }
+      host.textContent = messageText(error.messageKey, error.params) || error.message;
+      if (['retry_or_manual_import', 'fix_query'].includes(error.hint))
+        host.append(el('span', { text: ' ' + T('living_review.eric.hint_' + error.hint) }));
+    }
+
+    async function previewEric(rec, output, button) {
+      if (!guardTask() || button.disabled) return;
+      const id = recordIdentity(rec);
+      const base = taskApi();
+      const taskVersion = S.taskVersion;
+      button.disabled = true;
+      output.textContent = T('living_review.eric.preview_pending');
+      try {
+        const search = new URLSearchParams({ source: 'eric', ...ericAddress(rec) });
+        const data = await api(base + '/living-review/preview?' + search);
+        if (S.task && base === taskApi() && S.taskVersion === taskVersion) {
+          ericPreviews.set(id, data);
+          renderRecords();
+        }
+      } catch (error) {
+        if (S.task && base === taskApi() && S.taskVersion === taskVersion) renderCheckError(output, error, 'eric');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function renderRecords() {
       recBox.replaceChildren();
       recEmpty.hidden = records.length > 0;
+      noEric.hidden = records.some(rec => rec.database === 'eric');
+      saveDetails.hidden = !canManage;
+      readonly.hidden = canManage;
+      autoDetails.hidden = !canManage;
       for (const rec of records) {
         if (!rec || typeof rec !== 'object') continue;
         const db = String(rec.database || '');
+        const isEric = db === 'eric';
+        const id = recordIdentity(rec);
+        const progress = ericProgress.get(id);
+        const preview = ericPreviews.get(id);
+        const output = el('div', { role: 'status' });
         const head = el('div', { class: 'head' },
-          el('span', { class: 'chip', translate: 'no', text: DB_LABELS[db] || db }),
-          rec.last_run_date ? el('span', { class: 'chip', text: T('上次检索：{0}', String(rec.last_run_date)) }) : null,
-          rec.total_hits_last ? el('span', { class: 'chip', text: T('命中 {0}', String(rec.total_hits_last)) }) : null);
+          el('span', { class: 'chip', text: T(DB_LABELS[db] || db) }),
+          !isEric && rec.last_run_date ? el('span', { class: 'chip', text: T('上次检索：{0}', String(rec.last_run_date)) }) : null,
+          rec.total_hits_last != null ? el('span', { class: 'chip', text: T('命中 {0}', String(rec.total_hits_last)) }) : null);
         const url = String(rec.url || '');
         if (db === 'pubmed' && /^https:\/\//.test(url)) {
           head.append(el('a', { class: 'btn b-out', href: url, target: '_blank', rel: 'noopener noreferrer',
             text: T('一键打开 PubMed ↗'), style: 'padding:3px 10px;font-size:.75rem' }));
         }
-        if (db === 'pubmed' && String(rec.query_string || '').trim()) {
-          head.append(el('button', { type: 'button', class: 'btn b-out', text: T('检查更新'),
-            style: 'padding:3px 10px;font-size:.75rem',
-            onclick: safe(() => { runCheck(rec, {}); }) }));
+        const ericUrl = isEric && ericNavigation(url);
+        if (ericUrl) head.append(el('a', { class: 'btn b-out sm', href: ericUrl, target: '_blank', rel: 'noopener noreferrer',
+          text: T('search_strategy.open_db') }));
+        if (canManage && (isEric || db === 'pubmed') && String(rec.query_string || '').trim()) {
+          head.append(el('button', { type: 'button', class: 'btn b-out sm',
+            text: progress?.truncated ? T('living_review.eric.continue_button', { remaining: progress.remaining_hits })
+              : T(isEric ? 'living_review.eric.check_button' : '检查更新'),
+            onclick: () => runCheck(rec, {}) }));
+        }
+        if (isEric) {
+          const button = el('button', { type: 'button', class: 'btn b-out sm',
+            text: preview ? T('living_review.eric.preview_count_button', { n: preview.new_count }) : T('living_review.eric.preview_button'),
+            onclick: () => previewEric(rec, output, button) });
+          head.append(button);
+          if (preview) {
+            renderEricOutput(output, preview);
+            output.append(el('ul', {}, preview.records.map(record => {
+              const recordUrl = ericNavigation(record.url);
+              const title = record.title || record.zotero_key;
+              return el('li', { translate: 'no' }, recordUrl
+                ? el('a', { href: recordUrl, target: '_blank', rel: 'noopener noreferrer', text: title })
+                : document.createTextNode(title),
+              record.year == null ? null : document.createTextNode(' · ' + record.year));
+            })));
+          }
         }
         recBox.append(el('div', { class: 'rf-lr-record' }, head,
-          el('pre', { translate: 'no', text: String(rec.query_string || '') })));
+          el('pre', { translate: 'no', text: String(rec.query_string || '') }), output));
       }
     }
 
@@ -229,13 +336,13 @@
       let ticket;
       try {
         if (typeof api !== 'function' || typeof taskApi !== 'function') return;
-        if (!guardTask()) return;
+        if (!guardTask() || !canManage) return;
         const query = queryInput.value.trim();
         if (!query) { statusLine.textContent = T('请先填写检索式。'); return; }
         const body = {
           database: dbSel.value || 'pubmed',
           query_string: query,
-          last_run_date: dateInput.value || '',
+          last_run_date: dbSel.value === 'eric' ? '' : dateInput.value || '',
           total_hits_last: Number(hitsInput.value) || 0,
         };
         ticket = ++version;
@@ -247,10 +354,11 @@
           if (ticket !== version) return;
           records = (d && d.search_records) || records;
           renderRecords();
-          statusLine.textContent = T('✓ 检索式已保存（PubMed 链接由本地规则生成）。');
+          statusLine.textContent = T('✓ 检索式已保存');
+          document.dispatchEvent(new Event('reviewflow:search-strategies-changed'));
           if (typeof toast === 'function') toast(T('✓ 检索式已保存'), 'inc');
         } finally {
-          if (saveBtn.dataset.requestTicket === String(ticket)) saveBtn.disabled = false;
+          if (saveBtn.dataset.requestTicket === String(ticket)) saveBtn.disabled = !canManage;
         }
       } catch (e) {
         if (ticket !== undefined && ticket !== version) return;
@@ -289,7 +397,7 @@
     }
     function normalizeEntry(d, source, label) {
       d = d || {};
-      const entry = d.history_entry || {};
+      const entry = d.history_entry || d;
       const nNew = d.new_articles ? d.new_articles.length : (entry.n_new != null ? entry.n_new : null);
       return {
         when: entry.when || '',
@@ -308,6 +416,10 @@
         meta_before: d.meta_before || entry.meta_before || null,
         meta_after: d.meta_after || entry.meta_after || null,
         change_report: d.change_report || entry.change_report || '',
+        change_report_key: entry.change_report_key || d.message_key,
+        change_report_params: entry.change_report_params || d.message_params,
+        scan_start: entry.scan_start ?? 0, scanned: entry.scanned, total_hits: entry.total_hits,
+        remaining_hits: entry.remaining_hits ?? 0, truncated: entry.truncated,
         comparison: entry.comparison || '', outcome: entry.outcome || '',
         timepoint: entry.timepoint || '', measure: entry.measure || '',
       };
@@ -330,7 +442,7 @@
 
       const head = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center' },
         el('b', { style: 'font-size:.85rem', text: e.when ? T('更新时间：{0}', e.when) : T('本次更新') }));
-      if (e.source) head.append(el('span', { class: 'chip', text: T(SOURCE_LABELS[e.source] || e.source) }));
+      if (e.source) head.append(el('span', { class: 'chip', text: sourceLabel(e.source) }));
       if (e.label) head.append(el('span', { class: 'chip', translate: 'no', text: e.label }));
       reportBox.append(head);
 
@@ -340,7 +452,7 @@
         // PubMed 拉取口径（r8 评审 medium）：拉回条数 / 待审条数 / 库内已存在条数
         // 各自独立显示，不再把「已存在」算成「新增」。
         e.pending_new ? el('span', { class: 'chip', text: T('导入待审 {0} 篇', String(e.pending_new)) }) : null,
-        e.fetched != null ? el('span', { class: 'chip', text: T('PubMed 拉回 {0} 篇', String(e.fetched)) }) : null,
+        e.fetched != null ? el('span', { class: 'chip', text: e.source === 'eric' ? T('living_review.eric.fetched', { n: e.fetched }) : T('PubMed 拉回 {0} 篇', String(e.fetched)) }) : null,
         e.already_present ? el('span', { class: 'chip', text: T('库内已存在 {0} 篇', String(e.already_present)) }) : null);
       if (e.n_screen != null) stats.append(el('span', { class: 'chip', text: T('待新筛 {0} 篇（机器学习热启动排序）', String(e.n_screen)) }));
       else if (e.al_available === false) stats.append(el('span', { class: 'chip', text: T('机器学习排序不可用') }));
@@ -379,9 +491,12 @@
       reportBox.append(el('p', { style: 'margin:8px 0 0' },
         el('span', { class: 'rf-lr-flip ' + (e.conclusion_changed ? 'rf-lr-flip-yes' : 'rf-lr-flip-no'),
           text: e.conclusion_changed ? T('⚠ 结论已翻转（CI 跨 null 状态变化）') : T('结论未翻转') })));
-      if (e.change_report) {
+      const changeReport = messageText(e.change_report_key, e.change_report_params) || e.change_report;
+      const progress = progressText(e);
+      if (progress) reportBox.append(el('span', { class: 'hint', style: 'display:block', text: progress }));
+      if (changeReport) {
         reportBox.append(el('p', { class: 'hint', style: 'margin:6px 0 0', text: T('影响评估') }),
-          el('pre', { translate: 'no', text: String(e.change_report) }));
+          el('pre', { translate: 'no', text: changeReport }));
       }
     }
 
@@ -392,8 +507,8 @@
       for (const entry of history.slice(0, 30)) {
         if (!entry || typeof entry !== 'object') continue;
         const row = el('button', { type: 'button' });
-        row.append(el('span', { translate: 'no',
-          text: [entry.when, SOURCE_LABELS[entry.source] || entry.source,
+        row.append(el('span', { class: 'chip', text: sourceLabel(entry.source) }), el('span', { translate: 'no',
+          text: [entry.when,
             T('新增 {0}', String(entry.n_new == null ? 0 : entry.n_new)),
             entry.conclusion_changed ? T('结论已翻转') : ''].filter(Boolean).join(' · ') }));
         row.addEventListener('click', safe(() => {
@@ -406,15 +521,19 @@
 
     /* ---- 列表刷新 ---- */
     async function refreshLists() {
+      let ticket;
       try {
-        if (typeof api !== 'function' || typeof taskApi !== 'function') return;
-        const ticket = ++version;
-        const [recRes, histRes] = await Promise.all([
+        if (!S.task || typeof api !== 'function' || typeof taskApi !== 'function') return;
+        ticket = ++version;
+        const [recRes, histRes, strategies] = await Promise.all([
           api(taskApi() + '/living-review/search-records'),
           api(taskApi() + '/living-review/history'),
+          api(taskApi() + '/search-strategy/strategies'),
         ]);
         if (ticket !== version) return;
         records = (recRes && recRes.search_records) || [];
+        canManage = (strategies.can_manage ?? WorkflowControls.settings()?.can_manage) === true;
+        saveBtn.disabled = !canManage;
         const auto = recRes?.living_review_auto || {enabled: false, interval_days: 30};
         autoCheck.checked = !!auto.enabled;
         intervalInput.value = String(auto.interval_days || 30);
@@ -426,7 +545,7 @@
           viewEntry = normalizeEntry(history[0], history[0].source, history[0].label);
           renderEntry();
         }
-      } catch (e) { /* 面板可选数据加载失败不阻塞；详情看状态行 */ }
+      } catch (e) { if (ticket === version) statusLine.textContent = e.message; }
     }
 
     /* ---- 自动监控（显式开关；后端只写设置；自动检查由本页会话内定时器实现） ---- */
@@ -481,45 +600,61 @@
       return past.toISOString().slice(0, 10);
     }
 
-    async function runCheck(record, opts) {
-      opts = opts || {};
+    async function runCheck(record, opts = {}) {
+      if (!guardTask() || checkTicket || !canManage) return;
+      const rec = record || firstPubmedRecord();
+      const query = String(rec?.query_string || '').trim();
+      if (!query) {
+        statusLine.textContent = T('请先保存检索式。');
+        return;
+      }
+      const source = rec.database === 'eric' ? 'eric' : 'pubmed';
+      const since = source === 'pubmed' ? computeSince(rec) : '';
+      const base = taskApi();
+      const task = S.task.task_id;
+      const address = rec.strategy_id != null ? { strategy_id: rec.strategy_id } : {};
+      const body = { ...address, source, query_string: query, ...outcomeLayer() };
+      if (since) body.since_date = since;
+      const ticket = checkTicket = Symbol();
+      checkBtn.disabled = true;
       try {
-        if (typeof api !== 'function' || typeof taskApi !== 'function') return;
-        if (!guardTask() || checkBusy) return;
-        const rec = record || firstPubmedRecord();
-        const query = String((rec && rec.query_string) || '').trim();
-        if (!query) {
-          statusLine.textContent = T('请先保存检索式。');
-          if (!opts.auto && typeof toast === 'function') toast(T('请先保存检索式。'), 'warn');
-          return;
-        }
-        const since = computeSince(rec);
-        const ticket = ++version;
-        checkBusy = true;
-        checkBtn.disabled = true;
-        try {
-          statusLine.textContent = T(opts.auto ? '自动检查中…' : '正在通过 PubMed 插件拉取增量…');
-          const d = await api(taskApi() + '/living-review/check-now',
-            { method: 'POST', body: { query_string: query, since_date: since } });
-          if (ticket !== version) return;
-          if (d && Array.isArray(d.search_records)) { records = d.search_records; renderRecords(); }
-          applyResult(d, 'pubmed', (d && d.virtual_file) || '');
-          statusLine.textContent = (d && d.fetched)
+        statusLine.textContent = T(opts.auto ? '自动检查中…' : source === 'eric'
+          ? 'living_review.eric.check_pending' : '正在通过 PubMed 插件拉取增量…');
+        const d = await api(base + '/living-review/check-now', { method: 'POST', body });
+        if (checkTicket !== ticket || task !== S.task?.task_id) return;
+        if (Array.isArray(d.search_records)) records = d.search_records;
+        if (source === 'eric') {
+          const id = recordIdentity(rec);
+          ericProgress.set(id, d);
+          ericPreviews.delete(id);
+          statusLine.replaceChildren();
+          renderEricOutput(statusLine, d);
+          if (d.staged && d.import?.batch_id) {
+            const batch = d.import.batch_id;
+            if (d.message_key !== 'living_review.eric.increment_staged') statusLine.append(el('span', { class: 'hint',
+              text: T('living_review.eric.staged_batch', { batch_id: batch }) }));
+            statusLine.append(el('button', { type: 'button', class: 'btn b-out sm', text: T('Open import review'), onclick: async () => {
+              if (await go('import')) await WorkflowImports.list();
+            } }));
+          }
+        } else {
+          statusLine.textContent = d.fetched
             ? T('✓ 已拉取 {0} 条，进入导入核验待审。', String(d.fetched))
             : T('✓ 自 {0} 起无新增。', since);
-          refreshLists();  // 同步服务端推进的检索式与历史（内部自带票据与兜错）
-        } finally {
-          checkBusy = false;
+        }
+        renderRecords();
+        applyResult(d, source, d.virtual_file || '');
+        if (d.history_entry) {
+          history = [d.history_entry, ...history];
+          renderHistory();
+        }
+      } catch (error) {
+        if (checkTicket === ticket && task === S.task?.task_id) renderCheckError(statusLine, error, source);
+      } finally {
+        if (checkTicket === ticket) {
+          checkTicket = null;
           checkBtn.disabled = false;
         }
-      } catch (e) {
-        // 优雅降级：检查失败只提示（含 409 pubmed_unavailable 的手动导入指引），
-        // 面板与离线手动导入路径不受影响，异常绝不冒泡。
-        const code = (e && e.code) || '';
-        const msg = String((e && e.message) || e || '');
-        statusLine.textContent = T('PubMed 检查失败：') + msg
-          + (code === 'pubmed_unavailable' ? ' ' + T('网络不可达，请手动导出文件后导入。') : '');
-        if (!opts.auto && typeof toast === 'function') toast(T('PubMed 检查失败：') + msg, 'warn');
       }
     }
 
@@ -557,7 +692,7 @@
       }
       autoTimer = setTimeout(() => {           // 到期：检查一次并排下一轮
         autoTimer = null;
-        if (autoCheck.checked && !checkBusy) runCheck(null, { auto: true });
+        if (autoCheck.checked && !checkTicket) runCheck(null, { auto: true });
         autoDueAt = Date.now() + autoIntervalMs();
         armAutoSlice();
       }, Math.max(0, remaining));
@@ -567,7 +702,7 @@
     }
     function scheduleAutoCheck() {
       clearAutoTimer();
-      if (!autoCheck.checked || !firstPubmedRecord()) return;
+      if (!canManage || !autoCheck.checked || !firstPubmedRecord()) return;
       const intervalMs = autoIntervalMs();
       // 会话开始时已到期（上次检查距今 ≥ 间隔）→ 短延迟补检一次，随后按间隔排下一轮
       const last = Date.parse(String((firstPubmedRecord() || {}).last_run_date || '')) || 0;
@@ -576,7 +711,7 @@
         autoCatchup = setTimeout(() => {
           autoCatchup = null;
           if (!autoCheck.checked) return;
-          if (!checkBusy) runCheck(null, { auto: true });
+          if (!checkTicket) runCheck(null, { auto: true });
           autoDueAt = Date.now() + intervalMs;
           armAutoSlice();
         }, 5000);
@@ -607,6 +742,9 @@
         heading.textContent = T('活体综述');
         hint.textContent = T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.');
         recCaption.textContent = T('检索式管理');
+        strategyBtn.textContent = T('search_strategy.entry');
+        noEric.textContent = T('living_review.eric_source_required');
+        readonly.textContent = T('search_strategy.readonly');
         recEmpty.textContent = T('尚未保存检索式。');
         saveDetails.querySelector(':scope > button').textContent = T('保存 / 更新检索式');
         const keepDb = dbSel.value || 'pubmed';
@@ -638,17 +776,24 @@
 
     /* ---- 事件接入 ---- */
     document.addEventListener('reviewflow:analysis-loaded', safe(refreshLists));
+    document.addEventListener('reviewflow:search-strategies-changed', safe(() => {
+      if (S.page === 'analysis') refreshLists();
+    }));
     document.addEventListener('reviewflow:analysis-core-loaded', safe(syncLayerFromAnalysis));
     document.addEventListener('reviewflow:analysis-task-changed', safe(() => {
       version++;
       clearAutoTimer();   // 换任务：停旧任务的会话内自动检查
       records = []; history = []; viewEntry = null;
+      canManage = false;
+      checkTicket = null;
+      ericPreviews.clear();
+      ericProgress.clear();
       renderRecords(); renderHistory(); renderEntry();
       recEmpty.hidden = false;
       histDetails.hidden = true;
       autoCheck.checked = false;
       intervalInput.value = '30';
-      saveBtn.disabled = false;
+      saveBtn.disabled = true;
       importBtn.disabled = false;
       checkBtn.disabled = false;
       layerTouched = false;

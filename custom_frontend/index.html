@@ -5409,6 +5409,7 @@ async function apiRequest(path, opts = {}) {
       error.reasons = payload.reasons || [];
       error.fields = Array.isArray(payload.fields) ? payload.fields : [];
       error.guidance = payload.guidance;
+      error.hint = payload.hint;
       error.version = payload.version;
       error.maxItems = payload.max_items;
     }
@@ -9902,7 +9903,9 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./analysis_grade.js?v=20261030-r8fl5"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
-<script src="./living_review.js?v=20261030-r8-w3-2"></script>
+<script src="./search_strategy_locale.js?v=20261110-215"></script>
+<script src="./search_strategy.js?v=20261110-215"></script>
+<script src="./living_review.js?v=20261110-215"></script>
 <script src="./evidence_mapper.js?v=20261030-r8fl5"></script>
 <link rel="stylesheet" href="./mobile_concept.css?v=20261101-r10u3">
 <script src="./mobile_concept_locale.js?v=20261101-r10u3"></script>
