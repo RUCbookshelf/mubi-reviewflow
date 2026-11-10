@@ -222,7 +222,7 @@ async function nav(page, destination, { timeout = 20000 } = {}) {
     }
     await page.waitForTimeout(200);
   }
-  throw new Error(`导航失败或被刷新守卫持续暂缓（${destination}）：go()=${JSON.stringify(last)}`);
+  throw new Error(`导航失败（go()=${JSON.stringify(last)}：false=被刷新守卫暂缓、undefined=目标页不存在；${destination}）`);
 }
 
 async function goHomeTab(page, tab) {
