@@ -106,6 +106,10 @@ with sqlite3.connect(ctx.owner_db) as conn:
     for c,base_row in zip(presented,base_rows):
         assert isinstance(c['bulk_eligible'],bool) and isinstance(c['suggested_keeper'],dict)
         assert (c['bulk_eligible'],c['bulk_ineligible_reason'])==tuple(bulk_eligibility(base_row))
+        # 双异构评审补钉（2026-11-10）：第三项 suggested_keeper 也要与展示层同一函数逐值同源，
+        # 不允许校验器只看类型（伪造保留者建议必须在此变红；API 层另有 test_2_1_5_g5_merge_rules 钉）。
+        from custom_backend.import_review_presentation import suggested_keeper as compute_keeper
+        assert c['suggested_keeper']==compute_keeper(base_row['members'])
 client.headers['Authorization']='Bearer '+scope['member']['token']
 assert call('GET',path+'?view=attention&limit=1')['can_manage'] is False
 client.headers['Authorization']='Bearer '+outsider['token']
