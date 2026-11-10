@@ -229,6 +229,27 @@
 
       const statusLine = el('p', { class: 'hint', style: 'margin:6px 0 0', role: 'status' });
       const rationaleBox = el('div', { class: 'rf-grade-rationale hint', hidden: '' });
+      if (assessmentReadReady && window.AppraisalWorkspace) {
+        const appraisalBtn = el('button', { class: 'btn b-out', type: 'button', hidden: '',
+          text: T('appraisal.grade_input') });
+        autoBtn.after(appraisalBtn);
+        const epoch = version;
+        AppraisalWorkspace.canAssess().then(allowed => {
+          if (epoch === version && rowEl.isConnected) appraisalBtn.hidden = !allowed;
+        });
+        appraisalBtn.addEventListener('click', () => {
+          AppraisalWorkspace.openGrade(st.combo, st.initial_design, (level, signal) => {
+            if (epoch !== version || !DOWNGRADE_LEVELS.some(([value]) => value === level)) return;
+            st.downgrades.rob = level;
+            st.suggested = { ...st.suggested, rob: level };
+            st.signals = { ...st.signals, rob: signal };
+            delete st.overridden.rob;
+            st.dirty = true;
+            syncFromState();
+            statusLine.textContent = T('appraisal.grade_hint');
+          });
+        });
+      }
 
       rowEl.append(head, ctl, statusLine, rationaleBox);
 

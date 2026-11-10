@@ -32,6 +32,10 @@
      *     此处只注册本模块新增的键。）
      * ===================================================================== */
     RFLang.register([
+      Object.assign(["质性研究", "Qualitative research", "Recherche qualitative", "Качественное исследование", "Investigación cualitativa", "質的研究", "Pesquisa qualitativa", "Qualitative Forschung", "Квалитативно истраживање", "질적 연구"], { aliases: ["sd.label.qualitative"] }),
+      Object.assign(["混合方法", "Mixed methods", "Méthodes mixtes", "Смешанные методы", "Métodos mixtos", "混合研究法", "Métodos mistos", "Mixed Methods", "Мешовите методе", "혼합 방법"] , { aliases: ["sd.label.mixed_methods"] }),
+      Object.assign(["调查研究", "Survey research", "Enquête", "Опросное исследование", "Estudio de encuesta", "調査研究", "Pesquisa por inquérito", "Befragungsstudie", "Анкетно истраживање", "설문 연구"], { aliases: ["sd.label.survey"] }),
+      Object.assign(["话语/语料分析", "Discourse / corpus analysis", "Analyse du discours / de corpus", "Дискурс-анализ / корпусный анализ", "Análisis del discurso / de corpus", "談話・コーパス分析", "Análise do discurso / de corpus", "Diskurs- / Korpusanalyse", "Анализа дискурса / корпуса", "담화·말뭉치 분석"], { aliases: ["sd.label.discourse"] }),
       ["未识别", "Unrecognized", "Non identifié", "Не распознано", "No identificado", "未分類", "Não identificado", "Nicht erkannt", "Није препознато", "미식별"],
       ["本地关键词规则判定为「{0}」（命中：{1}）。仅供参考，请人工核对。", "Classified as “{0}” by local keyword rules (matched: {1}). Advisory only — verify manually.", "Classifié comme « {0} » par les règles locales de mots-clés (correspondance : {1}). À titre indicatif — vérifiez manuellement.", "Классифицировано как «{0}» локальными правилами по ключевым словам (совпадение: {1}). Только рекомендация — проверьте вручную.", "Clasificado como «{0}» por reglas locales de palabras clave (coincidencia: {1}). Solo orientativo: verifique manualmente.", "ローカルのキーワード規則により「{0}」に分類（一致：{1}）。参考情報のため手動で確認してください。", "Classificado como “{0}” por regras locais de palavras-chave (correspondência: {1}). Apenas orientativo — verifique manualmente.", "Durch lokale Schlagwortregeln als „{0}“ klassifiziert (Treffer: {1}). Nur orientierend – bitte manuell prüfen.", "Класификовано као „{0}“ локалним правилима кључних речи (поклапање: {1}). Само оријентационо — проверите ручно.", "로컬 키워드 규칙으로 「{0}」(으)로 분류됨(일치: {1}). 참고용이니 수동으로 확인하세요."],
       ["未识别到明确的研究设计关键词（规则精确优先，宁缺毋滥）。", "No explicit study-design keyword was recognized (precision-first rules; nothing is guessed).", "Aucun mot-clé explicite de design d’étude reconnu (règles précises d’abord ; aucune supposition).", "Явное ключевое слово дизайна исследования не распознано (правила точности в приоритете; догадки исключены).", "No se reconoció ninguna palabra clave explícita de diseño del estudio (reglas de precisión primero; sin conjeturas).", "明確な研究デザインのキーワードは認識されませんでした（精確優先の規則。推測はしません）。", "Nenhuma palavra-chave explícita de desenho do estudo reconhecida (regras de precisão primeiro; sem suposições).", "Es wurde kein eindeutiges Schlagwort zum Studiendesign erkannt (Präzision vor Vermutung).", "Није препозната експлицитна кључна реч дизајна студије (правила прецизности прво; без нагађања).", "명시적인 연구 설계 키워드가 인식되지 않았습니다(정밀도 우선 규칙, 추측 없음)."],
@@ -47,6 +51,10 @@
       '.rf-sd-badge{display:inline-flex;align-items:center;font-size:.72rem;border-radius:999px;padding:2px 10px;border:1px solid var(--border);color:var(--muted);margin:4px 0 2px;max-width:100%;cursor:help}',
       '.rf-sd-badge.rf-sd-rct{color:#2F6F6A;border-color:currentColor;font-weight:600}',
       '.rf-sd-badge.rf-sd-syn{color:var(--primary);border-color:currentColor;font-weight:600}',
+      '.rf-sd-badge.rf-sd-qualitative{background:#EDE7FB;color:#5B3FB5}',
+      '.rf-sd-badge.rf-sd-mixed_methods{background:#FDEEDC;color:#8A4B08}',
+      '.rf-sd-badge.rf-sd-survey{background:#DFF3F7;color:#0E6478}',
+      '.rf-sd-badge.rf-sd-discourse{background:#F9E4F1;color:#8C2A66}',
     ].join('\n');
     (document.head || document.documentElement).appendChild(style);
 
@@ -58,6 +66,8 @@
       meta_analysis: 'Meta 分析', systematic_review: '系统综述', rct: '随机对照试验',
       cohort: '队列研究', case_control: '病例对照', cross_sectional: '横断面研究',
       diagnostic: '诊断准确性', other: '未识别',
+      qualitative: 'sd.label.qualitative', mixed_methods: 'sd.label.mixed_methods',
+      survey: 'sd.label.survey', discourse: 'sd.label.discourse',
     };
     const SYN_LABELS = { meta_analysis: true, systematic_review: true };
 
@@ -120,8 +130,8 @@
      * 五、徽标渲染（textContent/setAttribute，绝不 innerHTML）
      * ===================================================================== */
     function renderBadge(node, item) {
-      const label = LABELS[item.label] ? item.label : 'other';
-      node.className = 'rf-sd-badge' + (label === 'rct' ? ' rf-sd-rct' : SYN_LABELS[label] ? ' rf-sd-syn' : '');
+      const label = Object.hasOwn(LABELS, item.label) ? item.label : 'other';
+      node.className = 'rf-sd-badge rf-sd-' + label + (SYN_LABELS[label] ? ' rf-sd-syn' : '');
       node.textContent = T(LABELS[label]);
       node.setAttribute('title', item.recognized
         ? T('本地关键词规则判定为「{0}」（命中：{1}）。仅供参考，请人工核对。', T(LABELS[label]), item.matched_keyword || '—')

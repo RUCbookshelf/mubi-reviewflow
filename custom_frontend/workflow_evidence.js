@@ -109,6 +109,7 @@
   E.render=async()=>{
     if(!W.renderAllowed())return;
     const t=++ticket,scope=identity(),version=S.taskVersion,screener=S.screener,cur=S.cbQueue[S.cbIdx];
+    window.AppraisalWorkspace?.setArticle(cur,E.context());
     clear();S.codingFormReady=false;
     if($('#rfExtractPanel'))$('#rfExtractPanel').hidden=mode==='canonical';
     $('#cbLabel').textContent=T('第 {0} / {1} 篇',S.cbQueue.length?S.cbIdx+1:0,S.cbQueue.length);
