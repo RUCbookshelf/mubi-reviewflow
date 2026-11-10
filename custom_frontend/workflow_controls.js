@@ -601,6 +601,7 @@
     const changed=pendingPolicyRefresh;
     if(draft&&!policyChanged)draft.version=result.version;
     settings=result;
+    window.RFArbitrationReader?.sync();
     void loadBinaryReset();
     for(const [stage,ids] of [['screen',['btnInc','btnExc']],['fulltext',['ftInc','ftExc']]])if(result.stages[stage].mode==='paused')for(const id of ids){const control=$('#'+id);if(control)control.disabled=true;}
     W.anyDirty(); // Refresh value-based dirty flags before rendering the policy.

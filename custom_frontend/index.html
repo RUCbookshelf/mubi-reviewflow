@@ -1242,6 +1242,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <select class="input" id="mergeStage" style="width:240px;max-width:100%"><option value="stage1">文献初筛</option><option value="stage2">文献复筛</option></select>
       <button class="btn b-inc" id="mergePick">⇧ 选择 2–9 份决策 CSV</button>
       <button class="btn b-out" id="mergeServerLoad" type="button">⇣ 从服务器加载全员决策</button>
+      <button class="btn b-out" id="mergeSession" type="button" hidden>盲裁决阅读卡</button>
       <button class="btn b-out" id="mergeLatest" type="button">最近的仲裁记录</button>
       <button class="btn b-out" id="mergeDownload" type="button" hidden>导出仲裁记录</button>
       <span class="hint" style="margin:0" id="mergeFilesHint">未选择文件</span>
@@ -4089,6 +4090,11 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["请输入自定义排除理由","Enter a custom exclusion reason","Saisissez un motif d'exclusion personnalisé","Введите свою причину исключения","Introduzca un motivo de exclusión personalizado","除外理由を入力してください","Introduza um motivo de exclusão personalizado","Eigenen Ausschlussgrund eingeben","Унесите сопствени разлог искључења","직접 제외 사유를 입력하세요"],
   ["人群不符","Population mismatch","Population non conforme","Несоответствие популяции","Población no conforme","対象集団不一致","População inadequada","Population passt nicht","Не одговара популацији", "대상 집단 부적합"],
   ["干预不符","Intervention mismatch","Intervention non conforme","Несоответствие вмешательства","Intervención no conforme","介入不一致","Intervenção inadequada","Intervention passt nicht","Не одговара интервенцији", "중재 부적합"],
+  ["仲裁决定必须为「纳入」或「排除」，不能保存为「暂不确定」或其他值。","The adjudication decision must be Include or Exclude; Not Sure Now or any other value cannot be saved.","La décision d’arbitrage doit être « inclure » ou « exclure » ; « à décider » ou toute autre valeur ne peuvent pas être enregistrés.","Решение в разрешении разногласий должно быть «включить» или «исключить»; «возможно» или иное значение сохранить нельзя.","La decisión de arbitraje debe ser «incluir» o «excluir»; «pendiente» o cualquier otro valor no se pueden guardar.","仲裁の判定は「採用」または「除外」でなければなりません。「保留」やその他の値は保存できません。","A decisão de arbitragem deve ser “incluir” ou “excluir”; “talvez” ou qualquer outro valor não podem ser salvos.","Die Entscheidung muss „einschließen“ oder „ausschließen“ sein; „vielleicht“ oder andere Werte können nicht gespeichert werden.","Одлука у решавању неслагања мора бити „укључи“ или „искључи“; „можда“ или друга вредност не могу се сачувати.", "조정 결정은 '포함' 또는 '제외'여야 하며, '보류'나 다른 값은 저장할 수 없습니다."],
+  ["仲裁决定为「排除」时必须填写仲裁理由后再保存。","An Exclude decision requires an adjudication reason before it can be saved.","Une décision « exclure » exige un motif d’arbitrage avant l’enregistrement.","Для решения «исключить» перед сохранением нужно указать причину.","Una decisión «excluir» exige un motivo de arbitraje antes de guardar.","「除外」の判定には保存前に仲裁理由の入力が必要です。","Uma decisão “excluir” exige um motivo de arbitragem antes de salvar.","Eine Entscheidung „ausschließen“ erfordert vor dem Speichern einen Begründungstext.","Одлука „искључи“ захтева разлог пре чувања.", "‘제외’ 결정은 저장 전에 조정 사유를 입력해야 합니다."],
+  ["仲裁理由（排除必填）","Adjudication reason (required for exclusion)","Motif d’arbitrage (obligatoire pour exclure)","Причина разрешения разногласий (обязательно при исключении)","Motivo de arbitraje (obligatorio al excluir)","仲裁理由（除外時必須）","Motivo da arbitragem (obrigatório ao excluir)","Begründung der Entscheidung (bei Ausschluss erforderlich)","Разлог за решавање неслагања (обавезан при искључивању)", "조정 사유(제외 시 필수)"],
+  ["仲裁理由（可选）","Adjudication reason (optional)","Motif d’arbitrage (facultatif)","Причина разрешения разногласий (необязательно)","Motivo de arbitraje (opcional)","仲裁理由（任意）","Motivo da arbitragem (opcional)","Begründung der Entscheidung (optional)","Разлог за решавање неслагања (опционо)", "조정 사유(선택 사항)"],
+  ["请先为所有「排除」裁决填写理由，再保存。","Add a reason for every Exclude decision before saving.","Ajoutez un motif à chaque décision « exclure » avant d’enregistrer.","Перед сохранением укажите причину для каждого решения «исключить».","Añada un motivo a cada decisión «excluir» antes de guardar.","保存する前に、すべての「除外」判定に理由を入力してください。","Informe um motivo para cada decisão “excluir” antes de salvar.","Geben Sie vor dem Speichern für jede Entscheidung „ausschließen“ eine Begründung an.","Унесите разлог за сваку одлуку „искључи“ пре чувања.", "저장하기 전에 모든 '제외' 결정에 사유를 입력하세요."],
   ["主题不符合","Topic mismatch","Sujet non conforme","Несоответствие теме","Tema no conforme","主題不一致","Tema inadequado","Thema passt nicht","Не одговара теми", "주제 부적합"],
   ["领域不符合","Field mismatch","Domaine non conforme","Несоответствие области","Área no conforme","分野不一致","Área inadequada","Fachgebiet passt nicht","Не одговара области", "분야 부적합"],
   ["研究设计不符","Study design mismatch","Conception d'étude non conforme","Несоответствие дизайна исследования","Diseño de estudio no conforme","研究デザイン不一致","Desenho de estudo inadequado","Studiendesign passt nicht","Дизајн студије не одговара", "연구 설계 부적합"],
@@ -5180,7 +5186,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 })();
 </script>
 <script src="./analysis_locale.js?v=20261031-r81fl4"></script>
-<script src="./interface_locale.js?v=20261107-r14"></script>
+<script src="./interface_locale.js?v=20261110-arbitration"></script>
 <script src="./research_trace_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_history_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./title_duplicate_locale.js?v=20261031-r81fl4"></script>
@@ -5211,7 +5217,9 @@ function T(tpl, ...args) { return (window.RFLang ? RFLang.t(tpl, ...args) : tpl)
 /* 结构化后端错误的 message_key -> 规范中文源串（十语言词典按源串注册）。
    前端只按 key 渲染文案，绝不把后端 error_code 当展示串。 */
 const SERVER_MESSAGE_SOURCES = Object.freeze({
-  'team.screening_not_enabled': '你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。'
+  'team.screening_not_enabled': '你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。',
+  'team.arbitration_decision_invalid': '仲裁决定必须为「纳入」或「排除」，不能保存为「暂不确定」或其他值。',
+  'team.arbitration_reason_required': '仲裁决定为「排除」时必须填写仲裁理由后再保存。'
 });
 const serverMessageSources = new Map(Object.entries(SERVER_MESSAGE_SOURCES));
 window.RFRegisterServerMessages = sources => {
@@ -7537,6 +7545,7 @@ function setMergeBusy(active) {
 function syncMergeServerLoad() {
   const button = $('#mergeServerLoad'), hint = $('#mergeServerHint');
   if (!button || !hint) return;
+  window.RFArbitrationReader?.sync();
   const unavailable = runtimeMode !== 'server';
   button.hidden = unavailable;
   hint.hidden = !unavailable;
@@ -7665,6 +7674,22 @@ function renderMergeResult(d) {
   renderConf();
   $('#mergeCard').style.display = '';
 }
+const mergeReasonHint = '请先为所有「排除」裁决填写理由，再保存。';
+let mergeSavePending = false;
+function syncMergeSave() {
+  const missingReason = Object.values(S.mergeChoices || {}).some(choice =>
+    choice.decision === 'exclude' && !choice.rationale?.trim());
+  $('#mergeSave').disabled = mergeSavePending || missingReason;
+  const status = $('#mergeSaveStatus');
+  if (missingReason) {
+    status.dataset.reasonRequired = '';
+    status.textContent = T(mergeReasonHint);
+  } else if (Object.hasOwn(status.dataset, 'reasonRequired')) {
+    delete status.dataset.reasonRequired;
+    status.textContent = '';
+  }
+  return !missingReason;
+}
 function renderConf() {
   const body = $('#confBody');
   body.textContent = '';
@@ -7690,16 +7715,23 @@ function renderConf() {
     const arb = el('td');
     if (r.status === 'conflict') {
       const selected = S.mergeChoices?.[r.zotero_key] || {};
-      const decision = el('select', {class:'input', 'aria-label':`仲裁决定 ${r.zotero_key}`},
+      const decision = el('select', {class:'input', 'aria-label':T('待仲裁')},
         el('option', {value:'', text:T('待仲裁')}),
-        ...['include','maybe','exclude'].map(value => el('option', {value, text:T(DEC_LABEL[value])})));
+        ...['include','exclude'].map(value => el('option', {value, text:T(DEC_LABEL[value])})));
       decision.value = selected.decision || '';
-      const reason = el('input', {class:'input', placeholder:T('仲裁说明（可选）'),
-        'aria-label':`仲裁说明 ${r.zotero_key}`});
+      const reason = el('input', {class:'input'});
+      const labelReason = () => {
+        reason.required = decision.value === 'exclude';
+        reason.placeholder = T(reason.required ? '仲裁理由（排除必填）' : '仲裁理由（可选）');
+        reason.setAttribute('aria-label', reason.placeholder);
+      };
+      labelReason();
       reason.value = selected.rationale || '';
       const remember = () => {
         if (decision.value) S.mergeChoices[r.zotero_key] = {decision:decision.value, rationale:reason.value};
         else delete S.mergeChoices[r.zotero_key];
+        labelReason();
+        syncMergeSave();
       };
       decision.addEventListener('change', remember);
       reason.addEventListener('input', remember);
@@ -7709,6 +7741,7 @@ function renderConf() {
     body.append(tr);
   }
   if (!rows.length) body.append(el('tr', {}, el('td', { colspan: String(names.length + 3), class: 'hint', text: T('（当前筛选条件下无条目）') })));
+  syncMergeSave();
 }
 $('#onlyConflict').addEventListener('change', () => { S.mergePage = 0; renderConf(); });
 $('#mergePrev').addEventListener('click', () => { S.mergePage--; renderConf(); });
@@ -7725,6 +7758,7 @@ $('#mergeStage').addEventListener('change', () => {
   syncMergeServerLoad();
 });
 $('#mergeSave').addEventListener('click', async () => {
+  if (mergeSavePending || !syncMergeSave()) return;
   if (!S.task || S.task.task_id !== S.mergeTaskId) {
     /* 补扫：任务切换会清 mergeServerSource；服务器模式下应引导「重新从服务器
        加载」，而不是让用户以为只能重传 CSV（旧任务的在途响应其上已被丢弃）。 */
@@ -7737,8 +7771,9 @@ $('#mergeSave').addEventListener('click', async () => {
     $('#mergeSaveStatus').textContent = T('请先选择任务，并重新上传该任务的决策 CSV。');
     return;
   }
-  const button = $('#mergeSave');
-  button.disabled = true;
+  const saveTask = S.task.task_id, saveMerge = S.merge;
+  mergeSavePending = true;
+  syncMergeSave();
   try {
     const resolutions = Object.entries(S.mergeChoices || {}).map(
       ([zotero_key, value]) => ({zotero_key, ...value}));
@@ -7756,12 +7791,17 @@ $('#mergeSave').addEventListener('click', async () => {
       form.append('resolutions', JSON.stringify(resolutions));
       saved = await api(taskApi() + '/screening-arbitrations', {method:'POST', form});
     }
+    if (S.task?.task_id !== saveTask || S.merge !== saveMerge) return;
     S.savedArbitration = saved;
     $('#mergeDownload').hidden = false;
     const remaining = saved.records.filter(row => row.arbitration_status === 'unresolved').length;
     $('#mergeSaveStatus').textContent = T('仲裁记录 #{0} 已保存；{1} 条仍待仲裁。个人原始决策未改动。', saved.id, remaining);
-  } catch (error) { $('#mergeSaveStatus').textContent = error.message; }
-  finally { button.disabled = false; }
+  } catch (error) {
+    if (S.task?.task_id === saveTask && S.merge === saveMerge) $('#mergeSaveStatus').textContent = error.message;
+  } finally {
+    mergeSavePending = false;
+    syncMergeSave();
+  }
 });
 $('#mergeLatest').addEventListener('click', async () => {
   if (!S.task) { toast('请先选择任务', 'warn'); return; }
@@ -9843,7 +9883,8 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./extraction_workbench.js?v=20261029-lastfix"></script>
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
-<script src="./workflow_controls.js?v=20261110-w1"></script>
+<script src="./workflow_controls.js?v=20261110-arbitration"></script>
+<script src="./arbitration_reader.js?v=20261110-arbitration"></script>
 <script src="./workflow_evidence.js?v=20261101-r9l31"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
 <script src="./import_export_locale.js?v=20261101-r10u2"></script>
