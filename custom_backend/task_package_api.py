@@ -74,6 +74,7 @@ from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
 from coscreen import fulltext as fulltext_mod
+from coscreen import sof_judgments as sof_judgments_mod
 from coscreen import task_collaboration
 from coscreen import tasks as tasks_mod
 from coscreen.fulltext_archive import archive_filename
@@ -1303,6 +1304,9 @@ def _rewrite_collaboration_store(base: Path, name: str, *, task_id: str,
 
     旧部署的 role grants / member settings 引用源部署用户 ID，在新部署无意义
     且可能误授权，一律清空；``collaboration_settings``（含回填标记）保留。
+    2.1.5-sof：``sof_judgments`` 的 ``decided_by``（含 prev 快照里的）同样指向
+    源部署用户 ID——判定是研究产出、随包保留（不清空），但署名改绑给导入者
+    （判定随包迁移的承接责任人）；表不存在（旧包/无判定）时静默跳过。
     """
     try:
         with closing(_open_rw(base, name)) as conn:
@@ -1318,6 +1322,7 @@ def _rewrite_collaboration_store(base: Path, name: str, *, task_id: str,
                     return False
                 conn.execute("DELETE FROM collaboration_role_grants")
                 conn.execute("DELETE FROM collaboration_member_settings")
+                sof_judgments_mod.rebind_decided_by(conn, owner_id)
                 conn.commit()
                 return True
             except sqlite3.Error:

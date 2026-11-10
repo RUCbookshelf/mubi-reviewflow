@@ -6585,6 +6585,166 @@
         "title": "SofIn",
         "type": "object"
       },
+      "SofJudgmentComponents": {
+        "description": "手工判定的四构件（档位枚举非法 → Pydantic 422，与本向导既有约定一致）。",
+        "properties": {
+          "imprecision": {
+            "enum": [
+              "none",
+              "serious",
+              "very_serious",
+              "very_very_serious"
+            ],
+            "title": "Imprecision",
+            "type": "string"
+          },
+          "inconsistency": {
+            "enum": [
+              "none",
+              "serious",
+              "very_serious",
+              "very_very_serious"
+            ],
+            "title": "Inconsistency",
+            "type": "string"
+          },
+          "publication_bias": {
+            "enum": [
+              "none",
+              "serious",
+              "very_serious",
+              "very_very_serious"
+            ],
+            "title": "Publication Bias",
+            "type": "string"
+          },
+          "rob": {
+            "enum": [
+              "none",
+              "serious",
+              "very_serious",
+              "very_very_serious"
+            ],
+            "title": "Rob",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rob",
+          "inconsistency",
+          "imprecision",
+          "publication_bias"
+        ],
+        "title": "SofJudgmentComponents",
+        "type": "object"
+      },
+      "SofJudgmentIn": {
+        "description": "判定写回请求体（契约 §八）。\n\n``adopt_from_suggestion=true`` 时服务端**忽略**手工 ``components``/``overall``，\n取当前 grade_assessor 建议落盘（判定与快照都来自服务端现算，防客户端\n伪造建议）；两种来源都留痕（``source`` + ``adopted_snapshot``）。\n手工来源要求 ``components`` 与 ``overall`` 齐全（缺 → 400 结构化）。\n``model``/``ci_method``/``rob_tool``/``initial_design`` 只在采纳时用于\n现算「当前建议」（与 SoF 向导同一套参数与缺省，前端应原样带回向导里\n选过的值）；手工写入不读分析库、可省略。",
+        "properties": {
+          "adopt_from_suggestion": {
+            "default": false,
+            "title": "Adopt From Suggestion",
+            "type": "boolean"
+          },
+          "ci_method": {
+            "default": "normal",
+            "enum": [
+              "normal",
+              "hksj"
+            ],
+            "title": "Ci Method",
+            "type": "string"
+          },
+          "comparison": {
+            "title": "Comparison",
+            "type": "string"
+          },
+          "components": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SofJudgmentComponents"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "initial_design": {
+            "default": "rct",
+            "enum": [
+              "rct",
+              "observational",
+              "diagnostic"
+            ],
+            "title": "Initial Design",
+            "type": "string"
+          },
+          "measure": {
+            "title": "Measure",
+            "type": "string"
+          },
+          "model": {
+            "default": "fixed",
+            "enum": [
+              "fixed",
+              "random",
+              "random_pm",
+              "random_reml"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "overall": {
+            "anyOf": [
+              {
+                "enum": [
+                  "high",
+                  "moderate",
+                  "low",
+                  "very_low"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall"
+          },
+          "rob_tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rob Tool"
+          },
+          "timepoint": {
+            "title": "Timepoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "comparison",
+          "outcome",
+          "timepoint",
+          "measure"
+        ],
+        "title": "SofJudgmentIn",
+        "type": "object"
+      },
       "SourceIn": {
         "properties": {
           "active": {
@@ -32746,6 +32906,86 @@
           }
         },
         "summary": "Tables Sof"
+      }
+    },
+    "/api/tasks/{task_id}/tables/sof/judgment": {
+      "put": {
+        "description": "判定写回（契约 §八）：把一个结局四元组的 GRADE 判定定稿并留痕。\n\n权限 = 属主/裁决员（``consensus:write``），与 grade-input 完全同一\n判定函数（``_consensus_gate``，仅换词条）；权限闸在**任何建表/写入\n之前**——普通成员 403 时协作库零写入。四元组必须存在于当前筛选员\n分析库的效应分层（与 SoF 行同源），未知 → 400 结构化。\n``adopt_from_suggestion=true`` 时忽略手工 components/overall，取\n服务端现算的当前建议（判定与快照同源落盘，防客户端伪造建议、防\n建议事后变化说不清）。",
+        "operationId": "tables_sof_judgment_api_tasks__task_id__tables_sof_judgment_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "screener",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Screener"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SofJudgmentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tables Sof Judgment"
       }
     },
     "/api/tasks/{task_id}/team-progress": {

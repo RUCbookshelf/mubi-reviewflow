@@ -24,14 +24,25 @@
   （``_consensus_gate`` 直接复用宿主同一判定函数）；普通成员 403
   ``tables.rob_requires_consensus`` 且响应不含任何档位。不带 ``rob_tool`` 的
   SoF 与 Table 1 仍对全部可见成员开放、不含评价数据；
-- **不写业务数据**：不新建任务/筛选员库、不建表、不写轨迹、不改任何既有行；
-  筛选员库缺失时 ``ensure=False``（不懒建库）。如实披露：读路径复用既有的
-  ``coscreen.db._connect`` 连接工厂，对**已存在的旧库**它会执行幂等的自愈
-  DDL（与既有 ``/export/*`` 端点同口径）；本模块自身没有任何 INSERT/UPDATE/
-  DELETE，也没有「采纳为判定」之类的写入口（该写回路径属 v2）；
+- **判定写回（2.1.5-sof，用户 2026-11-10 裁定提前到 2.1.5）**：
+  ``PUT /api/tasks/{id}/tables/sof/judgment`` 把某结局四元组的 GRADE 判定
+  （四构件 + 总体置信度，手工或采纳当时建议）定稿到任务协作库的
+  ``sof_judgments`` 表（``coscreen.sof_judgments``，``CREATE TABLE IF NOT
+  EXISTS`` 幂等可加）。写权限与 grade-input 完全同一判定（同一
+  ``_consensus_gate``，只换词条 ``tables.judgment_requires_consensus``，
+  不造第二份权限口径）；普通成员 403 且零写入。判定块只含定稿判定，
+  **不含任何逐人评分**；已判定的行四构件与总体置信度以判定为准展示
+  （标记「已判定」，自动建议仍在 ``detail`` 并列），judgment 块对全部
+  可见成员开放（判定是定稿结论而非他人评分，裁定记入契约 §八）；
+- **除此之外仍不写业务数据**：不新建任务/筛选员库、不写轨迹、不改任何
+  既有行；筛选员库缺失时 ``ensure=False``（不懒建库）。如实披露：读路径
+  复用既有的 ``coscreen.db._connect`` 连接工厂，对**已存在的旧库**它会执行
+  幂等的自愈 DDL（与既有 ``/export/*`` 端点同口径）；本文件内除判定写回
+  （经 ``coscreen.sof_judgments``）外没有任何 INSERT/UPDATE/DELETE；
 - **零联网**：无网络、无定时、无后台任务；
 - SQL 全部为常量字面量 + ``?`` 绑定（本模块直接执行的 SQL 只有既有
-  ``coscreen.appraisal.load_records_for_tool`` 常量查询；本文件内无 SQL 拼装）。
+  ``coscreen.appraisal.load_records_for_tool`` 常量查询；判定读写全部走
+  ``coscreen.sof_judgments`` 的内联字面量 + 绑定；本文件内无 SQL 拼装）。
 """
 
 from __future__ import annotations
@@ -56,6 +67,8 @@ from coscreen import db as db_mod
 from coscreen import grade_assessor as grade
 from coscreen import publication_bias as publication_bias_mod
 from coscreen import review_analysis as analysis_mod
+from coscreen import sof_judgments as sof_judgments_core
+from coscreen import task_collaboration as collaboration_mod
 from coscreen.export import coding_matrix_table
 from custom_backend.synthesis_report import _analysis_estimate, _display_value, _number
 
@@ -113,6 +126,49 @@ class SofIn(BaseModel):
     initial_design: Literal["rct", "observational", "diagnostic"] = _DEFAULT_INITIAL_DESIGN
 
 
+#: 四构件档位枚举 = ``grade_assessor.DOWNGRADE_LABELS`` 键（沿既有构件命名
+#: 与档位；间接性不在 SoF 四构件建议列中，判定写回同样不含它）。
+_ComponentTier = Literal["none", "serious", "very_serious", "very_very_serious"]
+
+#: 总体置信度枚举 = ``grade_assessor.GRADE_LEVELS`` 键（GRADE 四档）。
+_OverallLevel = Literal["high", "moderate", "low", "very_low"]
+
+
+class SofJudgmentComponents(BaseModel):
+    """手工判定的四构件（档位枚举非法 → Pydantic 422，与本向导既有约定一致）。"""
+
+    rob: _ComponentTier
+    inconsistency: _ComponentTier
+    imprecision: _ComponentTier
+    publication_bias: _ComponentTier
+
+
+class SofJudgmentIn(BaseModel):
+    """判定写回请求体（契约 §八）。
+
+    ``adopt_from_suggestion=true`` 时服务端**忽略**手工 ``components``/``overall``，
+    取当前 grade_assessor 建议落盘（判定与快照都来自服务端现算，防客户端
+    伪造建议）；两种来源都留痕（``source`` + ``adopted_snapshot``）。
+    手工来源要求 ``components`` 与 ``overall`` 齐全（缺 → 400 结构化）。
+    ``model``/``ci_method``/``rob_tool``/``initial_design`` 只在采纳时用于
+    现算「当前建议」（与 SoF 向导同一套参数与缺省，前端应原样带回向导里
+    选过的值）；手工写入不读分析库、可省略。
+    """
+
+    comparison: str
+    outcome: str
+    timepoint: str
+    measure: str
+    components: SofJudgmentComponents | None = None
+    overall: _OverallLevel | None = None
+    note: str = ""
+    adopt_from_suggestion: bool = False
+    model: Literal["fixed", "random", "random_pm", "random_reml"] = "fixed"
+    ci_method: Literal["normal", "hksj"] = "normal"
+    rob_tool: str | None = None
+    initial_design: Literal["rct", "observational", "diagnostic"] = _DEFAULT_INITIAL_DESIGN
+
+
 # ---------------------------------------------------------------------------
 # 公共小工具
 # ---------------------------------------------------------------------------
@@ -124,17 +180,23 @@ def _error(code: str, message_key: str, *, params: dict | None = None,
 
 
 def _consensus_gate(task_id: str, user: dict,
-                    arbitration_store: Callable[[str, dict], Any] | None = None) -> None:
-    """带 ``rob_tool`` 的 SoF 的权限闸：与 ``GET /appraisal/grade-input`` 同一判定。
+                    arbitration_store: Callable[[str, dict], Any] | None = None, *,
+                    code: str = "tables_rob_requires_consensus",
+                    message_key: str = "tables.rob_requires_consensus") -> None:
+    """带 ``rob_tool`` 的 SoF 与判定写回共用的权限闸（同一判定函数）。
 
-    研究局限性列会跨全员个人库聚合评价档位（``_appraisal_levels``），而
-    grade-input 对同一聚合只允许属主/裁决员（``consensus:write``）。因此这里
-    **直接复用** ``main._arbitration_store`` 这一个判定函数（不复制、不另造
-    口径）：非属主且无 ``consensus:write`` → 403；server 模式 legacy 任务 →
-    既有 409 ``coding.collaboration_owner_unset``。
+    研究局限性列会跨全员个人库聚合评价档位（``_appraisal_levels``），判定
+    写回更是定稿落库，而 grade-input 对同一批数据只允许属主/裁决员
+    （``consensus:write``）。因此这里**直接复用** ``main._arbitration_store``
+    这一个判定函数（不复制、不另造口径）：非属主且无 ``consensus:write`` →
+    403；server 模式 legacy 任务 → 既有 409
+    ``coding.collaboration_owner_unset``。
 
-    403 改写为本端点的结构化键 ``tables.rob_requires_consensus``（响应体只有
-    ``error_code/message_key/params``，不含任何档位）；409/503 原样透出。
+    403 改写为调用方的结构化键（响应体只有 ``error_code/message_key/params``，
+    不含任何档位）；409/503 原样透出。缺省键 = SoF 读取的
+    ``tables.rob_requires_consensus``；判定写回（PUT judgment）传
+    ``tables.judgment_requires_consensus`` —— **换的只是词条，权限判定逻辑
+    仍是这一个函数**，不存在第二份口径。
 
     判定函数的来源（2.1.5 收尾清债 C1）：优先用**注册期注入**的
     ``arbitration_store``（``register_tables_routes`` 参数，``main.py`` 注册区
@@ -149,8 +211,7 @@ def _consensus_gate(task_id: str, user: dict,
         arbitration_store(task_id, user)
     except HTTPException as exc:
         if exc.status_code == 403:
-            raise _error("tables_rob_requires_consensus",
-                         "tables.rob_requires_consensus", status=403) from exc
+            raise _error(code, message_key, status=403) from exc
         raise
 
 
@@ -564,8 +625,16 @@ def _imprecision_signal(result: dict, measure: str) -> dict:
             "null_value": 0.0}
 
 
-def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[str], dict]:
-    """装配 SoF 行；返回 (rows, 全局脚注, 参数回显)。"""
+def _sof_rows(db_path: Path, info: Any, body: SofIn,
+              judgments: dict[tuple[str, str, str, str], dict] | None = None
+              ) -> tuple[list[dict], list[str], dict]:
+    """装配 SoF 行；返回 (rows, 全局脚注, 参数回显)。
+
+    ``judgments`` = 任务协作库里的定稿判定（``{四元组: 判定块}``，端点侧
+    载入）。已判定的行四构件与总体置信度以判定为准展示（标记「已判定」，
+    自动建议仍在 ``detail.grade`` 并列）；无判定的行维持现状（建议/留空
+    口径不变，``judgment`` 块 = None）。
+    """
     notes: list[str] = []
     params = {"model": body.model, "ci_method": body.ci_method,
               "rob_tool": body.rob_tool, "initial_design": body.initial_design,
@@ -769,13 +838,21 @@ def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[s
         if selection_error:
             rows[-1]["footnotes"].append(
                 f"「{label}」效应选择异常：{selection_error}（未合并）。")
+        judgment = (judgments or {}).get(key)
+        rows[-1]["judgment"] = judgment
+        if judgment:
+            _apply_judgment_to_row(rows[-1], judgment)
 
     global_notes = [f"自动生成于 {_today()}。",
                     "效应估计为已保存研究效应的合并结果（模型/区间见参数）；"
                     "空单元格表示无可用数据，不填 0、不臆造。",
                     "降级建议由 grade_assessor 自动生成，仅供研究者参考；"
-                    "「采纳为判定」写回属 v2，本端点不写任何数据。",
+                    "研究者可通过判定写回端点把建议或手工判定定稿（留痕）。",
                     "间接性无法从数据自动推导，未评价，按无降级计入总体置信度。"]
+    if judgments and any(row.get("judgment") for row in rows):
+        global_notes.append(
+            "标记「已判定」的行：四构件与总体置信度以定稿判定为准展示，"
+            "自动建议保留在明细中并列。")
     if body.initial_design == _DEFAULT_INITIAL_DESIGN:
         global_notes.append("研究设计未另行指定：总体置信度按 RCT（初始质量=高）计算；"
                             "可在向导中选择 observational / diagnostic 重算。")
@@ -791,6 +868,72 @@ def _sof_rows(db_path: Path, info: Any, body: SofIn) -> tuple[list[dict], list[s
 
 _FACTOR_LABELS = {"rob": "研究局限性", "inconsistency": "不一致性",
                   "imprecision": "不精确性", "publication_bias": "发表偏倚"}
+
+#: 已判定行脚注过滤用的列语（五列的中文列名 = _FACTOR_LABELS 值 + 总体置信度）。
+_JUDGED_COLUMN_LABELS = frozenset(_FACTOR_LABELS.values()) | {"总体置信度"}
+
+
+def _redact_judgment_block(block: dict) -> dict:
+    """对无 ``consensus:write`` 的读者裁剪判定块里的聚合推导证据（I-19）。
+
+    裁定边界（契约 §8.4）：judgment 块本身（四构件档位/总体/note/来源/
+    decided_by/decided_at/prev）是**定稿结论**，全员可见不变；但
+    ``adopted_snapshot`` 里的 ``components.*.signal``（rob 聚合计数
+    high_risk_studies、rule 码、p 值等推导依据）与 ``n_studies``（写入者库的
+    研究集规模）与 ``GET /appraisal/grade-input`` 闸内的聚合证据同源——对非
+    属主/裁决员读者**裁掉**，只留各构件 ``level`` 与 overall/initial_design/
+    params，并加 ``evidence_redacted: true`` 标记供前端区分。``prev`` 块同理
+    （上一版可能也是采纳来源）。PUT 响应（写入者本人已过闸）不裁剪。
+    """
+    def _redact_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return snapshot
+        return {
+            "components": {name: {"level": piece.get("level")}
+                           for name, piece in (snapshot.get("components") or {}).items()
+                           if isinstance(piece, dict)},
+            "overall": snapshot.get("overall"),
+            "initial_design": snapshot.get("initial_design"),
+            "params": snapshot.get("params"),
+            "evidence_redacted": True,
+        }
+
+    redacted = dict(block)
+    if redacted.get("adopted_snapshot") is not None:
+        redacted["adopted_snapshot"] = _redact_snapshot(redacted["adopted_snapshot"])
+    if redacted.get("prev"):
+        redacted["prev"] = _redact_judgment_block(redacted["prev"])
+    return redacted
+
+
+def _apply_judgment_to_row(row: dict, judgment: dict) -> None:
+    """已判定的行：四构件与总体置信度以判定为准展示（标记「已判定」）。
+
+    - 四构件格 = 判定档位标签（``DOWNGRADE_LABELS``）+「（已判定）」；研究
+      局限性格不再拼评价聚合/建议串（定稿优先；聚合计数与建议保留在
+      ``detail.rob`` / ``detail.grade`` 里并列可查）；
+    - 总体置信度格 = 判定档（``GRADE_LEVELS`` + 圆点符号）+「（已判定）」；
+    - ``empty_cells`` 只保留效应类留空（四构件/置信度已有定稿值，不再算
+      「未评价」空格）；GRADES 列的「未评价/按无降级计入」脚注被判定脚注
+      取代（显示值已不是建议，旧脚注会自相矛盾）。
+    """
+    label = row["label"]
+    components = judgment["components"]
+    for name in ("rob", "inconsistency", "imprecision", "publication_bias"):
+        row["cells"][name] = f"{grade.DOWNGRADE_LABELS[components[name]]}（已判定）"
+    overall = judgment["overall"]
+    row["cells"]["certainty"] = (f"{grade.GRADE_LEVELS[overall]} "
+                                 f"{grade.CERTAINTY_SYMBOLS[overall]}（已判定）")
+    row["empty_cells"] = [cell for cell in row["empty_cells"] if cell == "effect"]
+    source_text = "采纳自动建议" if judgment["source"] == "adopted" else "人工判定"
+    row["footnotes"] = [
+        note for note in row["footnotes"]
+        if not (note.startswith(f"「{label}」")
+                and any(word in note for word in _JUDGED_COLUMN_LABELS))
+    ]
+    row["footnotes"].append(
+        f"「{label}」已判定（{source_text}）：四构件与总体置信度以判定为准，"
+        "自动建议保留在明细中并列展示。")
 
 
 def _sof_matrix(rows: list[dict]) -> list[list[str]]:
@@ -830,15 +973,16 @@ def register_tables_routes(
     library_unavailable_message: str,
     arbitration_store: Callable[[str, dict], Any] | None = None,
 ) -> None:
-    """在 ``app`` 上注册 W7 两个表生成端点（main.py 注册区一行调用）。
+    """在 ``app`` 上注册 W7 两个表生成端点 + 判定写回端点（main.py 一行调用）。
 
     ``library_unavailable_message`` = ``main.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE``
-    （终审 #05）：个人库被外部进程持锁/暂时不可读时两端点 503 复用该既有
-    十语言词条，与仲裁/一致性端点同一口径，不另造文案。
+    （终审 #05）：个人库被外部进程持锁/暂时不可读时各端点 503 复用该既有
+    十语言词条，与仲裁/一致性端点同一口径，不另造文案（判定库的读写失败
+    也走同一 503 词条）。
 
     ``arbitration_store`` = ``main._arbitration_store``（收尾清债 C1）：带
-    ``rob_tool`` 的 SoF 权限闸的宿主判定函数，注册期注入（见
-    ``_consensus_gate`` 文档）；``None`` 时闸内退回请求期导入兜底。
+    ``rob_tool`` 的 SoF 与判定写回共用权限闸的宿主判定函数，注册期注入
+    （见 ``_consensus_gate`` 文档）；``None`` 时闸内退回请求期导入兜底。
     """
 
     def _info(task_id: str, user: dict) -> Any:
@@ -868,6 +1012,29 @@ def register_tables_routes(
             raise exc
         logger.warning("W7 表生成读库失败（%s，降级 503）：%r", scope, exc)
         return _library_unavailable()
+
+    def _load_judgments(info: Any) -> dict[tuple[str, str, str, str], dict]:
+        """任务协作库里的定稿判定；判定库不可用 → 503（与读库同口径）。"""
+        store = collaboration_mod.shared_store_path(info.dir)
+        try:
+            return sof_judgments_core.load_judgments(store)
+        except sof_judgments_core.SofJudgmentStoreUnavailable as exc:
+            logger.warning("判定库读取失败（降级 503）：%s", exc)
+            raise _library_unavailable() from exc
+
+    def _may_read_consensus_evidence(task_id: str, user: dict) -> bool:
+        """该读者是否可读 grade-input 闸内的聚合证据（属主/裁决员）。
+
+        复用同一 ``_consensus_gate``（同一判定函数，不造第二份口径）：403 =
+        无权；其余（409 legacy/503）按既有语义透出，不在这里吞。
+        """
+        try:
+            _consensus_gate(task_id, user, arbitration_store)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                return False
+            raise
+        return True
 
     @app.post("/api/tasks/{task_id}/tables/characteristics")
     def tables_characteristics(task_id: str, body: CharacteristicsIn,
@@ -922,8 +1089,20 @@ def register_tables_routes(
             # 被静默上调为「高」。规范 id 与 grade-input 侧同一取值。
             body.rob_tool = _rob_tool_or_error(body.rob_tool)["id"]
         db_path = screener_db(info, screener or user["username"], ensure=False)
+        judgments = _load_judgments(info)
+        if judgments and any(
+                block.get("adopted_snapshot") is not None
+                or (isinstance(block.get("prev"), dict)
+                    and block["prev"].get("adopted_snapshot") is not None)
+                for block in judgments.values()):
+            # 只有带采纳快照（当前或 prev 里）的判定才携带 grade-input 闸内的
+            # 聚合证据；无 consensus:write 的读者按 I-19 裁剪快照（判定块本身
+            # 仍可见）。
+            if not _may_read_consensus_evidence(task_id, user):
+                judgments = {key_: _redact_judgment_block(block)
+                             for key_, block in judgments.items()}
         try:
-            rows, notes, params = _sof_rows(Path(db_path), info, body)
+            rows, notes, params = _sof_rows(Path(db_path), info, body, judgments)
         except sqlite3.DatabaseError as exc:
             # 终审 #05：与 Table 1 同口径——库被持锁/损坏 → 503，不落全局 500。
             raise _map_library_db_error("sof", exc) from exc
@@ -942,3 +1121,109 @@ def register_tables_routes(
                                   f"sof-{task_id}.docx")
         return _file_response(_sof_csv(rows, all_notes), "text/csv; charset=utf-8",
                               f"sof-{task_id}.csv")
+
+    @app.put("/api/tasks/{task_id}/tables/sof/judgment")
+    def tables_sof_judgment(task_id: str, body: SofJudgmentIn,
+                            screener: str | None = Query(default=None),
+                            user: dict = Depends(require_user)):
+        """判定写回（契约 §八）：把一个结局四元组的 GRADE 判定定稿并留痕。
+
+        权限 = 属主/裁决员（``consensus:write``），与 grade-input 完全同一
+        判定函数（``_consensus_gate``，仅换词条）；权限闸在**任何建表/写入
+        之前**——普通成员 403 时协作库零写入。四元组必须存在于当前筛选员
+        分析库的效应分层（与 SoF 行同源），未知 → 400 结构化。
+        ``adopt_from_suggestion=true`` 时忽略手工 components/overall，取
+        服务端现算的当前建议（判定与快照同源落盘，防客户端伪造建议、防
+        建议事后变化说不清）。
+        """
+        info = _info(task_id, user)
+        _consensus_gate(task_id, user, arbitration_store,
+                        code="tables_judgment_requires_consensus",
+                        message_key="tables.judgment_requires_consensus")
+
+        db_path = screener_db(info, screener or user["username"], ensure=False)
+        key = (str(body.comparison).strip(), str(body.outcome).strip(),
+               str(body.timepoint).strip(), str(body.measure).strip())
+        try:
+            strata = _effect_strata(Path(db_path)) if Path(db_path).is_file() else {}
+        except sqlite3.DatabaseError as exc:
+            # 个人库被持锁/损坏 → 503（评审阻断项）：与 Table 1 / SoF 读端点
+            # 同一口径，绝不落全局 500。
+            raise _map_library_db_error("sof-judgment", exc) from exc
+        if not all(key) or key not in strata:
+            raise _error(
+                "tables_judgment_outcome_unknown", "tables.judgment_outcome_unknown",
+                params={"comparison": key[0], "outcome": key[1],
+                        "timepoint": key[2], "measure": key[3],
+                        "available": [list(item) for item in sorted(
+                            strata, key=lambda k: (k[1].casefold(), k[2], k[0], k[3]))]})
+
+        if body.adopt_from_suggestion:
+            # 采纳路径要现算建议：rob 构件建议依赖评价聚合，工具校验与规范
+            # id 归一同 SoF 读取（终审 #08 口径）。手工判定不读评价聚合，
+            # 请求里带的 rob_tool 一律忽略（评审低项：不因无关工具 400）。
+            rob_tool = _rob_tool_or_error(body.rob_tool)["id"] if body.rob_tool else None
+            sof_body = SofIn(outcomes=[key[1]], model=body.model,
+                             ci_method=body.ci_method, rob_tool=rob_tool,
+                             initial_design=body.initial_design)
+            try:
+                rows, _notes, _params = _sof_rows(Path(db_path), info, sof_body)
+            except sqlite3.DatabaseError as exc:
+                raise _map_library_db_error("sof-judgment-adopt", exc) from exc
+            row = next((item for item in rows
+                      if (item["comparison"], item["outcome"], item["timepoint"],
+                          item["measure"]) == key), None)
+            if row is None:  # 已按 strata 校验过；此分支只是防御性兜底
+                raise _error("tables_judgment_outcome_unknown",
+                             "tables.judgment_outcome_unknown",
+                             params={"comparison": key[0], "outcome": key[1],
+                                     "timepoint": key[2], "measure": key[3],
+                                     "available": []})
+            suggestions = row["detail"]["grade"]["suggestions"]
+            quality = row["detail"]["grade"]["quality"]
+            if "final_quality" not in quality:
+                # 无合成结果（单项研究/无效应数据/合成被拒）时 SoF 本就拒绝
+                # 给出总体置信度建议；采纳不能按「全构件无降级」凑出「高」。
+                raise _error(
+                    "tables_judgment_adopt_unavailable",
+                    "tables.judgment_adopt_unavailable",
+                    params={"reason": quality.get("skipped")
+                            or quality.get("error") or "no_synthesis"})
+            components = {name: suggestions[name]["level"]
+                          for name in sof_judgments_core.COMPONENTS}
+            overall = quality["final_quality"]
+            snapshot = {
+                "components": {name: {"level": suggestions[name]["level"],
+                                      "signal": suggestions[name]["signal"]}
+                               for name in sof_judgments_core.COMPONENTS},
+                "overall": overall,
+                "initial_design": body.initial_design,
+                "n_studies": row["n_studies"],
+                "params": {"model": body.model, "ci_method": body.ci_method,
+                           "rob_tool": rob_tool,
+                           "initial_design": body.initial_design},
+            }
+            source = "adopted"
+        else:
+            if body.components is None or body.overall is None:
+                raise _error("tables_judgment_missing_fields",
+                             "tables.judgment_missing_fields",
+                             params={"missing": [name for name in ("components",
+                                                                   "overall")
+                                                 if getattr(body, name) is None]})
+            components = body.components.model_dump()
+            overall = body.overall
+            snapshot = None
+            source = "manual"
+
+        store = collaboration_mod.shared_store_path(info.dir)
+        try:
+            block, replaced = sof_judgments_core.save_judgment(
+                store, comparison=key[0], outcome=key[1], timepoint=key[2],
+                measure=key[3], components=components, overall=overall,
+                note=str(body.note or ""), source=source,
+                adopted_snapshot=snapshot, decided_by=int(user["user_id"]))
+        except sof_judgments_core.SofJudgmentStoreUnavailable as exc:
+            logger.warning("判定写入失败（降级 503）：%s", exc)
+            raise _library_unavailable() from exc
+        return {"table": "sof_judgment", "judgment": block, "replaced": replaced}
