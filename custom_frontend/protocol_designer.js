@@ -505,7 +505,7 @@
           const p = d && d.protocol;
           if (!p) throw new Error(T('响应缺少方案数据。'));
           anchoredTaskId = taskId;
-          document.dispatchEvent(new CustomEvent('reviewflow:protocol-saved', {detail: taskId}));
+          document.dispatchEvent?.(new CustomEvent('reviewflow:protocol-saved', {detail: taskId}));
           if (formRevision === revision) {
             keyTerms = (p.key_terms || []).map(entry => ({term: entry.term, definition: entry.definition}));
             keyTermsEdited = false;

@@ -151,7 +151,8 @@
       return node('span', null, {}, tr('span', (key === 'certainty' ? 'appraisal.rating.' : 'tables.level.') + value),
         tr('span', 'tables.sof.judged', { class: 'chip' }));
     }));
-    const area = node('div', null, {}, grid(cols, rows), noteList(data.footnotes));
+    const rowNotes = new Set((data.rows || []).flatMap(row => row.footnotes || []));
+    const area = node('div', null, {}, grid(cols, rows), noteList((data.footnotes || []).filter(note => !rowNotes.has(note))));
     for (const row of data.rows || []) {
       const audit = node('section', null, { class: 'card rf-tables-audit' }, raw('h3', row.label));
       audit.append(raw('p', row.comparison), noteList(row.footnotes));
@@ -256,7 +257,19 @@
         } else {
           const scheme = await api(taskApi() + '/coding/scheme' + scrQ());
           if (!valid()) return;
-          const chosen = choices(scheme.dimensions || [], item => item.name, item => item.name, changed, true);
+          const dimensions = scheme.dimensions || [];
+          let numericIds = new Map();
+          // The portable scheme omits IDs. Decimal names can match a different
+          // dimension's ID, so submit their actual IDs when such names exist.
+          const numericName = name => /^\p{Decimal_Number}+$/u.test(name.trim());
+          const numericFields = dimensions.filter(item => numericName(item.name));
+          if (numericFields.length) {
+            const catalog = await api(taskApi() + '/coding/dimensions' + scrQ());
+            if (!valid()) return;
+            numericIds = new Map(catalog.dimensions.filter(item => numericName(item.name)).map(item => [item.name, item.id]));
+            if (numericFields.some(item => !numericIds.has(item.name))) throw Error(T('tables.unavailable'));
+          }
+          const chosen = choices(dimensions, item => numericIds.get(item.name) ?? item.name, item => item.name, changed, true);
           const inclusion = controlsFor('tables.inclusion.', ['stage1_stage2', 'stage1', 'matrix'], 'stage1_stage2');
           const sort = controlsFor('tables.sort.', ['import_order', 'author_year'], 'import_order');
           [inclusion, sort].forEach(control => control.addEventListener('change', changed));

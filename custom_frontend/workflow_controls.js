@@ -567,11 +567,9 @@
       stage1:totals.stage1_reset, stage2
     })}), n('p', T('可用的升级前备份：{0} / {1}。建议先完成筛选训练，再重新筛选。', available.length, affected.length)));
     if (backups.length) host.append(el('ul', {}, backups));
-    if (window.PilotScreening) {
-      const training = button('打开筛选训练', () => window.PilotScreening.open());
-      training.id = 'wf-binary-reset-training';
-      host.append(training);
-    }
+    const training = button('打开筛选训练', () => window.PilotScreening?.open());
+    training.id = 'wf-binary-reset-training';
+    host.append(training);
   }
   async function loadBinaryReset() {
     if (binaryResetSummary || binaryResetRequest) return;

@@ -1210,7 +1210,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
         <option value="__custom__">其他（自定义）</option>
       </select>
       <input class="input" id="ftCustomReason" style="max-width:210px" maxlength="2000" placeholder="请输入自定义排除理由" aria-label="请输入自定义排除理由" hidden>
-      <span class="hint" style="margin:0">键盘 <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> 可用</span>
+      <span class="hint" style="margin:0">复筛键盘操作 1 纳入 · 3 排除。</span>
     </div>
   </div>
 </section>
@@ -5194,7 +5194,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
 <script src="./batch6_locale.js?v=2.1.5"></script>
-<script src="./help_locale.js?v=2.1.5"></script>
+<script src="./help_locale.js?v=20261110-215"></script>
 <script src="./navigation_locale.js?v=20261101-r10u4"></script>
 <script src="./navigation_registry.js?v=2.1.2.2"></script>
 
@@ -6981,14 +6981,16 @@ async function renderFtDoc() {
   syncScreeningNoticeElement('ftScreeningNotice');
   const cur = curFt();
   const taskVersion = S.taskVersion, screener = S.screener;
-  for (const id of ['ftInc','ftExc']) $('#'+id).disabled = true;
+  const reason = $('#ftReason'), customReason = $('#ftCustomReason');
+  // Wait for the saved reason to be restored before accepting a new choice.
+  for (const control of [$('#ftInc'), $('#ftExc'), reason, customReason]) control.disabled = true;
   if (cur) {
     try {
       const item = await WorkflowControls.item('fulltext',cur.zotero_key);
       if (!item || taskVersion !== S.taskVersion || screener !== S.screener || curFt()?.zotero_key !== cur.zotero_key || !WorkflowControls.renderAllowed()) return;
       Object.assign(cur,item.article);
       if(item.saved) {S.ftDec[cur.zotero_key]=item.saved.decision;S.ftUndoSaved={key:cur.zotero_key,decision:item.saved};}
-      window.WorkspaceUndo?.restoreReason($('#ftReason'),$('#ftCustomReason'),item.saved?.exclusion_reason||item.saved?.reason||'');
+      window.WorkspaceUndo?.restoreReason(reason,customReason,item.saved?.exclusion_reason||item.saved?.reason||'');
     } catch(error) {WorkflowControls.error(error);return;}
   }
   $('#ftDocLabel').textContent = T('Full-text report {0} / {1}', S.ftQueue.length ? S.ftIdx + 1 : 0, S.ftQueue.length);
@@ -7002,6 +7004,7 @@ async function renderFtDoc() {
   list.textContent = '';
   if (cur) list.append(el('div', { class: 'hint', text: T('正在载入高亮…') }));
   WorkflowControls.decorateStage('fulltext');
+  reason.disabled = customReason.disabled = $('#ftExc').disabled;
   WorkflowControls.markDecisionClean('fulltext');
 }
 /* ---------- pdf.js 4.x 原生阅读器工厂（复筛全文页 + 编码页 共用） ----------
@@ -9881,7 +9884,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workspace_shell.js?v=20261101-r10u4"></script>
 <script src="./sidebar_sheet.js?v=20261101-r10u4"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261110-w1"></script>
+<script src="./workflow_locale.js?v=20261110-215-final"></script>
 <script src="./research_trace.js?v=20261101-r10u6-trace1"></script>
 <script src="./import_review_locale.js?v=20261030-r8fl4"></script>
 <script src="./import_review_model.js?v=20261028-r7-frontsec1"></script>
@@ -9891,20 +9894,20 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
-<script src="./al_profile_selector.js?v=2.1.5"></script>
+<script src="./al_profile_selector.js?v=20261110-215"></script>
 <script src="./al_stop_panel.js?v=20261029-lastfix"></script>
 <script src="./al_blind_mode.js?v=20261012-home-wording1"></script>
-<script src="./screen_reader.js?v=20261110-w1"></script>
+<script src="./screen_reader.js?v=20261110-215"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./screening_tools_locale.js?v=20261110-215"></script>
 <script src="./criteria_panel.js?v=20261110-215"></script>
 <script src="./daily_nudge.js?v=20261110-215"></script>
 <script src="./keyword_highlight.js?v=20261110-215"></script>
-<script src="./protocol_designer.js?v=20261110-215"></script>
+<script src="./protocol_designer.js?v=20261030-r8fl5-20261110-215"></script>
 <script src="./extraction_workbench.js?v=20261029-lastfix"></script>
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
-<script src="./workflow_controls.js?v=20261110-arbitration"></script>
+<script src="./workflow_controls.js?v=20261107-r15-20261110-215"></script>
 <script src="./arbitration_reader.js?v=20261110-arbitration"></script>
 <script src="./pilot_screening_locale.js?v=20261110-215"></script>
 <script src="./pilot_screening.js?v=20261110-215"></script>
@@ -9918,14 +9921,14 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./import_review_updates.js?v=20261110-215"></script>
 <script src="./import_review_quality_locale.js?v=20261110-215"></script>
 <script src="./import_review_ai.js?v=20261110-215"></script>
-<script src="./unified_import_workspace.js?v=20261110-215"></script>
+<script src="./unified_import_workspace.js?v=20261110-215-final"></script>
 <script src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261101-r10u1b"></script>
-<script src="./analysis_grade.js?v=20261110-215"></script>
+<script src="./analysis_grade.js?v=20261030-r8fl5-20261110-215"></script>
 <script src="./assessment_tables_locale.js?v=20261110-215"></script>
 <script src="./appraisal_workspace.js?v=20261110-215"></script>
-<script src="./table_wizards.js?v=20261110-215"></script>
+<script src="./table_wizards.js?v=20261110-215-final"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
 <script src="./analysis_manuscript.js?v=20261002-release1"></script>
 <script src="./search_strategy_locale.js?v=20261110-215"></script>
@@ -9949,7 +9952,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <!-- R11 ERIC 教育检索（2.1.4-r11）：导入页「从 ERIC 检索文献」入口+命中预览+检索并导入（api.ies.ed.gov 官方 API，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./eric_search.js?v=20261102-r11eric1"></script>
 <!-- W2 PDF 自动获取（2.1.4-r8）：初筛文献卡「获取全文」+任务设置卡开关/批量入口（DOI→Unpaywall；联网默认关、仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./pdf_fetch.js?v=2.1.5"></script>
+<script src="./pdf_fetch.js?v=20261030-r8-w2pdf1-20261110"></script>
 <!-- W4 预置分类器（2.1.4-r8）：初筛卡研究设计徽标+排除理由预填不代存（纯本地规则端点，无联网；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./study_design_badge.js?v=20261110-215"></script>
 <!-- W5 PWA 离线壳（2.1.4-r8）：离线只读快照提示条模块（自包含 IIFE＋十语言词条，textContent 渲染）＋ Service Worker 注册（相对路径；本组独占文档最末锚点） -->
