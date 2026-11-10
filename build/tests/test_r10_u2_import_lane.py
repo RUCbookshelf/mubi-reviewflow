@@ -14,6 +14,14 @@ subprocess 门控并在未配置 playwright 时如实 skip）。
 - test_save_flash_near_actions：保存反馈回到只靠顶部状态行 → 红；
 - test_undo_disabled_states_explain_reason：撤销禁用无 title/启用后无通告 → 红；
 - test_bulk_dialog_reports_truncation_and_undo：截断提示/整批可撤销文案丢失 → 红；
+- test_bulk_eligibility_reads_backend_field_only（G5 C8）：批量资格恢复前端
+  判据镜像或总项数本地重算 → 红；
+- test_bulk_ineligible_reason_renders_from_message_key（G5 C8）：不可批量原因
+  不走词典/无字段守卫 → 红；
+- test_bulk_keeper_defaults_to_suggestion_and_allows_override（G5 C8/F1/F3）：
+  保留者不预选 suggested_keeper/不可改选/可空选提交 → 红；
+- test_bulk_conflict_409_renders_translated_reason（G5 X11/C8）：409 不按
+  message_key 词典渲染 → 红；
 - test_activation_action_named_add_to_task（F46＋#2）：四 locale 出现旧动作名 → 红；
 - test_retain_wording_avoids_duplicate_verbs（F35）：同卡再出现两个「保留」动词 → 红；
 - test_upload_copy_and_precheck（F54/F55/F61）：上传期文案/停滞检测/100MB 预检缺失 → 红；
@@ -153,12 +161,57 @@ class ImportReviewBehaviourSourceTests(unittest.TestCase):
 
     def test_bulk_dialog_reports_truncation_and_undo(self):
         """F33＋#12：超 100 项如实说明、整批提交可一步撤销。"""
-        self.assertIn("const total=(kind==='candidate'?groups.filter(ImportReviewUpdates.eligible)", self.src,
-                      "F33：弹窗必须知道总项数（而不只是 slice 后的 100）")
+        self.assertIn("groups.filter(group=>group.bulk_eligible===true)", self.src,
+                      "F33/C8：弹窗总项数只来自后端 bulk_eligible 字段（单一事实源），"
+                      "不得恢复前端判据镜像")
         self.assertIn("'{0} of {1} items; this bulk action covers the first 100.'", self.src,
                       "F33：超限时必须如实说明范围")
         self.assertIn("'This bulk submission can be undone as one step before adding to the task.'", self.src,
                       "#12：批量弹窗必须说明整批可撤销")
+
+    def test_bulk_eligibility_reads_backend_field_only(self):
+        """G5 C8（2026-11-10 门禁收尾）：批量资格单一事实源=后端 bulk_eligible。
+
+        破坏即红：恢复任何前端判据镜像（eligible()/identityKey() 回归）、或
+        按钮可用性/总项数本地重算判据 → 红。后端三段判据矩阵与载荷同源钉在
+        test_r10_u2_bulk_identity.py（钉子 2/3）与 test_2_1_5_g5_merge_rules.py。
+        """
+        self.assertIn("!groups.some(group=>group.bulk_eligible===true)", self.src,
+                      "C8：批量按钮可用性必须只读 bulk_eligible 字段")
+        self.assertIn("groups.filter(group=>group.bulk_eligible===true)", self.src,
+                      "C8：批量池/总项数必须只按 bulk_eligible 过滤")
+        self.assertNotIn("ImportReviewUpdates.eligible", self.src,
+                         "C8：前端判据镜像不得回归（2.1.5 G5 F2 已删，后端单一事实源）")
+        self.assertNotIn("identityKey(", self.src,
+                         "C8：identityKey 镜像不得回归")
+
+    def test_bulk_ineligible_reason_renders_from_message_key(self):
+        """G5 C8：不可批量原因按 import.merge.ineligible.* 词典渲染。"""
+        self.assertIn("item.bulk_eligible===false&&item.bulk_ineligible_reason", self.src,
+                      "C8：原因渲染必须有字段守卫（缺字段不显示）")
+        self.assertIn("T('import.merge.ineligible.'+item.bulk_ineligible_reason)", self.src,
+                      "C8：原因文案必须走词典键拼接（不显示原始 reason 码/JSON）")
+        self.assertIn("U.details('import.review.bulk_ineligible'", self.src,
+                      "C8：批量弹窗必须列出未纳入的组及各自原因")
+
+    def test_bulk_keeper_defaults_to_suggestion_and_allows_override(self):
+        """G5 C8/F1/F3：默认选中 suggested_keeper、理由随行，可人工改选且必选非空。"""
+        self.assertIn("select.value=suggestedId(item)||''", self.src,
+                      "C8：保留者下拉必须预选 suggested_keeper")
+        self.assertIn("item.suggested_keeper?.keeper_key||item.suggested_keeper?.keeper_record_id", self.src,
+                      "C8：预选 id 必须读 suggested_keeper 字段（兼容两种键）")
+        self.assertIn("select.onchange=()=>{updateReason();updateConfirm();}", self.src,
+                      "C8：人工改选必须生效（刷新理由显示与确认按钮状态）")
+        self.assertIn("confirm.disabled=[...selections.values()].some(({select})=>!select.value)", self.src,
+                      "C8：任一组未选保留者时确认必须禁用（不静默缺省提交）")
+
+    def test_bulk_conflict_409_renders_translated_reason(self):
+        """G5 X11/C8：整批 409 按词典渲染原因；零部分写入的 API 级钉在
+        test_r10_u2_bulk_identity.py（近似组整批回滚）。"""
+        self.assertIn("error.messageKey==='import_merge.bulk_ineligible'", self.src,
+                      "X11：409 必须按 message_key 分流（不显示原始 JSON）")
+        self.assertIn("T('import.merge.ineligible.'+error.params.reason)", self.src,
+                      "X11：409 原因必须走词典渲染")
 
     def test_batch_card_counts_carry_units(self):
         """#7-A：批次卡片每个数字都带单位（前四项记录、末项候选【组】）。

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""r10-U2 批量确认资格判据的双端钉子（2.1.5 G5 换钉版）。
+"""r10-U2 批量确认资格判据的后端钉子（2.1.5 G5 C8 换钉版）。
 
 **钉头变更（2.1.5 G5·B1）**：后端已改为单一事实源（``bulk_eligibility`` 三段判据
 + 通用/过短标题从严排除），候选载荷直接下发 ``bulk_eligible`` /
@@ -22,17 +22,21 @@ CJK < 6 字）。
      拒绝（全有或全无语义不变）。
 其余用例前后端结论必须逐例一致。
 
-三条钉子（钉子 2/3 不受过渡差异影响）：
-1. 跨语言对照矩阵（按上表允许两类差异）；
+钉子沿革（2.1.5 G5 C8，2026-11-10 门禁收尾）：原钉子 1「跨语言对照矩阵」随
+前端镜像 ``ImportReviewUpdates.eligible()``/``identityKey()`` 的删除（G5 F2）
+退役——后端 ``bulk_eligibility`` 是唯一事实源；载荷三项字段
+（bulk_eligible/bulk_ineligible_reason/suggested_keeper）与判据的同源一致性钉在
+``test_2_1_5_g5_merge_rules.py`` 与 ``build/validate_import_review.py``；界面只认
+后端字段、原因按词典渲染、suggested_keeper 预选可改、409 零部分写入的源码钉在
+``test_r10_u2_import_lane.py``（G5 C8 组）；镜像不得回归的模块面钉在
+``import_review_updates.test.cjs``。本文件保留两条后端钉子：
 2. 对照组逐位不变：近似但差一项、identity_conflict、已决、多 active、单成员
    等仍不可批量；
 3. 真实批量路径（TestClient）：三项强身份一致且题名非通用/非过短的组可整批
    确认（200 且落库）；近似组仍 409 且整批回滚。
 """
-import json
 import os
 import pathlib
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -44,16 +48,6 @@ sys.path.insert(0, str(REPO))
 
 #: 一次性临时账号口令（运行时随机生成，不落任何可复用凭据）。
 ACCOUNT_SECRET = uuid.uuid4().hex
-
-NODE_CANDIDATES = (r"C:\Users\16073\AppData\Local\hermes\node\node.exe",)
-
-
-def _node_exe():
-    for exe in NODE_CANDIDATES:
-        if pathlib.Path(exe).is_file():
-            return exe
-    import shutil
-    return shutil.which("node")
 
 
 def _member(title, authors, year, doi):
@@ -137,61 +131,7 @@ CASES = {
     "single_member": _group([_member(_LONG, "Smith, J", "2021", "")]),
 }
 
-#: 过渡期允许的前后端差异，**逐例列举**（后端结论, 前端旧镜像结论）。
-#: 类①：新判据 (c)（含期刊样式 DOI 视同缺 DOI 的同形用例）——后端可、前端不可。
-#: 类②：通用/过短标题——后端不可、前端旧镜像可能可（后端提交时结构化拒绝）。
-EXPECTED_DIFFS = {
-    "doi_mixed": (True, False),
-    "identity_partial_doi_single": (True, False),
-    "journal_pattern_plus_real": (True, False),
-    "journal_pattern_plus_empty": (True, False),
-    "generic_en_editorial": (False, True),
-    "generic_en_book_review": (False, True),
-    "generic_en_prefix_special_issue": (False, True),
-    "generic_zh_editor_note": (False, True),
-    "generic_zh_book_review": (False, True),
-    "short_en_two_words": (False, True),
-    "short_en_three_words": (False, True),
-    "short_zh_four_chars": (False, True),
-}
-
-_NODE = r"""
-const U = require(process.argv[1] + '/custom_frontend/import_review_updates.js');
-const cases = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
-const out = {};
-for (const [name, group] of Object.entries(cases)) out[name] = U.eligible(group);
-process.stdout.write(JSON.stringify(out));
-"""
-
-
-class BulkIdentityParityTests(unittest.TestCase):
-    def test_backend_and_frontend_agree_except_declared_transition_diffs(self):
-        from custom_backend.import_review_actions import eligible_duplicate
-        self.assertTrue(set(EXPECTED_DIFFS) <= set(CASES),
-                        "已披露差异必须逐例出现在矩阵中")
-        exe = _node_exe()
-        if exe is None:
-            self.skipTest("node 不可用")
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
-            handle.write(json.dumps(CASES, ensure_ascii=False))
-            path = handle.name
-        try:
-            proc = subprocess.run([exe, "-e", _NODE, str(REPO), path], capture_output=True,
-                                  text=True, encoding="utf-8", timeout=120)
-        finally:
-            pathlib.Path(path).unlink(missing_ok=True)
-        self.assertEqual(proc.returncode, 0, proc.stderr[-1500:])
-        frontend = json.loads(proc.stdout.strip().splitlines()[-1])
-        backend = {name: eligible_duplicate(case) for name, case in CASES.items()}
-        unexpected = {}
-        for name in CASES:
-            actual = (backend[name], frontend.get(name))
-            if name in EXPECTED_DIFFS:
-                if actual != EXPECTED_DIFFS[name]:
-                    unexpected[name] = actual
-            elif backend[name] != frontend.get(name):
-                unexpected[name] = actual
-        self.assertEqual(unexpected, {}, "未披露的前后端判据漂移：%r" % (unexpected,))
+class BulkEligibilityMatrixTests(unittest.TestCase):
 
     def test_expected_verdicts(self):
         """后端矩阵：判据三段 + 通用/过短标题排除 + 对照逐位不变。"""
