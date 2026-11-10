@@ -203,9 +203,26 @@ async function openAs(browser, base, token, hash, { viewport = { width: 1440, he
   return page;
 }
 
-async function nav(page, destination) {
-  await page.evaluate(target => go(target), destination);
-  await page.waitForTimeout(500);
+async function nav(page, destination, { timeout = 20000 } = {}) {
+  /* go() 在工作流刷新守卫拒绝时返回 false 且完全不导航（index.html go() 首行）。
+     旧钉忽略返回值 + 固定 500ms：英文分支首次导航被守卫暂缓后，后续交互落在
+     未显示的页面上超时（交付报告 19/20 病灶）。现取 go() 返回值，按界面状态
+     等待目标页 section.page[data-p] 挂 .on（导航成功的可见标志），被暂缓
+     （false）时自动重试直到超时。 */
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await page.evaluate(target => go(target), destination);
+    if (last === true) {
+      const visible = await waitFor(page, section => {
+        const node = document.querySelector(`section.page[data-p="${section}"]`);
+        return !!(node && node.classList.contains('on'));
+      }, `目标页可见（${destination}）`, { timeout: 5000, arg: destination });
+      if (visible) return true;
+    }
+    await page.waitForTimeout(200);
+  }
+  throw new Error(`导航失败或被刷新守卫持续暂缓（${destination}）：go()=${JSON.stringify(last)}`);
 }
 
 async function goHomeTab(page, tab) {
@@ -248,9 +265,21 @@ async function screeningToggleState(page, username) {
 async function clickToggle(page, username) {
   const row = page.locator('#teamList .team-member', { hasText: username });
   await row.locator('.team-more').click();
-  await page.waitForTimeout(250);
+  await waitFor(page, name => {
+    const hit = Array.from(document.querySelectorAll('#teamList .team-member'))
+      .find(node => node.textContent.includes(name));
+    return !!(hit && hit.querySelector('.team-screening-toggle'));
+  }, `成员菜单展开（${username}）`, { timeout: 10000, arg: username });
+  const before = await row.locator('.team-screening-toggle').getAttribute('aria-checked').catch(() => null);
   await row.locator('.team-screening-toggle').click();
-  await page.waitForTimeout(1800);
+  /* 状态等待（原固定 1800ms）：保存落库后开关状态翻转，翻转完成才返回。 */
+  await waitFor(page, arg => {
+    const hit = Array.from(document.querySelectorAll('#teamList .team-member'))
+      .find(node => node.textContent.includes(arg[0]));
+    const node = hit && hit.querySelector('.team-screening-toggle');
+    const state = node && node.getAttribute('aria-checked');
+    return !!(state && state !== arg[1]);
+  }, `筛选开关状态翻转（${username}）`, { timeout: 15000, arg: [username, before] });
 }
 
 async function setStageModes(page, modes) {
@@ -262,8 +291,13 @@ async function setStageModes(page, modes) {
   for (let index = 0; index < modes.length; index += 1) {
     await selects.nth(index).selectOption(modes[index]);
   }
-  await page.getByRole('button', { name: '保存当前任务的流程设置' }).click();
-  await page.waitForTimeout(1500);
+  const [response] = await Promise.all([
+    page.waitForResponse(item => new URL(item.url()).pathname.endsWith('/workflow-settings')
+      && item.request().method() === 'PUT', { timeout: 15000 }),
+    page.getByRole('button', { name: '保存当前任务的流程设置' }).click(),
+  ]);
+  assert.equal(response.status(), 200,
+    `阶段模式保存失败：${response.status()} ${(await response.text()).slice(0, 200)}`);
 }
 
 async function stageModesFromApi(base, token, taskId) {
@@ -275,8 +309,27 @@ async function screenDecide(page, kind, reason) {
   if (kind === 'exclude') {
     await page.locator('#excReason').selectOption(reason || '人群不符');
   }
-  await page.locator(kind === 'include' ? '#btnInc' : '#btnExc').click();
-  await page.waitForTimeout(650);
+  /* 状态等待（原固定 650ms）：先等筛选保存响应（POST /decisions）成功落库，
+     再等换卡状态（S.scrIdx 前进或当前条目键变化；原本就是末篇时直接满足）。
+     保存未完成不进行下一步交互。 */
+  const before = await page.evaluate(() => ({
+    idx: typeof S !== 'undefined' && Number.isInteger(S.scrIdx) ? S.scrIdx : -1,
+    key: ((typeof S !== 'undefined' && Array.isArray(S.articles) && S.articles[S.scrIdx]) || {}).zotero_key || '',
+  }));
+  const [response] = await Promise.all([
+    page.waitForResponse(item => new URL(item.url()).pathname.endsWith('/decisions')
+      && item.request().method() === 'POST', { timeout: 15000 }),
+    page.locator(kind === 'include' ? '#btnInc' : '#btnExc').click(),
+  ]);
+  assert.equal(response.status(), 200,
+    `筛选保存响应失败（${kind}）：${response.status()} ${(await response.text()).slice(0, 200)}`);
+  await waitFor(page, state => {
+    if (typeof S === 'undefined' || !Array.isArray(S.articles)) return false;
+    const article = S.articles[S.scrIdx] || {};
+    const advanced = S.scrIdx !== state.idx || (article.zotero_key || '') !== state.key;
+    const wasLast = state.idx >= S.articles.length - 1;
+    return advanced || wasLast;
+  }, `筛选保存后换卡（${kind}）`, { timeout: 15000, arg: before });
 }
 
 async function fulltextDecide(page, kind, reason) {
@@ -688,6 +741,17 @@ let TASK_ID = '';
       await waitFor(page, () => document.querySelector('#mergeSaveStatus').textContent.includes('已保存'),
         '桌面 CSV 保存完成', { timeout: 15000 });
       await page.context().close();
+    });
+
+    /* ===== 7. en 导航成功与目标页可见（第 21 条：19/20 病灶的对症钉） ===== */
+    await check('7 en 导航成功且目标页可见（守卫暂缓自动重试）', async () => {
+      const enNav = await openAs(browser, SERVER, adj.token, 'workspace/screen', { language: 'en' });
+      assert.equal(await nav(enNav, 'merge'), true, 'go 必须成功返回 true');
+      assert.equal(await enNav.evaluate(() => {
+        const node = document.querySelector('section.page[data-p="merge"]');
+        return !!(node && node.classList.contains('on'));
+      }), true, '目标页必须挂 .on 可见');
+      await enNav.context().close();
     });
 
     /* ===== 7. en 文案 + 390px 布局 ===== */

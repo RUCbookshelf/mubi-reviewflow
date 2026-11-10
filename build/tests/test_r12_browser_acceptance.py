@@ -44,7 +44,7 @@ NODE_CANDIDATES = (r"C:\Users\16073\AppData\Local\hermes\node\node.exe",)
 SERVER_PORT = 19711
 DESKTOP_PORT = 19712
 READY_TIMEOUT = 90.0
-EXPECTED_CHECKS = 20
+EXPECTED_CHECKS = 21  # 2026-11-10 门禁收尾：+1 条「en 导航成功且目标页可见」（19/20 病灶对症钉）
 
 
 def _node_exe() -> str | None:
