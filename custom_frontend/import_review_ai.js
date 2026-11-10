@@ -79,8 +79,10 @@
     const panel=n('dialog',null,{class:'rf-import-ai-dialog','aria-label':T(title)});
     const dismiss=b('Close',()=>panel.close());
     const content=n('div'),status=n('p',null,{role:'status',class:'hint'}),actions=n('div',null,{class:'buttons'});
-    actions.append(dismiss);
-    panel.append(n('h2',title),content,status,actions);
+    const header=n('header'),body=n('div',null,{class:'rf-import-ai-dialog-body'});
+    header.append(n('h2',title),dismiss);
+    body.append(content,status);
+    panel.append(header,body,actions);
     let pending=false;
     panel.addEventListener('cancel',event=>{if(pending)event.preventDefault();});
     panel.addEventListener('close',()=>panel.remove(),{once:true});

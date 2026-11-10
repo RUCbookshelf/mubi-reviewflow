@@ -81,6 +81,9 @@
 
 /* Approved local spacing only. */
 .rf-import-page .info-box>p{margin:7px 0}#wf-import-review .record h3{margin-top:7px}#wf-import-review .record>details{margin-top:10px}
+@media(max-width:760px){
+  .rf-import-page #rfImportGuide{position:static!important;width:100%;max-width:none;margin:12px 0 0!important;box-shadow:none}
+}
 
 /* 2.1.5 import review suggestions, field picks and merge feedback. */
 #wf-import-review .rf-import-ai-toolbar,
@@ -97,7 +100,15 @@
 #wf-import-review .rf-import-ai-toolbar p,
 #wf-import-review .rf-import-merge-feedback p{width:100%;margin:0;font-size:.8rem}
 #wf-import-review .rf-import-ai-rationale{line-height:1.5}
-#wf-import-review .rf-import-ai-dialog .buttons{flex-wrap:wrap}
+#wf-import-review .rf-import-ai-dialog{margin:auto;padding:clamp(16px,4vw,24px);overflow:hidden}
+#wf-import-review .rf-import-ai-dialog[open]{display:flex;flex-direction:column}
+#wf-import-review .rf-import-ai-dialog::backdrop{background:rgb(20 34 36 / 35%);backdrop-filter:none}
+#wf-import-review .rf-import-ai-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+#wf-import-review .rf-import-ai-dialog>header h2{margin:0;font-size:1.12rem;overflow-wrap:anywhere}
+#wf-import-review .rf-import-ai-dialog>header button{flex:none}
+#wf-import-review .rf-import-ai-dialog-body{min-height:0;overflow:auto;overscroll-behavior:contain}
+#wf-import-review .rf-import-ai-dialog .buttons{flex-wrap:wrap;margin-top:12px}
+#wf-import-review .rf-import-ai-dialog .buttons:empty{display:none}
 #wf-import-review .rf-import-ai-disclosure{padding-inline-start:1.25em;margin:6px 0;overflow-wrap:anywhere;font-size:.82rem}
 #wf-import-review .rf-import-ai-selection{max-height:220px;overflow:auto}
 #wf-import-review .rf-import-ai-selection label,
