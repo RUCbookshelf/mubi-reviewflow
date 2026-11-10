@@ -6,16 +6,19 @@
   const style = el('style', {text: [
     '.rf-daily-trigger,.rf-daily-metrics{display:flex;gap:9px;align-items:center}',
     '.rf-daily-trigger[hidden]{display:none}',
+    '.rf-daily-trigger{white-space:normal;text-align:start}',
     '.rf-daily-metrics{flex-wrap:wrap}',
-    '.rf-daily-ring{display:inline-grid;place-items:center;flex:none;width:24px;height:24px;border-radius:50%;background:conic-gradient(var(--primary) var(--daily-progress),var(--border) 0)}',
-    '.rf-daily-ring::after{content:"";width:calc(100% - 6px);height:calc(100% - 6px);border-radius:50%;background:var(--bg)}',
+    '.rf-daily-ring{display:inline-grid;place-items:center;flex:none;width:20px;height:20px;border-radius:50%;background:conic-gradient(var(--primary) var(--daily-progress),var(--primary-light) 0)}',
+    '.rf-daily-ring::after{content:"";width:calc(100% - 5px);height:calc(100% - 5px);border-radius:50%;background:var(--surface)}',
     '.rf-daily-metrics .rf-daily-ring{width:44px;height:44px}',
     '.rf-daily-days{display:flex;flex-wrap:wrap;gap:5px;list-style:none;padding:0;margin:6px 0 12px}',
-    '.rf-daily-days li{width:12px;height:12px;border:1px solid var(--primary);border-radius:3px}',
-    '.rf-daily-days li.met{background:var(--primary)}.rf-daily-days li.in-progress{border-style:dashed;border-width:2px}',
+    '.rf-daily-days li{width:12px;height:12px;border:1px solid var(--border);border-radius:3px}',
+    '.rf-daily-days li.met{background:var(--primary);border-color:var(--primary)}.rf-daily-days li.in-progress{border:2px dashed var(--primary)}',
     '.rf-daily-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:8px;border:0;padding:0;margin:0}',
     '.rf-daily-fields label{display:flex;flex-direction:column;gap:4px;min-width:0}.rf-daily-fields label:has(input[type=checkbox]){flex-direction:row;align-items:center}',
-    '#rfDailyNudgeDialog section{margin:14px 0;padding:10px;border:1px solid var(--border);border-radius:10px}',
+    '#rfDailyNudgeDialog{width:min(720px,calc(100% - 24px));margin:auto}',
+    '#rfDailyNudgeDialog>header{justify-content:space-between;margin:0 0 8px}',
+    '#rfDailyNudgeDialog>section:not(:empty){padding-block:14px;border-top:1px solid var(--border)}',
     '#rfDailyNudgeDialog h3,#rfDailyNudgeDialog h4{margin:0 0 8px}',
   ].join('\n')});
   document.head.append(style);
@@ -31,9 +34,8 @@
   const settingsBox = el('section', {});
   const tokenBox = el('section', {});
   const channelBox = el('section', {});
-  const dialog = el('dialog', {id: 'rfDailyNudgeDialog', class: 'card', 'aria-labelledby': heading.id,
-    style: 'width:min(720px,calc(100% - 24px));max-height:calc(100dvh - 24px);overflow:auto;margin:auto'},
-    el('div', {class: 'row', style: 'justify-content:space-between'}, heading, close),
+  const dialog = el('dialog', {id: 'rfDailyNudgeDialog', class: 'wf-source-dialog', 'aria-labelledby': heading.id},
+    el('header', {class: 'row'}, heading, close),
     errorLine, memberBox, statusBox, settingsBox, tokenBox, channelBox);
   document.body.append(dialog);
   dialog.addEventListener('keydown', event => event.stopPropagation());

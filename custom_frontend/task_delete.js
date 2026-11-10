@@ -7,27 +7,40 @@
   const dialogId = 'rf-task-delete-dialog';
   document.getElementById('hubGrid')?.before(text('p', 'tasks.trash_retention_hint', null, {class:'hint'}));
 
+  document.head.append(el('style', {text: `
+    #rf-task-delete-dialog{max-width:480px}
+    .rf-task-delete-options{min-inline-size:0;border:0}
+    .rf-task-delete-choice{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;
+      gap:10px;margin-bottom:6px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;
+      cursor:pointer;line-height:1.4}
+    .rf-task-delete-choice:has(:checked){background:var(--primary-light)}
+    .rf-task-delete-choice input{margin-top:3px;accent-color:var(--primary)}
+    .rf-task-delete-choice .hint{display:block;margin-top:3px}
+    .rf-task-delete-confirmation:not([hidden]){display:grid;gap:8px;padding-top:2px}
+    #rf-delete-purge-warning{line-height:1.5;font-weight:600}
+  `}));
+
   async function openDelete(task) {
     const auth = AUTH_TOKEN;
-    const ui = open(dialogId, prefix + 'title');
+    const ui = open(dialogId, prefix + 'title', {fallbackFocus:document.getElementById('wf-tab-tasks')});
     if (!ui) return;
     const active = () => ui.active && auth === AUTH_TOKEN;
-    const options = el('fieldset', {'aria-labelledby':dialogId + '-title'});
+    const options = el('fieldset', {class:'rf-task-delete-options', 'aria-labelledby':dialogId + '-title'});
     const trash = el('input', {type:'radio', name:'rf-delete-mode', value:'trash', checked:''});
     const purge = el('input', {type:'radio', name:'rf-delete-mode', value:'purge'});
     options.append(
-      el('label', {}, trash, ' ', text('span', prefix + 'option_trash')),
-      text('p', prefix + 'option_trash_hint', null, {class:'hint'}),
-      el('label', {}, purge, ' ', text('span', prefix + 'option_purge'))
+      el('label', {class:'rf-task-delete-choice'}, trash, el('span', {},
+        text('span', prefix + 'option_trash'), text('span', prefix + 'option_trash_hint', null, {class:'hint'}))),
+      el('label', {class:'rf-task-delete-choice'}, purge, text('span', prefix + 'option_purge'))
     );
 
     const input = el('input', {id:'rf-delete-confirm-id', type:'text', class:'input', spellcheck:'false',
       autocapitalize:'off', autocomplete:'off', placeholder:T(prefix + 'purge_confirm_placeholder'),
       'aria-describedby':'rf-delete-purge-warning'});
-    const confirmation = el('div', {hidden:''},
-      text('p', prefix + 'purge_warning', null, {id:'rf-delete-purge-warning'}),
+    const confirmation = el('div', {class:'rf-task-delete-confirmation', hidden:''},
+      el('p', {id:'rf-delete-purge-warning', class:'rf-sensitive-warning'}, rfWarningIcon(),
+        text('span', prefix + 'purge_warning')),
       text('label', prefix + 'purge_confirm_label', {task_id:task.task_id}, {for:input.id}),
-      literal('code', task.task_id, {class:'hint', style:'display:block;margin:4px 0'}),
       input);
     const submit = button('删除', remove, {class:'btn b-exc'});
     ui.actions.append(submit);

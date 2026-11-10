@@ -131,9 +131,15 @@ body.rf-screen-focus.fp-screen .view{padding:12px}
 /* F59：重排期间的轻量指示（「排序更新中…」），落定即移除。 */
 .rf-screen-ranking{display:flex;align-items:center;gap:8px;margin:0 0 8px;padding:5px 10px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--muted);font-size:12px}
 .rf-screen-ranking[hidden]{display:none!important}
-.rf-screen-ranking-dot{width:8px;height:8px;border-radius:50%;background:var(--primary);animation:rf-screen-rank-pulse 1s ease-in-out infinite}
-@keyframes rf-screen-rank-pulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.1)}}
+.rf-screen-ranking-dot{width:8px;height:8px;border-radius:50%;background:var(--primary);animation:rf-screen-rank-pulse 1.5s ease-in-out infinite}
+@keyframes rf-screen-rank-pulse{0%,100%{opacity:.65}50%{opacity:1}}
 @media(prefers-reduced-motion:reduce){.rf-screen-ranking-dot{animation:none}}
+/* Post-upgrade summary, with backup links and a secondary training action. */
+#wf-binary-reset{padding:12px 16px;background:var(--primary-light);color:var(--ink);line-height:1.55;overflow-wrap:anywhere}
+#wf-binary-reset>p:first-child{color:var(--primary-dark);font-weight:600}
+#wf-binary-reset>p+p,#wf-binary-reset>ul{margin-block-start:4px}
+#wf-binary-reset>ul{padding-inline-start:1.2em}
+#wf-binary-reset-training{margin-block-start:8px;white-space:normal}
 /* F08：无理由按「3」时的就地微文案（不抢焦点，2 秒淡出）。 */
 .scr-reason-error{margin:0 0 6px;font-size:12px;line-height:1.5;color:var(--danger);font-weight:600}
 .scr-reason-error[hidden]{display:none!important}

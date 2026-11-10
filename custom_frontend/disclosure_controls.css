@@ -42,3 +42,49 @@
 @media(prefers-reduced-motion:reduce){
   #appMain :is(.page,.rf-mobile-sheet) details>summary::after {transition:none}
 }
+
+/* Opt-in affordance for new panels, including dialogs mounted outside #appMain. */
+details.rf-plain-disclosure>summary,
+#appMain :is(.page,.rf-mobile-sheet) details.rf-plain-disclosure>summary {
+  position:relative;
+  list-style:none;
+  padding-inline-end:28px!important;
+  cursor:pointer;
+}
+details.rf-plain-disclosure>summary::marker {content:''}
+details.rf-plain-disclosure>summary::-webkit-details-marker {display:none}
+details.rf-plain-disclosure>summary::before {content:none!important}
+details.rf-plain-disclosure>summary::after,
+#appMain :is(.page,.rf-mobile-sheet) details.rf-plain-disclosure>summary::after {
+  content:''!important;
+  display:block!important;
+  position:absolute;
+  inset-inline-end:6px;
+  top:50%;
+  width:12px;
+  height:12px;
+  margin:0!important;
+  color:var(--muted);
+  background:linear-gradient(currentColor,currentColor) center/10px 1px no-repeat,
+             linear-gradient(currentColor,currentColor) center/1px 10px no-repeat;
+  -webkit-mask:none;
+  mask:none;
+  transform:translateY(-50%);
+  transition:background-size .14s ease,color .14s ease;
+  pointer-events:none;
+}
+details.rf-plain-disclosure[open]>summary::after,
+#appMain :is(.page,.rf-mobile-sheet) details.rf-plain-disclosure[open]>summary::after {
+  background-size:10px 1px,1px 0;
+  color:var(--primary-dark);
+  transform:translateY(-50%);
+}
+details.rf-plain-disclosure>summary:focus-visible {
+  outline:2px solid var(--primary);
+  outline-offset:3px;
+  border-radius:4px;
+}
+@media(prefers-reduced-motion:reduce){
+  details.rf-plain-disclosure>summary::after,
+  #appMain :is(.page,.rf-mobile-sheet) details.rf-plain-disclosure>summary::after {transition:none}
+}

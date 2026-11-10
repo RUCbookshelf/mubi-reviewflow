@@ -4,15 +4,24 @@
   const anchor = document.querySelector('.page[data-p="screen"] .scr-status');
   if (!anchor) return;
   const colors = ['#f5dfa1', '#cce6db', '#f7d8d2', '#dcd8f9', '#c8e8fa', '#f4d1e7'];
+  document.head.append(el('style', {text: [
+    '#rfKeywordSettings{width:min(680px,calc(100% - 24px));margin:auto}',
+    '#rfKeywordSettings>header{justify-content:space-between;margin:0 0 8px}',
+    '#rfKeywordSettings>header h3{margin:0}',
+    '#rfKeywordSettings .rf-keyword-set{display:grid;gap:8px;padding-block:12px;border-bottom:1px solid var(--border)}',
+    '#rfKeywordSettings .rf-keyword-set>.btn{justify-self:start}',
+    '.rf-keyword-hit{background:var(--rf-keyword-color);color:#263536;border-radius:3px}',
+    '@supports(background:color-mix(in srgb,white,black)){[data-theme=dark] .rf-keyword-hit{background:color-mix(in srgb,var(--surface) 65%,var(--rf-keyword-color));color:var(--ink)}}',
+    '.rf-keyword-legend{margin:6px 0;gap:5px;overflow-wrap:anywhere}.rf-keyword-legend .rf-keyword-hit{padding-inline:4px}',
+  ].join('\n')}));
   const launch = el('button', {type: 'button', class: 'btn b-out', text: T('highlight.title'), hidden: ''});
   anchor.append(launch);
   const heading = el('h3', {id: 'rfKeywordSettingsHeading', text: T('highlight.title')});
   const main = el('div', {});
   const message = el('p', {class: 'hint', role: 'status'});
   const close = el('button', {type: 'button', class: 'btn b-out', text: T('关闭')});
-  const panel = el('dialog', {id: 'rfKeywordSettings', class: 'card', 'aria-labelledby': heading.id,
-    style: 'width:min(680px,calc(100% - 24px));max-height:calc(100dvh - 24px);overflow:auto;margin:auto'},
-    el('div', {class: 'row', style: 'justify-content:space-between'}, heading, close), message, main);
+  const panel = el('dialog', {id: 'rfKeywordSettings', class: 'wf-source-dialog', 'aria-labelledby': heading.id},
+    el('header', {class: 'row'}, heading, close), message, main);
   document.body.append(panel);
   close.addEventListener('click', () => panel.close());
   panel.addEventListener('keydown', event => event.stopPropagation());
@@ -49,8 +58,8 @@
   }
   function tintedMark(termId, text) {
     const color = colors[termId % colors.length];
-    return el('mark', {text, 'data-term-id': termId, translate: 'no',
-      style: 'background:' + color + ';color:#222;border-radius:2px'});
+    return el('mark', {class: 'rf-keyword-hit', text, 'data-term-id': termId, translate: 'no',
+      style: '--rf-keyword-color:' + color});
   }
   function markedText(response) {
     const fragment = document.createDocumentFragment();
@@ -125,7 +134,7 @@
   function show(article, nodes) {
     if (!article || !nodes.abstract || !nodes.title) return;
     nodes.abstract.parentElement.querySelector('.rf-keyword-legend')?.remove();
-    const legend = el('div', {class: 'row hint rf-keyword-legend', role: 'status', style: 'margin:0;gap:5px'});
+    const legend = el('div', {class: 'row hint rf-keyword-legend', role: 'status'});
     nodes.abstract.after(legend);
     const fields = [
       {node: nodes.title, plain: nodes.title.textContent, text: article.title || ''},
@@ -158,7 +167,7 @@
       terms.value = (set.terms || []).join('\n');
       const remove = el('button', {type: 'button', class: 'btn b-out', text: T('highlight.remove_set')});
       const option = set.set_id ? el('option', {value: set.set_id, translate: 'no', text: set.name}) : null;
-      const row = el('section', {class: 'card'}, name, terms,
+      const row = el('section', {class: 'rf-keyword-set'}, name, terms,
         set.set_id ? el('small', {class: 'hint', text: set.set_id, translate: 'no'}) : null,
         typeof set.term_count === 'number' ? el('p', {class: 'hint', text: T('highlight.term_count', set.term_count)}) : null,
         remove);

@@ -28,11 +28,19 @@
     return control;
   };
   const style = el('style', { text: [
-    '.rf-strategy-field{display:grid;gap:4px}',
-    '.rf-strategy-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:8px 0}',
-    '.rf-strategy-card{margin:8px 0;min-width:0;overflow-wrap:anywhere}',
-    '.rf-strategy-card pre{white-space:pre-wrap;overflow-wrap:anywhere}',
-    '.rf-strategy-selected[aria-pressed=true]{background:var(--primary-light);color:var(--primary)}',
+    '#rfSearchStrategy .rf-strategy-field{display:grid;gap:4px;min-width:0}',
+    '#rfSearchStrategy .rf-strategy-field[hidden]{display:none}',
+    '#rfSearchStrategy .rf-strategy-field>span{font-size:.8rem;color:var(--muted)}',
+    '#rfSearchStrategy .rf-strategy-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px 12px;margin:8px 0}',
+    '#rfSearchStrategy .rf-strategy-card{margin:8px 0;padding:12px;background:var(--bg);min-width:0;overflow-wrap:anywhere}',
+    '#rfSearchStrategy .rf-strategy-card:hover{box-shadow:none}',
+    '#rfSearchStrategy .rf-strategy-card pre{margin:8px 0;font-size:.82rem;white-space:pre-wrap;overflow-wrap:anywhere}',
+    '#rfSearchStrategy .input[type=checkbox]{width:auto;accent-color:var(--primary)}',
+    '#rfSearchStrategy .rf-strategy-tabs{gap:4px;padding-bottom:8px;border-bottom:1px solid var(--border)}',
+    '#rfSearchStrategy .rf-strategy-tabs>.btn{border-color:transparent;color:var(--muted);min-height:34px;white-space:normal;transition:background-color 140ms ease,color 140ms ease}',
+    '#rfSearchStrategy .rf-strategy-tabs>.btn:hover,#rfSearchStrategy .rf-strategy-tabs>.btn[aria-pressed=true]{background:var(--primary-light);color:var(--primary-dark)}',
+    '#rfSearchStrategy .rf-strategy-tabs>.btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}',
+    '@media(prefers-reduced-motion:reduce){#rfSearchStrategy .rf-strategy-tabs>.btn{transition:none}}',
   ].join('\n') });
   document.head.append(style);
 
@@ -43,9 +51,9 @@
   const content = el('div', { id: 'rfSearchStrategyContent', hidden: true });
   const notice = el('p', { class: 'hint', role: 'status' });
   const panel = el('div');
-  const controls = el('div', { class: 'row' });
-  const builderTab = button('search_strategy.builder', () => show('builder'), { class: 'btn b-out sm rf-strategy-selected', 'aria-pressed': 'true' });
-  const libraryTab = button('search_strategy.library', () => show('library'), { class: 'btn b-out sm rf-strategy-selected', 'aria-pressed': 'false' });
+  const controls = el('div', { class: 'row rf-strategy-tabs' });
+  const builderTab = button('search_strategy.builder', () => show('builder'), { 'aria-pressed': 'true' });
+  const libraryTab = button('search_strategy.library', () => show('library'), { 'aria-pressed': 'false' });
   controls.append(builderTab, libraryTab);
   content.append(controls, notice, panel);
   box.append(toggle, content);
@@ -215,7 +223,7 @@
         current.selected = new Set(current.generated.strategies.map(entry => entry.database));
         renderGenerated(current, results);
       });
-    });
+    }, { class: 'btn b-inc sm' });
     builder.append(row(translate), results);
     mode.onchange = updateMode;
     add();
@@ -290,7 +298,7 @@
     const snapshots = s.timeline.snapshots;
     host.append(tr('h3', 'search_strategy.timeline'));
     for (const snapshot of snapshots) {
-      const card = el('details', { class: 'card rf-strategy-card' },
+      const card = el('details', { class: 'card rf-strategy-card rf-plain-disclosure' },
         tr('summary', 'search_strategy.snapshot_label', { id: snapshot.id, date: snapshot.created_at }),
         snapshot.is_current ? hint('search_strategy.current') : null,
         text('p', snapshot.content_sha256),
@@ -439,7 +447,7 @@
         notice.append(hint('search_strategy.no_prefill'));
         return;
       }
-      if (!await RFConfirm(T('search_strategy.prefill_confirm', { n: response.rows.length }), { danger: false })) return;
+      if (!await RFConfirm({ message: T('search_strategy.prefill_confirm', { n: response.rows.length }), danger: false })) return;
       if (state !== s || !await go('prisma') || state !== s) return;
       const host = document.getElementById('prRowsDb');
       if (!host || response.target_field !== 'identified_rows_db') return;

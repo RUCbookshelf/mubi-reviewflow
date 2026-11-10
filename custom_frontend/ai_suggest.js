@@ -168,12 +168,12 @@
       '.rf-ai-tools{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}',
       '.rf-ai-tools .rf-ai-status{font-size:.78rem;color:var(--muted)}',
       '.rf-ai-tools .rf-ai-disclosure{font-size:.75rem;color:var(--muted)}',
-      '.rf-ai-suggest{border:1px dashed var(--border);border-radius:10px;margin-top:8px;background:var(--surface)}',
+      '.rf-ai-suggest{border:1px solid var(--border);border-radius:10px;margin-top:8px;background:var(--bg)}',
       '.rf-ai-suggest>summary{cursor:pointer;padding:6px 10px;font-size:.82rem;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap;list-style:none}',
       '.rf-ai-suggest>summary::-webkit-details-marker{display:none}',
       '.rf-ai-suggest>summary .rf-ai-count{font-weight:400;font-size:.72rem;color:var(--muted)}',
       '.rf-ai-body{padding:2px 10px 10px}',
-      '.rf-ai-item{border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px}',
+      '.rf-ai-item{border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px;background:var(--surface)}',
       '.rf-ai-item .rf-ai-val{font-weight:600;word-break:break-word}',
       '.rf-ai-quote{margin:4px 0 0;font-size:.78rem;color:var(--muted);white-space:pre-wrap;word-break:break-word}',
       '.rf-ai-meta{font-size:.72rem;color:var(--muted);margin-top:4px}',
@@ -181,15 +181,15 @@
       '.rf-ai-actions{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}',
       '.rf-ai-actions .input{max-width:280px;min-width:160px}',
       '.rf-ai-badge{font-size:.72rem;border-radius:999px;padding:2px 10px;border:1px solid var(--border);color:var(--muted)}',
-      '.rf-ai-badge.adopted{color:#2F6F6A;border-color:currentColor}',
+      '.rf-ai-badge.adopted{color:var(--primary-dark);background:var(--primary-light)}',
       '.rf-ai-badge.ignored{color:var(--muted)}',
       '.rf-ai-settings h3{margin:0 0 4px}',
       '.rf-ai-settings h4{margin:12px 0 6px}',
       '.rf-ai-settings .lbl{display:block;font-size:.8rem;margin-bottom:2px}',
-      '.rf-ai-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:6px 0}',
+      '.rf-ai-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;margin:6px 0}',
       '.rf-ai-checks{display:flex;gap:6px 14px;flex-wrap:wrap;margin:6px 0}',
       '.rf-ai-checks label{display:inline-flex;gap:4px;align-items:center;font-size:.8rem}',
-      '.rf-ai-mapping{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:6px 10px;margin:6px 0}',
+      '.rf-ai-mapping{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:6px 10px;margin:6px 0}',
       '.rf-ai-methods{white-space:pre-wrap;font-size:.78rem;max-height:220px;overflow:auto;border:1px dashed var(--border);border-radius:8px;padding:8px;margin:6px 0}',
       '.rf-ai-notice{color:var(--danger);font-size:.78rem;margin:6px 0 0}',
       '.rf-ai-hint{font-size:.75rem;color:var(--muted);margin:6px 0 0}'
@@ -486,7 +486,7 @@
       const mapped = !!(mapping[fid] && document.getElementById('wf-field-' + mapping[fid]));
       const badgeMode = detection?.prefs?.presentation === 'badge';
       /* R3 呈现偏好：card=常驻（展开）；badge=收纳为角标（仅计数，点击展开） */
-      const details = el('details', { class: 'rf-ai-suggest', 'data-field': fid });
+      const details = el('details', { class: 'rf-ai-suggest rf-plain-disclosure', 'data-field': fid });
       if (!badgeMode) details.open = true;
       const summary = el('summary', {},
         el('span', { text: T('AI 建议') + ' · ' + fieldLabel(fid) }),

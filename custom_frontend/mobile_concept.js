@@ -150,6 +150,8 @@
     const actions=block(host,'rf-mobile-screen-actions');move(q('#scrPos'),actions);move(q('[data-undo-stage="screen"]',q('.rf-screen-tools',host)),actions);
     if(!q('.rf-mobile-screen-options',actions)){const b=opener(options,'Screening options','btn b-out rf-mobile-screen-options');b.textContent='···';labels.delete(b);add(b,actions);}
     q('.rf-mobile-screen-options',actions).setAttribute('aria-label',tr('Screening options'));
+    move(q('.rf-criteria-panel',host),actions,q('.rf-mobile-screen-options',actions));
+    move(q('#rfPilotEntry',host),actions,q('.rf-criteria-panel',actions)||q('.rf-mobile-screen-options',actions));
     move(q('.scr-status',host),options);move(q('#rfScreenFocus'),options);
     if(!q('.rf-mobile-help-open',options))add(button('阅读帮助',()=>{options.close();q('#rfScreenHelp').click();},'btn b-out rf-mobile-help-open'),options);
     const card=q('#scrCard');if(shell.nextElementSibling!==actions||actions.nextElementSibling!==card){host.insertBefore(shell,card);host.insertBefore(actions,card);}

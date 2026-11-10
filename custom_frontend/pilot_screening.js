@@ -8,14 +8,16 @@
   anchor.before(host);
   document.querySelector('.page[data-p="screen"]')?.prepend(gate);
   const style = el('style', { text: [
-    '.rf-pilot-dialog{width:min(760px,calc(100vw - 28px));max-height:calc(100dvh - 36px);overflow:auto}',
+    '.rf-pilot-dialog{width:min(760px,calc(100vw - 28px));max-height:calc(100dvh - 36px);margin:auto;overflow:auto;overscroll-behavior:contain}',
+    '.rf-pilot-dialog .rf-pilot-header{justify-content:space-between;align-items:center;margin:0 0 8px}',
+    '.rf-pilot-header h2{margin:0}',
     '.rf-pilot-card{overflow-wrap:anywhere;margin:10px 0}',
-    '.rf-pilot-card details p{white-space:pre-wrap}',
+    '.rf-pilot-card :is(details p,summary~p){white-space:pre-wrap}',
     '.rf-pilot-fields{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));margin:8px 0}',
     '.rf-pilot-fields label{display:grid;gap:4px}',
     '.rf-pilot-pool{display:grid;gap:4px;max-height:250px;overflow:auto;margin:8px 0}',
     '.rf-pilot-pool label{display:flex;align-items:flex-start;gap:8px}',
-    '.rf-pilot-borderline{border-inline-start:4px solid var(--primary)}',
+    '.rf-pilot-borderline>.chip{background:color-mix(in srgb,var(--accent) 18%,var(--surface));color:var(--ink)}',
   ].join('\n') });
   document.head.append(style);
 
@@ -28,6 +30,8 @@
   const row = (...nodes) => el('div', { class: 'row' }, ...nodes);
   const button = (key, fn, attrs = {}) =>
     tr('button', key, undefined, { type: 'button', class: 'btn b-out sm', onclick: fn, ...attrs });
+  const screenEntry = button('pilot.entry', () => open(), { id: 'rfPilotEntry', hidden: true });
+  document.querySelector('.page[data-p="screen"] .scr-status')?.append(screenEntry);
   const field = (key, input) => el('label', {}, tr('span', key), input);
   const decisionKey = decision => ({ include: '纳入', exclude: '排除', maybe: '暂不确定' }[decision]);
   const verdictKey = verdict => ({ pass: 'pilot.verdict_pass', borderline: 'pilot.verdict_borderline', fail: 'pilot.verdict_fail' }[verdict]);
@@ -46,6 +50,8 @@
 
   function renderHost(message = '') {
     host.replaceChildren();
+    screenEntry.hidden = capability?.settings.pilot_enabled !== true;
+    screenEntry.textContent = T('pilot.entry');
     if (!capability) {
       host.hidden = !message;
       if (message) host.append(literal('p', message, { class: 'hint', role: 'status' }));
@@ -124,7 +130,8 @@
     const title = tr('h2', 'pilot.entry', undefined, { id: 'rfPilotTitle' });
     const body = el('div');
     const notice = el('p', { class: 'hint', role: 'status' });
-    dialog.append(row(title, button('关闭', () => dialog.close())), hint('pilot.training_badge'), notice, body);
+    dialog.append(el('header', { class: 'row rf-pilot-header' }, title, button('关闭', () => dialog.close())),
+      hint('pilot.training_badge'), notice, body);
     document.body.append(dialog);
     dialog.addEventListener('close', () => {
       dialog.remove();
@@ -355,8 +362,9 @@
   function articleCard(article) {
     return el('article', { class: 'card rf-pilot-card' },
       literal('h4', article.title || article.zotero_key),
-      literal('p', [article.authors, article.journal, article.year, article.doi].filter(value => value != null && value !== '').join(' · ')),
-      article.abstract ? el('details', {}, tr('summary', '摘要'), literal('p', article.abstract)) : null);
+      literal('p', [article.authors, article.journal, article.year, article.doi].filter(value => value != null && value !== '').join(' · '),
+        { class: 'hint' }),
+      article.abstract ? el('details', { class: 'rf-plain-disclosure' }, tr('summary', '摘要'), literal('p', article.abstract)) : null);
   }
 
   function answerForm(item, readonly, save) {
@@ -539,7 +547,7 @@
     }
     session.body.append(copies, hint('pilot.borderline_hint'));
     for (const item of result.items) {
-      const details = el('details', { class: 'card rf-pilot-card' + (item.borderline ? ' rf-pilot-borderline' : '') },
+      const details = el('details', { class: 'card rf-pilot-card rf-plain-disclosure' + (item.borderline ? ' rf-pilot-borderline' : '') },
         literal('summary', titles.get(item.zotero_key) || item.zotero_key),
         item.borderline ? chip('pilot.boundary_case') : null,
         tr('h4', 'pilot.your_decision'),

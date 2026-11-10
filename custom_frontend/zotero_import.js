@@ -196,19 +196,22 @@
     }
 
     var style = mk('style', { text:
-      '.rf-zotero-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;' +
+      '.rf-zotero-overlay{position:fixed;inset:0;background:rgba(15,23,42,.30);display:flex;' +
       'align-items:center;justify-content:center;z-index:1200;padding:16px}' +
-      '.rf-zotero-card{background:var(--bg,#fff);color:inherit;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.25);' +
-      'max-width:640px;width:100%;max-height:86vh;display:flex;flex-direction:column;padding:18px}' +
+      '.rf-zotero-overlay>.rf-zotero-card{background:var(--surface);box-shadow:var(--shadow);margin:0;' +
+      'max-width:640px;width:100%;max-height:calc(100dvh - 32px);display:flex;flex-direction:column;overflow:auto;padding:18px}' +
       '.rf-zotero-card h3{margin:0 0 6px}' +
-      '.rf-zotero-privacy{font-size:.8rem;opacity:.75;margin:0 0 12px}' +
+      '.rf-zotero-privacy{font-size:.8rem;color:var(--muted);margin:0 0 12px}' +
       '.rf-zotero-status{font-size:.9rem;margin:8px 0;min-height:1.2em}' +
-      '.rf-zotero-list{overflow:auto;border:1px solid rgba(125,125,125,.35);border-radius:8px;' +
+      '.rf-zotero-list{overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:8px;' +
       'margin:8px 0;padding:4px;flex:1;min-height:120px;max-height:46vh}' +
       '.rf-zotero-row{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px}' +
-      '.rf-zotero-row:hover{background:rgba(125,125,125,.08)}' +
-      '.rf-zotero-count{font-size:.78rem;opacity:.7;margin-left:auto;white-space:nowrap}' +
+      '.rf-zotero-row{overflow-wrap:anywhere}' +
+      '.rf-zotero-row input{flex:none;accent-color:var(--primary)}' +
+      '.rf-zotero-row:hover,.rf-zotero-row:focus-within{background:var(--primary-light)}' +
+      '.rf-zotero-count{font-size:.78rem;color:var(--muted);margin-inline-start:auto;white-space:nowrap}' +
       '.rf-zotero-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:10px}' +
+      '#rfZoteroEntry{margin:12px 0;padding:16px;box-shadow:none}' +
       '.rf-zotero-entry{margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}' });
     document.head.append(style);
 
@@ -231,12 +234,13 @@
       mk('p', { class: 'hint', style: { margin: '4px 0 0' },
                 text: T('仅连接本机 Zotero（127.0.0.1:23119）读取你选择的集合；不访问 Zotero 云端，也不向任何外部地址发送数据。每次连接都由你手动触发。') }),
       mk('div', { class: 'rf-zotero-entry' }, [
-        mk('button', { class: 'btn b-inc', id: 'rfZoteroOpen',
+        mk('button', { class: 'soft', id: 'rfZoteroOpen',
                        text: T('连接本机 Zotero…'),
                        onclick: function () { openDialog(); } })
       ])
     ]);
-    var dropCard = section.querySelector('.dz') && section.querySelector('.dz').closest('.card');
+    var dropCard = document.getElementById('io-upload')?.closest('.upload-layout') ||
+      section.querySelector('.dz')?.closest('.card');
     if (dropCard && dropCard.parentNode) dropCard.parentNode.insertBefore(entry, dropCard.nextSibling);
     else section.append(entry);
 
@@ -250,8 +254,8 @@
     function openDialog() {
       if (overlay) { overlay.remove(); overlay = null; }
       overlay = mk('div', { class: 'rf-zotero-overlay', id: 'rfZoteroOverlay' }, [
-        mk('div', { class: 'card rf-zotero-card', role: 'dialog', 'aria-modal': 'true' }, [
-          mk('h3', { text: T('从本机 Zotero 导入') }),
+        mk('div', { class: 'card rf-zotero-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'rfZoteroTitle' }, [
+          mk('h3', { id: 'rfZoteroTitle', text: T('从本机 Zotero 导入') }),
           mk('p', { class: 'hint rf-zotero-privacy',
                     text: T('仅连接本机 Zotero（127.0.0.1:23119）读取你选择的集合；不访问 Zotero 云端，也不向任何外部地址发送数据。每次连接都由你手动触发。') }),
           mk('div', { class: 'row', style: { justifyContent: 'space-between', margin: '0' } }, [

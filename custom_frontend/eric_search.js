@@ -165,17 +165,16 @@
     }
 
     var style = mk('style', { text:
-      '.rf-eric-entry{margin-top:12px}' +
-      '.rf-eric-query{width:100%;min-height:64px;font:inherit;font-size:.85rem;padding:8px 10px;' +
-      'border:1px solid var(--border);border-radius:8px;background:var(--bg);color:inherit;resize:vertical}' +
+      '#rfEricEntry{margin:12px 0;padding:16px;box-shadow:none}' +
+      '.rf-eric-query{display:block;min-height:72px;font-size:.85rem;line-height:1.45;resize:vertical}' +
       '.rf-eric-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}' +
-      '.rf-eric-status{font-size:.88rem;margin:8px 0 0;min-height:1.2em;white-space:pre-wrap}' +
+      '.rf-eric-status:not(:empty){font-size:.82rem;color:var(--muted);margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}' +
       '.rf-eric-list{list-style:none;margin:8px 0 0;padding:0;max-height:320px;overflow:auto;' +
-      'border:1px solid rgba(125,125,125,.35);border-radius:8px}' +
-      '.rf-eric-list li{padding:7px 10px;border-top:1px solid rgba(125,125,125,.2)}' +
+      'background:var(--bg);border:1px solid var(--border);border-radius:8px;overscroll-behavior:contain}' +
+      '.rf-eric-list li{padding:8px 10px;border-top:1px solid var(--border);overflow-wrap:anywhere}' +
       '.rf-eric-list li:first-child{border-top:none}' +
       '.rf-eric-list .t{font-size:.86rem;font-weight:600}' +
-      '.rf-eric-list .m{font-size:.76rem;opacity:.75;margin-top:2px}' });
+      '.rf-eric-list .m{font-size:.76rem;color:var(--muted);margin-top:2px}' });
     document.head.append(style);
 
     var state = { busy: false };
@@ -192,16 +191,16 @@
     }
 
     var input = mk('textarea', {
-      class: 'rf-eric-query', id: 'rfEricQuery', rows: '3',
+      class: 'input rf-eric-query', id: 'rfEricQuery', rows: '3',
       'aria-label': T('ERIC 检索式（例如 title:"second language" AND publicationdateyear:2020）'),
       placeholder: T('ERIC 检索式（例如 title:"second language" AND publicationdateyear:2020）')
     });
     var previewButton = mk('button', {
-      class: 'btn b-out', id: 'rfEricPreview', type: 'button',
+      class: 'soft', id: 'rfEricPreview', type: 'button',
       text: T('预览命中'), onclick: function () { runPreview(); }
     });
     var importButton = mk('button', {
-      class: 'btn b-inc', id: 'rfEricImport', type: 'button',
+      class: 'primary', id: 'rfEricImport', type: 'button',
       text: T('检索并导入'), onclick: function () { runImport(); }
     });
     var statusBox = mk('div', { class: 'rf-eric-status', id: 'rfEricStatus', role: 'status' });
@@ -219,8 +218,8 @@
     /* 挂载锚点：Zotero 入口之后（存在时），否则上传卡之后；都找不到就追加到页尾。 */
     var anchor = document.getElementById('rfZoteroEntry');
     if (!anchor) {
-      var dropCard = section.querySelector('.dz') && section.querySelector('.dz').closest('.card');
-      anchor = dropCard || null;
+      anchor = document.getElementById('io-upload')?.closest('.upload-layout') ||
+        section.querySelector('.dz')?.closest('.card');
     }
     if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(entry, anchor.nextSibling);
     else section.append(entry);

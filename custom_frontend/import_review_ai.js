@@ -76,7 +76,7 @@
   }
 
   function dialog(host,title){
-    const panel=n('dialog',null,{'aria-label':T(title)});
+    const panel=n('dialog',null,{class:'rf-import-ai-dialog','aria-label':T(title)});
     const dismiss=b('Close',()=>panel.close());
     const content=n('div'),status=n('p',null,{role:'status',class:'hint'}),actions=n('div',null,{class:'buttons'});
     actions.append(dismiss);
@@ -215,7 +215,7 @@
     const section=n('section',null,{class:'rf-import-ai-suggestion'});
     if(verdicts.has(row.verdict))section.append(n('strong',lang+'verdict.'+row.verdict));
     if(typeof row.confidence==='number')section.append(l('span',T(lang+'confidence',{value:row.confidence.toFixed(2)})));
-    if(row.rationale_zh)section.append(l('p',row.rationale_zh,{class:'rf-import-ai-rationale',title:row.rationale_zh}));
+    if(row.rationale_zh)section.append(l('p',row.rationale_zh,{class:'rf-import-ai-rationale'}));
     const warnings=new Set((row.warnings||[]).map(token=>Object.hasOwn(warningKeys,token)?warningKeys[token]:'generic'));
     for(const warning of warnings)section.append(n('p',lang+'degraded.'+warning,{class:'hint'}));
     if(link&&row.audit_id!=null)section.append(b(ui+'audit',()=>openAudit(section.closest('#wf-import-review'),row.audit_id)));
@@ -467,7 +467,7 @@
         link.append(l('span',' · #'+row.audit_id));
         links.append(link);
       }
-      tools.append(U.details(ui+'audit',links));
+      tools.append(el('details',{class:'rf-plain-disclosure rf-import-ai-audit'},n('summary',ui+'audit'),links));
     }
     if(tools.childNodes.length)host.append(tools);
   }

@@ -13,21 +13,22 @@
   const grades = ['high', 'moderate', 'low', 'very_low'];
   const controlsFor = (prefix, options, value) => select(options.map(option => [option, prefix + option]), value);
   const heading = (key, ...children) => node('fieldset', null, {}, tr('legend', key), children);
-  const expanded = (key, ...children) => node('details', null, {}, tr('summary', key), children);
+  const expanded = (key, ...children) => node('details', null, { class: 'rf-plain-disclosure' }, tr('summary', key), children);
+  const fields = (...controls) => node('div', null, { class: 'rf-tables-fields' }, controls);
   const resultMessage = (error, fallback) => error?.message || T(fallback);
   const componentLabel = component => 'tables.sof.judgment.component_' + component;
   const formatEvidence = signal => Object.entries(signal || {}).filter(([key, value]) =>
     key !== 'available' && ['string', 'number', 'boolean'].includes(typeof value)).map(([key, value]) => key + ' = ' + value).join(' · ');
 
   function choices(items, keyOf, labelOf, changed, ordered = false) {
-    const list = node('div');
+    const list = node('div', null, { class: 'rf-tables-choices' });
     const empty = tr('p', 'tables.all_by_default', { class: 'hint' });
     const rank = new Map();
     list.append(empty);
     for (const item of items) {
       const key = keyOf(item);
       const check = node('input', null, { type: 'checkbox', value: key });
-      const position = node('span', '');
+      const position = node('span', '', { class: 'rf-tables-choice-order' });
       check.addEventListener('change', () => {
         if (check.checked) rank.set(key, position);
         else {
@@ -107,7 +108,7 @@
       component, controlsFor('tables.level.', ['', ...levels], row.judgment?.components?.[component] || '')
     ]));
     const overall = select([['', 'tables.level.'], ...grades.map(value => [value, 'appraisal.rating.' + value])], row.judgment?.overall || '');
-    const manual = node('div', null, {}, components.map(key => field(componentLabel(key), chosen[key])), field('tables.sof.judgment.overall', overall));
+    const manual = fields(...components.map(key => field(componentLabel(key), chosen[key])), field('tables.sof.judgment.overall', overall));
     const message = statusLine();
     const save = button('tables.sof.judgment.submit', async () => {
       if (!valid() || save.disabled) return;
@@ -173,7 +174,7 @@
     const resource = path + (sof ? '/sof' : '/characteristics');
     const title = sof ? 'tables.sof.title' : 'tables.table1.title';
     const { dialog, body } = popup(title);
-    const status = statusLine(), preview = node('div');
+    const status = statusLine(), preview = node('div', null, { class: 'rf-tables-preview' });
     const format = controlsFor('tables.format.', formats, 'csv');
     const valid = () => dialog.open && scope() === identity;
     const formatKey = sof ? 'tables.sof.format' : 'tables.table1.format';
@@ -222,6 +223,7 @@
     async function init() {
       body.replaceChildren(status);
       status.textContent = T('tables.generating');
+      const formatField = field(formatKey, format);
       try {
         if (sof) {
           const [baseline, canWrite] = await Promise.all([
@@ -234,7 +236,8 @@
           const model = controlsFor('tables.model.', ['fixed', 'random', 'random_pm', 'random_reml'], 'fixed');
           const ci = controlsFor('tables.ci.', ['normal', 'hksj'], 'normal');
           const design = controlsFor('tables.design.', ['rct', 'observational', 'diagnostic'], 'rct');
-          const params = heading('tables.sof.params', field('tables.sof.model', model), field('tables.sof.ci', ci), field('tables.sof.design', design));
+          const settings = fields(field('tables.sof.model', model), field('tables.sof.ci', ci), field('tables.sof.design', design));
+          const params = heading('tables.sof.params', settings);
           let rob;
           if (privileged) {
             try {
@@ -243,7 +246,8 @@
               if (!registry.available) throw Error(RFServerMessage(registry.message_key, registry.params) || T('appraisal.registry_unavailable'));
               rob = toolsSelect(registry.tools, '', 'tables.rob_none');
               rob.addEventListener('change', changed);
-              params.append(field(componentLabel('rob'), rob), tr('p', 'tables.rob_tool_hint', { class: 'hint' }));
+              settings.append(field(componentLabel('rob'), rob));
+              params.append(tr('p', 'tables.rob_tool_hint', { class: 'hint' }));
             } catch (error) {
               params.append(raw('p', resultMessage(error, 'appraisal.registry_unavailable')));
             }
@@ -252,7 +256,7 @@
           [model, ci, design].forEach(control => control.addEventListener('change', changed));
           payload = () => ({ outcomes: chosen.values(), model: model.value, ci_method: ci.value,
             initial_design: design.value, ...(rob?.value ? { rob_tool: rob.value } : {}), format: format.value });
-          body.append(heading('tables.sof.outcomes', chosen.list), params);
+          body.append(heading('tables.sof.outcomes', chosen.list), params, fields(formatField));
           preview.replaceChildren(sofPreview(baseline, payload(), wizard, privileged));
         } else {
           const scheme = await api(taskApi() + '/coding/scheme' + scrQ());
@@ -274,11 +278,11 @@
           const sort = controlsFor('tables.sort.', ['import_order', 'author_year'], 'import_order');
           [inclusion, sort].forEach(control => control.addEventListener('change', changed));
           payload = () => ({ fields: chosen.values(), inclusion: inclusion.value, sort: sort.value, format: format.value });
-          body.append(heading('tables.table1.fields', chosen.list), field('tables.table1.inclusion', inclusion),
-            field('tables.table1.sort', sort));
+          body.append(heading('tables.table1.fields', chosen.list),
+            fields(field('tables.table1.inclusion', inclusion), field('tables.table1.sort', sort), formatField));
         }
         status.textContent = '';
-        body.append(field(formatKey, format), node('div', null, { class: 'row' }, previewButton, downloadButton), status, preview);
+        body.append(node('div', null, { class: 'row rf-tables-actions' }, previewButton, downloadButton), status, preview);
       } catch (error) {
         if (!valid()) return;
         status.textContent = resultMessage(error, 'tables.unavailable');

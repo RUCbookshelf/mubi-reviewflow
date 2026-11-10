@@ -29,15 +29,22 @@
 
   document.head.append(el('style', {text:`
     #rf-retraction-tools[hidden],#rf-retraction-start[hidden],.rf-retraction-slot[hidden]{display:none!important}
-    #rf-retraction-tools{flex-wrap:wrap;gap:8px}
-    .rf-retraction-badge{display:inline-flex;max-width:100%;align-items:center;white-space:normal;
-      margin-inline:4px;gap:4px;border:1px solid var(--border);border-radius:999px;padding:1px 8px;
-      color:var(--muted);font-size:.75rem}
-    .rf-retraction-badge[data-severity="3"]{background:#fbe1dc;color:#8d2c22;border-color:#a73f32}
-    .rf-retraction-badge[data-severity="2"]{background:#ffebd6;color:#7a420d;border-color:#996027}
-    .rf-retraction-badge[data-severity="1"]{background:#ecedee;color:#3e454a;border-color:#8e969d}
-    #rf-retraction-dialog .rf-retraction-history{max-height:13rem;overflow:auto}
-    #rf-retraction-dialog .rf-retraction-history li{margin:4px 0}
+    #rf-retraction-tools .hint{margin:0}
+    .rf-retraction-badge{--retraction-tone:var(--muted);display:inline-flex;max-width:100%;align-items:baseline;
+      white-space:normal;overflow-wrap:anywhere;margin-inline:4px;gap:5px;border-radius:999px;padding:2px 8px;
+      color:var(--retraction-tone);font-size:.75rem;line-height:1.4;
+      border:1px solid color-mix(in srgb,var(--retraction-tone) 24%,var(--border));
+      background:color-mix(in srgb,var(--retraction-tone) 8%,var(--surface))}
+    .rf-retraction-badge[data-severity="3"]{--retraction-tone:color-mix(in srgb,var(--danger) 78%,var(--ink))}
+    .rf-retraction-badge[data-severity="2"]{--retraction-tone:#85552E}
+    [data-theme=dark] .rf-retraction-badge[data-severity="2"]{--retraction-tone:#EBBA88}
+    a.rf-retraction-badge:hover{text-decoration:underline;text-underline-offset:2px}
+    a.rf-retraction-badge:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+    #rf-retraction-dialog .rf-retraction-controls:not([hidden]){display:grid;gap:8px}
+    #rf-retraction-dialog .rf-retraction-history{display:grid;gap:6px;padding-inline-start:0;list-style:none}
+    #rf-retraction-dialog .rf-retraction-history li{display:flex;flex-wrap:wrap;gap:4px 8px;
+      align-items:baseline;margin:0}
+    #rf-retraction-dialog .rf-retraction-history li+li{padding-top:6px;border-top:1px solid var(--border)}
   `}));
 
   function findingType(type) {
@@ -63,11 +70,12 @@
     if (item.source_title) title.push(String(item.source_title));
     const attrs = {
       class:'rf-retraction-badge', title:title.join('\n'),
-      'data-severity':item.severity === 3 ? '3' : item.severity === 2 ? '2' : '1',
-      text:'⚠ ' + findingType(item.type)
+      'data-severity':item.severity === 3 ? '3' : item.severity === 2 ? '2' : '1'
     };
     const url = noticeLink(item.url);
-    slot.append(url ? el('a', {...attrs, href:url, target:'_blank', rel:'noopener noreferrer'}) : el('span', attrs));
+    const badge = url ? el('a', {...attrs, href:url, target:'_blank', rel:'noopener noreferrer'}) : el('span', attrs);
+    badge.append(el('span', {'aria-hidden':'true', text:'⚠\uFE0E'}), el('span', {text:findingType(item.type)}));
+    slot.append(badge);
   }
 
   function badgeSlot(articleKey) {
@@ -156,11 +164,11 @@
     const active = () => ui.active && scopeKey === context();
     const scopeSelect = el('select', {class:'input', id:'rf-retraction-scope', 'aria-label':t('scope_label')},
       scopes.map(value => n('option', 'scope_' + value, null, {value})));
-    const controls = el('div', {hidden:''}, n('label', 'scope_label', null, {for:scopeSelect.id}), scopeSelect);
-    const results = el('div', {'aria-live':'polite'});
+    const controls = el('div', {class:'rf-retraction-controls', hidden:''}, n('label', 'scope_label', null, {for:scopeSelect.id}), scopeSelect);
+    const results = el('div', {class:'rf-task-section', 'aria-live':'polite'});
     const runsBox = el('ul', {class:'rf-task-list rf-retraction-history'});
     const meter = el('progress', {'aria-label':t('panel_title'), value:'0', max:'1', hidden:''});
-    const progress = el('p', {role:'status'});
+    const progress = el('p', {...hint, role:'status'});
     const actions = el('div', {class:'row'});
     const begin = b('start_button', () => drive({scope:scopeSelect.value}), {id:'rf-retraction-begin', class:'btn b-inc'});
     const resume = b('resume_button', () => {
@@ -170,11 +178,11 @@
       if (remaining) void drive({scope:remaining.scope, offset:remaining.offset});
     }, {id:'rf-retraction-next', hidden:''});
     const reload = button('Retry / refresh', () => void loadRuns(true), {hidden:''});
-    const historySection = el('section', {}, n('h3', 'runs_title'), runsBox);
+    const historySection = el('section', {class:'rf-task-section'}, n('h3', 'runs_title'), runsBox);
     actions.append(begin, resume, next);
     controls.append(actions);
     ui.content.append(controls, meter, progress, results, historySection, reload,
-      ...disclosures.map(name => n('p', name, null, hint)));
+      el('div', {class:'rf-task-section'}, disclosures.map(name => n('p', name, null, hint))));
 
     let continuation = null;
     let remaining = null;
@@ -245,7 +253,7 @@
           ? {run_id:activeRunId, ...(activeRun ? {scope:activeRun.scope} : {})} : null;
         runsBox.replaceChildren(...(list.runs || []).map(run => el('li', {},
           b('run_entry', () => loadDetail(run.run_id), {class:'btn b-out sm'}),
-          literal('span', ' · ' + (run.started_at || '')))));
+          literal('span', run.started_at, hint))));
         for (const [index, run] of (list.runs || []).entries()) {
           const rowButton = runsBox.children[index]?.querySelector('button');
           rowButton.textContent = t('run_entry', {id:run.run_id, scope:t('scope_' + run.scope)});

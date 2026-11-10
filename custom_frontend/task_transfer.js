@@ -14,6 +14,18 @@
   const hint = {class:'hint'};
   const taskPath = id => '/api/tasks/' + encodeURIComponent(id);
 
+  document.head.append(el('style', {text: `
+    #rf-task-transfer-exports>.row{margin:0}
+    #rf-task-transfer-exports>p:empty{display:none}
+    #rf-task-transfer-exports>p{margin:8px 0 0}
+    #rf-task-transfer-dialog .rf-task-transfer-field{display:grid;gap:6px}
+    #rf-task-transfer-dialog .rf-task-transfer-check{display:flex;align-items:baseline;gap:8px;cursor:pointer}
+    #rf-task-transfer-dialog input[type=checkbox]{accent-color:var(--primary)}
+    #rf-task-transfer-dialog input[type=file]::file-selector-button{font:inherit;
+      margin-inline-end:8px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;
+      color:var(--primary-dark);background:var(--primary-light);cursor:pointer}
+  `}));
+
   const exportPage = document.querySelector('.page[data-p=export]');
   const taskPanel = document.getElementById('wf-panel-tasks') || document.querySelector('.page[data-p=home]');
   const taskGrid = document.getElementById('hubGrid');
@@ -113,8 +125,8 @@
       scopes.map(value => copy('option', 'archive.scope.' + value, null, {value})));
     const include = el('input', {type:'checkbox'});
     include.checked = true;
-    const preflight = el('div');
-    const summary = el('div', {role:'status'});
+    const preflight = el('div', {class:'rf-task-section'});
+    const summary = el('div', {class:'rf-task-section', role:'status'});
     const retryNoPdfs = entry('package.retryWithoutPdfs', () => {
       include.checked = false;
       void loadPreflight(true);
@@ -127,9 +139,9 @@
     ui.actions.prepend(action, retryNoPdfs, retryPreflight);
     ui.content.append(literal('p', S.task.name),
       archive
-        ? el('div', {}, el('label', {for:scope.id}, t('archive.scope.label')), scope,
+        ? el('div', {class:'rf-task-transfer-field'}, el('label', {for:scope.id}, t('archive.scope.label')), scope,
           copy('p', 'archive.nameExample', {name:'AB12CD34-王-2022.pdf'}, hint))
-        : el('label', {}, include, ' ', t('package.includePdfs')),
+        : el('label', {class:'rf-task-transfer-check'}, include, el('span', {text:t('package.includePdfs')})),
       preflight, summary);
 
     let limits = null;
@@ -231,7 +243,7 @@
     const active = () => ui.active && auth === AUTH_TOKEN;
     const input = el('input', {type:'file', accept:'.zip,application/zip', class:'input',
       'aria-label':t('import.entry')});
-    const previewBox = el('div');
+    const previewBox = el('div', {class:'rf-task-section'});
     const previewButton = entry('import.preview', preview, 'rf-package-preview');
     const confirmButton = entry('import.confirm', confirm, 'rf-package-confirm');
     confirmButton.className = 'btn b-inc';

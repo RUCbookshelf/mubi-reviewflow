@@ -37,7 +37,7 @@
       }));
       heterogeneity = el('p', { class:'hint', text:T('研究间方差：{0}。研究间相关：{1}。{2}',variances,correlations.join('; '),result.fit?.boundary ? T('边界解，谨慎解读相关系数。') : '') });
     }
-    const audit = el('details', {}, el('summary', { text:T('查看协方差与输入快照') }),
+    const audit = el('details', { class:'rf-plain-disclosure' }, el('summary', { text:T('查看协方差与输入快照') }),
       el('pre', { class:'hint', text:JSON.stringify({ between_study_covariance:result.between_study_covariance,
         fit:result.fit, coefficient_covariance:result.coefficient_covariance,
         input_snapshot:result.input_snapshot, limitations:result.limitations }, null, 2) }));

@@ -255,7 +255,7 @@
           shown++;
           const value = String(suggestions[field]);
           const line = mk('div', null, { class: 'row', style: 'gap:6px;align-items:flex-start;margin:4px 0' });
-          line.append(mk('span', field + ': ' + value.slice(0, 300), { class: 'hint', style: 'flex:1;word-break:break-all' }));
+          line.append(mk('span', field + ': ' + value.slice(0, 300), { class: 'hint', style: 'flex:1;overflow-wrap:anywhere' }));
           line.append(btn('复制', async () => {
             try {
               if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(value);
@@ -278,7 +278,7 @@
       const article = currentArticle();
       if (!article || !article.zotero_key) return;
       const row = mk('div', null, { class: 'row', id: 'rfPdfFetchRow', style: 'gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap' });
-      const status = mk('span', '', { class: 'hint', role: 'status', style: 'min-width:0;word-break:break-word' });
+      const status = mk('span', '', { class: 'hint', role: 'status', style: 'min-width:0;overflow-wrap:anywhere' });
       const hasDoi = !!(article.doi && String(article.doi).trim());
       const fetchButton = btn('获取全文', () => fetchOne(status));
       if (!hasDoi) {
@@ -317,7 +317,7 @@
          本行译文（与后端同口径）。 */
       const endpoints = Array.isArray(data.outbound_endpoints) ? data.outbound_endpoints.join(' · ') : '';
       if (endpoints) {
-        card.append(mk('p', T('出站访问范围：{0}', endpoints), { class: 'hint', style: 'word-break:break-all' }));
+        card.append(mk('p', T('出站访问范围：{0}', endpoints), { class: 'hint', style: 'overflow-wrap:anywhere' }));
         const lang = (typeof document !== 'undefined' && document.documentElement
           && document.documentElement.lang) || '';
         const note = (typeof data.pdf_hosts_note === 'string' && data.pdf_hosts_note.trim()
@@ -361,12 +361,15 @@
           save.disabled = false;
         }
       });
+      const field = (label, control) => mk('label', null, { style: 'display:grid;gap:4px' },
+        mk('span', T(label), { class: 'hint' }), control);
       card.append(
         mk('div', null, { class: 'row', style: 'gap:8px;align-items:center;margin:4px 0' },
           mk('label', null, { class: 'lbl' }, enabled, document.createTextNode(' ' + T('启用 PDF 自动获取')))),
-        mk('div', null, { style: 'margin:4px 0' }, mk('label', T('联系 email（Unpaywall 要求，非密钥）'), { class: 'lbl' }), email),
-        mk('div', null, { style: 'margin:4px 0' }, mk('label', T('Unpaywall 端点（可自托管）'), { class: 'lbl' }), unpaywallBase),
-        mk('div', null, { style: 'margin:4px 0' }, mk('label', T('Crossref 端点（可自托管）'), { class: 'lbl' }), crossrefBase),
+        mk('div', null, { style: 'display:grid;gap:8px;margin:10px 0;max-width:560px' },
+          field('联系 email（Unpaywall 要求，非密钥）', email),
+          field('Unpaywall 端点（可自托管）', unpaywallBase),
+          field('Crossref 端点（可自托管）', crossrefBase)),
         save, formStatus);
 
       /* ---- 批量入口（显式手动触发；启用后才渲染） ---- */

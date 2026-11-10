@@ -2,11 +2,16 @@
 (function () {
   'use strict';
   const style = el('style', {text: [
-    '.rf-criteria-toggle{margin:0;align-self:flex-start}',
-    '.rf-criteria-view{position:fixed;z-index:40;right:12px;top:76px;width:min(320px,calc(100vw - 24px));max-height:calc(100dvh - 96px);overflow:auto;overscroll-behavior:contain;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 12px 32px #0003}',
-    '.rf-criteria-view h3,.rf-criteria-view h4{margin:0 0 6px}.rf-criteria-view h4{margin-top:12px}.rf-criteria-view dd{margin-inline-start:12px}.rf-criteria-view li,.rf-criteria-view dd{margin-block-end:5px}',
-    '.rf-criteria-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}',
-    '@media(max-width:640px){.rf-criteria-view{inset:auto 0 0;width:100%;max-height:72dvh;margin:0;border-radius:16px 16px 0 0;padding-bottom:max(14px,env(safe-area-inset-bottom));z-index:85}}',
+    '.rf-criteria-toggle{margin:0;white-space:normal}',
+    '.rf-criteria-toggle[aria-expanded=true]{background:var(--primary-light);color:var(--primary-dark)}',
+    '.rf-criteria-view{position:fixed;z-index:40;inset:76px 12px auto auto;width:min(340px,calc(100vw - 24px));max-height:calc(100dvh - 96px);margin:0;padding:0;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere;box-shadow:var(--shadow)}',
+    '.rf-criteria-heading{position:sticky;inset-block-start:0;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface)}',
+    '.rf-criteria-heading h3{margin:0}',
+    '.rf-criteria-content{padding:12px 16px 16px;white-space:pre-wrap}',
+    '.rf-criteria-content h4{margin:12px 0 5px}.rf-criteria-content h4:first-child{margin-top:0}',
+    '.rf-criteria-content ul{margin:0;padding-inline-start:18px}.rf-criteria-content dd{margin-inline-start:12px}.rf-criteria-content :is(li,dd){margin-block-end:5px}',
+    '@media(max-width:760px){#appMain .rf-mobile-screen-actions:has(.rf-criteria-panel:not([hidden])){flex-wrap:wrap}.rf-criteria-view{inset:auto 0 0;width:100%;max-height:72dvh;border-radius:16px 16px 0 0;z-index:85}.rf-criteria-content{padding-bottom:max(16px,env(safe-area-inset-bottom))}}',
+    '@media(prefers-reduced-motion:no-preference){.rf-criteria-view:not([hidden]){animation:rf-criteria-enter 140ms ease-out}@keyframes rf-criteria-enter{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}}',
   ].join('\n')});
   document.head.append(style);
   let nextId = 0;
@@ -64,15 +69,16 @@
     const surface = options.training ? 'training' : options.surface || 'screen';
     const id = 'rf-criteria-view-' + (++nextId);
     const button = el('button', {type: 'button', class: 'btn b-out rf-criteria-toggle', 'aria-controls': id});
-    const close = el('button', {type: 'button', class: 'btn b-out', text: '×'});
+    const close = el('button', {type: 'button', class: 'btn b-out sm'});
     const title = el('h3', {id: id + '-heading'});
-    const content = el('div', {'aria-live': 'polite'});
+    const content = el('div', {class: 'rf-criteria-content', 'aria-live': 'polite'});
     const view = el('aside', {id, class: 'card rf-criteria-view', 'aria-labelledby': title.id, hidden: ''},
       el('div', {class: 'rf-criteria-heading'}, title, close), content);
     const root = el('div', {class: 'rf-criteria-panel'}, button, view);
     let request = 0;
     function syncLabels() {
       button.textContent = title.textContent = T('criteria_panel.title');
+      close.textContent = T('关闭');
       button.setAttribute('aria-expanded', String(!view.hidden));
       button.setAttribute('aria-label', T(view.hidden ? 'criteria_panel.expand' : 'criteria_panel.collapse'));
       close.setAttribute('aria-label', T('criteria_panel.collapse'));

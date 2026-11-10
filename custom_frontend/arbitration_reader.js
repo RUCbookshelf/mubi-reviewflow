@@ -5,6 +5,16 @@
   const launch = document.getElementById('mergeSession');
   if (!launch) return;
 
+  document.head.append(el('style', {text:[
+    '#rf-arbitration-reader progress{display:block;width:100%;height:6px;margin:12px 0 5px;appearance:none;accent-color:var(--primary);border:0;border-radius:8px;background:var(--primary-light);overflow:hidden}',
+    '#rf-arbitration-reader progress::-webkit-progress-bar{background:var(--primary-light)}',
+    '#rf-arbitration-reader progress::-webkit-progress-value{background:var(--primary);border-radius:8px}',
+    '#rf-arbitration-reader progress::-moz-progress-bar{background:var(--primary);border-radius:8px}',
+    '#rf-arbitration-card{overflow-wrap:anywhere}',
+    '#rf-arbitration-abstract-toggle{margin-block:4px}',
+    '#rf-arbitration-reveal{margin:14px 0 0;padding:12px 0 0;border-top:1px solid var(--border)}',
+  ].join('\n')}));
+
   const node = (tag, source, attrs = {}, ...children) =>
     el(tag, {...attrs, text: source == null ? null : T(source)}, children);
   const literal = (tag, value, attrs = {}) =>
@@ -159,7 +169,7 @@
   function renderReveal(session, item, card) {
     const reveal = session.reveal;
     if (item.status !== 'decided' || reveal?.zotero_key !== item.zotero_key || session.editing) return;
-    const panel = el('section', {class:'card', id:'rf-arbitration-reveal'},
+    const panel = el('section', {id:'rf-arbitration-reveal'},
       node('h3', '原筛选决定'),
       literal('p', [decisionLabel(reveal.decision), reveal.reason, reveal.decided_at].filter(Boolean).join(' · ')),
       el('ul', {}, (reveal.screeners || []).map(screener =>
@@ -189,6 +199,7 @@
         session.dialog.querySelector('#rf-arbitration-abstract-toggle')?.focus();
       });
       toggle.id = 'rf-arbitration-abstract-toggle';
+      toggle.classList.add('sm');
       toggle.setAttribute('aria-expanded', String(session.expanded));
       card.append(abstract, toggle);
     }
@@ -271,7 +282,7 @@
     const {decided, total, remaining} = data.summary;
     session.body.append(el('progress', {max:Math.max(total, 1), value:decided,
       'aria-label':T('裁决进度 {0} / {1} · 剩余 {2}', decided, total, remaining)}),
-      el('p', {role:'status', text:T('裁决进度 {0} / {1} · 剩余 {2}', decided, total, remaining)}));
+      el('p', {class:'hint', role:'status', text:T('裁决进度 {0} / {1} · 剩余 {2}', decided, total, remaining)}));
     const item = currentItem(session);
     if (item) {
       const index = data.items.indexOf(item);

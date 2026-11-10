@@ -48,6 +48,9 @@
       '.rf-lr-record{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-top:8px;background:var(--bg)}',
       '.rf-lr-record .head{display:flex;flex-wrap:wrap;gap:6px;align-items:center}',
       '.rf-lr-record pre{margin:6px 0 0;font-size:.76rem;white-space:pre-wrap;word-break:break-word}',
+      '.rf-lr-eric-output:not(:empty){margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--muted);font-size:.82rem;overflow-wrap:anywhere}',
+      '.rf-lr-eric-output ul{padding-inline-start:1.3em;margin:6px 0}',
+      '.rf-lr-eric-output li{margin:4px 0}',
       '.rf-living .input{font-size:.8rem;padding:4px 8px}',
       '.rf-lr-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px}',
       '.rf-lr-form label{display:flex;flex-direction:column;gap:3px;font-size:.75rem}',
@@ -289,7 +292,7 @@
         const id = recordIdentity(rec);
         const progress = ericProgress.get(id);
         const preview = ericPreviews.get(id);
-        const output = el('div', { role: 'status' });
+        const output = el('div', { role: 'status', class: isEric ? 'rf-lr-eric-output' : '' });
         const head = el('div', { class: 'head' },
           el('span', { class: 'chip', text: T(DB_LABELS[db] || db) }),
           !isEric && rec.last_run_date ? el('span', { class: 'chip', text: T('上次检索：{0}', String(rec.last_run_date)) }) : null,
