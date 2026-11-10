@@ -17,7 +17,7 @@
   const alValues=()=>Object.fromEntries(alIds.map(id=>[id,$('#'+id).value]));
   const alSignature=values=>JSON.stringify(alIds.map(id=>{const value=values[id];return id!=='alStrategy'&&String(value).trim()!==''&&Number.isFinite(Number(value))?Number(value):value;}));
   const syncALDirty=()=>{alDirty=alBaseline!==null&&alSignature(alValues())!==alSignature(alBaseline);return alDirty;};
-  const draftSignature=value=>JSON.stringify({stages:stages.map(stage=>{const s=value?.stages?.[stage]||{};return[s.mode,[...(s.source_ids||[])].sort(),s.show_maybe];}),evidence:[...(value?.evidence_required_field_ids||[])].sort()});
+  const draftSignature=value=>JSON.stringify({stages:stages.map(stage=>{const s=value?.stages?.[stage]||{};return[s.mode,[...(s.source_ids||[])].sort()];}),evidence:[...(value?.evidence_required_field_ids||[])].sort()});
   const syncSettingsDirty=()=>{settingsDirty=!!draft&&draftBaseline!==null&&draftSignature(draft)!==draftBaseline;return settingsDirty;};
   // Catalogue counters and the mutation version are not editable policy changes.
   const policySignature=value=>JSON.stringify({draft:draftSignature(value),can_manage:value?.can_manage,task_kind:value?.task_kind,sources:(value?.sources||[]).map(s=>[s.id,s.active]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))),fields:value?.evidence_fields,issues:value?.mapping_issues,submission:value?.submission_evidence?.available});
@@ -42,12 +42,6 @@
   W.order = () => order;
   W.selectedSource = stage => selected[stage];
   W.activeItem = stage => items[stage];
-  W.maybe = stage => settings?.stages?.[stage]?.show_maybe !== false;
-  /* 「暂不确定」的可用性 = 任务级 show_maybe && 本筛选员对该文献第一轮（未进过
-     任一复筛轮次快照）。maybe_allowed 由初筛 work_item 下发；全文恒为 true，
-     全文按钮行为不变。 */
-  W.maybeAllowed = stage => stage !== 'screen' || items[stage]?.maybe_allowed !== false;
-  W.maybeAvailable = stage => W.maybe(stage) && W.maybeAllowed(stage);
   W.settingsDirty = () => syncSettingsDirty() || libraryDirty || syncALDirty();
   const decisionBaselines={};
   const reasonSignature=stage=>{
@@ -123,7 +117,7 @@
     finally{autoReload=null;for(const [control,disabled] of contextControls)control.disabled=disabled;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
   }
 
-  const reasonLabels={article_pending_round:'This article is in a repeat screening round. Finish the round or proceed to full-text screening first.',task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',maybe_disabled:'Maybe is disabled for this stage.',maybe_first_round_only:'本轮请选择纳入或排除，暂不确定只在第一轮提供。',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.',missing_evidence_file:'The saved evidence image is no longer in the data directory, so this save cannot be undone.'};
+  const reasonLabels={task_read_only:'This item is read-only under the current workflow policy.',stage_paused:'This stage is paused.',article_not_eligible:'This article is not eligible for this stage.',article_outside_scope:'This article is outside the permitted sources.',requirement_mapping_gap:'Evidence field mapping needs owner review. Existing values are preserved.',coding_submission_access_denied:'You do not have permission for this action.',saved_state_changed:'The current saved state has changed. Reload before retrying.',unlinked_subject:'This history record cannot be linked to the current task.',no_linked_latest_save:'There is no linked latest save to undo.',workflow_version_conflict:'Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.',import_catalogue_changed:'The current saved state has changed. Reload before retrying.',missing_evidence_file:'The saved evidence image is no longer in the data directory, so this save cannot be undone.'};
   W.reason = value => T(reasonLabels[value] || value || '');
   /* F65（r10-u1，前端半步）：403 文案此前是「已译的中文句 + 空格 + 后端英文原串」，
      中英混排。这里把两段都过 T()（词典按中英双键索引，后端英文原串命中即译全）；
@@ -133,8 +127,9 @@
   W.errorText = error => {
     /* R2：带 message_key 的契约错误直接渲染对应引导文案（十语言），
        不再拼 403 通用句 + 后端原文。 */
-    const keyed = error.messageKey ? window.RFServerMessage?.(error.messageKey) : null;
+    const keyed = error.messageKey ? window.RFServerMessage?.(error.messageKey, error.params) : null;
     if (keyed) return keyed;
+    if (error.code === 'maybe_disabled') return RFServerMessage('workflow.maybe_disabled');
     if (error.code && reasonLabels[error.code]) return W.reason(error.code);
     if (!error.status) return T(error.message);
     const base = T(error.status === 403
@@ -148,7 +143,7 @@
   W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Source not recorded') : source.name;
   W.error = error => {
     toast(W.errorText(error), 'warn');
-    if (error.status === 409 && (error.workflowSettings || ['workflow_version_conflict','stage_paused','article_outside_scope','maybe_disabled','maybe_first_round_only'].includes(error.code))) run(() => W.refresh('conflict'));
+    if (error.status === 409 && (error.workflowSettings || ['workflow_version_conflict','stage_paused','article_outside_scope'].includes(error.code))) run(() => W.refresh('conflict'));
   };
   const home = document.querySelector('section.page[data-p="home"]');
   const panels = {};
@@ -214,14 +209,14 @@
     teamBox.append(n('h3','Team Management',{id:'wf-team-title'}));
     const existingTeam=document.getElementById('teamPanel');
     if(existingTeam){existingTeam.classList.remove('card');teamBox.append(existingTeam);}
-    policy.classList.remove('card');teamBox.append(policy,n('section',null,{id:'wf-team-decisions'}));
+    policy.classList.remove('card');teamBox.append(policy);
     panels.tasks.append(teamBox);
-    panels.screening.append(n('div',null,{id:'wf-personal-maybe',class:'card'}),n('section',null,{id:'wf-reasons',class:'card'}));
+    panels.screening.append(n('section',null,{id:'wf-reasons',class:'card'}));
     panels.coding.append(n('section',null,{id:'wf-requirements',class:'card'}));
     teamBox.append(n('section',null,{id:'wf-sources'}));
     const savebar=n('div',null,{class:'wf-settings-save'});
     savebar.append(button('Save current task workflow settings',()=>run(W.saveSettings)),button('Reload current task workflow settings',()=>run(async()=>{if(await W.guard()) {settingsDirty=false; await W.refresh('reload');}})),n('span',null,{id:'wf-settings-notice',role:'status'}));
-    home.append(n('p',"This button saves this task\u2019s stage sources, Maybe options and evidence requirements. Reasons, source names and Machine Learning settings have their own Save buttons. Display preferences save automatically in this browser.",{class:'hint'}),savebar);
+    home.append(n('p',"此按钮保存当前任务的阶段来源与证据要求。排除理由、来源名称和机器学习设置分别保存。显示偏好自动保存在本浏览器。",{class:'hint'}),savebar);
     const recovery=n('div',null,{id:'wf-policy-recovery',class:'card',hidden:'',role:'status'});
     recovery.append(n('p','Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'),button('Review current policy',()=>{const details=n('dialog',null,{class:'wf-source-dialog','aria-label':T('Current workflow policy')});details.append(n('h3','Current workflow policy'),literal('pre',JSON.stringify(settings,null,2)),button('Apply current policy version to retained draft',()=>run(async()=>{if(draft)draft.version=settings.version;await window.WorkflowEvidence?.revalidate();if(['screen','fulltext'].includes(S.page)){const stage=S.page,key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:curFt()?.zotero_key;if(key){await W.item(stage,key);W.decorateStage(stage);}}details.close();details.remove();recovery.hidden=true;})),button('Stay',()=>{details.close();details.remove();}));document.body.append(details);details.showModal();}));
     document.querySelector('#appMain').prepend(recovery);
@@ -298,10 +293,6 @@
     $('#wf-team-title').textContent=T(settings.task_kind==='team'?'Team Management':'Task workflow');
     $('#teamTitle').textContent=T('Members & progress');
     const host=$('#wf-policy');host.replaceChildren(n('h4','Sources available by stage'),n('p','Imported sources are discovered automatically. Selected sources limits work; Paused retains read-only access.',{class:'hint'}));
-    const personal=$('#wf-personal-maybe'),team=$('#wf-team-decisions');
-    const decisions=settings.task_kind==='personal'?personal:team;
-    personal.replaceChildren();team.replaceChildren();team.hidden=settings.task_kind==='personal';
-    decisions.append(n('h4','Screening decision options'));
     for(const stage of stages) {
       const row=n('fieldset',null,{class:'wf-policy-stage'});row.append(n('legend',stage==='screen'?'Title-and-abstract screening':stage==='fulltext'?'Full-text screening':'Coding'));
       const select=n('select',null,{class:'input','aria-label':T('Permitted sources by stage')});
@@ -315,14 +306,7 @@
       }
       sourceList.hidden=select.value!=='selected';select.addEventListener('change',()=>{draft.stages[stage].mode=select.value;sourceList.hidden=select.value!=='selected';settingsDirty=true;});
       row.append(select,sourceList);host.append(row);
-      if(stage!=='coding') {
-        const check=n('input',null,{type:'checkbox'});check.checked=draft.stages[stage].show_maybe;check.disabled=!settings.can_manage;
-        check.addEventListener('change',()=>{draft.stages[stage].show_maybe=check.checked;settingsDirty=true;});
-        decisions.append(el('label',{class:'wf-field-option'},check,n('span',stage==='screen'?'Allow uncertain decisions during title-and-abstract screening':'Allow deferred eligibility decisions during full-text assessment')),
-          n('p',stage==='screen'?'Include and Needs review records proceed to full-text assessment.':'Needs review leaves eligibility unresolved; it does not qualify a report for coding.',{class:'hint'}));
-      }
     }
-    if(settings.task_kind!=='personal')personal.append(n('p','The owner manages screening decision options in Tasks & team.'));
     const fields=$('#wf-requirements');fields.replaceChildren(n('h3','Coding dimensions requiring evidence'),n('p',"Select dimensions that require evidence, not required coding values. Nonblank notes or one image satisfy the evidence requirement. Missing evidence can be saved as a draft but does not count as complete.",{class:'hint'}));
     const known=new Set();
     for(const field of settings.evidence_fields||[]) {
@@ -468,7 +452,7 @@
     const select=n('select',null,{class:'input','aria-label':T('Source scope')});select.dataset.stage=stage;
     select.addEventListener('change',()=>run(async()=>{const value=select.value;select.value=selected[stage];if(!await W.guard())return;selected[stage]=value;await W.reload(stage);}));
     host.append(n('label','Source scope'),select,n('span',null,{class:'wf-scope-progress',role:'status'}),button('Retry / refresh',()=>run(async()=>{if(await W.guard())await W.reload(stage);})),n('span',null,{class:'wf-readonly',role:'status'}));
-    if(stage==='fulltext')host.append(n('span','Initial Include or Maybe decisions enter full-text screening.',{class:'hint'}));
+    if(stage==='fulltext')host.append(n('span','初筛纳入的文献进入复筛。',{class:'hint'}));
     page.insertBefore(host,page.querySelector('.al-mode')||page.children[1]||null);
     return host;
   }
@@ -489,11 +473,10 @@
         return W.queue(stage,{url,evidenceOnly,attempt:attempt+1});
       }
       queues[stage]=result;delete items[stage];delete readOnlyKeys[stage];
-      if(stage==='screen'){window.ScreeningRounds?.ingest(result);if(result.screening_round)selected[stage]=result.screening_round.source_id||'';}
       const select=host.querySelector('select');select.disabled=false;select.replaceChildren(n('option','All permitted sources',{value:''}));
       for(const id of result.allowed_sources||[]){const source=policy.sources.find(source=>source.id===id);if(source)select.append(el('option',{value:source.id,text:W.sourceLabel(source),translate:source.reserved?'yes':'no'}));}
       if(selected[stage]&&![...select.options].some(o=>o.value===selected[stage])){selected[stage]='';return W.queue(stage,{url,evidenceOnly,attempt});}
-      select.value=selected[stage];select.disabled=stage==='screen'&&!!result.screening_round;
+      select.value=selected[stage];
       const p=result.scope_progress;host.querySelector('.wf-scope-progress').textContent=T(evidenceOnly?'Evidence scope: {0} / {1} requirements complete':'Scope: {0} / {1} complete',p.completed,p.total);
       host.querySelector('.wf-readonly').textContent=result.paused?T('Paused — saved work is read-only.'):'';
       W.clearRecovery();
@@ -518,22 +501,16 @@
   W.decorateStage=stage=>{
     const item=items[stage],key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:stage==='fulltext'?curFt()?.zotero_key:S.cbQueue[S.cbIdx]?.zotero_key;
     const writable=item && item.key===key&&item.writable&&settings?.stages?.[stage]?.mode!=='paused'&&item.policy_version===settings?.version;
-    const ids=stage==='screen'?['btnInc','btnMay','btnExc']:stage==='fulltext'?['ftInc','ftMay','ftExc']:['cbSave'];
+    const ids=stage==='screen'?['btnInc','btnExc']:stage==='fulltext'?['ftInc','ftExc']:['cbSave'];
     for(const id of ids){const b=$('#'+id);if(b)b.disabled=!writable;}
-    const maybe=$(stage==='screen'?'#btnMay':'#ftMay');if(stage!=='coding'&&maybe){const available=W.maybeAvailable(stage);maybe.hidden=!available;maybe.disabled=!writable||!available;}
     const notice=tools(stage).querySelector('.wf-readonly');notice.replaceChildren();if(item && item.key===key&&!item.writable)notice.append(n('span','Read-only: current policy or source scope does not allow saving.'),document.createTextNode(' '),n('span',W.reason(item.reason)));
     if(stage!=='coding')W.decorateReasons(stage);
   };
   W.canSave=(stage,decision)=>{
     if(autoReload)return false;
+    if(decision==='maybe'&&stage!=='coding'){toast(RFServerMessage('workflow.maybe_disabled'),'warn');return false;}
     const item=items[stage],key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:stage==='fulltext'?curFt()?.zotero_key:S.cbQueue[S.cbIdx]?.zotero_key;
-    /* 初筛「暂不确定」的两种不可用各有说明，不套「只读」那句：
-       ① 任务关闭了该阶段 maybe；② 该文献已进过本人复筛轮次。
-       全文（fulltext）不走这两条，保持原有提示与行为完全不变。 */
     if(!item||item.key!==key||!item.writable||settings?.stages?.[stage]?.mode==='paused'||item.policy_version!==settings?.version){toast(T('This item is read-only under the current workflow policy.'),'warn');return false;}
-    if(decision==='maybe'&&stage==='screen'&&!W.maybe('screen')){toast(W.reason('maybe_disabled'),'warn');return false;}
-    if(decision==='maybe'&&stage==='screen'&&!W.maybeAllowed('screen')){toast(W.reason('maybe_first_round_only'),'warn');return false;}
-    if(decision==='maybe'&&!W.maybe(stage)){toast(T('This item is read-only under the current workflow policy.'),'warn');return false;}
     return true;
   };
   W.reload=stage=>stage==='screen'?loadScreen():stage==='fulltext'?loadFulltext():loadBench();
@@ -570,6 +547,48 @@
     if(S.task)await loadScreen();
     $('#alModeImport').classList.toggle('on',mode==='import');
   };
+  let binaryResetSummary = null;
+  let binaryResetRequest = null;
+  function renderBinaryReset() {
+    const host = $('#wf-binary-reset');
+    if (!host) return;
+    const totals = binaryResetSummary?.totals;
+    const stage2 = totals ? totals.stage2_reset + totals.stage2_cascade_reset : 0;
+    host.hidden = !totals || (totals.stage1_reset === 0 && stage2 === 0);
+    host.replaceChildren();
+    if (host.hidden) return;
+    const affected = binaryResetSummary.members.filter(member =>
+      member.stage1_reset || member.stage2_reset || member.stage2_cascade_reset);
+    const available = affected.filter(member => member.backup?.exists);
+    const backups = available.map(member => el('li', {
+      'data-rf-verbatim':'', text:member.backup.name, title:member.backup.sha256
+    }));
+    host.append(el('p', {role:'status', text:RFServerMessage('workflow.binary_reset_summary', {
+      stage1:totals.stage1_reset, stage2
+    })}), n('p', T('可用的升级前备份：{0} / {1}。建议先完成筛选训练，再重新筛选。', available.length, affected.length)));
+    if (backups.length) host.append(el('ul', {}, backups));
+    if (window.PilotScreening) {
+      const training = button('打开筛选训练', () => window.PilotScreening.open());
+      training.id = 'wf-binary-reset-training';
+      host.append(training);
+    }
+  }
+  async function loadBinaryReset() {
+    if (binaryResetSummary || binaryResetRequest) return;
+    const request = api(taskApi()+'/binary-reset-summary');
+    binaryResetRequest = request;
+    try {
+      const result = await request;
+      if (binaryResetRequest !== request) return;
+      binaryResetSummary = result;
+      renderBinaryReset();
+    } catch (_) {
+      // The optional summary does not block opening a task.
+    } finally {
+      if (binaryResetRequest === request) binaryResetRequest = null;
+    }
+  }
+  document.addEventListener('reviewflow:language-changed', renderBinaryReset);
   async function refreshPolicy(reason='poll',reload=true){
     if(!S.task||!S.user)return;
     if(autoReload){if(reason!=='entry')deferredRefresh=true;return;}
@@ -578,12 +597,12 @@
     if(current!==scope()||ticket!==refreshTicket||(settings&&result.version<settings.version))return;
     const policyChanged=!!settings&&policySignature(settings)!==policySignature(result);
     pendingPolicyReview=pendingPolicyReview||policyChanged;
-    pendingPolicyRefresh=!!(pendingPolicyRefresh||policyChanged||(settings&&(settings.version!==result.version||JSON.stringify(settings.screening_round_marker)!==JSON.stringify(result.screening_round_marker))));
+    pendingPolicyRefresh=!!(pendingPolicyRefresh||policyChanged||((settings&&settings.version!==result.version)));
     const changed=pendingPolicyRefresh;
     if(draft&&!policyChanged)draft.version=result.version;
     settings=result;
-    for(const [stage,id] of [['screen','btnMay'],['fulltext','ftMay']]){const maybe=$('#'+id);if(maybe){const available=W.maybeAvailable(stage);maybe.hidden=!available;if(!available)maybe.disabled=true;}}
-    for(const [stage,ids] of [['screen',['btnInc','btnMay','btnExc']],['fulltext',['ftInc','ftMay','ftExc']]])if(result.stages[stage].mode==='paused')for(const id of ids){const control=$('#'+id);if(control)control.disabled=true;}
+    void loadBinaryReset();
+    for(const [stage,ids] of [['screen',['btnInc','btnExc']],['fulltext',['ftInc','ftExc']]])if(result.stages[stage].mode==='paused')for(const id of ids){const control=$('#'+id);if(control)control.disabled=true;}
     W.anyDirty(); // Refresh value-based dirty flags before rendering the policy.
     $('#wf-settings-notice').textContent=pendingPolicyReview&&policyDraftDirty()?T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'):'';
     if(pendingPolicyReview&&policyDraftDirty())$('#wf-policy-recovery').hidden=false;else W.clearRecovery();
@@ -644,8 +663,7 @@
       }
       if(settingsDirty){
         const fields=n('fieldset',null,{class:'wf-draft-fields wf-draft-policy'});fields.append(n('legend','Task workflow'));
-        const decisions=settings.task_kind==='personal'?'#wf-personal-maybe':'#wf-team-decisions';
-        for(const selector of ['#wf-policy',decisions,'#wf-requirements']){
+        for(const selector of ['#wf-policy','#wf-requirements']){
           const original=$(selector),copy=original.cloneNode(true);copy.removeAttribute('id');copy.hidden=false;
           const originals=original.querySelectorAll('input,select'),copies=copy.querySelectorAll('input,select');copies.forEach((input,index)=>bindEditor(originals[index],input));
           for(const stage of copy.querySelectorAll('.wf-policy-stage')){const mode=stage.querySelector('select'),sources=stage.querySelector('.wf-source-checks');mode.addEventListener('change',()=>sources.hidden=mode.value!=='selected');}
@@ -670,7 +688,7 @@
            用 n('p',null,{...},child) 会把子节点丢掉，草稿就等于没显示。 */
         fields.append(el('p',{class:'hf-reason-draft'},literal('strong',reasonDraft.title||''),el('br'),
           el('span',{text:reasonDraft.reason?T('所选理由：{0}',reasonDraft.reason):T('尚未选择理由')})));
-        fields.append(n('p','A reason is saved together with Include, Maybe or Exclude. The decision buttons are disabled while this dialog is open.',{class:'hint'}));
+        fields.append(n('p','理由随纳入或排除决定一同保存。关闭此对话框后即可选择决定。',{class:'hint'}));
         const clearDraft=button('Clear draft',()=>{
           W.clearReasonDraft(reasonDraft.stage);
           finish(true);
@@ -705,7 +723,7 @@
          （先按下 1/2/3 做决策，理由才会随决策保存；或「清空草稿」）。 */
       if(reasonDraftOnly){
         saveButton.disabled=true;
-        saveButton.title=T('理由需随「纳入 / 待定 / 排除」决策一起保存：请先做决策，或清空草稿');
+        saveButton.title=T('请先保存纳入或排除决定，或清空理由草稿。');
         saveButton.setAttribute('aria-disabled','true');
       }
       dialog.append(saveButton,button('Discard',()=>{settingsDirty=false;for(const field of dirtyFields)field.wfRestore?.();libraryDirty=false;dirtyFields.clear();if(alBaseline)for(const id of alIds)$('#'+id).value=alBaseline[id];alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);draftBaseline=null;policyEditor();W.clearRecovery();finish(true);}),button('Stay',()=>finish(false)));
@@ -726,11 +744,15 @@
   for(const id of alIds)for(const event of ['input','change'])$('#'+id).addEventListener(event,syncALDirty);
   for(const event of ['reviewflow:al-settings-loaded','reviewflow:al-settings-saved'])document.addEventListener(event,e=>{alBaseline=e.detail?.values||alValues();syncALDirty();});
   document.addEventListener('reviewflow:task-context-changed',()=>{
-    if(context===scope())return;context=scope();refreshTicket++;for(const stage of stages){tickets[stage]++;selected[stage]='';delete items[stage];delete queues[stage];delete decisionBaselines[stage];}settings=null;draft=null;draftBaseline=null;alBaseline=alValues();policyFlight=null;pendingPolicyRefresh=false;pendingPolicyReview=false;settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;$('#wf-policy-recovery').hidden=true;
+    if(context===scope())return;
+    binaryResetSummary = null;
+    binaryResetRequest = null;
+    renderBinaryReset();
+    context=scope();refreshTicket++;for(const stage of stages){tickets[stage]++;selected[stage]='';delete items[stage];delete queues[stage];delete decisionBaselines[stage];}settings=null;draft=null;draftBaseline=null;alBaseline=alValues();policyFlight=null;pendingPolicyRefresh=false;pendingPolicyReview=false;settingsDirty=false;libraryDirty=false;dirtyFields.clear();alDirty=false;$('#wf-policy-recovery').hidden=true;
     for(const id of ['scrBody','scrHist','scrHistCounts','scrPos','ftDocTitle','ftDocLabel','ftDocChip','cbTitle','cbForms','cbLabel','cbStatus','cbSaveProg','capScreen','capFull','capCode','annList'])document.getElementById(id)?.replaceChildren();
-    for(const id of ['wf-current-task','wf-policy','wf-personal-maybe','wf-reasons','wf-requirements','wf-sources'])document.getElementById(id)?.replaceChildren(n('p','Loading scope…'));
+    for(const id of ['wf-current-task','wf-policy','wf-reasons','wf-requirements','wf-sources'])document.getElementById(id)?.replaceChildren(n('p','Loading scope…'));
     for(const id of ['barScreen','barFull','barCode']){const bar=document.getElementById(id);if(bar)bar.style.width='0%';}
-    for(const id of ['btnInc','btnMay','btnExc','ftInc','ftMay','ftExc','cbSave']){const control=document.getElementById(id);if(control)control.disabled=true;}
+    for(const id of ['btnInc','btnExc','ftInc','ftExc','cbSave']){const control=document.getElementById(id);if(control)control.disabled=true;}
     for(const stage of stages){const host=tools(stage);host.querySelector('select').replaceChildren();host.querySelector('select').disabled=true;host.querySelector('.wf-scope-progress').textContent=T('Loading scope…');host.querySelector('.wf-readonly').textContent='';}
     /* F13：切到零任务上下文时不留在「Loading scope…」——占位只对有任务但尚未
        载入完成的情形有意义。 */

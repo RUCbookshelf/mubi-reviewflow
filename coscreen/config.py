@@ -15,6 +15,8 @@ APP_NAME = "木笔ReviewFlow 协同文献筛选"
 DEFAULT_EXCLUSION_REASONS = [
     "人群不符",
     "干预不符",
+    "主题不符合",
+    "领域不符合",
     "研究设计不符",
     "非目标语言",
     "发表类型不符",

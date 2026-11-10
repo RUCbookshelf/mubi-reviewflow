@@ -746,7 +746,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./research_trace.css?v=20261011-trace-topbar2">
 <link rel="stylesheet" href="./update_check.css?v=20261005-update1">
 <link rel="stylesheet" href="./import_guide.css?v=20261011-pearl1">
-<link rel="stylesheet" href="./screen_reader.css?v=20261101-r10u1b">
+<link rel="stylesheet" href="./screen_reader.css?v=20261110-w1">
 <link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
 <link rel="stylesheet" href="./workspace_layouts.css?v=20261012-rounds1">
 <link rel="stylesheet" href="./report_evidence.css?v=2.1.3">
@@ -1018,7 +1018,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div class="steps">
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m0 0-3.2-3.2M12 12l3.2-3.2M4.5 16.5v3a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-3"/></svg><b>导入文献</b><span>导入 CSV/RIS，进行精确去重，并人工核验可能重复的记录。</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 13.6 9l4.4 1.6-4.4 1.6L12 16.7l-1.6-4.5L6 10.6 10.4 9Z"/><path d="M18.5 3.5v3M17 5h3M6.5 16.5v3M5.5 18h2"/></svg><b>机器学习排序</b><span>根据已有筛选决策调整待筛文献的顺序，最终决定仍由筛选员作出</span></div>
-    <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5.5 5.5"/></svg><b>独立筛选</b><span>阅读标题与摘要，保存纳入或排除决定；启用时也可选择待定。</span></div>
+    <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5.5 5.5"/></svg><b>独立筛选</b><span>阅读标题与摘要，保存纳入或排除决定。</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5c2.4-1.1 4.8-1.1 8 0 3.2-1.1 5.6-1.1 8 0v13c-2.4-1.1-4.8-1.1-8 0-3.2-1.1-5.6-1.1-8 0Z"/><path d="M12 5.5v13"/></svg><b>全文复筛</b><span>根据全文评估纳入条件，记录筛选决定、PDF 高亮与批注。</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16.5" rx="2"/><path d="m8.5 11 2 2 4-4.5M8.5 17h7"/></svg><b>数据提取与编码</b><span>自定义编码维度（单选 / 多选 / 填空），左侧同步阅读 PDF，逐篇填写保存</span></div>
     <div class="step"><svg class="ic" width="30" height="30" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.2" cy="12" r="5.7"/><circle cx="14.8" cy="12" r="5.7"/></svg><b>Cohen's κ 一致性</b><span>比较筛选员决定，计算 Cohen’s κ，并逐条处理分歧。</span></div>
@@ -1117,7 +1117,9 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 
 <!-- ============ 文献初筛 ============ -->
 <section class="page" data-p="screen">
-  <h2>文献初筛</h2><p class="hint">键盘：<kbd>1</kbd> 纳入 · <kbd>2</kbd> 待定 · <kbd>3</kbd> 排除（排除必填理由）· 每次决策实时保存到服务器</p>
+  <h2>文献初筛</h2>
+  <p class="hint">快捷键 1 纳入 · 3 排除（排除须填写理由）。每次决定即时保存。</p>
+  <div id="wf-binary-reset" class="card" hidden></div>
   <div class="al-mode">
     <button id="alModeImport" class="on" title="按 Zotero 导入顺序逐篇筛选"><svg class="al-import-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M7 10h1m3 0h6M7 14h1m3 0h6M7 18h1m3 0h6"/></svg><span>导入顺序</span></button>
     <button id="alModeAI" title="机器学习排序：基于你的筛选决策，按当前策略排列待筛文献"><svg class="rf-pearl-companion" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><g class="rf-pearl-motion"><path class="rf-pearl-shell" d="M24 3C12 3 3.5 11.2 3.5 23.5S10.4 44 24 44s20.5-8.2 20.5-20.5S36 3 24 3Z"/><path class="rf-pearl-shine" d="M10 16c2-5.8 6.6-9 12-9"/><g class="rf-pearl-cheeks"><ellipse cx="12" cy="29" rx="2.2" ry="1.15"/><ellipse cx="36" cy="29" rx="2.2" ry="1.15"/></g><g class="rf-pearl-face calm"><g class="rf-pearl-eyes"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><ellipse cx="31.5" cy="24" rx="2.4" ry="3.25"/></g><path d="M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face happy"><path d="M13 24q3-5 6 0m10 0q3-5 6 0M21 28.5q3 5 6 0"/></g><g class="rf-pearl-face wink"><ellipse cx="16.5" cy="24" rx="2.4" ry="3.25"/><path d="M29 24q3-3 6 0M21 29q3 3.5 6 0"/></g><g class="rf-pearl-face curious"><ellipse cx="16.5" cy="25" rx="2.4" ry="3.1"/><ellipse cx="31.5" cy="22.5" rx="2.4" ry="3.7"/><path d="M22 30q2.8 2.2 5-.7"/></g></g></svg><span>机器学习排序</span></button>
@@ -1198,11 +1200,11 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   <div class="ft-decide">
     <div class="row" style="margin:0">
       <button class="btn b-inc" id="ftInc">1 纳入</button>
-      <button class="btn b-may" id="ftMay">2 待定</button>
       <button class="btn b-exc" id="ftExc">3 排除</button>
       <select class="input" id="ftReason" style="max-width:190px">
         <option value="">— 排除理由（排除必选）—</option>
         <option value="全文无法获取">全文无法获取</option><option value="人群不符">人群不符</option><option value="干预不符">干预不符</option>
+        <option value="主题不符合">主题不符合</option><option value="领域不符合">领域不符合</option>
         <option value="研究设计不符">研究设计不符</option><option value="非目标语言">非目标语言</option><option value="发表类型不符">发表类型不符</option>
         <option value="重复文献">重复文献</option><option value="结局指标不符">结局指标不符</option><option value="非实证研究">非实证研究</option>
         <option value="__custom__">其他（自定义）</option>
@@ -3996,7 +3998,6 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["机器学习排序", "Machine Learning ranking", "Classement par apprentissage automatique", "Умная сортировка на основе машинного обучения", "Ordenación con aprendizaje automático", "機械学習スマート順序付け", "Ordenação por aprendizado de máquina", "Durch maschinelles Lernen gestütztes Ranking", "Паметно рангирање машинским учењем", "머신러닝 순위 지정"],
   ["根据已有筛选决策调整待筛文献的顺序，最终决定仍由筛选员作出","Reorders unscreened records from your earlier decisions. Screeners still make every decision.","Réordonne les références à examiner selon les décisions précédentes. Les décisions restent prises par les évaluateurs.","Меняет порядок непроверенных записей с учетом прежних решений. Окончательное решение принимает эксперт.","Reordena los registros pendientes según las decisiones previas. La decisión final sigue siendo del revisor.","これまでの判定をもとに未選別文献の順序を変えます。最終判断は選別担当者が行います。","Reordena os registros pendentes com base nas decisões anteriores. A decisão final continua com o triador.","Ordnet noch nicht geprüfte Einträge nach bisherigen Entscheidungen. Die Entscheidung trifft weiterhin der Screener.","Мења редослед непрегледаних записа на основу ранијих одлука. Коначну одлуку и даље доноси члан тима за одабир.","이전 선별 결정을 바탕으로 미검토 문헌의 순서를 조정합니다. 최종 결정은 검토자가 합니다."],
   ["独立筛选","Independent screening","Sélection indépendante","Независимый отбор","Cribado independiente","独立スクリーニング","Triagem independente","Unabhängiges Screening","Независно одабирање", "독립 선별"],
-  ["阅读标题与摘要，保存纳入或排除决定；启用时也可选择待定。", "Read titles and abstracts and save Include or Exclude decisions; choose Maybe when enabled.", "Lisez les titres et résumés et enregistrez Inclure ou Exclure ; choisissez Peut-être si disponible.", "Читайте названия и аннотации, сохраняйте «Включить» или «Исключить»; «Возможно» доступно, если включено.", "Lea títulos y resúmenes y guarde Incluir o Excluir; elija Quizá cuando esté habilitado.", "タイトルと抄録を読み、採用・除外を保存します。有効な場合は保留も選べます。", "Leia títulos e resumos e salve Incluir ou Excluir; escolha Talvez quando habilitado.", "Titel und Abstracts lesen und Einschließen oder Ausschließen speichern; Vielleicht ist verfügbar, wenn aktiviert.", "Читајте наслове и сажетке и сачувајте Укључи или Искључи; Можда је доступно када је омогућено.", "제목과 초록을 읽고 포함 또는 제외를 저장합니다. 활성화된 경우 보류도 선택할 수 있습니다."],
   ["全文复筛","Full-text screening","Examen du plein texte","Отбор полных текстов","Revisión de texto completo","全文レビュー","Revisão de texto completo","Volltext-Sichtung","Преглед пуног текста", "전문 선별"],
   ["根据全文评估纳入条件，记录筛选决定、PDF 高亮与批注。", "Assess eligibility from the full text and record decisions, PDF highlights and annotations.", "Évaluez l’éligibilité dans le texte intégral et consignez décisions, surlignages et annotations PDF.", "Оцените соответствие критериям по полному тексту, сохраните решения, выделения и аннотации PDF.", "Evalúe la elegibilidad en el texto completo y registre decisiones, resaltados y anotaciones PDF.", "全文で適格性を評価し、判定とPDFのハイライト・注釈を記録します。", "Avalie a elegibilidade pelo texto completo e registre decisões, destaques e anotações PDF.", "Eignung anhand des Volltexts prüfen und Entscheidungen, PDF-Markierungen und Anmerkungen speichern.", "Процените подобност на основу пуног текста и забележите одлуке, истицања и PDF напомене.", "전문으로 적격성을 평가하고 결정, PDF 강조 표시와 주석을 기록합니다."],
   ["自定义编码维度（单选 / 多选 / 填空），左侧同步阅读 PDF，逐篇填写保存","Custom coding dimensions (single-choice / multi-choice / free text); read the PDF alongside and fill in per reference","Dimensions de codage personnalisées (choix unique / multiple / texte libre) ; PDF à côté, saisie référence par référence","Настраиваемые измерения кодирования (одиночный / множественный выбор / текст); PDF рядом, заполнение по записям","Dimensiones de codificación personalizadas (opción única / múltiple / texto); lea el PDF al lado y rellene referencia por referencia","独自のコーディング次元（単一選択／複数選択／記述）。左側で PDF を見ながら1件ずつ入力・保存","Dimensões de codificação personalizadas (única / múltipla / texto livre); leia o PDF ao lado e preencha referência por referência","Eigene Kodierdimensionen (Einfach-/Mehrfachauswahl / Freitext); PDF daneben lesen, Referenz für Referenz ausfüllen","Прилагођене димензије кодирања (једноструки / вишеструки избор / слободан текст); читате PDF са стране и попуњавате по референци", "코딩 차원 설정(단일/복수/자유 입력), 왼쪽 PDF를 읽으며 문헌별 저장"],
@@ -4081,7 +4082,6 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["摘要：", "Abstract: ", "Résumé : ", "Аннотация: ", "Resumen: ", "概要：", "Resumo: ", "Zusammenfassung:", "Апстракт: ", "초록:"],
   ["（无摘要）","(no abstract)","(pas de résumé)","(нет аннотации)","(sin resumen)","（概要なし）","(sem resumo)","(kein Abstract)","(нема апстракта)", "(초록 없음)"],
   ["1 纳入","1 Include","1 Inclure","1 Включить","1 Incluir","1 採用","1 Incluir","1 Einschließen","1 Укључи", "1 포함"],
-  ["2 待定", "2 Maybe", "2 À décider", "2 Возможно", "2 Pendiente", "2 保留", "2 Talvez", "2 Vielleicht", "2 Можда", "2 보류"],
   ["3 排除","3 Exclude","3 Exclure","3 Исключить","3 Excluir","3 除外","3 Excluir","3 Ausschließen","3 Искључи", "3 제외"],
   ["— 排除理由（必选）—","— Exclusion reason (required) —","— Motif d'exclusion (obligatoire) —","— Причина исключения (обязательно) —","— Motivo de exclusión (obligatorio) —","— 除外理由（必須）—","— Motivo de exclusão (obrigatório) —","— Ausschlussgrund (erforderlich) —","— Разлог искључења (обавезно) —", "— 제외 사유 (필수) —"],
   ["— 排除理由（排除必选）—","— Exclusion reason (required for exclusion) —","— Motif d'exclusion (obligatoire pour exclure) —","— Причина исключения (обязательно при исключении) —","— Motivo de exclusión (obligatorio para excluir) —","— 除外理由（除外時必須）—","— Motivo de exclusão (obrigatório para excluir) —","— Ausschlussgrund (bei Ausschluss erforderlich) —","— Разлог искључења (обавезан за искључење) —", "— 제외 사유 (제외 시 필수) —"],
@@ -4089,6 +4089,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   ["请输入自定义排除理由","Enter a custom exclusion reason","Saisissez un motif d'exclusion personnalisé","Введите свою причину исключения","Introduzca un motivo de exclusión personalizado","除外理由を入力してください","Introduza um motivo de exclusão personalizado","Eigenen Ausschlussgrund eingeben","Унесите сопствени разлог искључења","직접 제외 사유를 입력하세요"],
   ["人群不符","Population mismatch","Population non conforme","Несоответствие популяции","Población no conforme","対象集団不一致","População inadequada","Population passt nicht","Не одговара популацији", "대상 집단 부적합"],
   ["干预不符","Intervention mismatch","Intervention non conforme","Несоответствие вмешательства","Intervención no conforme","介入不一致","Intervenção inadequada","Intervention passt nicht","Не одговара интервенцији", "중재 부적합"],
+  ["主题不符合","Topic mismatch","Sujet non conforme","Несоответствие теме","Tema no conforme","主題不一致","Tema inadequado","Thema passt nicht","Не одговара теми", "주제 부적합"],
+  ["领域不符合","Field mismatch","Domaine non conforme","Несоответствие области","Área no conforme","分野不一致","Área inadequada","Fachgebiet passt nicht","Не одговара области", "분야 부적합"],
   ["研究设计不符","Study design mismatch","Conception d'étude non conforme","Несоответствие дизайна исследования","Diseño de estudio no conforme","研究デザイン不一致","Desenho de estudo inadequado","Studiendesign passt nicht","Дизајн студије не одговара", "연구 설계 부적합"],
   ["非目标语言","Not in target language","Pas dans la langue cible","Не на целевом языке","Fuera del idioma objetivo","対象言語外","Fora do idioma-alvo","Nicht in Zielsprache","Није на циљном језику", "대상 언어 아님"],
   ["发表类型不符","Publication type mismatch","Type de publication non conforme","Несоответствие типа публикации","Tipo de publicación no conforme","出版タイプ不一致","Tipo de publicação inadequado","Publikationstyp passt nicht","Тип публикације не одговара", "출판 유형 부적합"],
@@ -4933,8 +4935,17 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   const renderedTemplates = new Map();
   function renderTemplate(spec) {
     const row = dictionary.get(spec.key);
-    const template = row ? row[languageIndex] : spec.key;
-    return template.replace(/\{(\d+)\}/g, (m, d) => spec.args[+d] === undefined ? m : String(spec.args[+d])) + (spec.suffix || '');
+    return interpolate(row ? row[languageIndex] : spec.key, spec.args) + (spec.suffix || '');
+  }
+  function interpolate(template, args) {
+    const named = args[0];
+    return template.replace(/\{(\d+|[A-Za-z_][\w]*)\}/g, (token, name) => {
+      const value = /^\d+$/.test(name) ? args[+name]
+        : named && typeof named === 'object' && Object.hasOwn(named, name) ? named[name] : undefined;
+      if (/^\d+$/.test(name)) return value === undefined ? token : String(value);
+      if (Array.isArray(value)) return value.filter(item => ['string', 'number', 'boolean'].includes(typeof item)).join(', ');
+      return ['string', 'number', 'boolean'].includes(typeof value) ? String(value) : token;
+    });
   }
   function rememberTemplate(text, spec) {
     renderedTemplates.set(text.trim(), spec);
@@ -5147,14 +5158,14 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
     get: () => languages[languageIndex][0],
     index: () => languageIndex,
     label: () => languages[languageIndex][1],
+    has: key => dictionary.has(key),
     capture: captureTemplate,
     render: renderTemplate,
     /* RFLang.t(模板, ...参数)：动态合成句用；{0}{1}… 位置占位。 */
     t(tpl, ...args) {
       const key = String(tpl);
       const row = dictionary.get(key) || dictionary.get(key.trim());
-      let s = row ? row[languageIndex] : key;
-      if (args.length) s = s.replace(/\{(\d+)\}/g, (m, d) => args[+d] === undefined ? m : String(args[+d]));
+      const s = args.length ? interpolate(row ? row[languageIndex] : key, args) : (row ? row[languageIndex] : key);
       if (row) rememberTemplate(s, { key:row[0], args:args.slice() });
       return s;
     },
@@ -5202,9 +5213,14 @@ function T(tpl, ...args) { return (window.RFLang ? RFLang.t(tpl, ...args) : tpl)
 const SERVER_MESSAGE_SOURCES = Object.freeze({
   'team.screening_not_enabled': '你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。'
 });
-window.RFServerMessage = key => {
-  const source = SERVER_MESSAGE_SOURCES[key];
-  return source ? T(source) : null;
+const serverMessageSources = new Map(Object.entries(SERVER_MESSAGE_SOURCES));
+window.RFRegisterServerMessages = sources => {
+  for (const [key, source] of Object.entries(sources)) serverMessageSources.set(key, source);
+};
+window.RFServerMessage = (key, params = {}) => {
+  if (typeof key !== 'string') return null;
+  const source = serverMessageSources.get(key) || key;
+  return RFLang.has(source) ? T(source, params) : null;
 };
 
 /* ---------- XSS 安全的 DOM 构造器 ---------- */
@@ -5295,9 +5311,9 @@ async function apiRequest(path, opts = {}) {
     logout('登录已过期，请重新登录。', { force: (opts.method || 'GET').toUpperCase() !== 'GET' });
     throw new ApiError(401, '登录已过期');
   }
-  if (opts.blob) {
+  if (opts.blob || opts.response) {
     if (!resp.ok) throw await errOf(resp);
-    return await resp.blob();
+    return opts.response ? resp : await resp.blob();
   }
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw await errOf(resp, data);
@@ -5311,7 +5327,9 @@ async function apiRequest(path, opts = {}) {
        “暂无译文”外壳（RFAnalysisLocale.message 的启发式只认中英文）。 */
     let translatedHit = false;
     const data = parsed || await r.json().catch(() => null);
-    const payload = data?.detail;
+    const structured = value => value && typeof value === 'object' && !Array.isArray(value)
+      && (value.message_key || value.error_code || value.code);
+    const payload = structured(data) ? data : data?.detail;
     if (payload) {
       if (Array.isArray(payload)) {  /* FastAPI 422 校验错误数组 */
         /* 注册/登录的账号与密码长度校验由 Pydantic 先行拦截（CredentialsIn，
@@ -5359,38 +5377,32 @@ async function apiRequest(path, opts = {}) {
           }
           return (d.loc ? field + '：' : '') + (d.msg || '');
         }).join('；');
-      } else if (typeof payload === 'object' && payload.message) {
-        /* 高2（评审修正）：结构化错误（如池兼容 PoolCompatibilityError）的主消息
-           同样过 T()——命中词典即已是当前界面语言并置 rfLocalized，不再以英文
-           技术串进入分析页“暂无译文”外壳；reasons 明细逐条过 T()，未注册的
-           技术补救指引保持原文随主消息直读展示。
-           R2：带 message_key 的结构化错误优先按 key 渲染（十语言词典），
-           保证被关成员看到的是引导文案而非后端技术串。 */
-        const translatedMessage = T(payload.message);
-        const keyed = payload.message_key ? window.RFServerMessage?.(payload.message_key) : null;
-        const finalMessage = keyed || translatedMessage;
-        if (finalMessage !== payload.message) translatedHit = true;
-        detail = [finalMessage, ...(payload.reasons || []).map(reason => reason && reason.detail ? T(reason.detail) : reason?.detail)].filter(Boolean).join('\n');
-      } else {
-        /* 后端纯字符串错误消息统一在此过 T()（双键注册机制的中央接线点）：
-           已注册的五类高频消息（登录失败/注册校验/登录限流/会话过期/撤销边界，
-           见 interface_locale.js 的注册块与机制说明）在任何界面语言下都能命中，
-           #authErr、toast 拼接（含 workspace_undo.js 的撤销错误拼接）与
-           WorkflowControls.error 均经 error.message 取值即自动获得译文；
-           未注册的消息原样透传。注意：凡被前端按内容做正则/前缀判断的错误串
-           （report_evidence.js 的 STALE 正则、analysis_paired_interval.js 的
-           “b = c = 0…” startsWith）不得注册进词典，否则译文会破坏判断。 */
-        const translated = typeof payload === 'string' ? T(payload) : null;
-        if (translated !== null) { translatedHit = translated !== payload; detail = translated; }
-        else detail = JSON.stringify(payload);
+      } else if (typeof payload === 'object') {
+        const keyed = window.RFServerMessage(payload.message_key, payload.params);
+        const source = [payload.message, payload.detail, payload.details].find(value => typeof value === 'string' && value);
+        const message = keyed || (source && T(source));
+        translatedHit = Boolean(keyed || (message && message !== source));
+        const reasons = Array.isArray(payload.reasons) ? payload.reasons : [];
+        if (message) detail = [message, ...reasons.map(reason => typeof reason?.detail === 'string' ? T(reason.detail) : '')]
+          .filter(Boolean).join('\n');
+      } else if (typeof payload === 'string') {
+        detail = T(payload);
+        translatedHit = detail !== payload;
       }
     }
     const error = new ApiError(r.status, detail);
     if (translatedHit) error.rfLocalized = true;
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-      error.code = payload.code; error.workflowSettings = payload.workflow_settings; error.reasons = payload.reasons || [];
-      error.errorCode = payload.error_code; error.messageKey = payload.message_key;
-      error.fields = Array.isArray(payload.fields) ? payload.fields : [];  /* B9 F19：ai_field_not_allowed 等字段清单 */
+      error.code = payload.code;
+      error.errorCode = payload.error_code;
+      error.messageKey = payload.message_key;
+      error.params = payload.params || {};
+      error.workflowSettings = payload.workflow_settings;
+      error.reasons = payload.reasons || [];
+      error.fields = Array.isArray(payload.fields) ? payload.fields : [];
+      error.guidance = payload.guidance;
+      error.version = payload.version;
+      error.maxItems = payload.max_items;
     }
     return error;
   }
@@ -6481,8 +6493,8 @@ async function advanceALQueue() {
 async function applyAIOrder() {
   if (S.al.mode !== 'ai' || (window.WorkflowControls && !WorkflowControls.renderAllowed())) return;
   const base = S.articlesBase || [];
-  const done = base.filter(a => !ScreeningRounds.pending(a.zotero_key));
-  const pending = new Map(base.filter(a => ScreeningRounds.pending(a.zotero_key)).map(a => [a.zotero_key, a]));
+  const done = base.filter(a => S.decisions[a.zotero_key]);
+  const pending = new Map(base.filter(a => !S.decisions[a.zotero_key]).map(a => [a.zotero_key, a]));
   const ranked = [];
   for (const key of S.al.orderKeys) {
     if (pending.has(key)) { ranked.push(pending.get(key)); pending.delete(key); }
@@ -6632,13 +6644,13 @@ function nzArticle(a) {
   return a;
 }
 function nextUndecided() {
-  for (let i = 0; i < S.articles.length; i++) if (ScreeningRounds.pending(S.articles[i].zotero_key)) return i;
+  for (let i = 0; i < S.articles.length; i++) if (!S.decisions[S.articles[i].zotero_key]) return i;
   return -1;
 }
 function renderScreenHist() {
   const box = $('#scrHist');
   box.textContent = '';
-  const history = [], counts = {include:0, maybe:0, exclude:0};
+  const history = [], counts = {include:0, exclude:0};
   S.articles.forEach((a, i) => {
     const d = S.decisions[a.zotero_key];
     if (d) {
@@ -6654,7 +6666,7 @@ function renderScreenHist() {
          完整已决列表浮层（只读展示；多步撤销需后端能力，未在本期范围）。 */
       : el('button', {type:'button',class:'chip rf-hist-more',text:'…','aria-haspopup':'dialog','aria-label':T('查看全部已决文献'),title:T('查看全部已决文献'),onclick:()=>window.RFScreenHistory?.open()}));
   });
-  $('#scrHistCounts').textContent = T('(纳入：{0} | 待定：{1} | 排除：{2})', counts.include, counts.maybe, counts.exclude);
+  $('#scrHistCounts').textContent = T('(纳入：{0} · 排除：{1})', counts.include, counts.exclude);
 }
 function screenTitle(article, score) {
   const fullTitle = (article.title || '').trim() || T('（无标题）');
@@ -6704,10 +6716,9 @@ async function refreshScreeningState() {
 async function renderScreen() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   renderScreenHist();
-  ScreeningRounds.render();
   let i = S.scrIdx;
   const cur = S.articles[i];
-  if (!cur || (!ScreeningRounds.pending(cur.zotero_key) && S.screenEditingKey !== cur.zotero_key)) S.scrIdx = i = nextUndecided();
+  if (!cur || (S.decisions[cur.zotero_key] && S.screenEditingKey !== cur.zotero_key)) S.scrIdx = i = nextUndecided();
   $('#scrPos').textContent = '#' + (i < 0 ? S.articles.length : i + 1) + ' / ' + S.articles.length;
   const body = $('#scrBody');
   body.textContent = '';
@@ -6723,12 +6734,12 @@ async function renderScreen() {
     }
     const n = k => Object.values(S.decisions).filter(d => d.decision === k).length;
     body.append(
-      el('h3', { text: '🎉 本轮初筛完成（全部已保存到服务器）' }),
+      el('h3', { text: T('当前范围初筛已完成。') }),
       el('div', { class: 'row', style: 'margin-top:10px' },
       el('span', { class: 'chip c-inc', text: T('纳入 {0}', n('include')) }),
-      el('span', { class: 'chip c-may', text: T('待定 {0}', n('maybe')) }),
       el('span', { class: 'chip c-exc', text: T('排除 {0}', n('exclude')) })),
       el('div', { class: 'row' },
+        el('button', { class: 'btn b-out', text: T('文献复筛'), onclick: () => go('fulltext') }),
         el('button', { class: 'btn b-out', text: '前往导出 →', onclick: () => go('export') }))
     );
     refreshProgress();
@@ -6750,7 +6761,7 @@ async function renderScreen() {
   $('#scrCard').classList.toggle('ai-active', aiOn);
   const reason = el('select', { class: 'input', id: 'excReason', style: 'max-width:210px' },
     el('option', { value: '', text: T('— 排除理由（必选）—') }),
-    ['人群不符', '干预不符', '研究设计不符', '非目标语言', '发表类型不符', '重复文献', '结局指标不符', '非实证研究']
+    ['人群不符', '干预不符', '主题不符合', '领域不符合', '研究设计不符', '非目标语言', '发表类型不符', '重复文献', '结局指标不符', '非实证研究']
       .map(o => el('option', { value: o, text: T(o) })),
     el('option', { value: '__custom__', text: T('其他（自定义）') }));
   const customReason = el('input', { class: 'input', id: 'excCustomReason', style: 'max-width:210px', maxlength: '2000', placeholder: T('请输入自定义排除理由'), 'aria-label': T('请输入自定义排除理由'), hidden: '' });
@@ -6777,7 +6788,6 @@ async function renderScreen() {
     el('div', { class: 'absbox', text: nz(r.abstract) ? T('摘要：') + nz(r.abstract) : T('（无摘要）') }),
     el('div', { class: 'row scr-decisions', style: 'margin-bottom:0' },
       el('button', { class: 'btn b-inc', id: 'btnInc', text: '1 纳入', onclick: () => screenDecide('include') }),
-      el('button', { class: 'btn b-may', id: 'btnMay', text: '2 待定', onclick: () => screenDecide('maybe') }),
       el('button', { class: 'btn b-exc', id: 'btnExc', text: '3 排除', onclick: () => screenDecide('exclude') }),
       reason, customReason)
   ].filter(x => x !== null && x !== undefined));
@@ -6843,7 +6853,7 @@ async function screenDecide(decision) {
   const ticket = screenRequestVersion, taskId = S.task.task_id, screener = S.screener;
   const i = S.scrIdx;
   const r = S.articles[i];
-  if (!r || (!ScreeningRounds.pending(r.zotero_key) && S.screenEditingKey !== r.zotero_key)) { toast('本批文献已全部完成', 'info'); return; }
+  if (!r || (S.decisions[r.zotero_key] && S.screenEditingKey !== r.zotero_key)) { toast('本批文献已全部完成', 'info'); return; }
   const rsn = $('#excReason');
   let reason = '';
   if (decision === 'exclude') {
@@ -6884,14 +6894,13 @@ async function screenDecide(decision) {
     window.RFScreenReason?.clearMessage();
     if (S.al.mode === 'ai') recordALDecision(r.zotero_key, decision);
     refreshALStatus(); // Lightweight progress read, never awaited by next-item navigation.
-    ScreeningRounds.saved(r.zotero_key);
     WorkflowControls.markDecisionClean('screen');
     WorkflowControls.updateProgress('screen').catch(WorkflowControls.error);
     S.screenEditingKey = null;
     /* 保存反馈（F03）：toast 标明题名片段与理由，并延长停留时间，
        使“保存了哪条”在连续筛选时可被感知。 */
     const name = (r.title || '').slice(0, 22) + '…';
-    toast({ include: T('✓ 已纳入《{0}》', name), maybe: T('◐ 待定《{0}》', name), exclude: T('✗ 已排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
+    toast({ include: T('✓ 已纳入《{0}》', name), exclude: T('✗ 已排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
     $('#scrCard').classList.add('out');
     setTimeout(async () => {
       if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
@@ -6934,7 +6943,7 @@ async function loadFulltext() {
     await refreshScreeningState();
     if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion || !WorkflowControls.renderAllowed()) return;
     if (!S.ftQueue.length) {
-      $('#ftDocTitle').textContent = T('Initial Include or Maybe decisions enter full-text screening. No eligible records in this scope.');
+      $('#ftDocTitle').textContent = T('当前范围没有初筛纳入的文献可供复筛。');
       renderFtDoc(); return;
     }
     await renderFtDoc();
@@ -6948,7 +6957,7 @@ async function renderFtDoc() {
   syncScreeningNoticeElement('ftScreeningNotice');
   const cur = curFt();
   const taskVersion = S.taskVersion, screener = S.screener;
-  for (const id of ['ftInc','ftMay','ftExc']) $('#'+id).disabled = true;
+  for (const id of ['ftInc','ftExc']) $('#'+id).disabled = true;
   if (cur) {
     try {
       const item = await WorkflowControls.item('fulltext',cur.zotero_key);
@@ -7404,7 +7413,7 @@ async function fullDecide(decision) {
     /* 保存反馈（F03）：复筛与初筛对齐——toast 标明题名片段（排除时附理由），
        并延长停留时间，使“保存了哪条”在连续筛选时可被感知。 */
     const name = (cur.title || '').slice(0, 22) + '…';
-    toast({ include: T('✓ 复筛纳入《{0}》', name), maybe: T('◐ 复筛暂不确定《{0}》', name), exclude: T('✗ 复筛排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
+    toast({ include: T('✓ 复筛纳入《{0}》', name), exclude: T('✗ 复筛排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
     const nxt = S.ftQueue.findIndex(x => !S.ftDec[x.zotero_key]);
     if (nxt >= 0) { S.ftIdx = nxt; renderFtDoc(); openFtPdf(); }
     else { renderFtDoc(); toast(T('🎉 复筛队列全部完成'), 'inc'); }
@@ -7422,7 +7431,6 @@ $('#ftReason').addEventListener('change', () => {
   if (!$('#ftCustomReason').hidden) $('#ftCustomReason').focus();
 });
 $('#ftInc').addEventListener('click', () => fullDecide('include'));
-$('#ftMay').addEventListener('click', () => fullDecide('maybe'));
 $('#ftExc').addEventListener('click', () => fullDecide('exclude'));
 /* 批注侧栏默认收起；展示层在开启时将其停靠在 PDF 旁。 */
 $('#ftSideToggle').addEventListener('click', () => {
@@ -8899,12 +8907,12 @@ $('#cbSave').addEventListener('click', () => WorkflowEvidence.save());
 /* ---------- 全局键盘快捷键 ---------- */
 /* F21（报告⑥.5，本泳道先用 Playwright 键盘事件复现后修）：
    复现结论（r10-u1 探针，焦点在 #excReason 时）——
-   · 按 1 → 直接 POST 决策、当前文献被存为「纳入」；按 2 → 存为「待定」；
+   · 按 1 → 直接 POST 决策、当前文献被存为「纳入」；
    · 焦点在自定义理由输入框时按 3 无任何反应（tag==='input' 早退），
      按 Enter 亦无反应——两条键盘路径行为不一致。
    修复口径（批准单 F21「控件层」方案）：
    · select 聚焦时只放行「3=排除」；1/2 需 Ctrl/⌘/Alt 修饰键确认（避免下拉内
-     误按即把文献误存为纳入/待定并污染 ML 训练标签）；
+     误按即把文献误存为纳入或排除并污染 ML 训练标签）；
    · 自定义理由输入框补 Enter=排除提交（有理由时），数字键按普通文本输入；
    · 其余输入控件内仍不触发决策（原有行为不变）。 */
 document.addEventListener('keydown', e => {
@@ -8930,11 +8938,9 @@ document.addEventListener('keydown', e => {
   if (reasonSelect && e.key !== '3' && !(e.ctrlKey || e.metaKey || e.altKey)) return;
   if (S.page === 'screen') {
     if (e.key === '1') screenDecide('include');
-    else if (e.key === '2') screenDecide('maybe');
     else if (e.key === '3') screenDecide('exclude');
   } else if (S.page === 'fulltext') {
     if (e.key === '1') fullDecide('include');
-    else if (e.key === '2') fullDecide('maybe');
     else if (e.key === '3') fullDecide('exclude');
   }
 });
@@ -9818,7 +9824,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./workspace_shell.js?v=20261101-r10u4"></script>
 <script src="./sidebar_sheet.js?v=20261101-r10u4"></script>
 <script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261101-r10u5b"></script>
+<script src="./workflow_locale.js?v=20261110-w1"></script>
 <script src="./research_trace.js?v=20261101-r10u6-trace1"></script>
 <script src="./import_review_locale.js?v=20261030-r8fl4"></script>
 <script src="./import_review_model.js?v=20261028-r7-frontsec1"></script>
@@ -9831,14 +9837,13 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./al_profile_selector.js?v=20261101-r9l4b1"></script>
 <script src="./al_stop_panel.js?v=20261029-lastfix"></script>
 <script src="./al_blind_mode.js?v=20261012-home-wording1"></script>
-<script src="./screen_reader.js?v=20261101-r10u1b"></script>
+<script src="./screen_reader.js?v=20261110-w1"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
 <script src="./protocol_designer.js?v=20261030-r8fl5"></script>
 <script src="./extraction_workbench.js?v=20261029-lastfix"></script>
 <script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
-<script src="./screening_rounds.js?v=20261107-r15"></script>
-<script src="./workflow_controls.js?v=20261107-r15"></script>
+<script src="./workflow_controls.js?v=20261110-w1"></script>
 <script src="./workflow_evidence.js?v=20261101-r9l31"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
 <script src="./import_export_locale.js?v=20261101-r10u2"></script>

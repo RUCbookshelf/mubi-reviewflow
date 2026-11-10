@@ -323,7 +323,7 @@
     const dialog=el('dialog',{class:'rf-hist-dialog','aria-labelledby':'rfHistTitle'});
     const list=el('ol',{class:'rf-hist-list'});
     const filter=el('select',{class:'input','aria-label':T('决策类型')});
-    for(const [value,label] of [['','全部'],['include','纳入'],['maybe','待定'],['exclude','排除']])filter.append(el('option',{value,text:T(label)}));
+    for(const [value,label] of [['','全部'],['include','纳入'],['exclude','排除']])filter.append(el('option',{value,text:T(label)}));
     function render(){
       list.textContent='';
       const shown=rows.filter(row=>!filter.value||row.decision===filter.value);
