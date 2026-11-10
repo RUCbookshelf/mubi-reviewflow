@@ -27,13 +27,18 @@ _ULA_V6 = ipaddress.IPv6Network("fc00::/7")
 _LINK_LOCAL_V4 = ipaddress.IPv4Network("169.254.0.0/16")
 
 __all__ = [
+    "DECISION_DEFAULT_BASE_URL",
     "DEFAULT_BASE_URL",
+    "KEY_KINDS",
+    "KIND_DECISION",
+    "KIND_LLM",
     "KeyShapeError",
     "base_url_of",
     "delete_personal_key",
     "delete_shared_key",
     "env_key",
     "keys_dir",
+    "kind_of",
     "load_personal_key",
     "load_shared_key",
     "mask_key",
@@ -47,14 +52,29 @@ __all__ = [
 #: OpenAI 兼容端点的默认 base_url（用户可改填 DeepSeek/月之暗面/本地 Ollama 等）。
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
+#: decision 钥匙的默认 base_url：官方 hosted Jev（systemone）端点。**缺省必须
+#: 按 kind 区分落盘**（评审 BLOCKER：此前 decision 钥匙不填 base_url 会被写成
+#: OpenAI 缺省，把 TypeSafe 钥匙发往 api.openai.com）。单一事实源在此，
+#: decision_model_adapter 从本模块引用（反向 import 会成环）。
+DECISION_DEFAULT_BASE_URL = "https://api.typesafe.ai"
+
+#: 钥匙的模型类型（2026-11-10 用户裁定：Jev 决策模型提前到 2.1.5）。
+#: ``llm``=生成式 LLM（OpenAI 兼容 chat/completions，缺省与存量行为不变）；
+#: ``decision``=决策模型（Jev 类 systemone 端点，只允许导入复核 AI 助手的
+#: duplicate_group 与 merge_conflict 两场景，越界由调用端硬闸拒绝）。
+KIND_LLM = "llm"
+KIND_DECISION = "decision"
+KEY_KINDS = (KIND_LLM, KIND_DECISION)
+
 _KEY_RE = re.compile(r"^[^/\\\x00]{1,4096}$")
 _TASK_ID_RE = re.compile(r"^[^/\\\x00]{1,200}$")
 
-#: 环境变量覆盖（服务器管理员模式）：存在即视为已配置个人钥匙。
+# 环境变量覆盖（服务器管理员模式）：存在即视为已配置个人钥匙。
 ENV_KEY = "REVIEWFLOW_AI_KEY"
 ENV_PROVIDER = "REVIEWFLOW_AI_PROVIDER"
 ENV_BASE_URL = "REVIEWFLOW_AI_BASE_URL"
 ENV_MODEL = "REVIEWFLOW_AI_MODEL"
+ENV_MODEL_KIND = "REVIEWFLOW_AI_MODEL_KIND"
 
 
 class KeyDeletionError(RuntimeError):
@@ -116,10 +136,13 @@ def _clean_key(key: str) -> str:
     return text
 
 
-def _clean_base_url(base_url: str | None) -> str:
+def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM) -> str:
     from urllib.parse import urlsplit
 
-    text = str(base_url or "").strip() or DEFAULT_BASE_URL
+    # 空值缺省按钥匙类型回落：decision → hosted Jev；llm → OpenAI 兼容缺省
+    # （绝不把 TypeSafe 钥匙的落盘缺省写成 api.openai.com——评审 BLOCKER 修复）。
+    fallback = DECISION_DEFAULT_BASE_URL if kind == KIND_DECISION else DEFAULT_BASE_URL
+    text = str(base_url or "").strip() or fallback
     # MM-09：C0/C1 控制字符（含 \r\n 头注入尝试）在入库前拒绝——否则会一路放到
     # 出站时才被 http.client 以 InvalidURL 拒绝并冒泡成用户可达 500。
     # （strip() 只去首尾空白，中间的控制字符必须显式检查。）
@@ -177,9 +200,26 @@ def _clean_model(model: str | None) -> str:
     return text
 
 
+def _clean_kind(kind: str | None) -> str:
+    """写入侧校验：空=llm（旧客户端缺省）；其余必须在 ``KEY_KINDS`` 内。"""
+    text = str(kind or "").strip().lower()
+    if not text:
+        return KIND_LLM
+    if text not in KEY_KINDS:
+        raise KeyShapeError("kind 须为 llm 或 decision。")
+    return text
+
+
+def kind_of(record: dict | None) -> str:
+    """读取侧归一（绝不抛错）：缺失/大小写/非法值 → ``llm``（存量钥匙兼容）。"""
+    text = str((record or {}).get("kind") or "").strip().lower()
+    return text if text in KEY_KINDS else KIND_LLM
+
+
 def base_url_of(record: dict | None) -> str:
-    """从钥匙记录取规范 base_url（缺省回官方端点）。"""
-    return _clean_base_url((record or {}).get("base_url") or DEFAULT_BASE_URL)
+    """从钥匙记录取规范 base_url（缺省按记录的 kind 回落对应官方端点）。"""
+    record = record or {}
+    return _clean_base_url(record.get("base_url"), kind=kind_of(record))
 
 
 def mask_key(key: str) -> str:
@@ -221,16 +261,22 @@ def _load(path: Path) -> dict | None:
         return None
     if not isinstance(raw, dict) or not isinstance(raw.get("key"), str) or not raw.get("provider"):
         return None
+    # 存量钥匙（2.1.5 决策模型波之前落盘）没有 kind 字段 → 读作 llm（兼容）。
+    if raw.get("kind") not in KEY_KINDS:
+        raw["kind"] = KIND_LLM
     return raw
 
 
-def _save(path: Path, *, provider: str, key: str, base_url: str | None, model: str | None) -> dict:
+def _save(path: Path, *, provider: str, key: str, base_url: str | None,
+          model: str | None, kind: str | None = None) -> dict:
     previous = _load(path)
+    cleaned_kind = _clean_kind(kind)
     record = {
         "provider": _clean_provider(provider),
         "key": _clean_key(key),
-        "base_url": _clean_base_url(base_url),
+        "base_url": _clean_base_url(base_url, kind=cleaned_kind),
         "model": _clean_model(model),
+        "kind": cleaned_kind,
         "added_at": previous.get("added_at") if previous else _now_iso(),
         "last_used_at": previous.get("last_used_at") if previous else None,
     }
@@ -256,10 +302,11 @@ def _delete(path: Path) -> bool:
 
 def save_personal_key(user_id: int, *, provider: str, key: str,
                       base_url: str | None = None, model: str | None = "",
+                      kind: str | None = None,
                       data_root: Path | None = None) -> dict:
     """保存/覆盖本人钥匙（PUT 单向写入，无读取明文路径）。"""
     return _save(personal_path(user_id, data_root), provider=provider, key=key,
-                 base_url=base_url, model=model)
+                 base_url=base_url, model=model, kind=kind)
 
 
 def load_personal_key(user_id: int, data_root: Path | None = None) -> dict | None:
@@ -277,9 +324,10 @@ def delete_personal_key(user_id: int, data_root: Path | None = None) -> bool:
 
 def save_shared_key(task_id: str, *, provider: str, key: str,
                     base_url: str | None = None, model: str | None = "",
+                    kind: str | None = None,
                     data_root: Path | None = None) -> dict:
     return _save(shared_path(task_id, data_root), provider=provider, key=key,
-                 base_url=base_url, model=model)
+                 base_url=base_url, model=model, kind=kind)
 
 
 def load_shared_key(task_id: str, data_root: Path | None = None) -> dict | None:
@@ -305,11 +353,18 @@ def env_key() -> dict | None:
     # r7 复审（第2轮）：model 同理透传——超长等非法值出站时由 provider 拒绝
     # （ProviderError/502），读取路径绝不因环境配置抛错。
     # 缺省语义与 _clean_base_url 一致：空值回落官方端点。
+    # kind 与 base_url 的缺省联动：decision 钥匙不设 REVIEWFLOW_AI_BASE_URL 时
+    # 缺省必须是 hosted Jev 端点（同 _save 的按 kind 落盘缺省——评审 BLOCKER）。
+    kind = (KIND_DECISION if os.environ.get(
+        ENV_MODEL_KIND, "").strip().lower() == KIND_DECISION else KIND_LLM)
+    fallback = DECISION_DEFAULT_BASE_URL if kind == KIND_DECISION else DEFAULT_BASE_URL
     return {
         "provider": os.environ.get(ENV_PROVIDER, "").strip() or "managed",
         "key": key,
-        "base_url": (os.environ.get(ENV_BASE_URL, "").strip() or DEFAULT_BASE_URL),
+        "base_url": (os.environ.get(ENV_BASE_URL, "").strip() or fallback),
         "model": os.environ.get(ENV_MODEL, "").strip(),
+        # kind 与 model/base_url 同理透传归一：非法值读作 llm，读取路径绝不抛错。
+        "kind": kind,
         "added_at": None,
         "last_used_at": None,
     }
