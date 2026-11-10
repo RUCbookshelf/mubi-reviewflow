@@ -329,8 +329,12 @@ class StaticGuardTests(unittest.TestCase):
         # 令牌上调到 20261107-r14 并重新钉对（令牌, 内容）。
         # r14 补扫：再补一条「筛选员决策库暂时无法读取…」503 文案（十语言），
         # 令牌仍为 20261107-r14，重新钉对内容。
-        pinned_token = '20261107-r14'
-        pinned_sha256 = 'd0828dd7aa8a87b3380dbc1ebb298fc77525f05b95b60f6624f2baec7ca34f8c'
+        # 2.1.5-arbitration（盲读会话，frontend_contract_2.1.5-arbitration-reader.md）：
+        # 合并仲裁盲读卡新增 13 条 UI 文案与 6 条 team.arbitration_session_*
+        # 结构化错误词条（均十语言），词典内容变更；按既有惯例令牌上调
+        # 20261107-r14 -> 20261110-arbitration 并重新钉对（令牌, 内容）元组。
+        pinned_token = '20261110-arbitration'
+        pinned_sha256 = '0028132c9a28f532b7543818eb609945395b1eb7baf7ff06083f687c0aca18a7'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')

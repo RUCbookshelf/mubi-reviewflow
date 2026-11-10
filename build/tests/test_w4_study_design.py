@@ -16,7 +16,8 @@
    available=false，绝不 500）。
 4. **静态守卫**：index.html 三处锚点（徽标插在 AL 分数条与摘要之间、
    预填在 restoreReason 之后 markDecisionClean 之前、script 令牌
-   ``20261030-r8-w4sd1`` 且不挤占 W5 末尾 SW 锚点）；前端模块红线
+   ``20261110-215``（2.1.5-appraisal §10 类别面扩为十一类时上调）且不挤占
+   W5 末尾 SW 锚点）；前端模块红线
    （IIFE/RFLang.register/textContent-only、无 innerHTML/eval/fetch/外链）；
    后端模块纯本地（无 urllib/http/socket/sklearn 导入）且规则**复用**
    ``evidence_mapper._STUDY_DESIGN_RULES``（import 断言，镜像实现即红）；
@@ -68,7 +69,10 @@ INDEX_HTML = REPO / "custom_frontend" / "index.html"
 MAIN_PY = REPO / "custom_backend" / "main.py"
 API_PY = REPO / "custom_backend" / "study_design_api.py"
 BADGE_JS = "study_design_badge.js"
-TOKEN = "20261030-r8-w4sd1"
+# 2.1.5-appraisal 契约 §10 把徽标类别面从七类扩为「七加四为十一」（新增
+# qualitative/mixed_methods/survey/discourse 词条与配色），study_design_badge.js
+# 内容变更，index.html 的 ?v= 令牌按惯例上调（20261030-r8-w4sd1 -> 20261110-215）。
+TOKEN = "20261110-215"
 
 DESIGN_LABELS = ("meta_analysis", "systematic_review", "rct", "cohort",
                  "case_control", "cross_sectional", "diagnostic")

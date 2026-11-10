@@ -361,14 +361,17 @@ def test_f1_82_register_of_an_empty_list_fails_the_gate(tmp_path):
 
 def test_f1_82_clean_tree_still_reports_every_row(tmp_path):
     """Control: the fail-closed rule must not shrink the validated set. The live
-    locale pack registers 101 rows and the gate must still count all of them."""
+    locale pack registers 101 rows and the gate must still count all of them,
+    across every language pack file (25 since 2.1.5 added six packs:
+    pilot_screening / search_strategy / screening_tools / import_review_quality
+    / assessment_tables / batch6)."""
     tree = _tree(tmp_path, (TEAM_GATE,))
     proc = _run(tree, TEAM_GATE)
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout)
     assert report["status"] == "passed"
     assert report["ten_language_rows"] == 101
-    assert report["language_pack_files"] == 19
+    assert report["language_pack_files"] == 25
 
 
 # --------------------------------------------------------------------------- #
@@ -387,7 +390,13 @@ def test_manifest_data_src_is_not_a_loader(tmp_path):
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout)
-    assert report["syntax_files"] == 116  # ghost_module.js 未混进载入列表；r11 ERIC 入口 +1
+    # ghost_module.js 未混进载入列表；2.1.5 各波前端契约净增 19 个载入模块
+    # （+20：W2 pilot/W3 strategy/W6 topic-cluster/W7 tables/W8 criteria-panel/
+    #  W9 retraction-watch/highlight/task-delete/arbitration-reader/appraisal/
+    #  import-ai-assist/daily-nudge 等；-1：screening_rounds.js 随 W1 轮次路由
+    #  契约化退役），清单基准 116 -> 135。本文件三处 135 同源（皆取自
+    #  script_manifest.cjs 的 loadScriptManifest 清单长度）。
+    assert report["syntax_files"] == 135
 
 
 def test_manifest_data_src_cannot_mask_a_dead_file(tmp_path):
@@ -411,7 +420,7 @@ def test_manifest_quoted_gt_does_not_hide_a_real_loader(tmp_path):
           MODEL_TAG.replace('<script src=', '<script data-note="a>b" src='))
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout)["syntax_files"] == 116
+    assert json.loads(proc.stdout)["syntax_files"] == 135  # 2.1.5 载入清单基准（见 test_manifest_data_src_is_not_a_loader）
 
 
 def test_manifest_helper_only_accepts_the_exact_src_attribute(tmp_path):
@@ -441,7 +450,7 @@ def test_manifest_helper_only_accepts_the_exact_src_attribute(tmp_path):
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["ghost"] == [], f"data-src/lazy-src 混进了载入列表：{out['ghost']}"
     assert out["model"] is True, "真 loader 不得因同标签的其他属性被漏掉"
-    assert out["count"] == 116
+    assert out["count"] == 135  # 2.1.5 载入清单基准（见 test_manifest_data_src_is_not_a_loader）
 
 
 # --------------------------------------------------------------------------- #
