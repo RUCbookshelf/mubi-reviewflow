@@ -287,15 +287,23 @@
         let personal = null;
         try { personal = await api('/api/ai/key'); } catch (e) { personal = null; }
 
+        const sharedConfigured = isOwner
+          ? taskSettings.shared_key_enabled === true : sharedMeta.shared_available === true;
+        let sharedKind = null;
+        if (sharedConfigured) {
+          try {
+            const assist = await api(base + '/import-review/ai-assist/settings');
+            if (assist.key_source === 'shared') sharedKind = assist.key_kind || 'llm';
+          } catch (_) { /* The shared-key metadata intentionally omits its kind. */ }
+        }
         const enabled = isOwner ? taskSettings.enabled === true : sharedMeta.enabled === true;
         let prefs = null;
         if (enabled) {
           try { prefs = await api(base + '/ai-suggest/preferences'); } catch (e) { prefs = null; }
         }
-        const sharedAvailable = isOwner
-          ? (taskSettings.key_mode === 'shared' && taskSettings.shared_key_enabled === true)
-          : !!(sharedMeta && sharedMeta.key_mode === 'shared' && sharedMeta.shared_available === true);
-        const personalConfigured = !!(personal && personal.configured);
+        const sharedAvailable = sharedKind !== 'decision' && sharedConfigured &&
+          (isOwner ? taskSettings.key_mode === 'shared' : sharedMeta.key_mode === 'shared');
+        const personalConfigured = !!(personal && personal.configured && personal.kind !== 'decision');
         const personalEffective = !prefs || prefs.use_personal_key === undefined ? personalConfigured
           : (prefs.use_personal_key !== false && personalConfigured);
         return {
@@ -308,8 +316,9 @@
                        || (sharedMeta && sharedMeta.field_labels) || null,
           contextPrompt: isOwner ? (taskSettings.context_prompt || '') : '',
           sharedAvailable: !!sharedAvailable,
-          sharedProviderName: isOwner ? (taskSettings.shared_provider_name || null)
-                                       : (sharedMeta ? sharedMeta.shared_provider_name : null),
+          sharedKind,
+          sharedProviderName: sharedKind === 'llm'
+            ? (isOwner ? taskSettings.shared_provider_name : sharedMeta.shared_provider_name) : null,
           owner_unset: !isOwner && !!(sharedMeta && sharedMeta.owner_unset),   /* B9 F13 */
           personal, prefs,
           keyAvailable: personalConfigured || !!sharedAvailable,
@@ -337,14 +346,15 @@
     /* 局部状态变化后重派生派生量（钥匙可用性/共享披露），避免整轮重新判定 */
     function rederive() {
       if (!detection) return;
-      const personalConfigured = !!(detection.personal && detection.personal.configured);
+      const personalConfigured = !!(detection.personal && detection.personal.configured && detection.personal.kind !== 'decision');
       const usePersonal = !detection.prefs || detection.prefs.use_personal_key !== false;
       detection.sharedAvailable = detection.isOwner
-        ? (detection.settings && detection.settings.key_mode === 'shared' && detection.settings.shared_key_enabled === true)
+        ? (detection.settings && detection.settings.key_mode === 'shared' &&
+           detection.settings.shared_key_enabled === true && detection.sharedKind !== 'decision')
         : detection.sharedAvailable;
-      detection.sharedProviderName = detection.isOwner
-        ? ((detection.settings && detection.settings.shared_provider_name) || null)
-        : detection.sharedProviderName;
+      if (detection.isOwner) {
+        detection.sharedProviderName = detection.sharedKind === 'llm' ? detection.settings?.shared_provider_name : null;
+      }
       detection.keyAvailable = personalConfigured || !!detection.sharedAvailable;
       detection.sharedEffective = detection.active && !(usePersonal && personalConfigured) && !!detection.sharedAvailable;
     }
@@ -707,8 +717,11 @@
         const detail = (e && e.message) || '';
         if (e && e.status === 502 && code === 'ai_provider_error') {
           setStatus([T('AI 服务调用失败：{0}', detail)], true);
+        } else if (e && e.status === 409 && e.messageKey === 'ai.decision_key_not_allowed') {
+          setStatus([detail], true);
         } else if (e && e.status === 409 && code === 'ai_no_source_text') {
-          setStatus([T('该文献既无全文 PDF 也无摘要，无法生成建议。')], false);
+          const recovery = window.RFLang?.has?.('taskPackage.fulltext.recovery') ? T('taskPackage.fulltext.recovery') : '';
+          setStatus([T('该文献既无全文 PDF 也无摘要，无法生成建议。'), recovery].filter(Boolean), false);
         } else if (e && e.status === 403 && code === 'ai_field_not_allowed') {
           const fields403 = (e && e.fields) || [];
           setStatus([T('以下字段未开放：{0}', fields403.map(fieldLabel).join('、'))], false);
@@ -767,7 +780,8 @@
     function renderKeyCard(preserve) {
       const snap = preserve ? snapshotInputs(keyCard) : null;
       keyCard.replaceChildren(node('h3', '个人钥匙（全局）', { style: 'margin:0 0 6px' }));
-      const meta = detection && detection.personal;
+      const personal = detection && detection.personal;
+      const meta = personal?.kind === 'decision' ? null : personal;
       if (!meta || !meta.configured) {
         keyCard.append(node('p', '未配置', { class: 'hint' }));
       } else {
@@ -829,7 +843,7 @@
       });
       keyCard.append(grid,
         el('label', { class: 'rf-ai-checks' }, verify, el('span', { text: T('保存前验证连通性'), style: 'font-size:.8rem' })),
-        el('div', { class: 'rf-ai-actions' }, save, test, meta && meta.configured ? del : null, status),
+        el('div', { class: 'rf-ai-actions' }, save, personal?.kind === 'decision' ? null : test, meta && meta.configured ? del : null, status),
         node('p', '钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
       restoreInputs(keyCard, snap);
     }
@@ -871,7 +885,9 @@
       /* 共享钥匙配置（owner 写；掩码确认/删除） */
       const sharedBox = el('div', { class: 'rf-ai-shared' });
       const sharedStatus = detection.sharedAvailable
-        ? literal('p', T('共享钥匙已启用：{0}', detection.sharedProviderName || '—'), { class: 'hint' })
+        ? (detection.sharedProviderName
+            ? literal('p', T('共享钥匙已启用：{0}', detection.sharedProviderName), { class: 'hint' })
+            : node('p', 'import.review.ai.shared_configured', { class: 'hint' }))
         : node('p', '未配置共享钥匙。', { class: 'hint' });
       sharedBox.append(sharedStatus);
       const provider = el('input', { class: 'input', translate: 'no', maxlength: '50', 'data-rf-name': 'shared_provider', 'aria-label': T('服务商') });
@@ -1195,6 +1211,7 @@
       else if (page === 'home') { detect().then(safe(renderAll)).catch(() => {}); }
       /* 其余页面不动设置卡（避免清掉用户正在填写的表单） */
     }));
+    document.addEventListener('reviewflow:ai-keys-changed', safe(() => scheduleDetect(true)));
     document.addEventListener('reviewflow:workflow-changed', safe(() => scheduleDetect(true)));   // B4 §5：开关联动
     document.addEventListener('reviewflow:language-changed', safe(() => {
       renderKeyCard(true);

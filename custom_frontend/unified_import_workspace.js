@@ -1,6 +1,7 @@
 /* One stable import-review reader, using the existing transactional endpoints. */
 (function(){'use strict';
  const W=WorkflowControls,U=ImportExportWorkspace,M=ImportReviewModel,I=window.WorkflowImports={};
+ const AI=window.ImportReviewAI;
  const n=U.node,l=U.literal,b=U.button,icon=U.icon,host=n('section',null,{id:'wf-import-review'});U.reviewHost.append(host);
  let active=null,batch=null,records=[],groups=[],legacy=[],legacyUndo=false,tab='duplicate',selected=null,page=0,listPage=0,ticket=0,context='',busy=false,assigning=false,dirty=false,lastView=null,errorMessage='',followUp='',saveNote='';
  /* r10-U2（F34）：撤销窗口是否已被本次启用关闭——只在「本会话真的启用过」
@@ -12,7 +13,7 @@
     参数的，不重渲染就会「句子变了、records/groups 还是旧语言」）；缓存也让
     切换语言不多发一次 /import-batches 请求。 */
  let listBatches=null,listTotal=0,listHasNext=false,listView=false;
- let batchOptions=[];const reports=new Map(),keepers=new Map(),labels={duplicate:'Duplicate checks',metadata:'Information differences',ready:'Ready to add to task',completed:'已完成',later:'Review later'};
+ let batchOptions=[];const reports=new Map(),keepers=new Map(),fieldEdits=new Map(),labels={duplicate:'Duplicate checks',metadata:'Information differences',ready:'Ready to add to task',completed:'已完成',later:'Review later'};
  /* r10-U2（批准单 §五 F46 ＋ 导入12项 #2）：动作名统一为一套动词＋名词——
    「加入任务 / Add to task」。此前同一动作在四个 locale 文件里以
    Activate reviewed records / Activate resolved records（reviewed↔resolved
@@ -128,7 +129,7 @@
     activate 的 finally 对当前 loader 无条件恢复续拉（已加载页保留）。 */
  let activationEpoch=0,activationInFlight=false;
  function loadingStatus(){return ImportReviewLoading.status(loadState,()=>loader?.resume());}
- I.open=async(batchId,preserve=false)=>{listView=false;const old=preserve?view():null,cached=preserve?{records,groups,legacy,batch,legacyUndo}:null,priority={records:records.findIndex(r=>id(r)===selected),candidates:groups.findIndex(r=>id(r)===selected),groups:legacy.findIndex(r=>id(r)===selected)};if(active!==batchId){tab='duplicate';selected=null;page=0;dirty=false;}active=batchId;overlays=ImportReviewUpdates.create();savedBatch=null;savedLegacyUndo=null;reviewVersion=W.version()||0;U.showImport('review');const t=++ticket,scope=W.scope(),epoch=activationEpoch,valid=()=>t===ticket&&scope===W.scope()&&active===batchId&&(!activationInFlight||epoch===activationEpoch);/* 高5（F31 重开批次/30 秒轮询重放加载动画）：preserve 重开且缓存可用时，
+ I.open=async(batchId,preserve=false)=>{listView=false;const old=preserve?view():null,cached=preserve?{records,groups,legacy,batch,legacyUndo}:null,priority={records:records.findIndex(r=>id(r)===selected),candidates:groups.findIndex(r=>id(r)===selected),groups:legacy.findIndex(r=>id(r)===selected)};if(active!==batchId){tab='duplicate';selected=null;page=0;dirty=false;mergeFeedback=null;errorMessage='';}active=batchId;overlays=ImportReviewUpdates.create();savedBatch=null;savedLegacyUndo=null;reviewVersion=W.version()||0;U.showImport('review');const t=++ticket,scope=W.scope(),epoch=activationEpoch,valid=()=>t===ticket&&scope===W.scope()&&active===batchId&&(!activationInFlight||epoch===activationEpoch);/* 高5（F31 重开批次/30 秒轮询重放加载动画）：preserve 重开且缓存可用时，
    起始状态按缓存记为 complete 而非 initial——屏上数据继续可用，后台加载静默
    合并；首轮 notify 的 initial/background 也被压住（见 loader 回调），只有
    failed/complete 才改变可见状态，30 秒轮询（refresh 仅在 complete 态触发）
@@ -140,7 +141,9 @@
    （静默合并），failed 与 complete 照常透传；空缓存不压（见 cachedUsable）。 */loadState=cachedUsable&&['initial','background'].includes(state.phase)?loadState:state;const source=state.feeds.find(f=>f.key==='records'),candidates=state.feeds.find(f=>f.key==='candidates'),prior=state.feeds.find(f=>f.key==='groups');records=overlays.merge('records',source?.result?source.all:(cached?.records||[]));groups=overlays.merge('candidates',candidates?.result?candidates.all:(cached?.groups||[]));legacy=overlays.merge('legacy',prior?.result?prior.all.map(g=>({...g,legacy:true})):(cached?.legacy||[]));legacyUndo=savedLegacyUndo??(prior?.result?!!prior.result.undo_available:!!cached?.legacyUndo);batch=source?.result||cached?.batch||{can_manage:!batchId&&!!W.settings()?.can_manage,review_counts:{},undo:{available:false}};if(state.phase==='failed'){loadState={...state,loaded:records.length+groups.length+legacy.length,total:state.total??(cached?cached.records.length+cached.groups.length+cached.legacy.length:null)};}if(savedBatch)batch={...batch,...savedBatch};reviewVersion=Math.max(reviewVersion,Number(batch.policy_version)||0);W.acceptImportVersion(reviewVersion,scope);U.importPolicy(batch);legacyUndo=legacyUndo&&batch.legacy_undo_allowed!==false;
    if(!reported&&source?.result){reported=true;const original=reports.get(batchId)||{},report={...original,...batch,source_files:batch.files,files:original.files};I.remember(report);renderImportReport(report);}
    if(busy){host.querySelector('.load-state')?.replaceWith(loadingStatus());return;}const location=first?old:view(),focused=document.activeElement;if(host.querySelector('dialog[open]')){host.querySelector('.load-state')?.replaceWith(loadingStatus());}else{render(!first||preserve);position(location,true);}if(!first){const focusTarget=focused?.isConnected?focused:focused?.id?document.getElementById(focused.id):null;if(focusTarget&&focusTarget!==document.body)focusTarget.focus({preventScroll:true});}host.removeAttribute('aria-busy');first=false;
-  });const current=loader;await current.initial();if(valid()&&loadState.phase!=='failed')void current.resume();
+  });const current=loader;
+   if(batchId&&AI)void AI.load().then(changed=>{if(changed&&valid()&&batch&&!busy&&!host.hasAttribute('aria-busy')&&!host.querySelector('dialog[open]'))redraw();});
+   await current.initial();if(valid()&&loadState.phase!=='failed')void current.resume();
  };
  function render(retainReader=false){const held=retainReader?{key:selected,tab,card:host.querySelector('.main-panel>.card')}:null;const oldBar=host.querySelector('.indicator'),previous=oldBar?{left:parseFloat(oldBar.style.left)||0,width:parseFloat(oldBar.style.width)||0}:null;cancelAnimationFrame(indicatorFrame);indicatorObserver?.disconnect();const all=items(),counts=Object.fromEntries(Object.keys(labels).map(k=>[k,all.filter(item=>category(item)===k).length]));/* 高4（r4）：“待启用”页签计数改用与启用按钮同源的 readyCount()——后端 review_counts.ready 与 /activate 实际启用集合同源，两处数字恒等（上轮页签按 items() 计数漏掉已决未启用组的成员记录，出现页签 0 ≠ 按钮 1）。 */counts.ready=readyCount();let visible=all.filter(item=>category(item)===tab);/* r10-U2（导入12项 #10-A）：'稍后处理' 栏整表按「我暂缓的 → 等待关联记录」分组排序（跨页一致），页签计数、分页、上下条切换都读同一顺序；其它页签不动。 */if(tab==='later')visible=laterOrdered(visible);if(retainReader&&selected){const index=visible.findIndex(item=>id(item)===selected);if(index>=0)page=Math.floor(index/20);}page=Math.min(page,Math.max(0,Math.ceil(visible.length/20)-1));/* r10-U2（#6-A）：legacy 组已移出分类队列，但仍可选中——选中项若属
    任务级分区则保留选择，不按批次可见集清空。 */const legacySelected=legacy.find(g=>id(g)===selected);if(!legacySelected&&!visible.some(item=>id(item)===selected))selected=visible[page*20]?id(visible[page*20]):null;
@@ -150,15 +153,17 @@
    （后端 review_counts.needs_review 与 /attention 同源），其余数字收进 title；
    完成度按「已核验/需要核验」保留在副行。 */const meta=n('div',null,{class:'compact-files'}),/* 状态行可换行：320px 窄屏 + 长语种下「待你处理 N 项」不得把来源文件/帮助挤出视口。 */progress=n('div',null,{class:'compact-progress',style:'min-width:0;flex-wrap:wrap;white-space:normal'}),needs=Number(batch?.review_counts?.needs_review??records.filter(r=>['duplicate','metadata','dependency','waiting'].includes(M.reason(r))).length);progress.append(n('span','Needs your review'),l('b',needs+' '+T('items')),n('span',total?done+' / '+total:loadState?.phase==='complete'?T('No review needed'):'—'));progress.title=T('Needs your review: {0}. Reviewed: {1} of {2}.',needs,done,total);meta.append(progress);
   const sources=n('details',null,{class:'sources-detail'}),sourceHead=n('summary');sourceHead.append(l('span',T('Source files')+' · '+(batch.files||[]).length),icon('chevron'));const sourceList=n('div');for(const file of batch.files||[])sourceList.append(l('span',file.filename||file.name,{class:'file'}));sources.append(sourceHead,sourceList);meta.append(sources);const explain=b('Help',helpDialog);explain.prepend(icon('info'));meta.append(explain);
-  const toolbar=n('div',null,{class:'compact-tools'}),undo=write('Undo last review',I.undo,!(batch.undo?.available||legacyUndo));undo.classList.add('undo');undo.prepend(icon('undo'));undo.title=navigator.platform.includes('Mac')?'⌘ Z':'Ctrl Z';const bulk=write('Confirm eligible duplicates',()=>bulkDialog('candidate'),!groups.some(ImportReviewUpdates.eligible)),keep=write('Keep existing information in bulk',()=>bulkDialog('metadata'),!records.some(r=>r.metadata&&r.metadata.action==null));toolbar.append(bulk,keep,undo);
-  host.replaceChildren(selector,meta,toolbar,n('p',null,{class:'status-message',role:'status','aria-live':'polite'}));host.querySelector('.status-message').textContent=errorMessage;/* #12：撤销窗口说明单独成行（顶部 .status-message 的既有文案 'Saved' 保持逐字不变）。 */if(errorMessage===T('Saved')&&saveNote){const note=n('p',null,{class:'save-undo-note',role:'status','aria-live':'polite',style:'font-size:.72rem;color:var(--muted);margin:0 0 4px'});note.textContent=saveNote;host.append(note);}
+  const toolbar=n('div',null,{class:'compact-tools'}),undo=write('Undo last review',I.undo,!(batch.undo?.available||legacyUndo));undo.classList.add('undo');undo.prepend(icon('undo'));undo.title=navigator.platform.includes('Mac')?'⌘ Z':'Ctrl Z';const bulk=write('Confirm eligible duplicates',()=>bulkDialog('candidate'),!groups.some(group=>group.bulk_eligible===true)),keep=write('Keep existing information in bulk',()=>bulkDialog('metadata'),!records.some(r=>r.metadata&&r.metadata.action==null));toolbar.append(bulk,keep,undo);
+  host.replaceChildren(selector,meta,toolbar,n('p',null,{class:'status-message',role:'status','aria-live':'polite'}));host.querySelector('.status-message').textContent=errorMessage;
+   renderMergeFeedback(mergeFeedback);
+   if(active&&AI)AI.toolbar({host,batchId:active,visible:visible.slice(page*20,page*20+20),busy,redraw,refresh:()=>I.open(active,true)});/* #12：撤销窗口说明单独成行（顶部 .status-message 的既有文案 'Saved' 保持逐字不变）。 */if(errorMessage===T('Saved')&&saveNote){const note=n('p',null,{class:'save-undo-note',role:'status','aria-live':'polite',style:'font-size:.72rem;color:var(--muted);margin:0 0 4px'});note.textContent=saveNote;host.append(note);}
 
   const tabs=n('div',null,{class:'tabs-wrap'}),nav=n('nav',null,{class:'tabs',role:'tablist','aria-label':T('Import review')}),indicator=n('span',null,{class:'indicator'});tabs.append(nav);for(const [key,label] of Object.entries(labels)){const button=b(label,()=>{const old=view();tab=key;page=0;selected=null;dirty=false;render();position(old);},'tab');button.disabled=busy;button.setAttribute('role','tab');button.id='wf-review-tab-'+key;button.setAttribute('aria-selected',String(key===tab));button.tabIndex=key===tab?0:-1;button.setAttribute('aria-controls','wf-import-attention');/* r10-U2（F32）：计数常显单位小字（触屏读不到 title/aria）；「≥」只在
    加载未完成且计数非零时出现——空分类不再显示「≥ 0」。 */{const count=Number(counts[key])||0,unknown=loadState?.phase!=='complete'&&count>0;button.append(l('span',(unknown?'≥ ':'')+count,{class:'count'}),n('span',TAB_UNIT_TEXT[tabUnit[key]],{class:'count-unit'}));}nav.append(button);}nav.append(indicator);host.append(tabs);nav.onkeydown=e=>{if(busy)return;const keys=Object.keys(labels),index=keys.indexOf(tab);let next;if(e.key==='ArrowRight')next=(index+1)%keys.length;if(e.key==='ArrowLeft')next=(index+keys.length-1)%keys.length;if(e.key==='Home')next=0;if(e.key==='End')next=keys.length-1;if(next!=null){e.preventDefault();tab=keys[next];page=0;selected=null;render();document.getElementById('wf-review-tab-'+tab)?.focus({preventScroll:true});}};function moveBar(animate){cancelAnimationFrame(indicatorFrame);const chosen=nav.querySelector('[aria-selected=true]');if(!chosen?.isConnected||!chosen.getClientRects().length)return;const x=chosen.offsetLeft,w=chosen.offsetWidth;if(!animate||!previous||matchMedia('(prefers-reduced-motion:reduce)').matches){indicator.style.left=x+'px';indicator.style.width=w+'px';return;}const start=performance.now(),left=previous.left,right=left+previous.width,forward=x>=left,ease=t=>1-Math.pow(1-Math.max(0,Math.min(1,t)),3);function step(now){if(!chosen.isConnected)return;const t=now-start;let a=left+(x-left)*ease((t-(forward?100:0))/360),z=right+(x+w-right)*ease((t-(forward?0:100))/360);const bump=Math.sin(Math.PI*Math.min(1,Math.max(0,(t-330)/130)))*2;forward?z+=bump:a-=bump;indicator.style.left=a+'px';indicator.style.width=Math.max(2,z-a)+'px';if(t<460)indicatorFrame=requestAnimationFrame(step);else{indicator.style.left=x+'px';indicator.style.width=w+'px';}}indicatorFrame=requestAnimationFrame(step);}indicatorFrame=requestAnimationFrame(()=>moveBar(true));let firstResize=true;indicatorObserver=new ResizeObserver(()=>{if(firstResize){firstResize=false;return;}moveBar(false);});indicatorObserver.observe(nav);
   const space=n('div',null,{class:'review-space',id:'wf-import-attention',role:'tabpanel','aria-labelledby':'wf-review-tab-'+tab}),side=n('aside',null,{class:'queue-side'}),label=n('div',null,{class:'queue-label'}),queue=n('div',null,{class:'queue'});label.append(n('span','Review queue'),l('span',visible.length));side.append(label,queue);{/* r10-U2（导入12项 #10-A）：'稍后处理' 栏按「我暂缓的 / 等待关联记录」分组，
-   组头常显并给出该组该做什么；其它页签保持单一队列。 */let seenGroup='';for(const item of visible.slice(page*20,page*20+20)){if(tab==='later'){const group=laterGroup(item);if(group!==seenGroup){seenGroup=group;const head=n('div',null,{class:'queue-group-label','data-later-group':group,style:'display:flex;justify-content:space-between;gap:6px;margin:2px 0 0;padding:4px 2px;font-size:11px;font-weight:600;color:var(--muted);border-top:1px solid var(--border)'}),count=visible.filter(entry=>laterGroup(entry)===group).length;head.append(n('span',LATER_GROUP_LABEL[group]),l('span',count));queue.append(head);}}const key=id(item),button=b('',()=>{const old=view();selected=key;dirty=false;render();position(old);},'queue-item'+(key===selected?' active':''));button.disabled=busy;button.id='wf-queue-'+encodeURIComponent(key);button.setAttribute('aria-current',String(key===selected));/* 高4（评审修正）：队列项同款状态徽标（仅已完成分类），与阅读卡同一 completionBadge，语义一致。 */if(category(item)==='completed'){const state=completionBadge(item);button.append(n('span',state,{class:'badge'+(state==='已核验待启用'?' amber':'')}));}/* r10-U2（F30）：稍后处理栏的两个来源徽标（依赖阻塞/仅本浏览器）。 */{const scope=scopeBadge(item);if(scope)button.append(n('span',scope,{class:'badge amber'}));}button.append(l('span',title(item),{class:'qtitle'}));queue.append(button);}}if(visible.length>20){const prev=b('Previous page',()=>{page--;selected=null;render();}),next=b('Next page',()=>{page++;selected=null;render();});prev.disabled=page===0;next.disabled=(page+1)*20>=visible.length;side.append(prev,next);}const main=n('div',null,{class:'main-panel'}),item=visible.find(item=>id(item)===selected);main.append(item?(held?.key===selected&&held.tab===tab&&held.card?.dataset.reviewFingerprint===JSON.stringify(item)?held.card:reader(item)):legacySelected?reader(legacySelected):empty());const mobileNav=n('div',null,{class:'record-nav'}),pick=n('select',null,{'aria-label':T('Choose a review record')});for(const [index,r] of visible.entries())pick.append(l('option',(index+1)+'/'+visible.length+' · '+title(r),{value:id(r)}));pick.value=selected||'';pick.disabled=busy||!visible.length;pick.onchange=()=>{const old=view();selected=pick.value;dirty=false;render();position(old);};const at=visible.findIndex(r=>id(r)===selected),step=delta=>{const old=view();selected=id(visible[at+delta]);dirty=false;render();position(old);},prev=b('',()=>step(-1)),next=b('',()=>step(1));prev.append(icon('chevron'));prev.classList.add('previous');prev.setAttribute('aria-label',T('Previous record'));next.append(icon('chevron'));next.setAttribute('aria-label',T('Next record'));prev.disabled=busy||at<=0;next.disabled=busy||at<0||at>=visible.length-1;mobileNav.append(prev,pick,next);space.append(side,mobileNav,main);host.append(space);const legacyBox=legacySection();if(legacyBox)host.append(legacyBox);/* r10-U2（F34）：撤销按钮禁用时按原因给 title——启用后核验窗口关闭
+   组头常显并给出该组该做什么；其它页签保持单一队列。 */let seenGroup='';for(const item of visible.slice(page*20,page*20+20)){if(tab==='later'){const group=laterGroup(item);if(group!==seenGroup){seenGroup=group;const head=n('div',null,{class:'queue-group-label','data-later-group':group,style:'display:flex;justify-content:space-between;gap:6px;margin:2px 0 0;padding:4px 2px;font-size:11px;font-weight:600;color:var(--muted);border-top:1px solid var(--border)'}),count=visible.filter(entry=>laterGroup(entry)===group).length;head.append(n('span',LATER_GROUP_LABEL[group]),l('span',count));queue.append(head);}}const key=id(item),button=b('',()=>{const old=view();selected=key;dirty=false;render();position(old);},'queue-item'+(key===selected?' active':''));button.disabled=busy;button.id='wf-queue-'+encodeURIComponent(key);button.setAttribute('aria-current',String(key===selected));/* 高4（评审修正）：队列项同款状态徽标（仅已完成分类），与阅读卡同一 completionBadge，语义一致。 */if(category(item)==='completed'){const state=completionBadge(item);button.append(n('span',state,{class:'badge'+(state==='已核验待启用'?' amber':'')}));}/* r10-U2（F30）：稍后处理栏的两个来源徽标（依赖阻塞/仅本浏览器）。 */{const scope=scopeBadge(item);if(scope)button.append(n('span',scope,{class:'badge amber'}));}button.append(l('span',title(item),{class:'qtitle'}));const aiBadge=AI?.badge(active,item);if(aiBadge)button.append(aiBadge);queue.append(button);}}if(visible.length>20){const prev=b('Previous page',()=>{page--;selected=null;render();}),next=b('Next page',()=>{page++;selected=null;render();});prev.disabled=page===0;next.disabled=(page+1)*20>=visible.length;side.append(prev,next);}const main=n('div',null,{class:'main-panel'}),item=visible.find(item=>id(item)===selected);main.append(item?(held?.key===selected&&held.tab===tab&&held.card?.dataset.reviewFingerprint===JSON.stringify(item)?held.card:reader(item)):legacySelected?reader(legacySelected):empty());const mobileNav=n('div',null,{class:'record-nav'}),pick=n('select',null,{'aria-label':T('Choose a review record')});for(const [index,r] of visible.entries())pick.append(l('option',(index+1)+'/'+visible.length+' · '+title(r),{value:id(r)}));pick.value=selected||'';pick.disabled=busy||!visible.length;pick.onchange=()=>{const old=view();selected=pick.value;dirty=false;render();position(old);};const at=visible.findIndex(r=>id(r)===selected),step=delta=>{const old=view();selected=id(visible[at+delta]);dirty=false;render();position(old);},prev=b('',()=>step(-1)),next=b('',()=>step(1));prev.append(icon('chevron'));prev.classList.add('previous');prev.setAttribute('aria-label',T('Previous record'));next.append(icon('chevron'));next.setAttribute('aria-label',T('Next record'));prev.disabled=busy||at<=0;next.disabled=busy||at<0||at>=visible.length-1;mobileNav.append(prev,pick,next);space.append(side,mobileNav,main);host.append(space);const legacyBox=legacySection();if(legacyBox)host.append(legacyBox);/* r10-U2（F34）：撤销按钮禁用时按原因给 title——启用后核验窗口关闭
    （本地记录的启用事实或服务端已无可用撤销）/ 本次尚无保存 / 无管理权；
-   可撤销时退回原快捷键提示。 */{const undoReason=!batch.can_manage?'Only the task owner can undo import review':!(batch.undo?.available||legacyUndo)?(undoClosedByActivation?'Adding records to the task closed the undo window; earlier reviews can no longer be undone':'Nothing to undo yet'):'Undo ends when you add records to the task, save another review, or someone else changes the data.';undo.title=T((navigator.platform.includes('Mac')?'⌘ Z':'Ctrl Z')+' · ')+T(undoReason);}if(held?.card===main.firstElementChild){for(const button of main.querySelectorAll('[data-import-mutation]'))button.disabled=busy||!batch.can_manage||(button.dataset.importActivation?!ImportReviewUpdates.canActivate(batch,busy):button.dataset.importBlocked==='true');for(const radio of main.querySelectorAll('input[type=radio][data-import-blocked]'))radio.disabled=busy||!batch.can_manage||radio.dataset.importBlocked==='true';}const bar=n('div',null,{class:'footer-bar',id:'wf-import-activation'}),help=n('div');/* r10-U2（导入12项 #2 文案级）：把抽象动作名讲清——「加入任务/补充来源」而
+   可撤销时退回原快捷键提示。 */{const undoReason=!batch.can_manage?'Only the task owner can undo import review':!(batch.undo?.available||legacyUndo)?(undoClosedByActivation?'Adding records to the task closed the undo window; earlier reviews can no longer be undone':'Nothing to undo yet'):'Undo ends when you add records to the task, save another review, or someone else changes the data.';undo.title=T((navigator.platform.includes('Mac')?'⌘ Z':'Ctrl Z')+' · ')+T(undoReason);}if(held?.card===main.firstElementChild){for(const button of main.querySelectorAll('[data-import-mutation]'))button.disabled=busy||!batch.can_manage||(button.dataset.importActivation?!ImportReviewUpdates.canActivate(batch,busy):button.dataset.importBlocked==='true');for(const radio of main.querySelectorAll('input[type=radio][data-import-blocked],select[data-import-field]'))radio.disabled=busy||!batch.can_manage||radio.dataset.importBlocked==='true';}const bar=n('div',null,{class:'footer-bar',id:'wf-import-activation'}),help=n('div');/* r10-U2（导入12项 #2 文案级）：把抽象动作名讲清——「加入任务/补充来源」而
    不是「启用（过滤）」；副标题明确它不作出纳入决定、不改变筛选结果。 */
  help.append(n('b','Add reviewed records to the task'),n('p','Adds resolved records or source links. This is not an inclusion decision; unresolved candidates and information differences stay staged.'));const activate=write(ADD_TO_TASK,confirmActivation,!active||!ImportReviewUpdates.canActivate(batch,busy));activate.classList.add('primary');activate.append(l('span',' ('+readyCount()+')'));bar.append(help,activate);host.append(bar);const controls=n('div',null,{class:'report-actions'});controls.append(b('All batches',I.list),b('Export provenance CSV',I.exportCurrent),b('Refresh',()=>I.open(active,true)));host.append(controls);for(const control of controls.querySelectorAll('button'))control.disabled=busy;if(!batch.can_manage)host.querySelector('.status-message').textContent=T('The task owner reviews metadata and activates records.');
  }
@@ -174,9 +179,137 @@ if(item.legacy){const decided=['duplicate','not_duplicate'].includes(item.status
    组结论已存且全组已激活 / 任务级遗留核验。kicker 加流向徽章讲清，
    已决但未启用的组去向另在保存后提示（见 toast）。 */{const flow=item.legacy?'Task-level, outside this batch':!item.members&&M.reason(item)==='completed'?'Added to the task':item.members&&item.members.length>0&&item.members.every(m=>m.ref_type==='active'||m.record?.state==='active')?'Group decided; all records added to the task':'';if(flow)kicker.append(n('span',flow,{class:'badge hint-flow'}));}kicker.append(l('small',item.filename||T(item.legacy?'Task duplicate checks':'Source record'),{class:'hint'}));head.append(kicker,item.members?n('h3','Are these records the same article?'):l('h3',title(item)));kicker.querySelector('.hint')?.remove();const body=n('div',null,{class:'card-body'}),actions=n('div',null,{class:'card-actions'}),help=n('div',null,{class:'result-help'});card.append(head,body,actions,help);item.members?candidateReader(item,body,actions,help):recordReader(item,body,actions,help);return card;}
  function recordCard(member,choice,showTitle=true){const article=member.article||member.record?.article||member.record?.original||member,card=n('div',null,{class:'record'});if(member.ref_type==='active'||member.imported_in_batch===0)card.append(n('span','Current bibliographic information',{class:'badge'}));if(choice)card.append(choice);if(showTitle)card.append(l('h3',article.title||member.ref_id||'—'));let raw=article.raw||{};if(article.raw_json){try{raw=JSON.parse(article.raw_json);}catch(_){}}const dl=n('dl');for(const [field,key] of [['authors','Authors'],['year','Year'],['journal','Journal'],['doi','DOI']])dl.append(n('dt',key),l('dd',article[field]||'—'));dl.append(n('dt','Source file'),l('dd',member.record?.filename||member.source_file||raw.source_file||'—'));card.append(dl,U.details('View original source record',l('pre',JSON.stringify(member.record?.original||raw||member,null,2))));return card;}
- function candidateReader(item,body,actions,help){const compare=n('div',null,{class:'compare'}),members=item.members||[],activeMembers=members.filter(m=>m.ref_type==='active'),key=id(item),final=['duplicate','not_duplicate'].includes(item.status);let keeper=keepers.get(W.scope()+':'+key)||item.keeper_key||item.keeper_record_id||activeMembers[0]?.ref_id||members[0]?.ref_id||members[0]?.zotero_key;for(const member of members){const value=member.ref_id||member.zotero_key,choice=n('label'),radio=n('input',null,{type:'radio',name:'keeper-'+item.review_id,value});radio.checked=keeper===value;radio.dataset.importBlocked=String(final||(!item.legacy&&activeMembers.length>0&&member.ref_type!=='active'));radio.disabled=busy||!batch.can_manage||radio.dataset.importBlocked==='true';radio.onchange=()=>{keepers.set(W.scope()+':'+key,value);keeper=value;dirty=true;};choice.append(radio,n('span','Retain this record'));compare.append(recordCard(member,choice));}body.append(compare);if(!final){actions.append(write('Confirm duplicate and retain selected',()=>mutate(item,{status:'duplicate',keeper}),!keeper||activeMembers.length>1),write('Not duplicates — keep all',()=>mutate(item,{status:'not_duplicate'})),write('Review later',()=>mutate(item,{status:'undecided'})));actions.firstElementChild.classList.add('primary');actions.lastElementChild.classList.add('later');help.hidden=activeMembers.length<=1;if(activeMembers.length>1)help.textContent=T('Multiple active records cannot be merged here. Their saved work remains available.');}else{body.append(n('p',item.status==='duplicate'?'Duplicate confirmed':'Not duplicates'));help.hidden=true;}}
- function metadataTable(metadata){const table=n('table',null,{class:'wf-metadata-table'}),thead=n('thead'),head=n('tr'),tbody=n('tbody');['Field','Existing bibliographic information','Incoming bibliographic information'].forEach(key=>head.append(n('th',key,{scope:'col'})));thead.append(head);for(const field of M.comparison(metadata)){const row=n('tr',null,{'data-changed':String(field.changed)});row.append(n('th',field.label,{scope:'row'}),l('td',field.before||'—',{'data-label':T('Existing bibliographic information')}),l('td',field.incoming||'—',{'data-label':T('Incoming bibliographic information')}));tbody.append(row);}table.append(thead,tbody);const tools=n('div',null,{class:'diff-tools'}),label=n('label'),only=n('input',null,{type:'checkbox'});label.append(only,n('span','Only changed fields'));only.checked=true;only.onchange=()=>[...tbody.children].forEach(row=>row.hidden=only.checked&&row.dataset.changed!=='true');only.onchange();tools.append(label);const wrap=n('div',null,{class:'table-wrap'}),root=n('div');wrap.append(table);root.append(tools,wrap);return root;}
- function recordReader(item,body,actions,help){const metadata=item.metadata,pending=metadata&&(metadata.action==null||metadata.action==='pending');if(metadata)body.append(metadataTable(metadata),U.details('View original source record',l('pre',JSON.stringify(item.original,null,2))));else body.append(recordCard({article:item.article||item.original,record:item},null,false));if(pending){actions.append(write('Keep existing metadata',()=>mutate(item,{action:'keep_existing'})),write('Accept incoming metadata',()=>mutate(item,{action:'accept_incoming'}),!!metadata.stale),write('Review later',()=>{const old=view();defer(id(item),true);selected=null;render();position(old);}));actions.firstElementChild.classList.add('primary');actions.lastElementChild.classList.add('later');const acceptButton=actions.children[1];if(acceptButton)acceptButton.title=T('Accepts immediately: the library record is updated now, before adding to the task. You can undo before adding to the task.');help.textContent=T(metadata.stale?'Existing information changed since this proposal. Keep the current information; accepting this older proposal is unavailable.':'Accepting incoming information updates the library record immediately, before adding to the task; it replaces the fields shown above. Undo is available until records are added to the task.');}else if(tab==='later'){actions.append(b('Review now',()=>{const old=view();defer(id(item),false);tab=M.reason(item)==='metadata'?'metadata':M.reason(item)==='ready'?'ready':'later';selected=id(item);render();position(old);}));if(item.related_batch_id)actions.append(b('Open linked import',()=>I.open(item.related_batch_id)));help.textContent=T('A linked record must be added to the task or reviewed first. Existing articles remain available.');}else{if(tab==='ready')actions.append(write(ADD_TO_TASK,confirmActivation,!ImportReviewUpdates.canActivate(batch,busy)));help.hidden=true;}}
+ function redraw(){const old=view();render();position(old,true);}
+ const memberId=member=>member.ref_id||member.zotero_key;
+ const reviewKey=item=>W.scope()+':'+active+':'+id(item);
+ const suggestedId=item=>item.suggested_keeper?.keeper_key||item.suggested_keeper?.keeper_record_id;
+ const memberTitle=member=>member?.article?.title||member?.record?.article?.title||member?.title||member?.ref_id||'—';
+ const keeperFields=member=>member?.ref_type==='active'?{keeper_key:member.ref_id}:{keeper_record_id:member.ref_id};
+ function keeperCaption(item,keeper){
+   const member=item.members.find(row=>memberId(row)===keeper);
+   const details=[member?.record?.filename,member?.record?.row_locator||member?.record?.row_index].filter(Boolean);
+   return [memberTitle(member),...details].join(' · ');
+ }
+ function keeperReasons(item){
+   const reasons=item.suggested_keeper?.reasons||[];
+   return reasons.map(reason=>T('import.merge.reason.'+reason)).join(' · ');
+ }
+ function bulkReason(item){
+   return item.bulk_eligible===false&&item.bulk_ineligible_reason
+     ?T('import.merge.ineligible.'+item.bulk_ineligible_reason):'';
+ }
+ function candidateReader(item,body,actions,help){
+   const compare=n('div',null,{class:'compare'}),members=item.members||[];
+   const activeMembers=members.filter(member=>member.ref_type==='active'),key=reviewKey(item);
+   const final=['duplicate','not_duplicate'].includes(item.status);
+   let keeper=final?(item.keeper_key||item.keeper_record_id):
+     (keepers.get(key)||suggestedId(item)||item.keeper_key||item.keeper_record_id||memberId(activeMembers[0]||members[0]||{}));
+   if(!members.some(member=>memberId(member)===keeper))keeper=undefined;
+   const reason=keeperReasons(item),ineligible=bulkReason(item);
+   const suggestion=AI?.suggestion(active,item);
+   const hint=n('p',null,{class:'hint'});
+   const updateHint=()=>{hint.textContent=keeper&&keeper===suggestedId(item)&&reason
+     ?T('import.review.keeper_reason',{keeper:keeperCaption(item,keeper),reasons:reason}):'';hint.hidden=!hint.textContent;};
+   if(suggestion)body.append(AI.summary(suggestion));
+   if(!final){updateHint();body.append(hint);if(ineligible)body.append(l('p',ineligible,{class:'hint'}));}
+   const conflictTools=n('div');
+   function renderConflict(){
+     const member=members.find(row=>memberId(row)===keeper);
+     conflictTools.replaceChildren();
+     if(!item.legacy&&!final&&member&&batch.can_manage&&activeMembers.length<2){
+       const controls=AI?.conflict({batchId:active,item,keeper:keeperFields(member),busy,redraw,
+         refresh:()=>I.open(active,true),apply:payload=>mutate(item,{status:'duplicate',keeper,...payload})});
+       if(controls)conflictTools.append(controls);
+     }
+   }
+   for(const member of members){
+     const value=memberId(member),choice=n('label'),radio=n('input',null,{type:'radio',name:'keeper-'+item.review_id,value});
+     radio.checked=keeper===value;
+     radio.dataset.importBlocked=String(final||(!item.legacy&&activeMembers.length>0&&member.ref_type!=='active'));
+     radio.disabled=busy||!batch.can_manage||radio.dataset.importBlocked==='true';
+     radio.onchange=()=>{keepers.set(key,value);keeper=value;dirty=true;updateHint();renderConflict();};
+     choice.append(radio,n('span','Retain this record'));
+     compare.append(recordCard(member,choice));
+   }
+   body.append(compare,conflictTools);
+   renderConflict();
+   if(!final){
+     const confirm=write('Confirm duplicate and retain selected',()=>mutate(item,{status:'duplicate',keeper}),!keeper||activeMembers.length>1);
+     const different=write('Not duplicates — keep all',()=>mutate(item,{status:'not_duplicate'}));
+     if(!suggestion||(!suggestion.degraded&&suggestion.verdict==='same'))confirm.classList.add('primary');
+     if(suggestion&&!suggestion.degraded&&suggestion.verdict==='different')different.classList.add('primary');
+     const later=write('Review later',()=>mutate(item,{status:'undecided'}));
+     later.classList.add('later');
+     actions.append(confirm,different,later);
+     help.hidden=activeMembers.length<=1;
+     if(activeMembers.length>1)help.textContent=T('Multiple active records cannot be merged here. Their saved work remains available.');
+   }else{body.append(n('p',item.status==='duplicate'?'Duplicate confirmed':'Not duplicates'));help.hidden=true;}
+ }
+ function metadataTable(metadata,picks,suggestion){
+   const table=n('table',null,{class:'wf-metadata-table'}),thead=n('thead'),head=n('tr'),tbody=n('tbody');
+   const labels=['Field','Existing bibliographic information','Incoming bibliographic information'];
+   if(picks)labels.push('import.review.field_picks.apply');
+   for(const key of labels)head.append(n('th',key,{scope:'col'}));
+   thead.append(head);
+   for(const field of M.comparison(metadata)){
+     const row=n('tr',null,{'data-changed':String(field.changed)});
+     const highlight=suggestion?.degraded?null:suggestion?.field_picks?.[field.key];
+     const left=l('td',field.before||'—',{'data-label':T(labels[1])});
+     const right=l('td',field.incoming||'—',{'data-label':T(labels[2])});
+     if(highlight==='left'||highlight==='right'){
+       (highlight==='left'?left:right).classList.add('rf-import-ai-pick');
+       (highlight==='left'?left:right).append(n('small','import.review.ai.suggested',{class:'badge'}));
+     }
+     row.append(n('th',field.label,{scope:'row'}),left,right);
+     if(picks){
+       const cell=n('td',null,{'data-label':T(labels[3])});
+       if(field.changed){
+         const select=n('select',null,{'aria-label':T(field.label)});
+         select.append(n('option','import.review.field_picks.keep',{value:'keep'}),n('option','import.review.field_picks.incoming',{value:'incoming'}));
+         select.value=picks[field.key]||'keep';
+         select.disabled=busy||!batch.can_manage||!!metadata.stale;
+         select.dataset.importField='true';
+         select.dataset.importBlocked=String(!!metadata.stale);
+         select.onchange=()=>{picks[field.key]=select.value;dirty=true;};
+         cell.append(select);
+       }
+       row.append(cell);
+     }
+     tbody.append(row);
+   }
+   table.append(thead,tbody);
+   const tools=n('div',null,{class:'diff-tools'}),label=n('label'),only=n('input',null,{type:'checkbox'});
+   label.append(only,n('span','Only changed fields'));
+   only.checked=true;
+   only.onchange=()=>[...tbody.children].forEach(row=>row.hidden=only.checked&&row.dataset.changed!=='true');
+   only.onchange();
+   tools.append(label);
+   const wrap=n('div',null,{class:'table-wrap'}),root=n('div');
+   wrap.append(table);root.append(tools,wrap);
+   return root;
+ }
+ function recordReader(item,body,actions,help){
+   const metadata=item.metadata,pending=metadata&&(metadata.action==null||metadata.action==='pending');
+   const key=reviewKey(item),picks=pending?(fieldEdits.get(key)||Object.create(null)):null;
+   if(picks)fieldEdits.set(key,picks);
+   const suggestion=AI?.suggestion(active,item);
+   if(suggestion)body.append(AI.summary(suggestion));
+   if(metadata)body.append(metadataTable(metadata,picks,suggestion),U.details('View original source record',l('pre',JSON.stringify(item.original,null,2))));
+   else body.append(recordCard({article:item.article||item.original,record:item},null,false));
+   if(pending){
+     actions.append(write('Keep existing metadata',()=>mutate(item,{action:'keep_existing'})),
+       write('Accept incoming metadata',()=>mutate(item,{action:'accept_incoming'}),!!metadata.stale),
+       write('import.review.field_picks.apply',()=>mutate(item,{action:'field_picks',picks:{...picks}}),!!metadata.stale),
+       write('Review later',()=>{const old=view();defer(id(item),true);selected=null;render();position(old);}));
+     actions.firstElementChild.classList.add('primary');actions.lastElementChild.classList.add('later');
+     const acceptButton=actions.children[1];if(acceptButton)acceptButton.title=T('Accepts immediately: the library record is updated now, before adding to the task. You can undo before adding to the task.');
+     help.textContent=T(metadata.stale?'Existing information changed since this proposal. Keep the current information; accepting this older proposal is unavailable.':'Accepting incoming information updates the library record immediately, before adding to the task; it replaces the fields shown above. Undo is available until records are added to the task.');
+   }else if(tab==='later'){
+     actions.append(b('Review now',()=>{const old=view();defer(id(item),false);tab=M.reason(item)==='metadata'?'metadata':M.reason(item)==='ready'?'ready':'later';selected=id(item);render();position(old);}));
+     if(item.related_batch_id)actions.append(b('Open linked import',()=>I.open(item.related_batch_id)));
+     help.textContent=T('A linked record must be added to the task or reviewed first. Existing articles remain available.');
+   }else{if(tab==='ready')actions.append(write(ADD_TO_TASK,confirmActivation,!ImportReviewUpdates.canActivate(batch,busy)));help.hidden=true;}
+ }
  function helpDialog(){const dialog=n('dialog',null,{'aria-label':T('Import review')}),close=b('Close',()=>{dialog.close();dialog.remove();});dialog.append(n('h2','Import review'),n('p','Compare duplicates and choose which record to retain. For information differences, keep existing information or use incoming information.'),n('p','Reviewed records still need to be added to the task. Unresolved records stay staged.'),close);host.append(dialog);dialog.addEventListener('cancel',()=>dialog.remove());dialog.showModal();close.focus();}
  function applyResult(result,scope){const delta=result.review_updates;if(delta){overlays.apply(delta);records=overlays.merge('records',records);groups=overlays.merge('candidates',groups);legacy=overlays.merge('legacy',legacy);}savedBatch={...result};delete savedBatch.review_updates;if(result.undo?.available)undoClosedByActivation=false;/* 评审修正（渐进加载快照回退）：保存后的计数以
    result.review_updates.review_counts 为权威——后端在同一写事务内经
@@ -190,9 +323,149 @@ if(item.legacy){const decided=['duplicate','not_duplicate'].includes(item.status
    无 review_updates 的响应（如 activate，随后由 I.open 重取批次详情）
    退回本地已加载记录推导（F05 核验完按钮仍 (0) 禁用的原始修复语义）。 */const authoritativeCounts=delta&&delta.review_counts;if(authoritativeCounts)savedBatch={...savedBatch,review_counts:authoritativeCounts};batch={...batch,...savedBatch};if(!authoritativeCounts)batch={...batch,review_counts:{...(batch.review_counts||{}),ready:records.filter(r=>M.reason(r)==='ready').length}};if(result.policy_version){reviewVersion=result.policy_version;W.acceptImportVersion(result.policy_version,scope);}legacyUndo=legacyUndo&&batch.legacy_undo_allowed!==false;syncBatchOption();U.importPolicy(batch);}
  function auxiliary(){document.dispatchEvent(new CustomEvent('reviewflow:import-completed'));void Promise.allSettled([Promise.resolve().then(()=>refreshProgress()),Promise.resolve().then(()=>I.notice())]);}
- async function saveRequest(path,body,after){if(busy)return;const old=view(),scope=W.scope(),batchId=active;lastView=old;errorMessage=T('Saving…');saveNote='';busy=true;let saved=false;render(true);position(old,true);host.setAttribute('aria-busy','true');try{const result=await api(path,{method:'POST',body});if(scope!==W.scope()||batchId!==active)return;if(result.review_updates)applyResult(result,scope);after?.(result);dirty=false;saved=true;errorMessage=T('Saved');saveNote=(followUp?T(followUp)+' ':'')+T('You can undo this until records are added to the task.');followUp='';auxiliary();}catch(error){if(scope===W.scope()&&batchId===active){errorMessage=W.errorText(error);W.error(error);}}finally{busy=false;if(scope===W.scope()&&batchId===active){host.removeAttribute('aria-busy');render(true);position(old,true);/* F36：收尾 render 之后再浮出就近反馈，避免被重建的 DOM 清掉。 */if(saved)flashSaved(T('Saved ✓'));}}}
- async function mutate(item,payload){let path,body;if(item.legacy){path=taskApi()+'/title-duplicate-reviews/'+encodeURIComponent(item.review_id)+scrQ();body={decision:payload.status,keeper_key:payload.keeper||''};}else{path=taskApi()+'/import-batches/'+encodeURIComponent(active)+(item.members?'/candidates/'+encodeURIComponent(item.review_id):'/metadata/'+encodeURIComponent(item.record_id));body={...payload,expected_policy_version:W.version()};if(payload.keeper){const member=item.members.find(m=>m.ref_id===payload.keeper);body[member?.ref_type==='active'?'keeper_key':'keeper_record_id']=payload.keeper;delete body.keeper;}}await saveRequest(path,body,result=>{defer(id(item),payload.status==='undecided');/* 仅当组内仍有未启用成员时提示去向（成员全 active 的组结论不影响可加入计数）。 */if(item.members&&['duplicate','not_duplicate'].includes(payload.status)&&item.members.some(m=>m.ref_type!=='active'&&m.record?.state!=='active'))followUp='The group decision is saved; its staged member records moved to Ready to add to task.';if(item.legacy){const row={...item,status:payload.status,keeper_key:payload.keeper||null};overlays.apply({legacy:[row]});legacy=overlays.merge('legacy',legacy);legacyUndo=result.undo_available===true;savedLegacyUndo=legacyUndo;if(batch)batch.undo={available:false};}});}
- function bulkDialog(kind){const chosen=(kind==='candidate'?groups.filter(ImportReviewUpdates.eligible):records.filter(r=>r.metadata&&r.metadata.action==null)).slice(0,100);if(!chosen.length||busy||!batch.can_manage)return;const total=(kind==='candidate'?groups.filter(ImportReviewUpdates.eligible):records.filter(r=>r.metadata&&r.metadata.action==null)).length,truncated=total>chosen.length;const dialog=n('dialog',null,{'aria-label':T('Confirm bulk review')}),heading=kind==='candidate'?'Confirm eligible duplicates':'Keep existing information in bulk',list=n('div',null,{class:'bulk-list'});for(const item of chosen){const row=n('p');row.append(l('b',title(item)));if(kind==='candidate'){const keeper=keepers.get(W.scope()+':'+id(item))||item.members.find(m=>m.ref_type==='active')?.ref_id||item.members[0]?.ref_id;const member=item.members.find(m=>m.ref_id===keeper),record=member?.record;const caption=record?.filename?[record.filename,record.row_locator||record.row_index].filter(Boolean).join(' · '):member?.article?.title||keeper;row.append(l('small',T('Retain selected record')+': '+caption));}list.append(row);}const cancel=b('Cancel',()=>{dialog.close();dialog.remove();}),confirm=b(heading,async()=>{const actions=chosen.map(item=>{if(kind==='metadata')return {kind,id:item.record_id};const keeper=keepers.get(W.scope()+':'+id(item))||item.members.find(m=>m.ref_type==='active')?.ref_id||item.members[0]?.ref_id,member=item.members.find(m=>m.ref_id===keeper);return {kind,id:item.review_id,[member?.ref_type==='active'?'keeper_key':'keeper_record_id']:keeper};});dialog.close();dialog.remove();await saveRequest(taskApi()+'/import-batches/'+encodeURIComponent(active)+'/bulk-review',{expected_policy_version:W.version(),actions});});confirm.classList.add('primary');dialog.append(n('h2',heading),n('p',kind==='candidate'?'Only loaded candidates with matching DOI values and no identity conflict are included.':'Keep existing bibliographic information for the listed loaded records.'),l('p',T(truncated?'{0} of {1} items; this bulk action covers the first 100.':'{0} review items',...(truncated?[chosen.length,total]:[chosen.length]))),list,n('p','This bulk submission can be undone as one step before adding to the task.'),n('p','Reviewed records still need to be added to the task. Unresolved records stay staged.'),cancel,confirm);host.append(dialog);dialog.addEventListener('cancel',()=>dialog.remove());dialog.showModal();cancel.focus();}
+ let mergeFeedback=null;
+ function renderMergeFeedback(result){
+   if(!result)return;
+   const fill=result.merge_fill,collisions=fill?.doi_collision||result.doi_collision||[];
+   if(!fill&&!collisions.length)return;
+   const box=n('section',null,{class:'rf-import-merge-feedback',role:'status'});
+   box.append(n('strong','import.merge.fill_summary.title'));
+   if(fill?.articles)box.append(l('p',T('import.merge.fill_summary.filled',{n:fill.articles})));
+   for(const [field,count] of Object.entries(fill?.fields||{})){
+     box.append(l('p',T('import.merge.fill_summary.field',{field:fieldLabel(field),n:count})));
+   }
+   if(collisions.length)box.append(n('p','import.merge.fill_summary.doi_collision'));
+   for(const warning of collisions){
+     const key=warning.reason==='journal_pattern'?'journal_pattern':'occupied';
+     box.append(l('p',T('import.merge.doi_collision.'+key,warning)));
+   }
+   if(fill?.skipped?.length)box.append(n('p','import.merge.fill_summary.skipped'));
+   for(const warning of fill?.skipped||[]){
+     if(warning.reason==='changed_by_other')box.append(l('p',T('import.merge.skipped.changed_by_other',{field:fieldLabel(warning.field)})));
+   }
+   host.querySelector('.status-message')?.after(box);
+ }
+ function fieldLabel(field){
+   return T(M.comparison({}).find(row=>row.key===field)?.label||'Field');
+ }
+ async function saveRequest(path,body,after){
+   if(busy)return;
+   const old=view(),scope=W.scope(),batchId=active;
+   lastView=old;errorMessage=T('Saving…');saveNote='';mergeFeedback=null;busy=true;
+   let saved=false;
+   render(true);position(old,true);host.setAttribute('aria-busy','true');
+   try{
+     const result=await api(path,{method:'POST',body});
+     if(scope!==W.scope()||batchId!==active)return;
+     if(result.review_updates)applyResult(result,scope);
+     if(result.metadata_noop){errorMessage=T('import.review.metadata_noop');return;}
+     after?.(result);
+     dirty=false;saved=true;errorMessage=T('Saved');
+     saveNote=(followUp?T(followUp)+' ':'')+T('You can undo this until records are added to the task.');
+     followUp='';mergeFeedback=result;auxiliary();
+   }catch(error){
+     if(scope===W.scope()&&batchId===active){
+       if(error.status===409&&path.endsWith('/undo')){
+         batch.undo={available:false};savedBatch={...savedBatch,undo:batch.undo};
+       }
+       errorMessage=W.errorText(error);
+       if(error.messageKey==='import_merge.bulk_ineligible'&&error.params?.reason){
+         errorMessage+=' '+T('import.merge.ineligible.'+error.params.reason);
+       }
+       W.error(error);
+     }
+   }finally{
+     busy=false;
+     if(scope===W.scope()&&batchId===active){
+       host.removeAttribute('aria-busy');render(true);position(old,true);
+       if(saved)flashSaved(T('Saved ✓'));
+     }
+   }
+ }
+ async function mutate(item,payload){
+   let path,body;
+   if(item.legacy){
+     path=taskApi()+'/title-duplicate-reviews/'+encodeURIComponent(item.review_id)+scrQ();
+     body={decision:payload.status,keeper_key:payload.keeper||''};
+   }else{
+     path=taskApi()+'/import-batches/'+encodeURIComponent(active)+(item.members?'/candidates/'+encodeURIComponent(item.review_id):'/metadata/'+encodeURIComponent(item.record_id));
+     body={...payload,expected_policy_version:W.version()};
+     if(payload.keeper){
+       const member=item.members.find(row=>row.ref_id===payload.keeper);
+       if(!member)return;
+       Object.assign(body,keeperFields(member));delete body.keeper;
+     }
+   }
+   await saveRequest(path,body,result=>{
+     fieldEdits.delete(reviewKey(item));
+     defer(id(item),payload.status==='undecided');
+     if(item.members&&['duplicate','not_duplicate'].includes(payload.status)&&item.members.some(m=>m.ref_type!=='active'&&m.record?.state!=='active'))followUp='The group decision is saved; its staged member records moved to Ready to add to task.';
+     if(item.legacy){
+       const row={...item,status:payload.status,keeper_key:payload.keeper||null};
+       overlays.apply({legacy:[row]});legacy=overlays.merge('legacy',legacy);
+       legacyUndo=result.undo_available===true;savedLegacyUndo=legacyUndo;if(batch)batch.undo={available:false};
+     }
+   });
+ }
+ function bulkDialog(kind){
+   const candidates=kind==='candidate';
+   const pool=candidates?groups.filter(group=>group.bulk_eligible===true):records.filter(row=>row.metadata&&row.metadata.action==null);
+   const chosen=pool.slice(0,100);
+   if(!chosen.length||busy||!batch.can_manage)return;
+   const scope=W.scope(),batchId=active,policyVersion=W.version(),truncated=pool.length>chosen.length;
+   const dialog=n('dialog',null,{'aria-label':T('Confirm bulk review')});
+   const heading=candidates?'Confirm eligible duplicates':'Keep existing information in bulk';
+   const list=n('div',null,{class:'bulk-list'}),selections=new Map();
+   for(const item of chosen){
+     const row=n('p');
+     row.append(l('b',title(item)));
+     if(candidates){
+       const members=item.members||[],existing=members.filter(member=>member.ref_type==='active');
+       const allowed=existing.length?existing:members;
+       const label=n('label','Retain selected record'),select=n('select',null,{'aria-label':T('Retain selected record')});
+       select.append(n('option','import.review.select_keeper',{value:''}));
+       for(const member of allowed)select.append(l('option',keeperCaption(item,memberId(member)),{value:memberId(member)}));
+       select.value=suggestedId(item)||'';
+       label.append(select);
+       const reason=l('small',keeperReasons(item));
+       const updateReason=()=>{reason.hidden=!reason.textContent||select.value!==suggestedId(item);};
+       updateReason();
+       select.onchange=()=>{updateReason();updateConfirm();};
+       selections.set(item.review_id,{select,allowed});
+       row.append(label,reason);
+     }
+     list.append(row);
+   }
+   const close=()=>{dialog.close();dialog.remove();};
+   const cancel=b('Cancel',close);
+   const confirm=b(heading,async()=>{
+     if(scope!==W.scope()||batchId!==active)return close();
+     const actions=[];
+     for(const item of chosen){
+       if(!candidates){actions.push({kind,id:item.record_id});continue;}
+       const {select,allowed}=selections.get(item.review_id);
+       const member=allowed.find(row=>memberId(row)===select.value);
+       if(!member)return;
+       actions.push({kind,id:item.review_id,...keeperFields(member)});
+     }
+     close();
+     await saveRequest(taskApi()+'/import-batches/'+encodeURIComponent(batchId)+'/bulk-review',{expected_policy_version:policyVersion,actions});
+   },'primary');
+   const updateConfirm=()=>{confirm.disabled=[...selections.values()].some(({select})=>!select.value);};
+   updateConfirm();
+   dialog.append(n('h2',heading),n('p',candidates?'import.review.bulk_authority':'Keep existing bibliographic information for the listed loaded records.'),
+     l('p',T(truncated?'{0} of {1} items; this bulk action covers the first 100.':'{0} review items',...(truncated?[chosen.length,pool.length]:[chosen.length]))),list);
+   if(candidates){
+     const skipped=groups.filter(item=>!['duplicate','not_duplicate'].includes(item.status)&&bulkReason(item));
+     if(skipped.length){
+       const reasons=n('ul');
+       for(const item of skipped.slice(0,100))reasons.append(l('li',title(item)+' · '+bulkReason(item)));
+       dialog.append(U.details('import.review.bulk_ineligible',reasons));
+     }
+   }
+   dialog.append(n('p','This bulk submission can be undone as one step before adding to the task.'),n('p','Reviewed records still need to be added to the task. Unresolved records stay staged.'),cancel,confirm);
+   host.append(dialog);dialog.addEventListener('close',()=>dialog.remove(),{once:true});dialog.showModal();cancel.focus();
+ }
  function confirmActivation(){if(!ImportReviewUpdates.canActivate(batch,busy))return;const count=readyCount();if(!count||!batch.can_manage)return;const dialog=n('dialog',null,{'aria-labelledby':'wf-activate-title'});dialog.append(n('h2','Add reviewed records to the task',{id:'wf-activate-title'}),l('p',T('This will add {0} reviewed record(s) to the task.',count)),n('p','Adding records enables resolved records or source links. This is not an inclusion decision; unresolved records stay staged, and repeating it does not add duplicate work.'),n('p','Adding to the task ends the undo window for these import-review actions.',{class:'warning'}));const buttons=n('div',null,{class:'buttons'}),cancel=b('Cancel',()=>{dialog.close();dialog.remove();}),confirm=b('Add reviewed records to the task',async()=>{confirm.disabled=true;try{await activate();dialog.close();dialog.remove();}catch(error){confirm.disabled=false;throw error;}},'primary');buttons.append(cancel,confirm);dialog.append(buttons);host.append(dialog);dialog.addEventListener('cancel',()=>dialog.remove());dialog.showModal();cancel.focus();}
  async function activate(){const scope=W.scope(),batchId=active,old=view();if(busy)return;busy=true;activationEpoch++;activationInFlight=true;/* L-02：启用不再 ++ticket（烧毁加载器读代次→启用失败后后台分页永久停滞，
     复现：out/external_reviews/gpt_luna_findings_verification.md L-02 节）；改用
@@ -208,6 +481,6 @@ if(item.legacy){const decided=['duplicate','not_duplicate'].includes(item.status
  function refresh(eventVersion){if(eventVersion&&!ImportReviewUpdates.needsReload(reviewVersion,eventVersion))return;if(refreshing||busy||S.page!=='import'||!active||(loadState&&loadState.phase!=='complete'))return;if(dirty){const message=host.querySelector('.status-message');if(message)message.textContent=T('Import data changed. Refresh when ready; your selection is retained.');return;}const scope=W.scope(),batchId=active;refreshing=true;Promise.resolve(W.refresh('import',false)).then(()=>{if(scope===W.scope()&&batchId===active&&!busy&&ImportReviewUpdates.needsReload(reviewVersion,W.version()))return I.open(active,true);}).catch(W.error).finally(()=>refreshing=false);}
  document.addEventListener('reviewflow:workflow-changed',e=>{if(String(e.detail?.task_id)===String(S.task?.task_id)&&String(e.detail?.reason||'').startsWith('import-'))refresh(e.detail?.version);});
  document.addEventListener('reviewflow:language-changed',()=>{/* r14：列表视图（active===null；batch 可能是上一次打开的残留对象）用缓存数据重渲染——统计行单位词是渲染期翻译的，不重渲染就会「句子变了、records/groups 仍是旧语言」。详情视图沿用整页重渲染。 */if(listView&&listBatches){const old=view();renderList();position(old);return;}if(batch){const old=view();render();position(old,true);}});
- document.addEventListener('reviewflow:task-context-changed',()=>{if(context===W.scope())return;context=W.scope();ticket++;active=null;listView=false;listBatches=null;listTotal=0;listHasNext=false;batch=null;records=[];groups=[];legacy=[];legacyUndo=false;undoClosedByActivation=false;loader=null;loadState=null;overlays=ImportReviewUpdates.create();savedBatch=null;savedLegacyUndo=null;reviewVersion=0,refreshing=false;batchOptions=[];reports.clear();keepers.clear();page=0;listPage=0;dirty=false;lastView=null;host.replaceChildren();host.removeAttribute('aria-busy');if(S.task){I.notice().catch(W.error);if(S.page==='import')I.list(false).catch(W.error);}});
+ document.addEventListener('reviewflow:task-context-changed',()=>{if(context===W.scope())return;context=W.scope();ticket++;active=null;listView=false;listBatches=null;listTotal=0;listHasNext=false;batch=null;records=[];groups=[];legacy=[];legacyUndo=false;undoClosedByActivation=false;loader=null;loadState=null;overlays=ImportReviewUpdates.create();savedBatch=null;savedLegacyUndo=null;reviewVersion=0,refreshing=false;batchOptions=[];reports.clear();keepers.clear();fieldEdits.clear();mergeFeedback=null;AI?.reset();page=0;listPage=0;dirty=false;lastView=null;host.replaceChildren();host.removeAttribute('aria-busy');if(S.task){I.notice().catch(W.error);if(S.page==='import')I.list(false).catch(W.error);}});
  setInterval(()=>{if(!document.hidden)refresh();},30000);
 })();

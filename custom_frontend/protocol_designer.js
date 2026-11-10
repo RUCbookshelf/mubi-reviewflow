@@ -113,6 +113,11 @@
     let formRevision = 0;
     let version = 0;            // 异步票据
     let anchoredTaskId = null;  // 已把方案保存到的任务（生成/保存流程产物）
+    let canEdit = true;
+    let loading = false;
+    let saving = false;
+    let keyTerms = [];
+    let keyTermsEdited = false;
     const picoState = {};       // key -> {synonyms:[], meshTerms:[]}
     const inclState = { tags: [] };
     const exclState = { tags: [] };
@@ -281,10 +286,51 @@
     }
     picoGrid.append(tagInput('纳入标准', inclState), tagInput('排除标准', exclState));
 
+    const termHeading = el('b', {text: T('criteria_panel.key_terms')});
+    const termRows = el('div', {});
+    const addTerm = smallBtn('criteria_panel.add_term');
+    const termEditor = el('section', {class: 'rf-pico-card'}, termHeading, termRows, addTerm);
+    function renderTerms() {
+      termRows.replaceChildren(...keyTerms.map((entry, index) => {
+        const name = el('input', {class: 'input', maxlength: 200, value: entry.term,
+          placeholder: T('criteria_panel.term_name'), 'aria-label': T('criteria_panel.term_name')});
+        const definition = el('textarea', {class: 'ta', maxlength: 2000, rows: 2,
+          placeholder: T('criteria_panel.term_definition'), 'aria-label': T('criteria_panel.term_definition')});
+        definition.value = entry.definition;
+        const remove = smallBtn('移除');
+        const row = el('div', {class: 'rf-pd-row', style: 'margin-top:8px'}, name, definition, remove);
+        function edit() {
+          entry.term = name.value;
+          entry.definition = definition.value;
+          keyTermsEdited = true;
+        }
+        name.addEventListener('input', edit);
+        definition.addEventListener('input', edit);
+        remove.addEventListener('click', () => {
+          keyTerms.splice(index, 1);
+          keyTermsEdited = true;
+          touchForm();
+          renderTerms();
+          syncAccess();
+        });
+        return row;
+      }));
+      addTerm.disabled = keyTerms.length >= 200;
+    }
+    addTerm.addEventListener('click', () => {
+      if (!canEdit || loading || keyTerms.length >= 200) return;
+      keyTerms.push({term: '', definition: ''});
+      keyTermsEdited = true;
+      touchForm();
+      renderTerms();
+      termRows.lastElementChild.querySelector('input').focus();
+    });
+
     /* ---- 操作按钮 ---- */
     const genBtn = el('button', { class: 'btn b-out', type: 'button', text: T('生成检索式') });
     const saveBtn = el('button', { class: 'btn b-inc', type: 'button', text: T('保存并创建任务') });
     const exportBtn = el('button', { class: 'btn b-out', type: 'button', text: T('导出方案') });
+    const readOnlyHint = el('p', {class: 'hint', hidden: '', text: T('criteria_panel.protocol_readonly')});
     const statusLine = el('p', { class: 'rf-status hint', 'role': 'status' });
     const nextBox = el('div', { class: 'rf-pd-row', hidden: '' });
     const nextNav = smallBtn('导入文献', 'b-inc');
@@ -296,7 +342,8 @@
     saveBtn.addEventListener('click', safe(() => runFlow(true)));
     exportBtn.addEventListener('click', safe(exportMarkdown));
 
-    panel.append(L.heading, L.hint, targetRow, titleRow, rqRow, picoGrid,
+    const editFields = el('fieldset', {style: 'min-width:0;border:0;padding:0;margin:0'}, titleRow, rqRow, picoGrid, termEditor);
+    panel.append(L.heading, L.hint, targetRow, readOnlyHint, editFields,
       el('div', { class: 'rf-pd-row' }, genBtn, saveBtn, exportBtn),
       statusLine, nextBox, strategyBox);
     taskCard.after(panel);
@@ -320,32 +367,60 @@
       }
       targetSel.value = Array.from(targetSel.options).some(o => o.value === prev) ? prev : '__new__';
     }
-    targetSel.addEventListener('change', safe(() => {
+    function selectTarget(taskId) {
       version++;
       anchoredTaskId = null;
       nextBox.hidden = true;
-      const v = targetSel.value;
-      if (v === '__new__') { setText(L.targetHint, ''); return; }
-      loadProtocolIntoForm(v);
-    }));
+      statusLine.textContent = '';
+      strategyBox.replaceChildren();
+      fillForm({});
+      if (taskId === '__new__') {
+        canEdit = true;
+        loading = false;
+        setText(L.targetHint, '');
+        syncAccess();
+        return;
+      }
+      return loadProtocolIntoForm(taskId);
+    }
+    targetSel.addEventListener('change', safe(() => selectTarget(targetSel.value)));
+
+    function syncAccess() {
+      editFields.disabled = loading || !canEdit;
+      genBtn.hidden = saveBtn.hidden = !canEdit && !loading;
+      genBtn.disabled = saveBtn.disabled = !canEdit || loading || saving;
+      targetSel.disabled = saving;
+      readOnlyHint.hidden = canEdit || loading;
+    }
 
     /* ---- 读取已保存方案回填表单（GET /protocol；未保存过 -> 404 安静提示） ---- */
-    function loadProtocolIntoForm(taskId) {
+    async function loadProtocolIntoForm(taskId) {
       if (typeof api !== 'function') return;
-      const revision = formRevision;
       const ticket = ++version;
+      canEdit = false;
+      loading = true;
+      syncAccess();
       setText(L.targetHint, T('正在读取已保存方案…'));
-      api(taskBase(taskId) + '/protocol').then(d => {
-        if (ticket !== version || revision !== formRevision) return;
-        const p = d && d.protocol;
-        if (!p) { setText(L.targetHint, T('该任务尚未保存方案。')); return; }
-        fillForm(p);
-        setText(L.targetHint, T('已载入该任务保存的方案（{0}）', p.created_at || '—'));
-        renderStrategies(p.search_strategies || []);
-      }).catch(e => {
-        if (ticket !== version || revision !== formRevision) return;
-        setText(L.targetHint, (e && e.status === 404) ? T('该任务尚未保存方案。') : ((e && e.message) || ''));
-      });
+      const base = taskBase(taskId);
+      const [permissions, protocol] = await Promise.allSettled([
+        api(base + '/workflow-settings'), api(base + '/protocol'),
+      ]);
+      if (ticket !== version) return;
+      loading = false;
+      if (protocol.status === 'fulfilled') {
+        const p = protocol.value?.protocol;
+        if (p) {
+          fillForm(p);
+          setText(L.targetHint, '已载入该任务保存的方案（{0}）', p.created_at || '—');
+          renderStrategies(p.search_strategies || []);
+        }
+      } else {
+        setText(L.targetHint, protocol.reason?.status === 404
+          ? '该任务尚未保存方案。' : protocol.reason?.message || '');
+      }
+      canEdit = permissions.status === 'fulfilled' && permissions.value?.can_manage === true &&
+        (protocol.status === 'fulfilled' || protocol.reason?.status === 404);
+      syncAccess();
     }
 
     function fillForm(p) {
@@ -353,7 +428,7 @@
       rqInput.value = typeof p.research_question === 'string' ? p.research_question : '';
       for (const slot of PICO_SLOTS) {
         const st = picoState[slot.key];
-        const item = (p.pico || []).find(x => x && x.key === slot.key) || {};
+        const item = Array.isArray(p.pico) ? p.pico.find(x => x?.key === slot.key) || {} : {};
         st.valueInput.value = typeof item.value === 'string' ? item.value : '';
         st.synonyms = Array.isArray(item.synonyms) ? item.synonyms.map(String) : [];
         st.meshTerms = Array.isArray(item.mesh_terms) ? item.mesh_terms.map(String) : [];
@@ -362,13 +437,18 @@
       inclState.tags = Array.isArray(p.inclusion_criteria) ? p.inclusion_criteria.map(String) : [];
       exclState.tags = Array.isArray(p.exclusion_criteria) ? p.exclusion_criteria.map(String) : [];
       inclState.render(); exclState.render();
+      keyTerms = Array.isArray(p.key_terms) ? p.key_terms
+        .filter(entry => typeof entry?.term === 'string' && entry.term.trim())
+        .map(entry => ({term: entry.term, definition: typeof entry.definition === 'string' ? entry.definition : ''})) : [];
+      keyTermsEdited = false;
+      renderTerms();
     }
 
     /* ---- 收集表单 ---- */
     function collectBody() {
       const title = titleInput.value.trim();
       if (!title) throw new Error(T('请先填写方案标题。'));
-      return {
+      const body = {
         title: title,
         research_question: rqInput.value.trim(),
         pico: PICO_SLOTS.map(slot => ({
@@ -381,18 +461,22 @@
         inclusion_criteria: inclState.tags.slice(),
         exclusion_criteria: exclState.tags.slice(),
       };
+      // Omission preserves stored terms. An explicitly edited empty list clears them.
+      if (keyTermsEdited) body.key_terms = keyTerms.filter(entry => entry.term.trim()).map(entry => ({...entry}));
+      return body;
     }
 
     /* ---- 主流程：生成检索式 / 保存并创建任务 ---- */
     async function runFlow(isSave) {
       let ticket;
       try {
-        if (typeof api !== 'function') return;
+        if (typeof api !== 'function' || !canEdit || loading || saving) return;
         let body;
         try { body = collectBody(); } catch (e) { toast(e.message, 'warn'); return; }
         ticket = ++version;
         const revision = formRevision;   // LUNA4-03：提交快照后的修订号（检测请求在途期间的表单编辑）
-        genBtn.disabled = true; saveBtn.disabled = true; targetSel.disabled = true;
+        saving = true;
+        syncAccess();
 
         let taskId = targetSel.value === '__new__' ? null : targetSel.value;
         if (!taskId && anchoredTaskId) taskId = anchoredTaskId;
@@ -421,6 +505,12 @@
           const p = d && d.protocol;
           if (!p) throw new Error(T('响应缺少方案数据。'));
           anchoredTaskId = taskId;
+          document.dispatchEvent(new CustomEvent('reviewflow:protocol-saved', {detail: taskId}));
+          if (formRevision === revision) {
+            keyTerms = (p.key_terms || []).map(entry => ({term: entry.term, definition: entry.definition}));
+            keyTermsEdited = false;
+            renderTerms();
+          }
           renderStrategies(p.search_strategies || []);
           statusLine.textContent = T('方案已保存到任务 {0}（{1} 条检索式）。', taskId, String((p.search_strategies || []).length));
           if (formRevision !== revision) {
@@ -432,14 +522,16 @@
             if (typeof toast === 'function') toast(T('✓ 方案已保存并嵌入任务《{0}》', body.title), 'inc');
           }
         } finally {
-          if (ticket === version) { genBtn.disabled = false; saveBtn.disabled = false; }
+          if (ticket === version) syncAccess();
         }
       } catch (e) {
         if (ticket !== undefined && ticket !== version) return;
+        if (e.status === 403) canEdit = false;
         statusLine.textContent = T('保存失败：') + ((e && e.message) || '');
         if (typeof toast === 'function') toast(T('保存失败：') + ((e && e.message) || ''), 'warn');
       } finally {
-        if (ticket === version) { genBtn.disabled = false; saveBtn.disabled = false; targetSel.disabled = false; }
+        saving = false;
+        syncAccess();
       }
     }
 
@@ -511,6 +603,10 @@
         saveBtn.textContent = T('保存并创建任务');
         exportBtn.textContent = T('导出方案');
         nextNav.textContent = T('导入文献');
+        termHeading.textContent = T('criteria_panel.key_terms');
+        addTerm.textContent = T('criteria_panel.add_term');
+        readOnlyHint.textContent = T('criteria_panel.protocol_readonly');
+        renderTerms();
         targetSel.setAttribute('aria-label', T('目标任务'));
         refreshTargetOptions();
       } catch (e) { /* 单点故障 */ }
@@ -520,11 +616,31 @@
     document.addEventListener('reviewflow:task-loaded', safe(() => { anchoredTaskId = null; refreshTargetOptions(); }));
     document.addEventListener('reviewflow:task-context-changed', safe(e => {
       const id = e && e.detail;
-      if (!id) { anchoredTaskId = null; }
+      if (!id) {
+        anchoredTaskId = null;
+        panel.hidden = true;
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        selectTarget('__new__');
+      }
       refreshTargetOptions();
     }));
     document.addEventListener('reviewflow:language-changed', safe(refreshLang));
 
+    window.RFProtocolDesigner = Object.freeze({
+      async open(taskId) {
+        if (saving || !await go('home')) return false;
+        window.WorkflowControls?.homeTab?.('tasks');
+        refreshTargetOptions();
+        if (!Array.from(targetSel.options).some(option => option.value === taskId)) return false;
+        panel.hidden = false;
+        toggleBtn.setAttribute('aria-expanded', 'true');
+        targetSel.value = taskId;
+        await selectTarget(taskId);
+        panel.scrollIntoView({block: 'start'});
+        targetSel.focus({preventScroll: true});
+        return true;
+      },
+    });
     refreshTargetOptions();
   } catch (e) { /* 单点故障：模块初始化失败不影响主应用与 /api/health */ }
 })();
