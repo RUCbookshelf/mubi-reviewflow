@@ -3431,6 +3431,15 @@
             "title": "Key",
             "type": "string"
           },
+          "kind": {
+            "default": "llm",
+            "enum": [
+              "llm",
+              "decision"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "model": {
             "anyOf": [
               {

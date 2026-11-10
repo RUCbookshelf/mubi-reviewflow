@@ -43,6 +43,18 @@
   「是不是重复」（duplicate_group 的 verdict）仍只高亮、不预选。
 - I-6：本文件全部结构化错误都带 ``message_key`` 与 ``params``，``code`` /
   ``detail`` / ``guidance`` 保持兼容。
+
+2.1.5 决策模型波（2026-11-10 用户裁定，Jev 提前到 2.1.5）：
+- 钥匙柜条目按 ``kind`` 分派（``custom_backend/ai_keys.py``：llm=缺省/存量，
+  decision=Jev 类决策模型）；本端点 ``duplicate_group`` 与 ``merge_conflict``
+  在 decision 钥匙下走 ``custom_backend/decision_model_adapter.py``（systemone
+  协议，统一输出形状与 LLM 适配器一致），其余路径零变化。
+- **范围铁律**：决策模型只用于这两场景；``metadata_diff`` 在 decision 钥匙下
+  零出站、逐条降级 unsure（``decision_kind_not_supported``）；其他 AI 端点
+  （编码建议等）拿 decision 钥匙被 ``ai_suggest_api.decision_key_not_allowed``
+  硬闸拒绝（409 ``ai.decision_key_not_allowed``）。
+- 审计行新增 ``model_kind``（llm/decision），决策两场景用独立提示词版本
+  ``import-ai-assist-decision/v1`` / ``import-ai-assist-merge-decision/v1``。
 """
 from __future__ import annotations
 
@@ -65,6 +77,7 @@ from coscreen import tasks as tasks_mod
 from coscreen.dedup import _norm_doi, is_journal_pattern_doi
 from coscreen.normalize import first_author_surname
 from custom_backend import ai_keys
+from custom_backend import decision_model_adapter as decision_model
 from custom_backend.ai_suggest_api import (
     ProviderError,
     _FALLBACK_MODEL,
@@ -90,7 +103,9 @@ MERGE_PROMPT_VERSION = "import-ai-assist-merge/v1"
 MAX_ITEMS_PER_REQUEST = 20
 #: 出站短超时：导入复核是交互式逐条建议，宁可快速降级也不长时间挂起。
 OUTBOUND_TIMEOUT_SECONDS = 10.0
-#: 低于该置信度一律 unsure（低置信明说无法判断）。
+#: 低于该置信度一律 unsure（低置信明说无法判断）。决策模型通道沿用同一阈值
+#: （概率→confidence 映射后判定）；**阈值待用历史已确认样本校准**——需要用户
+#: 服务器上已确认的重复/非重复历史数据，校准本身本波不做。
 MIN_CONFIDENCE = 0.6
 #: 连续出站失败达到该次数后，剩余条目不再出站（避免持续消耗额度/时间）。
 MAX_CONSECUTIVE_FAILURES = 2
@@ -158,6 +173,11 @@ _MERGE_SYSTEM_PROMPT = (
 #: 审计 verdict 列用 n/a 明示，绝不伪装成 same/different）。
 MERGE_VERDICT = "n/a"
 
+#: decision 钥匙下 metadata_diff 的零出站范围降级行的 prompt_version 标记：
+#: 该行从未出站、不属于任何提示词版本域（同 MERGE_VERDICT 的 n/a 先例），
+#: 绝不记成 LLM 版本以免误导审计（评审低危项修复）。
+NOT_SENT_PROMPT_VERSION = "n/a"
+
 _AUDIT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS import_ai_suggestions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,6 +187,7 @@ CREATE TABLE IF NOT EXISTS import_ai_suggestions(
   item_id TEXT NOT NULL,
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
+  model_kind TEXT NOT NULL DEFAULT 'llm' CHECK(model_kind IN ('llm','decision')),
   prompt_version TEXT NOT NULL,
   request_digest TEXT NOT NULL,
   verdict TEXT NOT NULL CHECK(verdict IN ('same','different','unsure','n/a')),
@@ -182,6 +203,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_import_ai_suggestions_request
   ON import_ai_suggestions(task_id,batch_id,item_kind,item_id,request_digest);
 """
 
+#: 2.1.5 决策模型波之前的审计表没有 model_kind 列 → ALTER 幂等加列（回填
+#: 'llm'：决策模型钥匙在该波之前不存在，存量行只能是 LLM 通道；DDL 在
+#: ``_ensure_audit_schema`` 内以字面量执行，无任何外部输入拼接）。
+
 _AUDIT_COPY_SQL = (
     "INSERT OR IGNORE INTO import_ai_suggestions(id,task_id,batch_id,item_kind,item_id,"
     "provider,model,prompt_version,request_digest,verdict,confidence,rationale_zh,"
@@ -192,14 +217,14 @@ _AUDIT_COPY_SQL = (
 )
 _AUDIT_UPSERT = (
     "INSERT INTO import_ai_suggestions(task_id,batch_id,item_kind,item_id,provider,model,"
-    "prompt_version,request_digest,verdict,confidence,rationale_zh,field_picks_json,"
-    "warnings_json,status,created_at,updated_at) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+    "model_kind,prompt_version,request_digest,verdict,confidence,rationale_zh,"
+    "field_picks_json,warnings_json,status,created_at,updated_at) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(task_id,batch_id,item_kind,item_id,request_digest) DO UPDATE SET "
     "verdict=excluded.verdict,confidence=excluded.confidence,"
     "rationale_zh=excluded.rationale_zh,field_picks_json=excluded.field_picks_json,"
     "warnings_json=excluded.warnings_json,status=excluded.status,"
-    "updated_at=excluded.updated_at"
+    "model_kind=excluded.model_kind,updated_at=excluded.updated_at"
 )
 
 _AUDIT_LOOKUP = (
@@ -1003,27 +1028,38 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
         return ctx
 
     def _credentials(info, user: dict):
-        """复用 ai_suggest 的钥匙口径（个人 > 共享 > 无）。"""
+        """复用 ai_suggest 的钥匙口径（个人 > 共享 > 无）。
+
+        返回 ``(credentials, key_source, model, model_kind)``；decision 钥匙的
+        model 兜底是 Jev 缺省模型名（gpt 兜底对 systemone 端点无意义）。
+        """
         ai_settings = _load_settings(info)
         prefs = _load_prefs(info, user["username"])
         credentials, key_source = resolve_task_credentials(
             info, ai_settings, prefs, user, data_root)
-        model = ((credentials or {}).get("model") or "").strip() or _FALLBACK_MODEL
-        return credentials, key_source, model
+        model_kind = ai_keys.kind_of(credentials)
+        fallback = (decision_model.DEFAULT_DECISION_MODEL
+                    if model_kind == ai_keys.KIND_DECISION else _FALLBACK_MODEL)
+        model = ((credentials or {}).get("model") or "").strip() or fallback
+        return credentials, key_source, model, model_kind
 
     def _settings_view(info, user: dict, ctx, settings: dict) -> dict:
-        credentials, key_source, model = _credentials(info, user)
+        credentials, key_source, model, model_kind = _credentials(info, user)
         return {
             "enabled": bool(settings.get("enabled")),
             "version": int(settings.get("version") or 0),
             "can_manage": bool(ctx.can_manage),
             "has_key": credentials is not None,
             "key_source": key_source,
+            "key_kind": model_kind,
             "model": model,
             "prompt_version": PROMPT_VERSION,
             "prompt_versions": {"duplicate_group": PROMPT_VERSION,
                                 "metadata_diff": PROMPT_VERSION,
                                 "merge_conflict": MERGE_PROMPT_VERSION},
+            "decision_prompt_versions": {
+                "duplicate_group": decision_model.DECISION_PROMPT_VERSION,
+                "merge_conflict": decision_model.DECISION_MERGE_PROMPT_VERSION},
             "kinds": ["duplicate_group", "metadata_diff", "merge_conflict"],
             "min_confidence": MIN_CONFIDENCE,
             "max_items": MAX_ITEMS_PER_REQUEST,
@@ -1102,14 +1138,17 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                     "只能为 merge_conflict 指定保留者。")
 
         # 3) 钥匙（无钥匙 → 404 结构化 guidance；零出站）。
-        credentials, key_source, model = _credentials(info, user)
+        credentials, key_source, model, model_kind = _credentials(info, user)
         if credentials is None:
             raise _error(
                 404, "import_ai_assist_key_missing", "import_ai_assist.key_missing", {},
                 "尚未配置可用的 AI 钥匙。",
                 guidance="请先配置个人 AI 钥匙，或由任务负责人配置任务共享钥匙后再试。")
         try:  # 存量钥匙记录的非法 base_url 映射 422，不冒泡 500。
-            base_url = ai_keys.base_url_of(credentials)
+            if model_kind == ai_keys.KIND_DECISION:
+                base_url = decision_model.decision_base_url_of(credentials)
+            else:
+                base_url = ai_keys.base_url_of(credentials)
         except ai_keys.KeyShapeError as exc:
             raise _error(422, "import_ai_assist_key_invalid",
                          "import_ai_assist.key_invalid", {},
@@ -1152,7 +1191,15 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                                   base_url=base_url, model=model,
                                   timeout=OUTBOUND_TIMEOUT_SECONDS)
 
+        def _call_decision(body_out: dict) -> dict:
+            return decision_model.call_decision(
+                body_out, api_key=credentials["key"], base_url=base_url,
+                model=model, timeout=OUTBOUND_TIMEOUT_SECONDS)
+
         # 6) 逐条出站（短超时；失败逐条降级 unsure，连续失败即停止出站）。
+        #    按钥匙的 kind 分派：llm → chat/completions + prompt 解析；
+        #    decision → systemone + 结构化答案解析（统一输出形状）。metadata_diff
+        #    不在决策模型范围（2026-11-10 用户裁定）→ decision 钥匙零出站降级。
         results: list[dict] = []
         consecutive_failures = 0
         for ref, payload in zip(body.items, payloads):
@@ -1161,21 +1208,45 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                 #     六字段白名单冲突才出站；全部被规则层判出 → 一次都不调用。
                 needs = _merge_ai_fields(payload["fields"])
                 user_message = merge_outbound_message(needs) if needs else ""
-                digest = _request_digest(
-                    _MERGE_SYSTEM_PROMPT,
-                    user_message or json.dumps(
-                        {"kind": "merge_conflict",
-                         "fields": [{"field": row["field"], "left": row["left"],
-                                     "right": row["right"]}
-                                    for row in payload["fields"]]},
-                        ensure_ascii=False, sort_keys=True),
-                    model, prompt_version=MERGE_PROMPT_VERSION)
+                fallback_state = json.dumps(
+                    {"kind": "merge_conflict",
+                     "fields": [{"field": row["field"], "left": row["left"],
+                                 "right": row["right"]}
+                                for row in payload["fields"]]},
+                    ensure_ascii=False, sort_keys=True)
+                if model_kind == ai_keys.KIND_DECISION:
+                    merge_prompt_version = decision_model.DECISION_MERGE_PROMPT_VERSION
+                    decision_body = decision_model.merge_request(needs, model=model) if needs else None
+                    digest = _request_digest(
+                        json.dumps(decision_body["questions"], ensure_ascii=False, sort_keys=True)
+                        if decision_body else {},
+                        json.dumps(decision_body["state"], ensure_ascii=False, sort_keys=True)
+                        if decision_body else fallback_state,
+                        model, prompt_version=merge_prompt_version)
+                else:
+                    merge_prompt_version = MERGE_PROMPT_VERSION
+                    digest = _request_digest(
+                        _MERGE_SYSTEM_PROMPT,
+                        user_message or fallback_state,
+                        model, prompt_version=MERGE_PROMPT_VERSION)
                 parsed = None
                 if needs:
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                         parsed = _merge_unsure_parsed(
                             "模型连续调用失败，已跳过该条以避免持续消耗额度。",
                             "provider_unavailable")
+                    elif model_kind == ai_keys.KIND_DECISION:
+                        try:
+                            answer = _call_decision(decision_body)
+                            parsed = decision_model.parse_merge_answers(
+                                answer, [row["field"] for row in needs],
+                                min_confidence=MIN_CONFIDENCE)
+                            consecutive_failures = 0
+                            _touch_key()
+                        except ProviderError:
+                            parsed = _merge_unsure_parsed(
+                                "模型调用失败，无法判断。", "provider_error")
+                            consecutive_failures += 1
                     else:
                         try:
                             reply = _call(_MERGE_SYSTEM_PROMPT, user_message)
@@ -1194,8 +1265,9 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                     "kind": ref.kind,
                     "item_id": ref.item_id,
                     "model": model,
+                    "model_kind": model_kind,
                     "request_digest": digest,
-                    "prompt_version": MERGE_PROMPT_VERSION,
+                    "prompt_version": merge_prompt_version,
                     "audit_payload": {"keeper": suggestion["keeper"],
                                       "fields": suggestion["fields"]},
                 })
@@ -1203,6 +1275,58 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                 continue
 
             user_message = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            if model_kind == ai_keys.KIND_DECISION and ref.kind == "metadata_diff":
+                # 范围铁律（2026-11-10 用户裁定）：决策模型只用于 duplicate_group
+                # 与 merge_conflict；metadata_diff 不出站、逐条降级 unsure。
+                # 审计行 prompt_version 记 n/a：该行从未出站，不属于任何提示词
+                # 版本域（digest 以显式标记串计算，仍保证幂等唯一）。
+                suggestion = _unsure(
+                    "决策模型钥匙不支持元数据差异条目，无法判断；请改用生成式 LLM 钥匙。",
+                    ["decision_kind_not_supported"])
+                digest = _request_digest(
+                    "not-sent:decision-kind-not-supported", user_message, model,
+                    prompt_version=NOT_SENT_PROMPT_VERSION)
+                suggestion.update({
+                    "batch_id": ref.batch_id,
+                    "kind": ref.kind,
+                    "item_id": ref.item_id,
+                    "model": model,
+                    "model_kind": model_kind,
+                    "request_digest": digest,
+                    "prompt_version": NOT_SENT_PROMPT_VERSION,
+                })
+                results.append(suggestion)
+                continue
+            if model_kind == ai_keys.KIND_DECISION:
+                decision_body = decision_model.duplicate_request(payload, model=model)
+                digest = _request_digest(
+                    json.dumps(decision_body["questions"], ensure_ascii=False, sort_keys=True),
+                    json.dumps(decision_body["state"], ensure_ascii=False, sort_keys=True),
+                    model, prompt_version=decision_model.DECISION_PROMPT_VERSION)
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    suggestion = _unsure("模型连续调用失败，已跳过该条以避免持续消耗额度。",
+                                         ["provider_unavailable"])
+                else:
+                    try:
+                        answer = _call_decision(decision_body)
+                        suggestion = decision_model.parse_duplicate_answer(
+                            answer, min_confidence=MIN_CONFIDENCE)
+                        consecutive_failures = 0
+                        _touch_key()
+                    except ProviderError:
+                        suggestion = _unsure("模型调用失败，无法判断。", ["provider_error"])
+                        consecutive_failures += 1
+                suggestion.update({
+                    "batch_id": ref.batch_id,
+                    "kind": ref.kind,
+                    "item_id": ref.item_id,
+                    "model": model,
+                    "model_kind": model_kind,
+                    "request_digest": digest,
+                    "prompt_version": decision_model.DECISION_PROMPT_VERSION,
+                })
+                results.append(suggestion)
+                continue
             digest = _request_digest(_SYSTEM_PROMPT, user_message, model)
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 suggestion = _unsure("模型连续调用失败，已跳过该条以避免持续消耗额度。",
@@ -1221,6 +1345,7 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                 "kind": ref.kind,
                 "item_id": ref.item_id,
                 "model": model,
+                "model_kind": model_kind,
                 "request_digest": digest,
                 "prompt_version": PROMPT_VERSION,
             })
@@ -1243,7 +1368,9 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                         stored_json = None
                     conn.execute(_AUDIT_UPSERT, (
                         info.task_id, entry["batch_id"], entry["kind"], entry["item_id"],
-                        provider, model, entry["prompt_version"], entry["request_digest"],
+                        provider, model,
+                        entry.get("model_kind") or ai_keys.KIND_LLM,
+                        entry["prompt_version"], entry["request_digest"],
                         entry["verdict"] or MERGE_VERDICT,
                         entry["confidence"], entry["rationale_zh"], stored_json,
                         json.dumps(entry["warnings"], ensure_ascii=False), status,
@@ -1262,14 +1389,27 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
         for entry in results:
             if entry["verdict"] in counts:
                 counts[entry["verdict"]] += 1
+        # 顶层 prompt_version(s) 按钥匙 kind 返回（评审中危项修复）：decision
+        # 钥匙下与行级/审计一致（metadata_diff 为 null=该 kind 不出站）；llm
+        # 钥匙零变化。行级 prompt_version 始终是权威值。
+        if model_kind == ai_keys.KIND_DECISION:
+            top_prompt_version = decision_model.DECISION_PROMPT_VERSION
+            top_prompt_versions = {
+                "duplicate_group": decision_model.DECISION_PROMPT_VERSION,
+                "metadata_diff": None,
+                "merge_conflict": decision_model.DECISION_MERGE_PROMPT_VERSION}
+        else:
+            top_prompt_version = PROMPT_VERSION
+            top_prompt_versions = {"duplicate_group": PROMPT_VERSION,
+                                   "metadata_diff": PROMPT_VERSION,
+                                   "merge_conflict": MERGE_PROMPT_VERSION}
         return {
             "status": "ok",
             "read_only": True,               # 建议只读：确认仍走导入复核既有动作端点
-            "prompt_version": PROMPT_VERSION,
-            "prompt_versions": {"duplicate_group": PROMPT_VERSION,
-                                "metadata_diff": PROMPT_VERSION,
-                                "merge_conflict": MERGE_PROMPT_VERSION},
+            "prompt_version": top_prompt_version,
+            "prompt_versions": top_prompt_versions,
             "model": model,
+            "model_kind": model_kind,
             "key_source": key_source,
             "suggestions": [_suggestion_view(entry) for entry in results],
             "counts": counts,
@@ -1356,6 +1496,7 @@ def _audit_view(record: dict) -> dict:
         "item_id": record["item_id"],
         "provider": record["provider"],
         "model": record["model"],
+        "model_kind": record.get("model_kind") or "llm",
         "prompt_version": record["prompt_version"],
         "status": record["status"],
         "created_at": record["created_at"],
@@ -1409,6 +1550,9 @@ def _ensure_audit_schema(conn: sqlite3.Connection) -> None:
     ``duplicate_group``/``metadata_diff`` 与 same/different/unsure；SQLite 不能
     ALTER CHECK，故重建：改名 → 建新表 → 拷行（``INSERT OR IGNORE``）→ 删旧表。
     任一步中断后重入都能继续（旧表在时先拷贝再删）。
+    2.1.5 决策模型波给新表加 ``model_kind`` 列；G5 形状（无该列）的存量表用
+    ALTER 幂等补列（回填 'llm'：决策模型钥匙在该波之前不存在，存量行只能
+    是 LLM 通道），列已存在时忽略（并发先加列无碍）。
     """
     tables = {row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -1426,3 +1570,8 @@ def _ensure_audit_schema(conn: sqlite3.Connection) -> None:
         # 列清单是模块内固定常量（无任何外部输入），见 _AUDIT_COPY_SQL。
         conn.executescript(_AUDIT_COPY_SQL)
         conn.execute("DROP TABLE import_ai_suggestions_legacy")
+    try:
+        conn.execute("ALTER TABLE import_ai_suggestions "
+                     "ADD COLUMN model_kind TEXT NOT NULL DEFAULT 'llm'")
+    except sqlite3.OperationalError:
+        pass  # 列已存在（新建表自带 / 他连接并发先加列）——幂等。

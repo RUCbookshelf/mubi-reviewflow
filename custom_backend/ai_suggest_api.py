@@ -425,6 +425,22 @@ def resolve_task_credentials(info, settings: dict, prefs: dict, user: dict,
     return None, None
 
 
+def decision_key_not_allowed(endpoint: str) -> HTTPException:
+    """越界硬闸错误（模块级，供各 AI 端点复用同一形状）。
+
+    决策模型类钥匙（kind=decision）只允许导入复核 AI 助手的 duplicate_group
+    与 merge_conflict；任何其他走 ai_suggest 钥匙柜的端点拿到它都返回本错误
+    （结构化 message_key + params 端点名，零出站）。
+    """
+    return HTTPException(409, {
+        "code": "ai_decision_key_not_allowed",
+        "message_key": "ai.decision_key_not_allowed",
+        "params": {"endpoint": endpoint},
+        "detail": ("决策模型类钥匙只可用于导入复核 AI 助手（重复判断/合并字段冲突），"
+                   "不能用于本功能。"),
+    })
+
+
 # ---------------------------------------------------------------------------
 # 提示词组装与解析
 # ---------------------------------------------------------------------------
@@ -664,6 +680,9 @@ class KeyPutIn(BaseModel):
     key: str = Field(min_length=8, max_length=4096)
     base_url: str | None = Field(default=None, max_length=500)
     model: str | None = Field(default=None, max_length=100)
+    #: 模型类型（2026-11-10 用户裁定）：llm=生成式（缺省，既有行为不变）；
+    #: decision=Jev 类决策模型（只允许导入复核 AI 助手两场景，越界硬闸拒绝）。
+    kind: Literal["llm", "decision"] = "llm"
     # B4 §2"校验连通后保存"以显式选项实现：默认不强制出站（离线/内网可先保存）。
     verify: bool = False
 
@@ -733,16 +752,37 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
     def _masked_metadata(record: dict | None, source: str | None) -> dict:
         if record is None:
             return {"configured": False, "provider": None, "masked": None,
-                    "base_url": None, "model": None, "source": None,
+                    "base_url": None, "model": None, "kind": None, "source": None,
                     "added_at": None, "last_used_at": None}
         return {"configured": True, "provider": record.get("provider"),
                 "masked": ai_keys.mask_key(record.get("key", "")),
                 "base_url": _base_url_meta(record),
-                "model": record.get("model") or "", "source": source,
+                "model": record.get("model") or "",
+                "kind": ai_keys.kind_of(record), "source": source,
                 "added_at": record.get("added_at"), "last_used_at": record.get("last_used_at")}
 
-    def _verify_credentials(provider: str, key: str, base_url: str | None, model: str | None) -> None:
-        """保存前的连通性校验（最小 completion；异常映射 502，key 不进错误）。"""
+    def _verify_credentials(provider: str, key: str, base_url: str | None,
+                            model: str | None, kind: str = "llm") -> None:
+        """保存前的连通性校验（按钥匙类型分派协议；异常映射 502，key 不进错误）。
+
+        decision 钥匙走 systemone 连通检查（Jev 端点没有 chat/completions），
+        llm 钥匙照旧走最小 completion。"""
+        if kind == ai_keys.KIND_DECISION:
+            from custom_backend import decision_model_adapter as decision
+            try:
+                normalized = decision.decision_base_url_of({"base_url": base_url})
+            except ai_keys.KeyShapeError as exc:
+                raise HTTPException(422, str(exc)) from None
+            try:
+                decision.call_decision(
+                    decision.connectivity_body(
+                        model=(str(model or "").strip() or decision.DEFAULT_DECISION_MODEL)),
+                    api_key=key, base_url=normalized,
+                    model=(str(model or "").strip() or decision.DEFAULT_DECISION_MODEL),
+                    timeout=15.0)
+            except ProviderError as exc:
+                raise _provider_http_error(exc, key) from None
+            return
         try:
             normalized = ai_keys.base_url_of({"base_url": base_url})
         except ai_keys.KeyShapeError as exc:
@@ -768,11 +808,12 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
     @app.put("/api/ai/key")
     def put_personal_key(body: KeyPutIn, user: dict = Depends(require_user)) -> dict:
         if body.verify:
-            _verify_credentials(body.provider, body.key, body.base_url, body.model)
+            _verify_credentials(body.provider, body.key, body.base_url, body.model, body.kind)
         try:
             record = ai_keys.save_personal_key(
                 user["user_id"], provider=body.provider, key=body.key,
-                base_url=body.base_url, model=body.model, data_root=data_root)
+                base_url=body.base_url, model=body.model, kind=body.kind,
+                data_root=data_root)
         except ai_keys.KeyShapeError as exc:
             raise HTTPException(422, str(exc)) from None
         return _masked_metadata(record, "file")
@@ -791,18 +832,33 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         if record is None:
             raise HTTPException(409, {"code": "ai_key_missing",
                                       "detail": "尚未配置个人 AI 钥匙。"})
-        try:  # MM-09：历史存量记录若含非法 base_url，映射 422 而非未捕获 500。
-            base_url = ai_keys.base_url_of(record)
-        except ai_keys.KeyShapeError as exc:
-            raise HTTPException(422, str(exc)) from None
         started = time.monotonic()
-        try:
-            result = _call_provider(
-                "You are a connectivity check. Reply with a JSON object.",
-                '{"ping": true}', api_key=record["key"], base_url=base_url,
-                model=(record.get("model") or _FALLBACK_MODEL), timeout=15.0)
-        except ProviderError as exc:
-            raise _provider_http_error(exc, record["key"]) from None
+        if ai_keys.kind_of(record) == ai_keys.KIND_DECISION:
+            # decision 钥匙：连通性检查走 systemone（Jev 端点没有 chat/completions）。
+            from custom_backend import decision_model_adapter as decision
+            try:  # 存量记录非法 base_url → 422（同 MM-09 口径，绝不冒泡 500）。
+                base_url = decision.decision_base_url_of(record)
+            except ai_keys.KeyShapeError as exc:
+                raise HTTPException(422, str(exc)) from None
+            model = (record.get("model") or "").strip() or decision.DEFAULT_DECISION_MODEL
+            try:
+                result = decision.call_decision(
+                    decision.connectivity_body(model=model), api_key=record["key"],
+                    base_url=base_url, model=model, timeout=15.0)
+            except ProviderError as exc:
+                raise _provider_http_error(exc, record["key"]) from None
+        else:
+            try:  # MM-09：历史存量记录若含非法 base_url，映射 422 而非未捕获 500。
+                base_url = ai_keys.base_url_of(record)
+            except ai_keys.KeyShapeError as exc:
+                raise HTTPException(422, str(exc)) from None
+            try:
+                result = _call_provider(
+                    "You are a connectivity check. Reply with a JSON object.",
+                    '{"ping": true}', api_key=record["key"], base_url=base_url,
+                    model=(record.get("model") or _FALLBACK_MODEL), timeout=15.0)
+            except ProviderError as exc:
+                raise _provider_http_error(exc, record["key"]) from None
         ai_keys.touch_last_used(ai_keys.personal_path(user["user_id"], data_root))
         return {"ok": True, "provider": record["provider"],
                 "model": result.get("model"), "latency_ms": int((time.monotonic() - started) * 1000),
@@ -824,11 +880,12 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         info = task_lookup(task_id)
         _owner_context(task_id, user)
         if body.verify:
-            _verify_credentials(body.provider, body.key, body.base_url, body.model)
+            _verify_credentials(body.provider, body.key, body.base_url, body.model, body.kind)
         try:
             record = ai_keys.save_shared_key(
                 info.task_id, provider=body.provider, key=body.key,
-                base_url=body.base_url, model=body.model, data_root=data_root)
+                base_url=body.base_url, model=body.model, kind=body.kind,
+                data_root=data_root)
         except ai_keys.KeyShapeError as exc:
             raise HTTPException(422, str(exc)) from None
         return {"enabled": True, "provider_name": record["provider"]}
@@ -949,6 +1006,11 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             # R1/无 Key 零影响：返回明确 disabled 状态而非抛错（B6 任务书钥匙优先级条款）。
             return {"status": "disabled", "code": "ai_key_missing", "reason": "ai_key_missing",
                     "suggestions": [], "usage": None, "warnings": ["ai_key_missing"]}
+        if ai_keys.kind_of(credentials) == ai_keys.KIND_DECISION:
+            # 越界硬闸（2026-11-10 用户裁定）：决策模型类钥匙只允许导入复核 AI
+            # 助手的 duplicate_group/merge_conflict 两场景；任何其他 AI 端点
+            # （编码建议等一切走本钥匙柜的功能）一律结构化拒绝，零出站。
+            raise decision_key_not_allowed("coding/ai-suggestions")
 
         requested = sorted({f for f in body.field_ids if f.strip()})
         if not requested:
