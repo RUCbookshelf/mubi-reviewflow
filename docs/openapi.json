@@ -9742,6 +9742,32 @@
             }
           },
           {
+            "in": "query",
+            "name": "purge",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Purge",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "confirm",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Confirm"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,

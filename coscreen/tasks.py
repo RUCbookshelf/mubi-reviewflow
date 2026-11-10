@@ -10,7 +10,12 @@
         ui_settings_{slug}.json  每位筛选员的界面偏好
         pdfs/ coding_assets/ exports/ merge_out/
         {taskId}.lock            任务锁（O_EXCL，内容 = PID + 时间戳）
-      .trash/{ts}_{taskId}/      删除任务的隔离区（移入而非就地 rm）
+      .trash/{ts}_{taskId}/      删除任务的隔离区（移入而非就地 rm；默认保留
+                                  REVIEWFLOW_TRASH_TTL_DAYS=30 天，触点式惰性
+                                  清扫，<1 = 禁用自动清理=纯手工模式；
+                                  purge_task 彻底删除**不经**此处）
+      .purging/{name}.purging-{ts}/  purge 的原子改名暂存区（tasks 根之外；
+                                  rmtree 未竟的残骸在此，不入注册表扫描）
       .migration_state.json      迁移进度状态（已处理的平铺库清单）
 
 设计约定：
@@ -33,10 +38,12 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 import uuid
 import zipfile
@@ -50,12 +57,20 @@ from coscreen.security import sanitize_component
 
 DEFAULT_SCREENER = "匿名"
 
+#: 本模块日志（回收站清扫结果只进服务端日志，见 sweep_trash）
+_LOG = logging.getLogger(__name__)
+
 __all__ = [
     "DEFAULT_TASK_TOUCH_THROTTLE",
+    "DEFAULT_TRASH_TTL_DAYS",
     "LOCK_SUFFIX",
     "MIGRATION_STATE_FILENAME",
+    "PURGE_STAGING_DIRNAME",
+    "PURGE_STAGING_SUFFIX",
+    "PurgePartialError",
     "TASKS_DIRNAME",
     "TRASH_DIRNAME",
+    "TRASH_TTL_ENV",
     "MigrationItem",
     "MigrationPlan",
     "TaskInfo",
@@ -82,6 +97,9 @@ __all__ = [
     "tasks_root",
     "touch_task",
     "trash_root",
+    "trash_ttl_days",
+    "sweep_trash",
+    "purge_task",
     "migrate_scan",
     "apply_migration",
 ]
@@ -525,6 +543,202 @@ def delete_task(task_id: str, data_dir: str | Path = "data") -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(info.dir), str(dst))
     return dst
+
+
+# ---------------------------------------------------------------------------
+# 彻底删除（purge）与回收站保留期清扫（2.1.5 任务删除策略，契约 =
+# out/release_plan/drafts/frontend_contract_2.1.5-task-delete.md）
+# ---------------------------------------------------------------------------
+
+#: 回收站默认保留天数（前端披露文案的 N；运维可用环境变量覆盖）
+DEFAULT_TRASH_TTL_DAYS = 30
+#: 回收站保留期环境变量名：整数字符串；<1 = 禁用自动清理（纯手工模式）；
+#: 缺省/非整数 → 默认 30（警告进日志，不让坏配置静默变成「永不清理」或 500）
+TRASH_TTL_ENV = "REVIEWFLOW_TRASH_TTL_DAYS"
+#: purge 暂存区目录名（{data_dir}/.purging，位于 tasks 根**之外**——rmtree
+#: 未竟的残骸不会被 list_tasks 扫到、也不参与建任务重名检查）
+PURGE_STAGING_DIRNAME = ".purging"
+#: purge 暂存条目后缀（{dirName}.purging-{ts}，位于暂存区内、同卷）
+PURGE_STAGING_SUFFIX = ".purging-"
+
+
+def trash_ttl_days() -> int:
+    """回收站保留天数：环境变量优先（整数），缺省/非法回退默认 30。
+
+    返回 <1 表示**禁用自动清理**（sweep_trash 立即空转）——纯手工模式，
+    运维自行处置 ``.trash``；契约写死该口径。
+    """
+    raw = os.environ.get(TRASH_TTL_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_TRASH_TTL_DAYS
+    try:
+        return int(raw.strip())
+    except ValueError:
+        _LOG.warning("%s=%r 不是整数，回退默认 %d 天", TRASH_TTL_ENV, raw,
+                     DEFAULT_TRASH_TTL_DAYS)
+        return DEFAULT_TRASH_TTL_DAYS
+
+
+def _trash_entry_time(entry: Path):
+    """回收站条目的时间：目录名前缀 ``{ts}_``（delete_task 的秒级本地时间串）
+    优先；解析失败回退目录 mtime；两者都拿不到返回 None（清扫按跳过处理，
+    保守不删）。"""
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(entry.name.split("_", 1)[0], "%Y-%m-%dT%H%M%S")
+    except ValueError:
+        pass
+    try:
+        return datetime.fromtimestamp(entry.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def sweep_trash(
+    data_dir: str | Path = "data",
+    *,
+    ttl_days: int | None = None,
+    now=None,
+) -> dict:
+    """惰性清扫回收站：保留期满的 ``.trash/{ts}_{taskId}/`` 目录整目录 rmtree。
+
+    - 过期口径：条目时间 ≤ ``now − TTL``（恰好满 TTL 天即过期）；
+    - 目录名时间戳不可解析 → mtime 兜底；两者皆不可得 → 跳过（保守不删）；
+    - 只处理**目录**：``.trash`` 里的 ``migration_backup_*.zip`` 等文件不动；
+    - 单目录失败计入 ``skipped`` 后继续（不因一个坏目录让触点请求 500）；
+    - 返回 ``{"purged": n, "skipped": n, "ttl_days": t}``（+禁用时
+      ``disabled=True``）——只供服务端日志，触点响应不扩；``now``/``ttl_days``
+      仅供测试注入，生产触点一律走环境变量口径。
+    """
+    from datetime import timedelta
+
+    ttl = trash_ttl_days() if ttl_days is None else int(ttl_days)
+    if ttl < 1:
+        return {"purged": 0, "skipped": 0, "ttl_days": ttl, "disabled": True}
+    root = trash_root(data_dir)
+    if not root.is_dir():
+        return {"purged": 0, "skipped": 0, "ttl_days": ttl}
+    if now is None:
+        from datetime import datetime
+
+        now = datetime.now()
+    cutoff = now - timedelta(days=ttl)
+    purged = skipped = 0
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue  # 迁移备份 zip 等文件不属清扫对象
+        ts = _trash_entry_time(entry)
+        if ts is None:
+            skipped += 1
+            continue
+        if ts > cutoff:
+            continue  # 保留期内
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            skipped += 1
+            _LOG.warning("回收站条目清扫失败（跳过继续）：%s： %s", entry.name, exc)
+            continue
+        purged += 1
+    return {"purged": purged, "skipped": skipped, "ttl_days": ttl}
+
+
+class PurgePartialError(OSError):
+    """purge 已把任务目录移出注册表、但暂存目录 rmtree 未竟（不可恢复路径上
+    的受控失败）——携带暂存目录路径与剩余条目数，端点按 409 如实报告。"""
+
+    def __init__(self, staging: Path):
+        remaining = sum(1 for _ in staging.rglob("*")) if staging.exists() else 0
+        super().__init__(
+            f"任务目录已移出注册表，暂存目录 {staging.name} 清理未完成"
+            f"（剩余 {remaining} 个条目）")
+        self.staging = staging
+        self.remaining = remaining
+
+
+def _rmtree_with_readonly_recovery(path: Path) -> None:
+    """rmtree；失败时清树内只读位后重试一次（Windows 只读文件 unlink 失败
+    是 purge 半删的最常见诱因）。清位是 best-effort，仍失败则如实抛
+    OSError 给上层报告状态。"""
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        for p in path.rglob("*"):
+            if p.is_file():
+                try:
+                    p.chmod(p.stat().st_mode | stat.S_IWUSR)
+                except OSError:
+                    pass
+        shutil.rmtree(path)
+
+
+def purge_task(task_id: str, data_dir: str | Path = "data") -> Path:
+    """彻底删除任务 = 任务目录整目录清除，**不进 ``.trash``（不可恢复）。
+
+    防误删闸门与 delete_task 同一道（锁检查逐字复用）：任务不存在 / 其他
+    活进程持任务锁 / 本进程在途写 >1 → ValueError（端点映射 409，任务原样
+    保留）。执行顺序：
+
+    ① 删除目标 = 属主校验/404 校验命中的**同一目录**（``info.dir``）。
+       **不**按 task.json 的 task_id 合成目标（评审 P2：手工拷贝/备份还原
+       等场景 json 内 id 可与目录名不一致，合成目标会错删另一个任务）；
+       并校验其解析路径严格位于 tasks_root 之下（防路径拼接意外把注册表
+       外的目录 rmtree）。
+    ② 原子改名到暂存区 ``{data_dir}/.purging/{dirName}.purging-{ts}``
+       （同卷 rename；暂存区在 tasks 根**之外**——rmtree 未竟的残骸不会被
+       list_tasks 扫到、也不撞建任务重名检查）。rename 失败（如句柄未释放）
+       抛 OSError：任务目录**原样保留**在注册表，绝不半删。
+    ③ rmtree 暂存条目（先清只读位再重试一次）；仍未竟抛 PurgePartialError
+       （任务目录已移出注册表，暂存条目路径/剩余条目数如实报告，交运维
+       处置）。
+
+    返回被清除的暂存条目路径（仅供日志与测试断言）。
+    """
+    info = find_task(task_id, data_dir)
+    if info is None:
+        raise ValueError(f"任务不存在：{task_id}")
+    canonical_dir = tasks_root(data_dir) / info.task_id
+    lock_path = canonical_dir / f"{info.task_id}{LOCK_SUFFIX}"
+    holder = lock_holder(lock_path)
+    # 本进程持锁（后端请求期任务锁，见 custom_backend 路由中间件）不算占用；
+    # 仅其他存活进程持有时拒绝。
+    if (holder and holder.get("pid") != os.getpid()
+            and pid_alive(int(holder.get("pid", 0)))):
+        raise ValueError(
+            f"任务正被其他窗口使用（PID {holder.get('pid')}），请先关闭后再删除。"
+        )
+    if holder and holder.get("pid") == os.getpid():
+        inflight = 0
+        if _inflight_requests is not None:
+            try:  # 计数钩子异常不阻断删除（退回旧行为：仅本请求持锁）
+                inflight = int(_inflight_requests(info.task_id))
+            except Exception:  # noqa: BLE001  防御性兜底
+                inflight = 0
+        if inflight > 1:
+            raise ValueError("任务有操作进行中（导入/分析等），请等待完成后再删除。")
+    # ①目标=属主校验命中的目录（info.dir），且必须严格位于 tasks_root 之下
+    # （== tasks_root 本身或逃逸到外面都拒绝——绝无可能 rmtree 注册表之外
+    # 的任何目录）。
+    target = info.dir
+    root = tasks_root(data_dir).resolve()
+    resolved = target.resolve()
+    if resolved == root or root not in resolved.parents:
+        raise ValueError(f"非法任务路径：{info.task_id}")
+    if not target.is_dir():
+        raise ValueError(f"任务目录不存在：{info.task_id}")
+    # ②原子改名到暂存区（同卷；失败=任务原样保留，不产生半删）
+    staging_root = Path(data_dir) / PURGE_STAGING_DIRNAME
+    staging_root.mkdir(parents=True, exist_ok=True)
+    staging = staging_root / (
+        f"{target.name}{PURGE_STAGING_SUFFIX}{_now_iso().replace(':', '')}")
+    os.rename(target, staging)
+    # ③清除暂存条目；失败如实报告其状态（任务已移出注册表）
+    try:
+        _rmtree_with_readonly_recovery(staging)
+    except OSError as exc:
+        raise PurgePartialError(staging) from exc
+    return staging
 
 
 # ---------------------------------------------------------------------------

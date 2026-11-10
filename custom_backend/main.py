@@ -2023,11 +2023,14 @@ def list_all_tasks(
                     visible.append(info)
                     degraded_ids.add(info.task_id)
                 continue
-        return {"tasks": [_task_payload(i, degraded=i.task_id in degraded_ids)
-                          for i in visible]}
+        payload = {"tasks": [_task_payload(i, degraded=i.task_id in degraded_ids)
+                             for i in visible]}
     finally:
         if entered:
             TaskLockMiddleware.exit_list_read()
+    # F2 触点之一：列表读出口惰性清扫回收站（结果只进日志，响应形状不变）。
+    _sweep_trash_logged()
+    return payload
 
 
 @app.post("/api/tasks", status_code=201)
@@ -2069,6 +2072,8 @@ def create_task(body: TaskCreateIn, user: dict = Depends(require_user)) -> dict:
         raise _bad(str(exc), 409) from exc
     finally:
         TaskLockMiddleware.exit_list_read()
+    # F2 触点之一：建任务出口惰性清扫回收站（结果只进日志，响应形状不变）。
+    _sweep_trash_logged()
     return _task_payload(info)
 
 
@@ -2574,9 +2579,72 @@ def update_task(
     return _task_payload(tasks_mod.find_task(task_id, DATA_DIR))
 
 
+def _sweep_trash_logged() -> None:
+    """F2 触点式惰性清扫回收站：结果只进服务端日志，**绝不扩触点响应**、
+    绝不因清扫异常让触点请求 500。触点 = 任务删除（普通+purge 两种成功）、
+    GET /api/tasks、POST /api/tasks（无定时无后台，与整包 60 分钟清扫同一
+    模式；TTL 口径见 tasks_mod.sweep_trash / REVIEWFLOW_TRASH_TTL_DAYS）。"""
+    try:
+        result = tasks_mod.sweep_trash(DATA_DIR)
+    except Exception:  # noqa: BLE001  清扫绝不阻断业务触点
+        logger.exception("回收站惰性清扫异常（忽略，触点请求不受影响）")
+        return
+    if result.get("disabled"):
+        logger.info("回收站清扫：TTL=%s（<1，禁用自动清理=纯手工模式）",
+                    result.get("ttl_days"))
+    elif result.get("purged") or result.get("skipped"):
+        logger.info("回收站清扫：彻底删除 %s 个、跳过 %s 个（TTL=%s 天）",
+                    result.get("purged"), result.get("skipped"),
+                    result.get("ttl_days"))
+
+
+#: purge 确认串口径（契约 frontend_contract_2.1.5-task-delete.md）：
+#: confirm = **规范任务 ID** 精确匹配（区分大小写；仅查询参数一种渠道）。
+_PURGE_CONFIRM_EXPECTED = (
+    "confirm 查询参数须与规范任务 ID 完全一致（区分大小写，不含引号）")
+
+
+def _purge_confirm_error(info: tasks_mod.TaskInfo) -> HTTPException:
+    """purge=true 但缺 confirm → 400 结构化（message_key，新增文案不裸奔）。"""
+    return HTTPException(400, {
+        "error_code": "purge_confirm_required",
+        "message_key": "tasks.purge_confirm_required",
+        "params": {"task_id": info.task_id, "expected": _PURGE_CONFIRM_EXPECTED},
+        "detail": "彻底删除不可恢复，需在 confirm 查询参数中提供规范任务 ID 确认。",
+        "message": "彻底删除不可恢复，需在 confirm 查询参数中提供规范任务 ID 确认。",
+    })
+
+
+def _purge_confirm_mismatch_error(info: tasks_mod.TaskInfo,
+                                  confirm: str) -> HTTPException:
+    """purge=true 且 confirm 不匹配规范 ID → 400 结构化（任务原样保留）。"""
+    return HTTPException(400, {
+        "error_code": "purge_confirm_mismatch",
+        "message_key": "tasks.purge_confirm_mismatch",
+        "params": {"task_id": info.task_id, "expected": _PURGE_CONFIRM_EXPECTED},
+        "detail": "确认串与规范任务 ID 不匹配，已拒绝彻底删除（任务原样保留）。",
+        "message": "确认串与规范任务 ID 不匹配，已拒绝彻底删除（任务原样保留）。",
+    })
+
+
 @app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
+def delete_task(
+    task_id: str,
+    purge: bool = False,
+    confirm: str | None = None,
+    user: dict = Depends(require_user),
+) -> dict:
     info = _require_task_owner(task_id, user)
+    # F1 彻底删除（契约 frontend_contract_2.1.5-task-delete.md）：purge=true
+    # 必须携带 confirm=**规范任务 ID** 精确匹配（查询参数；DELETE 请求体在
+    # 部分客户端会被剥掉，渠道写死查询参数）。**属主闸门先行**（非属主一律
+    # 403，不向非属主泄露 confirm 口径），confirm 校验在其后：缺 → 400
+    # tasks.purge_confirm_required；不匹配 → 400 tasks.purge_confirm_mismatch
+    # ——两种 400 都发生在置删除标记/动目录之前，任务原样在位。
+    if purge and confirm != info.task_id:
+        if confirm is None:
+            raise _purge_confirm_error(info)
+        raise _purge_confirm_mismatch_error(info, confirm)
     # U5-P2/R6-S2：单进程部署下中间件对同任务并发只做引用计数，此前本进程
     # 持锁时 delete_task 照删不误——导入还在写库就能把任务目录搬进 .trash。
     # 顺序：①置「删除中」标记（中间件对后续一切请求——含 GET/导入——直接
@@ -2585,7 +2653,9 @@ def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
     # 读请求持有 SQLite 文件句柄，未排空即 move 会在 Windows 上 os.rename
     # 失败→shutil.move 回退 copytree+rmtree→在打开的 .db 上半删原目录、
     # .trash 留全量副本、端点 500）→ ④真正 move。读排空有界：超时受控 409
-    # （任务原样保留），绝不落入破坏性回退路径。
+    # （任务原样保留），绝不落入破坏性回退路径。purge 与普通删除走**同一套**
+    # 属主校验与在途排空（一字不改），此后才分叉：普通=move 进 .trash；
+    # purge=整目录清除不经 .trash（rename 到暂存+rmtree，见 tasks_mod.purge_task）。
     TaskLockMiddleware._begin_delete(info.task_id)
     try:
         inflight = TaskLockMiddleware.inflight(info.task_id)
@@ -2605,12 +2675,41 @@ def delete_task(task_id: str, user: dict = Depends(require_user)) -> dict:
             if time.monotonic() >= deadline:
                 raise _bad("任务或任务列表仍有读取请求未完成，请稍后重试删除。", 409)
             time.sleep(0.02)
-        try:
-            trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
-        except ValueError as exc:
-            raise _bad(str(exc), 409) from exc
+        if purge:
+            try:
+                tasks_mod.purge_task(task_id, DATA_DIR)
+            except tasks_mod.PurgePartialError as exc:
+                # rename 已把目录移出注册表、暂存目录清理未竟：如实报告
+                # 暂存目录名与剩余条目数（运维处置），受控 409。
+                raise HTTPException(409, {
+                    "error_code": "purge_partial",
+                    "message_key": "tasks.purge_partial",
+                    "params": {"staging": exc.staging.name,
+                               "remaining": exc.remaining},
+                    "detail": str(exc), "message": str(exc),
+                }) from exc
+            except OSError as exc:
+                # 原子 rename 失败（如句柄未释放）：任务目录**原样保留**在
+                # 注册表，绝不半删；受控 409。
+                raise HTTPException(409, {
+                    "error_code": "purge_busy",
+                    "message_key": "tasks.purge_busy",
+                    "params": {"reason": str(exc)},
+                    "detail": f"任务目录正被占用，未能彻底删除（任务原样保留）：{exc}",
+                    "message": f"任务目录正被占用，未能彻底删除（任务原样保留）：{exc}",
+                }) from exc
+            except ValueError as exc:
+                raise _bad(str(exc), 409) from exc
+        else:
+            try:
+                trash_path = tasks_mod.delete_task(task_id, DATA_DIR)
+            except ValueError as exc:
+                raise _bad(str(exc), 409) from exc
     finally:
         TaskLockMiddleware._end_delete(info.task_id)
+    _sweep_trash_logged()
+    if purge:
+        return {"deleted": True, "purged": True}
     return {"deleted": True, "trash": trash_path.name}
 
 
