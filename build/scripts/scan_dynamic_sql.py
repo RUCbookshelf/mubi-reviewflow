@@ -19,13 +19,20 @@ Mimosa 生成前钩子（2026-11-07）要求：数据库查询时所有外部输
   （无插值的 f-string 仍是纯常量，不记）；
 * ``format``   —— ``ast.Call`` 且 func 为 ``.format`` 属性；
 * ``percent``  —— ``ast.BinOp(op=Mod)``；
-* ``concat``   —— ``ast.BinOp(op=Add)``。
+* ``concat``   —— ``ast.BinOp(op=Add)``；
+* ``join``     —— ``''.join((…))`` 之类 ``str.join``，且可迭代对象是
+  **字面量**容器（tuple/list/set）或推导式/生成器表达式，其中至少一个
+  元素是上述动态构造（含嵌套动态 join），或（作用域内）是已追踪的动态
+  别名变量。纯常量元素不记：``','.join('?' for _ in ids)`` 占位符生成器、
+  ``'?' * n`` 重复、以及 join 一个未知来源的裸变量（``join(parts)``，
+  即使该变量由动态元素构成）都与既有「不做跨函数数据流」口径一致地放行。
 
 此外（默认开启，``--direct-only`` 可关闭）做**函数内简单别名追踪**：
-若第一实参是局部/外层/模块级变量，而该变量经赋值或 ``+=`` 来自上述四类
-动态表达式，则以 ``direct=false`` 记一条间接命中（``via`` 带变量名与
-赋值行号）。这类写法与直接拼装等价，必须一并修复，否则工单不完整；
-追踪只在语法作用域内做，不做跨函数参数的数据流分析（见「已知局限」）。
+若第一实参是局部/外层/模块级变量，而该变量经赋值或 ``+=`` 来自上述动态
+表达式（含函数作用域内 ``+= <已追踪别名>`` 的追加传播），则以 ``direct=false`` 记一条
+间接命中（``via`` 带变量名与赋值行号）。这类写法与直接拼装等价，必须一
+并修复，否则工单不完整；追踪只在语法作用域内做，不做跨函数参数的数据流
+分析（见「已知局限」）。
 
 纯常量片段（含隐式字符串拼接 ``"a" "b"``、常量 ``+=`` 追加）不记命中。
 
@@ -49,7 +56,7 @@ SQLite 语法确实无法绑定处（如 ``PRAGMA``、``ATTACH`` 的只读库名
 
     python build/scripts/scan_dynamic_sql.py
     python build/scripts/scan_dynamic_sql.py --json > hits.json
-    python build/scripts/scan_dynamic_sql.py --whitelist build/sql_whitelist.txt
+    python build/scripts/scan_dynamic_sql.py --whitelist build/scripts/scan_dynamic_sql.whitelist
     python build/scripts/scan_dynamic_sql.py --root /tmp/fixture --json
     python build/scripts/scan_dynamic_sql.py --direct-only
 
@@ -57,8 +64,14 @@ SQLite 语法确实无法绑定处（如 ``PRAGMA``、``ATTACH`` 的只读库名
 --------
 * 不做跨函数数据流：``build_sql(...)`` 之类 helper 返回的动态 SQL、或经
   函数参数传入再 execute 的 SQL 不会被识别；
-* 只认上述四类表达式形态；``.join(...)`` 单独作为第一实参、``str(...)`` /
-  ``textwrap.dedent(...)`` 包装等不记（当前树中不存在这些形态）。
+* ``join`` 只检**字面量**可迭代对象：``''.join(parts)`` 的 ``parts`` 是
+  变量时不记（即使该变量由动态元素构成）；``str(...)`` /
+  ``textwrap.dedent(...)`` 等任意非 execute 族名 Call 包装同样不记。
+  当前树中 23 处 ``join`` 站点的元素均为常量子句或 ``'?'`` 占位符生成器，
+  语义上是常量拼接（终审 #60 复核），因此零命中；把已白名单化的拼接改写
+  成「字面量元素含动态构造」的 join 会被本检查器抓住；
+* 模块顶层的 ``+=`` 常量组合（db.py 的 ``_SCHEMA`` 系列 schema 惯用形）不
+  做别名传播，只检函数作用域内的 ``q += <已追踪别名>``。
 
 本模块导入无副作用，测试可直接 import 复用 ``scan_tree`` / ``main``。
 """
@@ -147,18 +160,55 @@ class ScanError:
         return {"file": self.file, "line": self.line, "message": self.message}
 
 
+def _iterable_elements(node: ast.AST) -> list[ast.AST] | None:
+    """join 可迭代对象的元素表达式；非字面量容器/推导式返回 None。"""
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return list(node.elts)
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+        return [node.elt]
+    return None
+
+
+def _join_kind(call: ast.AST) -> str | None:
+    """``str.join`` 形态判定（终审 #60）：字面量元素含动态构造才记 ``join``。
+
+    纯常量元素不记：``','.join('?' for _ in ids)``（占位符生成器）、
+    ``'?' * n``（BinOp(Mult)）、join 一个未知来源的裸变量——与「不做跨
+    函数数据流」的既有口径一致。
+    """
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "join"
+        and len(call.args) == 1
+    ):
+        return None
+    elements = _iterable_elements(call.args[0])
+    if elements is None:
+        return None
+    for element in elements:
+        if isinstance(element, ast.Starred):
+            element = element.value
+        if dynamic_kind(element) is not None:
+            return "join"
+    return None
+
+
 def dynamic_kind(node: ast.AST) -> str | None:
     """返回动态 SQL 构造类别；纯常量返回 None。"""
     if isinstance(node, ast.JoinedStr) and any(
         isinstance(value, ast.FormattedValue) for value in node.values
     ):
         return "fstring"
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "format"
-    ):
-        return "format"
+    if isinstance(node, ast.Call):
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "format"
+        ):
+            return "format"
+        kind = _join_kind(node)
+        if kind is not None:
+            return kind
     if isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.Mod):
             return "percent"
@@ -252,6 +302,33 @@ class _ScopeVisitor(ast.NodeVisitor):
             self._pop()
 
     # ---- 赋值追踪 -----------------------------------------------------
+    def _scoped_kind(self, node: ast.AST) -> str | None:
+        """``dynamic_kind`` + 作用域内可见的 join 别名元素。
+
+        join 的字面量可迭代对象中若有一个元素是**已追踪的动态别名变量**
+        （如 ``sql = ''.join(("SELECT ", q))`` 的 ``q``），同样记 ``join``；
+        纯形态检查（``dynamic_kind``）看不到作用域，这一层补齐。
+        """
+        kind = dynamic_kind(node)
+        if kind is not None:
+            return kind
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+            and len(node.args) == 1
+        ):
+            return None
+        elements = _iterable_elements(node.args[0])
+        if elements is None:
+            return None
+        for element in elements:
+            if isinstance(element, ast.Starred):
+                element = element.value
+            if isinstance(element, ast.Name) and self._lookup(element.id) is not None:
+                return "join"
+        return None
+
     def _bind(self, target: ast.AST, value: ast.AST, kind: str | None) -> None:
         scope = self._scopes[-1]
         if isinstance(target, ast.Name):
@@ -277,22 +354,33 @@ class _ScopeVisitor(ast.NodeVisitor):
                 self._bind(sub_target, sub_value, dynamic_kind(sub_value))
 
     def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
-        kind = dynamic_kind(node.value)
+        kind = self._scoped_kind(node.value)
         for target in node.targets:
             self._bind(target, node.value, kind)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
         if node.value is not None:
-            self._bind(node.target, node.value, dynamic_kind(node.value))
+            self._bind(node.target, node.value, self._scoped_kind(node.value))
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:  # noqa: N802
         if isinstance(node.op, ast.Add) and isinstance(node.target, ast.Name):
             name = node.target.id
-            if self._lookup(name) is None and dynamic_kind(node.value) is not None:
+            if self._lookup(name) is None:
                 # 常量基串 + 动态追加 → 整体已是动态 SQL；记追加行号。
-                self._scopes[-1][name] = Alias(dynamic_kind(node.value) or "concat", node.lineno)
+                # 终审 #60：追加值也可以是已追踪别名（``q += part``），与
+                # ``=`` 赋值的别名传播（_bind）同口径——但只在函数作用域
+                # 内传播：模块顶层的 ``+=`` 是本仓库固定 schema 常量组合
+                # 的惯用形（db.py 的 _SCHEMA 系列），不按动态 SQL 处理。
+                alias = None
+                kind = self._scoped_kind(node.value)
+                if kind is not None:
+                    alias = Alias(kind, node.lineno)
+                elif len(self._scopes) > 1 and isinstance(node.value, ast.Name):
+                    alias = self._lookup(node.value.id)
+                if alias is not None:
+                    self._scopes[-1][name] = alias
         self.generic_visit(node)
 
     # ---- 调用点 -------------------------------------------------------
@@ -300,7 +388,7 @@ class _ScopeVisitor(ast.NodeVisitor):
         name = _call_name(node.func)
         if name in TARGET_CALLS and node.args:
             arg = node.args[0]
-            kind = dynamic_kind(arg)
+            kind = self._scoped_kind(arg)
             if kind is not None:
                 self.hits.append(
                     Hit(

@@ -1995,5 +1995,288 @@ class MalformedPackagePins(_ApiBase):
         self.assertEqual(self._import_leftovers(), [], "失败导入必须原子清场")
 
 
+# ---------------------------------------------------------------------------
+# 终审 #42 剩余缺口：加密成员/重复成员闸、_read_upload_bounded 有界上传、
+# 协作库 grants 清空、-imported slug 映射（成员名/三限额/清场已有上方钉组）
+# ---------------------------------------------------------------------------
+
+class EncryptedDuplicateMemberPins(_ApiBase):
+    """zip 结构闸里此前无钉的两条：encrypted_member / duplicate_member。
+
+    去掉对应检查后，加密/重复成员包会在更深的校验层以别的 reason 被拒
+    （或被接受）——本组钉死 preflight 与 import 两层都给出准确 reason；
+    变异钉证明检查是承重的（被绕过后 reason 变 manifest_missing 即红）。"""
+
+    def _post(self, endpoint: str, payload: bytes):
+        return self.client.post(
+            f"/api/tasks/{endpoint}",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+
+    def _assert_reason(self, response, reason: str):
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["params"]["reason"], reason)
+
+    @staticmethod
+    def _encrypted_package() -> bytes:
+        """zipfile 写盘时会清洗 flag_bits——加密位用中央目录原始字节手术置上
+        （校验路径读的正是中央目录的 flag_bits）。"""
+        import struct
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("db/a.db", _SQLITE_MAGIC + os.urandom(64))
+        raw = bytearray(buffer.getvalue())
+        end = raw.rfind(b"PK\x05\x06")
+        pos = 0
+        while True:
+            pos = raw.find(b"PK\x01\x02", pos)
+            if pos < 0 or pos > end:
+                break
+            flag = struct.unpack_from("<H", raw, pos + 8)[0]
+            struct.pack_into("<H", raw, pos + 8, flag | 0x1)
+            pos += 4
+        return bytes(raw)
+
+    @staticmethod
+    def _duplicate_package() -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            blob = _SQLITE_MAGIC + os.urandom(64)
+            archive.writestr("db/a.db", blob)
+            archive.writestr("db/a.db", blob)  # 同名重复成员
+        return buffer.getvalue()
+
+    def test_encrypted_member_rejected_at_both_layers(self):
+        payload = self._encrypted_package()
+        for endpoint in ("import-package/preflight", "import-package"):
+            with self.subTest(endpoint=endpoint):
+                self._assert_reason(self._post(endpoint, payload),
+                                    "encrypted_member")
+
+    def test_duplicate_member_rejected_at_both_layers(self):
+        payload = self._duplicate_package()
+        for endpoint in ("import-package/preflight", "import-package"):
+            with self.subTest(endpoint=endpoint):
+                self._assert_reason(self._post(endpoint, payload),
+                                    "duplicate_member")
+
+    def test_mutation_encrypted_check_bypassed_pin_goes_red(self):
+        """破坏性变异：infolist 层把加密位清零（等效删除该检查）→ 包走到
+        manifest_missing 而非 encrypted_member——上一颗钉必红。"""
+        real_infolist = zipfile.ZipFile.infolist
+
+        def _no_flag(self):
+            infos = real_infolist(self)
+            for info in infos:
+                info.flag_bits = 0
+            return infos
+
+        with mock.patch.object(zipfile.ZipFile, "infolist", _no_flag):
+            response = self._post("import-package/preflight",
+                                  self._encrypted_package())
+        self._assert_reason(response, "manifest_missing")
+
+    def test_mutation_duplicate_check_neutered_pin_goes_red(self):
+        """破坏性变异：``len(names) != len(set(names))`` 的比较恒假（值保真
+        的恒等 int）→ 包走到 manifest_missing 而非 duplicate_member——上一
+        颗钉必红。"""
+        real_len = len
+
+        class _EqAnyInt(int):
+            def __eq__(self, other):
+                return True
+
+            def __ne__(self, other):
+                return False
+
+        with mock.patch.object(task_package_api, "len",
+                               lambda seq: _EqAnyInt(real_len(seq)),
+                               create=True):
+            response = self._post("import-package/preflight",
+                                  self._duplicate_package())
+        self._assert_reason(response, "manifest_missing")
+
+
+class ReadUploadBoundedPins(unittest.TestCase):
+    """``_read_upload_bounded`` 函数级红钉（终审 #42：有界上传此前只有
+    端点级 413 一处，数值漂移无人发现——终审 runner.py drift_rule 探针）。"""
+
+    class _FakeUpload:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        async def read(self, limit=-1):
+            return self._chunks.pop(0) if self._chunks else b""
+
+    def _run(self, chunks, limit):
+        import asyncio
+        return asyncio.run(
+            task_package_api._read_upload_bounded(self._FakeUpload(chunks),
+                                                  limit))
+
+    def _temp_files(self):
+        import glob
+        return set(glob.glob(os.path.join(tempfile.gettempdir(),
+                                          "rf-package-upload-*")))
+
+    def test_over_limit_is_structured_413_and_cleans_temp_file(self):
+        before = self._temp_files()
+        with self.assertRaises(task_package_api.TaskPackageError) as ctx:
+            self._run([b"x" * 1024] * 2, limit=1024)
+        error = ctx.exception
+        self.assertEqual(error.status, 413)
+        self.assertEqual(error.params["limit_bytes"],
+                         1024 - task_package_api._UPLOAD_SLACK_BYTES,
+                         "413 载荷必须按 limit-slack 报真实端点上限")
+        self.assertEqual(error.params["total_bytes"], 2048)
+        self.assertEqual(self._temp_files(), before, "超限后的临时文件必须被清理")
+
+    def test_empty_body_is_structured_400(self):
+        with self.assertRaises(task_package_api.TaskPackageError) as ctx:
+            self._run([], limit=1024)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertEqual(ctx.exception.params["reason"], "empty_upload")
+
+    def test_within_limit_spools_and_returns_path(self):
+        path = None
+        try:
+            path = self._run([b"abc", b"def"], limit=1024)
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.read_bytes(), b"abcdef")
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+    def test_mutation_bound_removed_equivalent_pin_goes_red(self):
+        """破坏性变异的等价对照：limit 被放到天文数字（=「total>limit 检查
+        形同虚设」）时，同样的超限内容被完整落盘并成功返回——证明真实
+        limit 下的 413 完全由该检查承重（去掉检查即如此行为）。"""
+        path = None
+        try:
+            path = self._run([b"x" * 1024] * 2, limit=1 << 62)
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.stat().st_size, 2048,
+                             "无界时 2KiB 全部落盘（= 有界钉必红）")
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+
+class CollabRewritePins(unittest.TestCase):
+    """``_rewrite_collaboration_store``：导入协作库时旧部署的 role grants /
+    member settings 必须清空 + 任务改绑导入者（终审 #42 ⑤）。"""
+
+    def _make_store(self, base):
+        path = base / "collaboration.db"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute("CREATE TABLE collaboration_task(singleton INTEGER"
+                         " PRIMARY KEY, task_id TEXT, owner_user_id INTEGER,"
+                         " owner_username TEXT)")
+            conn.execute("CREATE TABLE collaboration_role_grants("
+                         "user_id INTEGER, role TEXT)")
+            conn.execute("CREATE TABLE collaboration_member_settings("
+                         "user_id INTEGER, json TEXT)")
+            conn.execute("INSERT INTO collaboration_task VALUES(1,'src-task',"
+                         "42,'old-owner')")
+            conn.execute("INSERT INTO collaboration_role_grants VALUES(42,'coder')")
+            conn.execute("INSERT INTO collaboration_role_grants VALUES(43,'reconciler')")
+            conn.execute("INSERT INTO collaboration_member_settings VALUES(42,'{}')")
+        return path
+
+    def test_grants_and_settings_cleared_and_task_rebound(self):
+        with tempfile.TemporaryDirectory(prefix="rf_w5_collab_rw_") as tmp:
+            base = Path(tmp)
+            path = self._make_store(base)
+            ok = task_package_api._rewrite_collaboration_store(
+                base, "collaboration.db", task_id="new-task", owner_id=7,
+                owner_name="importer")
+            self.assertTrue(ok)
+            with closing(sqlite3.connect(path)) as conn:
+                task = conn.execute(
+                    "SELECT task_id, owner_user_id, owner_username FROM"
+                    " collaboration_task").fetchone()
+                self.assertEqual(task, ("new-task", 7, "importer"))
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM collaboration_role_grants"
+                ).fetchone()[0], 0, "旧部署的 grants 必须清空")
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM collaboration_member_settings"
+                ).fetchone()[0], 0, "旧部署的 member settings 必须清空")
+
+    def test_mutation_deletes_swallowed_pin_goes_red(self):
+        """破坏性变异：清空语句被转发代理拦掉（经 ``__getattr__`` 动态绑定，
+        不在测试里写出「变量 SQL 进 execute」形态——同 W1 变异钉惯例）→
+        grants 原样残留——上一颗钉必红。"""
+        real_open_rw = task_package_api._open_rw
+        swallow = "".join(["DEL", "ETE"])
+
+        class _Proxy:
+            def __init__(self, real):
+                self._real = real
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._real.__exit__(*exc)
+                return False
+
+            def __getattr__(self, name):
+                attr = getattr(self._real, name)
+                if name in ("commit", "rollback", "close") or not callable(attr):
+                    return attr
+
+                def _forward(*args, **kwargs):
+                    first = str(args[0]) if args else ""
+                    if first.lstrip().upper().startswith(swallow):
+
+                        class _Noop:
+                            rowcount = 0
+
+                        return _Noop()
+                    return attr(*args, **kwargs)
+
+                return _forward
+
+        with tempfile.TemporaryDirectory(prefix="rf_w5_collab_mut_") as tmp:
+            base = Path(tmp)
+            path = self._make_store(base)
+            with mock.patch.object(task_package_api, "_open_rw",
+                                   lambda *a, **k: _Proxy(real_open_rw(*a, **k))):
+                ok = task_package_api._rewrite_collaboration_store(
+                    base, "collaboration.db", task_id="new-task", owner_id=7,
+                    owner_name="importer")
+            self.assertTrue(ok)
+            with closing(sqlite3.connect(path)) as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM collaboration_role_grants"
+                ).fetchone()[0], 2, "变异下 grants 残留（= 清空钉必红）")
+
+
+class SlugMapPins(unittest.TestCase):
+    """``_slug_map_for``：保留名/大小写冲突加 ``-imported`` 后缀且映射
+    唯一（终审 #42 ⑤；纯函数输出钉，同 TopicOrderUnitNails 先例）。"""
+
+    def test_reserved_and_case_collisions_get_imported_suffix(self):
+        mapping = task_package_api._slug_map_for([
+            "db/collaboration.db", "db/Collaboration.db", "db/plain.db"])
+        # 排序先处理大写 Collaboration（casefold 命中保留名）→ -imported；
+        # 小写 collaboration 再撞保留名 + 已用后缀 → -imported-2。
+        self.assertEqual(mapping["Collaboration"], "Collaboration-imported")
+        self.assertEqual(mapping["collaboration"], "collaboration-imported-2")
+        self.assertEqual(mapping["plain"], "plain")
+        # 映射目标整体：无保留名、大小写唯一（同名库绝不互相覆盖）
+        targets = [target.casefold() for target in mapping.values()]
+        self.assertEqual(len(targets), len(set(targets)))
+        self.assertNotIn("collaboration", targets)
+
+    def test_plain_names_keep_identity(self):
+        mapping = task_package_api._slug_map_for(
+            [f"db/s{i}.db" for i in range(3)])
+        self.assertEqual(sorted(mapping.values()), ["s0", "s1", "s2"])
+
+
 if __name__ == "__main__":
     unittest.main()

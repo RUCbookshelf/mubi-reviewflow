@@ -354,6 +354,53 @@ class AppraisalAgreementTests(unittest.TestCase):
                                 headers=self.owner_auth).json()
         assert again["studies"] == payload["studies"]
 
+    # ---- 6. 终审 #03：三端点权限闸逐端点红钉 + agreement 桌面 404 ------
+
+    def test_export_forbidden_to_plain_member_without_payload(self):
+        """export 逐端点权限钉：普通成员（无 consensus:write）403 且零内容。"""
+        self._seed_two_raters()
+        response = self.client.get(f"{self.base}/export", params={"tool": TOOL},
+                                   headers=self.peer_auth)
+        assert response.status_code == 403, response.text
+        # 拒绝体绝不携带跨人评价内容（文献键/逐人应答）。
+        assert "K1" not in response.text and "K2" not in response.text, response.text
+        assert "Yes" not in response.text and "No" not in response.text, response.text
+
+    def test_grade_input_forbidden_to_plain_member_without_levels(self):
+        """grade-input 逐端点权限钉：普通成员 403 且档位/逐人明细不出现在响应。"""
+        self._seed_two_raters()
+        response = self.client.get(f"{self.base}/grade-input",
+                                   params={"tool": TOOL},
+                                   headers=self.peer_auth)
+        assert response.status_code == 403, response.text
+        for leak in ("risk_of_bias", "serious", "very_serious", "grade_ready",
+                     "studies", "K1", "K2"):
+            assert leak not in response.text, (leak, response.text)
+
+    def test_owner_and_reconciler_reach_export_and_grade_input(self):
+        """对照腿：属主与 reconciler（consensus:write）三端点均 200。"""
+        self._seed_two_raters()
+        for auth in (self.owner_auth, self.reconciler_auth):
+            assert self._agreement(auth).status_code == 200
+            exported = self.client.get(f"{self.base}/export",
+                                       params={"tool": TOOL}, headers=auth)
+            assert exported.status_code == 200, exported.text
+            graded = self.client.get(f"{self.base}/grade-input",
+                                     params={"tool": TOOL}, headers=auth)
+            assert graded.status_code == 200, graded.text
+            assert graded.json()["available"] is True
+
+    def test_agreement_desktop_mode_is_structured_404(self):
+        """agreement 桌面模式 404 闸：非 server 模式结构化 404（先于权限判定）。"""
+        self._seed_two_raters()
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            response = self._agreement()
+        assert response.status_code == 404, response.text
+        detail = response.json()["detail"]
+        assert detail["error_code"] == "appraisal_agreement_desktop_mode", detail
+        assert detail["message_key"] == "appraisal.agreement.desktop_mode", detail
+        assert "K1" not in response.text
+
 
 class GradeMappingPureTests(unittest.TestCase):
     """不依赖 HTTP 的纯函数钉（GRADE 映射表每工具至少三档）。"""
