@@ -123,7 +123,8 @@ def _error(code: str, message_key: str, *, params: dict | None = None,
                                   "params": params or {}})
 
 
-def _consensus_gate(task_id: str, user: dict) -> None:
+def _consensus_gate(task_id: str, user: dict,
+                    arbitration_store: Callable[[str, dict], Any] | None = None) -> None:
     """带 ``rob_tool`` 的 SoF 的权限闸：与 ``GET /appraisal/grade-input`` 同一判定。
 
     研究局限性列会跨全员个人库聚合评价档位（``_appraisal_levels``），而
@@ -135,14 +136,17 @@ def _consensus_gate(task_id: str, user: dict) -> None:
     403 改写为本端点的结构化键 ``tables.rob_requires_consensus``（响应体只有
     ``error_code/message_key/params``，不含任何档位）；409/503 原样透出。
 
-    说明：``main.py`` 的注册区在本波冻结（不改），tables 的注册签名因此拿不到
-    宿主注入的权限函数；在请求期从宿主模块取同一函数对象是唯一不产生第二份
-    权限口径的接法（grade-input 用的就是它）。
+    判定函数的来源（2.1.5 收尾清债 C1）：优先用**注册期注入**的
+    ``arbitration_store``（``register_tables_routes`` 参数，``main.py`` 注册区
+    传入——显式依赖，不依赖宿主模块属性的运行期可变性）；仅当未注入
+    （``None``，独立注册/测试桩）时在请求期从宿主模块导入同一函数对象兜底。
+    两条路取的都是同一个 ``main._arbitration_store``，不存在第二份权限口径。
     """
-    from custom_backend.main import _arbitration_store
+    if arbitration_store is None:
+        from custom_backend.main import _arbitration_store as arbitration_store
 
     try:
-        _arbitration_store(task_id, user)
+        arbitration_store(task_id, user)
     except HTTPException as exc:
         if exc.status_code == 403:
             raise _error("tables_rob_requires_consensus",
@@ -824,12 +828,17 @@ def register_tables_routes(
     task_visible: Callable[[Any, dict], bool],
     screener_db: Callable[..., Path],
     library_unavailable_message: str,
+    arbitration_store: Callable[[str, dict], Any] | None = None,
 ) -> None:
     """在 ``app`` 上注册 W7 两个表生成端点（main.py 注册区一行调用）。
 
     ``library_unavailable_message`` = ``main.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE``
     （终审 #05）：个人库被外部进程持锁/暂时不可读时两端点 503 复用该既有
     十语言词条，与仲裁/一致性端点同一口径，不另造文案。
+
+    ``arbitration_store`` = ``main._arbitration_store``（收尾清债 C1）：带
+    ``rob_tool`` 的 SoF 权限闸的宿主判定函数，注册期注入（见
+    ``_consensus_gate`` 文档）；``None`` 时闸内退回请求期导入兜底。
     """
 
     def _info(task_id: str, user: dict) -> Any:
@@ -906,7 +915,7 @@ def register_tables_routes(
         if body.rob_tool:
             # 研究局限性列聚合全员评价档位：权限与 grade-input 完全同一判定，
             # 不通过时在校验工具之前就 403（响应中不含任何档位）。
-            _consensus_gate(task_id, user)
+            _consensus_gate(task_id, user, arbitration_store)
             # 后续聚合/回显一律用注册表返回的**规范 id**（终审 #08）：get_tool
             # 内部 strip 使带首尾空白的 rob_tool 通过校验，但评价聚合按 tool_id
             # 精确匹配，未规范化的原串会命中 0 条 → 研究局限性全空、总体置信度

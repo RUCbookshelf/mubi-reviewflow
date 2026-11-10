@@ -44,6 +44,7 @@ fixture = tempfile.TemporaryDirectory(prefix="rf_w7tab_")
 os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
 os.environ["REVIEWFLOW_MODE"] = "server"
 
+from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from coscreen import appraisal as appraisal_core  # noqa: E402
@@ -56,6 +57,7 @@ from coscreen import tasks as tasks_mod  # noqa: E402
 from coscreen.models import Article  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
 from custom_backend.main import DATA_DIR, app  # noqa: E402
+from custom_backend.tables_api import _consensus_gate  # noqa: E402
 
 USERS = ("w7owner@example.test", "w7member@example.test", "w7outsider@example.test")
 TOOL = "rob2"
@@ -789,6 +791,72 @@ class ConsensusPermissionPins(W7TablesBase):
         self.assertEqual(detail["error_code"], "tables_rob_tool_link_only")
         self.assertEqual(detail["message_key"], "tables.rob_tool_link_only")
         self.assertEqual(detail["params"]["tool"], link_only)
+
+
+class ConsensusGateInjectionPins(W7TablesBase):
+    """2.1.5 收尾清债 C1：``_consensus_gate`` 必须用**注册期注入**的宿主判定
+    函数（``register_tables_routes(..., arbitration_store=...)``），请求期
+    ``from custom_backend.main import _arbitration_store`` 仅作为未注入
+    （``None``）时的兜底。
+
+    背景：旧实现只能在请求期从宿主模块取函数对象（注册区当时冻结）；现在
+    注册区已解冻，注入是显式依赖、可被测试替换，兜底 import 只服务独立
+    注册（未传参）的调用方。若实现退回「永远请求期导入」，钉 1 必红；
+    若注入参数被移除（兜底 import 也删掉），钉 2/钉 3 必红。
+    """
+
+    PREFIX = "w7inj"
+
+    @staticmethod
+    def _boom(task_id, user):
+        raise AssertionError("请求期导入路径被使用（应走注册期注入）")
+
+    def test_sof_gate_uses_registration_time_injection_not_request_time_import(self):
+        """钉 1（先红）：端点侧必须吃注册期注入的函数对象。
+
+        打桩 ``custom_backend.main._arbitration_store``：若 tables 仍在请求期
+        ``import`` 取该属性，成员的 rob_tool SoF 会撞桩（AssertionError →
+        500）；注入路径捕获的是注册时的原函数对象，桩不可见 → 正常结构化
+        403 ``tables_rob_requires_consensus``。
+        """
+        self._seed()  # 权限闸在校验工具/读库之前：无成员库也能到闸
+        with mock.patch("custom_backend.main._arbitration_store", self._boom):
+            response = self.client.post(
+                self.sof, json={"format": "csv", "rob_tool": TOOL},
+                headers=self.member_auth)
+        self.assertEqual(response.status_code, 403, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "tables_rob_requires_consensus")
+
+    def test_injected_sentinel_is_called_and_403_is_mapped(self):
+        """钉 2：注入函数被调用（参数原样），其 403 映射为 tables 词条，
+        且全程不触发宿主模块属性（请求期兜底不启用）。"""
+        calls = []
+
+        def sentinel(task_id, user):
+            calls.append((task_id, user))
+            raise HTTPException(403, "blocked-by-injected-sentinel")
+
+        with mock.patch("custom_backend.main._arbitration_store", self._boom):
+            with self.assertRaises(HTTPException) as caught:
+                _consensus_gate(self.task, self.member, sentinel)
+        self.assertEqual(calls, [(self.task, self.member)])
+        self.assertEqual(caught.exception.status_code, 403)
+        body = caught.exception.detail
+        self.assertEqual(body["error_code"], "tables_rob_requires_consensus")
+        self.assertEqual(body["message_key"], "tables.rob_requires_consensus")
+
+    def test_none_argument_falls_back_to_request_time_import(self):
+        """钉 3：``arbitration_store=None``（未注入）保留请求期导入兜底。"""
+        calls = []
+
+        def recorder(task_id, user):
+            calls.append((task_id, user))
+            return Path("sentinel-store.db")
+
+        with mock.patch("custom_backend.main._arbitration_store", recorder):
+            _consensus_gate(self.task, self.member)  # 不注入
+        self.assertEqual(calls, [(self.task, self.member)])
 
 
 # ---------------------------------------------------------------------------

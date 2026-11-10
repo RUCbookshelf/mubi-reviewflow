@@ -467,15 +467,23 @@ class ArbitrationSessionTests(unittest.TestCase):
 
     # ---- 6. stage2 同口径 + 连全文 -------------------------------------
 
-    def test_stage2_uses_stage2_decisions_and_marks_fulltext(self):
-        self._seed_three(stage="stage2")
-        pdf = Path(tempfile.mkdtemp(prefix="b1arb_pdf_")) / "K1.pdf"
-        pdf.write_bytes(b"%PDF-1.4\n% test fixture\n")
-        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+    def _put_fulltext_row(self, db: Path, key: str, pdf: Path) -> None:
+        with closing(sqlite3.connect(db)) as conn, conn:
             conn.execute(
                 "INSERT OR REPLACE INTO fulltexts(zotero_key,filename,path,sha256,n_pages,added_at) "
                 "VALUES(?,?,?,?,?,?)",
-                ("K1", "K1.pdf", str(pdf), "0" * 64, 0, "2026-11-08T00:00:00Z"))
+                (key, pdf.name, str(pdf), "0" * 64, 0, "2026-11-08T00:00:00Z"))
+
+    def test_stage2_uses_stage2_decisions_and_marks_fulltext(self):
+        self._seed_three(stage="stage2")
+        # 播种位置 = 真实写入路径（upload/pdf_fetch 落 info.dir/pdfs）：C3 收窄后
+        # fulltext_available 与 GET /fulltext 同口径（合法根=任务目录），临时
+        # 目录播种会误红；断言本身一字未动。
+        pdfs_dir = self.info.dir / "pdfs"
+        pdfs_dir.mkdir(parents=True, exist_ok=True)
+        pdf = pdfs_dir / "K1.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n% test fixture\n")
+        self._put_fulltext_row(self.owner_db, "K1", pdf)
 
         stage2 = self._open(stage="stage2")
         self.assertEqual(stage2.status_code, 200, stage2.text)
@@ -488,13 +496,9 @@ class ArbitrationSessionTests(unittest.TestCase):
 
         # 全文可见性按当前裁决者自己的库判定（与既有 fulltext 端点同口径）：
         # 同一篇 K2 的 PDF 在成员 1 的库里，裁决者 1 看到可用、裁决者 0 看不到。
-        pdf2 = Path(tempfile.mkdtemp(prefix="b1arb_pdf2_")) / "K2.pdf"
+        pdf2 = pdfs_dir / "K2.pdf"
         pdf2.write_bytes(b"%PDF-1.4\n% test fixture\n")
-        with closing(sqlite3.connect(self._screener_db(1))) as conn, conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO fulltexts(zotero_key,filename,path,sha256,n_pages,added_at) "
-                "VALUES(?,?,?,?,?,?)",
-                ("K2", "K2.pdf", str(pdf2), "1" * 64, 0, "2026-11-08T00:00:00Z"))
+        self._put_fulltext_row(self._screener_db(1), "K2", pdf2)
         other = {item["zotero_key"]: item
                  for item in self._open(stage="stage2", actor=1).json()["items"]}
         self.assertTrue(other["K2"]["fulltext_available"])
@@ -509,6 +513,37 @@ class ArbitrationSessionTests(unittest.TestCase):
         row = next(row for row in record["records"] if row["zotero_key"] == "K1")
         self.assertEqual(row["final_decision"], "include")
         self.assertEqual(row["arbitration_status"], "adjudicated")
+
+    def test_stage2_fulltext_available_requires_task_dir_path(self):
+        """C3 普查钉（先红）：可用性探针与 GET /fulltext 同一包含性口径。
+
+        fulltexts.path 是库内数据（自造/恶意导入行可控）。GET
+        ``/api/tasks/{id}/fulltext/{key}`` 的合法根已收窄为**仅任务目录**
+        （终审 #39 r3），本模块文档承诺队列标记「可用」与该端点一致
+        （「避免队列标记可用但点开 404」）；探针只查 ``is_file`` 不校验
+        包含性时，任务目录外的存在文件（如 C:\\Windows\\win.ini）会把条目
+        标成可用——点开即 404，且向队列观察者泄露任意路径存在性。修复后：
+        任务目录外的行不算可用；任务目录内的行照常可用。
+        """
+        self._seed_three(stage="stage2")
+        # 任务目录外的**存在**文件（旧实现据此标可用 → 必红）
+        outside = Path(tempfile.mkdtemp(prefix="b1arb_outside_")) / "K1.pdf"
+        outside.write_bytes(b"%PDF-1.4\n% outside task dir\n")
+        self._put_fulltext_row(self.owner_db, "K1", outside)
+        # 对照腿：任务目录内（真实写入路径）→ 可用
+        pdfs_dir = self.info.dir / "pdfs"
+        pdfs_dir.mkdir(parents=True, exist_ok=True)
+        inside = pdfs_dir / "K2.pdf"
+        inside.write_bytes(b"%PDF-1.4\n% inside task dir\n")
+        self._put_fulltext_row(self.owner_db, "K2", inside)
+
+        items = {item["zotero_key"]: item
+                 for item in self._open(stage="stage2").json()["items"]}
+        self.assertEqual(set(items), {"K1", "K2"})
+        self.assertFalse(items["K1"]["fulltext_available"],
+                         "任务目录外的 path 不得标记可用")
+        self.assertTrue(items["K2"]["fulltext_available"],
+                        "任务目录内的 path 照常可用")
 
     # ---- 7. 守卫复用：权限 / 双盲 / 模式 / 503 -------------------------
 

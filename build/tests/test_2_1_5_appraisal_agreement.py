@@ -34,9 +34,34 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # 与既有 2.1.5 服务端测试同法：先设环境再导入 main。
+# r3 测试卫生（修订 r2 的还原式 tearDownModule）：**不得把环境还原成本模块
+# 导入前的值**——pytest 的模块级 env 赋值发生在收集期、tearDownModule 发生
+# 在测试期，"还原 unset"会抹掉后续套件（w5/w7 等）收集期设的 server 状态，
+# 实测 `pytest 本文件 w7` → 44 errors（评审 r3 阻断项）。模块边界的正确语义
+# 是**保证而非抹除**：结束时环境必须仍是 server + 本模块 fixture（用例内
+# 谁弄丢了就重申），fixture 目录也挪到这里才删（r2 前第一个类的 tearDownClass
+# 就删目录，后续类/后续套件看到的是"env 指向已删目录"的中间态）。
+_ENV_KEYS = ("REVIEWFLOW_MODE", "COBOOKSHELF_DATA_DIR")
 fixture = tempfile.TemporaryDirectory(prefix="rf_215c_agreement_")
 os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
 os.environ["REVIEWFLOW_MODE"] = "server"
+
+
+def _guarantee_module_env() -> None:
+    """模块边界的环境保证（r3）：server + 本模块 fixture，**不还原成导入前
+    的值**。pytest 的模块级 env 赋值发生在收集期、tearDownModule 在测试期，
+    "还原 unset"会抹掉后续套件（w5/w7 等不重钉 env 的）收集期设的 server
+    状态（实测 `pytest 本文件 w7` → 44 errors，评审 r3 阻断项）。"""
+    os.environ["REVIEWFLOW_MODE"] = "server"
+    os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+
+
+def tearDownModule():
+    """模块结束：先保证环境（见 :func:`_guarantee_module_env`），再清理
+    fixture 目录（r2 前第一个类的 tearDownClass 就删目录，后续类/后续套件
+    看到的是"env 指向已删目录"的中间态；挪到模块末统一清）。"""
+    _guarantee_module_env()
+    fixture.cleanup()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -80,6 +105,10 @@ class AppraisalAgreementTests(unittest.TestCase):
     def setUpClass(cls):
         cls.client = TestClient(app, raise_server_exceptions=False)
         cls.client.__enter__()
+        # C2 顺序泄漏修复：类装配（建用户）也在请求期读 os.environ，先跑模块
+        # 的 tearDownModule 可能已把收集期的模块级赋值抹掉——装配前重申。
+        os.environ["REVIEWFLOW_MODE"] = "server"
+        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
         cls.owner = auth_mod.create_user("r215c-owner@example.test",
                                          "R215C-Owner-2026!")
         cls.peer = auth_mod.create_user("r215c-peer@example.test",
@@ -98,10 +127,19 @@ class AppraisalAgreementTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
-        fixture.cleanup()
+        # r3：fixture 目录改由 tearDownModule 在**模块结束**时清理——第一个类
+        # 结束就删会把"env 指向已删目录"的中间态留给本模块后续类与后续套件。
 
     # ---- 夹具 ---------------------------------------------------------
     def setUp(self):
+        # C2 顺序泄漏修复（用例内还原）：本模块对 REVIEWFLOW_MODE /
+        # COBOOKSHELF_DATA_DIR 的模块级赋值发生在 pytest 收集期；先跑模块
+        # （如 test_pdf_fetch_api）的 tearDownModule 会在其用例结束后把这
+        # 两个变量还原/弹回，收集期赋值救不了测试期。server-only 端点与
+        # auth 用户库都在请求期读 os.environ，故每个用例装配时重申一次
+        # （见本类末尾 test_order_leak_step1/step2 复现钉）。
+        os.environ["REVIEWFLOW_MODE"] = "server"
+        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
         response = self.client.post(
             "/api/tasks", json={"name": f"agreement-{self._testMethodName}"},
             headers=self.owner_auth)
@@ -401,6 +439,71 @@ class AppraisalAgreementTests(unittest.TestCase):
         assert detail["message_key"] == "appraisal.agreement.desktop_mode", detail
         assert "K1" not in response.text
 
+    # ---- C2 顺序泄漏复现钉（sec2 登记：先跑 pdf_fetch 时本套件撞环境泄漏） --
+    #
+    # 泄漏机理：pytest 先**收集**（此时执行两个模块的模块级代码——本文件在
+    # 收集期设 REVIEWFLOW_MODE=server / COBOOKSHELF_DATA_DIR=本模块临时目录），
+    # 再按文件顺序跑用例。test_pdf_fetch_api 的 tearDownModule（r13 测试卫生）
+    # 在它的用例全部结束后、本套件用例开始前，把这两个变量还原/弹回收集前的
+    # 值（未设置）。本文件的模块级赋值早已发生、救不了测试期，而 server-only
+    # 端点（collaboration invite / appraisal 三端点）与 auth 用户库都在**请求
+    # 期**读 os.environ → setUp 内 invite 404「团队协作仅在服务器模式下开放」
+    # （2026-11 合跑实测 19 failed 即此签名）。
+    #
+    # step1 在本类内复刻该中间状态（弹掉两个变量且**不恢复**——这正是先跑
+    # 模块收尾后进程的真实状态）；step2 紧随其后装配任务并打 server-only
+    # 端点：修复（每用例 setUp 内重申环境，见 setUp）后必须全绿；退回旧的
+    # 「只在模块级设一次」行为，step2 以同一 404 签名红。
+
+    def test_order_leak_step1_simulate_prior_module_env_restore(self):
+        """step1：模拟先跑模块 tearDownModule 的环境还原（不恢复，留状态）。"""
+        os.environ.pop("REVIEWFLOW_MODE", None)
+        os.environ.pop("COBOOKSHELF_DATA_DIR", None)
+
+    def test_order_leak_step2_server_endpoints_still_usable(self):
+        """step2：紧随其后，server-only 装配与端点必须仍然可用。"""
+        self._seed_two_raters()
+        response = self._agreement()
+        assert response.status_code == 200, response.text
+        exported = self.client.get(f"{self.base}/export",
+                                   params={"tool": TOOL}, headers=self.owner_auth)
+        assert exported.status_code == 200, exported.text
+
+    def test_module_teardown_restores_env_hygiene(self):
+        """r3 卫生钉（修订 r2 语义）：模块边界**保证 server + 本模块 fixture**，
+        绝不还原成导入前的值（unset 抹除）。
+
+        r2 版把 tearDownModule 做成"还原 _ORIGINAL_ENV"——pytest 模块级 env
+        赋值在收集期、tearDownModule 在测试期，两文件直跑时后续套件（w5/w7
+        这类不重钉 env 的）收集期赋的 server 被抹掉，实测 `pytest 本文件
+        w7` → 44 errors（评审 r3 阻断项）。正确语义是保证而非抹除。本钉
+        直接测 :func:`_guarantee_module_env`（先 pop 模拟用例残留 → 保证
+        成立），再以桩验证 tearDownModule 的接线（保证 + fixture 清理都在、
+        顺序正确）——用桩是为了不在套件中途真删 fixture（r3 中间版实测：
+        真删会让本模块后续用例 5 failed）。
+        """
+        os.environ.pop("REVIEWFLOW_MODE", None)
+        os.environ.pop("COBOOKSHELF_DATA_DIR", None)
+        _guarantee_module_env()
+        assert os.environ.get("REVIEWFLOW_MODE") == "server", \
+            "模块边界必须保证 server 模式（不抹除）"
+        assert os.environ.get("COBOOKSHELF_DATA_DIR") == fixture.name, \
+            "模块边界必须保证本模块 fixture 路径（不抹除）"
+        # 接线：tearDownModule = 环境保证 + fixture 清理（均以桩验证，
+        # 不真删目录、不真改环境）。
+        calls: list[str] = []
+        module = sys.modules[__name__]
+        real_guarantee = module._guarantee_module_env
+        with mock.patch.object(
+                module, "_guarantee_module_env",
+                side_effect=lambda: (calls.append("guarantee"),
+                                     real_guarantee())), \
+                mock.patch.object(fixture, "cleanup",
+                                  side_effect=lambda: calls.append("cleanup")):
+            tearDownModule()
+        assert calls == ["guarantee", "cleanup"], \
+            f"tearDownModule 接线=先保证环境后清理：实际 {calls}"
+
 
 class GradeMappingPureTests(unittest.TestCase):
     """不依赖 HTTP 的纯函数钉（GRADE 映射表每工具至少三档）。"""
@@ -446,6 +549,10 @@ class ExportFormulaInjectionPins(unittest.TestCase):
         # 任何残留状态下都成立）。
         import uuid as _uuid
 
+        # C2 顺序泄漏修复：与 AppraisalAgreementTests 同因——类装配建用户
+        # 前重申收集期环境（先跑模块的 tearDownModule 可能已抹掉）。
+        os.environ["REVIEWFLOW_MODE"] = "server"
+        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
         suffix = _uuid.uuid4().hex[:6]
         cls.owner = auth_mod.create_user(
             f"r215c-csv-owner-{suffix}@example.test", "R215C-CSV-2026!")
@@ -461,6 +568,9 @@ class ExportFormulaInjectionPins(unittest.TestCase):
         cls.client.__exit__(None, None, None)
 
     def setUp(self):
+        # C2 顺序泄漏修复（用例内还原）：与 AppraisalAgreementTests.setUp 同因。
+        os.environ["REVIEWFLOW_MODE"] = "server"
+        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
         response = self.client.post(
             "/api/tasks", json={"name": f"csv-formula-{self._testMethodName}"},
             headers=self.owner_auth)

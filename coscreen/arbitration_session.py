@@ -372,12 +372,21 @@ def _load_fulltext_keys(db_path: StrPath | None) -> set[str]:
 
     只读当前裁决者的个人库，与既有 ``GET /fulltext/{key}``（默认 ``screener``
     = 当前用户）的可见范围一致，避免队列标记「可用」但点开 404。
+
+    2.1.5 收尾清债 C3：包含性校验与该端点同口径（终审 #39 r3 收窄后其
+    合法根 = **仅任务目录**）。``fulltexts.path`` 是库内数据（自造/恶意
+    导入行可控），只查 ``is_file`` 会把任务目录外的任意存在文件标成
+    「可用」（点开即 404，且向队列观察者泄露任意路径存在性）。合法根取
+    筛选员库所在目录——API 层传入的 ``fulltext_db`` 即 ``info.dir/<slug>.db``
+    （custom_backend/arbitration_session_api.py），父目录就是任务目录；
+    与 task_package 导出侧 ``_fulltext_allowed_roots`` 同一判定。
     """
     if db_path is None:
         return set()
     path = Path(db_path)
     if not path.is_file():
         return set()
+    task_root = path.parent.resolve()
     available: set[str] = set()
     try:
         with closing(_read_only_connection(path)) as conn:
@@ -386,10 +395,14 @@ def _load_fulltext_keys(db_path: StrPath | None) -> set[str]:
         return set()
     for key, pdf_path in rows:
         try:
-            if pdf_path and Path(str(pdf_path)).is_file():
-                available.add(str(key))
-        except OSError:
+            if not pdf_path:
+                continue
+            resolved = Path(str(pdf_path)).resolve()
+            resolved.relative_to(task_root)  # 包含性：逃出任务目录 → 不算可用
+        except (OSError, ValueError):
             continue
+        if resolved.is_file():
+            available.add(str(key))
     return available
 
 

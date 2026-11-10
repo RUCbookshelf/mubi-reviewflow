@@ -441,11 +441,17 @@ def test_offline_shell_service_worker_end_to_end_real_browser():
     子路径下同构再跑一遍。
 
     skipif 与 banner 用例（MM7-03）同款：CI 的 Provision playwright 步骤提供
-    这两个变量，本地未配置时跳过——不伪造通过。"""
+    这两个变量，本地未配置时跳过——不伪造通过。
+
+    2.1.5 收尾清债 B（全量跑偶发超时、单跑绿）：子进程预算 900 → 1200s——
+    内层每个等待点的预算已统一提到 60s（``RF_W5_WAIT_BUDGET_MS`` 可覆写，
+    见 w5_pwa_sw_browser.cjs），外层要留出聚合余量让内层先超（内层超时的
+    报错带「最后观测值」，可诊断；外层 SIGKILL 只剩壳输出）。断言本身
+    一字未动。"""
     proc = subprocess.run(
         [NODE, "build/tests/w5_pwa_sw_browser.cjs"],
         cwd=str(REPO), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900,
+        encoding="utf-8", errors="replace", timeout=1200,
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-5000:]

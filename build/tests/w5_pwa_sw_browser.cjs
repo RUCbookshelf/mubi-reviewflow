@@ -114,6 +114,12 @@ function serveFrontend() {
    错误信息。 */
 const POLL_INTERVAL_MS = 100;
 
+/* 2.1.5 收尾清债 B（全量跑偶发超时、单跑绿）：每个等待点的预算统一从固定
+   30s 提到 60s（可经 RF_W5_WAIT_BUDGET_MS 覆写），只放大「等多久」，不碰
+   任何断言本身。全量 battery 下机器高负载时 SW install/activate 或冷导航
+   偶发超 30s；等待条件本身已是条件轮询（waitUntil/probe），无需放宽。 */
+const WAIT_BUDGET_MS = Number(process.env.RF_W5_WAIT_BUDGET_MS || 60000);
+
 async function waitUntil(probe, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -136,25 +142,25 @@ async function waitUntil(probe, timeoutMs, label) {
 async function waitForActivated(context, page) {
   /* 显式 serviceWorkers() 等待：拿到 worker 句柄再读它的状态。 */
   await waitUntil(async () => context.serviceWorkers().length > 0
-    ? true : 'no-service-worker', 30000, '浏览器上下文里出现 service worker');
+    ? true : 'no-service-worker', WAIT_BUDGET_MS, '浏览器上下文里出现 service worker');
   const workerUrl = context.serviceWorkers()[0].url();
   assert.match(workerUrl, /\/sw\.js$/, `SW 脚本 URL 形态漂移：${workerUrl}`);
   await waitUntil(() => page.evaluate(async () => {
     const reg = await navigator.serviceWorker.getRegistration();
     if (!reg || !reg.active) return 'no-active';
     return reg.active.state;
-  }).then((state) => (state === 'activated' ? true : state)), 30000, 'Service Worker 进入 activated');
+  }).then((state) => (state === 'activated' ? true : state)), WAIT_BUDGET_MS, 'Service Worker 进入 activated');
 }
 
 /* 在线加载 → 等 activate → reload 拿 controller。
    sw.js 没有 clients.claim()，首次文档不受控；reload 后导航才由 SW 接管
    （真实生产用户升级/二次打开时的路径）。 */
 async function loadControlled(context, page, appUrl) {
-  await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: WAIT_BUDGET_MS });
   await waitForActivated(context, page);
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: WAIT_BUDGET_MS });
   /* controller 判定是同步取值，可以用 waitForFunction。 */
-  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 30000 });
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: WAIT_BUDGET_MS });
 }
 
 /* 轮询直到两个缓存都出现预期条目（cache.put 是异步的，不能拍脑袋等一拍）。 */
@@ -170,7 +176,7 @@ async function waitForCaches(page, { assetUrl, shellKey }) {
     return (runtimeUrls.includes(want.assetUrl) && shellUrls.includes(want.shellKey))
       ? true
       : { hasRuntime, hasShell, runtimeEntries: runtimeUrls.length, shellUrls };
-  }, { runtimeName: RUNTIME_CACHE, shellName: SHELL_CACHE, assetUrl, shellKey }), 30000,
+  }, { runtimeName: RUNTIME_CACHE, shellName: SHELL_CACHE, assetUrl, shellKey }), WAIT_BUDGET_MS,
   `缓存出现 ${RUNTIME_CACHE} / ${SHELL_CACHE} 预期条目`);
 }
 
@@ -227,7 +233,7 @@ async function assertApiNeverCached(page, apiUrl, scope, label) {
 
   /* (2) 地址栏导航到 scope 内的 /api/（navigate，content-type JSON）：
      r2 finding #2 —— 旧实现把任一 navigate 当壳，JSON 会覆盖 shellKey() 快照。 */
-  const response = await page.goto(apiUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const response = await page.goto(apiUrl, { waitUntil: 'domcontentloaded', timeout: WAIT_BUDGET_MS });
   assert.ok(response, `${label}：/api/ 导航必须有响应`);
   assert.equal(response.status(), 200, `${label}：/api/ 导航应直连成功`);
   const body = await response.text();
@@ -283,17 +289,17 @@ async function runScenario(browser, origin, { appPath, label }) {
     await assertApiNeverCached(page, apiUrl, expectedScope, label);
 
     /* 回到应用壳，重新受控；壳快照应在 API 导航后仍是 HTML。 */
-    await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 30000 });
+    await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: WAIT_BUDGET_MS });
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: WAIT_BUDGET_MS });
     const afterApi = await readCacheReport(page, expectedScope);
     assertShellEntry(afterApi, expectedScope, label + '（返回应用后）');
 
     /* ---- 离线：reload 必须由壳快照交付，提示条走真实 SW postMessage ---- */
     await context.setOffline(true);
-    const offlineResponse = await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    const offlineResponse = await page.reload({ waitUntil: 'domcontentloaded', timeout: WAIT_BUDGET_MS });
     assert.ok(offlineResponse, `${label}：离线 reload 必须由 SW 返回壳，而不是浏览器原生错误页`);
     assert.equal(offlineResponse.status(), 200, `${label}：离线壳快照应以 200 交付`);
-    await page.waitForSelector('#rfOfflineSnapshotBanner', { timeout: 30000 });
+    await page.waitForSelector('#rfOfflineSnapshotBanner', { timeout: WAIT_BUDGET_MS });
 
     const offline = await page.evaluate(() => {
       const bar = document.getElementById('rfOfflineSnapshotBanner');

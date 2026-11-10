@@ -1577,7 +1577,7 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
             covered_paths: dict[str, str] = {}
             if parsed["fulltexts"]:
                 rows_by_key = _fulltext_rows_by_key(temp_dir, db_names)
-                for entry in parsed["fulltexts"]:
+                for restore_index, entry in enumerate(parsed["fulltexts"]):
                     key = entry["zotero_key"]
                     archive_path = entry["archive_path"]
                     # 就地校验：与预检同一判定函数（终审 #45「统一按预检」）。
@@ -1590,15 +1590,24 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                         raise TaskPackageError("package_invalid", params={
                             "reason": "fulltext_key_missing", "zotero_key": key})
                     info = archive.getinfo(archive_path)
-                    # 终审 #41：PDF 有界流式读取（≤MAX_PDF_BYTES；旧实现
-                    # archive.read 整块入内存且上限只查声明值）。
-                    _check_member_declared(info)
-                    data = _read_member_bounded(archive, info, MAX_PDF_BYTES,
-                                                reason="pdf_too_large")
+                    # D1（2.1.5 收尾清债）：PDF 成员流式恢复——先经既有
+                    # ``_extract_member`` 有界解压到任务临时目录内的中转文件
+                    # （_CHUNK 循环；终审 #41 三限额：单成员 ≤MAX_MEMBER_BYTES
+                    # （=MAX_PDF_BYTES）、压缩比、声明/实际一致），再交给
+                    # ``save_pdf(data_path=...)`` 流式落盘。旧实现
+                    # ``_read_member_bounded`` 把 ≤100MB 成员整个堆进一个
+                    # bytearray（峰值 = 成员大小）；新路径峰值 = 单块。
+                    # 中转文件用服务器端派生名（restore 序号），成功后立即
+                    # 删除（temp_dir 事后整体改名成任务目录，不得残留）；
+                    # 失败路径由外层 ``shutil.rmtree(temp_dir)`` 清场。
+                    scratch = _extract_member(
+                        archive, archive_path, temp_dir,
+                        f"pdf-restore-{restore_index}.pdf")
                     first_db = _contained(temp_dir, targets[0])
                     try:
                         meta = fulltext_mod.save_pdf(
-                            first_db, key, data, pdfs_dir=temp_dir / "pdfs")
+                            first_db, key, None, pdfs_dir=temp_dir / "pdfs",
+                            data_path=scratch)
                     except ValueError as exc:
                         raise TaskPackageError("package_invalid", params={
                             "reason": "pdf_unreadable", "zotero_key": key}) from exc
@@ -1618,6 +1627,9 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                         raise TaskPackageError("package_invalid", params={
                             "reason": "fulltext_schema_unsupported",
                             "zotero_key": key}) from exc
+                    # 成功即删中转文件（temp_dir 稍后整体改名为任务目录；
+                    # 异常路径由外层 rmtree(temp_dir) 清场，见上）。
+                    scratch.unlink(missing_ok=True)
                     final_path = str(final_dir / "pdfs" / Path(meta.path).name)
                     # filename 列是**展示名**：优先还原 manifest 记录的原名
                     # （旧库可能保留自定义展示名）；磁盘路径始终是 save_pdf

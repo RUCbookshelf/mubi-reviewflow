@@ -474,6 +474,61 @@ class PackagePins(_ApiBase):
             history = conn.execute("SELECT task_id, screener FROM imports").fetchall()
         self.assertEqual(history, [(result["task_id"], new_name)])
 
+    def test_pdf_member_restore_streams_not_whole_member_buffer(self):
+        """D1（先红）：整包导入的 PDF 成员必须流式恢复，不得整块入内存。
+
+        旧恢复路径 ``_read_member_bounded(archive, info, MAX_PDF_BYTES,
+        reason="pdf_too_large")`` 把 ≤100MB 的成员整个堆进一个 bytearray
+        （导出侧 ``_add_file_to_zip`` 早已 _CHUNK 流式）；新路径先用既有
+        ``_extract_member`` 有界解压到临时文件（_CHUNK 循环 + 三限额），
+        再 ``save_pdf(data_path=...)`` 流式落盘。本钉给旧入口装哨兵：恢复
+        路径再经它整块读 PDF 成员即红。往返一致性由
+        ``test_roundtrip_with_pdfs_preserves_fulltexts_and_owner`` 钉住
+        （字节级相等、展示名还原、n_pages、单射命名）。
+        """
+        self.new_task()
+        originals = {key: self.add_pdf(key) for key in ("K01", "K02")}
+        self.decide({"K01": "include", "K02": "exclude"})
+        data, _headers = self._export()
+
+        sentinel: list[str] = []
+        original = task_package_api._read_member_bounded
+
+        def guard(archive, info, limit, *, reason):
+            if reason == "pdf_too_large":
+                sentinel.append(reason)
+                raise AssertionError(
+                    f"PDF 成员 {info.filename!r} 被整块读入内存（D1 流式恢复回退）")
+            return original(archive, info, limit, reason=reason)
+
+        def no_zip_read(self_zip, name, pwd=None):
+            # r2 复审：旧 helper 哨兵只拦 _read_member_bounded；未来若退化为
+            # zipfile.ZipFile.read（整块便捷入口）也必须红。
+            raise AssertionError(
+                f"整包处理不得用 ZipFile.read 整块读成员（D1/终审 #41）：{name!r}")
+
+        with mock.patch.object(task_package_api, "_read_member_bounded", guard), \
+                mock.patch.object(zipfile.ZipFile, "read", no_zip_read):
+            imported = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("package.zip", data, "application/zip")},
+                data={"preview_sha256": hashlib.sha256(data).hexdigest()},
+                headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(sentinel, [])
+        result = imported.json()
+        self.assertEqual(result["fulltexts_restored"], 2)
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        new_db = new_info.dir / f"{tasks_mod.slugify_screener(self.users[0]['username'])}.db"
+        with closing(sqlite3.connect(str(new_db))) as conn:
+            rows = {row[0]: row for row in conn.execute(
+                "SELECT zotero_key, filename, path FROM fulltexts").fetchall()}
+        self.assertEqual(set(rows), {"K01", "K02"})
+        for key in ("K01", "K02"):
+            resolved = tasks_mod.resolve_fulltext_raw(rows[key][2], new_db, data_dir=DATA_DIR)
+            self.assertIsNotNone(resolved, f"{key} 的 PDF 未在导入后落盘")
+            self.assertEqual(Path(resolved).read_bytes(), originals[key])
+
     def test_roundtrip_without_pdfs_keeps_metadata(self):
         self.new_task()
         for key in ("K01", "K02"):
@@ -2276,6 +2331,96 @@ class SlugMapPins(unittest.TestCase):
         mapping = task_package_api._slug_map_for(
             [f"db/s{i}.db" for i in range(3)])
         self.assertEqual(sorted(mapping.values()), ["s0", "s1", "s2"])
+
+
+class SavePdfStreamPins(unittest.TestCase):
+    """D1：``save_pdf(data_path=...)``（流式入口）与 bytes 入口产物逐字段一致。"""
+
+    def test_data_path_matches_bytes_result(self):
+        blob = make_pdf("D1-stream")
+        with tempfile.TemporaryDirectory(prefix="w5_d1_") as tmp:
+            tmp = Path(tmp)
+            source = tmp / "member.pdf"
+            source.write_bytes(blob)
+            metas = []
+            for index in (1, 2):
+                db = tmp / f"s{index}.db"
+                db_mod.init_db(db)
+                db_mod.upsert_articles(db, [
+                    Article(zotero_key="K01", title="Stream pin",
+                            authors="", year=2026)], [])
+                if index == 1:
+                    metas.append(fulltext_mod.save_pdf(
+                        db, "K01", blob, pdfs_dir=tmp / f"pdfs{index}"))
+                else:
+                    metas.append(fulltext_mod.save_pdf(
+                        db, "K01", None, pdfs_dir=tmp / f"pdfs{index}",
+                        data_path=source))
+            first, second = metas
+            self.assertEqual(first.sha256, second.sha256)
+            self.assertEqual(first.n_pages, second.n_pages)
+            self.assertEqual(first.filename, second.filename)
+            self.assertEqual(Path(first.path).name, Path(second.path).name)
+            self.assertEqual(Path(second.path).read_bytes(), blob)
+            with closing(sqlite3.connect(str(tmp / "s2.db"))) as conn:
+                row = conn.execute(
+                    "SELECT filename, path, sha256, n_pages FROM fulltexts"
+                ).fetchone()
+            self.assertEqual(row[2], first.sha256)
+            self.assertEqual(row[3], first.n_pages)
+            self.assertEqual(Path(row[1]).read_bytes(), blob)
+
+    def test_data_path_rejects_non_pdf_like_bytes_input(self):
+        """data_path 入口与 bytes 入口同一道 magic/页数闸（坏文件 ValueError）。"""
+        with tempfile.TemporaryDirectory(prefix="w5_d1b_") as tmp:
+            tmp = Path(tmp)
+            db = tmp / "bad.db"
+            db_mod.init_db(db)
+            db_mod.upsert_articles(db, [
+                Article(zotero_key="K01", title="bad", authors="", year=2026)], [])
+            bad = tmp / "not-a-pdf.pdf"
+            bad.write_bytes(b"not a pdf at all")
+            with self.assertRaises(ValueError):
+                fulltext_mod.save_pdf(db, "K01", None, pdfs_dir=tmp / "p",
+                                      data_path=bad)
+
+    def test_save_pdf_annotations_resolve_no_undefined_alias(self):
+        """r2 复审钉：签名注解不得再出现未定义类型别名（StrFile 笔误防再犯）。
+
+        ``from __future__ import annotations`` 让未定义名只在
+        ``typing.get_type_hints`` 求值时才炸（r1 实锤 ``NameError: StrFile``）。
+        本文件的 TraceContext 是 ``TYPE_CHECKING`` 既有形态（基线同款），
+        允许它成为首个未解析名；**其它**任何未解析名都红。
+        """
+        import inspect
+        import typing
+
+        source = inspect.getsource(fulltext_mod.save_pdf)
+        self.assertNotIn("StrFile", source)
+        try:
+            typing.get_type_hints(fulltext_mod.save_pdf)
+        except NameError as exc:
+            self.assertIn("TraceContext", str(exc),
+                          f"出现新的未定义注解名（非既有 TYPE_CHECKING 形态）：{exc}")
+        else:
+            self.fail("基线含 TYPE_CHECKING 的 TraceContext，此处不应完全解析——"
+                      "若解析环境变化请同步更新本钉的预期")
+
+    def test_page_count_uses_file_handle_not_str_path(self):
+        """r2 复审实锤钉：pypdf 页数必须走**文件句柄**（seek 式解析）。
+
+        pypdf 6.x 对 str/Path 入参会 ``open`` 后整文件读进 ``BytesIO``
+        （≈文件大小峰值）；句柄式同文件峰值 0.02MiB 级。本钉直接对
+        ``_page_count_from_path`` 的实现形态设防：源码里 ``PdfReader(``
+        的实参必须是句柄变量而非 ``str(path)``。
+        """
+        import inspect
+
+        source = inspect.getsource(fulltext_mod._page_count_from_path)
+        self.assertNotIn("PdfReader(str(", source,
+                          "页数统计退回 str 入参（pypdf 整文件入内存）")
+        self.assertIn("PdfReader(handle)", source,
+                      "页数统计必须是 PdfReader(handle)（文件句柄、seek 式）")
 
 
 if __name__ == "__main__":
