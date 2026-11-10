@@ -167,14 +167,41 @@ process.exit(fail?1:0);
         self.assertNotIn("FAIL", out)
 
     def test_errof_marks_translated_hits(self):
+        """2.1.5 结构化错误渲染器（交接 handoff_2.1.5_backend_to_frontend.md
+        §0.4/§4.2 V1–V6）的源码钉：message_key 查词典、params 具名占位符插值、
+        无 message_key 时回退 message/detail/details 过 T()、命中置 rfLocalized、
+        绝不把结构体原样 JSON 展示。
+
+        破坏：errOf 不再先按 message_key 查词典（V1/V3 无 message 的结构体会
+        退成「请求失败（409）」）、params 不插值（{task_id} 留在文案里）、回退
+        分支主消息不过 T()、或对象退回 JSON.stringify 原样展示 → 红。
+        """
         html = _read(FRONTEND / "index.html")
         self.assertIn("let translatedHit = false;", html)
         self.assertIn("if (translatedHit) error.rfLocalized = true;", html,
                       "errOf 翻译命中必须在 ApiError 上置 rfLocalized")
-        self.assertIn("const translatedMessage = T(payload.message);", html,
-                      "errOf 对象分支（池兼容错误）主消息必须过 T()")
-        self.assertIn("(payload.reasons || []).map(reason => reason && reason.detail ? T(reason.detail) : reason?.detail)", html,
+        # message_key 查词典（V1/V3：结构体没有 message 字段也有文案）
+        self.assertIn("const keyed = window.RFServerMessage(payload.message_key, payload.params);", html,
+                      "errOf 对象分支必须先按 message_key 查词典（V1/V3 无 message 也能渲染）")
+        self.assertIn("return RFLang.has(source) ? T(source, params) : null;", html,
+                      "RFServerMessage 必须命中词典才回文案（不把 error_code/message_key 当展示串）")
+        # params 具名占位符插值（{task_id}/{limit_bytes} 等，interpolate 的 named 分支）
+        self.assertIn("Object.hasOwn(named, name) ? named[name] : undefined", html,
+                      "params 具名占位符必须插值（{task_id} 等留在文案里即未渲染）")
+        # 无 message_key 时的回退（V2 中文 message / V6 detail / V5 纯串）
+        self.assertIn("const source = [payload.message, payload.detail, payload.details]"
+                      ".find(value => typeof value === 'string' && value);", html,
+                      "无 message_key 时必须回退到 message/detail/details")
+        self.assertIn("const message = keyed || (source && T(source));", html,
+                      "errOf 对象分支主消息必须过 T()（keyed 优先，回退不裸显）")
+        self.assertIn("translatedHit = Boolean(keyed || (message && message !== source));", html,
+                      "命中判定必须覆盖 keyed 与 T() 回退两条路")
+        # reasons 明细逐条过 T()（池兼容错误形态保留）
+        self.assertIn("reasons.map(reason => typeof reason?.detail === 'string' ? T(reason.detail) : '')", html,
                       "errOf 对象分支 reasons 明细必须逐条过 T()")
+        # 不显示原始 JSON：旧渲染器对不含 message 的对象 JSON.stringify 兜底，已随 V1 引入删除
+        self.assertNotIn("JSON.stringify(payload)", html,
+                         "errOf 不得把结构化错误体原样 JSON 展示给用户")
 
     def test_all_error_banner_catch_sites_pass_localized(self):
         """全量扫描（评审补强：不再手工枚举文件，防止再漏 tau profile 类调用点）。

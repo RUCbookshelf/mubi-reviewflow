@@ -17,7 +17,8 @@
 - F49 ``test_same_screen_uses_one_noun``：把筛选语境行改回 article → 红；
 - F50 ``test_destination_and_range_wording``：``.trash`` 或 ``2~9`` 回到用户可见面 → 红；
 - F51 ``test_login_constraints_are_stated_before_submitting``：占位符退回只给长度 → 红；
-- F52 ``test_confirm_dialog_replaces_native_confirm``：任一处 ``confirm(T(`` 回归 → 红；
+- F52 ``test_confirm_dialog_replaces_native_confirm``：任一处 ``confirm(T(`` 回归、删除任务
+  退出 2.1.5 两选项删除对话框（task-delete 契约 §一）→ 红；
 - 十语言：本轮新增/改写的每一行 10 槽非空、占位符一致、非中文槽不得回退成中文。
 """
 from __future__ import annotations
@@ -530,15 +531,32 @@ class TestLoginConstraintCopy:
 # ---------------------------------------------------------------------------
 class TestConfirmDialog:
     def test_confirm_dialog_replaces_native_confirm(self):
-        """三处破坏性确认必须改走自绘对话框。
+        """破坏性确认不得走原生 confirm；删除任务走 2.1.5 两选项删除对话框。
 
-        破坏：任一处退回 ``confirm(T(...))`` → 红（按钮文字又会随浏览器语言）。
+        2.1.5 任务删除（frontend_contract_2.1.5-task-delete.md §一）把「删除任务」
+        从单按钮 RFConfirm 升级为「移入回收站（默认）/彻底删除（需键入任务 ID）」
+        专用对话框（task_delete.js）；移除成员/删除维度仍走 RFConfirm。
+
+        破坏：任一处退回 ``confirm(T(...)`` → 红（按钮文字又会随浏览器语言）；
+        删除任务退回单按钮确认（丢掉键入任务 ID 的误删闸门）→ 红。
         """
         html = INDEX.read_text(encoding="utf-8")
         assert re.findall(r"(?<![.\w])confirm\s*\(\s*T\(", html) == [], \
             "F52：index.html 仍在使用原生 confirm(T(...))"
-        assert html.count("await RFConfirm({") >= 3, \
-            "F52：三处破坏性确认（移除成员/删除任务/删除维度）都必须走 RFConfirm"
+        assert html.count("await RFConfirm({") >= 2, \
+            "F52：两处破坏性确认（移除成员/删除维度）都必须走 RFConfirm"
+        assert "await window.RFTaskDelete?.open(t);" in html, \
+            "F52：删除任务按钮必须进入 2.1.5 两选项删除对话框（task_delete.js）"
+        dialog = _read("task_delete.js")
+        assert re.findall(r"(?<![.\w])confirm\s*\(", dialog) == [], \
+            "F52：删除对话框不得退回原生 confirm（按钮文字会随浏览器语言）"
+        assert "value:'trash', checked:''" in dialog, \
+            "F52：默认选项必须是「移入回收站」（task-delete 契约 §一）"
+        assert "input.value !== task.task_id" in dialog and \
+               "new URLSearchParams({purge:'true', confirm:input.value})" in dialog, \
+            "F52：彻底删除必须键入与任务 ID 完全一致的确认串才放行提交（契约 §一）"
+        assert "confirmation.hidden = !purge.checked" in dialog, \
+            "F52：选中彻底删除即展示不可逆警示（契约 §一）"
 
     def test_dialog_contract(self):
         """焦点陷阱、ESC、危险色、初始焦点落「取消」、关闭后归还焦点。"""

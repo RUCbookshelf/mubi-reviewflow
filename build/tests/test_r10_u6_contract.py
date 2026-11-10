@@ -11,9 +11,11 @@
 - F07：静态钉住「先清单后校验」的调用次序与面板/高亮接线；文案必须十语言注册。
 - F60：真实 preview 端点（MAX_EVENTS 临时压到 -1）返回 413，文案必须逐字等于
   interface_locale.js 已注册的十语言词条；三处 413 不得再有插值英文。
-- F63：真实 screening-rounds 端点：过期版本回结构化 payload（code/version/
-  workflow_settings）且不再回纯串；其余 409 仍是纯串（前端按 code 分支的对照组）。
-  前端 screening_rounds.js 在收到该 code 时等待 W.refresh 落地再放开 busy。
+- F63：2.1.5 W1 已删轮次路由（恒 404）；版本冲突的触发端点换成同一 write_guard
+  的 PUT /workflow-settings（与浏览器套件 9b9b45a 同口径）。前端从
+  workflow_controls.js 抽出真实 run/W.error/saveSettings 原句回放：409
+  workflow_version_conflict → W.refresh('conflict') 把新版本落回 draft →
+  重试保存必须带新版本。
 - F64：保存端点 503 文案逐字对齐 main.py 决策保存口径，撤销端点文案不变。
 - F68：从 index.html 抽出真实 apiRequest 跑 422 分支：高频 type 产出中文模板，
   字段名来自 loc；/api/auth/ 的长度特例与未知 type 的原文回退保持不变。
@@ -419,64 +421,94 @@ print(json.dumps(out))
 
 _F63_HARNESS = r"""
 'use strict';
+/* 2.1.5 W1 删除轮次路由后，F63「冲突后等刷新拿到新版本」的载体从 screening_rounds.js
+   （已随之删除）换成 WorkflowControls：PUT /workflow-settings 发过期 expected_version
+   （与浏览器套件 9b9b45a 同一触发口径）→ 409 workflow_version_conflict → W.error 触发
+   run(W.refresh('conflict')) → refreshPolicy 把新版本落回 draft.version → 重试保存
+   带新版本。这里从 workflow_controls.js 原文抽出真实语句（run / W.error /
+   W.saveSettings / 冲突版本落 draft），在桩环境回放整条链；任一句被删改 → 抽取
+   失败即红。 */
 const fs = require('fs');
 const vm = require('vm');
 const src = fs.readFileSync(process.argv[2], 'utf8');
-const order = [];
-let version = 1, fail = true, loads = 0;
-const buttons = [];
-function el(tag, attrs) {
-  const node = { tag, attrs: attrs || {}, hidden: false, dataset: {}, children: [],
-    append(...kids) { this.children.push(...kids); }, replaceChildren() { this.children = []; },
-    insertBefore() {}, removeAttribute() {}, setAttribute() {} };
-  if (attrs && typeof attrs.onclick === 'function') node.onclick = attrs.onclick;
-  if (attrs && attrs.text) node.textContent = attrs.text;
-  buttons.push(node);
-  return node;
+function need(needle) {
+  const at = src.indexOf(needle);
+  if (at < 0) throw new Error('源码字面量缺失：' + needle);
+  return at;
 }
-const page = { insertBefore() {}, querySelector() { return null; } };
+function matchBraces(start) {
+  let depth = 0;
+  for (let k = start; k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}') { depth--; if (!depth) return k; }
+  }
+  throw new Error('unterminated block');
+}
+const runCode = "const run = fn => Promise.resolve().then(fn).catch(error => W.error(error));";
+need(runCode);
+const errorAt = need("W.error = error => {");
+const errorBlock = src.slice(errorAt, matchBraces(src.indexOf('{', errorAt)) + 1) + ';';
+const saveAt = need("W.saveSettings=async()=>{");
+const saveBlock = src.slice(saveAt, matchBraces(src.indexOf('{', saveAt)) + 1) + ';';
+const landing = "if(reason==='conflict'&&draft&&!settingsDirty)draft.version=result.version;";
+need(landing);
+const landConflict = new Function('reason', 'draft', 'settingsDirty', 'result', landing);
+const order = [];
+let fail = true;
 const context = {
-  S: { task: { task_id: 't1' }, user: { user_id: 1 }, screener: 's', articles: [], decisions: {} },
-  api: async (path, opts) => {
-    order.push('api:' + opts.body.action + ':' + opts.body.expected_policy_version);
-    if (fail) { const error = new Error('stale'); error.status = 409; error.code = 'workflow_version_conflict'; throw error; }
-    return {};
-  },
-  taskApi: () => '/api/tasks/t1',
+  console, setTimeout, Promise, structuredClone,
+  W: {},
+  stages: ['screen', 'fulltext', 'coding'],
   T: value => value,
-  el,
-  document: {
-    addEventListener() {},
-    querySelector: sel => (sel.includes('data-p="screen"') ? page : null),
-    getElementById: () => null,
+  toast: () => {},
+  scope: () => 't1|1|s',
+  taskApi: () => '/api/tasks/t1',
+  draftSignature: value => JSON.stringify(value),
+  policyEditor: () => {},
+  draft: { version: 1,
+           stages: { screen: {mode: 'paused', source_ids: []},
+                     fulltext: {mode: 'paused', source_ids: []},
+                     coding: {mode: 'paused', source_ids: []} },
+           evidence_required_field_ids: [] },
+  settings: { can_manage: true, version: 1 },
+  settingsDirty: false,
+  draftBaseline: null,
+  api: async (path, opts) => {
+    order.push('api:' + opts.method + ':' + path.slice(path.lastIndexOf('/')) + ':' + opts.body.expected_version);
+    if (fail) {
+      const error = new Error('stale');
+      error.status = 409;
+      error.code = 'workflow_version_conflict';
+      error.workflowSettings = { version: 2 };
+      throw error;
+    }
+    return { version: 2 };
   },
-  WorkflowControls: {
-    guard: async () => true,
-    selectedSource: () => '',
-    version: () => version,
-    error: error => order.push('error:' + (error.code || error.status)),
-    refresh: async () => { order.push('refresh'); await new Promise(r => setTimeout(r, 5)); version = 2; },
-  },
-  loadScreen: async () => { loads += 1; order.push('loadScreen'); },
-  go: async page => order.push('go:' + page),
+  __exports: {},
 };
-context.window = context;
+context.W.errorText = error => { order.push('error:' + (error.code || error.status)); return 'conflict!'; };
+context.W.refresh = async reason => {
+  order.push('refresh:' + reason);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const result = { can_manage: true, version: 2 };  /* GET /workflow-settings 拿回的最新设置 */
+  landConflict(reason, context.draft, context.settingsDirty, result);
+  context.settings = result;
+};
 vm.createContext(context);
-vm.runInContext(src, context);
-const R = context.ScreeningRounds;
-R.ingest({ screening_round: { number: 2, completed: 2, total: 2, pending_keys: [] }, remaining_uncertain: 1 });
-R.render();
-const start = buttons.find(b => b.attrs && b.attrs.text === 'Review Not Sure Now again');
-if (!start) throw new Error('start button not rendered');
+vm.runInContext([runCode, errorBlock, saveBlock, ';__exports.run = run;'].join('\n'), context);
+const save = context.W.saveSettings;
 (async () => {
-  await start.onclick();
-  const afterFail = { order: order.slice(), version };
+  await context.__exports.run(save);
+  /* W.error 用 run(...) 发起刷新、不回传 promise（真实语义：刷新在后台链上落地）；
+     等它落定后再读版本，对应用户看到刷新完成后再次点保存。 */
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const afterFail = { order: order.slice(), version: context.draft.version };
   fail = false;
   order.length = 0;
-  await start.onclick();
+  await context.__exports.run(save);
   process.stdout.write(JSON.stringify({
     afterFail,
-    afterRetry: { order: order.slice(), version, loads },
+    afterRetry: { order: order.slice(), version: context.draft.version },
   }));
 })();
 """
@@ -529,14 +561,22 @@ print(json.dumps(out))
         self.assertIn('"code": "maybe_disabled"', src)
 
     def test_frontend_awaits_refresh_before_releasing_busy(self):
-        out = json.loads(_run_node(_F63_HARNESS, argv=[str(FRONTEND / "screening_rounds.js")]))
+        """2.1.5 W1 换钉（screening_rounds.js 已删）：workflow_controls.js 的真实
+        run/W.error/saveSettings 原句在桩环境回放——PUT /workflow-settings 发
+        过期 expected_version → 409 workflow_version_conflict → W.refresh
+        ('conflict') 把新版本落回 draft.version → 重试保存必须带新版本。
+        """
+        out = json.loads(_run_node(_F63_HARNESS, argv=[str(FRONTEND / "workflow_controls.js")]))
         fail = out["afterFail"]
-        self.assertEqual(fail["order"], ["api:start:1", "error:workflow_version_conflict", "refresh"],
-                         "冲突后必须等 W.refresh 落地（否则重试仍带旧 version）：%r" % fail)
+        self.assertEqual(fail["order"],
+                         ["api:PUT:/workflow-settings:1", "error:workflow_version_conflict", "refresh:conflict"],
+                         "冲突后必须触发 W.refresh('conflict') 拿到新版本（否则重试仍带旧 version）：%r" % fail)
+        self.assertEqual(fail["version"], 2,
+                         "冲突刷新必须把新版本落回 draft.version（refreshPolicy 的 conflict 分支）：%r" % fail)
         retry = out["afterRetry"]
-        self.assertEqual(retry["order"][0], "api:start:2",
+        self.assertEqual(retry["order"][0], "api:PUT:/workflow-settings:2",
                          "刷新后重试必须带新版本（修复前恒为旧值 1）：%r" % retry)
-        self.assertIn("loadScreen", retry["order"])
+        self.assertIn("refresh:saved", retry["order"])
 
 
 # ---------------------------------------------------------------------------

@@ -153,7 +153,15 @@ class TestUnsavedReasonDraftHalfStep:
         source = _read("workflow_controls.js")
         assert "reasonDraftOnly" in source, "F27：必须区分「只有理由草稿」的情形"
         assert "saveButton.disabled=true" in source, "F27：无物可存时 Save 必须置灰"
-        assert "理由需随「纳入 / 待定 / 排除」决策一起保存" in source, "F27：置灰必须以 title 说明原因"
+        # 2.1.5 W1 二选一（frontend_contract_2.1.5-w1-binary.md §1/F1：maybe 恒 409、
+        # 初筛卡移除「2 暂不确定」）——决策只剩纳入/排除，置灰 title 随之换词。
+        assert "saveButton.title=T('请先保存纳入或排除决定，或清空理由草稿。')" in source, \
+            "F27：置灰必须以 title 说明原因（W1 后只剩纳入/排除两条路）"
+        assert "纳入 / 待定 / 排除" not in source, \
+            "F27：W1 已删「待定」决策，title 不得退回三选一措辞"
+        rows = {row[0]: row for row in _locale_rows("workflow_locale.js")}
+        title = rows.get("请先保存纳入或排除决定，或清空理由草稿。")
+        assert title and len(title) == 10, "F27：新置灰 title 必须注册十语言"
 
     def test_clearing_the_draft_marks_the_decision_clean(self):
         source = _read("workflow_controls.js")
