@@ -48,6 +48,7 @@
     style.textContent = [
       '.al-profile-picker{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted);flex-wrap:wrap}',
       '.al-profile-picker .input{max-width:190px;font-size:.8rem;padding:4px 8px}',
+      '.al-profile-picker[hidden]{display:none!important}',
       'body.fp-screen .al-profile-picker{flex-shrink:0}',
     ].join('\n');
     (document.head || document.documentElement).appendChild(style);
@@ -64,6 +65,11 @@
     document.getElementById('alStrategy').closest('.row').prepend(homeField);
     const selectors = [select, homeSelect];
     const disable = value => selectors.forEach(node => { node.disabled = value; });
+    function syncStrategy() {
+      wrap.hidden = S.al.strategy === 'cluster';
+      homeField.hidden = document.getElementById('alStrategy').value === 'cluster';
+    }
+    window.RFALProfiles = Object.freeze({syncStrategy});
 
     function orderedNames() {
       const names = Object.keys(profiles);
@@ -123,7 +129,7 @@
       try {
         const effective = current || defaultName;
         const next = select.value;
-        if (next === effective || !next) return;
+        if (select.closest('[hidden]') || next === effective || !next) return;
         const info = profiles[next] || {};
         const ok = confirm(T('切换模型将重置 机器学习排序，已有的筛选标签不受影响。'));
         if (!ok) { select.value = effective; return; }

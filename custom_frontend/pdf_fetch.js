@@ -147,6 +147,7 @@
       if (code === 'pdf_fetch_email_invalid') return T('邮箱格式不正确。');
       if (code === 'pdf_fetch_base_url_invalid' || code === 'pdf_fetch_base_url_insecure')
         return T('端点地址不合法（需 http/https 且含主机名）。');
+      if (code === 'pdf_fetch_base_url_blocked') return T('taskPackage.pdfEndpointBlocked');
       if (code === 'pdf_fetch_settings_version_conflict') return T('设置已被他人更新，请刷新后重试。');
       if (code === 'pdf_fetch_article_missing') return T('该文献在当前筛选库中不存在。');
       if (code === 'pdf_fetch_trace_conflict') return T('出现未知错误，请稍后重试。');
@@ -217,7 +218,10 @@
         }
         if (result && result.outcome === 'saved') {
           status.textContent = T('已获取全文（{0} 页）。', String(result.n_pages)) + ' ';
-          const openButton = btn('打开 PDF', () => openPdfBlob(key));
+          const openButton = btn('打开 PDF', async () => {
+            try { await openPdfBlob(key); }
+            catch (error) { toastMsg(error.status === 404 ? T('taskPackage.fulltext.recovery') : error.message, 'warn'); }
+          });
           status.append(openButton);
           toastMsg(T('已获取全文（{0} 页）。', String(result.n_pages)), 'inc');
         } else if (result && result.outcome === 'no_oa') {

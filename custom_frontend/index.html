@@ -5193,7 +5193,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <script src="./import_progress_locale.js?v=20261005-fuzzy-progress1"></script>
 <script src="./update_check_locale.js?v=20261005-update1"></script>
 <script src="./restart_app_locale.js?v=20261006-power1"></script>
-<script src="./help_locale.js?v=20261107-r14"></script>
+<script src="./batch6_locale.js?v=2.1.5"></script>
+<script src="./help_locale.js?v=2.1.5"></script>
 <script src="./navigation_locale.js?v=20261101-r10u4"></script>
 <script src="./navigation_registry.js?v=2.1.2.2"></script>
 
@@ -6083,8 +6084,7 @@ function renderHub() {
         } }),
         el('button', { class: 'btn b-exc', text: T('删除'), onclick: async () => {
           if (S.task?.task_id === t.task_id && window.WorkflowControls && !await WorkflowControls.guard()) return;
-          if (!await RFConfirm({ message: T('删除任务《{0}》？任务将移入隔离区，之后可手动恢复。', t.name) })) return;
-          try { await api(taskPath(t), { method: 'DELETE' }); await loadTasks(); await refreshProgress(); toast(T('已删除（移入隔离区）'), 'exc'); } catch (e) { toast(e.message, 'warn'); }
+          await window.RFTaskDelete?.open(t);
         } })
       )
     );
@@ -6517,15 +6517,17 @@ function alStrategyLabel(strategy) {
 }
 function renderALChrome() {
   const ai = S.al.mode === 'ai';
+  const cluster = S.al.strategy === 'cluster';
+  window.RFTopicCluster?.renderModeLabel();
   $('#alModeImport').classList.toggle('on', !ai && window.WorkflowControls?.order() !== 'random');
   $('#alModeRandom')?.classList.toggle('on', window.WorkflowControls?.order() === 'random');
   $('#alModeAI').classList.toggle('on', ai);
   const badge = $('#alBadge');
   if (ai && S.al.available) {
     badge.style.display = '';
-    badge.textContent = T('已训练于 {0} 条标签', S.al.nLabeled);
+    badge.textContent = cluster ? T('al.strategy.cluster') : T('已训练于 {0} 条标签', S.al.nLabeled);
   } else badge.style.display = 'none';
-  $('#alHint').textContent = ai && !S.al.available
+  $('#alHint').textContent = ai && !cluster && !S.al.available
     ? T('可用标签不足（{0} / 最少 {1}），暂按导入顺序展示', S.al.currentLabels, S.al.minLabeled)
     : '';
   const showStop = ai && S.al.suggestStop && S.al.dismissStreak !== S.al.streak;
@@ -6535,9 +6537,11 @@ function renderALChrome() {
   if (ai) {
     side.style.display = '';
     const strategyLabel = alStrategyLabel(S.al.strategy);
-    side.textContent = (S.al.profileLabel ? T('机器学习模型') + '：' + T(S.al.profileLabel) + ' · ' : '')
-      + T('机器学习排序：{0}（seed {1}）· 连续排除 {2} 条', strategyLabel, S.al.seed, S.al.streak)
-      + ' · ' + T('每 {0} 条决定更新排序 · 待更新 {1} 条', S.al.reorderInterval, S.al.pendingKeys.size);
+    const order = cluster
+      ? T('al.cluster.current', {strategy:strategyLabel, seed:S.al.seed, streak:S.al.streak})
+      : (S.al.profileLabel ? T('机器学习模型') + '：' + T(S.al.profileLabel) + ' · ' : '')
+        + T('机器学习排序：{0}（seed {1}）· 连续排除 {2} 条', strategyLabel, S.al.seed, S.al.streak);
+    side.textContent = order + ' · ' + T('每 {0} 条决定更新排序 · 待更新 {1} 条', S.al.reorderInterval, S.al.pendingKeys.size);
   } else side.style.display = 'none';
 }
 async function setALMode(mode) {
@@ -6548,9 +6552,12 @@ async function setALMode(mode) {
        常驻状态行（screen_reader.js 的 rf-screen-ml-status）同源同事实。 */
     await WorkflowControls.setOrder(mode);
     if (mode === 'ai' && S.task) {
-      toast(T(S.al.available
-        ? '机器学习排序已开启：按设定间隔更新排序'
-        : '已选择机器学习排序，当前标签不足，暂按导入顺序'), 'inc');
+      if (S.al.strategy === 'cluster') {
+        if (S.al.available) toast(T('al.cluster.enabled'), 'inc');
+      } else {
+        toast(T(S.al.available ? '机器学习排序已开启：按设定间隔更新排序'
+          : '已选择机器学习排序，当前标签不足，暂按导入顺序'), 'inc');
+      }
     }
     return;
   }
@@ -6562,10 +6569,14 @@ async function setALMode(mode) {
     /* F25：toast 必须先说清「当前能不能真的按模型排」——标签不足时队列仍是
        导入顺序，此前 toast 一律宣称已开启，页面却毫无变化。失败分支由
        refreshALRank 自己的告警覆盖，这里只按模型是否就绪分两种文案。 */
-    toast(T(S.al.available || S.al.currentLabels >= S.al.minLabeled
-      ? '机器学习排序已开启：按设定间隔更新排序'
-      : '已选择机器学习排序，当前标签不足，暂按导入顺序'), 'inc');
-    await refreshALRank();
+    if (S.al.strategy === 'cluster') {
+      if (await refreshALRank() && S.al.available) toast(T('al.cluster.enabled'), 'inc');
+    } else {
+      toast(T(S.al.available || S.al.currentLabels >= S.al.minLabeled
+        ? '机器学习排序已开启：按设定间隔更新排序'
+        : '已选择机器学习排序，当前标签不足，暂按导入顺序'), 'inc');
+      await refreshALRank();
+    }
   } else {
     S.articles = S.articlesBase ? S.articlesBase.slice() : S.articles;
     S.scrIdx = S.screenEditingKey ? S.articles.findIndex(a => a.zotero_key === S.screenEditingKey) : nextUndecided();
@@ -6780,6 +6791,7 @@ async function renderScreen() {
      （导入顺序模式下 score 为 null，AI 分数条不渲染）。 */
   body.append(...[
     screenTitle(r, score),
+    window.RFRetraction?.badgeSlot(r.zotero_key),
     el('div', { class: 'hint scr-meta' },
       el('span', {class:'scr-authors', title:nz(r.authors), text: nz(r.authors) || '—'}),
       el('span', { class: 'chip scr-journal', title:nz(r.journal), text: nz(r.journal) || '—' }),
@@ -6955,6 +6967,7 @@ async function loadFulltext() {
     if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion || !WorkflowControls.renderAllowed()) return;
     if (!S.ftQueue.length) {
       $('#ftDocTitle').textContent = T('当前范围没有初筛纳入的文献可供复筛。');
+      window.RFRetraction?.mountBadge($('#ftDocTitle'), null);
       renderFtDoc(); return;
     }
     await renderFtDoc();
@@ -6980,6 +6993,7 @@ async function renderFtDoc() {
   }
   $('#ftDocLabel').textContent = T('Full-text report {0} / {1}', S.ftQueue.length ? S.ftIdx + 1 : 0, S.ftQueue.length);
   $('#ftDocTitle').textContent = cur ? (cur.title || cur.zotero_key) : '—';
+  window.RFRetraction?.mountBadge($('#ftDocTitle'), cur?.zotero_key);
   const chip = $('#ftDocChip');
   const st = cur ? S.ftDec[cur.zotero_key] : null;
   chip.textContent = st ? T(DEC_LABEL[st]) : T('未决');
@@ -7326,7 +7340,7 @@ async function openFtPdf() {
     await loadHighlights();
   } catch (e) {
     if (!current()) return;
-    emptyText.textContent = e.status === 404 ? T('该文献尚未上传 PDF（可在此上传）') : (T('载入失败：') + e.message);
+    emptyText.textContent = e.status === 404 ? T('taskPackage.fulltext.recovery') : (T('载入失败：') + e.message);
   }
 }
 $('#ftPrevDoc').addEventListener('click', async () => { if (!await WorkflowControls.guard()) return; if (S.ftQueue.length) { S.ftIdx = (S.ftIdx - 1 + S.ftQueue.length) % S.ftQueue.length; renderFtDoc(); openFtPdf(); } });
@@ -8907,7 +8921,7 @@ async function openBenchPdf() {
   } catch (e) {
     if (!current()) return;
     emptyText.textContent = e.status === 404
-      ? T('该文献尚未上传 PDF（可到「文献复筛」页上传，或点上方「⇲ 显示 PDF」收起本栏）')
+      ? T('taskPackage.fulltext.recovery')
       : (T('PDF 载入失败：') + e.message);
   }
 }
@@ -9877,7 +9891,7 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <script src="./connection_repair.js?v=20261003-repair1"></script>
 <script src="./update_check.js?v=20261005-update1"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
-<script src="./al_profile_selector.js?v=20261101-r9l4b1"></script>
+<script src="./al_profile_selector.js?v=2.1.5"></script>
 <script src="./al_stop_panel.js?v=20261029-lastfix"></script>
 <script src="./al_blind_mode.js?v=20261012-home-wording1"></script>
 <script src="./screen_reader.js?v=20261110-w1"></script>
@@ -9935,10 +9949,15 @@ $('#auMotion').addEventListener('click', () => { if (window.RiverFX) RiverFX.tog
 <!-- R11 ERIC 教育检索（2.1.4-r11）：导入页「从 ERIC 检索文献」入口+命中预览+检索并导入（api.ies.ed.gov 官方 API，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./eric_search.js?v=20261102-r11eric1"></script>
 <!-- W2 PDF 自动获取（2.1.4-r8）：初筛文献卡「获取全文」+任务设置卡开关/批量入口（DOI→Unpaywall；联网默认关、仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./pdf_fetch.js?v=20261030-r8-w2pdf1"></script>
+<script src="./pdf_fetch.js?v=2.1.5"></script>
 <!-- W4 预置分类器（2.1.4-r8）：初筛卡研究设计徽标+排除理由预填不代存（纯本地规则端点，无联网；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./study_design_badge.js?v=20261110-215"></script>
 <!-- W5 PWA 离线壳（2.1.4-r8）：离线只读快照提示条模块（自包含 IIFE＋十语言词条，textContent 渲染）＋ Service Worker 注册（相对路径；本组独占文档最末锚点） -->
+<script src="./task_dialog.js?v=2.1.5"></script>
+<script src="./task_transfer.js?v=2.1.5"></script>
+<script src="./task_delete.js?v=2.1.5"></script>
+<script src="./retraction_watch.js?v=2.1.5"></script>
+<script src="./topic_cluster.js?v=2.1.5"></script>
 <script src="./offline_banner.js?v=20261030-r8-W5PWA1"></script>
 <script>
 'use strict';

@@ -66,3 +66,14 @@ document.addEventListener('click',function(event){
  if(heading){heading.setAttribute('tabindex','-1');heading.focus({preventScroll:true});}
  target.scrollIntoView({block:'start'});
 });
+
+/* The ranking disclosure is shared with the settings panel. */
+document.addEventListener('DOMContentLoaded', () => {
+ const deployment = document.getElementById('helpDeployment');
+ if (!deployment || !window.RFLang?.has('al.cluster.disclosure')) return;
+ const title = T('al.settings.section_title');
+ const link = el('a', {href:'#helpTopicCluster', text:title});
+ document.querySelector('.help-contents')?.append(link);
+ deployment.before(el('article', {class:'help-card', id:'helpTopicCluster'},
+   el('h3', {text:title}), el('p', {text:T('al.cluster.disclosure')})));
+});

@@ -57,7 +57,7 @@
      既有按钮状态，不改排序。 */
   function syncOrderNow(){
     const ai=aiButton.classList.contains('on'),random=document.getElementById('alModeRandom')?.classList.contains('on');
-    const label=ai?T('机器学习排序'):random?T('随机'):T('导入顺序');
+    const label=ai?T(S.al.strategy==='cluster'?'al.strategy.cluster':'机器学习排序'):random?T('随机'):T('导入顺序');
     orderNow.textContent=T('当前：{0}',label);
     orderNow.setAttribute('data-rf-order',ai?'ai':random?'random':'import');
   }
@@ -91,6 +91,8 @@
   window.addEventListener('resize',()=>{if(!help.hidden)placeHelp();});
   document.querySelector('#appMain>.view')?.addEventListener('scroll',()=>closeHelp(),{passive:true});
   new MutationObserver(syncMode).observe(aiButton,{attributes:true,attributeFilter:['class']});
+  const aiLabel=aiButton.querySelector('span');
+  if(aiLabel)new MutationObserver(syncOrderNow).observe(aiLabel,{childList:true,characterData:true,subtree:true});
   const randomButton=document.getElementById('alModeRandom');
   if(randomButton)new MutationObserver(syncOrderNow).observe(randomButton,{attributes:true,attributeFilter:['class']});
   new MutationObserver(syncPosition).observe(document.getElementById('scrPos'),{childList:true,characterData:true,subtree:true});
@@ -271,8 +273,8 @@
     if(tipBar||tipSeen())return;
     const close=(dismiss)=>{try{localStorage.setItem(TIP_KEY,'1');}catch(e){}tipBar?.remove();tipBar=null;if(dismiss==='try')aiButton.click();};
     tipBar=el('div',{class:'rf-screen-ml-tip',role:'note'},
-      el('span',{text:T('可以切换为机器学习排序：按模型预测的纳入概率排列待筛文献')}),
-      el('button',{type:'button',class:'btn b-out sm',text:T('试试机器学习排序'),onclick:()=>close('try')}),
+      el('span',{text:T(S.al.strategy==='cluster'?'al.strategy.cluster.hint':'可以切换为机器学习排序：按模型预测的纳入概率排列待筛文献')}),
+      el('button',{type:'button',class:'btn b-out sm',text:T(S.al.strategy==='cluster'?'al.strategy.cluster':'试试机器学习排序'),onclick:()=>close('try')}),
       el('button',{type:'button',class:'rf-screen-ml-tip-close','aria-label':T('关闭提示'),text:'✕',onclick:()=>close('dismiss')}));
     mlStatus.before(tipBar);
   }
