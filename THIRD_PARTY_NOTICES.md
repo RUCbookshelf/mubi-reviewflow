@@ -13,7 +13,7 @@
 | CPython 3.12.7 | 捆绑的 Python 运行时 | PSF License 及随运行时提供的历史许可，见运行时 `LICENSE.txt` |
 | pip 24.1.2 及其内置组件 | 随嵌入式 Python 保留的安装工具 | pip 为 MIT；内置组件版权和许可见其发行包 |
 | FastAPI 0.143.0、Pydantic 2.14.1、pydantic-core 2.50.1、anyio 4.15.1、PyJWT 2.15.1、RapidFuzz 3.14.6、rispy 0.10.0、h11 0.16.0 | API、数据验证、认证、文本匹配与题录解析 | MIT |
-| Uvicorn 0.54.0、Starlette 1.8.0、Click 8.5.0、idna 3.20、pypdf 6.20.1 | Web 服务及 PDF 处理 | BSD-3-Clause |
+| Uvicorn 0.54.0、Starlette 1.8.0、Click 8.5.0、idna 3.20、pypdf 6.21.4 | Web 服务及 PDF 处理 | BSD-3-Clause |
 | bcrypt 5.0.0、python-multipart 0.0.32 | 密码散列与上传 | Apache-2.0 |
 | passlib 1.7.4 | 密码处理（声明保留，代码直接使用 bcrypt） | BSD |
 | pandas 2.3.3 | 数据处理 | BSD-3-Clause；发行包还含其所引用的第三方版权/许可 |
@@ -24,7 +24,7 @@
 | python-docx 1.2.0 | Word 合成报告 | MIT |
 | python-pptx 1.0.2 | PowerPoint 合成报告 | MIT |
 | lxml 6.1.3 | Word 与 PowerPoint Open XML 处理 | BSD-3-Clause |
-| Pillow 12.3.0 | python-pptx 依赖 | MIT-CMU |
+| Pillow 13.0.0 | python-pptx 依赖 | MIT-CMU |
 | XlsxWriter 3.2.9 | python-pptx 依赖 | BSD-2-Clause |
 | python-dateutil 2.9.0.post0 | pandas 的依赖 | BSD-3-Clause 或 Apache-2.0 双许可 |
 | six 1.17.0 | python-dateutil 的依赖 | MIT |
