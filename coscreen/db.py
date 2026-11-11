@@ -695,19 +695,8 @@ def is_coscreen_database(db_path: StrPath) -> bool:
     return row is not None
 
 
-#: init_db 进程内去重（autoresearch 段6·run2 / 段7 重放）：_screener_db 每个
-#: 请求都调 init_db，库已初始化后重复 executescript(_SCHEMA) 纯属开销。仅在
-#: **建表与超长键迁移全部成功**后登记——降级路径不登记，保留 MM9-26「下次
-#: init_db 自动重试迁移」语义。已知边界：同进程内删除库文件后原路径重建
-#: （仅个别测试形态可能为之）会跳过建表；生产路径不删除任务库。
-_INIT_OK: set[str] = set()
-
-
 def init_db(db_path: StrPath) -> None:
-    """建库建表（幂等，可重复调用；同进程内成功初始化过的路径直接跳过）。"""
-    resolved = str(Path(db_path).resolve())
-    if resolved in _INIT_OK:
-        return
+    """建库建表（幂等，可重复调用）。"""
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA)
     # MM6-03：存量超长键的幂等迁移。CLI import（cli.cmd_import）与 Web
@@ -724,8 +713,6 @@ def init_db(db_path: StrPath) -> None:
         logging.getLogger(__name__).warning(
             "init_db(%s): 超长键迁移失败，已降级跳过（库按未迁移状态继续使用，"
             "后续 init_db 将自动重试）：%r", db_path, exc)
-    else:
-        _INIT_OK.add(resolved)
 
 
 # ---------------------------------------------------------------------------
