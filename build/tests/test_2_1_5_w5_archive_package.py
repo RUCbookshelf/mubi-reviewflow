@@ -2691,5 +2691,599 @@ class Sec29CollabRewriteRejectPins(_ApiBase):
         self.assertEqual(owner["owner_user_id"], self.users[2]["user_id"])
 
 
+# ---------------------------------------------------------------------------
+# 2.1.5-sec29b W1 修复波红钉（四项，复审 sec29-reaudit 探针实测确认级）：
+#   ①【高】_collaboration_schema_hostile 只按 4 张改绑表的 tbl_name 查触发器
+#     ——collaboration_settings 等其他表上的 AFTER INSERT 触发器逃逸，导入后
+#     属主首次 team-progress 的回填 INSERT 引爆触发器注入 grants（端到端
+#     权限提升，probe_z3 复现）。修法：全库判定——任意视图即拒；触发器仅
+#     放行产品自有的两个仲裁 append-only 守卫（screening_arbitration 的
+#     触发器就存在协作库里，逐字比对 CREATE 文本防同名异体）。
+#   ②【高】导出/归档下载流在客户端断开时锁+工作目录泄漏（同步生成器
+#     finally 在 ASGI spec 2.3 任务组取消分支不执行——uvicorn 实况）。
+#     修法：异步生成器承载 + anyio.CancelScope(shield=True) 盾化清理 +
+#     响应 __call__ 收尾确定性 aclose。钉 = 真实 uvicorn 最小实例。
+#   ③【中】v2.1.3 老协作库（缺 collaboration_member_settings，r12 才引入）
+#     自导出的包被 400 collaboration_rewrite 拒。修法：仅缺该产品自身表且
+#     无敌意痕迹时放行，改绑按 task_collaboration 建表口径惰性补建。
+#   ④【中】互斥挡不住预端点的 multipart spool（Starlette 在端点前已把
+#     >1MB part 落盘）——「磁盘峰值恒定 ≤4GB」承诺过度。修法：口径如实化
+#     + ASGI 层上传在途并发闸（上限 4，超出 503 结构化 upload_busy）。
+# 每项至少一颗「修复前必红」钉（对修复前源码实跑验证翻红）+ 变异钉。
+# ---------------------------------------------------------------------------
+
+
+def _sec29b_collab_bytes(extra: str, *, inject_member: int | None = None) -> bytes:
+    """产品形状协作库 + 指定敌意附加物（sec29b①用）。
+
+    四张表/列/singleton 行全部合法（改绑前置全过），仅注入 ``extra`` 的
+    SQL——证明拒绝确由敌意痕迹驱动，而非缺表/缺列。
+    """
+    with tempfile.TemporaryDirectory(prefix="rf_sec29b_collab_") as tmp:
+        path = Path(tmp) / "collaboration.db"
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.executescript("""
+CREATE TABLE collaboration_task (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  task_id TEXT NOT NULL UNIQUE,
+  owner_user_id INTEGER NOT NULL CHECK(owner_user_id > 0),
+  owner_username TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE collaboration_role_grants (
+  user_id INTEGER NOT NULL CHECK(user_id > 0),
+  role TEXT NOT NULL CHECK(role IN ('coder', 'reconciler')),
+  granted_by INTEGER NOT NULL CHECK(granted_by > 0),
+  granted_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, role)
+);
+CREATE TABLE collaboration_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE collaboration_member_settings (
+  user_id INTEGER PRIMARY KEY CHECK(user_id > 0),
+  screening_enabled INTEGER NOT NULL CHECK(screening_enabled IN (0, 1)),
+  updated_by INTEGER NOT NULL CHECK(updated_by > 0),
+  updated_at TEXT NOT NULL
+);
+""")
+            conn.execute("INSERT INTO collaboration_task VALUES ("
+                         "1,'sec29b-src',42,'old-owner','2026-01-01T00:00:00Z')")
+            if inject_member is not None:
+                # 复刻 z3 触发器形态：settings 表上的 AFTER INSERT 自授角色
+                # （改绑四表之外的表——修复前完全逃逸）。
+                conn.execute(
+                    "CREATE TRIGGER grant_on_settings AFTER INSERT ON "
+                    "collaboration_settings BEGIN "
+                    "INSERT OR IGNORE INTO collaboration_role_grants"
+                    "(user_id,role,granted_by,granted_at) VALUES "
+                    f"({inject_member},'reconciler',1,'2026-11-11T00:00:00Z'); "
+                    "INSERT OR IGNORE INTO collaboration_role_grants"
+                    "(user_id,role,granted_by,granted_at) VALUES "
+                    f"({inject_member},'coder',1,'2026-11-11T00:00:00Z'); END")
+            if extra:
+                conn.executescript(extra)
+        return path.read_bytes()
+
+
+class Sec29bCollabTriggerEscapePins(_ApiBase):
+    """sec29b①：协作库敌意判定必须全库收口（不按改绑表过滤）——挂在
+    collaboration_settings 上的注入触发器修复前 200 入库、team-progress
+    引爆后自授角色（端到端权限提升，独立探针 probe_z3 已实测）。"""
+
+    def _package_with(self, collab: bytes) -> bytes:
+        return _build_raw_package({
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(64),
+            "collaboration.db": collab,
+        })
+
+    def _assert_rejected(self, response):
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["params"]["reason"], "collaboration_rewrite")
+
+    def test_settings_trigger_rejected_at_preflight_and_import(self):
+        """主钉：改绑四表之外的表（collaboration_settings）上挂注入触发器
+        → 预检与导入都 400。修复前两层都 200（触发器逃逸）。"""
+        self.new_task()
+        payload = self._package_with(_sec29b_collab_bytes(
+            "", inject_member=self.users[1]["user_id"]))
+        before = _task_dir_count()
+        for endpoint in ("/api/tasks/import-package/preflight",
+                         "/api/tasks/import-package"):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(
+                    endpoint,
+                    files={"package": ("pkg.zip", payload, "application/zip")},
+                    headers=self.auth(2))
+                self._assert_rejected(response)
+        self.assertEqual(_task_dir_count(), before, "拒绝后零半成品任务")
+
+    def test_view_on_any_table_rejected(self):
+        """视图收口：改绑表之外任意表上的视图同样 400（全库判定）。"""
+        self.new_task()
+        payload = self._package_with(_sec29b_collab_bytes(
+            "CREATE TABLE harmless (x INTEGER); "
+            "CREATE VIEW v_harmless AS SELECT x FROM harmless;"))
+        response = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self._assert_rejected(response)
+
+    def test_renamed_own_trigger_shape_rejected(self):
+        """白名单不可绕：借产品守卫的**名字**挂到别的表/改写触发器体 → 400。"""
+        self.new_task()
+        payload = self._package_with(_sec29b_collab_bytes(
+            "CREATE TRIGGER screening_arbitrations_no_update "
+            "AFTER INSERT ON collaboration_settings BEGIN "
+            "INSERT INTO collaboration_role_grants"
+            "(user_id,role,granted_by,granted_at) "
+            "VALUES (1,'coder',1,'2026-01-01T00:00:00Z'); END"))
+        response = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self._assert_rejected(response)
+
+    def test_arbitration_history_package_still_imports(self):
+        """不误伤钉：产品自身的仲裁 append-only 守卫触发器就在协作库里
+        （screening_arbitration 存 collaboration.db）——带仲裁历史的自家
+        包必须照常往返（「任意触发器即拒」的字面实现会打断该合法路径，
+        白名单为此而设）。"""
+        self.new_task()
+        self.seed_member_db()
+        self.decide({"K01": "include"})
+        self.decide({"K01": "exclude"}, db=self.member_db)
+        named = screening_arbitration.load_screener_decision_packages(
+            self.info.db_files, stage="stage1")
+        merged = screening_arbitration.merge_decision_packages(named)
+        screening_arbitration.append_decision_arbitration(
+            task_collaboration.shared_store_path(self.info.dir), stage="stage1",
+            merged=merged,
+            resolutions=[{"zotero_key": "K01", "decision": "include",
+                          "rationale": "adjudicated"}],
+            arbitrator_id=self.users[0]["user_id"])
+        store = task_collaboration.shared_store_path(self.info.dir)
+        with closing(sqlite3.connect(store)) as conn:
+            triggers = [row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'")]
+        self.assertIn("screening_arbitrations_no_update", triggers)
+        payload = self.package().content
+        preflight = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(preflight.status_code, 200, preflight.text)
+        imported = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+
+    def test_trigger_escape_mutation_pin_goes_red(self):
+        """破坏性变异：敌意判定退回「只查 4 张改绑表」的旧逻辑 → 注入
+        触发器包 200 入库、team-progress 引爆后成员获得角色（主钉必红）。"""
+        self.new_task()
+        payload = self._package_with(_sec29b_collab_bytes(
+            "", inject_member=self.users[1]["user_id"]))
+
+        def _old_four_table_filter(conn):
+            rows = conn.execute(
+                "SELECT type FROM sqlite_master WHERE "
+                "(type='view' AND lower(name) IN ('collaboration_task', "
+                "'collaboration_role_grants', 'collaboration_member_settings', "
+                "'sof_judgments')) OR (type='trigger' AND lower(tbl_name) IN "
+                "('collaboration_task', 'collaboration_role_grants', "
+                "'collaboration_member_settings', 'sof_judgments'))").fetchall()
+            return bool(rows)
+
+        with mock.patch.object(task_package_api,
+                               "_collaboration_schema_hostile",
+                               _old_four_table_filter):
+            imported = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("pkg.zip", payload, "application/zip")},
+                headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+        new_task = imported.json()["task_id"]
+        new_info = tasks_mod.find_task(new_task, DATA_DIR)
+        store = task_collaboration.shared_store_path(new_info.dir)
+        progress = self.client.get(f"/api/tasks/{new_task}/team-progress",
+                                   headers=self.auth(2))
+        self.assertEqual(progress.status_code, 200, progress.text)
+        # 引爆：回填 INSERT 触发触发器，成员被自授 reconciler/coder。
+        self.assertTrue(task_collaboration.authorize_action(
+            store, self.users[1]["user_id"], "coding:read_all",
+            task_id=new_info.task_id),
+            "变异下端到端权限提升真实发生（成员凭注入 grants 过授权闸）")
+
+
+class Sec29bLegacyCollabRoundtripPins(_ApiBase):
+    """sec29b③：v2.1.3 老协作库（缺 collaboration_member_settings，该表
+    r12/7fb49a0 才引入且产品侧惰性创建）的自导出包必须能往返 200/200
+    （修复前 400 collaboration_rewrite，与敌意包同形无迁移提示）；敌意
+    形状（缺表+触发器/缺其他表）仍 400。"""
+
+    def _downgrade_store_to_v213(self) -> None:
+        store = task_collaboration.shared_store_path(self.info.dir)
+        with closing(sqlite3.connect(store)) as conn, conn:
+            conn.execute("DROP TABLE collaboration_member_settings")
+            conn.execute("DROP TABLE collaboration_settings")
+
+    def test_v213_roundtrip_200_and_lazy_created(self):
+        """主钉：升级部署的真实存量形态（两张 r12 表缺席）往返 200/200，
+        导入库惰性补建 member_settings、singleton 改绑给导入者。"""
+        self.new_task()
+        self._downgrade_store_to_v213()
+        exported = self.package()
+        self.assertEqual(exported.status_code, 200, exported.text)
+        payload = exported.content
+        preflight = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(preflight.status_code, 200, preflight.text)
+        imported = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(imported.status_code, 200, imported.text)
+        result = imported.json()
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        store = task_collaboration.shared_store_path(new_info.dir)
+        with closing(sqlite3.connect(store)) as conn:
+            tables = {str(row[0]).lower() for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            singleton = conn.execute(
+                "SELECT owner_user_id FROM collaboration_task "
+                "WHERE singleton=1").fetchone()
+            grants = conn.execute(
+                "SELECT COUNT(*) FROM collaboration_role_grants").fetchone()[0]
+        self.assertIn("collaboration_member_settings", tables,
+                      "v2.1.3 老库导入后必须惰性补建该表")
+        self.assertEqual(int(singleton[0]), self.users[2]["user_id"],
+                         "singleton 行必须改绑给导入者")
+        self.assertEqual(grants, 0, "旧部署 grants 引用清空")
+
+    def test_v213_with_trigger_still_rejected(self):
+        """缺 member_settings + 敌意触发器 → 仍 400（惰性补建只在无任何
+        敌意痕迹时放行；旧钉 test_collab_trigger_rejected 的口径不变）。"""
+        self.new_task()
+        payload = _build_raw_package({
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(64),
+            "collaboration.db": _sec29b_collab_bytes(
+                "DROP TABLE collaboration_member_settings; "
+                "CREATE TRIGGER grant_on_settings AFTER INSERT ON "
+                "collaboration_settings BEGIN "
+                "INSERT INTO collaboration_role_grants"
+                "(user_id,role,granted_by,granted_at) VALUES "
+                "(7,'reconciler',1,'2026-01-01T00:00:00Z'); END"),
+        })
+        for endpoint in ("/api/tasks/import-package/preflight",
+                         "/api/tasks/import-package"):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(
+                    endpoint,
+                    files={"package": ("pkg.zip", payload, "application/zip")},
+                    headers=self.auth(2))
+                self.assertEqual(response.status_code, 400, response.text)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["params"]["reason"],
+                                 "collaboration_rewrite")
+
+    def test_missing_other_rewrite_table_still_rejected(self):
+        """缺 collaboration_role_grants（非可缺席表）→ 仍 400。"""
+        self.new_task()
+        self._downgrade_store_to_v213()
+        store = task_collaboration.shared_store_path(self.info.dir)
+        with closing(sqlite3.connect(store)) as conn, conn:
+            conn.execute("DROP TABLE collaboration_role_grants")
+        exported = self.package()
+        self.assertEqual(exported.status_code, 200, exported.text)
+        preflight = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("pkg.zip", exported.content, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(preflight.status_code, 400, preflight.text)
+        self.assertEqual(
+            preflight.json()["detail"]["params"]["reason"],
+            "collaboration_rewrite")
+
+    def test_lazy_exempt_removed_pin_goes_red(self):
+        """破坏性变异：惰性豁免删除（缺表一律拒，即修复前口径）→ 老包
+        预检 400——主钉必红。"""
+        self.new_task()
+        self._downgrade_store_to_v213()
+        payload = self.package().content
+        with mock.patch.object(task_package_api,
+                               "_COLLABORATION_LAZY_CREATE_TABLE",
+                               "\x00none", create=True):
+            preflight = self.client.post(
+                "/api/tasks/import-package/preflight",
+                files={"package": ("pkg.zip", payload, "application/zip")},
+                headers=self.auth(2))
+        self.assertEqual(preflight.status_code, 400, preflight.text)
+        self.assertEqual(
+            preflight.json()["detail"]["params"]["reason"],
+            "collaboration_rewrite")
+
+
+class Sec29bStreamDisconnectPins(_ApiBase):
+    """sec29b②：真实 uvicorn + 原始 socket——POST package/export 读到响应
+    头即断开。修复前（同步生成器）：ASGI spec 2.3 任务组取消分支不执行
+    finally，锁悬挂（独立探针实测 >2s 不释放、工作目录泄漏）；修复后
+    （异步生成器 + 盾化 finally + 确定性 aclose）：2s 内释放、零残留、
+    后续导出不再 409。"""
+
+    @staticmethod
+    def _big_pdf(marker: str) -> bytes:
+        from pypdf import PdfWriter
+        writer = PdfWriter()
+        writer.add_metadata({"/Title": marker * 400_000})
+        writer.add_blank_page(width=200, height=200)
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+
+    def test_real_uvicorn_disconnect_releases_lock_and_cleans(self):
+        import socket
+        import uvicorn
+
+        self.new_task()
+        fulltext_mod.save_pdf(
+            self.owner_db, "K01", self._big_pdf("sec29bW1pad"),
+            pdfs_dir=self.info.dir / "pdfs")
+        fulltext_mod.save_pdf(
+            self.owner_db, "K02", self._big_pdf("sec29bW1pad2"),
+            pdfs_dir=self.info.dir / "pdfs")
+        token = self.users[0]["token"]
+        lock = task_package_api._PACKAGE_OP_LOCK
+
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        server = uvicorn.Server(uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_level="error",
+            proxy_headers=False, lifespan="off"))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: setattr(server, "should_exit", True))
+
+        def raw(method: str, path: str, body: bytes = b"") -> bytes:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=20)
+            head = (f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    f"Authorization: Bearer {token}\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n").encode()
+            sock.sendall(head + body)
+            data = b""
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            sock.close()
+            return data
+
+        deadline = time.time() + 15
+        ready = False
+        while time.time() < deadline:
+            try:
+                if raw("GET", "/api/tasks").split(b"\r\n", 1)[0].endswith(b"200 OK"):
+                    ready = True
+                    break
+            except OSError:
+                time.sleep(0.1)
+        self.assertTrue(ready, "uvicorn 探针实例未就绪")
+
+        temp_root = Path(tempfile.gettempdir())
+        before = {p.name for p in temp_root.iterdir()
+                  if p.name.startswith("rf-package-export-")}
+        # 断开的导出：发请求 → 恰好读到响应头（含首块）即挂断。
+        sock = socket.create_connection(("127.0.0.1", port), timeout=20)
+        body = b"{}"
+        sock.sendall((
+            f"POST /api/tasks/{self.task}/package/export HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            f"Authorization: Bearer {token}\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n").encode() + body)
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += sock.recv(65536)
+        t0 = time.time()
+        sock.close()
+
+        released = None
+        while time.time() < t0 + 2.0:
+            if lock.acquire(blocking=False):
+                lock.release()
+                released = time.time() - t0
+                break
+            time.sleep(0.025)
+        if released is None:
+            # 红跑卫生：不留悬挂锁拖垮同进程后续用例。
+            if lock.locked():
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+        self.assertIsNotNone(released,
+                             "客户端断开后 2s 内整包操作锁必须释放（sec29b②）")
+
+        time.sleep(0.2)
+        after = {p.name for p in temp_root.iterdir()
+                 if p.name.startswith("rf-package-export-")}
+        self.assertEqual(after - before, set(), "断开后工作目录必须即刻删除")
+        # 锁已回来：下一个整包操作立即可用（不再 409 operation_busy）。
+        followup = self.client.get(f"/api/tasks/{self.task}/package/preflight",
+                                   headers=self.auth())
+        self.assertEqual(followup.status_code, 200, followup.text)
+
+
+class Sec29bUploadInflightGatePins(_ApiBase):
+    """sec29b④：两个整包上传端点的 ASGI 层在途并发闸（上限 4，超出 503
+    结构化 ``task_package.upload_busy``）——互斥锁在端点内抢、挡不住
+    Starlette 预端点的 multipart spool；闸在解析之前拒绝，把 spool 峰值
+    一并封顶（修复前：N 个并发上传各自 spool 满 3MiB 后才 409）。"""
+
+    def test_fifth_concurrent_upload_503_upload_busy(self):
+        """主钉：6 个并发上传，恰 2 个被 503 结构化拒（上限 4），其余 4 个
+        照常进端点（1 个持锁走完预检 200、3 个 409 operation_busy）。"""
+        self.new_task()
+        self.add_pdf("K01")
+        payload = self.package().content
+        entered = threading.Event()
+        release = threading.Event()
+        original = task_package_api.validate_import_package
+        results: list = []
+
+        def slow_validate(path, **kwargs):
+            entered.set()
+            release.wait(timeout=30)
+            return original(path, **kwargs)
+
+        def upload(_i: int) -> None:
+            results.append(self.client.post(
+                "/api/tasks/import-package/preflight",
+                files={"package": (f"p{_i}.zip", payload, "application/zip")},
+                headers=self.auth(2)))
+
+        try:
+            with mock.patch.object(task_package_api,
+                                   "validate_import_package", slow_validate):
+                threads = [threading.Thread(target=upload, args=(i,))
+                           for i in range(6)]
+                for t in threads:
+                    t.start()
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    # 持锁者卡在 slow_validate（有意），其余 5 个应即时完成：
+                    # 3 个过闸后 409 operation_busy + 2 个闸前 503 upload_busy。
+                    if len(results) >= 5:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(len(results), 5,
+                                 f"除持锁者外 5 个并发请求都应即时得到响应: "
+                                 f"{len(results)}")
+        finally:
+            release.set()
+            for t in threads:
+                t.join(timeout=60)
+        codes = sorted(r.status_code for r in results)
+        busy = [r for r in results if r.status_code == 503]
+        self.assertEqual(codes, [200, 409, 409, 409, 503, 503],
+                         f"实际状态码集合不符: {codes}")
+        for response in busy:
+            detail = response.json()["detail"]
+            self.assertEqual(detail["error_code"], "upload_busy")
+            self.assertEqual(detail["message_key"],
+                             "task_package.upload_busy")
+            self.assertEqual(detail["params"], {"inflight_limit": 4})
+        # 闸不粘死：请求全部结束后新上传照常进端点（真实包 200）。
+        followup = self.client.post(
+            "/api/tasks/import-package/preflight",
+            files={"package": ("after.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(followup.status_code, 200, followup.text)
+
+    def test_multipart_spool_capped_by_gate(self):
+        """spool 钉（改自复审 N 探针）：互斥被占时 6 个并发 3MiB 上传——
+        修复前 6 个全 spool 落盘；修复后恰好 4 个 spool、2 个在解析前被拒。"""
+        import starlette.formparsers as fp
+
+        self.new_task()
+        payload = b"PK\x03\x04" + os.urandom(3 * 1024 * 1024)
+        rollovers: list[int] = []
+        real = fp.SpooledTemporaryFile
+
+        class _Spy(real):
+            def rollover(self):
+                before = self._rolled
+                super().rollover()
+                if not before:
+                    rollovers.append(self.tell())
+
+        lock = task_package_api._PACKAGE_OP_LOCK
+        self.assertTrue(lock.acquire(blocking=False))
+        results: list = []
+        try:
+            with mock.patch.object(fp, "SpooledTemporaryFile", _Spy):
+                def upload(i: int) -> None:
+                    results.append(self.client.post(
+                        "/api/tasks/import-package/preflight",
+                        files={"package": (f"s{i}.zip", payload,
+                                           "application/zip")},
+                        headers=self.auth(2)))
+
+                threads = [threading.Thread(target=upload, args=(i,))
+                           for i in range(6)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=60)
+        finally:
+            lock.release()
+        codes = sorted(r.status_code for r in results)
+        self.assertEqual(codes, [409, 409, 409, 409, 503, 503],
+                         f"互斥被占时：4 个过闸 409、2 个闸前 503: {codes}")
+        self.assertEqual(len(rollovers), 4,
+                         f"磁盘 spool 恰为闸上限 4（修复前 6）: {rollovers}")
+
+    def test_gate_removed_pin_goes_red(self):
+        """破坏性变异：闸删除（__call__ 直通）→ 6 并发全部 spool 落盘、
+        无一 503——主钉必红。"""
+        import starlette.formparsers as fp
+
+        self.new_task()
+        payload = b"PK\x03\x04" + os.urandom(3 * 1024 * 1024)
+        rollovers: list[int] = []
+        real = fp.SpooledTemporaryFile
+
+        class _Spy(real):
+            def rollover(self):
+                before = self._rolled
+                super().rollover()
+                if not before:
+                    rollovers.append(self.tell())
+
+        gate_cls = getattr(task_package_api, "_PackageUploadInflightGate", None)
+        self.assertIsNotNone(gate_cls, "在途闸类不存在（修复缺失时本变异钉无法"
+                                       "表达——先恢复闸实现再看危险是否真实）")
+
+        async def _bypass(self, scope, receive, send):
+            await self.app(scope, receive, send)
+
+        lock = task_package_api._PACKAGE_OP_LOCK
+        self.assertTrue(lock.acquire(blocking=False))
+        results: list = []
+        try:
+            with mock.patch.object(fp, "SpooledTemporaryFile", _Spy), \
+                 mock.patch.object(gate_cls, "__call__", _bypass):
+                def upload(i: int) -> None:
+                    results.append(self.client.post(
+                        "/api/tasks/import-package/preflight",
+                        files={"package": (f"m{i}.zip", payload,
+                                           "application/zip")},
+                        headers=self.auth(2)))
+
+                threads = [threading.Thread(target=upload, args=(i,))
+                           for i in range(6)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=60)
+        finally:
+            lock.release()
+        codes = sorted(r.status_code for r in results)
+        self.assertEqual(codes, [409] * 6,
+                         "无闸时 6 个并发请求全部到达端点（无 503）")
+        self.assertEqual(len(rollovers), 6, "无闸时 6 个请求全部 spool 落盘")
+
+
 if __name__ == "__main__":
     unittest.main()

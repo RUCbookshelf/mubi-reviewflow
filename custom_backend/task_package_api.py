@@ -47,9 +47,14 @@ legacy 任务（无属主记录）本人操作放行，server 模式 legacy 任�
   /导出体检（package/preflight）/归档导出共用一把进程级锁（2.1.5-sec29 起
   两个 preflight 一并纳入——体检快照与上传暂存同样是 2GB 级磁盘占用，不纳
   入即绕过「全局互斥把磁盘峰值封死」的承诺），同一时刻只允许一个整包操作
-  在途，第二个请求 409 ``task_package.operation_busy``；磁盘峰值恒定 ≤4GB
-  瞬态（导入 zip 2GB + 解压 2GB）。导出锁在下载送完或客户端中断时释放
-  （下载在途也算操作在途）。
+  在途，第二个请求 409 ``task_package.operation_busy``。**如实的峰值口径**
+  （sec29b-W1 修正）：互斥封顶的是**端点内**段——上传副本 + 解压 ≤4GB
+  瞬态 + 单次体检快照；multipart **请求体 spool 发生在端点之前的解析层、
+  在互斥之外**，随并发线性增长（N 个并发上传 = N×2GB 预检即落盘），
+  sec29b-W1 起由上传在途并发闸（ASGI 层、解析前，上限 4，超出 503 结构化
+  ``upload_busy``）另行封顶 spool 峰值。导出锁在下载送完或客户端中断时
+  释放（下载在途也算操作在途；sec29b-W1 起下载流为异步生成器 + 盾化
+  finally，uvicorn 实况的取消分支也确定释放）。
 * **协作库改绑失败即坏包**（2.1.5-sec29 发现 3，对齐 fulltexts 对抗口径）：
   包内 ``collaboration.db`` 改绑失败（缺表/缺 singleton 行/挂触发器或视图
   /列不全）= 该包无效——预检与导入同口径结构化 400
@@ -78,6 +83,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import quote
 
+import anyio
 from fastapi import Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
@@ -150,12 +156,86 @@ _ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
 #: 全局整包操作互斥（导入/导入体检/整包导出/导出体检/归档导出共用一把锁，
 #: 用户 2026-11-09 裁定；2.1.5-sec29 起两个 preflight 一并纳入）：同一时刻
-#: 全服务器（进程内）只允许一个整包操作在途——磁盘峰值从「并发数 × 2GB」
-#: 封死为恒定 ≤4GB 瞬态（导入 2+2 或导出 2；体检快照/上传暂存同受封顶）。
+#: 全服务器（进程内）只允许一个整包操作在途。**如实口径**（sec29b-W1 修正）：
+#: 互斥封顶的是端点内段——上传副本 2GB + 解压 2GB 的 ≤4GB 瞬态与体检快照；
+#: multipart 请求体 spool 在端点之前的解析层发生、在互斥**之外**，随并发
+#: 线性（修复前实测：互斥被占时并发上传仍各自预检落盘）——由
+#: :class:`_PackageUploadInflightGate`（上限 4）封顶 spool 峰值，而不是本锁。
 #: 第二个请求结构化 409 ``task_package.operation_busy``。导出侧锁在下载完成
-#: /客户端中断（流式生成器 finally）时释放，避免「下载中 + 新导入」的 6GB
-#: 叠加。
+#: /客户端中断（异步生成器的盾化 finally）时释放，避免「下载中 + 新导入」
+#: 的 6GB 叠加。
 _PACKAGE_OP_LOCK = threading.Lock()
+
+#: 整包上传在途并发上限（sec29b-W1·发现 4）：两个上传端点的互斥锁在
+#: **端点内**才抢，而 Starlette/FastAPI 在端点运行前已完成 multipart 解析
+#: ——>1MB 的文件 part 已先落盘 spool（复审 N 实测：互斥被占时 4 个并发
+#: 上传仍各自 spool 满 3MiB 后才 409），「磁盘峰值恒定 ≤4GB」的承诺被
+#: 这段互斥之外的预端点 spool 绕过（随并发线性）。本闸在 ASGI 层（路由/
+#: 解析之前）对两个上传路径计在途请求数：达上限即刻 503 结构化
+#: ``task_package.upload_busy``（不消费请求体、不 spool），把 spool 峰值
+#: 一并封顶（≤ 上限 × 2GB）。
+_PACKAGE_UPLOAD_INFLIGHT_LIMIT = 4
+#: 受闸路径（与 upload_rules 追加规则同一组正则，口径一致）。
+_PACKAGE_UPLOAD_PATH_RULES = (re.compile(r"^/api/tasks/import-package$"),
+                              re.compile(r"^/api/tasks/import-package/preflight$"))
+
+
+class _PackageUploadInflightGate:
+    """整包上传在途并发闸（纯 ASGI 中间件，sec29b-W1·发现 4）。
+
+    只拦两个整包上传路径的 POST：请求进入路由/multipart 解析**之前**计数
+    +1、请求结束（正常完成或任何取消/异常）finally -1；在途数已达上限时
+    直接应答 503（结构化 ``upload_busy``，与文件内既有 409/503 结构化错误
+    同形：``{"detail":{error_code,message_key,params}}``），不读请求体——
+    因此**不会 spool**，这正是本闸存在的目的（互斥锁挡不住预端点 spool）。
+    其余路径原样透传。计数是**进程内**计数（多 worker 部署各 worker 独立
+    计数——与进程级互斥锁同一粒度）；增减在一把小锁内完成、绝不跨 await
+    持有，同一进程内多事件循环/多线程共用本实例时计数仍然精确。未做 CORS
+    头补齐：闸触发是罕见的服务端忙信号，同源部署（本产品常态）不受影响；
+    跨域错误可读性不构成本闸的安全属性。
+    """
+
+    def __init__(self, app, limit: int = _PACKAGE_UPLOAD_INFLIGHT_LIMIT) -> None:  # noqa: ANN001
+        self.app = app
+        self.limit = limit
+        self._inflight = 0
+        self._guard = threading.Lock()
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        if (scope.get("type") != "http" or scope.get("method") != "POST"
+                or not any(rule.match(scope.get("path", ""))
+                           for rule in _PACKAGE_UPLOAD_PATH_RULES)):
+            await self.app(scope, receive, send)
+            return
+        with self._guard:
+            admitted = self._inflight < self.limit
+            if admitted:
+                self._inflight += 1
+        if not admitted:
+            body = json.dumps({"detail": {
+                "error_code": "upload_busy",
+                "message_key": "task_package.upload_busy",
+                "params": {"inflight_limit": self.limit},
+            }}, ensure_ascii=False).encode("utf-8")
+            await send({
+                "type": "http.response.start", "status": 503,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                    (b"cache-control", b"no-store"),
+                    (b"retry-after", b"1"),
+                    # 早拒不消费请求体：关闭连接，避免服务端继续吸收数据
+                    # （与 security.UploadSizeLimitMiddleware 同做法）。
+                    (b"connection", b"close"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            with self._guard:
+                self._inflight -= 1
 
 
 def _acquire_package_op_lock() -> None:
@@ -1335,11 +1415,24 @@ def _rewrite_collaboration_store(base: Path, name: str, *, task_id: str,
     2.1.5-sof：``sof_judgments`` 的 ``decided_by``（含 prev 快照里的）同样指向
     源部署用户 ID——判定是研究产出、随包保留（不清空），但署名改绑给导入者
     （判定随包迁移的承接责任人）；表不存在（旧包/无判定）时静默跳过。
+    sec29b-W1：v2.1.3 及更早的老协作库没有 ``collaboration_member_settings``
+    （r12 才引入、产品侧惰性创建）——仅缺该产品自身表时按
+    task_collaboration 的建表口径（字面量 DDL 与其 _SCHEMA 逐字一致）惰性
+    补建空表后继续改绑；随后 DELETE 清空（旧部署用户 ID 本就无意义，
+    reconciler 回填语义留给产品自身 ``_migrate_member_settings`` 首写时
+    处理——老库届时同样按升级前口径回填，语义不丢失）。
     """
     try:
         with closing(_open_rw(base, name)) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS collaboration_member_settings ("
+                    "user_id INTEGER PRIMARY KEY CHECK(user_id > 0), "
+                    "screening_enabled INTEGER NOT NULL "
+                    "CHECK(screening_enabled IN (0, 1)), "
+                    "updated_by INTEGER NOT NULL CHECK(updated_by > 0), "
+                    "updated_at TEXT NOT NULL)")
                 cursor = conn.execute(
                     "UPDATE collaboration_task SET task_id=?, owner_user_id=?, "
                     "owner_username=? WHERE singleton=1",
@@ -1424,11 +1517,33 @@ def _fulltexts_schema_hostile(conn: sqlite3.Connection) -> bool:
 #: 协作库改绑（:func:`_rewrite_collaboration_store`）触及的表（2.1.5-sec29
 #: 发现 3）：缺表/缺列/无 singleton 行 = 改绑必失败；表上有视图/触发器 =
 #: 改绑可被静默吞掉或写回——预检与导入同口径拒绝，绝不静默换空库假 200。
+#: sec29b-W1：``collaboration_member_settings`` 是唯一可缺席的表（v2.1.3
+#: 及更早部署的协作库没有它——r12/7fb49a0 才引入且惰性创建；仅缺该产品
+#: 自身表且其余前置全过时由改绑惰性补建，见
+#: :func:`_check_collaboration_member_rewritable`）。
 _COLLABORATION_REWRITE_TABLES = ("collaboration_task",
                                  "collaboration_role_grants",
                                  "collaboration_member_settings")
+#: 唯一允许缺席的改绑目标表（v2.1.3 老形状；其余任何缺表仍敌意）。
+_COLLABORATION_LAZY_CREATE_TABLE = "collaboration_member_settings"
 _COLLABORATION_TASK_COLUMNS = frozenset({
     "singleton", "task_id", "owner_user_id", "owner_username"})
+#: 产品自身协作库中**唯一**合法的触发器形状（sec29b-W1 全库盘点实测）：
+#: 仲裁快照的 append-only 守卫（screening_arbitration._ARBITRATION_SCHEMA，
+#: 存进协作库）。键 = (trigger 名, 目标表)，值 = sqlite_master 中应逐字
+#: 一致的 CREATE 文本（空白归一比较）——同名异表/同名异体（改写触发器体
+#: 注入 grants 等）一律按敌意拒绝；能逐字复刻的触发器语义与产品自有的
+#: 等价（RAISE(ABORT) 守卫），无注入面。产品协作库从不创建任何视图。
+_COLLABORATION_OWN_TRIGGERS = {
+    ("screening_arbitrations_no_update", "screening_arbitrations"):
+        "CREATE TRIGGER screening_arbitrations_no_update "
+        "BEFORE UPDATE ON screening_arbitrations "
+        "BEGIN SELECT RAISE(ABORT, 'screening arbitrations are append-only'); END",
+    ("screening_arbitrations_no_delete", "screening_arbitrations"):
+        "CREATE TRIGGER screening_arbitrations_no_delete "
+        "BEFORE DELETE ON screening_arbitrations "
+        "BEGIN SELECT RAISE(ABORT, 'screening arbitrations are append-only'); END",
+}
 
 
 def _collaboration_rewrite_error(member: str = "collaboration.db"
@@ -1439,23 +1554,33 @@ def _collaboration_rewrite_error(member: str = "collaboration.db"
 
 
 def _collaboration_schema_hostile(conn: sqlite3.Connection) -> bool:
-    """协作库是否被做了手脚：改绑目标表是视图，或其上（含 sof_judgments，
-    rebind_decided_by 要 UPDATE 它）挂有任意触发器。
+    """协作库是否被做了手脚：库内存在**任意**视图，或任一**非产品自有形状**
+    的触发器（不再按改绑目标表的 tbl_name 过滤）。
 
-    对齐 :func:`_fulltexts_schema_hostile` 的对抗口径：产品自身的协作库永远
-    是普通表、无触发器（task_collaboration._SCHEMA / sof_judgments 建表），
-    出现视图/触发器只可能来自自造包——BEFORE ``RAISE(IGNORE)`` 让 UPDATE
-    rowcount=0、AFTER 把属主改回旧值等任何形态都能让改绑静默失效或失败，
-    在 schema 层直接拒绝，不逐一猜触发器写法。
+    sec29b-W1（复审 z3 端到端实测复现）：修复前只按 4 张改绑相关表的
+    tbl_name 查触发器——挂在 ``collaboration_settings`` 等其他表上的
+    AFTER INSERT 触发器逃逸，导入后产品自身 team-progress 的回填 INSERT
+    引爆触发器注入 grants（权限提升）。导入后的产品自身写入不止改绑四表
+    （``_migrate_member_settings`` 写 settings、grant_role 写 grants、仲裁
+    追加写 screening_arbitrations……），任何表上的恶意触发器都是注入面，
+    因此对**全库**触发器逐一判定：仅放行
+    :data:`_COLLABORATION_OWN_TRIGGERS` 白名单里产品自有的两个 append-only
+    守卫（同名同表且 CREATE 文本一致），其余任何触发器/视图（无论挂在哪
+    张表）一律敌意——BEFORE ``RAISE(IGNORE)`` 让 UPDATE rowcount=0、
+    AFTER 把属主改回旧值、AFTER INSERT 自授角色等任何形态都在 schema 层
+    直接拒绝，不逐一猜触发器写法。
     """
-    rows = conn.execute(
-        "SELECT type FROM sqlite_master WHERE "
-        "(type='view' AND lower(name) IN ('collaboration_task', "
-        "'collaboration_role_grants', 'collaboration_member_settings', "
-        "'sof_judgments')) OR (type='trigger' AND lower(tbl_name) IN "
-        "('collaboration_task', 'collaboration_role_grants', "
-        "'collaboration_member_settings', 'sof_judgments'))").fetchall()
-    return bool(rows)
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' LIMIT 1"
+    ).fetchone() is not None:
+        return True
+    for name, tbl_name, sql in conn.execute(
+            "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger'"):
+        expected = _COLLABORATION_OWN_TRIGGERS.get(
+            (str(name).lower(), str(tbl_name).lower()))
+        if expected is None or " ".join((sql or "").split()) != expected:
+            return True
+    return False
 
 
 def _check_collaboration_member_rewritable(archive: zipfile.ZipFile,
@@ -1467,10 +1592,16 @@ def _check_collaboration_member_rewritable(archive: zipfile.ZipFile,
     前置条件在 :func:`validate_import_package`（预检与导入共同入口）即判定，
     任一不成立 → 结构化 400 ``collaboration_rewrite``：
 
-    * 三张改绑目标表都是普通表（缺表 = DELETE/UPDATE 必抛错）；
+    * 改绑目标表都是普通表（缺表 = DELETE/UPDATE 必抛错）；sec29b-W1 起
+      **唯一例外**：仅缺 ``collaboration_member_settings``（v2.1.3 及更早
+      部署的自家老形状，该表 r12 才引入且产品侧惰性创建）且其余前置全过
+      时放行——由 :func:`_rewrite_collaboration_store` 惰性补建空表后
+      继续改绑（老部署往返恢复 200/200）；缺其他任何表/与其他敌意痕迹
+      并存仍 400；
     * ``collaboration_task`` 具备改绑所需列且存在 ``singleton=1`` 行
       （UPDATE rowcount=0 = 改绑无对象）；
-    * 表上无视图/触发器手脚（防改绑被静默吞掉或写回）；
+    * 库内无视图、无非产品自有形状的触发器（全库判定，sec29b-W1 收口：
+      防改绑被静默吞掉/写回，防导入后产品自身写入引爆任意表上的触发器）；
     * ``sof_judgments`` 若存在则具备 ``decided_by``/``prev_json`` 列
       （rebind_decided_by 的 SELECT/UPDATE 目标列）。
 
@@ -1483,9 +1614,10 @@ def _check_collaboration_member_rewritable(archive: zipfile.ZipFile,
         with closing(_open_read_only(scratch)) as conn:
             tables = {str(row[0]).lower() for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
-            for table in _COLLABORATION_REWRITE_TABLES:
-                if table not in tables:
-                    raise _collaboration_rewrite_error()
+            missing = [table for table in _COLLABORATION_REWRITE_TABLES
+                       if table not in tables]
+            if missing and missing != [_COLLABORATION_LAZY_CREATE_TABLE]:
+                raise _collaboration_rewrite_error()
             if _collaboration_schema_hostile(conn):
                 raise _collaboration_rewrite_error()
             columns = {str(row[1]).lower() for row in conn.execute(
@@ -1778,8 +1910,10 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                 temp_dir, db_names, covered_paths)
 
         # 解压完成（成功或失败都走得到这里/异常路径）：上传 zip 立即删除
-        # （用户裁定不做「zip 不落盘」，落盘副本只活到解压结束；峰值 =
-        # zip ≤2GB + 解压内容 ≤2GB = ≤4GB 瞬态，全局互斥下全服务器恒定）。
+        # （用户裁定不做「zip 不落盘」，落盘副本只活到解压结束；端点内峰值
+        # = zip ≤2GB + 解压内容 ≤2GB = ≤4GB 瞬态，互斥下全服务器至多一个
+        # 在途；请求体 spool 在端点前、属互斥之外，另由上传在途闸封顶——
+        # sec29b-W1 如实口径）。
         package_path.unlink(missing_ok=True)
 
         task_payload.update({
@@ -1842,6 +1976,35 @@ def _ascii_filename(name: str, fallback: str) -> str:
     return ascii_name or fallback
 
 
+class _CleanupStreamingResponse(StreamingResponse):
+    """导出/归档下载流（sec29b-W1）：响应调用结束的**任何**路径都确定关闭
+    异步生成器，从而确定触发其盾化 finally（删 zip/工作目录、释放整包
+    操作锁）。
+
+    StreamingResponse 的取消分支（ASGI spec 2.3 任务组，uvicorn 实况）里，
+    取消可能落在 ``send()`` 而非 ``__anext__()``——生成器停在 yield 上，
+    只能等 GC 的 asyncgen 收尾（非确定时序）。本子类在 ``__call__`` 的
+    finally 里用 :class:`anyio.CancelScope`\\ ``(shield=True)`` 盾化
+    ``aclose()``：GeneratorExit 立即抛进生成器帧执行清理。幂等：正常送完
+    （生成器已耗尽）或清理已跑过时 ``aclose()`` 为空操作，不会二次执行
+    finally 里的删除/释放。
+    """
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is None:
+                return
+            try:
+                with anyio.CancelScope(shield=True):
+                    await close()
+            except (RuntimeError, StopAsyncIteration):
+                # 生成器已在收尾/从未启动：清理已由其 finally 完成。
+                pass
+
+
 def register_task_package_routes(
     app,
     require_user: Callable[..., dict],
@@ -1893,22 +2056,33 @@ def register_task_package_routes(
                 finally_hook()
             raise _error(TaskPackageError("storage_unavailable", status=503))
 
-        def generator():
-            # finally 同时覆盖：正常送完、客户端中断下载（生成器被关闭）、
-            # 读取中途 IO 故障——zip/工作目录即刻删除、整包操作锁即刻释放
-            # （终审 #41：下载在途也算操作在途，否则「下载中 + 新导入」可叠 6GB）。
+        async def generator():
+            # sec29b-W1（复审 u/l 真实 uvicorn 实测）：同步生成器在 ASGI
+            # spec 2.3 的任务组取消分支（uvicorn 实况）被整支遗弃——
+            # iterate_in_threadpool 的桥断开后 finally 不执行，客户端读到
+            # 响应头即断开 → 锁悬挂（>2s 实测、依赖 GC 才补跑）+ 工作目录
+            # 泄漏 + 后续导出 409。改用**异步生成器**承载：取消/断开异常
+            # 会抛进生成器帧，finally 确定执行；清理放在
+            # anyio.CancelScope(shield=True) 里——外部取消不得再打断锁
+            # 释放与目录删除（盾化保证清理内的检查点不被二次取消）。
+            # finally 同时覆盖：正常送完、客户端中断下载（生成器被取消/
+            # 关闭）、读取中途 IO 故障——zip/工作目录即刻删除、整包操作锁
+            # 即刻释放（终审 #41：下载在途也算操作在途，否则「下载中 +
+            # 新导入」可叠 6GB）。
             try:
                 with open(actual, "rb") as handle:
-                    while chunk := handle.read(_CHUNK):
+                    while chunk := await run_in_threadpool(handle.read, _CHUNK):
                         yield chunk
             finally:
-                actual.unlink(missing_ok=True)
-                if cleanup_dir is not None:
-                    shutil.rmtree(cleanup_dir, ignore_errors=True)
-                if finally_hook is not None:
-                    finally_hook()
+                with anyio.CancelScope(shield=True):
+                    actual.unlink(missing_ok=True)
+                    if cleanup_dir is not None:
+                        shutil.rmtree(cleanup_dir, ignore_errors=True)
+                    if finally_hook is not None:
+                        finally_hook()
 
-        return StreamingResponse(generator(), media_type=media_type, headers=headers)
+        return _CleanupStreamingResponse(generator(), media_type=media_type,
+                                         headers=headers)
 
     # ---- 全文规范归档导出 ------------------------------------------------
     @app.post("/api/tasks/{task_id}/fulltext/archive-export")
@@ -2048,6 +2222,9 @@ def register_task_package_routes(
         _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
         # 全局整包操作互斥（2.1.5-sec29 发现 1：导入体检落 2GB 上传暂存 +
         # 全成员双遍哈希——与 import-package 同一把锁、同 409 语义）。
+        # 注意（sec29b-W1 如实口径）：multipart 请求体在进入本端点前已被
+        # 解析层 spool（>1MB part 落盘），本锁挡不住那段——预端点的 spool
+        # 峰值由 _PackageUploadInflightGate（ASGI 层，上限 4）封顶。
         _acquire_package_op_lock_or_409()
         upload_path: Path | None = None
         try:
@@ -2085,7 +2262,9 @@ def register_task_package_routes(
     ) -> dict:
         _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
         # 全局整包操作互斥：读上传之前抢锁——两个并发导入不会各自缓冲 2GB；
-        # 抢不到直接 409（在 try 外，不进 finally 释放分支）。
+        # 抢不到直接 409（在 try 外，不进 finally 释放分支）。预端点的
+        # multipart spool 不在本锁管辖内（sec29b-W1 如实口径，由
+        # _PackageUploadInflightGate 封顶）。
         _acquire_package_op_lock_or_409()
         upload_path: Path | None = None
         try:
@@ -2115,3 +2294,10 @@ def register_task_package_routes(
         limit = MAX_PACKAGE_BYTES + _UPLOAD_SLACK_BYTES
         upload_rules.append((re.compile(r"^/api/tasks/import-package$"), limit, 1))
         upload_rules.append((re.compile(r"^/api/tasks/import-package/preflight$"), limit, 1))
+    # sec29b-W1：上传在途并发闸（ASGI 层、multipart 解析之前——互斥锁在
+    # 端点内抢、挡不住预端点 spool，见 _PackageUploadInflightGate）。注册
+    # 必须发生在应用启动前（本函数在 main 导入期被调用，早于首个请求）；
+    # 同一 app 重复注册只装一层（幂等标记）。
+    if not getattr(app.state, "_package_upload_inflight_gate", False):
+        app.add_middleware(_PackageUploadInflightGate)
+        app.state._package_upload_inflight_gate = True
