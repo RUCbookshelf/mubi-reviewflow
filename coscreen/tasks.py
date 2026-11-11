@@ -44,6 +44,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import sys
 import threading
 import uuid
 import zipfile
@@ -794,9 +795,23 @@ def register_inflight_counter(fn: Callable[[str], int] | None) -> None:
 
 
 def pid_alive(pid: int) -> bool:
-    """进程是否存活（os.kill(pid, 0) 探测；EPERM 视为存活，查无此进程视为死亡）。"""
+    """进程是否存活。
+
+    POSIX：``os.kill(pid, 0)`` 探测（EPERM 视为存活，查无此进程视为死亡）。
+    Windows（P1-2 修复，2026-11-11）：``os.kill(pid, 0)`` 在 Windows 语义下走
+    ``GenerateConsoleCtrlEvent(CTRL_C_EVENT=0)``，对已退出/无控制台的 PID 抛
+    WinError 87（OSError，不在原捕获清单）→ 异常上冒被调用方按「锁被持有」
+    处理 → 崩溃/被杀进程残留的任务锁永久 409（发布前对抗审查 P1 复现：
+    200→退出留锁→409→删锁恢复）。改用 ctypes ``OpenProcess``+
+    ``GetExitCodeProcess``：句柄可得且退出码=STILL_ACTIVE → 存活；
+    ``ERROR_ACCESS_DENIED`` → 保守视为存活（对齐 POSIX EPERM 口径）；其余
+    失败（含 87=PID 不存在）→ 死亡。
+    """
+    pid = int(pid)
+    if sys.platform == "win32":
+        return _pid_alive_windows(pid)
     try:
-        os.kill(int(pid), 0)
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -804,6 +819,24 @@ def pid_alive(pid: int) -> bool:
     except (OverflowError, ValueError, TypeError):
         return False
     return True
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """Windows 探活（P1-2），语义见 :func:`pid_alive` 文档。"""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000；STILL_ACTIVE = 259
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    if handle:
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == 259
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
+    return ctypes.get_last_error() != 5  # ERROR_ACCESS_DENIED → 保守存活
 
 
 def lock_holder(lock_path: str | Path) -> dict | None:
