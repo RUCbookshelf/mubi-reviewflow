@@ -1421,6 +1421,11 @@
             "title": "Password",
             "type": "string"
           },
+          "remember": {
+            "default": false,
+            "title": "Remember",
+            "type": "boolean"
+          },
           "username": {
             "maxLength": 64,
             "minLength": 3,
@@ -4646,6 +4651,36 @@
           "level"
         ],
         "title": "PairedIntervalIn",
+        "type": "object"
+      },
+      "PasswordResetIn": {
+        "description": "找回密码（2.1.5）：用户名+重置码+新密码（码经管理员/本机工具线下获取）。",
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Code",
+            "type": "string"
+          },
+          "new_password": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "New Password",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 64,
+            "minLength": 3,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "code",
+          "new_password"
+        ],
+        "title": "PasswordResetIn",
         "type": "object"
       },
       "PicoBlock": {
@@ -9004,6 +9039,47 @@
           }
         },
         "summary": "Register"
+      }
+    },
+    "/api/auth/reset": {
+      "post": {
+        "description": "找回密码（2.1.5，双模式重置码；用户裁定 2026-11-11）。\n\n服务器部署=管理员跑 build/scripts/reset_code.py 取码线下转交；单机=\n安装目录 windows_start.py --reset-user 弹码。限流/防枚举对齐 login：\npeer check 占位+账号/全局键 peek；用户不存在与码不匹配同一文案，\n不存在路径跑 dummy_verify 等时；新密码规则先行校验（不烧码）；成功\nset_password（哈希+pwd_version+1，全部长时令牌即时失效）。",
+        "operationId": "password_reset_api_auth_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Password Reset Api Auth Reset Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Password Reset"
       }
     },
     "/api/coding/agreement": {

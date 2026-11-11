@@ -472,6 +472,9 @@ def test_w6_documented_openapi_limits_stay_true(exported):
         "GET /api/app-update/check",
         "POST /api/auth/register",
         "POST /api/auth/login",
+        # 2.1.5 记住我+找回密码：reset 本身免 token——一次性重置码即能力
+        # （码经管理员/本机工具线下获取，15 分钟有效）。
+        "POST /api/auth/reset",
         # 2.1.5 Wave C2：ICS 订阅以「令牌即能力」鉴权（令牌在 URL 中，
         # 日历客户端无法带 header）；其余筛选/通知端点仍需 authorization。
         "GET /api/tasks/{task_id}/screening/daily-status.ics",
