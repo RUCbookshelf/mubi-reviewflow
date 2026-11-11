@@ -48,6 +48,7 @@ import os
 import re
 import smtplib
 import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -499,7 +500,10 @@ def _send_smtp(config: Mapping[str, Any], text: str, *, timeout: float) -> None:
         with smtplib.SMTP(host.strip(), port, timeout=timeout) as client:
             client.ehlo()
             if use_tls:
-                client.starttls()
+                # sec29（DS·出站 HTTP·发现18）：STARTTLS 必须带默认校验上下文
+                # ——stdlib 的 context=None 回落 CERT_NONE/check_hostname=False
+                # （3.11 实测 verify_mode=0），伪造证书的中间人截获 login 凭据。
+                client.starttls(context=ssl.create_default_context())
                 client.ehlo()
             if username:
                 client.login(username, password)

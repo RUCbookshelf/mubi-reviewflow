@@ -576,6 +576,10 @@ class _MultipartPartCounter:
     spool；r6 复审 #38：50×1MiB 字段 part 曾在 422 前整体进内存）。
     ``max_total_bytes`` 设定时对**全部**流经字节（含文件 part）累计设
     预算，超预算同通道拒绝（sec29：兜住「实际字节 > CL 声明」的违规流）。
+    ``max_file_bytes`` 设定时对**单个文件 part** 的 body 字节流式记账，
+    超限即拒（sec29·发现3：诚实申报总 CL 的巨单文件不再等端点
+    upload.read() 后才被 check_size 拒——receive 层拦截，不进 spool 不进
+    端点内存）。
 
     - part 头部块（到空行 ``\\r\\n\\r\\n`` 为止）含 ``filename`` → 文件
       part：第 ``max_files + 1`` 个的头部出现即拒绝；
@@ -611,7 +615,8 @@ class _MultipartPartCounter:
     def __init__(self, boundary: bytes, max_files: int,
                  max_fields: int = MAX_FIELD_PARTS,
                  max_field_bytes: int = MAX_FIELD_PART_BYTES,
-                 max_total_bytes: int | None = None) -> None:
+                 max_total_bytes: int | None = None,
+                 max_file_bytes: int | None = None) -> None:
         self._delim = b"\r\n--" + boundary
         self._lead = b"--" + boundary
         self._max_files = max_files
@@ -619,6 +624,8 @@ class _MultipartPartCounter:
         self._max_field_bytes = max_field_bytes
         self._max_total_bytes = max_total_bytes
         self._total_bytes = 0
+        self._max_file_bytes = max_file_bytes
+        self._file_part_bytes = 0
         self.files = 0
         self.fields = 0
         self._field_bytes = 0
@@ -633,6 +640,7 @@ class _MultipartPartCounter:
         self._in_file_part = True
         self._part_active = True
         self._field_bytes = 0
+        self._file_part_bytes = 0
         if self.files > self._max_files:
             raise MultipartStructureRejected(
                 f"上传文件数超过该端点允许的上限（{_fmt_count(self._max_files)} 个）。"
@@ -648,9 +656,18 @@ class _MultipartPartCounter:
                 f"上传表单字段数超过上限（{_fmt_count(self._max_fields)} 个）。"
             )
 
-    def _account_field_bytes(self, count: int) -> None:
-        """当前 part 是字段 part 时累计其 body 字节并检查上限。"""
-        if count <= 0 or not self._part_active or self._in_file_part:
+    def _account_part_bytes(self, count: int) -> None:
+        """当前 part 的 body 字节记账：文件 part 计单文件上限、字段 part
+        计单字段上限（sec29·发现3——单文件上限在 receive 层流式生效）。"""
+        if count <= 0 or not self._part_active:
+            return
+        if self._in_file_part:
+            self._file_part_bytes += count
+            if (self._max_file_bytes is not None
+                    and self._file_part_bytes > self._max_file_bytes):
+                raise MultipartStructureRejected(
+                    "单个上传文件超过大小上限，请压缩后重试。"
+                )
             return
         self._field_bytes += count
         if self._field_bytes > self._max_field_bytes:
@@ -697,12 +714,12 @@ class _MultipartPartCounter:
                 if idx < 0:
                     keep = len(self._delim) - 1  # 跨 chunk 的分隔符不漏判
                     if len(data) - pos > keep:
-                        self._account_field_bytes(len(data) - pos - keep)
+                        self._account_part_bytes(len(data) - pos - keep)
                         self._buf = data[-keep:]
                     else:
                         self._buf = data[pos:]
                     return
-                self._account_field_bytes(idx - pos)
+                self._account_part_bytes(idx - pos)
                 after = idx + len(self._delim)
                 if data[after:after + 2] == b"--":  # 结束边界 --boundary--
                     self._state = self._DONE
@@ -909,8 +926,10 @@ class UploadSizeLimitMiddleware:
         # 去引号）——此前用原值 startswith 判定，前导空白的 Content-Type
         # 在 ASGI 直调层可绕过预检（r6 复审 #43）。
         path = scope.get("path", "")
-        rule = next(((pattern, limit, max_files) for pattern, limit, max_files in self.rules
-                     if pattern.match(path)), None)
+        # sec29·发现3：规则允许 3 元或 4 元（尾元素=单文件上限）——整元组
+        # 透传，由下方 rule[:3]/rule[3] 解构，避免此处的定长解包再炸 4 元规则。
+        rule = next((rule for rule in self.rules
+                     if rule[0].match(path)), None)
         if _parse_options_header is not None:
             ctype, params = _parse_options_header(content_type_header)
             if ctype != b"multipart/form-data":
@@ -955,7 +974,12 @@ class UploadSizeLimitMiddleware:
                     extra_headers=[(b"www-authenticate", b"Bearer")])
                 return
         if rule is not None:
-            _, limit, max_files = rule
+            _, limit, max_files = rule[:3]
+            # sec29·发现3：4 元规则的尾元素=单文件字节上限（多文件端点=
+            # MAX_UPLOAD_BYTES+slack，把端点 check_size 的单文件语义提前到
+            # receive 层流式拦截）；3 元规则缺省=limit（单文件端点本就受
+            # 总上限约束，行为不变）。
+            max_file_bytes = rule[3] if len(rule) > 3 else limit
             if boundary is None:
                 # Starlette 对无 boundary 的 multipart 本就 400（Missing
                 # boundary），这里提前到解析/落盘之前（r6 复审 #37 的
@@ -973,7 +997,8 @@ class UploadSizeLimitMiddleware:
                 # 协议违规流（多 part 的 boundary/CRLF 封装均计入 body）。
                 counter = _MultipartPartCounter(
                     boundary, max_files,
-                    max_total_bytes=limit + 64 * 1024)
+                    max_total_bytes=limit + 64 * 1024,
+                    max_file_bytes=max_file_bytes)
 
                 async def receive_wrapper():
                     message = await receive()

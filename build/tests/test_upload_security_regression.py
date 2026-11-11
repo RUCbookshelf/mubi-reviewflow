@@ -1143,8 +1143,9 @@ class UploadSecurityTests(unittest.TestCase):
         """
         from custom_backend.main import _UPLOAD_SIZE_RULES
         from custom_backend.research_trace_api import MAX_TRACE_BODY_BYTES
-        limits = {pattern.pattern: (limit, max_files)
-                  for pattern, limit, max_files in _UPLOAD_SIZE_RULES}
+        # sec29·发现3：规则表允许 3/4 元（尾元素=单文件上限）——按索引取。
+        limits = {rule[0].pattern: (rule[1], rule[2])
+                  for rule in _UPLOAD_SIZE_RULES}
         trace_limit, trace_files = limits[
             r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"]
         self.assertEqual(trace_limit, MAX_TRACE_BODY_BYTES)  # 129MiB，不多不少
@@ -1170,7 +1171,7 @@ class UploadSecurityTests(unittest.TestCase):
             if not matched:
                 uncovered.append(route.path)
             else:
-                _, limit, max_files = matched[0]
+                limit, max_files = matched[0][1], matched[0][2]
                 self.assertIsInstance(limit, int)
                 self.assertIsInstance(max_files, int)
                 self.assertGreaterEqual(max_files, 1)
@@ -1183,8 +1184,9 @@ class UploadSecurityTests(unittest.TestCase):
         from coscreen.research_trace_export import MAX_PACKAGE_BYTES
         from coscreen.coding_evidence import MAX_UPLOAD_BYTES as EVIDENCE_MAX
         from custom_backend.research_trace_api import MAX_TRACE_BODY_BYTES
-        limits = {pattern.pattern: (limit, max_files)
-                  for pattern, limit, max_files in _UPLOAD_SIZE_RULES}
+        # sec29·发现3：规则表允许 3/4 元（尾元素=单文件上限）——按索引取。
+        limits = {rule[0].pattern: (rule[1], rule[2])
+                  for rule in _UPLOAD_SIZE_RULES}
         trace, trace_files = limits[r"^/api/tasks/[^/]+/trace/imports/(preview|commit)$"]
         self.assertEqual(trace, MAX_TRACE_BODY_BYTES)               # 端点守卫同值（129MiB）
         self.assertEqual(MAX_TRACE_BODY_BYTES, MAX_PACKAGE_BYTES + 1024 * 1024)

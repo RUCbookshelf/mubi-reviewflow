@@ -541,7 +541,8 @@ class SmtpPrivateHostPins(unittest.TestCase):
             def ehlo(self):
                 return (250, b"ok")
 
-            def starttls(self):
+            def starttls(self, context=None):
+                # sec29·发现18：产品代码现在传校验上下文（context kwarg）
                 return (220, b"ready")
 
             def sendmail(self, *a, **k):

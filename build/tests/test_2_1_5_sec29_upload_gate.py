@@ -202,5 +202,61 @@ class TotalBytesBudgetTests(unittest.TestCase):
         self.assertEqual(app.body, _BODY)
 
 
+class PerFileCapTests(unittest.TestCase):
+    """发现3：诚实 CL 下的巨单文件在 receive 层流式拦截（4 元规则）。"""
+
+    _CT2 = (b"content-type", b"multipart/form-data; boundary=bnd")
+
+    def test_single_oversize_file_part_rejected_midstream(self):
+        app, sink = _App(), _Sink()
+        rules = [(re.compile(r"^/up$"), 40_000, 2, 120)]
+        mw = security.UploadSizeLimitMiddleware(app, rules)
+        body = (b"--bnd\r\nContent-Disposition: form-data; "
+                b'name="f"; filename="a.txt"\r\n\r\n' + b"x" * 400 +
+                b"\r\n--bnd--\r\n")
+        with self.assertRaises(security.MultipartStructureRejected):
+            asyncio.run(mw(_scope([self._CT2, (b"content-length",
+                                               str(len(body)).encode())]),
+                           _static_receive([body]), sink))
+        # 中途拦截发生在「应用已调起、读体途中被掐」的流上（called=True 是
+        # 预期）；有意义的断言是没有完整响应产出、巨体未全量转发。
+        self.assertFalse(sink.messages)
+
+    def test_two_small_files_pass_per_file_cap(self):
+        app, sink = _App(), _Sink()
+        rules = [(re.compile(r"^/up$"), 40_000, 2, 120)]
+        mw = security.UploadSizeLimitMiddleware(app, rules)
+        part = (b"Content-Disposition: form-data; "
+                b'name="f"; filename="a.txt"\r\n\r\n' + b"x" * 40 +
+                b"\r\n")
+        body = b"--bnd\r\n" + part + b"--bnd\r\n" + part + b"--bnd--\r\n"
+        asyncio.run(mw(_scope([self._CT2, (b"content-length",
+                                           str(len(body)).encode())]),
+                       _static_receive([body]), sink))
+        self.assertTrue(app.called)
+        self.assertEqual(app.body, body)
+
+
+class CounterFileBytesUnitTests(unittest.TestCase):
+    """计数器单文件记账单元：只计 body 字节（part 头不计），逐字节滴灌。"""
+
+    _HEAD = (b"--bnd\r\nContent-Disposition: form-data; "
+             b'name="f"; filename="a.txt"\r\n\r\n')
+
+    def test_under_cap_passes(self):
+        counter = security._MultipartPartCounter(b"bnd", 2, max_file_bytes=4)
+        body = self._HEAD + b"xx\r\n--bnd--\r\n"
+        for i in range(len(body)):
+            counter.feed(body[i:i + 1])
+        self.assertEqual(counter.files, 1)
+
+    def test_over_cap_raises(self):
+        counter = security._MultipartPartCounter(b"bnd", 2, max_file_bytes=4)
+        body = self._HEAD + b"xxxxx\r\n--bnd--\r\n"
+        with self.assertRaises(security.MultipartStructureRejected):
+            for i in range(len(body)):
+                counter.feed(body[i:i + 1])
+
+
 if __name__ == "__main__":
     unittest.main()

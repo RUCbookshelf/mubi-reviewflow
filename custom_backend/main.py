@@ -673,19 +673,28 @@ _MULTI_CSV_MAX_FILES = 9
 _TRACE_BODY_MAX_BYTES = _TRACE_PACKAGE_MAX_BYTES + 1024 * 1024
 
 #: 预检规则表（模块级常量供回归测试核对：新增上传端点必须补对应规则）
-_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int, int]] = [
+_UPLOAD_SIZE_RULES: list[tuple[re.Pattern[str], int, int]
+                         | tuple[re.Pattern[str], int, int, int]] = [
+    # sec29·发现3：多文件规则的尾元素=单文件字节上限（与端点 check_size
+    # 的单文件语义一致——只是从「整读入内存后拒绝」提前到 receive 层流式
+    # 拒绝，诚实申报总 CL 的巨单文件不再可达端点）；单文件规则维持 3 元，
+    # 中间件缺省取=limit，行为不变。
     (re.compile(r"^/api/tasks/[^/]+/import-batch$"),
      _BATCH_IMPORT_MAX_FILES * MAX_UPLOAD_BYTES + 8 * _UPLOAD_SLACK_BYTES,
-     _BATCH_IMPORT_MAX_FILES),
+     _BATCH_IMPORT_MAX_FILES,
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/tasks/[^/]+/screening-arbitrations$"),
      _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
-     _MULTI_CSV_MAX_FILES),
+     _MULTI_CSV_MAX_FILES,
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/merge/decisions$"),
      _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
-     _MULTI_CSV_MAX_FILES),
+     _MULTI_CSV_MAX_FILES,
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/coding/agreement$"),
      _MULTI_CSV_MAX_FILES * MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES,
-     _MULTI_CSV_MAX_FILES),
+     _MULTI_CSV_MAX_FILES,
+     MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES),
     (re.compile(r"^/api/tasks/[^/]+/import$"),
      MAX_UPLOAD_BYTES + _UPLOAD_SLACK_BYTES, 1),
     (re.compile(r"^/api/tasks/[^/]+/fulltext/[^/]+/upload$"),
