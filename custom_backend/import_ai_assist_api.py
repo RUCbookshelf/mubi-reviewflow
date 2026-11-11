@@ -55,6 +55,19 @@
   硬闸拒绝（409 ``ai.decision_key_not_allowed``）。
 - 审计行新增 ``model_kind``（llm/decision），决策两场景用独立提示词版本
   ``import-ai-assist-decision/v1`` / ``import-ai-assist-merge-decision/v1``。
+
+2.1.5 aiux G（2026-11-12）双源交叉验证（按请求开关，缺省关=零行为变化）：
+- ``AssistIn.cross_check``（缺省 False）：True 且主解析钥匙为 llm 时，
+  ``duplicate_group`` 条目另用**第二独立源**同题出站——任务共享 llm 槽钥匙
+  （与主钥匙 ``(provider, base_url)`` 须不同，同端点视同没有第二源）。
+- 两源合成：一致（同为 same 或同为 different）→ 结论不变、置信度
+  ``min(1.0, max(c1,c2)+0.1)``；不一致 → ``unsure`` + ``degraded`` +
+  ``cross_check_disagree``。无有效第二源 → ``cross_check_unavailable``（不
+  降级）；第二源调用失败 → ``cross_check_second_failed``（照主源结果，不降
+  级，且不计入主钥匙连败停机）。decision 钥匙为单源体系，开关被忽略不警告。
+- 第二源走 ``ai_suggest_api._call_provider`` 同构路径（共用并发闸/出站闸/
+  钉扎/读帽，format 用第二源自己的 ``format_of``）；审计行记合成后的
+  verdict/confidence/warnings，``model`` 字段保持主源。
 """
 from __future__ import annotations
 
@@ -996,6 +1009,11 @@ class AssistIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # 上限 1000 只为挡住异常载荷；产品上限 MAX_ITEMS_PER_REQUEST=20 走 400 结构化口径。
     items: list[AssistItem] = Field(min_length=1, max_length=1000)
+    # aiux G（2026-11-12）双源交叉验证开关：缺省 False=字节级行为不变；True 且
+    # 主解析钥匙为 llm 时，duplicate_group 条目另用任务共享 llm 槽钥匙（与主
+    # 钥匙 provider+base_url 须不同）同题出站并合成结论。decision 钥匙单源
+    # 体系，开关被忽略（不警告）。
+    cross_check: bool = False
 
 
 class AssistSettingsIn(BaseModel):
@@ -1208,6 +1226,64 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                 body_out, api_key=credentials["key"], base_url=base_url,
                 model=model, timeout=OUTBOUND_TIMEOUT_SECONDS)
 
+        # 6-0) aiux G（2026-11-12）双源交叉验证的第二源解析（仅读钥匙柜，零
+        #      出站）：请求显式开启且主解析钥匙为 llm 时，取任务共享 llm 槽钥匙
+        #      作第二独立源；与主钥匙 (provider, base_url) 相同（同端点同厂牌）
+        #      或槽缺失/形状非法 → 视同没有第二源（逐条 warning，不降级不出
+        #      错）。decision 钥匙为单源体系：开关直接忽略，不加载不警告。
+        second_credentials: dict | None = None
+        second_base_url = ""
+        second_model = ""
+        want_cross_check = bool(body.cross_check) and model_kind == ai_keys.KIND_LLM
+        if want_cross_check:
+            shared = ai_keys.load_shared_key(info.task_id, data_root,
+                                             kind=ai_keys.KIND_LLM)
+            if shared is not None:
+                try:
+                    shared_base = ai_keys.base_url_of(shared)
+                except ai_keys.KeyShapeError:
+                    shared_base = ""  # 存量记录 base_url 非法 → 视同无第二源
+                if shared_base and (
+                        (shared.get("provider") or "") != (credentials.get("provider") or "")
+                        or shared_base != base_url):
+                    second_credentials = shared
+                    second_base_url = shared_base
+                    second_model = (shared.get("model") or "").strip() or _FALLBACK_MODEL
+
+        def _apply_cross_check(suggestion: dict, user_message: str) -> None:
+            """G 第二源同题出站并就地合成（任何第二源问题都不降级主结果）。"""
+            if second_credentials is None:
+                # 无有效第二源：该条照常出结果，只追加机器可读提示。
+                suggestion["warnings"].append("cross_check_unavailable")
+                return
+            try:
+                reply = _call_provider(
+                    _SYSTEM_PROMPT, user_message, api_key=second_credentials["key"],
+                    base_url=second_base_url, model=second_model,
+                    timeout=OUTBOUND_TIMEOUT_SECONDS,
+                    format=ai_keys.format_of(second_credentials))
+                second = parse_reply(reply.get("content"), "duplicate_group")
+            except ProviderError:
+                # 第二源调用失败：照主源结果；不计入主钥匙连败停机判定
+                # （独立钥匙独立记账——主钥匙的停机只统计主钥匙的失败）。
+                suggestion["warnings"].append("cross_check_second_failed")
+                return
+            if (suggestion["verdict"] in ("same", "different")
+                    and suggestion["verdict"] == second["verdict"]):
+                # 两源一致（同为 same 或同为 different）：结论不变，置信度取
+                # 两源最大值再 +0.1（上限 1.0）。
+                confidences = [value for value in (suggestion["confidence"],
+                                                   second["confidence"])
+                               if value is not None]
+                suggestion["confidence"] = min(
+                    1.0, (max(confidences) if confidences else 0.0) + 0.1)
+                return
+            # 两源不一致（含第二源 unsure/解析失败形态）：主源结论撤回为 unsure
+            # 并降级（status='degraded' 由既有审计写入按 degraded 标记得出）。
+            suggestion["verdict"] = "unsure"
+            suggestion["degraded"] = True
+            suggestion["warnings"].append("cross_check_disagree")
+
         # 6) 逐条出站（短超时；失败逐条降级 unsure，连续失败即停止出站）。
         #    按钥匙的 kind 分派：llm → chat/completions + prompt 解析；
         #    decision → systemone + 结构化答案解析（统一输出形状）。metadata_diff
@@ -1347,6 +1423,7 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                 suggestion = _unsure("模型连续调用失败，已跳过该条以避免持续消耗额度。",
                                      ["provider_unavailable"])
             else:
+                primary_sent = True
                 try:
                     reply = _call(_SYSTEM_PROMPT, user_message)
                     suggestion = parse_reply(reply.get("content"), ref.kind)
@@ -1355,6 +1432,12 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                 except ProviderError:
                     suggestion = _unsure("模型调用失败，无法判断。", ["provider_error"])
                     consecutive_failures += 1
+                    primary_sent = False
+                # aiux G：双源交叉验证只作用于 llm 钥匙的 duplicate_group 条目，
+                # 且只在主源确实出站拿到结果后进行（主源失败/停机跳过时没有可
+                # 合成的主源结论，也不再为该条花第二源额度）。
+                if want_cross_check and ref.kind == "duplicate_group" and primary_sent:
+                    _apply_cross_check(suggestion, user_message)
             suggestion.update({
                 "batch_id": ref.batch_id,
                 "kind": ref.kind,

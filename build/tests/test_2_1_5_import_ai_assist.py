@@ -762,5 +762,502 @@ class StorageFailurePins(unittest.TestCase):
         self.assertEqual(self.audit_rows(), [])
 
 
+# ===========================================================================
+# 2.1.5 aiux G · 双源交叉验证（cross_check）红钉（2026-11-12；只在文件末尾
+# 追加新类，不改上方既有用例——「缺省关=字节级行为不变」本身是第一钉）。
+# ===========================================================================
+
+#: 第二源专用哨兵钥匙（与主源 FAKE_KEY 区分；并钉其绝不进任何响应/错误体）。
+SHARED_FAKE_KEY = "sk-shared-cross-987654321"
+
+REPLY_SECOND_SAME = json.dumps({
+    "verdict": "same", "confidence": 0.8,
+    "rationale_zh": "第二源：题名、作者与 DOI 一致，应为重复。",
+}, ensure_ascii=False)
+
+REPLY_SECOND_SAME_MID = json.dumps({
+    "verdict": "same", "confidence": 0.7,
+    "rationale_zh": "第二源：证据基本一致。",
+}, ensure_ascii=False)
+
+REPLY_SECOND_DIFFERENT = json.dumps({
+    "verdict": "different", "confidence": 0.85,
+    "rationale_zh": "第二源：期刊与年份不符，不像同一篇。",
+}, ensure_ascii=False)
+
+REPLY_SAME_MID = json.dumps({
+    "verdict": "same", "confidence": 0.75,
+    "rationale_zh": "题录大体一致。",
+}, ensure_ascii=False)
+
+#: Jev(systemone) 同形响应（decision 钥匙用例）：duplicate 概率 0.91、
+#: confidence 0.7 → 映射置信度取小 = 0.7。
+JEV_CROSS_SAME = {"model": "jev-latest",
+                  "answers": {"duplicate_verdict": {
+                      "type": "choice", "choice": "duplicate",
+                      "probabilities": {"duplicate": 0.91, "include": 0.06,
+                                         "unsure": 0.03},
+                      "confidence": 0.7}},
+                  "usage": {"input_tokens": 90, "output_tokens": 9}}
+
+
+class _SecondChatProbe(BaseHTTPRequestHandler):
+    """第二独立源探针（OpenAI 兼容形状）。
+
+    类属性与 _ModelProbe 分离——两探针的 received/replies 互不混流，才能分别
+    钉「主源出站了几次 / 第二源出站了几次」。``status`` 非 200 时直接回该
+    状态码（第二源 5xx 用例；经 _call_provider 的瞬时重试档，一次合成调用
+    会打到两次）。"""
+
+    replies: list[str] = []
+    received: list[dict] = []
+    status: int = 200
+
+    def do_POST(self):  # noqa: N802  BaseHTTPRequestHandler 约定
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        body = json.loads(raw.decode("utf-8", "replace") or "{}")
+        type(self).received.append({
+            "path": self.path,
+            "headers": {k.lower(): v for k, v in self.headers.items()},
+            "json": body,
+            "raw": raw.decode("utf-8", "replace"),
+        })
+        if type(self).status != 200:
+            self.send_response(type(self).status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        reply = type(self).replies.pop(0) if type(self).replies else REPLY_SECOND_SAME
+        payload = json.dumps({
+            "model": body.get("model") or "probe-model-2",
+            "choices": [{"message": {"content": reply}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):  # noqa: A003  静默探针日志
+        return
+
+
+class _JevCrossProbe(BaseHTTPRequestHandler):
+    """decision 钥匙用例的本地 Jev(systemone) 端点探针。"""
+
+    replies: list[dict] = []
+    received: list[dict] = []
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        type(self).received.append({
+            "path": self.path,
+            "json": json.loads(raw.decode("utf-8", "replace") or "{}"),
+        })
+        reply = type(self).replies.pop(0) if type(self).replies else JEV_CROSS_SAME
+        payload = json.dumps(reply, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):  # noqa: A003  静默探针日志
+        return
+
+
+class ImportAiCrossCheckTests(unittest.TestCase):
+    """aiux G：cross_check 双源交叉验证七钉。
+
+    ① 缺省关（字段缺省/显式 False）：双源都在也只调主源；② 双源一致 same →
+    verdict 不变、confidence=max(c1,c2)+0.1（上限 1.0）；③ 双源不一致 →
+    unsure+degraded+cross_check_disagree；④ 共享 llm 槽缺 → cross_check_
+    unavailable 不降级；⑤ 共享槽与个人同 provider+base_url → 视同无第二源；
+    ⑥ 第二源 5xx → 照主源结果+cross_check_second_failed，且不触发主源连败
+    停机；⑦ decision 钥匙单源体系：cross_check=true 与 false 行为全等。
+    """
+
+    @classmethod
+    def _auth(cls, index=0):
+        return {"Authorization": "Bearer " + cls.users[index]["token"]}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        cls.client.__enter__()
+        cls.users = []
+        for i in range(3):
+            user = auth_mod.create_user(f"r215gcross{i}@example.test",
+                                        "R215G-Cross-2026")
+            cls.users.append({"user_id": user["id"], "username": user["username"],
+                              "token": auth_mod.create_access_token(
+                                  user["id"], user["username"])})
+        # 与 ImportAIAssistApiTests 同款模板库（来源/批次/文件静态种子）。
+        cls._slug = tasks_mod.slugify_screener(cls.users[0]["username"])
+        template = cls.client.post("/api/tasks", json={"name": "import-ai-cross-tpl"},
+                                   headers=cls._auth(0)).json()["task_id"]
+        ctx0 = app.state.review_workflow.context(template, cls.users[0])
+        db_mod.init_db(ctx0.owner_db)
+        store.migrate(ctx0.owner_db)
+        with closing(wf.connect(ctx0.owner_db)) as conn, conn:
+            conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,?,?)",
+                         ("s", "01-Wiley.ris", "01-wiley.ris", 1, "now"))
+            conn.execute("INSERT INTO workflow_import_batches VALUES(?,?,?,?,?,?,?)",
+                         ("b", str(cls.users[0]["user_id"]), "h", "batch", 1, "staged", "now"))
+            conn.execute("INSERT INTO workflow_import_files VALUES(?,?,?,?,?)",
+                         ("b", 0, "01-Wiley.ris", "d", "s"))
+        cls._template_db_bytes = Path(ctx0.owner_db).read_bytes()
+
+    @classmethod
+    def tearDownClass(cls):
+        # 注意：模块级 fixture.cleanup() 由文件里第一个类负责（同 StorageFailurePins）。
+        cls.client.__exit__(None, None, None)
+
+    def setUp(self):
+        os.environ.pop("REVIEWFLOW_AI_KEY", None)
+        os.environ.pop("REVIEWFLOW_AI_MODEL_KIND", None)
+        # 本地探针端点（127.0.0.1）= 本地模型语义：ai_keys 的回环例外按 desktop
+        # 模式放行（sec29 F-5 起 server 模式拦截回环/私网 base_url）；只钉
+        # ai_keys 的模式判定，其余 server 行为不受影响。
+        _mode = mock.patch.object(ai_keys, "_server_mode", lambda: False)
+        _mode.start()
+        self.addCleanup(_mode.stop)
+        for user in self.users:
+            ai_keys.delete_personal_key(user["user_id"], DATA_ROOT)
+        _ModelProbe.received = []
+        _ModelProbe.replies = []
+        _SecondChatProbe.received = []
+        _SecondChatProbe.replies = []
+        _SecondChatProbe.status = 200
+        _JevCrossProbe.received = []
+        _JevCrossProbe.replies = []
+        self.task = self.client.post("/api/tasks", json={"name": self._testMethodName},
+                                     headers=self._auth(0)).json()["task_id"]
+        info = tasks_mod.find_task(self.task, DATA_DIR)
+        self.db = info.dir / (self._slug + ".db")
+        Path(self.db).write_bytes(self._template_db_bytes)
+        self.base = f"/api/tasks/{self.task}/import-review/ai-assist"
+
+    # -- 种子与夹具（与既有类同款） -----------------------------------------
+
+    def seed(self, *, metadata: bool = False) -> None:
+        """一组待审重复候选 c1（可选拖一条元数据差异提案 m1）。"""
+        with closing(wf.connect(self.db)) as conn, conn:
+            for key in ("r1", "r2"):
+                article = _article(key, title=f"Synthetic {key} therapy trial")
+                conn.execute(
+                    "INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key, "s", key, 1, "01-Wiley.ris", json.dumps(article), json.dumps(article),
+                     key, key, None, None, "new", "staged", "now"))
+                conn.execute("INSERT INTO workflow_import_members VALUES(?,?,?)", ("b", key, 0))
+            conn.execute(
+                "INSERT INTO workflow_import_candidates(id,signature,kind,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)", ("c1", "sig-c1", "title", "pending", "now", "now"))
+            for key in ("r1", "r2"):
+                conn.execute("INSERT INTO workflow_import_candidate_members VALUES(?,?,?)",
+                             ("c1", "record", key))
+            if metadata:
+                incoming = _article("m1", title="Synthetic m1 therapy trial",
+                                    journal="J New", doi="10.test/a")
+                before = _article("EXIST", title="Synthetic m1 therapy trial",
+                                  journal="J Old", doi="10.test/a")
+                conn.execute(
+                    "INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("m1", "s", "m1", 2, "01-Wiley.ris", json.dumps(incoming),
+                     json.dumps(incoming), "m1", "m1", "EXIST", None, "new", "staged", "now"))
+                conn.execute("INSERT INTO workflow_import_members VALUES(?,?,?)", ("b", "m1", 0))
+                conn.execute(
+                    "INSERT INTO workflow_import_metadata(record_id,canonical_key,before_json,incoming_json) "
+                    "VALUES(?,?,?,?)", ("m1", "EXIST", json.dumps(before), json.dumps(incoming)))
+
+    def seed_second_duplicate_group(self) -> None:
+        """第二组重复候选 c2（第二源连败不触发主源停机用例需要两组）。"""
+        with closing(wf.connect(self.db)) as conn, conn:
+            for key in ("r3", "r4"):
+                article = _article(key, title=f"Synthetic {key} therapy trial")
+                conn.execute(
+                    "INSERT INTO workflow_source_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key, "s", key, 1, "01-Wiley.ris", json.dumps(article), json.dumps(article),
+                     key, key, None, None, "new", "staged", "now"))
+                conn.execute("INSERT INTO workflow_import_members VALUES(?,?,?)", ("b", key, 0))
+            conn.execute(
+                "INSERT INTO workflow_import_candidates(id,signature,kind,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)", ("c2", "sig-c2", "title", "pending", "now", "now"))
+            for key in ("r3", "r4"):
+                conn.execute("INSERT INTO workflow_import_candidate_members VALUES(?,?,?)",
+                             ("c2", "record", key))
+
+    @staticmethod
+    def _spawn(handler) -> str:
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        # 由测试方法自行挂 cleanup（本类不依赖实例探针顺序）。
+        return server
+
+    def probe(self) -> str:
+        server = self._spawn(_ModelProbe)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/v1"
+
+    def second_probe(self) -> str:
+        server = self._spawn(_SecondChatProbe)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/v1"
+
+    def jev_probe(self) -> str:
+        server = self._spawn(_JevCrossProbe)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def save_key(self, base_url: str) -> None:
+        """主源：个人 llm 钥匙（openai 兼容探针端点）。"""
+        response = self.client.put(
+            "/api/ai/key",
+            json={"provider": "openai", "key": FAKE_KEY, "model": "probe-model",
+                  "base_url": base_url},
+            headers=self._auth(0))
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def save_decision_key(self, base_url: str) -> None:
+        """decision 钥匙（systemone 协议；⑦ 单源体系用例）。"""
+        response = self.client.put(
+            "/api/ai/key",
+            json={"provider": "typesafe", "key": FAKE_KEY, "kind": "decision",
+                  "model": "jev-latest", "base_url": base_url},
+            headers=self._auth(0))
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def save_shared_llm(self, base_url: str, *, provider: str = "probe-second") -> None:
+        """第二源：任务共享 llm 槽钥匙（直写保险柜，与主源不同端点）。"""
+        ai_keys.save_shared_key(self.task, provider=provider, key=SHARED_FAKE_KEY,
+                                base_url=base_url, model="probe-model-2",
+                                kind="llm", data_root=DATA_ROOT)
+
+    def enable(self) -> None:
+        settings = self.client.get(f"{self.base}/settings", headers=self._auth(0)).json()
+        response = self.client.put(
+            f"{self.base}/settings",
+            json={"expected_version": settings["version"], "enabled": True},
+            headers=self._auth(0))
+        self.assertEqual(response.status_code, 200, response.text)
+
+    @staticmethod
+    def duplicate_item(item_id: str = "c1") -> dict:
+        return {"batch_id": "b", "kind": "duplicate_group", "item_id": item_id}
+
+    @staticmethod
+    def metadata_item(item_id: str = "m1") -> dict:
+        return {"batch_id": "b", "kind": "metadata_diff", "item_id": item_id}
+
+    def ask(self, items, *, cross_check: bool | None = None):
+        body = {"items": items}
+        if cross_check is not None:
+            body["cross_check"] = cross_check
+        return self.client.post(f"{self.base}", json=body, headers=self._auth(0))
+
+    def audit_rows(self) -> list[dict]:
+        with closing(wf.connect(self.db, read_only=True)) as conn:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "import_ai_suggestions" not in tables:
+                return []
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM import_ai_suggestions ORDER BY id")]
+
+    def _both_sources(self) -> tuple[str, str]:
+        """主源（个人 llm）+ 第二源（共享 llm 槽，异 provider 异端点）就位。"""
+        primary = self.probe()
+        second = self.second_probe()
+        self.save_key(primary)
+        self.save_shared_llm(second)
+        self.enable()
+        return primary, second
+
+    # -- ① 缺省关：只调主源 -------------------------------------------------
+
+    def test_cross_check_off_calls_primary_only(self):
+        self.seed()
+        self._both_sources()
+        # 字段缺省（老客户端载荷形状）与显式 False 都必须字节级等价：零第二源
+        # 出站、结果不带任何 cross_* 痕迹。
+        first = self.ask([self.duplicate_item()])
+        self.assertEqual(first.status_code, 200, first.text)
+        second = self.ask([self.duplicate_item()], cross_check=False)
+        self.assertEqual(second.status_code, 200, second.text)
+        for response in (first, second):
+            row = response.json()["suggestions"][0]
+            self.assertEqual(row["verdict"], "same")
+            self.assertEqual(row["confidence"], 0.92)
+            self.assertFalse(row["degraded"])
+            self.assertNotIn("cross_check_unavailable", row["warnings"])
+        self.assertEqual(first.json()["suggestions"][0],
+                         second.json()["suggestions"][0])
+        self.assertEqual(len(_ModelProbe.received), 2)  # 每次请求恰好 1 次主源
+        self.assertEqual(_SecondChatProbe.received, [])  # 第二源零出站
+        self.assertEqual({row["status"] for row in self.audit_rows()}, {"ok"})
+
+    # -- ② 双源一致：confidence 提升 max+0.1 上限 1.0 ------------------------
+
+    def test_cross_check_agree_same_boosts_confidence_capped(self):
+        self.seed()
+        self._both_sources()
+        # 0.92 vs 0.8 → min(1.0, max(0.92, 0.8)+0.1) = 1.0（触顶）。
+        _ModelProbe.replies = [REPLY_SAME]
+        _SecondChatProbe.replies = [REPLY_SECOND_SAME]
+        response = self.ask([self.duplicate_item()], cross_check=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()["suggestions"][0]
+        self.assertEqual(row["verdict"], "same")
+        self.assertEqual(row["confidence"], 1.0)
+        self.assertFalse(row["degraded"])
+        self.assertEqual(row["warnings"], [])
+        # 未触顶档：0.75 vs 0.7 → 0.75+0.1 = 0.85。
+        _ModelProbe.replies = [REPLY_SAME_MID]
+        _SecondChatProbe.replies = [REPLY_SECOND_SAME_MID]
+        again = self.ask([self.duplicate_item()], cross_check=True)
+        self.assertEqual(again.status_code, 200, again.text)
+        mid = again.json()["suggestions"][0]
+        self.assertEqual(mid["verdict"], "same")
+        self.assertAlmostEqual(mid["confidence"], 0.85, places=6)
+        self.assertFalse(mid["degraded"])
+        self.assertEqual(len(_ModelProbe.received), 2)
+        self.assertEqual(len(_SecondChatProbe.received), 2)
+        self.assertEqual({r["status"] for r in self.audit_rows()}, {"ok"})
+
+    # -- ③ 双源不一致：unsure + degraded + warning ---------------------------
+
+    def test_cross_check_disagree_degrades_to_unsure(self):
+        self.seed()
+        self._both_sources()
+        _ModelProbe.replies = [REPLY_SAME]
+        _SecondChatProbe.replies = [REPLY_SECOND_DIFFERENT]
+        response = self.ask([self.duplicate_item()], cross_check=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()["suggestions"][0]
+        self.assertEqual(row["verdict"], "unsure")
+        self.assertTrue(row["degraded"])
+        self.assertIn("cross_check_disagree", row["warnings"])
+        self.assertNotIn(SHARED_FAKE_KEY, response.text)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["verdict"], "unsure")
+        self.assertEqual(rows[0]["status"], "degraded")
+        self.assertIn("cross_check_disagree",
+                      json.loads(rows[0]["warnings_json"]))
+        # 审计 model 字段保持主源（第二源只参与合成，不抢署名）。
+        self.assertEqual(rows[0]["model"], "probe-model")
+        self.assertEqual(rows[0]["provider"], "openai")
+        self.assertEqual(len(_ModelProbe.received), 1)
+        self.assertEqual(len(_SecondChatProbe.received), 1)
+
+    # -- ④ 共享 llm 槽缺：unavailable 不降级 ---------------------------------
+
+    def test_cross_check_unavailable_without_shared_llm_slot(self):
+        self.seed(metadata=True)
+        primary = self.probe()
+        self.save_key(primary)  # 只有个人 llm 钥匙，任务共享 llm 槽未配
+        self.enable()
+        _ModelProbe.replies = [REPLY_SAME, REPLY_FIELD_PICKS]
+        response = self.ask([self.duplicate_item(), self.metadata_item()],
+                            cross_check=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        suggestions = {row["kind"]: row for row in response.json()["suggestions"]}
+        # 重复组：照常出结果，仅追加机器可读提示；不降级。
+        duplicate = suggestions["duplicate_group"]
+        self.assertEqual(duplicate["verdict"], "same")
+        self.assertEqual(duplicate["confidence"], 0.92)
+        self.assertFalse(duplicate["degraded"])
+        self.assertIn("cross_check_unavailable", duplicate["warnings"])
+        # metadata_diff 不在交叉范围：零 cross_* 痕迹。
+        metadata = suggestions["metadata_diff"]
+        self.assertNotIn("cross_check_unavailable", metadata["warnings"])
+        self.assertFalse(any(w.startswith("cross_check")
+                             for w in metadata["warnings"]))
+        self.assertEqual(len(_ModelProbe.received), 2)
+        self.assertEqual(_SecondChatProbe.received, [])
+        self.assertEqual({row["status"] for row in self.audit_rows()}, {"ok"})
+
+    # -- ⑤ 共享槽与个人同 provider+base_url：视同无第二源 ---------------------
+
+    def test_cross_check_same_endpoint_is_unavailable(self):
+        self.seed()
+        primary = self.probe()
+        self.save_key(primary)
+        # 共享 llm 槽指向与个人钥匙完全相同的 provider+base_url（同一探针）——
+        # 若误把同端点当第二源，会对同一端点翻倍出站且“交叉”毫无独立性。
+        self.save_shared_llm(primary, provider="openai")
+        self.enable()
+        response = self.ask([self.duplicate_item()], cross_check=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()["suggestions"][0]
+        self.assertEqual(row["verdict"], "same")
+        self.assertEqual(row["confidence"], 0.92)  # 无合成：原置信度原样
+        self.assertFalse(row["degraded"])
+        self.assertIn("cross_check_unavailable", row["warnings"])
+        self.assertEqual(len(_ModelProbe.received), 1)  # 只有主源那一次
+        self.assertEqual(_SecondChatProbe.received, [])
+
+    # -- ⑥ 第二源 5xx：照主源结果 + 不触发主源停机 ---------------------------
+
+    def test_cross_check_second_failure_keeps_primary_and_no_breaker(self):
+        self.seed()
+        self.seed_second_duplicate_group()
+        self._both_sources()
+        _SecondChatProbe.status = 500
+        response = self.ask([self.duplicate_item("c1"), self.duplicate_item("c2")],
+                            cross_check=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        for row in response.json()["suggestions"]:
+            self.assertEqual(row["verdict"], "same")
+            self.assertEqual(row["confidence"], 0.92)
+            self.assertFalse(row["degraded"])
+            self.assertIn("cross_check_second_failed", row["warnings"])
+        self.assertNotIn(SHARED_FAKE_KEY, response.text)
+        # 第二源失败绝不计入主钥匙连败停机：两组条目主源都真实出站
+        # （若误计入，第 2 条会被 provider_unavailable 跳过 → 只剩 1 次）。
+        self.assertEqual(len(_ModelProbe.received), 2)
+        # 第二源 500 属瞬时档：_call_provider 初次+重试 1 次 → 每条 2 次。
+        self.assertEqual(len(_SecondChatProbe.received), 4)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["status"] for row in rows}, {"ok"})
+
+    # -- ⑦ decision 钥匙：开关被忽略，行为与 false 全等 -----------------------
+
+    def test_cross_check_ignored_for_decision_key(self):
+        self.seed()
+        jev_base = self.jev_probe()
+        second = self.second_probe()
+        self.save_decision_key(jev_base)
+        # 共享 llm 槽在场也必须被无视（decision 单源体系）。
+        self.save_shared_llm(second)
+        self.enable()
+        enabled = self.ask([self.duplicate_item()], cross_check=True)
+        self.assertEqual(enabled.status_code, 200, enabled.text)
+        disabled = self.ask([self.duplicate_item()], cross_check=False)
+        self.assertEqual(disabled.status_code, 200, disabled.text)
+        # 全等：verdict/confidence/warnings/degraded 连同幂等 audit_id。
+        self.assertEqual(enabled.json()["suggestions"][0],
+                         disabled.json()["suggestions"][0])
+        row = enabled.json()["suggestions"][0]
+        self.assertEqual(row["verdict"], "same")
+        self.assertAlmostEqual(row["confidence"], 0.7, places=6)
+        self.assertFalse(row["degraded"])
+        self.assertFalse(any(w.startswith("cross_check") for w in row["warnings"]))
+        self.assertEqual(len(_JevCrossProbe.received), 2)  # 每次恰好 1 次 systemone
+        self.assertEqual({call["path"] for call in _JevCrossProbe.received},
+                         {"/v1/systemone"})
+        self.assertEqual(_SecondChatProbe.received, [])    # 共享 llm 槽零出站
+        self.assertEqual(_ModelProbe.received, [])
+        self.assertEqual(len(self.audit_rows()), 1)        # 同摘要幂等一行
+        self.assertEqual(self.audit_rows()[0]["model_kind"], "decision")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

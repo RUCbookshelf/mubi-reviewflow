@@ -231,6 +231,11 @@
       "AssistIn": {
         "additionalProperties": false,
         "properties": {
+          "cross_check": {
+            "default": false,
+            "title": "Cross Check",
+            "type": "boolean"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/AssistItem"
@@ -3429,6 +3434,18 @@
               }
             ],
             "title": "Base Url"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
           },
           "key": {
             "maxLength": 4096,
@@ -8456,8 +8473,25 @@
   "paths": {
     "/api/ai/key": {
       "delete": {
+        "description": "A 双槽：``?kind=llm|decision`` 只删该槽；缺省=全删（老客户端语义）。",
         "operationId": "delete_personal_key_api_ai_key_delete",
         "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",
@@ -8606,8 +8640,25 @@
     },
     "/api/ai/key/test": {
       "post": {
+        "description": "连通测试（aiux ①/D）：``?kind=llm|decision`` 测对应槽（env 同 kind 优先）；\n缺省=env 或首个已配置槽（老行为）。按 D 记账：成功刷 last_used/清连败/\n计数+1/累计 tokens；失败连败+1（钥匙健康横幅数据源）。",
         "operationId": "test_personal_key_api_ai_key_test_post",
         "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",
@@ -8650,6 +8701,55 @@
           }
         },
         "summary": "Test Personal Key"
+      }
+    },
+    "/api/ai/providers": {
+      "get": {
+        "description": "厂商目录（aiux ②）：内置静态快照 + 本版后端支持的 wire 格式声明——\n前端向导据此做 厂商∩后端 格式门控（未支持的格式置灰并注明）。",
+        "operationId": "ai_provider_catalog_api_ai_providers_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ai Provider Catalog Api Ai Providers Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ai Provider Catalog"
       }
     },
     "/api/analysis/effect-estimators": {
@@ -10358,6 +10458,7 @@
     },
     "/api/tasks/{task_id}/ai-suggest/shared-key": {
       "delete": {
+        "description": "A 双槽：``?kind=llm|decision`` 只删该槽；缺省=全删（老语义）。",
         "operationId": "delete_shared_key_api_tasks__task_id__ai_suggest_shared_key_delete",
         "parameters": [
           {
@@ -10367,6 +10468,22 @@
             "schema": {
               "title": "Task Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
             }
           },
           {
@@ -10531,6 +10648,80 @@
           }
         },
         "summary": "Put Shared Key"
+      }
+    },
+    "/api/tasks/{task_id}/ai-suggest/shared-key/test": {
+      "post": {
+        "description": "E（用户裁定 2026-11-12）：共享钥匙连通测试（owner-only，口径同个人\n/test——按 kind 测对应槽，缺省=首个已配置槽；结果按 D 记账）。",
+        "operationId": "test_shared_key_api_tasks__task_id__ai_suggest_shared_key_test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Test Shared Key Api Tasks  Task Id  Ai Suggest Shared Key Test Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Shared Key"
       }
     },
     "/api/tasks/{task_id}/ai-suggest/status": {
@@ -26620,6 +26811,86 @@
         "summary": "Assist"
       }
     },
+    "/api/tasks/{task_id}/import-review/ai-assist/audit/export": {
+      "get": {
+        "description": "B 审计导出（参与者可读；CSV/JSON 附件；format 非法 → 422）。",
+        "operationId": "assist_audit_export_api_tasks__task_id__import_review_ai_assist_audit_export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Format",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "batch_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Batch Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assist Audit Export"
+      }
+    },
     "/api/tasks/{task_id}/import-review/ai-assist/audit/{audit_id}": {
       "get": {
         "description": "审计导出：逐字段可查 rule_pick / ai_pick / human_final（参与者可读）。\n\n``human_final`` 由第一段留痕表 ``workflow_import_field_merges`` 经\n``ai_suggestion_id``（= 本审计行 id 的字符串）关联得出；该组尚未被\n人工确认时 ``executed=false`` 且 ``human_final=null``。",
@@ -26685,6 +26956,64 @@
           }
         },
         "summary": "Assist Audit"
+      }
+    },
+    "/api/tasks/{task_id}/import-review/ai-assist/scorecard": {
+      "get": {
+        "description": "C 记分卡（参与者可读；纯只读聚合，绝不写库）。",
+        "operationId": "assist_scorecard_api_tasks__task_id__import_review_ai_assist_scorecard_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Assist Scorecard Api Tasks  Task Id  Import Review Ai Assist Scorecard Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assist Scorecard"
       }
     },
     "/api/tasks/{task_id}/import-review/ai-assist/settings": {

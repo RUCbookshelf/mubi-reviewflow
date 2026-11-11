@@ -592,10 +592,11 @@ def _save(path: Path, *, provider: str, key: str, base_url: str | None,
         "added_at": previous.get("added_at") if previous else _now_iso(),
         "last_used_at": previous.get("last_used_at") if previous else None,
         # D/H（用户裁定 2026-11-12）：出站健康与用量计数随记录持久化；
-        # 覆盖保存（换钥匙）即清零重计。
-        "consecutive_failures": previous.get("consecutive_failures", 0) if previous else 0,
-        "call_count": previous.get("call_count", 0) if previous else 0,
-        "total_tokens": previous.get("total_tokens") or 0 if previous else 0,
+        # PUT 即换钥匙（每次都带新 key）→ 计数一律清零重计，不继承旧钥匙的
+        # 健康与用量（F 代理交叉复核指出代码曾与本注释语义相反）。
+        "consecutive_failures": 0,
+        "call_count": 0,
+        "total_tokens": 0,
     }
     _atomic_write_0600(path, record)
     return record

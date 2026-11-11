@@ -1187,8 +1187,8 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             raise HTTPException(409, {"code": "ai_key_missing",
                                       "detail": "尚未配置任务共享 AI 钥匙。"})
         outcome_path = ai_keys.outcome_path_for(
-            "shared", kind=ai_keys.kind_of(record), task_id=info.task_id,
-            data_root=data_root)
+            "shared", kind=ai_keys.kind_of(record), user_id=user["user_id"],
+            task_id=info.task_id, data_root=data_root)
         started = time.monotonic()
         if ai_keys.kind_of(record) == ai_keys.KIND_DECISION:
             from custom_backend import decision_model_adapter as decision

@@ -6769,6 +6769,8 @@ for module_name, register_name, dependencies in [
     ("rob_shared_api", "register_rob_shared_routes",
      (app, require_user, _task_or_404, _shared_rob_db, _coding_authorize,
       _rob_contract_error)),
+    # 2.1.5 aiux 波 B/C：导入复核 AI 助手审计导出 + 记分卡（纯只读，参与者可读）。
+    ("import_ai_report_api", "register_import_ai_report_routes", (app, require_user, _task_or_404)),
 ]:
     route_count = len(app.router.routes)
     try:
