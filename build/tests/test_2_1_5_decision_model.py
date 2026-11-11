@@ -446,13 +446,15 @@ class DecisionModelTests(unittest.TestCase):
         # 显式 decision：写入并回读。
         response = self.save_decision_key()
         self.assertEqual(response.json()["kind"], "decision")
-        self.assertEqual(self.client.get("/api/ai/key", headers=self._auth(0)
-                                         ).json()["kind"], "decision")
-        # 不带 kind（旧客户端）→ 默认 llm，既有行为不变。
+        # aiux A（2026-11-12）：GET 回双槽视图——decision 槽即存即读。
+        slots = self.client.get("/api/ai/key", headers=self._auth(0)).json()
+        self.assertEqual(slots["decision"]["kind"], "decision")
+        # 不带 kind（旧客户端）→ 默认 llm 落 llm 槽；双槽并存（A：不再互相覆盖）。
         self.client.put("/api/ai/key", json={"provider": "openai", "key": FAKE_KEY},
                         headers=self._auth(0))
-        self.assertEqual(self.client.get("/api/ai/key", headers=self._auth(0)
-                                         ).json()["kind"], "llm")
+        slots = self.client.get("/api/ai/key", headers=self._auth(0)).json()
+        self.assertEqual(slots["llm"]["kind"], "llm")
+        self.assertEqual(slots["decision"]["kind"], "decision")
         # 非法 kind → 422（pydantic Literal），且不落盘。
         response = self.client.put("/api/ai/key", json={
             "provider": "openai", "key": FAKE_KEY, "kind": "bogus"},
@@ -470,15 +472,18 @@ class DecisionModelTests(unittest.TestCase):
         self.assertEqual(ai_keys.kind_of(ai_keys.load_personal_key(
             self.users[0]["user_id"], DATA_ROOT)), "llm")
         self.assertEqual(self.client.get("/api/ai/key", headers=self._auth(0)
-                                         ).json()["kind"], "llm")
+                                         ).json()["llm"]["kind"], "llm")
 
     def test_env_override_can_be_decision_kind(self):
         os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
         os.environ["REVIEWFLOW_AI_MODEL_KIND"] = "decision"
         self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_KEY", None)
         self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_MODEL_KIND", None)
-        self.assertEqual(self.client.get("/api/ai/key", headers=self._auth(0)
-                                         ).json()["kind"], "decision")
+        # aiux A：env 钥匙占其 kind 槽（decision），llm 槽如实为空。
+        slots = self.client.get("/api/ai/key", headers=self._auth(0)).json()
+        self.assertEqual(slots["decision"]["kind"], "decision")
+        self.assertEqual(slots["decision"]["source"], "env")
+        self.assertFalse(slots["llm"]["configured"])
         self.assertEqual(ai_keys.kind_of(ai_keys.env_key()), "decision")
         # 非法环境值 → 读作 llm（读路径绝不抛错）。
         os.environ["REVIEWFLOW_AI_MODEL_KIND"] = "not-a-kind"
@@ -737,11 +742,13 @@ class DecisionModelTests(unittest.TestCase):
         response = self.client.post(self.coding, json={
             "zotero_key": "A1", "field_ids": ["study_design"]},
             headers=self._auth(0))
-        self.assertEqual(response.status_code, 409, response.text)
-        detail = response.json()["detail"]
-        self.assertEqual(detail["code"], "ai_decision_key_not_allowed")
-        self.assertEqual(detail["message_key"], "ai.decision_key_not_allowed")
-        self.assertEqual(detail["params"]["endpoint"], "coding/ai-suggestions")
+        # aiux A（2026-11-12）语义：llm 场景只取 llm 槽——decision 槽不算
+        # 「越界滥用」而是「无 llm 钥匙」→ 200 明确 disabled 降级（零出站），
+        # 409 越界闸保留给 env decision 钥匙（见下一测 env 段）。
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "disabled")
+        self.assertEqual(body["code"], "ai_key_missing")
         self.assertNotIn(FAKE_KEY, response.text)
 
     def test_decision_key_rejected_on_coding_suggestions_shared_and_env(self):
@@ -756,9 +763,10 @@ class DecisionModelTests(unittest.TestCase):
         response = self.client.post(self.coding, json={
             "zotero_key": "A1", "field_ids": ["study_design"]},
             headers=self._auth(0))
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["detail"]["code"], "ai_decision_key_not_allowed")
-        # 环境变量 decision 钥匙同样被拒。
+        # aiux A：共享 decision 槽对 llm 场景同样按「无 llm 钥匙」降级（200 零出站）。
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["code"], "ai_key_missing")
+        # 环境变量 decision 钥匙覆盖一切槽位，仍走 409 越界硬闸（闸的存留证明）。
         self.client.delete(f"{self.suggest_base}/shared-key", headers=self._auth(0))
         os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
         os.environ["REVIEWFLOW_AI_MODEL_KIND"] = "decision"
@@ -822,6 +830,8 @@ class DecisionModelTests(unittest.TestCase):
                                headers=self._auth(0)).json()
         self.assertEqual(view["model_kind"], "decision")
         # llm 钥匙同一端点 → model_kind=llm、旧 prompt_version（零回归）。
+        # aiux A：双槽并存→先删 decision 槽再配 llm（resolve 的 decision 优先口径）。
+        ai_keys.delete_personal_key(self.users[0]["user_id"], DATA_ROOT, kind="decision")
         self.save_llm_key(self.chat_probe())
         _ChatProbe.replies = [REPLY_LLM_SAME]
         response = self.ask([self.duplicate_item()])
@@ -923,14 +933,14 @@ class DecisionModelTests(unittest.TestCase):
         # b) HTTP 端点（PUT 不带 base_url → GET 元数据回读）。
         self.save_decision_key()  # base_url=None
         meta = self.client.get("/api/ai/key", headers=self._auth(0)).json()
-        self.assertEqual(meta["kind"], "decision")
-        self.assertEqual(meta["base_url"], "https://api.typesafe.ai")
+        self.assertEqual(meta["decision"]["kind"], "decision")
+        self.assertEqual(meta["decision"]["base_url"], "https://api.typesafe.ai")
         # d) llm 钥匙缺省回归：不填 base_url 仍是 OpenAI 兼容缺省（既有行为）。
         #    （在 env 覆盖之前做——GET /api/ai/key 的 env 记录优先于文件。）
         self.client.put("/api/ai/key", json={"provider": "openai", "key": FAKE_KEY},
                         headers=self._auth(0))
         self.assertEqual(self.client.get("/api/ai/key", headers=self._auth(0)
-                                         ).json()["base_url"], "https://api.openai.com/v1")
+                                         ).json()["llm"]["base_url"], "https://api.openai.com/v1")
         # c) 环境变量路径：REVIEWFLOW_AI_KEY + KIND=decision（无 BASE_URL）。
         os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
         os.environ["REVIEWFLOW_AI_MODEL_KIND"] = "decision"
@@ -987,6 +997,8 @@ class DecisionModelTests(unittest.TestCase):
             "metadata_diff": None,
             "merge_conflict": "import-ai-assist-merge-decision/v1"})
         # llm 钥匙：顶层与行级回到 LLM 版本（零回归）。
+        # aiux A：双槽并存→先删 decision 槽再配 llm（resolve 的 decision 优先口径）。
+        ai_keys.delete_personal_key(self.users[0]["user_id"], DATA_ROOT, kind="decision")
         self.save_llm_key(self.chat_probe())
         body = self.ask([self.duplicate_item()]).json()
         self.assertEqual(body["model_kind"], "llm")

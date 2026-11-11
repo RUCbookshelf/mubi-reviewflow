@@ -55,7 +55,8 @@ FAKE_CONTENT = json.dumps({
 
 def fake_generate(content=FAKE_CONTENT):
     """返回拟真的 OpenAI 兼容响应（零联网）。"""
-    def _generate(system, user, *, api_key, base_url, model, timeout=60.0):
+    def _generate(system, user, *, api_key, base_url, model, timeout=60.0,
+                  format="openai_chat"):
         assert api_key == FAKE_KEY, "出站必须携带保险柜里的钥匙"
         return {"content": content, "usage": {"prompt_tokens": 100, "completion_tokens": 20},
                 "model": model}
@@ -153,14 +154,16 @@ class AISuggestTests(unittest.TestCase):
         self.assertNotIn(FAKE_KEY, r.text)  # 永不回显明文
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertNotIn(FAKE_KEY, r.text)
-        self.assertEqual(r.json()["provider"], "openai")
+        # aiux A（2026-11-12）：GET 回双槽视图（llm/decision 各一），本测试存的是 llm 槽。
+        self.assertEqual(r.json()["llm"]["provider"], "openai")
         # 跨用户隔离：另一账号读不到（无读取他人钥匙路径）。
         r = self.client.get("/api/ai/key", headers=self.auth(1))
         self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["configured"])
-        # 保险柜位置：{DATA_DIR}/.ai_keys/personal_{user_id}.json，绝不在任何任务目录。
+        self.assertFalse(r.json()["llm"]["configured"])
+        # 保险柜位置：{DATA_DIR}/.ai_keys/personal_{user_id}_llm.json（A 按槽落盘），
+        # 绝不在任何任务目录。
         vault = DATA_ROOT / ".ai_keys"
-        path = vault / f"personal_{self.users[0]['user_id']}.json"
+        path = vault / f"personal_{self.users[0]['user_id']}_llm.json"
         self.assertTrue(path.is_file())
         tasks_root = DATA_ROOT / "tasks"
         for task_dir in (tasks_root.iterdir() if tasks_root.is_dir() else []):
@@ -169,7 +172,7 @@ class AISuggestTests(unittest.TestCase):
         # 删除后优雅降级。
         r = self.client.delete("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["configured"])
+        self.assertFalse(r.json()["llm"]["configured"])
         self.assertFalse(path.exists())
 
     def test_short_key_masked_fully(self):
@@ -208,7 +211,7 @@ class AISuggestTests(unittest.TestCase):
         r = self.client.put(f"{self.base}/ai-suggest/shared-key", json={
             "provider": "openai", "key": FAKE_KEY}, headers=self.auth(0))
         self.assertEqual(r.status_code, 200, r.text)
-        path = DATA_ROOT / ".ai_keys" / f"shared_{self.task}.json"
+        path = DATA_ROOT / ".ai_keys" / f"shared_{self.task}_llm.json"
         self.assertTrue(path.is_file())
         task_dir = app.state.review_workflow.context(self.task, self.users[0]).info.dir
         self.assertNotIn(".ai_keys", str(task_dir))
@@ -293,7 +296,7 @@ class AISuggestTests(unittest.TestCase):
         # 个人钥匙端点：未配置 -> 200 configured=false（无异常）。
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["configured"])
+        self.assertFalse(r.json()["llm"]["configured"])
         self.assertEqual(self.client.delete("/api/ai/key", headers=self.auth(0)).status_code, 200)
         # 任务未启用 -> 403 code ai_suggest_disabled（B4 §3）。
         r = self.suggestions()
@@ -318,8 +321,8 @@ class AISuggestTests(unittest.TestCase):
         os.environ["REVIEWFLOW_AI_KEY"] = FAKE_KEY
         self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_KEY", None)
         r = self.client.get("/api/ai/key", headers=self.auth(0))
-        self.assertTrue(r.json()["configured"])
-        self.assertEqual(r.json()["source"], "env")
+        self.assertTrue(r.json()["llm"]["configured"])
+        self.assertEqual(r.json()["llm"]["source"], "env")
         self.assertNotIn(FAKE_KEY, r.text)
 
     # -- 建议生成 ---------------------------------------------------------------
@@ -422,7 +425,8 @@ class AISuggestTests(unittest.TestCase):
         self.enable_task()
         self.put_personal_key()
 
-        def exploding(system, user, *, api_key, base_url, model, timeout=60.0):
+        def exploding(system, user, *, api_key, base_url, model, timeout=60.0,
+                      format="openai_chat"):
             raise ai_suggest_api.ProviderError(f"provider HTTP 401: invalid key {FAKE_KEY}", status=401)
 
         with mock.patch.object(ai_suggest_api, "_provider_generate", exploding):
@@ -583,8 +587,8 @@ class AISuggestTests(unittest.TestCase):
                 self.assertNotIn(FAKE_KEY.encode(), archive.read(name))
         # 保险柜文件本身存在且在数据目录根下（不在任务目录，天然不进任务导出/备份包）。
         vault = DATA_ROOT / ".ai_keys"
-        self.assertTrue((vault / f"personal_{self.users[0]['user_id']}.json").is_file())
-        self.assertTrue((vault / f"shared_{self.task}.json").is_file())
+        self.assertTrue((vault / f"personal_{self.users[0]['user_id']}_llm.json").is_file())
+        self.assertTrue((vault / f"shared_{self.task}_llm.json").is_file())
         task_dir = app.state.review_workflow.context(self.task, self.users[0]).info.dir
         for hidden in vault.iterdir():
             self.assertFalse(str(hidden).startswith(str(task_dir)))
@@ -686,14 +690,14 @@ class AISuggestTests(unittest.TestCase):
     def test_b9_f2_delete_failure_maps_503_and_key_remains(self):
         """B9 F2：删除失败绝不假报成功——503 + 钥匙仍在 + GET 仍 configured。"""
         self.put_personal_key()
-        path = DATA_ROOT / ".ai_keys" / f"personal_{self.users[0]['user_id']}.json"
+        path = DATA_ROOT / ".ai_keys" / f"personal_{self.users[0]['user_id']}_llm.json"
         self.assertTrue(path.is_file())
         with mock.patch.object(Path, "unlink", side_effect=PermissionError("locked")):
             r = self.client.delete("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 503, r.text)
         self.assertEqual(r.json()["detail"]["code"], "ai_key_delete_failed")
         self.assertTrue(path.is_file())
-        self.assertTrue(self.client.get("/api/ai/key", headers=self.auth(0)).json()["configured"])
+        self.assertTrue(self.client.get("/api/ai/key", headers=self.auth(0)).json()["llm"]["configured"])
 
     def test_b9_f8_prefs_field_subset_enforced_server_side(self):
         """B9 F8：三级白名单服务端强制——偏好子集外的字段 403。"""
@@ -1099,9 +1103,9 @@ class AISuggestTests(unittest.TestCase):
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        self.assertTrue(body["configured"])
+        self.assertTrue(body["llm"]["configured"])
         # 回传原始串（本人的配置）便于排查重存，而非 500/静默丢配置。
-        self.assertEqual(body["base_url"], "https://legacy.example/v1\r\nX-Injected: 1")
+        self.assertEqual(body["llm"]["base_url"], "https://legacy.example/v1\r\nX-Injected: 1")
         self.assertNotIn(FAKE_KEY, r.text)
         # 出站类端点对同一存量记录映射 422（重存可修），而非 500。
         r = self.client.post("/api/ai/key/test", headers=self.auth(0))
@@ -1118,8 +1122,8 @@ class AISuggestTests(unittest.TestCase):
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        self.assertTrue(body["configured"])
-        self.assertEqual(body["source"], "env")
+        self.assertTrue(body["llm"]["configured"])
+        self.assertEqual(body["llm"]["source"], "env")
         self.assertNotIn(FAKE_KEY, r.text)
         r = self.client.post("/api/ai/key/test", headers=self.auth(0))
         self.assertEqual(r.status_code, 422, r.text)
@@ -1190,8 +1194,8 @@ class AISuggestTests(unittest.TestCase):
             "last_used_at": None}, ensure_ascii=False), encoding="utf-8")
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["configured"])
-        self.assertEqual(r.json()["base_url"], "http://[::1")
+        self.assertTrue(r.json()["llm"]["configured"])
+        self.assertEqual(r.json()["llm"]["base_url"], "http://[::1")
         r = self.client.post("/api/ai/key/test", headers=self.auth(0))
         self.assertEqual(r.status_code, 422, r.text)
         # env 变体：读取 200；出站类调用 422。
@@ -1201,8 +1205,8 @@ class AISuggestTests(unittest.TestCase):
         self.addCleanup(os.environ.pop, "REVIEWFLOW_AI_BASE_URL", None)
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["configured"])
-        self.assertEqual(r.json()["source"], "env")
+        self.assertTrue(r.json()["llm"]["configured"])
+        self.assertEqual(r.json()["llm"]["source"], "env")
         r = self.client.post("/api/ai/key/test", headers=self.auth(0))
         self.assertEqual(r.status_code, 422, r.text)
 
@@ -1216,9 +1220,9 @@ class AISuggestTests(unittest.TestCase):
         r = self.client.get("/api/ai/key", headers=self.auth(0))
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        self.assertTrue(body["configured"])
-        self.assertEqual(body["source"], "env")
-        self.assertEqual(body["model"], "m" * 150)
+        self.assertTrue(body["llm"]["configured"])
+        self.assertEqual(body["llm"]["source"], "env")
+        self.assertEqual(body["llm"]["model"], "m" * 150)
         self.assertNotIn(FAKE_KEY, r.text)
 
 
@@ -1257,7 +1261,8 @@ class AISuggestTests(unittest.TestCase):
                 (str(victim), _hashlib.sha256(buffer.getvalue()).hexdigest()))
         captured = {}
 
-        def spy_generate(system, user, *, api_key, base_url, model, timeout=60.0):
+        def spy_generate(system, user, *, api_key, base_url, model, timeout=60.0,
+                         format="openai_chat"):
             captured["user"] = user
             return {"content": json.dumps({}), "usage": {}, "model": model}
 
@@ -1305,7 +1310,8 @@ class AISuggestTests(unittest.TestCase):
                 (str(victim), _hashlib.sha256(buffer.getvalue()).hexdigest()))
         captured = {}
 
-        def spy_generate(system, user, *, api_key, base_url, model, timeout=60.0):
+        def spy_generate(system, user, *, api_key, base_url, model, timeout=60.0,
+                         format="openai_chat"):
             captured["user"] = user
             return {"content": json.dumps({}), "usage": {}, "model": model}
 

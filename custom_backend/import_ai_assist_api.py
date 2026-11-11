@@ -1036,7 +1036,8 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
         ai_settings = _load_settings(info)
         prefs = _load_prefs(info, user["username"])
         credentials, key_source = resolve_task_credentials(
-            info, ai_settings, prefs, user, data_root)
+            info, ai_settings, prefs, user, data_root,
+            kinds=(ai_keys.KIND_DECISION, ai_keys.KIND_LLM))
         model_kind = ai_keys.kind_of(credentials)
         fallback = (decision_model.DEFAULT_DECISION_MODEL
                     if model_kind == ai_keys.KIND_DECISION else _FALLBACK_MODEL)
@@ -1179,17 +1180,28 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
             # 自己的结构化 404。
             raise _storage_unavailable() from exc
 
-        def _touch_key() -> None:
-            if key_source == "personal":
-                ai_keys.touch_last_used(ai_keys.personal_path(
-                    user["user_id"], data_root))
-            else:
-                ai_keys.touch_last_used(ai_keys.shared_path(info.task_id, data_root))
+        def _touch_key(usage: dict | None = None) -> None:
+            # aiux D/H（2026-11-12）：成功出站记账（槽文件优先/旧扁平回落；
+            # usage 有则累计 tokens）。
+            path = ai_keys.outcome_path_for(
+                key_source or "", kind=ai_keys.kind_of(credentials),
+                user_id=user["user_id"], task_id=info.task_id, data_root=data_root)
+            if path is not None:
+                ai_keys.record_outcome(path, ok=True, usage=usage)
+
+        def _fail_key() -> None:
+            # aiux D：出站失败连败+1（钥匙健康横幅数据源；env 钥匙不落盘不记）。
+            path = ai_keys.outcome_path_for(
+                key_source or "", kind=ai_keys.kind_of(credentials),
+                user_id=user["user_id"], task_id=info.task_id, data_root=data_root)
+            if path is not None:
+                ai_keys.record_outcome(path, ok=False)
 
         def _call(system: str, message: str) -> dict:
             return _call_provider(system, message, api_key=credentials["key"],
                                   base_url=base_url, model=model,
-                                  timeout=OUTBOUND_TIMEOUT_SECONDS)
+                                  timeout=OUTBOUND_TIMEOUT_SECONDS,
+                                  format=ai_keys.format_of(credentials))
 
         def _call_decision(body_out: dict) -> dict:
             return decision_model.call_decision(
@@ -1247,6 +1259,7 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                             parsed = _merge_unsure_parsed(
                                 "模型调用失败，无法判断。", "provider_error")
                             consecutive_failures += 1
+                            _fail_key()
                     else:
                         try:
                             reply = _call(_MERGE_SYSTEM_PROMPT, user_message)
@@ -1259,6 +1272,7 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                             parsed = _merge_unsure_parsed(
                                 "模型调用失败，无法判断。", "provider_error")
                             consecutive_failures += 1
+                            _fail_key()
                 suggestion = merge_suggestion(payload, parsed)
                 suggestion.update({
                     "batch_id": ref.batch_id,
@@ -1316,6 +1330,7 @@ def register_import_ai_assist_routes(app, require_user, task_lookup, data_dir) -
                     except ProviderError:
                         suggestion = _unsure("模型调用失败，无法判断。", ["provider_error"])
                         consecutive_failures += 1
+                        _fail_key()
                 suggestion.update({
                     "batch_id": ref.batch_id,
                     "kind": ref.kind,

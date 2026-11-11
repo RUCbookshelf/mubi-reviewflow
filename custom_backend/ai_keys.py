@@ -47,24 +47,35 @@ __all__ = [
     "BaseUrlResolveError",
     "DECISION_DEFAULT_BASE_URL",
     "DEFAULT_BASE_URL",
+    "FORMAT_ANTHROPIC",
+    "FORMAT_OPENAI_CHAT",
+    "FORMAT_OPENAI_RESPONSES",
+    "FORMAT_SYSTEMONE",
+    "KEY_FORMATS",
     "KEY_KINDS",
     "KIND_DECISION",
     "KIND_LLM",
     "KeyShapeError",
     "base_url_of",
+    "default_format_for_kind",
     "delete_personal_key",
     "delete_shared_key",
     "env_key",
+    "format_of",
     "keys_dir",
     "kind_of",
     "load_personal_key",
     "load_shared_key",
     "mask_key",
+    "outcome_path_for",
     "personal_path",
+    "personal_slot_path",
     "pinned_outbound_base_url",
+    "record_outcome",
     "save_personal_key",
     "save_shared_key",
     "shared_path",
+    "shared_slot_path",
     "touch_last_used",
 ]
 
@@ -84,6 +95,25 @@ DECISION_DEFAULT_BASE_URL = "https://api.typesafe.ai"
 KIND_LLM = "llm"
 KIND_DECISION = "decision"
 KEY_KINDS = (KIND_LLM, KIND_DECISION)
+
+#: wire 格式（aiux ②·2026-11-12 用户裁定补齐后端双协议）：钥匙记录新增可选
+#: ``format`` 字段——同一 kind 下选择出站协议形态。缺省按 kind 落传统映射
+#: （llm→openai_chat、decision→systemone），存量记录无此字段读侧同映射，
+#: 字节级行为不变。
+FORMAT_OPENAI_CHAT = "openai_chat"
+FORMAT_OPENAI_RESPONSES = "openai_responses"
+FORMAT_ANTHROPIC = "anthropic"
+FORMAT_SYSTEMONE = "systemone"
+#: 各 kind 允许的格式集合（decision 固定 systemone——Jev 端点唯一协议）。
+KEY_FORMATS: dict[str, tuple[str, ...]] = {
+    KIND_LLM: (FORMAT_OPENAI_CHAT, FORMAT_OPENAI_RESPONSES, FORMAT_ANTHROPIC),
+    KIND_DECISION: (FORMAT_SYSTEMONE,),
+}
+
+
+def default_format_for_kind(kind: str) -> str:
+    """kind 的传统缺省格式（存量兼容的单一事实源）。"""
+    return FORMAT_SYSTEMONE if kind == KIND_DECISION else FORMAT_OPENAI_CHAT
 
 _KEY_RE = re.compile(r"^[^/\\\x00]{1,4096}$")
 _TASK_ID_RE = re.compile(r"^[^/\\\x00]{1,200}$")
@@ -146,6 +176,40 @@ def shared_path(task_id: str, data_root: Path | None = None) -> Path:
     if not _TASK_ID_RE.match(task_id or ""):
         raise KeyShapeError("task_id 含非法字符。")
     return keys_dir(data_root) / f"shared_{task_id}.json"
+
+
+def personal_slot_path(user_id: int, kind: str, data_root: Path | None = None) -> Path:
+    """A（用户裁定 2026-11-12）：个人钥匙按 kind 分槽——llm 与 decision 并存。
+
+    槽文件与旧扁平文件同目录同格式（仅文件名带 kind 后缀）；读取侧旧文件
+    按「kind 匹配则视作该槽」回落（存量用户零迁移零丢失），写入侧落槽文件
+    并在成功后中和同 kind 的旧扁平文件（防旧值继续被读到）。
+    """
+    if kind not in KEY_KINDS:
+        raise KeyShapeError("kind 须为 llm 或 decision。")
+    if type(user_id) is not int or user_id <= 0:
+        raise KeyShapeError("user_id 必须是正整数。")
+    return keys_dir(data_root) / f"personal_{user_id}_{kind}.json"
+
+
+def shared_slot_path(task_id: str, kind: str, data_root: Path | None = None) -> Path:
+    """共享钥匙同口径分槽（owner 可为任务同时配 llm 与 decision 两把）。"""
+    if kind not in KEY_KINDS:
+        raise KeyShapeError("kind 须为 llm 或 decision。")
+    if not _TASK_ID_RE.match(task_id or ""):
+        raise KeyShapeError("task_id 含非法字符。")
+    return keys_dir(data_root) / f"shared_{task_id}_{kind}.json"
+
+
+def _neutralize_legacy(base_path: Path, kind: str) -> None:
+    """槽写入成功后删除同 kind 的旧扁平文件（尽力而为，失败静默——读取侧
+    永远槽文件优先，旧文件残留只是不再被读到）。"""
+    record = _load(base_path)
+    if record is not None and kind_of(record) == kind:
+        try:
+            base_path.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +500,25 @@ def kind_of(record: dict | None) -> str:
     return text if text in KEY_KINDS else KIND_LLM
 
 
+def _clean_format(format_: str | None, kind: str) -> str:
+    """写入侧校验（aiux ②）：空=按 kind 传统缺省；须在该 kind 允许集内。"""
+    text = str(format_ or "").strip().lower()
+    if not text:
+        return default_format_for_kind(kind)
+    if text not in KEY_FORMATS[kind]:
+        allowed = "、".join(KEY_FORMATS[kind])
+        raise KeyShapeError(f"format 须为 {allowed}。")
+    return text
+
+
+def format_of(record: dict | None) -> str:
+    """读取侧归一（绝不抛错）：缺失/非法/与 kind 不符 → 该 kind 传统缺省。"""
+    record = record or {}
+    kind = kind_of(record)
+    text = str(record.get("format") or "").strip().lower()
+    return text if text in KEY_FORMATS.get(kind, ()) else default_format_for_kind(kind)
+
+
 def base_url_of(record: dict | None, *, dns_recheck: bool = True) -> str:
     """从钥匙记录取规范 base_url（缺省按记录的 kind 回落对应官方端点）。
 
@@ -495,7 +578,8 @@ def _load(path: Path) -> dict | None:
 
 
 def _save(path: Path, *, provider: str, key: str, base_url: str | None,
-          model: str | None, kind: str | None = None) -> dict:
+          model: str | None, kind: str | None = None,
+          format: str | None = None) -> dict:
     previous = _load(path)
     cleaned_kind = _clean_kind(kind)
     record = {
@@ -504,8 +588,14 @@ def _save(path: Path, *, provider: str, key: str, base_url: str | None,
         "base_url": _clean_base_url(base_url, kind=cleaned_kind),
         "model": _clean_model(model),
         "kind": cleaned_kind,
+        "format": _clean_format(format, cleaned_kind),
         "added_at": previous.get("added_at") if previous else _now_iso(),
         "last_used_at": previous.get("last_used_at") if previous else None,
+        # D/H（用户裁定 2026-11-12）：出站健康与用量计数随记录持久化；
+        # 覆盖保存（换钥匙）即清零重计。
+        "consecutive_failures": previous.get("consecutive_failures", 0) if previous else 0,
+        "call_count": previous.get("call_count", 0) if previous else 0,
+        "total_tokens": previous.get("total_tokens") or 0 if previous else 0,
     }
     _atomic_write_0600(path, record)
     return record
@@ -529,20 +619,58 @@ def _delete(path: Path) -> bool:
 
 def save_personal_key(user_id: int, *, provider: str, key: str,
                       base_url: str | None = None, model: str | None = "",
-                      kind: str | None = None,
+                      kind: str | None = None, format: str | None = None,
                       data_root: Path | None = None) -> dict:
-    """保存/覆盖本人钥匙（PUT 单向写入，无读取明文路径）。"""
-    return _save(personal_path(user_id, data_root), provider=provider, key=key,
-                 base_url=base_url, model=model, kind=kind)
+    """保存/覆盖本人钥匙（PUT 单向写入，无读取明文路径）。
+
+    A 双槽：按 kind 落对应槽文件；旧扁平文件同 kind 即在写成功后中和。
+    """
+    cleaned_kind = _clean_kind(kind)
+    record = _save(personal_slot_path(user_id, cleaned_kind, data_root),
+                   provider=provider, key=key, base_url=base_url, model=model,
+                   kind=cleaned_kind, format=format)
+    _neutralize_legacy(personal_path(user_id, data_root), cleaned_kind)
+    return record
 
 
-def load_personal_key(user_id: int, data_root: Path | None = None) -> dict | None:
-    """读本人钥匙记录（明文仅限服务进程内部使用）。"""
+def load_personal_key(user_id: int, data_root: Path | None = None,
+                      *, kind: str | None = None) -> dict | None:
+    """读本人钥匙记录（明文仅限服务进程内部使用）。
+
+    给定 kind → 只读该槽（槽文件优先；旧扁平文件 kind 匹配则回落视作该槽，
+    存量用户零迁移零丢失）；kind 缺省 → 旧单钥匙视图（llm 槽→decision 槽→
+    旧扁平文件），老调用方行为不变。
+    """
+    if kind is not None:
+        cleaned = _clean_kind(kind)
+        record = _load(personal_slot_path(user_id, cleaned, data_root))
+        if record is not None and kind_of(record) == cleaned:
+            return record
+        legacy = _load(personal_path(user_id, data_root))
+        return legacy if legacy is not None and kind_of(legacy) == cleaned else None
+    for candidate in KEY_KINDS:
+        record = _load(personal_slot_path(user_id, candidate, data_root))
+        if record is not None and kind_of(record) == candidate:
+            return record
     return _load(personal_path(user_id, data_root))
 
 
-def delete_personal_key(user_id: int, data_root: Path | None = None) -> bool:
-    return _delete(personal_path(user_id, data_root))
+def delete_personal_key(user_id: int, data_root: Path | None = None,
+                        *, kind: str | None = None) -> bool:
+    """删除本人钥匙：给定 kind → 只删该槽（含同 kind 旧扁平文件）；缺省 →
+    全删（A 之前的单钥匙语义——老客户端「删除钥匙」按钮）。"""
+    removed = False
+    if kind is not None:
+        cleaned = _clean_kind(kind)
+        removed = _delete(personal_slot_path(user_id, cleaned, data_root))
+        legacy = _load(personal_path(user_id, data_root))
+        if legacy is not None and kind_of(legacy) == cleaned:
+            removed = _delete(personal_path(user_id, data_root)) or removed
+        return removed
+    for candidate in KEY_KINDS:
+        removed = _delete(personal_slot_path(user_id, candidate, data_root)) or removed
+    removed = _delete(personal_path(user_id, data_root)) or removed
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -551,18 +679,49 @@ def delete_personal_key(user_id: int, data_root: Path | None = None) -> bool:
 
 def save_shared_key(task_id: str, *, provider: str, key: str,
                     base_url: str | None = None, model: str | None = "",
-                    kind: str | None = None,
+                    kind: str | None = None, format: str | None = None,
                     data_root: Path | None = None) -> dict:
-    return _save(shared_path(task_id, data_root), provider=provider, key=key,
-                 base_url=base_url, model=model, kind=kind)
+    """共享钥匙同口径分槽（owner 可为任务同时配 llm 与 decision 两把）。"""
+    cleaned_kind = _clean_kind(kind)
+    record = _save(shared_slot_path(task_id, cleaned_kind, data_root),
+                   provider=provider, key=key, base_url=base_url, model=model,
+                   kind=cleaned_kind, format=format)
+    _neutralize_legacy(shared_path(task_id, data_root), cleaned_kind)
+    return record
 
 
-def load_shared_key(task_id: str, data_root: Path | None = None) -> dict | None:
+def load_shared_key(task_id: str, data_root: Path | None = None,
+                    *, kind: str | None = None) -> dict | None:
+    """读共享钥匙（kind 语义同 :func:`load_personal_key`）。"""
+    if kind is not None:
+        cleaned = _clean_kind(kind)
+        record = _load(shared_slot_path(task_id, cleaned, data_root))
+        if record is not None and kind_of(record) == cleaned:
+            return record
+        legacy = _load(shared_path(task_id, data_root))
+        return legacy if legacy is not None and kind_of(legacy) == cleaned else None
+    for candidate in KEY_KINDS:
+        record = _load(shared_slot_path(task_id, candidate, data_root))
+        if record is not None and kind_of(record) == candidate:
+            return record
     return _load(shared_path(task_id, data_root))
 
 
-def delete_shared_key(task_id: str, data_root: Path | None = None) -> bool:
-    return _delete(shared_path(task_id, data_root))
+def delete_shared_key(task_id: str, data_root: Path | None = None,
+                      *, kind: str | None = None) -> bool:
+    """删除共享钥匙：给定 kind → 只删该槽；缺省 → 全删。"""
+    removed = False
+    if kind is not None:
+        cleaned = _clean_kind(kind)
+        removed = _delete(shared_slot_path(task_id, cleaned, data_root))
+        legacy = _load(shared_path(task_id, data_root))
+        if legacy is not None and kind_of(legacy) == cleaned:
+            removed = _delete(shared_path(task_id, data_root)) or removed
+        return removed
+    for candidate in KEY_KINDS:
+        removed = _delete(shared_slot_path(task_id, candidate, data_root)) or removed
+    removed = _delete(shared_path(task_id, data_root)) or removed
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -592,18 +751,58 @@ def env_key() -> dict | None:
         "model": os.environ.get(ENV_MODEL, "").strip(),
         # kind 与 model/base_url 同理透传归一：非法值读作 llm，读取路径绝不抛错。
         "kind": kind,
+        # aiux ②：env 钥匙同口径带缺省 format（不落盘、不可改——env 单钥匙）。
+        "format": default_format_for_kind(kind),
         "added_at": None,
         "last_used_at": None,
     }
 
 
 def touch_last_used(path: Path) -> None:
-    """成功出站后更新 last_used_at（读改写 + 原子替换；失败静默）。"""
+    """成功出站后更新 last_used_at（读改写 + 原子替换；失败静默）。
+
+    aiux D/H 起改由 :func:`record_outcome` 承担（连败计数+用量计数）；
+    本函数保留为最薄兼容层（等价 ok=True、无用量）。
+    """
+    record_outcome(path, ok=True)
+
+
+def record_outcome(path: Path, *, ok: bool, usage: dict | None = None) -> None:
+    """D/H（用户裁定 2026-11-12）：出站结果记账（读改写+原子替换，失败静默）。
+
+    ok=True：last_used_at 刷新、consecutive_failures 清零、call_count +1、
+    usage.total_tokens（数值>0 时）累计；ok=False：仅 consecutive_failures +1。
+    只记账已存在的记录——env 钥匙不落盘（无文件）天然不计数。
+    """
     record = _load(path)
     if record is None:
         return
-    record["last_used_at"] = _now_iso()
+    if ok:
+        record["last_used_at"] = _now_iso()
+        record["consecutive_failures"] = 0
+        record["call_count"] = int(record.get("call_count") or 0) + 1
+        tokens = (usage or {}).get("total_tokens")
+        if isinstance(tokens, (int, float)) and tokens > 0:
+            record["total_tokens"] = int(record.get("total_tokens") or 0) + int(tokens)
+    else:
+        record["consecutive_failures"] = int(record.get("consecutive_failures") or 0) + 1
     try:
         _atomic_write_0600(path, record)
     except (OSError, ValueError):
         return
+
+
+def outcome_path_for(source: str, *, kind: str, user_id: int,
+                     task_id: str | None = None,
+                     data_root: Path | None = None) -> Path | None:
+    """出站结果记账的路径解析（aiux D/H）：personal/shared 槽文件优先、
+    旧扁平文件回落（存量钥匙未重存前记账不丢）；env/未知源 → None（不记账，
+    env 本就不落盘）。"""
+    cleaned = _clean_kind(kind)
+    if source == "personal":
+        slot = personal_slot_path(user_id, cleaned, data_root)
+        return slot if slot.exists() else personal_path(user_id, data_root)
+    if source == "shared" and task_id:
+        slot = shared_slot_path(task_id, cleaned, data_root)
+        return slot if slot.exists() else shared_path(task_id, data_root)
+    return None

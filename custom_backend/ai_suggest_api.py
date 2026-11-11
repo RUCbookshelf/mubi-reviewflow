@@ -38,6 +38,7 @@ from coscreen import research_trace
 from coscreen import tasks as tasks_mod
 from coscreen import fulltext as fulltext_mod
 from custom_backend import ai_keys
+from custom_backend import ai_providers
 from custom_backend.pdf_fetch_api import (  # sec29b W4①：复用钉扎连接 handler 先例
     _PinnedHTTPHandler,
     _PinnedHTTPSHandler,
@@ -379,7 +380,8 @@ def _outbound_guard(base_url: str) -> tuple[str, list[str]]:
 
 
 def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
-                       model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+                       model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS,
+                       format: str = ai_keys.FORMAT_OPENAI_CHAT) -> dict:
     """最小 completion 调用；返回 ``{"content": str, "usage": dict, "model": str}``。
 
     日志红线（B4 §4）：本函数抛出的任何错误消息都不得包含 api_key 或请求载荷；
@@ -395,13 +397,87 @@ def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
         normalized, pins = _outbound_guard(base_url)
         return _provider_generate_locked(
             system, user, api_key=api_key, base_url=normalized,
-            model=model, timeout=timeout, pinned_addresses=pins)
+            model=model, timeout=timeout, format=format, pinned_addresses=pins)
     finally:
         _OUTBOUND_SEMAPHORE.release()
 
 
+def _wire_request(format: str, base_url: str, system: str, user: str,
+                  model: str, api_key: str) -> tuple[str, bytes, dict[str, str]]:
+    """aiux ②（2026-11-12 用户裁定补齐双协议）：按 ``format`` 组装 ``(url, body, headers)``。
+
+    三种 llm wire 形态共用同一出站闸/钉扎/信号量/读帽（调用方 _provider_generate_locked
+    不变）；anthropic 形态鉴权走 ``x-api-key``+``anthropic-version``（钥匙只进
+    请求头，绝不进任何错误体/日志——_call_provider 兜底脱敏同样覆盖）。
+    """
+    common = {"Content-Type": "application/json",
+              "Accept": "application/json", "User-Agent": USER_AGENT}
+    if format == ai_keys.FORMAT_OPENAI_RESPONSES:
+        url = f"{base_url.rstrip('/')}/responses"
+        payload = json.dumps({
+            "model": model, "temperature": 0,
+            "input": [{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+        }, ensure_ascii=False).encode("utf-8")
+        return url, payload, {"Authorization": f"Bearer {api_key}", **common}
+    if format == ai_keys.FORMAT_ANTHROPIC:
+        url = f"{base_url.rstrip('/')}/v1/messages"
+        payload = json.dumps({
+            "model": model, "max_tokens": 1024, "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }, ensure_ascii=False).encode("utf-8")
+        return url, payload, {"x-api-key": api_key,
+                              "anthropic-version": "2023-06-01", **common}
+    # openai_chat（缺省——含历史未传 format 的全部既有调用语义字节不变）
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }, ensure_ascii=False).encode("utf-8")
+    return url, payload, {"Authorization": f"Bearer {api_key}", **common}
+
+
+def _wire_parse(format: str, body: Any, model: str) -> dict:
+    """按 ``format`` 从响应体取 ``{"content","usage","model"}``（形状缺失 → ProviderError）。"""
+    if format == ai_keys.FORMAT_OPENAI_RESPONSES:
+        texts: list[str] = []
+        if isinstance(body, dict):
+            for item in body.get("output") or []:
+                if isinstance(item, dict) and item.get("type") == "message":
+                    for block in item.get("content") or []:
+                        if isinstance(block, dict) and block.get("type") == "output_text" \
+                                and isinstance(block.get("text"), str):
+                            texts.append(block["text"])
+        if not texts:
+            raise ProviderError("provider 响应缺少 output/output_text。")
+        return {"content": "".join(texts), "usage": body.get("usage") or {},
+                "model": str(body.get("model") or model)}
+    if format == ai_keys.FORMAT_ANTHROPIC:
+        texts = []
+        if isinstance(body, dict):
+            for block in body.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text" \
+                        and isinstance(block.get("text"), str):
+                    texts.append(block["text"])
+        if not texts:
+            raise ProviderError("provider 响应缺少 content/text。")
+        return {"content": "".join(texts), "usage": body.get("usage") or {},
+                "model": str(body.get("model") or model)}
+    try:
+        content = body["choices"][0]["message"]["content"]
+        usage = body.get("usage") or {}
+    except (KeyError, TypeError, IndexError) as exc:
+        raise ProviderError("provider 响应缺少 choices/content。") from exc
+    if not isinstance(content, str):
+        raise ProviderError("provider 返回的 content 不是文本。")
+    return {"content": content, "usage": usage, "model": str(body.get("model") or model)}
+
+
 def _provider_generate_locked(system: str, user: str, *, api_key: str, base_url: str,
                               model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS,
+                              format: str = ai_keys.FORMAT_OPENAI_CHAT,
                               pinned_addresses: list[str] | None = None) -> dict:
     """``_provider_generate`` 的原实现（已持并发闸；已过出站闸）。
 
@@ -411,21 +487,9 @@ def _provider_generate_locked(system: str, user: str, *, api_key: str, base_url:
     连接级失败换同表下一地址（不重新解析）。``pinned_allow_private=True``
     口径同 pdf_fetch 的 base 端点：guard 已按本模块策略复核过地址表，
     回环/RFC1918 是 desktop 本地 Ollama 的既有卖点。"""
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-    }, ensure_ascii=False).encode("utf-8")
+    url, payload, headers = _wire_request(format, base_url, system, user, model, api_key)
     request = urllib.request.Request(  # noqa: S310  base_url 经用户配置并限 http(s)
-        url, data=payload, method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": USER_AGENT,
-        })
+        url, data=payload, method="POST", headers=headers)
     attempts: list[str | None] = list(pinned_addresses or []) or [None]
     error: ProviderError | None = None
     connection_level = False
@@ -467,24 +531,18 @@ def _provider_generate_locked(system: str, user: str, *, api_key: str, base_url:
         if connection_level and index + 1 < len(attempts):
             continue
         raise error from None
-    try:
-        content = body["choices"][0]["message"]["content"]
-        usage = body.get("usage") or {}
-    except (KeyError, TypeError, IndexError) as exc:
-        raise ProviderError("provider 响应缺少 choices/content。") from exc
-    if not isinstance(content, str):
-        raise ProviderError("provider 返回的 content 不是文本。")
-    return {"content": content, "usage": usage, "model": str(body.get("model") or model)}
+    return _wire_parse(format, body, model)
 
 
 def _call_provider(system: str, user: str, *, api_key: str, base_url: str,
-                   model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+                   model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS,
+                   format: str = ai_keys.FORMAT_OPENAI_CHAT) -> dict:
     """带重试（1 次）与脱敏兜底的包装；测试通过替换 ``_provider_generate`` 注入 fake。"""
     last: ProviderError | None = None
     for attempt in range(PROVIDER_RETRIES):
         try:
             return _provider_generate(system, user, api_key=api_key, base_url=base_url,
-                                      model=model, timeout=timeout)
+                                      model=model, timeout=timeout, format=format)
         except _ProviderBusyError:
             raise          # sec29 F-6：并发满不重试——重试只会把闸位占得更久
         except ProviderError as exc:
@@ -525,24 +583,32 @@ def _provider_http_error(exc: ProviderError, api_key: str) -> HTTPException:
 
 
 def resolve_task_credentials(info, settings: dict, prefs: dict, user: dict,
-                             data_root: Path) -> tuple[dict | None, str | None]:
+                             data_root: Path, *,
+                             kinds: tuple[str, ...] = (ai_keys.KIND_LLM,)
+                             ) -> tuple[dict | None, str | None]:
     """R2 钥匙优先级（个人 > 任务共享 > 无）的模块级实现。
 
     供本模块路由与导入复核 AI 助手（custom_backend/import_ai_assist_api.py）
     共用同一条解析口径，避免两处各写一份优先级后分叉。只读钥匙柜
     （custom_backend/ai_keys.py），不接触明文回显。
+    aiux A（2026-11-12）：``kinds`` 按场景限定取哪几槽——本模块路由均为 llm
+    场景（缺省 ``(llm,)``）；导入复核助手传 ``(decision, llm)``（decision 槽
+    优先，未配则回落 llm 槽=存量单钥匙用户行为不变）。env 覆盖语义不变
+    （存在即返回，kind 越界闸仍在调用端）。
     """
     if prefs.get("use_personal_key", True):
         env = ai_keys.env_key()
         if env is not None:
             return env, "personal"
-        record = ai_keys.load_personal_key(user["user_id"], data_root)
-        if record is not None:
-            return record, "personal"
+        for kind in kinds:
+            record = ai_keys.load_personal_key(user["user_id"], data_root, kind=kind)
+            if record is not None:
+                return record, "personal"
     if settings.get("key_mode") == "shared":
-        record = ai_keys.load_shared_key(info.task_id, data_root)
-        if record is not None:
-            return record, "shared"
+        for kind in kinds:
+            record = ai_keys.load_shared_key(info.task_id, data_root, kind=kind)
+            if record is not None:
+                return record, "shared"
     return None, None
 
 
@@ -804,6 +870,9 @@ class KeyPutIn(BaseModel):
     #: 模型类型（2026-11-10 用户裁定）：llm=生成式（缺省，既有行为不变）；
     #: decision=Jev 类决策模型（只允许导入复核 AI 助手两场景，越界硬闸拒绝）。
     kind: Literal["llm", "decision"] = "llm"
+    #: wire 格式（aiux ②·2026-11-12）：缺省按 kind 传统映射（llm→openai_chat、
+    #: decision→systemone）；llm 三选 chat/responses/anthropic，decision 仅 systemone。
+    format: str | None = Field(default=None, max_length=32)
     # B4 §2"校验连通后保存"以显式选项实现：默认不强制出站（离线/内网可先保存）。
     verify: bool = False
 
@@ -875,21 +944,29 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
     def _masked_metadata(record: dict | None, source: str | None) -> dict:
         if record is None:
             return {"configured": False, "provider": None, "masked": None,
-                    "base_url": None, "model": None, "kind": None, "source": None,
-                    "added_at": None, "last_used_at": None}
+                    "base_url": None, "model": None, "kind": None, "format": None,
+                    "source": None, "added_at": None, "last_used_at": None,
+                    "consecutive_failures": 0, "call_count": 0, "total_tokens": 0}
         return {"configured": True, "provider": record.get("provider"),
                 "masked": ai_keys.mask_key(record.get("key", "")),
                 "base_url": _base_url_meta(record),
                 "model": record.get("model") or "",
-                "kind": ai_keys.kind_of(record), "source": source,
-                "added_at": record.get("added_at"), "last_used_at": record.get("last_used_at")}
+                "kind": ai_keys.kind_of(record),
+                "format": ai_keys.format_of(record),
+                "source": source,
+                "added_at": record.get("added_at"), "last_used_at": record.get("last_used_at"),
+                # D/H（用户裁定 2026-11-12）：钥匙健康（连败次数）与用量计数。
+                "consecutive_failures": int(record.get("consecutive_failures") or 0),
+                "call_count": int(record.get("call_count") or 0),
+                "total_tokens": int(record.get("total_tokens") or 0)}
 
     def _verify_credentials(provider: str, key: str, base_url: str | None,
-                            model: str | None, kind: str = "llm") -> None:
+                            model: str | None, kind: str = "llm",
+                            format: str | None = None) -> None:
         """保存前的连通性校验（按钥匙类型分派协议；异常映射 502，key 不进错误）。
 
         decision 钥匙走 systemone 连通检查（Jev 端点没有 chat/completions），
-        llm 钥匙照旧走最小 completion。"""
+        llm 钥匙按 ``format``（缺省 openai_chat）走对应 wire 的最小连通调用。"""
         if kind == ai_keys.KIND_DECISION:
             from custom_backend import decision_model_adapter as decision
             try:
@@ -914,47 +991,103 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
             _call_provider(
                 "You are a connectivity check. Reply with a JSON object.",
                 '{"ping": true}', api_key=key, base_url=normalized,
-                model=(str(model or "").strip() or _FALLBACK_MODEL), timeout=15.0)
+                model=(str(model or "").strip() or _FALLBACK_MODEL), timeout=15.0,
+                format=ai_keys.format_of({"kind": kind, "format": format}))
         except ProviderError as exc:
             raise _provider_http_error(exc, key) from None
 
     # -- 个人钥匙（仅本人 JWT） --------------------------------------------
 
+    def _personal_slots(user: dict) -> dict:
+        """A 双槽视图（2026-11-12）：llm 与 decision 各一槽并存。
+
+        env 覆盖存在时：env 钥匙占其 kind 槽（source=env），另一槽如实展示
+        文件槽（env 只覆盖同 kind，另一槽对本人仍有意义）。响应形状由旧单键
+        改为 ``{"llm": …, "decision": …}``——随 aiux 前端向导一并消费。
+        """
+        env = ai_keys.env_key()
+        env_kind = ai_keys.kind_of(env) if env is not None else None
+        return {
+            kind: (_masked_metadata(env, "env")
+                   if env is not None and kind == env_kind else
+                   _masked_metadata(
+                       ai_keys.load_personal_key(user["user_id"], data_root, kind=kind),
+                       "file"))
+            for kind in ai_keys.KEY_KINDS
+        }
+
     @app.get("/api/ai/key")
     def get_personal_key(user: dict = Depends(require_user)) -> dict:
-        env = ai_keys.env_key()
-        if env is not None:
-            return _masked_metadata(env, "env")
-        record = ai_keys.load_personal_key(user["user_id"], data_root)
-        return _masked_metadata(record, "file" if record else None)
+        return _personal_slots(user)
 
     @app.put("/api/ai/key")
     def put_personal_key(body: KeyPutIn, user: dict = Depends(require_user)) -> dict:
         if body.verify:
-            _verify_credentials(body.provider, body.key, body.base_url, body.model, body.kind)
+            _verify_credentials(body.provider, body.key, body.base_url, body.model,
+                                body.kind, body.format)
         try:
             record = ai_keys.save_personal_key(
                 user["user_id"], provider=body.provider, key=body.key,
                 base_url=body.base_url, model=body.model, kind=body.kind,
-                data_root=data_root)
+                format=body.format, data_root=data_root)
         except ai_keys.KeyShapeError as exc:
             raise HTTPException(422, str(exc)) from None
         return _masked_metadata(record, "file")
 
     @app.delete("/api/ai/key")
-    def delete_personal_key(user: dict = Depends(require_user)) -> dict:
+    def delete_personal_key(kind: str | None = Query(default=None),
+                            user: dict = Depends(require_user)) -> dict:
+        """A 双槽：``?kind=llm|decision`` 只删该槽；缺省=全删（老客户端语义）。"""
+        if kind is not None and kind not in ai_keys.KEY_KINDS:
+            raise HTTPException(422, "kind 须为 llm 或 decision。")
         try:
-            ai_keys.delete_personal_key(user["user_id"], data_root)
+            ai_keys.delete_personal_key(user["user_id"], data_root, kind=kind)
         except ai_keys.KeyDeletionError as exc:  # B9 F2：删除失败绝不假报成功
             raise HTTPException(503, {"code": "ai_key_delete_failed", "detail": str(exc)}) from None
-        return _masked_metadata(None, None)
+        return _personal_slots(user)
+
+    @app.get("/api/ai/providers")
+    def ai_provider_catalog(user: dict = Depends(require_user)) -> dict:
+        """厂商目录（aiux ②）：内置静态快照 + 本版后端支持的 wire 格式声明——
+        前端向导据此做 厂商∩后端 格式门控（未支持的格式置灰并注明）。"""
+        return {
+            "providers": ai_providers.snapshot(),
+            "version": ai_providers.CATALOG_VERSION,
+            "supported_formats": {
+                ai_keys.FORMAT_OPENAI_CHAT: True,
+                ai_keys.FORMAT_OPENAI_RESPONSES: True,
+                ai_keys.FORMAT_ANTHROPIC: True,
+                ai_keys.FORMAT_SYSTEMONE: True,
+            },
+        }
 
     @app.post("/api/ai/key/test")
-    def test_personal_key(user: dict = Depends(require_user)) -> dict:
-        record = ai_keys.env_key() or ai_keys.load_personal_key(user["user_id"], data_root)
+    def test_personal_key(kind: str | None = Query(default=None),
+                          user: dict = Depends(require_user)) -> dict:
+        """连通测试（aiux ①/D）：``?kind=llm|decision`` 测对应槽（env 同 kind 优先）；
+        缺省=env 或首个已配置槽（老行为）。按 D 记账：成功刷 last_used/清连败/
+        计数+1/累计 tokens；失败连败+1（钥匙健康横幅数据源）。"""
+        if kind is not None and kind not in ai_keys.KEY_KINDS:
+            raise HTTPException(422, "kind 须为 llm 或 decision。")
+        env = ai_keys.env_key()
+        record = None
+        if env is not None and (kind is None or ai_keys.kind_of(env) == kind):
+            record = env
+        else:
+            for candidate in ((kind,) if kind else ai_keys.KEY_KINDS):
+                slot = ai_keys.load_personal_key(user["user_id"], data_root,
+                                                 kind=candidate)
+                if slot is not None:
+                    record = slot
+                    break
+            if record is None and env is not None:
+                record = env
         if record is None:
             raise HTTPException(409, {"code": "ai_key_missing",
                                       "detail": "尚未配置个人 AI 钥匙。"})
+        outcome_path = (ai_keys.outcome_path_for(
+            "personal", kind=ai_keys.kind_of(record), user_id=user["user_id"],
+            data_root=data_root) if record is not env else None)
         started = time.monotonic()
         if ai_keys.kind_of(record) == ai_keys.KIND_DECISION:
             # decision 钥匙：连通性检查走 systemone（Jev 端点没有 chat/completions）。
@@ -969,6 +1102,8 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                     decision.connectivity_body(model=model), api_key=record["key"],
                     base_url=base_url, model=model, timeout=15.0)
             except ProviderError as exc:
+                if outcome_path is not None:
+                    ai_keys.record_outcome(outcome_path, ok=False)
                 raise _provider_http_error(exc, record["key"]) from None
         else:
             try:  # MM-09：历史存量记录若含非法 base_url，映射 422 而非未捕获 500。
@@ -979,11 +1114,16 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
                 result = _call_provider(
                     "You are a connectivity check. Reply with a JSON object.",
                     '{"ping": true}', api_key=record["key"], base_url=base_url,
-                    model=(record.get("model") or _FALLBACK_MODEL), timeout=15.0)
+                    model=(record.get("model") or _FALLBACK_MODEL), timeout=15.0,
+                    format=ai_keys.format_of(record))
             except ProviderError as exc:
+                if outcome_path is not None:
+                    ai_keys.record_outcome(outcome_path, ok=False)
                 raise _provider_http_error(exc, record["key"]) from None
-        ai_keys.touch_last_used(ai_keys.personal_path(user["user_id"], data_root))
+        if outcome_path is not None:
+            ai_keys.record_outcome(outcome_path, ok=True, usage=result.get("usage"))
         return {"ok": True, "provider": record["provider"],
+                "kind": ai_keys.kind_of(record), "format": ai_keys.format_of(record),
                 "model": result.get("model"), "latency_ms": int((time.monotonic() - started) * 1000),
                 "usage": result.get("usage") or {}}
 
@@ -1003,25 +1143,89 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         info = task_lookup(task_id)
         _owner_context(task_id, user)
         if body.verify:
-            _verify_credentials(body.provider, body.key, body.base_url, body.model, body.kind)
+            _verify_credentials(body.provider, body.key, body.base_url, body.model,
+                                body.kind, body.format)
         try:
             record = ai_keys.save_shared_key(
                 info.task_id, provider=body.provider, key=body.key,
                 base_url=body.base_url, model=body.model, kind=body.kind,
-                data_root=data_root)
+                format=body.format, data_root=data_root)
         except ai_keys.KeyShapeError as exc:
             raise HTTPException(422, str(exc)) from None
         return {"enabled": True, "provider_name": record["provider"]}
 
     @app.delete("/api/tasks/{task_id}/ai-suggest/shared-key")
-    def delete_shared_key(task_id: str, user: dict = Depends(require_user)) -> dict:
+    def delete_shared_key(task_id: str, kind: str | None = Query(default=None),
+                          user: dict = Depends(require_user)) -> dict:
+        """A 双槽：``?kind=llm|decision`` 只删该槽；缺省=全删（老语义）。"""
+        if kind is not None and kind not in ai_keys.KEY_KINDS:
+            raise HTTPException(422, "kind 须为 llm 或 decision。")
         info = task_lookup(task_id)
         _owner_context(task_id, user)
         try:
-            ai_keys.delete_shared_key(info.task_id, data_root)
+            ai_keys.delete_shared_key(info.task_id, data_root, kind=kind)
         except ai_keys.KeyDeletionError as exc:  # B9 F2
             raise HTTPException(503, {"code": "ai_key_delete_failed", "detail": str(exc)}) from None
         return {"enabled": False, "provider_name": None}
+
+    @app.post("/api/tasks/{task_id}/ai-suggest/shared-key/test")
+    def test_shared_key(task_id: str, kind: str | None = Query(default=None),
+                        user: dict = Depends(require_user)) -> dict:
+        """E（用户裁定 2026-11-12）：共享钥匙连通测试（owner-only，口径同个人
+        /test——按 kind 测对应槽，缺省=首个已配置槽；结果按 D 记账）。"""
+        if kind is not None and kind not in ai_keys.KEY_KINDS:
+            raise HTTPException(422, "kind 须为 llm 或 decision。")
+        info = task_lookup(task_id)
+        _owner_context(task_id, user)
+        record = None
+        for candidate in ((kind,) if kind else ai_keys.KEY_KINDS):
+            slot = ai_keys.load_shared_key(info.task_id, data_root, kind=candidate)
+            if slot is not None:
+                record = slot
+                break
+        if record is None:
+            raise HTTPException(409, {"code": "ai_key_missing",
+                                      "detail": "尚未配置任务共享 AI 钥匙。"})
+        outcome_path = ai_keys.outcome_path_for(
+            "shared", kind=ai_keys.kind_of(record), task_id=info.task_id,
+            data_root=data_root)
+        started = time.monotonic()
+        if ai_keys.kind_of(record) == ai_keys.KIND_DECISION:
+            from custom_backend import decision_model_adapter as decision
+            try:
+                base_url = decision.decision_base_url_of(record)
+            except ai_keys.KeyShapeError as exc:
+                raise HTTPException(422, str(exc)) from None
+            model = (record.get("model") or "").strip() or decision.DEFAULT_DECISION_MODEL
+            try:
+                result = decision.call_decision(
+                    decision.connectivity_body(model=model), api_key=record["key"],
+                    base_url=base_url, model=model, timeout=15.0)
+            except ProviderError as exc:
+                if outcome_path is not None:
+                    ai_keys.record_outcome(outcome_path, ok=False)
+                raise _provider_http_error(exc, record["key"]) from None
+        else:
+            try:
+                base_url = ai_keys.base_url_of(record)
+            except ai_keys.KeyShapeError as exc:
+                raise HTTPException(422, str(exc)) from None
+            try:
+                result = _call_provider(
+                    "You are a connectivity check. Reply with a JSON object.",
+                    '{"ping": true}', api_key=record["key"], base_url=base_url,
+                    model=(record.get("model") or _FALLBACK_MODEL), timeout=15.0,
+                    format=ai_keys.format_of(record))
+            except ProviderError as exc:
+                if outcome_path is not None:
+                    ai_keys.record_outcome(outcome_path, ok=False)
+                raise _provider_http_error(exc, record["key"]) from None
+        if outcome_path is not None:
+            ai_keys.record_outcome(outcome_path, ok=True, usage=result.get("usage"))
+        return {"ok": True, "provider": record["provider"],
+                "kind": ai_keys.kind_of(record), "format": ai_keys.format_of(record),
+                "model": result.get("model"), "latency_ms": int((time.monotonic() - started) * 1000),
+                "usage": result.get("usage") or {}}
 
     @app.get("/api/tasks/{task_id}/ai-suggest/status")
     def get_ai_status(task_id: str, user: dict = Depends(require_user)) -> dict:
@@ -1186,12 +1390,21 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         try:
             result = _call_provider(system, user_message, api_key=credentials["key"],
                                     base_url=base_url, model=model,
-                                    timeout=DEFAULT_TIMEOUT_SECONDS)
+                                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                                    format=ai_keys.format_of(credentials))
         except ProviderError as exc:
+            # D（2026-11-12）：生成失败也记账（连败横幅数据源）。
+            _fail_path = ai_keys.outcome_path_for(
+                key_source or "", kind=ai_keys.kind_of(credentials),
+                user_id=user["user_id"], task_id=info.task_id, data_root=data_root)
+            if _fail_path is not None:
+                ai_keys.record_outcome(_fail_path, ok=False)
             raise _provider_http_error(exc, credentials["key"]) from None
-        ai_keys.touch_last_used(ai_keys.personal_path(user["user_id"], data_root)
-                                if key_source == "personal"
-                                else ai_keys.shared_path(info.task_id, data_root))
+        _ok_path = ai_keys.outcome_path_for(
+            key_source or "", kind=ai_keys.kind_of(credentials),
+            user_id=user["user_id"], task_id=info.task_id, data_root=data_root)
+        if _ok_path is not None:
+            ai_keys.record_outcome(_ok_path, ok=True, usage=result.get("usage"))
 
         kept, warnings, dropped = _parse_provider_content(result["content"], requested,
                                                           page_texts, abstract)
