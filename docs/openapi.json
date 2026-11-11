@@ -9043,7 +9043,7 @@
     },
     "/api/auth/reset": {
       "post": {
-        "description": "找回密码（2.1.5，双模式重置码；用户裁定 2026-11-11）。\n\n服务器部署=管理员跑 build/scripts/reset_code.py 取码线下转交；单机=\n安装目录 windows_start.py --reset-user 弹码。限流/防枚举对齐 login：\npeer check 占位+账号/全局键 peek；用户不存在与码不匹配同一文案，\n不存在路径跑 dummy_verify 等时；新密码规则先行校验（不烧码）；成功\nset_password（哈希+pwd_version+1，全部长时令牌即时失效）。",
+        "description": "找回密码（2.1.5，双模式重置码；用户裁定 2026-11-11）。\n\n服务器部署=管理员跑 build/scripts/reset_code.py 取码线下转交；单机=\n安装目录 windows_start.py --reset-user 弹码。限流/防枚举对齐 login：\npeer check 占位+账号/全局键 peek；用户不存在与码不匹配同一文案，\n不存在路径跑 dummy_verify 等时；新密码规则先行校验（不烧码）；成功\nset_password（哈希+pwd_version+1，全部带 pv 令牌即时失效）。\n\nauthb 复审补三件：①用户名 strip 后才进码库（空白键错位曾让合法请求\n401 还烧限流桶）；②set_password 异常时 rearm 码（烧码后置——先消费\n后落库无事务，库锁曾让码烧掉而口令未改）；③成功后 revoke_all_codes\n回收兄弟码（否则泄露的兄弟码在余下 15 分钟内仍可再改密）。限流残余\n如实登记（对齐 login 侧 r6#46 口径）：全局账号键 reset:acct=<name>\n跨来源生效，未认证者在任意来源各 1 次共 5 次错码即可让本人持正确码\n也 429（60 秒）；轮换来源可持续续锁覆盖 15 分钟码窗——使「跨来源锁\n定」可达的必然代价，产品取舍已接受，不宣称闭环。",
         "operationId": "password_reset_api_auth_reset_post",
         "requestBody": {
           "content": {

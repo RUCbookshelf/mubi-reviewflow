@@ -267,36 +267,66 @@ def _copy_to_clipboard_windows(text: str) -> bool:
         return False
 
 
+def _resolve_installed_data_dir() -> Path:
+    """解析本机真实数据目录（authb 复审 M7）。
+
+    安装版（installer.iss {app}=%LOCALAPPDATA%\\Programs\\ReviewFlow）真实
+    数据目录=%LOCALAPPDATA%\\ReviewFlow（launcher.py:130/536 同口径）——
+    此前工具回落相对 "data" 按 CWD 解析成安装目录影子库（真用户取不到码、
+    影子库用户反而能取）。优先级：环境变量（开发/便携）→ 平台默认目录。
+    """
+    env = os.environ.get('COBOOKSHELF_DATA_DIR')
+    if env:
+        return Path(env)
+    if sys.platform == 'win32':
+        base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~/AppData/Local')
+    else:
+        base = os.environ.get('XDG_DATA_HOME') or os.path.expanduser('~/.local/share')
+    return Path(base) / 'ReviewFlow'
+
+
 def reset_user(username: str) -> int:
     """找回密码·本机取码（2.1.5）：签发一枚 15 分钟一次性重置码，
     自动复制到剪贴板并弹窗展示。
 
-    需要能 import custom_backend（开发布局=仓库根在 APP.parent；打包布局
-    =应用代码已在 sys.path）。数据目录与后端同口径（COBOOKSHELF_DATA_DIR
-    环境变量或默认）。
+    authb（复审 M7/L25/L26）：数据目录按安装布局解析（不再 CWD 影子库）；
+    get_user/issue 的异常兜底成弹窗（pythonw 无控制台，裸异常=无声死）；
+    sys.path 安装目录排前（APP 在 APP.parent 之前——用户可写的 Programs
+    目录同名包不得遮蔽安装目录内的真实现）。用户名 strip（码库同键）。
     """
-    root = APP.parent
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+    install_dir = str(APP)
+    parent_dir = str(APP.parent)
+    for entry in (install_dir, parent_dir):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
+        elif sys.path.index(entry) > 1:
+            sys.path.remove(entry)
+            sys.path.insert(0, entry)
     try:
+        os.environ['COBOOKSHELF_DATA_DIR'] = str(_resolve_installed_data_dir())
         from custom_backend import auth, auth_recovery
     except Exception as exc:  # 打包布局差异/依赖缺失：给可操作的提示
         message(f"重置码生成失败：无法加载应用模块（{exc}）。\n"
                 f"请从安装目录运行本工具，或联系维护者。")
         return 1
-    user = auth.get_user(username)
-    if user is None:
-        # 中性提示：操作者持本机数据目录，措辞不区分「不存在」与「目录不对」。
-        message(f"未能为「{username}」生成重置码：用户名不存在或数据目录不对。")
+    name = str(username or '').strip()
+    try:
+        user = auth.get_user(name)
+        if user is None:
+            # 中性提示：不区分「不存在」与「目录不对」。
+            message(f"未能为「{name}」生成重置码：用户名不存在或数据目录不对。")
+            return 1
+        code = auth_recovery.issue_reset_code(name)
+    except Exception as exc:  # authb L25：库锁/损坏等——pythonw 下无处可去
+        message(f"重置码生成失败：{exc}")
         return 1
-    code = auth_recovery.issue_reset_code(username)
     if code is None:
         message("重置码生成失败：无法写入数据目录。")
         return 1
     copied = _copy_to_clipboard_windows(code)
     hint = ("已复制到剪贴板，直接在重置面板 Ctrl+V 粘贴即可。"
             if copied else "请手动完整复制下面的重置码。")
-    message(f"用户「{username}」的重置码（15 分钟内有效、一次性）：\n\n"
+    message(f"用户「{name}」的重置码（15 分钟内有效、一次性）：\n\n"
             f"{code}\n\n{hint}", error=False)
     print(code, file=sys.stderr)  # 无 GUI/重定向场景的第二通道
     return 0

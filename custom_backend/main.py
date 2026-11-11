@@ -902,10 +902,20 @@ def require_user(
         ) from None
     username = str(payload["username"])
     if "pv" in payload:
-        # 2.1.5 记住我：长时（remember）令牌带 pv——逐请求核对 users.pwd_version，
-        # 改密/重置后 +1 即全量吊销；默认 24h 短令牌不带 pv，本检查零成本跳过。
+        # 2.1.5 记住我/authb：带 pv 令牌逐请求核对 users.pwd_version，改密/
+        # 重置后 +1 即全量吊销。authb 补两件（复审 L1/L3）：异形 pv 按无效
+        # 令牌 401（不冒 500）；核验行与 sub 交叉校验（删号同名重建的旧令
+        # 牌 pv 恰同值会复活——id 不匹配即拒）。
+        try:
+            pv = int(payload["pv"])
+        except (TypeError, ValueError):
+            raise HTTPException(
+                401, "访问令牌无效或已过期，请重新登录。",
+                headers={"WWW-Authenticate": "Bearer"}
+            ) from None
         row = auth.get_user(username)
-        if row is None or int(payload["pv"]) != row.get("pwd_version", 1):
+        if (row is None or row.get("id") != user_id
+                or pv != row.get("pwd_version", 1)):
             raise HTTPException(
                 401, "访问令牌无效或已过期，请重新登录。",
                 headers={"WWW-Authenticate": "Bearer"}
@@ -1815,7 +1825,11 @@ def register(body: CredentialsIn, request: Request) -> dict:
         raise _bad(str(exc)) from exc
     # 注册**成功计入 peer 配额**（不退款）：注册走 bcrypt，成功量也须有
     # 上限（复审 #41「连续 6 次成功注册全 200」旁路），5 次/分钟/对端。
-    return {"token": auth.create_access_token(user["id"], user["username"]), "user": user}
+    # authb（复审 L7/M1）：新签令牌恒带 pv（可吊销）；响应不回显
+    # pwd_version（那是「改密次数」计数，未登记契约=信息泄露）。
+    return {"token": auth.create_access_token(
+                user["id"], user["username"], pwd_version=1),
+            "user": user}
 
 
 @app.post("/api/auth/login")
@@ -1893,13 +1907,16 @@ def login(body: CredentialsIn, request: Request) -> dict:
     login_limiter.refund(peer_key)
     login_limiter.reset(account_key)
     login_limiter.reset(global_account_key)
-    # 2.1.5 记住我：remember=true → 7 天令牌+pv 版本戳（改密/重置即时吊销）；
-    # 缺省仍 24h 短令牌（载荷不带 pv，与既往逐字节一致）。
+    # 2.1.5 记住我/authb（M1）：一切新签令牌恒带 pv（可被改密/重置吊销——
+    # 重置是产品唯一凭据补救动作，短令牌重置后仍存活 24h 属实质缺口）；
+    # remember 只改时长。响应剥 pwd_version（L7：改密计数不入契约面）。
     hours = auth.TOKEN_TTL_HOURS * 7 if body.remember else None
     token = auth.create_access_token(
         user["id"], user["username"], ttl_hours=hours,
         pwd_version=user.get("pwd_version", 1))
-    return {"token": token, "user": user, "warnings": warnings,
+    return {"token": token,
+            "user": {"id": user["id"], "username": user["username"]},
+            "warnings": warnings,
             "expires_in": (hours if hours is not None else auth.TOKEN_TTL_HOURS) * 3600}
 
 
@@ -1911,7 +1928,16 @@ def password_reset(body: PasswordResetIn, request: Request) -> dict:
     安装目录 windows_start.py --reset-user 弹码。限流/防枚举对齐 login：
     peer check 占位+账号/全局键 peek；用户不存在与码不匹配同一文案，
     不存在路径跑 dummy_verify 等时；新密码规则先行校验（不烧码）；成功
-    set_password（哈希+pwd_version+1，全部长时令牌即时失效）。
+    set_password（哈希+pwd_version+1，全部带 pv 令牌即时失效）。
+
+    authb 复审补三件：①用户名 strip 后才进码库（空白键错位曾让合法请求
+    401 还烧限流桶）；②set_password 异常时 rearm 码（烧码后置——先消费
+    后落库无事务，库锁曾让码烧掉而口令未改）；③成功后 revoke_all_codes
+    回收兄弟码（否则泄露的兄弟码在余下 15 分钟内仍可再改密）。限流残余
+    如实登记（对齐 login 侧 r6#46 口径）：全局账号键 reset:acct=<name>
+    跨来源生效，未认证者在任意来源各 1 次共 5 次错码即可让本人持正确码
+    也 429（60 秒）；轮换来源可持续续锁覆盖 15 分钟码窗——使「跨来源锁
+    定」可达的必然代价，产品取舍已接受，不宣称闭环。
     """
     from custom_backend import auth_recovery
 
@@ -1945,8 +1971,9 @@ def password_reset(body: PasswordResetIn, request: Request) -> dict:
         login_limiter.refund(peer_key)  # 校验类失败不占额（register 同口径）
         raise _bad(str(exc)) from exc
     user = auth.get_user(body.username)
+    canonical = str(body.username).strip()
     if user is not None:
-        ok = auth_recovery.consume_reset_code(body.username, body.code)
+        ok = auth_recovery.consume_reset_code(canonical, body.code)
     else:
         auth_recovery.dummy_verify(body.code)  # 等时垫，结果不使用
         ok = False
@@ -1954,7 +1981,16 @@ def password_reset(body: PasswordResetIn, request: Request) -> dict:
         login_limiter.record(account_key)
         login_limiter.record(global_key)
         raise _bad("用户名或重置码无效。", 401)
-    auth.set_password(user["id"], body.new_password)
+    try:
+        auth.set_password(user["id"], body.new_password)
+    except Exception:
+        # authb（复审 M6）：烧码后置——落库失败把码还回去（过期侧无意义），
+        # 用户可同码重试，不再「码已烧而口令未改」。异常仍上抛按 5xx 兜底。
+        auth_recovery.rearm_reset_code(body.code)
+        raise
+    # authb（复审 M4）：回收该用户其余活码——重置成功即止损，兄弟码不得
+    # 在余下 TTL 内再次改密。
+    auth_recovery.revoke_all_codes(canonical)
     login_limiter.refund(peer_key)
     login_limiter.reset(account_key)
     login_limiter.reset(global_key)

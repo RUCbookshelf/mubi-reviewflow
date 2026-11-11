@@ -42,10 +42,25 @@ from custom_backend import auth as auth_mod  # noqa: E402
 from custom_backend import update_check  # noqa: E402
 from custom_backend.main import app  # noqa: E402
 
+# 跨文件同进程秩序钉（authb 波定位）：main.DATA_DIR 在导入期捕获
+# （main.py:169），而 streak_api._ics_timing_work 在调用期读同名环境
+# 变量；同进程里先导入/先跑过的测试文件会把两者钉到不同目录——导入期
+# 各文件头互相覆盖 env（如 r7_authsec），运行期 setUp 还会再改且不还原
+# （如 r7_final_auth:54）——垫片探到空目录 → find_task 0 调用 →
+# shape-invalid 垫片钉假红（cd7001a 即复现，先于 authb 存在，非 authb
+# 回归）。生产内 env 进程内恒定、两读同根；RevokeCrossIdempotencyPins
+# .setUpClass 把 env 对齐到 main 实际 DATA_DIR 复现该不变量（导入期
+# 对齐会被运行期泄漏击穿，必须类启动时钉）。
+from custom_backend import main as backend_main  # noqa: E402
+
 
 class RevokeCrossIdempotencyPins(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # 垫片/应用同根对齐（见模块头注释）：建任务前把 env 钉回 main
+        # 实际 DATA_DIR——先跑文件的运行期 env 泄漏会让垫片探测根与
+        # 任务注册表裂脑，shape-invalid 垫片钉以「0 调用」假红。
+        os.environ["COBOOKSHELF_DATA_DIR"] = str(backend_main.DATA_DIR)
         cls.client = TestClient(app)
         cls.client.__enter__()
         user = auth_mod.create_user("sec29b@example.test", "Sec29b-Test-2026")
@@ -87,6 +102,17 @@ class RevokeCrossIdempotencyPins(unittest.TestCase):
         # 判据：垫片必调 coscreen.tasks.find_task（探 scandir 首目录），
         # 而形状非法 id（长度>200）的正路 404 在 _task_or_404 正则前置即
         # 返回、绝不调 find_task——shim 运行与否由此可观测。
+        # 前置自暴露：垫片探测根（调用期 env）须含 ≥1 任务目录——
+        # setUpClass 经 app 建的任务落在 main.DATA_DIR；若两根裂脑
+        # （见模块头对齐注释），此钉会以「0 调用」形态假红，先让裂脑
+        # 自己说话而不是留下费解的计数断言。
+        probe_root = tasks_mod.tasks_root(
+            os.environ.get("COBOOKSHELF_DATA_DIR", "data"))
+        self.assertTrue(
+            probe_root.is_dir()
+            and any(e.is_dir(follow_symlinks=False)
+                    for e in os.scandir(probe_root)),
+            f"垫片探测根无任务目录（env/DATA_DIR 裂脑？）：{probe_root}")
         shape_invalid = "a" * 201
         with mock.patch.object(tasks_mod, "find_task",
                                wraps=tasks_mod.find_task) as spy:

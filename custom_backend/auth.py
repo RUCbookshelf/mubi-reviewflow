@@ -92,7 +92,19 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_USERS_SCHEMA)
-    _ensure_pwd_version_column(conn)
+    # authb（复审 M2）：补列按**库路径**进程内只做一次——每连接都带写意图
+    # 会让未迁移旧库在并发写锁下把纯读路径拖成 5s 阻塞→500（实测）；按路径
+    # 而非按进程记账，库文件被删除重建（测试夹具/运维换库）时新库仍会补列。
+    global _PWD_COLUMN_READY
+    key = str(path.resolve())
+    if created:
+        # 库文件不存在=全新库：executescript 建出的是无列旧形状表——从
+        # 「已补列」集除名，强制本连接补列（同路径删库重建曾因集合残留
+        # 被跳过 → get_user 查列 500）。
+        _PWD_COLUMN_READY.discard(key)
+    if key not in _PWD_COLUMN_READY:
+        _ensure_pwd_version_column(conn)
+        _PWD_COLUMN_READY.add(key)
     if created:
         _restrict_db_permissions(path)
     else:
@@ -140,14 +152,16 @@ def _tighten_existing_db_permissions(path: Path) -> None:
 
 
 def _ensure_pwd_version_column(conn: sqlite3.Connection) -> None:
-    """users.pwd_version 幂等补列（2.1.5 记住我）。
+    """users.pwd_version 幂等补列（2.1.5 记住我；authb 起每进程仅首连执行）。
 
     ALTER 先例：coscreen/db.py._add_column_if_missing——先查 pragma_table_info，
     缺列才 ALTER；撞 duplicate column（并发补列）按幂等成功。默认 1，改密/
-    重置时 +1，使携带 pv 的 7 天令牌即时失效。
+    重置时 +1，使携带 pv 的令牌即时失效。
     """
+    global _PWD_COLUMN_READY
     cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "pwd_version" in cols:
+        _PWD_COLUMN_READY.add(str(_users_db().resolve()))
         return
     try:
         conn.execute(
@@ -157,6 +171,11 @@ def _ensure_pwd_version_column(conn: sqlite3.Connection) -> None:
         cols_after = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
         if "pwd_version" not in cols_after:
             raise
+
+
+#: 已补列的库路径（authb M2：按路径进程内去重，稳态连接零写意图；库删除
+#: 重建后新路径/同路径重扫即重新补列——进程级布尔曾让重建库漏列 500）。
+_PWD_COLUMN_READY: set[str] = set()
 
 
 def set_password(user_id: int, new_password: str) -> None:
@@ -666,12 +685,15 @@ def _secret() -> str:
 def create_access_token(user_id: int, username: str, *,
                         ttl_hours: int | None = None,
                         pwd_version: int | None = None) -> str:
-    """签发 HS256 JWT（默认 24h；remember 令牌 7 天且载荷带 pv）。
+    """签发 HS256 JWT（默认 24h；remember 令牌 7 天）。
 
-    2.1.5 记住我：``ttl_hours`` 给定时签发长时令牌并附带 ``pv``（签发时
-    users.pwd_version 快照）；require_user 对**带 pv 的令牌**逐请求核验，
-    改密/重置（pwd_version+1）即全量失效。默认调用（不传参）载荷与既往
-    逐字节一致——24h 令牌路径零行为变化。
+    2.1.5 记住我/authb（复审 M1）：``pwd_version`` 给定时载荷附带 ``pv``
+    ——require_user 对带 pv 的令牌逐请求核验，改密/重置（pwd_version+1）
+    即全量失效。authb 起 login/register **恒传** pwd_version，一切新签令牌
+    均可吊销（修复「重置后 24h 短令牌仍存活」——重置是产品唯一凭据补救
+    动作）；不传 pwd_version 的调用（兼容/测试）保持旧载荷形状，旧令牌
+    ≤24h 自然过期。长时令牌漏传 pwd_version 会静默盖 pv=1 使改密用户误
+    401（复审实证），调用方不得依赖缺省。
     """
     now = datetime.now(timezone.utc)
     hours = TOKEN_TTL_HOURS if ttl_hours is None else int(ttl_hours)
@@ -683,8 +705,8 @@ def create_access_token(user_id: int, username: str, *,
         "jti": uuid.uuid4().hex,
         "iss": JWT_ISSUER,
     }
-    if ttl_hours is not None:
-        payload["pv"] = int(pwd_version if pwd_version is not None else 1)
+    if pwd_version is not None:
+        payload["pv"] = int(pwd_version)
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 

@@ -55,7 +55,7 @@ python build/scripts/export_openapi.py --check  # CI/maintenance: fail if the co
 | Method and path | Contract |
 | --- | --- |
 | `POST /api/auth/register` | Body `{username (3–64 chars), password (8–128 chars)}`. Creates the account and returns `{token, user}`. Answers 400 for invalid input, duplicate usernames, and usernames colliding with the reserved collaboration store name (`collaboration`, `Collaboration`, …), which are rejected outright; 429 when the peer exceeds 5 registrations per minute. |
-| `POST /api/auth/login` | Same body as register. Returns `{token, user, warnings}`; `warnings` explains a reserved-name collision that disables collaboration — reachable only for legacy accounts registered before that rule existed (new registrations are rejected). Wrong credentials answer 401; 5 failed attempts lock that account for one minute (429, correct password included) to slow guessing. |
+| `POST /api/auth/login` | Same body as register, plus optional `remember: true` (2.1.5) — issues a 7-day token instead of a 24-hour one. Returns `{token, user, warnings, expires_in}` (`expires_in` in seconds); `warnings` explains a reserved-name collision that disables collaboration — reachable only for legacy accounts registered before that rule existed (new registrations are rejected). All newly issued tokens (login and register) carry a password-version stamp and are revoked immediately by any password change or `POST /api/auth/reset`. Wrong credentials answer 401; 5 failed attempts lock that account for one minute (429, correct password included) to slow guessing. |
 | `GET /api/auth/me` | Returns `{user_id, username}` for the bearer token. |
 
 ## Tasks
