@@ -9,6 +9,6 @@ custom_backend/research_trace_api.py:360#ATTACH 的 schema 别名是 SQLite 标�
 custom_backend/research_trace_api.py:382#跨库 UNION ALL 分支数随 store 数变化且分支内 schema 为 ATTACH 标识符；数据过滤值全部为 ? 参数
 # ---- 2.1.5 waveA 泳道 S1（coscreen）：仅 SQLite 语法无法绑定、且值来自内部
 # 元数据/固定常量的 3 处；每条对应源码处均已有注释说明。----
-coscreen/db.py:762#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）【2.1.5-fix 行号平移：原 749，init_db 进程内去重插入 13 行，内容零变化】
-coscreen/db.py:1357#迁移目标表/列名取自 sqlite_master 发现的实际库结构（内部元数据，非外部输入），标识符不能参数绑定；数据值全部 ? 绑定【2.1.5-fix 行号平移：原 1344，同上】
+coscreen/db.py:749#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）【2.1.5-sec29 行号复原：init_db 缓存曾插 13 行平移至 762（661fa4e 登记），revert c53c779 撤销后弹回，内容零变化】
+coscreen/db.py:1344#迁移目标表/列名取自 sqlite_master 发现的实际库结构（内部元数据，非外部输入），标识符不能参数绑定；数据值全部 ? 绑定【2.1.5-sec29 行号复原：曾平移至 1357（661fa4e 登记），同上弹回】
 coscreen/review_workflow.py:158#executescript 不支持参数绑定；脚本由模块内固定 _SCHEMA 常量与会话前缀 BEGIN IMMEDIATE 拼接，无外部输入
