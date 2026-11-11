@@ -763,9 +763,12 @@ class AISuggestTests(unittest.TestCase):
                     "http://100.100.100.200/v1", "http://[fe80::1]/v1"):
             with self.assertRaises(ai_keys.KeyShapeError, msg=bad):
                 ai_keys.base_url_of({"base_url": bad})
-        # loopback 保留（本地模型卖点）
-        self.assertEqual(ai_keys.base_url_of({"base_url": "http://127.0.0.1:11434/v1"}),
-                         "http://127.0.0.1:11434/v1")
+        # loopback 仅 desktop 模式保留（本地模型卖点；sec29 F-5 起 server 拦截）
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            self.assertEqual(ai_keys.base_url_of({"base_url": "http://127.0.0.1:11434/v1"}),
+                             "http://127.0.0.1:11434/v1")
+        with self.assertRaises(ai_keys.KeyShapeError):
+            ai_keys.base_url_of({"base_url": "http://127.0.0.1:11434/v1"})  # server
 
     def test_b9_f15_policy_version_conflict(self):
         """B9 F15：expected_policy_version 与设置版本不符 -> 409。"""
@@ -857,16 +860,22 @@ class AISuggestTests(unittest.TestCase):
         self.assertIn("unverified_quote:study_design", warnings)
 
     def test_b9_r6_metadata_bypass_literals_blocked(self):
-        """B9 R-6：IPv6 ULA/映射、十进制 IPv4、尾点域名等字面变体全部拦截。"""
+        """B9 R-6：IPv6 ULA/映射、十进制 IPv4、尾点域名等字面变体全部拦截；
+        sec29 F-5 起 RFC1918/CGNAT 私网段同样拦截（两种运行模式一致）。"""
         for bad in ("http://[fc00::1]/v1", "http://[fd12::1]/v1",
                     "http://[::ffff:169.254.169.254]/v1",
+                    "http://[::ffff:10.0.0.5]/v1",
                     "http://metadata.google.internal.:8080/v1",
-                    "http://2852039166/v1", "http://169.254.169.254/v1"):
+                    "http://2852039166/v1", "http://169.254.169.254/v1",
+                    "http://10.0.0.5/v1", "http://192.168.1.10/v1",
+                    "http://172.16.0.9/v1", "http://100.100.100.200/v1"):
             with self.assertRaises(ai_keys.KeyShapeError, msg=bad):
                 ai_keys.base_url_of({"base_url": bad})
-        # 回环保留（本地模型）；私网段按 accept 披露保留（企业内网网关是合法场景）
-        for ok in ("http://127.0.0.1:11434/v1", "http://10.0.0.5/v1"):
-            self.assertTrue(ai_keys.base_url_of({"base_url": ok}))
+        # 回环保留仅限 desktop（本地模型）；两种模式私网段都拦
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            self.assertTrue(ai_keys.base_url_of({"base_url": "http://127.0.0.1:11434/v1"}))
+        with self.assertRaises(ai_keys.KeyShapeError):
+            ai_keys.base_url_of({"base_url": "http://10.0.0.5/v1"})  # desktop 也拦
 
     def test_b9_r10_methods_report_lists_models(self):
         self.enable_task()
@@ -1004,28 +1013,31 @@ class AISuggestTests(unittest.TestCase):
         srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.guard.stop()      # 本用例直连真实 _provider_generate（仅 127.0.0.1）
-        try:
-            # 单元层：ProviderError 消息含状态码、绝不含响应体内容。
-            with self.assertRaises(ai_suggest_api.ProviderError) as ctx:
-                ai_suggest_api._provider_generate(
-                    "s", "u", api_key="sk-echo-test-123456",
-                    base_url=f"http://127.0.0.1:{srv.server_address[1]}/v1",
-                    model="m", timeout=5)
-            self.assertEqual(ctx.exception.status, 500)
-            self.assertIn("500", str(ctx.exception))
-            self.assertNotIn(secret, str(ctx.exception))
-            # API 层（MM-06 原复现路径）：verify=true 出站失败 -> 502 只回状态码。
-            r = self.client.put("/api/ai/key", json={
-                "provider": "openai", "key": FAKE_KEY,
-                "base_url": f"http://127.0.0.1:{srv.server_address[1]}/v1",
-                "verify": True}, headers=self.auth(0))
-            self.assertEqual(r.status_code, 502, r.text)
-            self.assertIn("500", r.text)
-            self.assertNotIn(secret, r.text)
-        finally:
-            self.guard.start()
-            srv.shutdown()
-            srv.server_close()
+        # 本文件默认 server 模式；本地回环端点（本地模型语义）= desktop 模式放行
+        # （sec29 F-5：server 模式回环一律拦）。
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            try:
+                # 单元层：ProviderError 消息含状态码、绝不含响应体内容。
+                with self.assertRaises(ai_suggest_api.ProviderError) as ctx:
+                    ai_suggest_api._provider_generate(
+                        "s", "u", api_key="sk-echo-test-123456",
+                        base_url=f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                        model="m", timeout=5)
+                self.assertEqual(ctx.exception.status, 500)
+                self.assertIn("500", str(ctx.exception))
+                self.assertNotIn(secret, str(ctx.exception))
+                # API 层（MM-06 原复现路径）：verify=true 出站失败 -> 502 只回状态码。
+                r = self.client.put("/api/ai/key", json={
+                    "provider": "openai", "key": FAKE_KEY,
+                    "base_url": f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                    "verify": True}, headers=self.auth(0))
+                self.assertEqual(r.status_code, 502, r.text)
+                self.assertIn("500", r.text)
+                self.assertNotIn(secret, r.text)
+            finally:
+                self.guard.start()
+                srv.shutdown()
+                srv.server_close()
 
     def test_mm_09_base_url_control_characters_rejected(self):
         """MM-09 钉子：base_url 含 C0/C1 控制字符（含 \\r\\n 头注入尝试）在入库前

@@ -618,5 +618,73 @@ class AppriseLiteralPrivatePins(unittest.TestCase):
                       loaded)
 
 
+class AppriseBracketedIPv6Pins(unittest.TestCase):
+    """sec29 F-4：apprise URL 的 [IPv6] 主机剥方括号后同口径拦截。
+
+    修复前 ``[::1]`` 带方括号进 ``_check_host_literal`` → ``ip_address`` 解析
+    失败 → 按域名放行；ULA/链路本地/IPv4 映射内网（含映射回环）全部绕过
+    私网检查直达引擎。探针：probe_notify_apprise_ipv6.py。"""
+
+    ENV = "REVIEWFLOW_NOTIFY_TEST_APPRISE_URL"
+
+    def _send(self, url):
+        loaded = []
+
+        class _FakeApprise:
+            def __init__(self):
+                loaded.append("ctor")
+
+            def add(self, target):
+                loaded.append(target)
+                return True
+
+            def notify(self, **kwargs):
+                loaded.append("notify")
+                return True
+
+        class _FakeModule:
+            Apprise = _FakeApprise
+
+        with mock.patch.dict(os.environ, {self.ENV: url}), \
+                mock.patch.dict(sys.modules, {"apprise": _FakeModule}):
+            result = notify_core.send(
+                {"enabled": True, "type": "apprise", "url_env": self.ENV},
+                _summary())
+        return result, loaded
+
+    def test_bracketed_private_ipv6_rejected_before_engine(self):
+        for url in ("json://[::1]:8080/x",
+                    "json://[::ffff:127.0.0.1]:8080/x",
+                    "json://[::ffff:192.168.1.5]:8080/x",
+                    "json://[::ffff:169.254.169.254]/x",
+                    "json://[fd00::2]:8080/x",
+                    "json://[fc00::1]:8080/x",
+                    "json://[fe80::1]:8080/x",
+                    "json://[fe80::1%25eth0]:8080/x",
+                    "json://[127.0.0.1]:8080/x"):
+            with self.subTest(url=url):
+                result, loaded = self._send(url)
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["status"], "private_host", result)
+                self.assertEqual(result["channel"], "apprise", result)
+                self.assertEqual(loaded, [], "Apprise 引擎绝不得被加载")
+
+    def test_bracketed_public_ipv6_allowed_to_engine(self):
+        for url in ("json://[2606:4700::6810:85e5]:8080/x",
+                    "json://[::ffff:93.184.216.34]:8080/x"):
+            with self.subTest(url=url):
+                result, loaded = self._send(url)
+                self.assertTrue(result["ok"], result)
+                self.assertIn("ctor", loaded)
+
+    def test_mutation_bracket_check_neutered_pin_goes_red(self):
+        """破坏性变异：[IPv6] 剥括号判定恒放行 → 引擎被加载（钉必红）。"""
+        with mock.patch.object(notify_core, "_bracketed_ipv6_host_private",
+                               lambda text: False):
+            result, loaded = self._send("json://[::1]:8080/x")
+        self.assertTrue(result["ok"], result)
+        self.assertIn("ctor", loaded, "防护被拆时引擎真的被加载（= 钉必红）")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

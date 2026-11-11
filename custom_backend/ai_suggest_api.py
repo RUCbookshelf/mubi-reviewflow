@@ -21,6 +21,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -317,6 +318,22 @@ def _build_opener():
 
 _OPENER = _build_opener()
 
+#: sec29 F-6：出站并发闸——AI 出站（生成/测连通/verify）原无并发限，攻击者
+#: 可用慢上游把工作线程/内存成倍占住。模块级信号量限**同时在飞的出站调用**
+#: 为 8；超限快速失败 503（结构化 ai_provider_busy，对齐文件内降级文案风格），
+#: 不排队——排队会让慢上游把整池请求拖到超时。
+_PROVIDER_MAX_CONCURRENCY = 8
+_OUTBOUND_SEMAPHORE = threading.BoundedSemaphore(_PROVIDER_MAX_CONCURRENCY)
+
+
+class _ProviderBusyError(ProviderError):
+    """出站并发已达上限（sec29 F-6）：不重试、映射 503。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"出站调用并发已达上限（{_PROVIDER_MAX_CONCURRENCY}），请稍后重试。",
+            status=503)
+
 
 def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
                        model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
@@ -325,7 +342,21 @@ def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
     日志红线（B4 §4）：本函数抛出的任何错误消息都不得包含 api_key 或请求载荷；
     只落 provider、状态码、耗时语义。安全红线（B9 F10/F11）：不跟随重定向
     （30x 视为错误）；响应体读取上限 2 MiB（无上限读取可被用于内存 DoS）。
+    sec29 F-6：并发闸在此生效（测试注入 fake 替换本函数时不受影响）。
     """
+    if not _OUTBOUND_SEMAPHORE.acquire(blocking=False):
+        raise _ProviderBusyError() from None
+    try:
+        return _provider_generate_locked(
+            system, user, api_key=api_key, base_url=base_url,
+            model=model, timeout=timeout)
+    finally:
+        _OUTBOUND_SEMAPHORE.release()
+
+
+def _provider_generate_locked(system: str, user: str, *, api_key: str, base_url: str,
+                              model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    """``_provider_generate`` 的原实现（已持并发闸；2.1.5 前签名与行为不变）。"""
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = json.dumps({
         "model": model,
@@ -384,6 +415,8 @@ def _call_provider(system: str, user: str, *, api_key: str, base_url: str,
         try:
             return _provider_generate(system, user, api_key=api_key, base_url=base_url,
                                       model=model, timeout=timeout)
+        except _ProviderBusyError:
+            raise          # sec29 F-6：并发满不重试——重试只会把闸位占得更久
         except ProviderError as exc:
             last = exc
             transient = exc.status is None or exc.status >= 500 or exc.status == 429
@@ -396,7 +429,13 @@ def _call_provider(system: str, user: str, *, api_key: str, base_url: str,
 
 
 def _provider_http_error(exc: ProviderError, api_key: str) -> HTTPException:
-    """ProviderError -> 502（错误摘要进 detail；key 绝不进错误信息，B4 §3）。"""
+    """ProviderError -> 502（错误摘要进 detail；key 绝不进错误信息，B4 §3）。
+
+    sec29 F-6：并发闸超限（``_ProviderBusyError``）→ 503 结构化
+    ``ai_provider_busy``（对齐文件内 503 降级文案风格，如 ai_key_delete_failed）。
+    """
+    if isinstance(exc, _ProviderBusyError):
+        return HTTPException(503, {"code": "ai_provider_busy", "detail": str(exc)})
     message = str(exc)
     if api_key and api_key in message:
         message = message.replace(api_key, "***")
@@ -744,7 +783,9 @@ def register_ai_suggest_routes(app, require_user, task_lookup, screener_db, data
         if record is None:
             return None
         try:
-            return ai_keys.base_url_of(record)
+            # dns_recheck=False：读取路径绝不联网（sec29 F-5 的 DNS 复核只在
+            # 保存与出站两处；字面拦截仍生效，非法值走既有 raw 回退）。
+            return ai_keys.base_url_of(record, dns_recheck=False)
         except ValueError:
             raw = record.get("base_url")
             return raw if isinstance(raw, str) and raw else None

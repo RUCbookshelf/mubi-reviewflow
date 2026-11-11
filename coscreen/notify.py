@@ -405,18 +405,52 @@ def _apprise_url_with_timeouts(url: str, timeout: float) -> str:
     return f"{base}{sep}cto={timeout:g}&rto={timeout:g}{marker}{fragment}"
 
 
+#: sec29 F-4：apprise URL 的 [IPv6] 字面量私网判定用——fc00::/7（ULA，含
+#: fd00:: 云元数据端点）。个别 Python 版本 ``is_private`` 对该段的覆盖口径
+#: 有差异，显式列段 fail closed（与 pdf_fetch_api._ULA_V6 同一常量口径）。
+_APPRISE_ULA_V6 = ipaddress.ip_network("fc00::/7")
+
+
+def _bracketed_ipv6_host_private(text: str) -> bool:
+    """[IPv6]:port 剥方括号后的字面量私网判定（sec29 F-4）。
+
+    旧实现遇到 ``[`` 开头的 host 直接跳过 ``_check_host_literal``，而该函数
+    对带方括号的 ``[::1]`` 解析不出 IP → 放行——ULA/链路本地/IPv4 映射回环
+    全部绕过私网检查。这里剥方括号（含 zone id ``%`` 后缀）后显式拦：
+    ULA（fc00::/7）/ 链路本地 / 回环 / IPv4 映射内网（含 CGNAT）。解析不出
+    IP 的内容按私网处理（fail closed——正常配置里方括号内只应是 IP 字面量）。
+    """
+    value = text.strip().strip("[]").split("%", 1)[0].strip()
+    if not value:
+        return True
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return True
+    if addr.version == 6 and addr in _APPRISE_ULA_V6:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)     # ::ffff:a.b.c.d → 检查内层 v4
+    target = mapped if mapped is not None else addr
+    return bool(_is_private_address(str(target)))
+
+
 def _send_apprise(config: Mapping[str, Any], text: str, *, timeout: float) -> None:
     url = _env_credential(config.get("url_env"))
     # Apprise URL 的 host 位置随 scheme 而异（discord://<id>/<token> 的 <id>
     # 不是主机名），因此这里只做**字面量**本机/私网地址拦截，不做 DNS：
     # 拦截 json://127.0.0.1、smtp://localhost 之类；公网/非主机形态的 service
     # 标识不受影响。Apprise 引擎自身的传输由其实现负责（契约已披露）。
+    # sec29 F-4：[IPv6] 形态剥方括号后同口径拦截（ULA/链路本地/映射内网）。
     authority = url.split("://", 1)[1].split("/", 1)[0] if "://" in url else ""
     host = authority.rsplit("@", 1)[-1]
-    if host and not host.startswith("["):
+    if host.startswith("["):
+        # [IPv6]:port → 取方括号内的字面量（残缺的 '[' 无 ']' 也按 fail closed）
+        if _bracketed_ipv6_host_private(host[1:].partition("]")[0]):
+            raise NotifyError("private_host")
+    elif host:
         host = host.split(":", 1)[0]
-    if host and _check_host_literal(host) == "private_host":
-        raise NotifyError("private_host")
+        if _check_host_literal(host) == "private_host":
+            raise NotifyError("private_host")
     try:
         import apprise  # lazy import：未安装不影响其余功能
     except Exception:  # noqa: BLE001 - ImportError / 依赖内部错误

@@ -172,6 +172,12 @@ class ImportAIAssistApiTests(unittest.TestCase):
 
     def setUp(self):
         os.environ.pop("REVIEWFLOW_AI_KEY", None)
+        # 本地探针端点（127.0.0.1）= 本地模型语义：ai_keys 的回环例外按
+        # desktop 模式放行（sec29 F-5 起 server 模式拦截回环/私网 base_url）；
+        # 只钉 ai_keys 的模式判定，其余 server 行为不受影响。
+        _mode = mock.patch.object(ai_keys, "_server_mode", lambda: False)
+        _mode.start()
+        self.addCleanup(_mode.stop)
         for user in self.users:
             ai_keys.delete_personal_key(user["user_id"], DATA_ROOT)
         _ModelProbe.received = []
@@ -596,6 +602,12 @@ class StorageFailurePins(unittest.TestCase):
 
     def setUp(self):
         os.environ.pop("REVIEWFLOW_AI_KEY", None)
+        # 本地探针端点（127.0.0.1）= 本地模型语义：ai_keys 的回环例外按
+        # desktop 模式放行（sec29 F-5 起 server 模式拦截回环/私网 base_url）；
+        # 只钉 ai_keys 的模式判定，其余 server 行为不受影响。
+        _mode = mock.patch.object(ai_keys, "_server_mode", lambda: False)
+        _mode.start()
+        self.addCleanup(_mode.stop)
         for user in self.users:
             ai_keys.delete_personal_key(user["user_id"], DATA_ROOT)
         _ModelProbe.received = []

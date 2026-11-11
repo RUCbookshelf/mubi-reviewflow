@@ -26,6 +26,23 @@ from custom_backend.auth import data_dir
 _ULA_V6 = ipaddress.IPv6Network("fc00::/7")
 _LINK_LOCAL_V4 = ipaddress.IPv4Network("169.254.0.0/16")
 
+#: sec29 F-5①：RFC1918 私网段与 RFC 6598 CGNAT 段（100.64.0.0/10，阿里云
+#: 元数据面 100.100.100.200 亦在其中——Python ``is_private`` 对 CGNAT 为假，
+#: 与 pdf_fetch_api._CGNAT_V4 / notify._CGNAT 同一常量口径）。
+_RFC1918_V4 = tuple(ipaddress.IPv4Network(net) for net in
+                    ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+_CGNAT_V4 = ipaddress.IPv4Network("100.64.0.0/10")
+
+#: sec29 F-5①：字面 IP / DNS 复核的被拦原因 → 用户可读消息（422 回显）。
+_BASE_URL_BLOCK_MESSAGES = {
+    "metadata_host": "base_url 不允许指向链路本地/云元数据地址。",
+    "link_local": "base_url 不允许指向链路本地/云元数据地址。",
+    "ula": "base_url 不允许指向链路本地/云元数据地址。",
+    "private": "base_url 不允许指向内网地址（RFC1918/CGNAT）。",
+    "unspecified": "base_url 不允许指向未指定地址（0.0.0.0/::）。",
+    "loopback": "base_url 不允许指向回环地址（服务器部署；桌面模式可配置本地 Ollama）。",
+}
+
 __all__ = [
     "DECISION_DEFAULT_BASE_URL",
     "DEFAULT_BASE_URL",
@@ -136,7 +153,93 @@ def _clean_key(key: str) -> str:
     return text
 
 
-def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM) -> str:
+def _server_mode() -> bool:
+    """服务器部署判定（与 custom_backend.main._server_mode 同一环境口径）。
+
+    回环例外按运行模式分流（sec29 F-5①）：desktop 单机模式放行本地
+    Ollama（http://127.0.0.1:11434/v1 是既有卖点）；server 模式下任何被邀请
+    成员都可配置 base_url 并触发服务器出站——回环即服务器自身服务面，
+    一律拦截。每次现读环境（不缓存），测试可用 mock.patch.dict 钉住模式。
+    """
+    return os.environ.get("REVIEWFLOW_MODE", "desktop") == "server"
+
+
+def _resolve_host(host: str, port: int = 443) -> list[str]:
+    """DNS 解析缝（seam，sec29 F-5②）：返回地址串；测试以桩替换。
+
+    先例：``pdf_fetch_api._resolve_host`` / ``coscreen.notify._resolve_host``。
+    """
+    import socket
+
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return sorted({str(info[4][0]) for info in infos})
+
+
+def _address_block_reason(value: str) -> str | None:
+    """单个字面 IP 的被拦原因（None=放行）；保存与出站（DNS 复核）共用。
+
+    被拦集合：链路本地（169.254/16、fe80::/10、IPv4 映射形态）、云元数据段
+    （CGNAT 100.64/10，含 100.100.100.200）、IPv6 ULA（fc00::/7）、RFC1918
+    私网段、未指定地址（0.0.0.0/::——多数协议栈实际连到本机）；回环按运行
+    模式例外（desktop 放行本地 Ollama，server 拦截）。
+    解析不出 IP 返回 None（域名的拦截在 DNS 复核层）。
+    """
+    try:
+        addr = ipaddress.ip_address(str(value).split("%", 1)[0])
+    except ValueError:
+        return None
+    mapped = getattr(addr, "ipv4_mapped", None)      # ::ffff:a.b.c.d → 检查内层 v4
+    target = mapped if mapped is not None else addr
+    if target.is_loopback:
+        return "loopback" if _server_mode() else None
+    if target.is_unspecified:
+        return "unspecified"
+    if target.is_link_local:
+        return "link_local"
+    if target.version == 6 and target in _ULA_V6:
+        return "ula"
+    if target.version == 4 and (target in _CGNAT_V4
+                                 or any(target in net for net in _RFC1918_V4)):
+        return "private"
+    return None
+
+
+def _dns_block_reason(host: str, port: int | None) -> str | None:
+    """域名 DNS 复核（sec29 F-5②）：解析到内网/元数据/链路本地即拒。
+
+    先例 ``pdf_fetch_api._resolved_blocked_reason``：解析失败**不拦**——
+    隔离网络里的合法自托管域名解析不出来不能当攻击拦，回退给出站网络错误。
+    """
+    try:
+        addresses = _resolve_host(host, port if port else 443)
+    except (OSError, ValueError, UnicodeError):
+        return None
+    for address in addresses or []:
+        reason = _address_block_reason(address)
+        if reason:
+            return reason
+    return None
+
+
+def _base_url_block_reason(host: str, parts, *, dns_recheck: bool) -> str | None:
+    """base_url 主机的被拦原因：字面 IP 直接判；域名做一次 DNS 复核。
+
+    ``dns_recheck=False`` 供只读元数据路径（r7 复审#1：读取路径绝不联网）。
+    """
+    literal = _parse_ip_literal(host)
+    if literal is not None:
+        return _address_block_reason(str(literal))
+    if not dns_recheck:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return _dns_block_reason(host, port)
+
+
+def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM,
+                    dns_recheck: bool = True) -> str:
     from urllib.parse import urlsplit
 
     # 空值缺省按钥匙类型回落：decision → hosted Jev；llm → OpenAI 兼容缺省
@@ -154,22 +257,18 @@ def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM) -> str:
         raise KeyShapeError("base_url 不是合法 URL。") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise KeyShapeError("base_url 必须是 http(s) URL（本地 Ollama 可填 http://127.0.0.1:11434/v1）。")
-    # B9 F12/R-6 缓解：默认阻断链路本地与云元数据地址（含 IPv6 映射/十进制 IPv4/
-    # 尾点等字面变体；不做 DNS 解析——域名绕过按 accept 披露，见 docs）。
-    # loopback 保留——本地模型是一期卖点。
+    # B9 F12/R-6 缓解 + sec29 F-5：阻断云元数据/链路本地/ULA 地址（含 IPv6
+    # 映射/十进制 IPv4/尾点等字面变体）；sec29 起 RFC1918/CGNAT 私网段同样
+    # 阻断，域名再做一次 DNS 复核（解析到内网/元数据/链路本地即拒）。
+    # 回环按运行模式例外：desktop 放行本地 Ollama，server 拦截。
     host = (parts.hostname or "").strip().strip("[]").lower().rstrip(".")
     if host in ("metadata.google.internal", "metadata.goog",
                 "100.100.100.100", "100.100.100.200"):
         raise KeyShapeError("base_url 不允许指向链路本地/云元数据地址。")
-    addr = _parse_ip_literal(host)
-    if addr is not None:
-        mapped = getattr(addr, "ipv4_mapped", None)  # ::ffff:a.b.c.d -> 检查内层 v4
-        target = mapped if mapped is not None else addr
-        if not target.is_loopback and (
-                target.is_link_local
-                or (target.version == 6 and target in _ULA_V6)
-                or (target.version == 4 and target in _LINK_LOCAL_V4)):
-            raise KeyShapeError("base_url 不允许指向链路本地/云元数据地址。")
+    reason = _base_url_block_reason(host, parts, dns_recheck=dns_recheck)
+    if reason is not None:
+        raise KeyShapeError(
+            _BASE_URL_BLOCK_MESSAGES.get(reason, "base_url 不允许指向内网/链路本地/云元数据地址。"))
     if len(text) > 500:
         raise KeyShapeError("base_url 过长（上限 500 字符）。")
     return text.rstrip("/")
@@ -216,10 +315,15 @@ def kind_of(record: dict | None) -> str:
     return text if text in KEY_KINDS else KIND_LLM
 
 
-def base_url_of(record: dict | None) -> str:
-    """从钥匙记录取规范 base_url（缺省按记录的 kind 回落对应官方端点）。"""
+def base_url_of(record: dict | None, *, dns_recheck: bool = True) -> str:
+    """从钥匙记录取规范 base_url（缺省按记录的 kind 回落对应官方端点）。
+
+    ``dns_recheck=False`` 供只读元数据路径跳过 DNS 复核（r7 复审#1：读取
+    路径绝不联网、绝不因环境配置抛错）；保存与出站两处保持缺省复核。
+    """
     record = record or {}
-    return _clean_base_url(record.get("base_url"), kind=kind_of(record))
+    return _clean_base_url(record.get("base_url"), kind=kind_of(record),
+                           dns_recheck=dns_recheck)
 
 
 def mask_key(key: str) -> str:

@@ -180,9 +180,14 @@ class _PinnedConnectionMixin:
     TCP 目标用 ``_pinned_address``，``self.host``（Host 头、HTTPS 的
     ``server_hostname``）保持原主机名。连接建立后再核对 peer 仍属公网，
     作为「钉扎后仍被中间设备/NAT 改写」的第二道防线。
+
+    sec29 F-3：``_pinned_allow_private`` 供 base_url 端点钉扎使用——回环/
+    RFC1918 是自托管端点的既有卖点（guard 只拦链路本地/CGNAT/ULA/云元数据），
+    此时第二道防线改为与 :func:`_blocked_host_reason` 同口径（拦的段不变）。
     """
 
     _pinned_address: str | None = None
+    _pinned_allow_private: bool = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -197,7 +202,11 @@ class _PinnedConnectionMixin:
         except OSError:
             sock.close()
             raise
-        if _is_private_address(peer):
+        if type(self)._pinned_allow_private:
+            if _blocked_host_reason(peer):
+                sock.close()
+                raise OSError("钉住的连接 peer 落在链路本地/云元数据/ULA/CGNAT 段。")
+        elif _is_private_address(peer):
             sock.close()
             raise OSError("钉住的连接 peer 不属于公网地址。")
         return sock
@@ -219,7 +228,10 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         if not pinned:
             return super().http_open(req)
         conn_class = type("_BoundPinnedHTTPConnection",
-                          (_PinnedHTTPConnection,), {"_pinned_address": pinned})
+                          (_PinnedHTTPConnection,),
+                          {"_pinned_address": pinned,
+                           "_pinned_allow_private": bool(
+                               getattr(req, "pinned_allow_private", False))})
         return self.do_open(conn_class, req)
 
 
@@ -231,7 +243,10 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         if not pinned:
             return super().https_open(req)
         conn_class = type("_BoundPinnedHTTPSConnection",
-                          (_PinnedHTTPSConnection,), {"_pinned_address": pinned})
+                          (_PinnedHTTPSConnection,),
+                          {"_pinned_address": pinned,
+                           "_pinned_allow_private": bool(
+                               getattr(req, "pinned_allow_private", False))})
         return self.do_open(conn_class, req, context=self._context,
                             check_hostname=self._check_hostname)
 
@@ -395,16 +410,38 @@ def _blocked_host_reason(host: str | None) -> str | None:
     return None
 
 
-def _resolved_blocked_reason(base_url: str) -> str | None:
-    """DNS 复核：域名解析到被拦段同样拒绝；解析失败不拦（回退给出站网络错误）。
+def _is_ip_literal(host: str) -> bool:
+    """host 是否为字面 IP（IPv4/IPv6/十进制 IPv4 形态之外一律按域名处理）。"""
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    return True
 
-    与 ``_validate_and_pin`` 的 fail-closed 不同：这里的 base_url 是任务级
-    配置（可能是隔离网络里的合法自托管域名），解析不出来不能当攻击拦。
+
+def _base_url_guard(base_url: str) -> tuple[list[str], str | None]:
+    """base_url 字面量 + **单次** DNS 复核：``(钉扎地址表, 拒绝原因)``。
+
+    - 字面被拦主机（云元数据名/链路本地/CGNAT/ULA，见
+      :func:`_blocked_host_reason`）→ 直接拒；
+    - 字面 IP → 该 IP 本身就是钉扎地址（无需解析）；
+    - 域名 → **单次**解析，任一地址落在被拦段即拒；解析失败不拦
+      （回退给出站网络错误），也不钉扎（保持既有回退行为）。
+
+    sec29 F-3：通过后返回的地址表必须经 ``_get_bytes`` 钉扎连接——guard
+    校验与实际连接之间**不再有第二次 DNS 解析**，堵住「校验时答公网、
+    连接时答内网」的 DNS 重绑定缝（``_get_json`` 此前未传 pinned_address，
+    出站连接会重新解析一次）。
     """
     parts = urlsplit(base_url or "")
     host = _host_identity(parts.hostname)
     if not host:
-        return "invalid_host"
+        return [], "invalid_host"
+    reason = _blocked_host_reason(host)
+    if reason:
+        return [], reason
+    if _is_ip_literal(host):
+        return [host], None
     try:
         port = parts.port
     except ValueError:
@@ -414,12 +451,21 @@ def _resolved_blocked_reason(base_url: str) -> str | None:
     try:
         addresses = _resolve_host(host, port)
     except (OSError, ValueError):
-        return None
+        return [], None                    # 解析失败不拦（回退给出站网络错误）
     for address in addresses or []:
-        reason = _blocked_host_reason(address)
-        if reason:
-            return reason
-    return None
+        blocked = _blocked_host_reason(address)
+        if blocked:
+            return [], blocked
+    return list(addresses), None
+
+
+def _resolved_blocked_reason(base_url: str) -> str | None:
+    """DNS 复核（2 元组旧缝）：域名解析到被拦段同样拒绝；解析失败不拦。
+
+    与 ``_validate_and_pin`` 的 fail-closed 不同：这里的 base_url 是任务级
+    配置（可能是隔离网络里的合法自托管域名），解析不出来不能当攻击拦。
+    """
+    return _base_url_guard(base_url)[1]
 
 
 def _base_url_block_reason(base_url: str) -> str | None:
@@ -428,14 +474,18 @@ def _base_url_block_reason(base_url: str) -> str | None:
         or _resolved_blocked_reason(base_url)
 
 
-def _guard_base_url_outbound(base_url: str) -> None:
+def _guard_base_url_outbound(base_url: str) -> list[str]:
     """出站侧二次闸：构造查询 URL 前拒绝被拦 base（存量文件/手改库兜底）。
 
     抛 :class:`OutboundError`（unsafe_url），调用方按既有口径降级——绝不 500。
+    sec29 F-3：通过时返回本次**唯一一次解析**得到的钉扎地址表（可为空：
+    字面量/DNS 失败回退形态），调用方必须把它传给 ``_get_json`` 钉扎连接。
     """
-    if _base_url_block_reason(base_url) is not None:
+    addresses, reason = _base_url_guard(base_url)
+    if reason is not None:
         raise OutboundError(
             "unsafe_url", "配置端点指向链路本地/云元数据地址，已拒绝出站。")
+    return addresses
 
 
 
@@ -518,7 +568,8 @@ def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
 
 
 def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
-               pinned_address: str | Iterable[str] | None = None) -> bytes:
+               pinned_address: str | Iterable[str] | None = None,
+               pinned_public_only: bool = True) -> bytes:
     """GET 指定 URL：显式 UA + 短超时 + 读取上限 + 拒绝重定向（30x=HTTPError）。
 
     ``pinned_address`` 给定（PDF 候选下载）时，连接钉住**分类阶段一次解析**
@@ -526,8 +577,13 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
     补扫修复：可传整份已校验地址表，按顺序逐个钉住尝试；``unreachable`` /
     ``timeout`` 这类连接级失败且还有下一地址时换下一个（与 stdlib
     ``socket.create_connection`` 的逐地址回退同语义，但**不重新解析**、且每个
-    地址都已在分类阶段核验为公网）。未给定时（配置的 Unpaywall/Crossref
-    端点，允许自托管回环）保持原行为。
+    地址都已在分类阶段核验为公网）。未给定时（无法钉扎的回退形态）保持原行为。
+
+    sec29 F-3：``pinned_public_only=False`` 供 **base_url 端点**（Unpaywall/
+    Crossref/W9）使用——钉扎地址来自 ``_guard_base_url_outbound`` 的同一次
+    复核，回环/RFC1918 自托管端点是既有卖点，此时跳过「仅公网」防御纵深，
+    连接期第二道防线由 ``_PinnedConnectionMixin`` 按链路本地/CGNAT/ULA/
+    云元数据同口径接管。
     """
     request = urllib.request.Request(  # noqa: S310  URL 经上方白名单校验
         url, method="GET",
@@ -539,15 +595,18 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
         if not addresses:
             raise OutboundError("unreachable", "没有可用的钉扎地址。")
         # 防御纵深：只接受公网 IP（正常调用方传的是分类阶段已校验的地址）。
-        for address in addresses:
-            if _is_private_address(address):
-                raise OutboundError(
-                    "private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
+        # base_url 端点（pinned_public_only=False）例外：guard 已按其口径复核。
+        if pinned_public_only:
+            for address in addresses:
+                if _is_private_address(address):
+                    raise OutboundError(
+                        "private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
     attempts: list[str | None] = list(addresses) or [None]
     error: OutboundError | None = None
     for index, address in enumerate(attempts):
         if address is not None:
             request.pinned_address = address
+            request.pinned_allow_private = not pinned_public_only
         try:
             with _open(request, timeout) as response:  # noqa: S310
                 data = response.read(max_bytes + 1)
@@ -588,9 +647,19 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
     return data
 
 
-def _get_json(url: str, *, timeout: float = API_TIMEOUT_SECONDS) -> Any:
+def _get_json(url: str, *, timeout: float = API_TIMEOUT_SECONDS,
+              pinned_addresses: list[str] | None = None) -> Any:
+    """GET JSON（Unpaywall/Crossref/W9 端点查询）。
+
+    sec29 F-3：``pinned_addresses`` 给定时（来自 ``_guard_base_url_outbound``
+    同一次复核），连接钉住该地址表——此前 ``_get_json`` 未传
+    ``pinned_address``，出站连接会对 base 域名**重新解析**，guard 校验（公网）
+    与实际连接（可被重绑定到内网）之间留有缝。回环/RFC1918 自托管端点
+    既有放行口径不变（``pinned_public_only=False``）。
+    """
     data = _get_bytes(url, timeout=timeout, max_bytes=MAX_JSON_BYTES,
-                      accept="application/json")
+                      accept="application/json",
+                      pinned_address=pinned_addresses, pinned_public_only=False)
     try:
         return json.loads(data.decode("utf-8", "replace"))
     except ValueError:
@@ -746,11 +815,11 @@ def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[dict], lis
     逐个钉住（``address`` 保留字典序首个，兼容旧调用方）。
     """
     base = settings["unpaywall_base_url"]
-    _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
+    pinned = _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
     email = settings["email"]
     query = f"?email={quote(email, safe='')}" if email else ""
     url = f"{base}/v2/{quote(doi, safe='')}{query}"
-    payload = _get_json(url)
+    payload = _get_json(url, pinned_addresses=pinned)   # sec29 F-3：钉扎同次解析
     if not isinstance(payload, dict):
         raise OutboundError("bad_response", "Unpaywall 响应形状异常。")
     if not payload.get("is_oa"):
@@ -783,17 +852,19 @@ def _crossref_message(article: dict, settings: dict) -> tuple[dict | None, str]:
     返回 ``(message, how)``：``how`` ∈ {"doi","title",""}（""=未命中）。
     """
     base = settings["crossref_base_url"]
-    _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
+    pinned = _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
     doi = normalize_doi(article.get("doi"))
     if doi:
-        payload = _get_json(f"{base}/works/{quote(doi, safe='')}")
+        payload = _get_json(f"{base}/works/{quote(doi, safe='')}",
+                            pinned_addresses=pinned)   # sec29 F-3：钉扎同次解析
         message = payload.get("message") if isinstance(payload, dict) else None
         return (message if isinstance(message, dict) else None), "doi"
     title = _norm_title(article.get("title"))
     if not title:
         return None, ""
     payload = _get_json(
-        f"{base}/works?query.bibliographic={quote(title, safe='')}&rows=3")
+        f"{base}/works?query.bibliographic={quote(title, safe='')}&rows=3",
+        pinned_addresses=pinned)
     message = payload.get("message") if isinstance(payload, dict) else None
     if not isinstance(message, dict):
         # 上游偶发 {"message": null} / {"message": []}。与 DOI 路径同口径：
@@ -888,8 +959,13 @@ def fetch_crossref_work(base_url: str, doi: str) -> dict | None:
     出站与解析中途的失败**向上抛** :class:`OutboundError`（单条失败由调用方
     降级处理，绝不 500）。响应非 dict / ``message`` 非 dict 一律按「未命中」
     返回 None（与 ``_crossref_message`` 的既有口径一致，避免 .get 抛 500）。
+
+    sec29 F-3：连接钉扎 ``_guard_base_url_outbound`` 的同次解析地址
+    （``crossref_works_url`` 内的闸只做拦截判定，这里再走一次同一闸取
+    钉扎地址表——被拦形态在第一处已抛，不会真正解析两次出站）。
     """
-    payload = _get_json(crossref_works_url(base_url, doi))
+    url = crossref_works_url(base_url, doi)
+    payload = _get_json(url, pinned_addresses=_guard_base_url_outbound(base_url))
     message = payload.get("message") if isinstance(payload, dict) else None
     return message if isinstance(message, dict) else None
 
