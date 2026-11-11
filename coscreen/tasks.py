@@ -803,11 +803,16 @@ def pid_alive(pid: int) -> bool:
     WinError 87（OSError，不在原捕获清单）→ 异常上冒被调用方按「锁被持有」
     处理 → 崩溃/被杀进程残留的任务锁永久 409（发布前对抗审查 P1 复现：
     200→退出留锁→409→删锁恢复）。改用 ctypes ``OpenProcess``+
-    ``GetExitCodeProcess``：句柄可得且退出码=STILL_ACTIVE → 存活；
-    ``ERROR_ACCESS_DENIED`` → 保守视为存活（对齐 POSIX EPERM 口径）；其余
-    失败（含 87=PID 不存在）→ 死亡。
+    ``WaitForSingleObject``（0 秒等待）：WAIT_TIMEOUT → 存活；
+    WAIT_OBJECT_0 → 已终止；``ERROR_ACCESS_DENIED``/``WAIT_FAILED`` → 状态
+    未知，保守视为存活（对齐 POSIX EPERM 口径）；其余失败（含 87=PID 不
+    存在）→ 死亡。PID 先做域钳制（sec29）：``0``=Windows 空闲进程、负数
+    或超 32 位无符号域的值只可能来自损坏/伪造的锁文件，直接判死——
+    POSIX 侧同时堵住 ``kill(-1, 0)``（全进程组探测）误判存活的口子。
     """
     pid = int(pid)
+    if pid <= 0 or pid > 0xFFFFFFFF:
+        return False
     if sys.platform == "win32":
         return _pid_alive_windows(pid)
     try:
@@ -841,8 +846,11 @@ def _pid_alive_windows(pid: int) -> bool:
     try:
         # WAIT_TIMEOUT(258)=仍在运行；WAIT_OBJECT_0(0)=已终止——用等待结果
         # 替代 GetExitCodeProcess 的退出码判断，消除 STILL_ACTIVE(259) 与
-        # 真实退出码同值的歧义（评审 low#1）。
-        return kernel32.WaitForSingleObject(handle, 0) == 258
+        # 真实退出码同值的歧义（评审 low#1）。WAIT_FAILED(0xFFFFFFFF)=等待
+        # 本身失败（句柄竞态失效等），进程状态未知：保守判活（sec29），
+        # 否则受保护/他户进程的活锁会被当死锁抢占。
+        result = kernel32.WaitForSingleObject(handle, 0)
+        return True if result == 0xFFFFFFFF else result == 258
     finally:
         kernel32.CloseHandle(handle)
 
@@ -891,7 +899,17 @@ def acquire_task_lock(
             holder = lock_holder(lock_path)
             if holder and pid_alive(int(holder.get("pid", 0))):
                 return None  # 活进程持有：只读提示，不抢
-            lock_path.unlink(missing_ok=True)  # 陈旧锁接管
+            # sec29（DS·锁与写闸）：判死到删除之间锁内容可能被并发接管者
+            # 重写——删除前复核，内容与判定时不一致则保守放弃本轮，避免
+            # 按陈旧快照误删他人的活锁（重建仍由 O_EXCL 仲裁并行接管者）。
+            if lock_holder(lock_path) != holder:
+                return None
+            try:
+                lock_path.unlink()  # 陈旧锁接管
+            except FileNotFoundError:
+                continue  # 并发接管者已删：直接争 O_EXCL 重建
+            except OSError:
+                return None  # 权限/共享冲突：本轮放弃，调用方按忙重试
             continue
         except OSError:
             return None
