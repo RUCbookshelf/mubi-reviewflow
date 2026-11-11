@@ -644,7 +644,14 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 #authScreen .submit:disabled{opacity:.5;cursor:not-allowed;transform:none}
 [data-theme=dark] #authScreen .submit{color:#142821;background:var(--primary)}
 [data-theme=dark] #authScreen .submit:hover{background:var(--primary-dark)}
-#authScreen .switch{display:flex;align-items:baseline;justify-content:center;gap:5px;margin:20px 0 0;font-size:12px;color:var(--muted)}
+#authScreen .auth-fields{min-width:0;margin:0;padding:0;border:0}
+#authScreen .remember{display:inline-flex;align-items:center;gap:6px;margin-top:12px;color:var(--muted);font-size:12px;cursor:pointer}
+#authScreen .remember input{margin:0;accent-color:var(--primary)}
+#authScreen .reset-hint{margin:12px 0 0;color:var(--muted);font-size:11px;line-height:1.6}
+#authScreen .reset-hint code{display:block;overflow-wrap:anywhere}
+#authScreen .autherr[data-success]{color:var(--primary-dark)}
+#authScreen .switch{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:center;gap:5px 12px;margin:20px 0 0;font-size:12px;color:var(--muted)}
+#authScreen .switch-account{display:inline-flex;flex-wrap:wrap;align-items:baseline;justify-content:center;gap:5px}
 #authScreen .text-button{border:0;padding:0;color:var(--primary);background:none;font-size:inherit}
 #authScreen .text-button:hover{color:var(--primary-dark);text-decoration:underline;text-underline-offset:3px}
 #authScreen .card-footer{display:flex;align-items:center;justify-content:center;gap:7px;margin-top:24px;padding-top:17px;border-top:1px solid var(--border);color:var(--muted);font-size:10px;letter-spacing:.015em}
@@ -660,6 +667,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 #authScreen .caption-review::after{height:29px}
 #authScreen .site-footer{position:fixed;left:40px;right:34px;bottom:25px;display:flex;justify-content:center;align-items:center;gap:16px;z-index:8}
 #authScreen .copyright{position:absolute;width:max-content;left:50%;transform:translateX(-50%);margin:0;color:var(--muted);font-size:10px;opacity:.85}
+#authScreen[data-auth-mode="reset"] .site-footer{position:static;margin:20px 0 0}
+#authScreen[data-auth-mode="reset"] .copyright{position:static;width:auto;transform:none;text-align:center}
 /* 语言切换（additive control；仅作用于登录页子树） */
 #rf-language{position:relative;flex-shrink:0}
 #rf-language-button{white-space:nowrap}
@@ -679,7 +688,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   #authScreen .auth-brand h1{font-size:24px}#authScreen .brand-latin{font-size:25px}
   #authScreen .sub{font-size:11px;letter-spacing:.01em}
   #authScreen .flow-caption{display:none}
-  #authScreen .site-footer{left:22px;right:22px;bottom:20px;flex-wrap:wrap;row-gap:12px}
+  #authScreen .site-footer{position:static;margin:20px 0 0;flex-wrap:wrap;row-gap:12px}
   #authScreen .copyright{order:3;width:100%;text-align:center;font-size:9px}
   #authScreen #rf-language-button{width:auto;padding:0 9px;gap:5px}
   #authScreen #rf-language-button span{display:inline;font-size:11px}
@@ -833,25 +842,55 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
       <p class="sub">协同文献筛选 · 文献编码 · PRISMA</p>
     </div>
     <form id="authForm">
-      <div class="field">
-        <label class="lbl" for="authUser">用户名</label>
-        <div class="input-wrap">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20v-1.5a6.5 6.5 0 0 1 13 0V20"/></svg>
-          <input class="input" id="authUser" name="username" type="text" autocomplete="username" placeholder="3–64 位，可用字母、数字、. _ @ - 与汉字" required aria-describedby="authErr demoNotice">
+      <fieldset class="auth-fields" id="authCredentials">
+        <div class="field">
+          <label class="lbl" for="authUser">用户名</label>
+          <div class="input-wrap">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20v-1.5a6.5 6.5 0 0 1 13 0V20"/></svg>
+            <input class="input" id="authUser" name="username" type="text" autocomplete="username" placeholder="3–64 位，可用字母、数字、. _ @ - 与汉字" required aria-describedby="authErr demoNotice">
+          </div>
         </div>
-      </div>
-      <div class="field">
-        <label class="lbl" for="authPass">密码</label>
-        <div class="input-wrap pw-wrap">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
-          <input class="input" id="authPass" name="password" type="password" autocomplete="current-password" placeholder="8–128 位" required aria-describedby="authErr demoNotice">
-          <button class="eye-btn" id="pwEye" type="button" aria-label="显示密码" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path id="eyeSlash" d="m4 4 16 16" hidden/></svg></button>
+        <div class="field">
+          <label class="lbl" for="authPass">密码</label>
+          <div class="input-wrap pw-wrap">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
+            <input class="input" id="authPass" name="password" type="password" autocomplete="current-password" placeholder="8–128 位" required aria-describedby="authErr demoNotice">
+            <button class="eye-btn" id="pwEye" type="button" aria-label="显示密码" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path id="eyeSlash" d="m4 4 16 16" hidden/></svg></button>
+          </div>
         </div>
-      </div>
+        <label class="remember" id="authRememberRow"><input id="authRemember" type="checkbox"> <span>记住我</span></label>
+      </fieldset>
+      <fieldset class="auth-fields" id="authResetFields" hidden disabled>
+        <div class="field">
+          <label class="lbl" for="authResetUser">用户名</label>
+          <div class="input-wrap">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20v-1.5a6.5 6.5 0 0 1 13 0V20"/></svg>
+            <input class="input" id="authResetUser" name="username" type="text" autocomplete="username" minlength="3" maxlength="64" required aria-describedby="authErr">
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="authResetCode">重置码</label>
+          <div class="input-wrap">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12h9m-3 0v3m-3-3v2"/></svg>
+            <input class="input" id="authResetCode" name="code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" minlength="16" maxlength="128" required aria-describedby="authErr authResetHint">
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="authResetPass">新密码（重置用）</label>
+          <div class="input-wrap">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
+            <input class="input" id="authResetPass" name="new_password" type="password" autocomplete="new-password" placeholder="8–128 位" minlength="8" maxlength="128" required aria-describedby="authErr">
+          </div>
+        </div>
+        <p class="reset-hint" id="authResetHint"><span id="authResetServerHint" hidden>请联系管理员获取重置码</span><span id="authResetDesktopHint">请运行安装目录的重置工具获取重置码<code><span translate="no">windows_start.py --reset-user </span><span>用户名</span></code></span></p>
+      </fieldset>
       <p class="autherr" id="authErr" role="alert"></p>
       <button class="submit" id="authSubmit" type="submit"><span id="submitText">登录</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button>
     </form>
-    <div class="switch"><span id="authSwitchPre">还没有账号？</span><button class="text-button" id="authSwitch" type="button">注册新账号</button></div>
+    <div class="switch">
+      <span class="switch-account"><span id="authSwitchPre">还没有账号？</span><button class="text-button" id="authSwitch" type="button">注册新账号</button></span>
+      <button class="text-button" id="authForgot" type="button">忘记密码？</button>
+    </div>
     <div id="connectionRepair" class="connection-repair"></div>
     <div class="card-footer" id="demoNotice"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/></svg><span id="authStorageNotice">数据保存在本机</span></div>
   </section>
@@ -2559,8 +2598,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   if('ResizeObserver' in window && $('authCard'))new ResizeObserver(queueLayout).observe($('authCard'));
   if(document.fonts&&document.fonts.ready)document.fonts.ready.then(queueLayout);
   if(!bed||!ctx){console.warn('当前浏览器不支持 Canvas，文献河流动效停用（登录表单不受影响）。');return;}
-  /* 输入时清除错误态（与概念稿一致）；提交逻辑仍归应用脚本 */
-  ['authUser','authPass'].forEach(id=>{const n=$(id);if(n)n.addEventListener('input',()=>{if($('authErr')&&$('authErr').textContent){$('authErr').textContent='';n.removeAttribute('aria-invalid');}queueLayout();});});
+
   applyTheme(document.documentElement.dataset.theme==='dark'?'dark':'light');
   resize();syncMotionUI();syncAnimation();
   window.RiverFX = Object.freeze({
@@ -2585,6 +2623,15 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   'use strict';
   const languages = [["zh-CN", "中文"], ["en", "English"], ["fr", "Français"], ["ru", "Русский"], ["es", "Español"], ["ja", "日本語"], ["pt", "Português"], ["de", "Deutsch"], ["sr", "Српски"], ["ko", "한국어"]];
   const rows = [
+  ["记住我", "Remember me", "Se souvenir de moi", "Запомнить меня", "Recordarme", "ログイン状態を保持", "Lembrar de mim", "Angemeldet bleiben", "Запамти ме", "로그인 상태 유지"],
+  ["忘记密码？", "Forgot password?", "Mot de passe oublié ?", "Забыли пароль?", "¿Olvidaste tu contraseña?", "パスワードをお忘れですか？", "Esqueceu a senha?", "Passwort vergessen?", "Заборавили сте лозинку?", "비밀번호를 잊으셨나요?"],
+  ["重置码", "Reset code", "Code de réinitialisation", "Код сброса", "Código de restablecimiento", "再設定コード", "Código de redefinição", "Code zum Zurücksetzen", "Код за ресетовање", "재설정 코드"],
+  ["新密码（重置用）", "New password", "Nouveau mot de passe", "Новый пароль", "Nueva contraseña", "新しいパスワード", "Nova senha", "Neues Passwort", "Нова лозинка", "새 비밀번호"],
+  ["重置密码", "Reset password", "Réinitialiser le mot de passe", "Сбросить пароль", "Restablecer la contraseña", "パスワードを再設定", "Redefinir senha", "Passwort zurücksetzen", "Ресетуј лозинку", "비밀번호 재설정"],
+  ["密码已重置，请用新密码登录", "Password reset. Sign in with your new password.", "Le mot de passe a été réinitialisé. Connectez-vous avec votre nouveau mot de passe.", "Пароль сброшен. Войдите с новым паролем.", "Se ha restablecido la contraseña. Inicia sesión con la nueva contraseña.", "パスワードを再設定しました。新しいパスワードでログインしてください。", "A senha foi redefinida. Entre com a nova senha.", "Das Passwort wurde zurückgesetzt. Melden Sie sich mit Ihrem neuen Passwort an.", "Лозинка је ресетована. Пријавите се новом лозинком.", "비밀번호를 재설정했습니다. 새 비밀번호로 로그인하세요."],
+  ["请联系管理员获取重置码", "Contact your administrator for a reset code.", "Demandez un code de réinitialisation à votre administrateur.", "Обратитесь к администратору за кодом сброса.", "Pide un código de restablecimiento a tu administrador.", "管理者に再設定コードの発行を依頼してください。", "Peça um código de redefinição ao administrador.", "Bitten Sie Ihre Administration um einen Code zum Zurücksetzen.", "Затражите код за ресетовање од администратора.", "관리자에게 재설정 코드를 요청하세요."],
+  ["请运行安装目录的重置工具获取重置码", "Run the reset tool in the installation folder to get a reset code.", "Exécutez l’outil de réinitialisation dans le dossier d’installation pour obtenir un code.", "Запустите утилиту сброса из папки установки, чтобы получить код.", "Ejecuta la herramienta de restablecimiento de la carpeta de instalación para obtener un código.", "インストールフォルダー内の再設定ツールを実行して、再設定コードを取得してください。", "Execute a ferramenta de redefinição na pasta de instalação para obter um código.", "Führen Sie das Tool zum Zurücksetzen im Installationsordner aus, um einen Code zu erhalten.", "Покрените алат за ресетовање из фасцикле за инсталацију да бисте добили код.", "설치 폴더의 재설정 도구를 실행해 코드를 받으세요."],
+  ["用户名或重置码无效。", "Invalid username or reset code.", "Nom d’utilisateur ou code de réinitialisation invalide.", "Неверное имя пользователя или код сброса.", "El nombre de usuario o el código de restablecimiento no es válido.", "ユーザー名または再設定コードが無効です。", "Nome de usuário ou código de redefinição inválido.", "Der Benutzername oder der Code zum Zurücksetzen ist ungültig.", "Корисничко име или код за ресетовање није важећи.", "사용자 이름 또는 재설정 코드가 올바르지 않습니다."],
   ["数据分析", "Data analysis", "Analyse des données", "Анализ данных", "Análisis de datos", "データ分析", "Análise de dados", "Datenanalyse", "Анализа података", "데이터 분석"],
   ["偏倚风险评估", "Risk of bias assessment", "Évaluation du risque de biais", "Оценка риска систематической ошибки", "Evaluación del riesgo de sesgo", "バイアスリスク評価", "Avaliação do risco de viés", "Bewertung des Verzerrungsrisikos", "Процена ризика од пристрасности", "비뚤림 위험 평가"],
   ["研究轨迹", "Research history", "Historique de recherche", "Журнал исследования", "Historial de investigación", "研究履歴", "Histórico da pesquisa", "Forschungsverlauf", "Историја истраживања", "연구 이력"],
@@ -4942,6 +4989,10 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 ];
   rows.push(...APP_ROWS, ...PRISMA_ROWS);
   const dictionary = new Map(rows.map(row => [row[0], row]));
+  // 后端错误与英文译文共用同一行，保留无句号的中文查找键。
+  const invalidResetCode = dictionary.get('用户名或重置码无效。');
+  dictionary.set('用户名或重置码无效', invalidResetCode);
+  dictionary.set(invalidResetCode[1], invalidResetCode);
   const textSources = new WeakMap(), attributeSources = new WeakMap();
   // Retain the template and its original arguments for generated interface text.
   const renderedTemplates = new Map();
@@ -5254,6 +5305,7 @@ function el(tag, attrs, ...children) {
 
 /* ---------- API 层 ---------- */
 const TOKEN_KEY = 'rf_token';
+const REMEMBER_KEY = 'rf_remember';
 let AUTH_TOKEN = null;
 /* 集成部署始终使用当前页面端口；独立前端开发服务才回退到 :8613。 */
 let API_BASE = '';
@@ -5308,7 +5360,7 @@ async function apiRequest(path, opts = {}) {
       throw new ApiError(0, '无法连接服务，请检查网络连接或重新打开应用。');
     }
   }
-  if (resp.status === 401 && !path.startsWith('/api/auth/')) {
+  if (resp.status === 401 && (!path.startsWith('/api/auth/') || path === '/api/auth/me')) {
     /* 高1（F01 会话静默丢失）：统一登出前先给出显式提示（十语言注册），并明确
        当前地址已保留、重登录后回到此处。logout() 不修改 location.hash，
        enterApp() 会按 hash 复原页面（见 enterApp 内 initialRoute 解析），因此
@@ -5323,7 +5375,8 @@ async function apiRequest(path, opts = {}) {
        状态，未保存内容仍留在既有暂存层（守卫对话框本来的保存/放弃路径不再触达）。
        GET 401 没有在途写计数，保持原守卫路径（有草稿时仍弹“未保存的改动”
        对话框，行为不变）。 */
-    logout('登录已过期，请重新登录。', { force: (opts.method || 'GET').toUpperCase() !== 'GET' });
+    // 会话恢复时 /auth/me 先于工作区加载，失效令牌直接清除。
+    logout('登录已过期，请重新登录。', { force: path === '/api/auth/me' || (opts.method || 'GET').toUpperCase() !== 'GET' });
     throw new ApiError(401, '登录已过期');
   }
   if (opts.blob || opts.response) {
@@ -5356,7 +5409,8 @@ async function apiRequest(path, opts = {}) {
            username 字段）维持原有 loc+msg 拼接，列后续工作。 */
         const lengthRules = path.startsWith('/api/auth/') ? {
           username: '用户名须为 3~64 个字符，且只含字母、数字、汉字与 . _ - @。',
-          password: '密码长度须为 8~128 个字符。'
+          password: '密码长度须为 8~128 个字符。',
+          new_password: '密码长度须为 8~128 个字符。'
         } : null;
         /* F68（UX 批准单 §七）：422 此前只在 /api/auth/ 的账号密码长度上做了
            中文映射，其余一律 `loc + '：' + 英文 msg`——中文界面里冒出
@@ -5388,7 +5442,10 @@ async function apiRequest(path, opts = {}) {
           const rule = VALIDATION_TEMPLATES[d.type];
           if (rule) {
             const limit = rule[1] ? d.ctx?.[rule[1]] : null;
-            return limit == null ? T(rule[0], field || '—') : T(rule[0], field || '—', limit);
+            const label = path === '/api/auth/reset'
+              ? T({username: '用户名', code: '重置码', new_password: '新密码（重置用）'}[field] || field)
+              : field;
+            return limit == null ? T(rule[0], label || '—') : T(rule[0], label || '—', limit);
           }
           return (d.loc ? field + '：' : '') + (d.msg || '');
         }).join('；');
@@ -5424,9 +5481,24 @@ async function apiRequest(path, opts = {}) {
   }
 }
 
-function saveToken(tok) {
+function clearStoredToken() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+}
+function restoreToken() {
+  try {
+    const remembered = localStorage.getItem(TOKEN_KEY);
+    if (remembered) return remembered;
+  } catch (e) {}
+  try { return sessionStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
+}
+function saveToken(tok, remember = false) {
   AUTH_TOKEN = tok;
-  try { sessionStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* 隐私模式等：仅内存持有 */ }
+  clearStoredToken();
+  try {
+    const storage = remember ? localStorage : sessionStorage;
+    storage.setItem(TOKEN_KEY, tok);
+  } catch (e) { /* 隐私模式等：仅内存持有 */ }
 }
 async function logout(msg, opts = {}) {
   /* MM5-02（r7-frontsec）：opts.force=true 跳过草稿守卫强制登出（会话 401 时写
@@ -5452,6 +5524,7 @@ async function logout(msg, opts = {}) {
   analysisPage.inert = false; analysisPage.removeAttribute('aria-busy');
   $('#anLoadStatus').hidden = true; $('#authPass').value = '';
   window.RFWorkspaceShell?.close();
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
   try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
   $('#appShell').style.display = 'none';
   $('#appMain').style.display = 'none';
@@ -9037,19 +9110,48 @@ document.addEventListener('keydown', e => {
 
 /* ---------- 登录 / 注册 ---------- */
 let authMode = 'login';
+const authInputIds = ['authUser', 'authPass', 'authResetUser', 'authResetCode', 'authResetPass'];
+function clearAuthMessage() {
+  $('#authErr').textContent = '';
+  $('#authErr').removeAttribute('data-success');
+  authInputIds.forEach(id => $('#' + id).removeAttribute('aria-invalid'));
+}
 function setAuthMode(mode, languageOnly = false) {
   authMode = mode;
-  $('#submitText').textContent = T(mode === 'login' ? '登录' : '注册');
-  $('#authSwitch').textContent = T(mode === 'login' ? '注册新账号' : '返回登录');
-  $('#authSwitchPre').textContent = T(mode === 'login' ? '还没有账号？' : '已有账号？');
+  $('#authScreen').dataset.authMode = mode;
+  const isLogin = mode === 'login', isReset = mode === 'reset';
+  $('#submitText').textContent = T({login: '登录', register: '注册', reset: '重置密码'}[mode]);
+  $('#authSwitch').textContent = T(isLogin ? '注册新账号' : '返回登录');
+  $('#authSwitchPre').textContent = T(isLogin ? '还没有账号？' : '已有账号？');
+  $('#authSwitchPre').hidden = isReset;
+  $('#authRememberRow').hidden = !isLogin;
+  $('#authForgot').hidden = !isLogin;
+  $('#authCredentials').hidden = $('#authCredentials').disabled = isReset;
+  $('#authResetFields').hidden = $('#authResetFields').disabled = !isReset;
+  $('#authPass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
+  $('#authResetServerHint').hidden = runtimeMode !== 'server';
+  $('#authResetDesktopHint').hidden = runtimeMode === 'server';
   if (!languageOnly) {
-    $('#authErr').textContent = '';
-    ['authUser', 'authPass'].forEach(id => { const n = $(id); if (n) n.removeAttribute('aria-invalid'); });
-    if (mode === 'register') $('#authPass').value = '';
+    clearAuthMessage();
+    if (!isLogin) $('#authPass').value = '';
+    $('#authResetCode').value = '';
+    $('#authResetPass').value = '';
   }
   if (window.RiverFX) RiverFX.layout();   /* 概念稿：切换后重排河道（卡片高度变化） */
 }
-$('#authSwitch').addEventListener('click', () => setAuthMode(authMode === 'login' ? 'register' : 'login'));
+authInputIds.forEach(id => $('#' + id).addEventListener('input', clearAuthMessage));
+$('#authRemember').addEventListener('change', e => {
+  try { localStorage.setItem(REMEMBER_KEY, String(e.target.checked)); } catch (error) {}
+});
+$('#authSwitch').addEventListener('click', () => {
+  setAuthMode(authMode === 'login' ? 'register' : 'login');
+  $('#authUser').focus();
+});
+$('#authForgot').addEventListener('click', () => {
+  $('#authResetUser').value = $('#authUser').value.trim();
+  setAuthMode('reset');
+  $('#authResetUser').focus();
+});
 /* 密码可见性切换（概念稿小眼睛：可见时显示斜线） */
 $('#pwEye').addEventListener('click', () => {
   const pass = $('#authPass'), eye = $('#pwEye');
@@ -9062,27 +9164,44 @@ $('#pwEye').addEventListener('click', () => {
 });
 $('#authForm').addEventListener('submit', async e => {
   e.preventDefault();
-  const username = $('#authUser').value.trim();
-  const password = $('#authPass').value;
+  if ($('#authSubmit').disabled) return;
+  const mode = authMode;
+  const isReset = mode === 'reset';
+  const remember = mode === 'login' && $('#authRemember').checked;
+  const username = $(isReset ? '#authResetUser' : '#authUser').value.trim();
+  const body = isReset
+    ? { username, code: $('#authResetCode').value.trim(), new_password: $('#authResetPass').value }
+    : { username, password: $('#authPass').value };
+  if (mode === 'login') body.remember = remember;
+
   const err = $('#authErr');
-  err.textContent = '';
-  $('#authSubmit').disabled = true;
+  clearAuthMessage();
+  const controls = ['authSubmit', 'authSwitch', 'authForgot'];
+  controls.forEach(id => { $('#' + id).disabled = true; });
   try {
-    const d = await api('/api/auth/' + authMode, { method: 'POST', body: { username, password } });
-    saveToken(d.token);
+    const d = await api('/api/auth/' + mode, { method: 'POST', body });
+    if (isReset) {
+      $('#authUser').value = username;
+      setAuthMode('login');
+      err.setAttribute('data-success', '');
+      err.textContent = T('密码已重置，请用新密码登录');
+      $('#authPass').focus();
+      return;
+    }
+    saveToken(d.token, remember);
     await enterApp();
     toast(T('欢迎，{0}', d.user.username), 'inc');
     /* F11（修复）：新注册用户不知道「我是谁／下一步干嘛」——注册成功再补一句
        角色与去向（独立用户可新建任务，或等任务属主邀请）。注册与登录共用同一
        submit 分支，只在 authMode==='register' 时提示；文案已注册十语言。 */
-    if (authMode === 'register') toast(T('你已注册为独立用户：可新建任务，或等任务属主邀请加入。'), 'info', 9000);
+    if (mode === 'register') toast(T('你已注册为独立用户：可新建任务，或等任务属主邀请加入。'), 'info', 9000);
     /* R6-C1（复审）：消费登录响应 warnings（保留名撞库账号的改名指引）——
        此前响应里有 warnings 但前端只取 token/username，用户得不到任何提示 */
     if (Array.isArray(d.warnings)) d.warnings.forEach(w => toast(String(w), 'warn', 9000));
   } catch (ex) {
     err.textContent = ex.message;
   } finally {
-    $('#authSubmit').disabled = false;
+    controls.forEach(id => { $('#' + id).disabled = false; });
   }
 });
 
@@ -9843,7 +9962,9 @@ restartButton.addEventListener('click', async () => {
   syncThemeChrome(t);
   $('#prMetaN').parentElement.style.display = 'none';  /* DTA 选填字段默认隐藏 */
   try { document.documentElement.dataset.density = localStorage.getItem('rfpb_density') || 'normal'; $('#densitySel').value = localStorage.getItem('rfpb_density') || 'normal'; } catch (e) {}
-  AUTH_TOKEN = sessionStorage.getItem(TOKEN_KEY);
+  try { $('#authRemember').checked = localStorage.getItem(REMEMBER_KEY) === 'true'; } catch (e) {}
+  setAuthMode(authMode, true);
+  AUTH_TOKEN = restoreToken();
   prInitChain();                                       /* PRISMA 推导链：字段打 ✨/✏️ 标签并启动联动 */
   if (AUTH_TOKEN) {
     try { await enterApp(); return; } catch (e) { /* 令牌失效：api() 已回登录屏 */ }
