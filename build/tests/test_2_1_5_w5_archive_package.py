@@ -1036,6 +1036,11 @@ class TempTTLAndMutexPins(_ApiBase):
             def release(self):
                 pass
 
+            def locked(self):
+                # 「互斥删除」形态的忠实模拟：清扫的在途探测也恒判无操作
+                # 在途（2.1.5-sec29 起 _sweep_stale_package_temp 会探 .locked）。
+                return False
+
         def slow_apply(*args, **kwargs):
             entered.set()
             release.wait(timeout=30)
@@ -2421,6 +2426,269 @@ class SavePdfStreamPins(unittest.TestCase):
                           "页数统计退回 str 入参（pypdf 整文件入内存）")
         self.assertIn("PdfReader(handle)", source,
                       "页数统计必须是 PdfReader(handle)（文件句柄、seek 式）")
+
+
+# ---------------------------------------------------------------------------
+# 2.1.5-sec29 安全修复波 G 组红钉（deepseek 复审三发现）：
+#   发现 1（中危）：两个 preflight 不持 _PACKAGE_OP_LOCK——并发体检各自落
+#     2GB 临时文件 + 双遍哈希，绕过「全局互斥把磁盘峰值封死」承诺；
+#   发现 2（低危）：TTL 清扫只看 mtime——超 60 分钟的在途导出目录可被并发
+#     preflight 触发的清扫 rmtree；
+#   发现 3（低危）：collaboration.db 改绑失败被静默 unlink 换空库 → 包内
+#     判定/设置丢失且导入 200。
+# 每项至少一颗「修复前必红」钉（对修复前源码实跑验证翻红）。
+# ---------------------------------------------------------------------------
+
+
+class Sec29PreflightMutexPins(_ApiBase):
+    """发现 1：导出体检与导入体检必须与导入/导出共用同一把全局整包操作互斥
+    （非阻塞抢锁；抢不到 409 ``task_package.operation_busy``）——体检快照
+    （rf-package-preflight-* 工作目录可落满 2GB）与导入体检上传暂存
+    （rf-package-upload-*，2GB + 全成员双遍哈希）同样是磁盘/CPU 大占用。"""
+
+    def test_both_preflights_409_while_operation_in_flight(self):
+        self.new_task()
+        lock = task_package_api._PACKAGE_OP_LOCK
+        self.assertTrue(lock.acquire(blocking=False))
+        try:
+            export_preflight = self.client.get(
+                f"/api/tasks/{self.task}/package/preflight", headers=self.auth())
+            self.assertEqual(export_preflight.status_code, 409,
+                             export_preflight.text)
+            detail = export_preflight.json()["detail"]
+            self.assertEqual(detail["error_code"], "operation_busy")
+            self.assertEqual(detail["message_key"],
+                             "task_package.operation_busy")
+            import_preflight = self.client.post(
+                "/api/tasks/import-package/preflight",
+                files={"package": ("p.zip", b"anything", "application/zip")},
+                headers=self.auth(2))
+            self.assertEqual(import_preflight.status_code, 409,
+                             import_preflight.text)
+            self.assertEqual(
+                import_preflight.json()["detail"]["message_key"],
+                "task_package.operation_busy")
+        finally:
+            lock.release()
+        # 锁释放后两个体检恢复正常（互斥不留下永久占用）。
+        recovered = self.client.get(f"/api/tasks/{self.task}/package/preflight",
+                                    headers=self.auth())
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+
+    def test_export_preflight_holds_mutex_through_inventory(self):
+        """体检执行期间锁必须被持有：inventory 钩子内再抢锁必失败（修复前
+        体检不持锁，钩子内 acquire 成功 → 本钉红）。"""
+        self.new_task()
+        probed: list[bool] = []
+        original = task_package_api._package_inventory
+
+        def probing(*args, **kwargs):
+            got = task_package_api._PACKAGE_OP_LOCK.acquire(blocking=False)
+            probed.append(got)
+            if got:
+                task_package_api._PACKAGE_OP_LOCK.release()  # 只探测，不真持有
+            return original(*args, **kwargs)
+
+        with mock.patch.object(task_package_api, "_package_inventory", probing):
+            response = self.client.get(
+                f"/api/tasks/{self.task}/package/preflight", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(probed, [False],
+                         "导出体检执行期间（2GB 快照在途）整包操作锁必须被持有")
+
+    def test_import_preflight_holds_mutex_through_validation(self):
+        """导入体检（2GB 上传暂存 + 全成员双遍哈希）执行期间锁必须被持有。"""
+        self.new_task()
+        self.add_pdf("K01")
+        payload = self.package().content
+        probed: list[bool] = []
+        original = task_package_api.validate_import_package
+
+        def probing(path, **kwargs):
+            got = task_package_api._PACKAGE_OP_LOCK.acquire(blocking=False)
+            probed.append(got)
+            if got:
+                task_package_api._PACKAGE_OP_LOCK.release()
+            return original(path, **kwargs)
+
+        with mock.patch.object(task_package_api, "validate_import_package",
+                               probing):
+            response = self.client.post(
+                "/api/tasks/import-package/preflight",
+                files={"package": ("pkg.zip", payload, "application/zip")},
+                headers=self.auth(2))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(probed, [False],
+                         "导入体检执行期间整包操作锁必须被持有")
+
+
+class Sec29SweepSkipPins(_ApiBase):
+    """发现 2：操作锁被持有时 TTL 清扫整体跳过——mtime 不是在途证据（慢
+    客户端下载在途/超大包导出中的工作目录 mtime 可超 60 分钟），仅凭 mtime
+    清扫会把在途目录 rmtree 掉。跳过 ≠ 永不清理：无操作在途时同一批孤儿照常
+    按 TTL 清扫。"""
+
+    def _stale_mtime(self):
+        return time.time() - (task_package_api.PACKAGE_TEMP_TTL_SECONDS + 60)
+
+    def test_sweep_skips_while_lock_held_resumes_after_release(self):
+        self.new_task()
+        temp_root = Path(tempfile.gettempdir())
+        stale = temp_root / "rf-package-export-sec29-inflight"
+        stale.mkdir(exist_ok=True)
+        (stale / "package.zip").write_bytes(b"in-flight")
+        os.utime(stale, (self._stale_mtime(), self._stale_mtime()))
+        tasks_root = Path(tasks_mod.tasks_root(DATA_DIR))
+        stale_import = tasks_root / ".import-sec29-inflight"
+        stale_import.mkdir(parents=True, exist_ok=True)
+        (stale_import / "x.db").write_bytes(b"in-flight")
+        os.utime(stale_import, (self._stale_mtime(), self._stale_mtime()))
+        try:
+            lock = task_package_api._PACKAGE_OP_LOCK
+            self.assertTrue(lock.acquire(blocking=False))
+            try:
+                # 操作在途（锁被持有）：即使 mtime 超 TTL 也一轮都不扫。
+                removed = task_package_api._sweep_stale_package_temp(tasks_root)
+                self.assertEqual(removed, 0)
+                self.assertTrue(stale.exists(),
+                                "在途操作的临时目录不得被清扫 rmtree（发现 2）")
+                self.assertTrue(stale_import.exists(),
+                                "在途导入暂存目录不得被清扫 rmtree（发现 2）")
+                # 端点层同一口径：并发请求触发的惰性清扫也跳过（该请求自身
+                # 随后 409 operation_busy——清扫先于抢锁发生且必须让路）。
+                busy = self.client.get(
+                    f"/api/tasks/{self.task}/package/preflight",
+                    headers=self.auth())
+                self.assertEqual(busy.status_code, 409, busy.text)
+                self.assertTrue(stale.exists(),
+                                "锁持有期间端点触发的清扫必须整体跳过")
+            finally:
+                lock.release()
+            # 无操作在途后：同一批孤儿按 TTL 正常清扫（跳过不是永不清理）。
+            removed = task_package_api._sweep_stale_package_temp(tasks_root)
+            self.assertGreaterEqual(removed, 2)
+            self.assertFalse(stale.exists())
+            self.assertFalse(stale_import.exists())
+        finally:
+            shutil.rmtree(stale, ignore_errors=True)
+            shutil.rmtree(stale_import, ignore_errors=True)
+
+
+class Sec29CollabRewriteRejectPins(_ApiBase):
+    """发现 3：包内 collaboration.db 改绑失败 = 该包无效——预检/导入同口径
+    结构化 400 ``package_invalid{collaboration_rewrite}``（对齐 fulltexts 的
+    对抗口径），绝不静默 unlink 换空库假 200（那会丢包内判定/设置且无迹
+    可查）。"""
+
+    @staticmethod
+    def _collab_db_bytes(mode: str) -> bytes:
+        """构造改绑必失败/可被绕过的 collaboration.db（SQLite 头合法）。"""
+        with tempfile.TemporaryDirectory(prefix="rf_sec29_collab_") as tmp:
+            path = Path(tmp) / "collaboration.db"
+            with closing(sqlite3.connect(path)) as conn, conn:
+                conn.execute("CREATE TABLE collaboration_task(singleton INTEGER"
+                             " PRIMARY KEY, task_id TEXT, owner_user_id INTEGER,"
+                             " owner_username TEXT)")
+                conn.execute("CREATE TABLE collaboration_role_grants("
+                             "user_id INTEGER, role TEXT)")
+                conn.execute("CREATE TABLE collaboration_member_settings("
+                             "user_id INTEGER, json TEXT)")
+                if mode == "no_singleton":
+                    pass  # 空 collaboration_task：UPDATE rowcount=0 → 改绑失败
+                elif mode == "trigger":
+                    conn.execute("INSERT INTO collaboration_task VALUES("
+                                 "1,'src-task',42,'old-owner')")
+                    # BEFORE RAISE(IGNORE)：UPDATE rowcount=0；AFTER 写回形态
+                    # 由 schema 敌意检查一并拒绝（任何触发器都拒）。
+                    conn.execute(
+                        "CREATE TRIGGER blk_collab BEFORE UPDATE ON "
+                        "collaboration_task BEGIN SELECT RAISE(IGNORE); END")
+            return path.read_bytes()
+
+    def _package_with(self, collab: bytes) -> bytes:
+        return _build_raw_package({
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/a.db": _SQLITE_MAGIC + os.urandom(64),
+            "collaboration.db": collab,
+        })
+
+    def _assert_collab_rewrite_rejected(self, response):
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error_code"], "package_invalid")
+        self.assertEqual(detail["message_key"], "task_package.package_invalid")
+        self.assertEqual(detail["params"]["reason"], "collaboration_rewrite")
+        self.assertEqual(detail["params"]["member"], "collaboration.db")
+
+    def test_no_singleton_row_rejected_at_preflight_and_import(self):
+        """空 collaboration_task（改绑 rowcount=0 必失败）：两层都 400。
+        修复前：预检 200、导入静默换空库 200——本钉红。"""
+        self.new_task()
+        payload = self._package_with(self._collab_db_bytes("no_singleton"))
+        before = _task_dir_count()
+        for endpoint in ("/api/tasks/import-package/preflight",
+                         "/api/tasks/import-package"):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(
+                    endpoint,
+                    files={"package": ("pkg.zip", payload, "application/zip")},
+                    headers=self.auth(2))
+                self._assert_collab_rewrite_rejected(response)
+        self.assertEqual(_task_dir_count(), before, "拒绝后必须零半成品任务")
+        root = tasks_mod.tasks_root(DATA_DIR)
+        leftovers = [] if not root.is_dir() else [
+            p.name for p in root.iterdir() if p.name.startswith(".import-")]
+        self.assertEqual(leftovers, [], "拒绝后必须清场")
+
+    def test_collab_trigger_rejected_not_silently_bypassed(self):
+        """协作库挂触发器（改绑被 RAISE(IGNORE) 吞掉）：schema 层拒绝。
+        修复前：导入 200 + 空库（判定/设置真实丢失）——本钉红。"""
+        self.new_task()
+        payload = self._package_with(self._collab_db_bytes("trigger"))
+        before = _task_dir_count()
+        response = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self._assert_collab_rewrite_rejected(response)
+        self.assertEqual(_task_dir_count(), before)
+
+    def test_apply_rewrite_failure_rejects_without_empty_store_swap(self):
+        """主钉：改绑函数真实返回 False（预检放行的合法协作库 + 运行期故障）
+        → 导入结构化拒绝并清场。修复前：unlink + 空库 + 200（发现 3 原样）
+        ——本钉红。"""
+        self.new_task()
+        payload = self.package().content  # 真实整包：协作库合法、预检通过
+        before = _task_dir_count()
+        with mock.patch.object(task_package_api,
+                               "_rewrite_collaboration_store",
+                               lambda *args, **kwargs: False):
+            response = self.client.post(
+                "/api/tasks/import-package",
+                files={"package": ("pkg.zip", payload, "application/zip")},
+                headers=self.auth(2))
+        self._assert_collab_rewrite_rejected(response)
+        self.assertEqual(_task_dir_count(), before, "拒绝后必须零半成品任务")
+
+    def test_valid_package_without_collab_member_still_imports(self):
+        """兼容钉：协作库是可选成员——无 collaboration.db 的包照常导入，
+        导入者以首任属主身份拿到初始化空库（不误伤既有合法形态）。"""
+        self.new_task()
+        payload = _build_raw_package({
+            "task.sanitized.json": b'{"task_id":"t","display_name":"T"}',
+            "db/sec29-plain.db": _SQLITE_MAGIC + b"\x00" * 64,
+        })
+        response = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth(2))
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        new_info = tasks_mod.find_task(result["task_id"], DATA_DIR)
+        owner = task_collaboration.get_owner(
+            task_collaboration.shared_store_path(new_info.dir),
+            task_id=result["task_id"])
+        self.assertEqual(owner["owner_user_id"], self.users[2]["user_id"])
 
 
 if __name__ == "__main__":

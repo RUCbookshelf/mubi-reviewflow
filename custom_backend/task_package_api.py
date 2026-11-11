@@ -41,10 +41,20 @@ legacy 任务（无属主记录）本人操作放行，server 模式 legacy 任�
 * **60 分钟临时保留上限**：上传 zip、解压暂存、导出/归档/体检工作目录都是
   分钟级路过文件——操作结束（成功/失败/客户端中断下载）即刻删除；每次触达
   任一整包端点惰性清扫超过 ``PACKAGE_TEMP_TTL_SECONDS`` 的全部前缀残留。
-* **全局整包操作互斥**：导入/整包导出/归档导出共用一把进程级锁，同一时刻
-  只允许一个整包操作在途，第二个请求 409 ``task_package.operation_busy``；
-  磁盘峰值恒定 ≤4GB 瞬态（导入 zip 2GB + 解压 2GB）。导出锁在下载送完或
-  客户端中断时释放（下载在途也算操作在途）。
+  清扫只在确认无整包操作在途时进行（2.1.5-sec29：操作锁被持有时整体跳过
+  ——mtime 不是在途证据，慢客户端下载在途的目录不得只凭 mtime 被 rmtree）。
+* **全局整包操作互斥**：导入/导入体检（import-package/preflight）/整包导出
+  /导出体检（package/preflight）/归档导出共用一把进程级锁（2.1.5-sec29 起
+  两个 preflight 一并纳入——体检快照与上传暂存同样是 2GB 级磁盘占用，不纳
+  入即绕过「全局互斥把磁盘峰值封死」的承诺），同一时刻只允许一个整包操作
+  在途，第二个请求 409 ``task_package.operation_busy``；磁盘峰值恒定 ≤4GB
+  瞬态（导入 zip 2GB + 解压 2GB）。导出锁在下载送完或客户端中断时释放
+  （下载在途也算操作在途）。
+* **协作库改绑失败即坏包**（2.1.5-sec29 发现 3，对齐 fulltexts 对抗口径）：
+  包内 ``collaboration.db`` 改绑失败（缺表/缺 singleton 行/挂触发器或视图
+  /列不全）= 该包无效——预检与导入同口径结构化 400
+  ``package_invalid{collaboration_rewrite}``，绝不静默 unlink 换空库假 200
+  （那会丢包内判定/设置且无迹可查）。
 * 上传 zip 落盘照旧（受 2GB 上传上限），但解压完成（成功或失败）立即删除。
 """
 
@@ -138,11 +148,13 @@ _PACKAGE_UPLOAD_PREFIX = "rf-package-upload-"
 #: 固定 zip 时间戳：导出副本不带本机 mtime（减少环境信息、便于比对）。
 _ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
-#: 全局整包操作互斥（导入/整包导出/归档导出共用一把锁，用户 2026-11-09
-#: 裁定）：同一时刻全服务器（进程内）只允许一个整包操作在途——磁盘峰值从
-#: 「并发数 × 2GB」封死为恒定 ≤4GB 瞬态（导入 2+2 或导出 2）。第二个请求
-#: 结构化 409 ``task_package.operation_busy``。导出侧锁在下载完成/客户端
-#: 中断（流式生成器 finally）时释放，避免「下载中 + 新导入」的 6GB 叠加。
+#: 全局整包操作互斥（导入/导入体检/整包导出/导出体检/归档导出共用一把锁，
+#: 用户 2026-11-09 裁定；2.1.5-sec29 起两个 preflight 一并纳入）：同一时刻
+#: 全服务器（进程内）只允许一个整包操作在途——磁盘峰值从「并发数 × 2GB」
+#: 封死为恒定 ≤4GB 瞬态（导入 2+2 或导出 2；体检快照/上传暂存同受封顶）。
+#: 第二个请求结构化 409 ``task_package.operation_busy``。导出侧锁在下载完成
+#: /客户端中断（流式生成器 finally）时释放，避免「下载中 + 新导入」的 6GB
+#: 叠加。
 _PACKAGE_OP_LOCK = threading.Lock()
 
 
@@ -169,7 +181,14 @@ def _sweep_stale_package_temp(tasks_root: Path | None = None, *,
     ``tasks_root`` 内的 ``.import-*`` 解压暂存目录。60 分钟内在途文件不误删
     （目录 mtime 随内部写文件刷新）。清扫是尽力而为：任何 OSError 静默跳过，
     绝不让清扫失败变成端点 500。返回删除条目数。
+
+    2.1.5-sec29（发现 2）：mtime 不是在途证据——慢客户端下载/超大包导出可让
+    在途工作目录的 mtime 超过 TTL 仍在被操作使用。任一整包操作在途（操作锁
+    被持有，含下载在途）时**整体跳过**本轮清扫；清扫只发生在确认无整包操作
+    在途时（各端点均在抢锁之前触达本函数，不存在「自己持锁自己跳过」）。
     """
+    if _PACKAGE_OP_LOCK.locked():
+        return 0
     cutoff = (time.time() if now is None else now) - ttl
     removed = 0
     roots: list[tuple[Path, tuple[str, ...]]] = [
@@ -1207,6 +1226,15 @@ def validate_import_package(path: str | Path, *, package_sha256: str | None = No
                 raise TaskPackageError("package_invalid", params={
                     "reason": "member_not_sqlite", "member": name})
 
+        # 2.1.5-sec29（发现 3）：协作库改绑前置条件在预检层即成立——改绑会
+        # 失败/可被绕过的包，导入侧将被结构化拒绝，预检不得放行（不假 200）。
+        if "collaboration.db" in actual:
+            collab_dir = Path(tempfile.mkdtemp(prefix="rf-package-preflight-"))
+            try:
+                _check_collaboration_member_rewritable(archive, collab_dir)
+            finally:
+                shutil.rmtree(collab_dir, ignore_errors=True)
+
         fulltexts = manifest.get("fulltexts") or []
         if not isinstance(fulltexts, list):
             raise TaskPackageError("package_invalid", params={"reason": "fulltexts_invalid"})
@@ -1393,6 +1421,93 @@ def _fulltexts_schema_hostile(conn: sqlite3.Connection) -> bool:
     return bool(rows)
 
 
+#: 协作库改绑（:func:`_rewrite_collaboration_store`）触及的表（2.1.5-sec29
+#: 发现 3）：缺表/缺列/无 singleton 行 = 改绑必失败；表上有视图/触发器 =
+#: 改绑可被静默吞掉或写回——预检与导入同口径拒绝，绝不静默换空库假 200。
+_COLLABORATION_REWRITE_TABLES = ("collaboration_task",
+                                 "collaboration_role_grants",
+                                 "collaboration_member_settings")
+_COLLABORATION_TASK_COLUMNS = frozenset({
+    "singleton", "task_id", "owner_user_id", "owner_username"})
+
+
+def _collaboration_rewrite_error(member: str = "collaboration.db"
+                                 ) -> TaskPackageError:
+    """改绑前置条件不成立/改绑失败共用的结构化错误（400，reason 单一口径）。"""
+    return TaskPackageError("package_invalid", params={
+        "reason": "collaboration_rewrite", "member": member})
+
+
+def _collaboration_schema_hostile(conn: sqlite3.Connection) -> bool:
+    """协作库是否被做了手脚：改绑目标表是视图，或其上（含 sof_judgments，
+    rebind_decided_by 要 UPDATE 它）挂有任意触发器。
+
+    对齐 :func:`_fulltexts_schema_hostile` 的对抗口径：产品自身的协作库永远
+    是普通表、无触发器（task_collaboration._SCHEMA / sof_judgments 建表），
+    出现视图/触发器只可能来自自造包——BEFORE ``RAISE(IGNORE)`` 让 UPDATE
+    rowcount=0、AFTER 把属主改回旧值等任何形态都能让改绑静默失效或失败，
+    在 schema 层直接拒绝，不逐一猜触发器写法。
+    """
+    rows = conn.execute(
+        "SELECT type FROM sqlite_master WHERE "
+        "(type='view' AND lower(name) IN ('collaboration_task', "
+        "'collaboration_role_grants', 'collaboration_member_settings', "
+        "'sof_judgments')) OR (type='trigger' AND lower(tbl_name) IN "
+        "('collaboration_task', 'collaboration_role_grants', "
+        "'collaboration_member_settings', 'sof_judgments'))").fetchall()
+    return bool(rows)
+
+
+def _check_collaboration_member_rewritable(archive: zipfile.ZipFile,
+                                           base: Path) -> None:
+    """预检/导入共用：包内 ``collaboration.db`` 必须可安全改绑到导入者。
+
+    2.1.5-sec29 发现 3：修复前改绑失败（返回 False）被静默 unlink 换空库
+    ——包内判定/设置丢失且导入仍 200。现对齐 fulltexts 的对抗口径，改绑
+    前置条件在 :func:`validate_import_package`（预检与导入共同入口）即判定，
+    任一不成立 → 结构化 400 ``collaboration_rewrite``：
+
+    * 三张改绑目标表都是普通表（缺表 = DELETE/UPDATE 必抛错）；
+    * ``collaboration_task`` 具备改绑所需列且存在 ``singleton=1`` 行
+      （UPDATE rowcount=0 = 改绑无对象）；
+    * 表上无视图/触发器手脚（防改绑被静默吞掉或写回）；
+    * ``sof_judgments`` 若存在则具备 ``decided_by``/``prev_json`` 列
+      （rebind_decided_by 的 SELECT/UPDATE 目标列）。
+
+    成员解压复用 :func:`_extract_member` 有界流式通道（终审 #41 三限额照常
+    生效）；校验后中转文件即刻删除。
+    """
+    scratch = _extract_member(archive, "collaboration.db", base,
+                              "collaboration.db")
+    try:
+        with closing(_open_read_only(scratch)) as conn:
+            tables = {str(row[0]).lower() for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            for table in _COLLABORATION_REWRITE_TABLES:
+                if table not in tables:
+                    raise _collaboration_rewrite_error()
+            if _collaboration_schema_hostile(conn):
+                raise _collaboration_rewrite_error()
+            columns = {str(row[1]).lower() for row in conn.execute(
+                "PRAGMA table_info(collaboration_task)")}
+            if not _COLLABORATION_TASK_COLUMNS <= columns:
+                raise _collaboration_rewrite_error()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM collaboration_task WHERE singleton=1"
+            ).fetchone()
+            if row is None or int(row[0]) < 1:
+                raise _collaboration_rewrite_error()
+            sof_columns = {str(row[1]).lower() for row in conn.execute(
+                "PRAGMA table_info(sof_judgments)")}
+            if sof_columns and not {"decided_by", "prev_json"} <= sof_columns:
+                raise _collaboration_rewrite_error()
+    except sqlite3.DatabaseError as exc:
+        # 头 16 字节是 SQLite 但库体损坏/不可读：改绑必然失败，同口径拒绝。
+        raise _collaboration_rewrite_error() from exc
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
 def _neutralize_unrestored_fulltexts(base: Path, names: Iterable[str],
                                      covered_paths: Mapping[str, str]) -> int:
     """终审 #39：manifest 未覆盖的 fulltexts 行 ``path`` 一律清空。
@@ -1569,10 +1684,18 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
 
             owner_id = int(user["user_id"])
             owner_name = str(user["username"])
-            if not (collab_target.is_file() and _rewrite_collaboration_store(
-                    temp_dir, "collaboration.db", task_id=new_id, owner_id=owner_id,
-                    owner_name=owner_name)):
-                collab_target.unlink(missing_ok=True)
+            if collab_target.is_file():
+                # 2.1.5-sec29（发现 3，对齐 fulltexts 对抗口径）：包内协作库
+                # 改绑失败 = 该包无效——结构化拒绝并清场，绝不静默 unlink 换
+                # 空库假 200（那会丢包内判定/设置且无迹可查）。前置条件已在
+                # validate_import_package（预检/导入共同入口）判定；此处兜底
+                # 运行期改绑失败（IO/并发写坏等）。
+                if not _rewrite_collaboration_store(
+                        temp_dir, "collaboration.db", task_id=new_id,
+                        owner_id=owner_id, owner_name=owner_name):
+                    raise _collaboration_rewrite_error()
+            else:
+                # 包内无协作库（合法可选成员）：导入者即首任属主，初始化新库。
                 task_collaboration.initialize_task_store(
                     temp_dir, task_id=new_id, owner_user_id=owner_id,
                     owner_username=owner_name,
@@ -1866,7 +1989,15 @@ def register_task_package_routes(
                                 user: dict = Depends(require_user)) -> dict:
         info = _manage_info(task_id, user)
         _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
-        return await _run_or_error(_package_inventory, info, data_dir, include_pdfs)
+        # 全局整包操作互斥（2.1.5-sec29 发现 1：体检快照可落满 2GB 临时目录
+        # ——与导入/导出同一把锁，非阻塞抢锁；抢不到 409 operation_busy，
+        # 否则「全局互斥把磁盘峰值封死」的承诺被并发体检绕过）。
+        _acquire_package_op_lock_or_409()
+        try:
+            return await _run_or_error(_package_inventory, info, data_dir,
+                                       include_pdfs)
+        finally:
+            _PACKAGE_OP_LOCK.release()
 
     # ---- 整包导出 --------------------------------------------------------
     @app.post("/api/tasks/{task_id}/package/export")
@@ -1915,6 +2046,9 @@ def register_task_package_routes(
         user: dict = Depends(require_user),
     ) -> dict:
         _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
+        # 全局整包操作互斥（2.1.5-sec29 发现 1：导入体检落 2GB 上传暂存 +
+        # 全成员双遍哈希——与 import-package 同一把锁、同 409 语义）。
+        _acquire_package_op_lock_or_409()
         upload_path: Path | None = None
         try:
             upload_path = await _read_upload_bounded(
@@ -1925,6 +2059,7 @@ def register_task_package_routes(
         finally:
             if upload_path is not None:
                 upload_path.unlink(missing_ok=True)
+            _PACKAGE_OP_LOCK.release()
         manifest = parsed["manifest"]
         return {
             "package_sha256": parsed["package_sha256"],
