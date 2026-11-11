@@ -469,7 +469,8 @@ class AiKeysBaseUrlGovernancePins(unittest.TestCase):
                         {"base_url": "http://my-ollama.example/v1"}))
 
     def test_dns_recheck_public_resolution_and_failure_pass(self):
-        """公网解析放行；解析失败不拦（先例：隔离网络自托管域名）。"""
+        """公网解析放行；保存/元数据口径解析失败不拦（隔离网络自托管域名；
+        sec29b W4② 起**出站侧**改失败关闭——见 test_2_1_5_sec29b_pinning）。"""
         with mock.patch.object(ai_keys, "_resolve_host",
                                lambda h, port=443: [PUBLIC_IP, "2001:db8::1"]):
             self.assertEqual(ai_keys.base_url_of(
@@ -524,6 +525,15 @@ class AiKeysBaseUrlGovernancePins(unittest.TestCase):
 class ProviderConcurrencyPins(unittest.TestCase):
     BODY = json.dumps({"choices": [{"message": {"content": "{}"}}],
                        "usage": {}, "model": "m"}).encode()
+
+    def setUp(self):
+        # sec29b W4①：_provider_generate 自带出站闸（guard 单次解析 + 钉扎表），
+        # 真跑时把 DNS 缝钉到公网桩（否则 probe.example.test 真解析 → 失败关闭
+        # 503，与并发闸语义无关地红）。
+        patcher = mock.patch.object(ai_keys, "_resolve_host",
+                                    lambda host, port=443: [PUBLIC_IP])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_over_limit_fails_fast_with_busy_503(self):
         """占满 8 个闸位后第 9 次出站快速失败（不排队、不重试）。"""

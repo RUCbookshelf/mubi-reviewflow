@@ -79,6 +79,8 @@ from custom_backend.ai_suggest_api import (
     PROVIDER_RETRIES,
     ProviderError,
     _OPENER,
+    _OUTBOUND_SEMAPHORE,
+    _ProviderBusyError,
 )
 
 __all__ = [
@@ -231,7 +233,24 @@ def post_decision(body: dict, *, api_key: str, base_url: str, model: str,
 
     日志红线同 LLM 通道：错误消息绝不携带 api_key 或请求载荷；拒重定向
     （30x 视为错误）；响应体读取上限 2 MiB；非 2xx 只回状态码不回显响应体。
+    sec29b W4④：decision 出站与 LLM 通道共用**同一把** ``_OUTBOUND_SEMAPHORE``
+    并发闸（``ai_suggest_api`` 模块级信号量，同一对象——llm 与 decision 两路
+    出站合计不超过 8 并发；超限快速失败 ``_ProviderBusyError`` 503，不排队）。
+    钥匙测试 / verify=true kind=decision / 导入复核 duplicate/merge 所有出站
+    路径都经本函数，闸在最底层全覆盖。
     """
+    if not _OUTBOUND_SEMAPHORE.acquire(blocking=False):
+        raise _ProviderBusyError() from None
+    try:
+        return _post_decision_locked(body, api_key=api_key, base_url=base_url,
+                                     model=model, timeout=timeout)
+    finally:
+        _OUTBOUND_SEMAPHORE.release()
+
+
+def _post_decision_locked(body: dict, *, api_key: str, base_url: str, model: str,
+                          timeout: float) -> dict:
+    """``post_decision`` 的原实现（已持并发闸；测试注入 fake 替换 ``post_decision``）。"""
     url = systemone_url(base_url)
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(  # noqa: S310  base_url 经用户配置并限 http(s)
@@ -276,12 +295,17 @@ def post_decision(body: dict, *, api_key: str, base_url: str, model: str,
 def call_decision(body: dict, *, api_key: str, base_url: str, model: str,
                   timeout: float) -> dict:
     """带重试（瞬时错误重试 1 次，与 LLM 通道同一 ``PROVIDER_RETRIES`` 口径）
-    与脱敏兜底的包装；测试替换 ``post_decision`` 注入 fake。"""
+    与脱敏兜底的包装；测试替换 ``post_decision`` 注入 fake。
+
+    sec29b W4④：并发闸超限（``_ProviderBusyError``）不重试——与
+    ``ai_suggest_api._call_provider`` 同判（重试只会把闸位占得更久）。"""
     last: ProviderError | None = None
     for attempt in range(PROVIDER_RETRIES):
         try:
             return post_decision(body, api_key=api_key, base_url=base_url,
                                  model=model, timeout=timeout)
+        except _ProviderBusyError:
+            raise          # sec29b W4④：并发满不重试（同 _call_provider 口径）
         except ProviderError as exc:
             last = exc
             transient = exc.status is None or exc.status >= 500 or exc.status == 429

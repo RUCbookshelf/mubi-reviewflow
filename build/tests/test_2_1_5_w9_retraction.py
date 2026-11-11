@@ -322,7 +322,12 @@ class OutboundWhitelistPins(W9Base):
         }), encoding="utf-8")
         stub = CrossrefStub().route("w9k001", updated_by(
             "10.1000/w9k001", "10.1000/eoc", "expression_of_concern"))
-        with mock.patch.object(pdf_fetch_api, "_OPENER", stub):
+        # sec29b（W4-②）：自托管保留 TLD 真实解析必败——此前靠「解析失败
+        # 放行+未钉扎发送」触达桩；修复后解析失败失败关闭不再出站。补
+        # _resolve_host 桩（解析到公网地址），钉扎表非空、经桩发送。
+        with mock.patch.object(pdf_fetch_api, "_resolve_host",
+                               lambda h, p=443: ["203.0.113.9"]), \
+                mock.patch.object(pdf_fetch_api, "_OPENER", stub):
             response = self.check({"scope": "stage2_include"})
         self.assertEqual(response.status_code, 200, response.text)
         # 改配后：只打自托管 base，绝不再触达官方域

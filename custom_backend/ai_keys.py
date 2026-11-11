@@ -44,6 +44,7 @@ _BASE_URL_BLOCK_MESSAGES = {
 }
 
 __all__ = [
+    "BaseUrlResolveError",
     "DECISION_DEFAULT_BASE_URL",
     "DEFAULT_BASE_URL",
     "KEY_KINDS",
@@ -60,6 +61,7 @@ __all__ = [
     "load_shared_key",
     "mask_key",
     "personal_path",
+    "pinned_outbound_base_url",
     "save_personal_key",
     "save_shared_key",
     "shared_path",
@@ -100,6 +102,17 @@ class KeyDeletionError(RuntimeError):
 
 class KeyShapeError(ValueError):
     """钥匙/服务商参数形状非法（消息可回给用户，不含任何明文）。"""
+
+
+class BaseUrlResolveError(RuntimeError):
+    """出站前 base_url 域名解析失败（sec29b W4②：失败关闭）。
+
+    保存/元数据口径对解析失败仍放行（隔离网络里的合法自托管域名不能当攻击
+    拦）；只有**出站侧**（:func:`pinned_outbound_base_url`）把解析失败升级为
+    本错误——绝不带着「无法解析」的域名裸发（连接期二次解析可被重绑定到
+    服务器回环，复审探针 probe_servfail/conf13 场景 B 实测）。出站层把它映射
+    为可重试的结构化 503（DNS 瞬时故障语义），不是配置错误 422。
+    """
 
 
 def _now_iso() -> str:
@@ -175,6 +188,39 @@ def _resolve_host(host: str, port: int = 443) -> list[str]:
     return sorted({str(info[4][0]) for info in infos})
 
 
+def _embedded_ipv4(host: str) -> "ipaddress.IPv4Address | None":
+    """IPv6 低 32 位嵌 IPv4 的形态归一（sec29b W4③）。
+
+    Python 3.11 的 ``ipaddress`` 对 ``::7f00:1``（IPv4 兼容回环）与
+    ``64:ff9b::7f00:1``（RFC 6052 NAT64 前缀）判 ``is_global=True``——
+    单靠 is_global/原生段判定会把「回环/私网的 IPv6 兼容写法」当公网放行
+    （复审探针 probe_rebind §4 实测 ALLOWED）。本函数把两种形态的低 32 位
+    映射回 IPv4，供三处判定（ai_keys._address_block_reason、
+    pdf_fetch_api._blocked_host_reason / _is_private_address）按内层 IPv4
+    再判一次：
+
+    - ``::x.y.z.w``：高 96 位全零且低 32 位非零（``::1`` 等原生回环/未指定
+      由调用方的原生判定先行接住，映射只做**追加**判定，不改写原判定）；
+    - ``64:ff9b::x.y.z.w``：NAT64 well-known prefix ``64:ff9b::/96``。
+
+    其余形态（含 ``::ffff:a.b.c.d``——由 ``ipv4_mapped`` 属性原生覆盖）
+    返回 None。
+    """
+    try:
+        addr = ipaddress.ip_address(str(host).split("%", 1)[0])
+    except ValueError:
+        return None
+    if addr.version != 6:
+        return None
+    value = int(addr)
+    low = value & 0xFFFFFFFF
+    if value >> 32 == 0 and low != 0:
+        return ipaddress.IPv4Address(low)          # ::x.y.z.w（IPv4 兼容）
+    if value >> 96 == 0x64FF9B:
+        return ipaddress.IPv4Address(low)          # 64:ff9b::x.y.z.w（NAT64 /96）
+    return None
+
+
 def _address_block_reason(value: str) -> str | None:
     """单个字面 IP 的被拦原因（None=放行）；保存与出站（DNS 复核）共用。
 
@@ -182,6 +228,9 @@ def _address_block_reason(value: str) -> str | None:
     （CGNAT 100.64/10，含 100.100.100.200）、IPv6 ULA（fc00::/7）、RFC1918
     私网段、未指定地址（0.0.0.0/::——多数协议栈实际连到本机）；回环按运行
     模式例外（desktop 放行本地 Ollama，server 拦截）。
+    sec29b W4③：IPv4 兼容 ``::x.y.z.w`` 与 NAT64 ``64:ff9b::x.y.z.w`` 取低
+    32 位映射回 IPv4 追加判定（``::7f00:1``≡``127.0.0.1``、
+    ``::a9fe:a9fe``≡``169.254.169.254``——原生段判定对二者均为 False）。
     解析不出 IP 返回 None（域名的拦截在 DNS 复核层）。
     """
     try:
@@ -201,45 +250,57 @@ def _address_block_reason(value: str) -> str | None:
     if target.version == 4 and (target in _CGNAT_V4
                                  or any(target in net for net in _RFC1918_V4)):
         return "private"
+    if target is addr and target.version == 6:
+        embedded = _embedded_ipv4(str(target))
+        if embedded is not None:
+            return _address_block_reason(str(embedded))
     return None
 
 
-def _dns_block_reason(host: str, port: int | None) -> str | None:
-    """域名 DNS 复核（sec29 F-5②）：解析到内网/元数据/链路本地即拒。
+def _unbracketed_ipv6_authority(parts) -> bool:
+    """authority 是否为**未括号 IPv6**（sec29b W4③）。
 
-    先例 ``pdf_fetch_api._resolved_blocked_reason``：解析失败**不拦**——
-    隔离网络里的合法自托管域名解析不出来不能当攻击拦，回退给出站网络错误。
+    ``urlsplit('http://fd00::2/v1')`` 只把 ``fd00`` 当主机（``urlsplit.hostname
+    = 'fd00'``，复审探针 probe_unbracketed 实测），字面判定在错误的片段上做，
+    ULA/回环拦截整体错位逃逸；而 urllib 连接层仍按 ``fd00::2`` 出站。凡
+    authority（去掉 userinfo）含 ≥2 个冒号且不以 ``[`` 开头即按未括号 IPv6
+    拒收（合法 IPv4:port / 域名:port 只含 1 个冒号；IPv6 必须走
+    ``http://[::1]:11434/v1`` 方括号形式——urlsplit 才能正确取主机）。
+    """
+    authority = (parts.netloc or "").rpartition("@")[2]
+    if authority.startswith("["):
+        return False
+    return authority.count(":") >= 2
+
+
+def _dns_pins_and_block(host: str, port: int | None) -> tuple[list[str], bool]:
+    """域名 DNS 复核（sec29 F-5② + sec29b W4②）：``(地址表, 解析失败)``。
+
+    解析到内网/元数据/链路本地由调用方按 :func:`_address_block_reason` 判；
+    解析失败在此只标记——保存/元数据口径仍放行（隔离网络里的合法自托管
+    域名解析不出来不能当攻击拦），**出站侧**（pinned_outbound_base_url）
+    对解析失败失败关闭（BaseUrlResolveError，可重试 503），绝不裸发。
     """
     try:
         addresses = _resolve_host(host, port if port else 443)
     except (OSError, ValueError, UnicodeError):
-        return None
-    for address in addresses or []:
-        reason = _address_block_reason(address)
-        if reason:
-            return reason
-    return None
+        return [], True
+    return list(addresses or []), not (addresses or [])
 
 
-def _base_url_block_reason(host: str, parts, *, dns_recheck: bool) -> str | None:
-    """base_url 主机的被拦原因：字面 IP 直接判；域名做一次 DNS 复核。
+def _base_url_guard_result(base_url: str | None, *, kind: str,
+                           dns_recheck: bool = True
+                           ) -> tuple[str, list[str] | None, str | None, bool]:
+    """base_url 完整闸（sec29b W4① 单一实现）：``(规范串, 钉扎表, 被拦原因, 解析失败)``。
 
-    ``dns_recheck=False`` 供只读元数据路径（r7 复审#1：读取路径绝不联网）。
+    - 结构非法（控制字符/非 http(s)/畸形/未括号 IPv6/超长/云元数据主机）直接
+      抛 :class:`KeyShapeError`；
+    - 字面 IP：钉扎表 = 该 IP 的规范形（十进制 IPv4 归一为点分）；
+    - 域名（dns_recheck=True）：**单次**解析，地址表随行返回供连接层钉扎；
+      任一地址被拦 → 原因；解析失败 → dns_failed=True（口径见
+      :func:`_dns_pins_and_block`）；
+    - ``dns_recheck=False``（只读元数据路径，r7 复审#1）：不联网、不钉扎。
     """
-    literal = _parse_ip_literal(host)
-    if literal is not None:
-        return _address_block_reason(str(literal))
-    if not dns_recheck:
-        return None
-    try:
-        port = parts.port
-    except ValueError:
-        port = None
-    return _dns_block_reason(host, port)
-
-
-def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM,
-                    dns_recheck: bool = True) -> str:
     from urllib.parse import urlsplit
 
     # 空值缺省按钥匙类型回落：decision → hosted Jev；llm → OpenAI 兼容缺省
@@ -257,6 +318,11 @@ def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM,
         raise KeyShapeError("base_url 不是合法 URL。") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise KeyShapeError("base_url 必须是 http(s) URL（本地 Ollama 可填 http://127.0.0.1:11434/v1）。")
+    # sec29b W4③：未括号 IPv6（http://fd00::2/v1 → urlsplit 主机='fd00' 错位）
+    # 一律拒收，提示方括号形式。
+    if _unbracketed_ipv6_authority(parts):
+        raise KeyShapeError(
+            "base_url 的 IPv6 主机必须使用方括号形式（如 http://[::1]:11434/v1）。")
     # B9 F12/R-6 缓解 + sec29 F-5：阻断云元数据/链路本地/ULA 地址（含 IPv6
     # 映射/十进制 IPv4/尾点等字面变体）；sec29 起 RFC1918/CGNAT 私网段同样
     # 阻断，域名再做一次 DNS 复核（解析到内网/元数据/链路本地即拒）。
@@ -265,13 +331,68 @@ def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM,
     if host in ("metadata.google.internal", "metadata.goog",
                 "100.100.100.100", "100.100.100.200"):
         raise KeyShapeError("base_url 不允许指向链路本地/云元数据地址。")
-    reason = _base_url_block_reason(host, parts, dns_recheck=dns_recheck)
+    if len(text) > 500:
+        raise KeyShapeError("base_url 过长（上限 500 字符）。")
+    literal = _parse_ip_literal(host)
+    if literal is not None:
+        literal_reason = _address_block_reason(str(literal))
+        if literal_reason is not None:
+            return text, None, literal_reason, False
+        return text, [str(literal)], None, False
+    if not dns_recheck:
+        return text, None, None, False
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    addresses, dns_failed = _dns_pins_and_block(host, port)
+    if dns_failed:
+        return text, None, None, True
+    for address in addresses:
+        address_reason = _address_block_reason(address)
+        if address_reason is not None:
+            return text, None, address_reason, False
+    return text, addresses, None, False
+
+
+def _clean_base_url(base_url: str | None, *, kind: str = KIND_LLM,
+                    dns_recheck: bool = True) -> str:
+    """保存/出站/元数据共用的 base_url 规范化（结构校验 + 拦截 + 可选 DNS 复核）。
+
+    sec29b W4②：解析失败在本（保存/元数据）口径仍放行——隔离网络里的合法
+    自托管域名不能当攻击拦；**出站侧**改走 :func:`pinned_outbound_base_url`
+    （解析失败失败关闭，绝不裸发）。
+    """
+    text, _pins, reason, _dns_failed = _base_url_guard_result(
+        base_url, kind=kind, dns_recheck=dns_recheck)
     if reason is not None:
         raise KeyShapeError(
             _BASE_URL_BLOCK_MESSAGES.get(reason, "base_url 不允许指向内网/链路本地/云元数据地址。"))
-    if len(text) > 500:
-        raise KeyShapeError("base_url 过长（上限 500 字符）。")
     return text.rstrip("/")
+
+
+def pinned_outbound_base_url(base_url: str | None, *, kind: str = KIND_LLM
+                             ) -> tuple[str, list[str]]:
+    """出站侧专用（sec29b W4①/W4②）：``(规范 base_url, 钉扎地址表)``。
+
+    - **单次**解析 + 全地址复核，得到的地址表**随行返回**——出站连接层必须
+      钉住这张表、对原域名**零次**再解析（堵 check-then-use 重绑定缝：
+      guard 答公网、连接期二次解析答回环，复审探针 conf13 场景 A 实测
+      Bearer 钥匙直达服务器回环）；
+    - 解析被拦 → :class:`KeyShapeError`（配置错误 422 口径，与
+      ``_clean_base_url`` 同一消息表）；解析失败 → :class:`BaseUrlResolveError`
+      （失败关闭：可重试的结构化降级，出站层映射 503，绝不带着未钉扎的
+      域名裸发——W4②）。
+    """
+    text, pins, reason, dns_failed = _base_url_guard_result(
+        base_url, kind=kind, dns_recheck=True)
+    if reason is not None:
+        raise KeyShapeError(
+            _BASE_URL_BLOCK_MESSAGES.get(reason, "base_url 不允许指向内网/链路本地/云元数据地址。"))
+    if dns_failed or not pins:
+        raise BaseUrlResolveError(
+            "base_url 域名暂时无法解析（已失败关闭，未发起出站），请稍后重试。")
+    return text.rstrip("/"), list(pins)
 
 
 def _parse_ip_literal(host: str):
@@ -320,6 +441,8 @@ def base_url_of(record: dict | None, *, dns_recheck: bool = True) -> str:
 
     ``dns_recheck=False`` 供只读元数据路径跳过 DNS 复核（r7 复审#1：读取
     路径绝不联网、绝不因环境配置抛错）；保存与出站两处保持缺省复核。
+    sec29b W4①：需要**钉扎连接**的出站方（ai_suggest 的 provider 链）改用
+    :func:`pinned_outbound_base_url`——那里解析失败失败关闭（W4②）。
     """
     record = record or {}
     return _clean_base_url(record.get("base_url"), kind=kind_of(record),

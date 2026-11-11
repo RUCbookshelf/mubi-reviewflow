@@ -38,6 +38,10 @@ from coscreen import research_trace
 from coscreen import tasks as tasks_mod
 from coscreen import fulltext as fulltext_mod
 from custom_backend import ai_keys
+from custom_backend.pdf_fetch_api import (  # sec29b W4①：复用钉扎连接 handler 先例
+    _PinnedHTTPHandler,
+    _PinnedHTTPSHandler,
+)
 
 __all__ = [
     "FIELD_WHITELIST",
@@ -311,9 +315,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 #: 代理环境下 API Key 与六字段载荷会整包发往代理主机（本地 Ollama 回环端点
 #: 在代理环境也会功能性失效）。拒重定向 handler 保留。独立成工厂便于测试在
 #: 代理环境下重建断言 handler 组成。
+#: sec29b W4①：加装 pdf_fetch_api 的钉扎 handler（_PinnedHTTP(S)Handler 先例
+#: 复用）——请求带 ``pinned_address`` 属性时连接钉住该地址、对原域名零次解析；
+#: 不带时退回默认行为（decision 通道等未钉扎调用方行为不变）。
 def _build_opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}),
-                                       _NoRedirectHandler)
+                                       _NoRedirectHandler,
+                                       _PinnedHTTPHandler(), _PinnedHTTPSHandler())
 
 
 _OPENER = _build_opener()
@@ -335,6 +343,41 @@ class _ProviderBusyError(ProviderError):
             status=503)
 
 
+class _ProviderDnsUnavailableError(ProviderError):
+    """出站前 base_url 域名解析失败（sec29b W4②：失败关闭）：503、可重试。
+
+    解析失败绝不裸发（连接期二次解析可被重绑定到服务器回环——复审探针
+    probe_servfail/conf13 场景 B 实测 Bearer 直送回环）；DNS 故障按瞬时
+    降级（``_call_provider`` 会按 5xx 重试一档）。"""
+
+    def __init__(self) -> None:
+        super().__init__("base_url 域名解析失败（失败关闭，未发起出站），请稍后重试。",
+                         status=503)
+
+
+class _ProviderBaseUrlBlockedError(ProviderError):
+    """出站前 base_url 复核被拦（内网/元数据/回环/未括号 IPv6 等，sec29b W4①
+    连接层闸）：422 配置错误口径（非瞬时、不重试；与路由层 ``base_url_of``
+    的 422 消息同源——ai_keys._BASE_URL_BLOCK_MESSAGES）。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=422)
+
+
+def _outbound_guard(base_url: str) -> tuple[str, list[str]]:
+    """sec29b W4①/W4② 出站闸：``(规范 base_url, 钉扎地址表)``。
+
+    guard 的**单次**解析结果（字面 IP 或 DNS 地址表）随行交给连接层钉扎
+    （连接期对原域名零次解析，堵 check-then-use 重绑定缝）；解析失败失败
+    关闭（``_ProviderDnsUnavailableError``，503 可重试），绝不裸发。"""
+    try:
+        return ai_keys.pinned_outbound_base_url(base_url)
+    except ai_keys.BaseUrlResolveError:
+        raise _ProviderDnsUnavailableError() from None
+    except ai_keys.KeyShapeError as exc:
+        raise _ProviderBaseUrlBlockedError(str(exc)) from None
+
+
 def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
                        model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
     """最小 completion 调用；返回 ``{"content": str, "usage": dict, "model": str}``。
@@ -343,20 +386,31 @@ def _provider_generate(system: str, user: str, *, api_key: str, base_url: str,
     只落 provider、状态码、耗时语义。安全红线（B9 F10/F11）：不跟随重定向
     （30x 视为错误）；响应体读取上限 2 MiB（无上限读取可被用于内存 DoS）。
     sec29 F-6：并发闸在此生效（测试注入 fake 替换本函数时不受影响）。
+    sec29b W4①/W4②：并发闸内先过 ``_outbound_guard``（单次解析 + 全地址
+    复核 + 钉扎表随行；解析失败失败关闭），再进钉扎连接。
     """
     if not _OUTBOUND_SEMAPHORE.acquire(blocking=False):
         raise _ProviderBusyError() from None
     try:
+        normalized, pins = _outbound_guard(base_url)
         return _provider_generate_locked(
-            system, user, api_key=api_key, base_url=base_url,
-            model=model, timeout=timeout)
+            system, user, api_key=api_key, base_url=normalized,
+            model=model, timeout=timeout, pinned_addresses=pins)
     finally:
         _OUTBOUND_SEMAPHORE.release()
 
 
 def _provider_generate_locked(system: str, user: str, *, api_key: str, base_url: str,
-                              model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
-    """``_provider_generate`` 的原实现（已持并发闸；2.1.5 前签名与行为不变）。"""
+                              model: str, timeout: float = DEFAULT_TIMEOUT_SECONDS,
+                              pinned_addresses: list[str] | None = None) -> dict:
+    """``_provider_generate`` 的原实现（已持并发闸；已过出站闸）。
+
+    sec29b W4①：``pinned_addresses`` 给定时逐地址钉扎连接（请求带
+    ``pinned_address``/``pinned_allow_private`` 属性，由 opener 里的
+    ``_PinnedHTTP(S)Handler`` 接管 TCP 目标；Host 头与 TLS 校验仍是原主机名）；
+    连接级失败换同表下一地址（不重新解析）。``pinned_allow_private=True``
+    口径同 pdf_fetch 的 base 端点：guard 已按本模块策略复核过地址表，
+    回环/RFC1918 是 desktop 本地 Ollama 的既有卖点。"""
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = json.dumps({
         "model": model,
@@ -372,31 +426,47 @@ def _provider_generate_locked(system: str, user: str, *, api_key: str, base_url:
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
         })
-    try:
-        with _OPENER.open(request, timeout=timeout) as response:  # noqa: S310
-            raw = response.read(MAX_PROVIDER_BYTES + 1)
-            if len(raw) > MAX_PROVIDER_BYTES:
+    attempts: list[str | None] = list(pinned_addresses or []) or [None]
+    error: ProviderError | None = None
+    connection_level = False
+    body: Any = None
+    for index, address in enumerate(attempts):
+        if address is not None:
+            request.pinned_address = address
+            request.pinned_allow_private = True
+        try:
+            with _OPENER.open(request, timeout=timeout) as response:  # noqa: S310
+                raw = response.read(MAX_PROVIDER_BYTES + 1)
+                if len(raw) > MAX_PROVIDER_BYTES:
+                    raise ProviderError(
+                        f"provider 响应超过 {MAX_PROVIDER_BYTES // 1024} KiB 读取上限。")
+                body = json.loads(raw.decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
                 raise ProviderError(
-                    f"provider 响应超过 {MAX_PROVIDER_BYTES // 1024} KiB 读取上限。")
-            body = json.loads(raw.decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        if 300 <= exc.code < 400:
-            raise ProviderError(
-                f"provider HTTP {exc.code}: 重定向被拒绝（为保护 API 钥匙不外发，请直接配置最终端点）。") from None
-        # MM-06：非 2xx 只回状态码＋固定文案，provider 响应体绝不回显——本出口被
-        # verify=true / 生成 / 测试连接共用，回显（原先前 200 字符）构成内网 SSRF
-        # 读预言机（docs §4 披露口径：仅"据响应差异探测"，不含响应体内容）。
-        raise ProviderError(f"provider HTTP {exc.code}（详情不回显）", status=exc.code) from None
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", None)
-        text = f"provider 连接失败: {reason}" if reason else "provider 连接失败"
-        raise ProviderError(text) from None
-    except http.client.HTTPException as exc:  # MM-09：InvalidURL 等 URL 级错误绝不冒泡 500
-        raise ProviderError(f"provider URL 非法: {type(exc).__name__}") from None
-    except (TimeoutError, OSError) as exc:
-        raise ProviderError(f"provider 超时（{int(timeout)}s）: {type(exc).__name__}") from None
-    except ValueError as exc:
-        raise ProviderError("provider 响应不是合法 JSON。") from None
+                    f"provider HTTP {exc.code}: 重定向被拒绝（为保护 API 钥匙不外发，请直接配置最终端点）。") from None
+            # MM-06：非 2xx 只回状态码＋固定文案，provider 响应体绝不回显——本出口被
+            # verify=true / 生成 / 测试连接共用，回显（原先前 200 字符）构成内网 SSRF
+            # 读预言机（docs §4 披露口径：仅"据响应差异探测"，不含响应体内容）。
+            raise ProviderError(f"provider HTTP {exc.code}（详情不回显）", status=exc.code) from None
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            text = f"provider 连接失败: {reason}" if reason else "provider 连接失败"
+            error, connection_level = ProviderError(text), True
+        except http.client.HTTPException as exc:  # MM-09：InvalidURL 等 URL 级错误绝不冒泡 500
+            error, connection_level = ProviderError(f"provider URL 非法: {type(exc).__name__}"), False
+        except (TimeoutError, OSError) as exc:
+            error, connection_level = ProviderError(
+                f"provider 超时（{int(timeout)}s）: {type(exc).__name__}"), True
+        except ValueError as exc:
+            error, connection_level = ProviderError("provider 响应不是合法 JSON。"), False
+        else:
+            break
+        # 连接级失败且还有已校验地址：换下一个（同一解析结果，不重新解析）；
+        # HTTP 状态/协议/解析层错误说明上游已应答，换址只会重放同一错误。
+        if connection_level and index + 1 < len(attempts):
+            continue
+        raise error from None
     try:
         content = body["choices"][0]["message"]["content"]
         usage = body.get("usage") or {}
@@ -433,9 +503,21 @@ def _provider_http_error(exc: ProviderError, api_key: str) -> HTTPException:
 
     sec29 F-6：并发闸超限（``_ProviderBusyError``）→ 503 结构化
     ``ai_provider_busy``（对齐文件内 503 降级文案风格，如 ai_key_delete_failed）。
+    sec29b W4②：出站前解析失败（``_ProviderDnsUnavailableError``，失败关闭）
+    → 503 结构化 ``ai_provider_dns_unavailable``（可重试降级，同 busy 风格）；
+    W4①：出站闸被拦（``_ProviderBaseUrlBlockedError``）→ 422 ``ai_base_url_
+    blocked``（配置错误口径，与路由层 base_url_of 的 422 消息同源）。
     """
     if isinstance(exc, _ProviderBusyError):
         return HTTPException(503, {"code": "ai_provider_busy", "detail": str(exc)})
+    if isinstance(exc, _ProviderDnsUnavailableError):
+        return HTTPException(503, {"code": "ai_provider_dns_unavailable",
+                                   "detail": str(exc)})
+    if isinstance(exc, _ProviderBaseUrlBlockedError):
+        message = str(exc)
+        if api_key and api_key in message:
+            message = message.replace(api_key, "***")
+        return HTTPException(422, {"code": "ai_base_url_blocked", "detail": message[:300]})
     message = str(exc)
     if api_key and api_key in message:
         message = message.replace(api_key, "***")

@@ -90,6 +90,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from coscreen import db as db_mod
 from coscreen import fulltext as fulltext_mod
 from coscreen import tasks as tasks_mod
+from custom_backend.ai_keys import _embedded_ipv4  # sec29b W4③：IPv4 兼容/NAT64 归一（单一实现）
 from custom_backend.security import MAX_UPLOAD_BYTES, UploadRejected, check_pdf_bytes
 
 __all__ = [
@@ -360,11 +361,18 @@ def _is_private_address(value: str) -> bool:
     元数据面 100.100.100.200 因此被判为「可访问」，服务端会真的发出请求
     （实测 ``ipaddress.ip_address('100.100.100.200').is_private is False``）。
     ``is_global`` 白名单口径天然覆盖 CGNAT、文档段、保留段与未来新增的非公网段。
+    sec29b W4③：``is_global`` 对 ``::7f00:1``（IPv4 兼容回环）与
+    ``64:ff9b::7f00:1``（NAT64）同样失真（实测二者 ``is_global=True``）——
+    先按 ``_embedded_ipv4`` 取低 32 位映射回 IPv4 追加判定（fail closed 只加拦）。
     """
     try:
         ip = ipaddress.ip_address(value.split("%", 1)[0])
     except ValueError:
         return True                     # 解析不出 IP：按不可信处理（fail closed）
+    if ip.version == 6:
+        embedded = _embedded_ipv4(value)
+        if embedded is not None and not embedded.is_global:
+            return True
     return not ip.is_global
 
 
@@ -407,6 +415,13 @@ def _blocked_host_reason(host: str | None) -> str | None:
         return "cgnat"
     if target.version == 6 and target in _ULA_V6:
         return "ula"
+    # sec29b W4③：IPv4 兼容 ::x.y.z.w / NAT64 64:ff9b::x.y.z.w 取低 32 位映射回
+    # IPv4 追加判定（::a9fe:a9fe≡169.254.169.254 链路本地、::7f00:1≡127.0.0.1
+    # ——原生段判定对二者均放行；先例 ai_keys._address_block_reason 同步接入）。
+    if target is addr and target.version == 6:
+        embedded = _embedded_ipv4(identity)
+        if embedded is not None:
+            return _blocked_host_reason(str(embedded))
     return None
 
 
@@ -419,14 +434,23 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
+#: 终审 #30 / sec29b W4②：可配置 base_url 的 DNS 复核哨兵——出站侧对解析
+#: 失败**失败关闭**（不再「空表回退」放行：空表经 ``_get_bytes`` 的 falsy
+#: 判定完全跳过钉扎、连接期重新解析，重绑定缝；复审探针 probe_rebind §1
+#: 实测回环收到 GET）。保存侧（put_settings / ``_resolved_blocked_reason``）
+#: 对该哨兵按不拦处理——隔离网络里的合法自托管域名解析不出来不能当攻击拦
+#: （存量语义不回退）。字符串复用 ``_validate_and_pin`` 既有 reason 口径。
+_DNS_UNRESOLVED = "unresolvable_host"
+
+
 def _base_url_guard(base_url: str) -> tuple[list[str], str | None]:
     """base_url 字面量 + **单次** DNS 复核：``(钉扎地址表, 拒绝原因)``。
 
     - 字面被拦主机（云元数据名/链路本地/CGNAT/ULA，见
       :func:`_blocked_host_reason`）→ 直接拒；
     - 字面 IP → 该 IP 本身就是钉扎地址（无需解析）；
-    - 域名 → **单次**解析，任一地址落在被拦段即拒；解析失败不拦
-      （回退给出站网络错误），也不钉扎（保持既有回退行为）。
+    - 域名 → **单次**解析，任一地址落在被拦段即拒；解析失败返回
+      ``_DNS_UNRESOLVED``（sec29b W4②：出站侧据此失败关闭，保存侧按不拦）。
 
     sec29 F-3：通过后返回的地址表必须经 ``_get_bytes`` 钉扎连接——guard
     校验与实际连接之间**不再有第二次 DNS 解析**，堵住「校验时答公网、
@@ -451,7 +475,7 @@ def _base_url_guard(base_url: str) -> tuple[list[str], str | None]:
     try:
         addresses = _resolve_host(host, port)
     except (OSError, ValueError):
-        return [], None                    # 解析失败不拦（回退给出站网络错误）
+        return [], _DNS_UNRESOLVED        # sec29b W4②：解析失败 → 出站失败关闭
     for address in addresses or []:
         blocked = _blocked_host_reason(address)
         if blocked:
@@ -463,9 +487,11 @@ def _resolved_blocked_reason(base_url: str) -> str | None:
     """DNS 复核（2 元组旧缝）：域名解析到被拦段同样拒绝；解析失败不拦。
 
     与 ``_validate_and_pin`` 的 fail-closed 不同：这里的 base_url 是任务级
-    配置（可能是隔离网络里的合法自托管域名），解析不出来不能当攻击拦。
+    配置（可能是隔离网络里的合法自托管域名），解析不出来不能当攻击拦
+    （sec29b W4② 只改**出站侧**口径，见 ``_guard_base_url_outbound``）。
     """
-    return _base_url_guard(base_url)[1]
+    reason = _base_url_guard(base_url)[1]
+    return None if reason == _DNS_UNRESOLVED else reason
 
 
 def _base_url_block_reason(base_url: str) -> str | None:
@@ -478,10 +504,17 @@ def _guard_base_url_outbound(base_url: str) -> list[str]:
     """出站侧二次闸：构造查询 URL 前拒绝被拦 base（存量文件/手改库兜底）。
 
     抛 :class:`OutboundError`（unsafe_url），调用方按既有口径降级——绝不 500。
-    sec29 F-3：通过时返回本次**唯一一次解析**得到的钉扎地址表（可为空：
-    字面量/DNS 失败回退形态），调用方必须把它传给 ``_get_json`` 钉扎连接。
+    sec29 F-3：通过时返回本次**唯一一次解析**得到的钉扎地址表，调用方必须
+    把它传给 ``_get_json`` 钉扎连接。
+    sec29b W4②：**解析失败同样失败关闭**（``unresolvable_host``，可重试降级）
+    ——空表≠放行：空表会完全跳过钉扎、连接期重新解析（重绑定缝，复审探针
+    probe_rebind §1/probe_servfail 实测）。返回的地址表恒非空。
     """
     addresses, reason = _base_url_guard(base_url)
+    if reason == _DNS_UNRESOLVED:
+        raise OutboundError(
+            "unresolvable_host",
+            "配置端点域名解析失败（已失败关闭，不再裸发），请稍后重试。")
     if reason is not None:
         raise OutboundError(
             "unsafe_url", "配置端点指向链路本地/云元数据地址，已拒绝出站。")
@@ -589,7 +622,11 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
         url, method="GET",
         headers={"User-Agent": USER_AGENT, "Accept": accept})
     addresses: list[str] = []
-    if pinned_address:
+    # sec29b W4②：``pinned_address is not None`` 即进入钉扎分支——**空表也
+    # 失败关闭**（此前 ``if pinned_address`` 的 falsy 判定让空表完全跳过钉扎、
+    # 连接期重新解析，重绑定缝）。``None`` 保留为「无法钉扎的旧回退形态」
+    # 参数缺省（既有调用方兼容，如测试的 mutation 桩）。
+    if pinned_address is not None:
         raw = [pinned_address] if isinstance(pinned_address, str) else list(pinned_address)
         addresses = [str(item) for item in raw if str(item)]
         if not addresses:
@@ -1058,11 +1095,22 @@ def _fetch_one(db: Path, key: str, article: dict, *, settings: dict,
 
 
 def _outbound_http_error(exc: OutboundError, settings: dict) -> HTTPException:
-    """OutboundError → 502（结构化 reason；detail 脱敏——email 绝不进消息）。"""
+    """OutboundError → 502（结构化 reason；detail 脱敏——email 绝不进消息）。
+
+    sec29b W4②：base 端点 DNS 解析失败（失败关闭，reason=``unresolvable_host``）
+    → 503 可重试降级（文件内 503 口径：结构化 code + retryable + Retry-After，
+    先例 ``_batch_prepare_http_error``/``_storage_http_error``）——DNS 瞬时
+    故障不是上游坏响应（502 pdf_fetch_upstream），也不能当配置错误 422。
+    """
     message = str(exc)
     email = settings.get("email") or ""
     if email and email in message:
         message = message.replace(email, "***")
+    if exc.reason == _DNS_UNRESOLVED:
+        return HTTPException(
+            503, {"code": "pdf_fetch_upstream", "reason": exc.reason,
+                  "detail": message[:300], "retryable": True},
+            headers={"Retry-After": "5"})
     return HTTPException(502, {"code": "pdf_fetch_upstream",
                                "reason": exc.reason, "detail": message[:300]})
 

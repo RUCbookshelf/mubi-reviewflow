@@ -743,19 +743,23 @@ class AISuggestTests(unittest.TestCase):
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()
         self.guard.stop()          # 本用例直连真实 _provider_generate（默认守卫会拦）
-        try:
-            port = srv.server_address[1]
-            with self.assertRaises(ai_suggest_api.ProviderError) as ctx:
-                ai_suggest_api._provider_generate(
-                    "s", "u", api_key="sk-redirect-secret-123456",
-                    base_url=f"http://127.0.0.1:{port}/v1", model="m", timeout=5)
-            self.assertIn("重定向", str(ctx.exception))
-            # 只收到最初的 /chat/completions 一次请求——目标路径从未被打到
-            self.assertEqual(len(seen_headers), 1)
-        finally:
-            self.guard.start()
-            srv.shutdown()
-            srv.server_close()
+        # 本地回环端点（本地模型语义）= desktop 模式放行（sec29b W4① 起
+        # _provider_generate 自带出站闸，server 模式回环在连接层也被拦——
+        # 同 test_mm_06_* 的模式钉法）。
+        with mock.patch.dict(os.environ, {"REVIEWFLOW_MODE": "desktop"}):
+            try:
+                port = srv.server_address[1]
+                with self.assertRaises(ai_suggest_api.ProviderError) as ctx:
+                    ai_suggest_api._provider_generate(
+                        "s", "u", api_key="sk-redirect-secret-123456",
+                        base_url=f"http://127.0.0.1:{port}/v1", model="m", timeout=5)
+                self.assertIn("重定向", str(ctx.exception))
+                # 只收到最初的 /chat/completions 一次请求——目标路径从未被打到
+                self.assertEqual(len(seen_headers), 1)
+            finally:
+                self.guard.start()
+                srv.shutdown()
+                srv.server_close()
 
     def test_b9_f12_metadata_base_url_blocked(self):
         """B9 F12 缓解：云元数据/链路本地 base_url 在校验层被拒。"""
