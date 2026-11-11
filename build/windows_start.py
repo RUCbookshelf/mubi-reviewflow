@@ -231,8 +231,45 @@ def replace_overlay(overlay: Path, target: Path) -> None:
     target.rename(overlay)
 
 
+def _copy_to_clipboard_windows(text: str) -> bool:
+    """把文本放入系统剪贴板（纯 ctypes，无第三方依赖；2026-11-11 用户实测
+    反馈：MessageBox 文本不可选中，手打 32 字符码太苦）。失败返回 False，
+    调用方回落为仅展示。"""
+    if sys.platform != 'win32':
+        return False
+    try:
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+        if not u32.OpenClipboard(None):
+            return False
+        try:
+            u32.EmptyClipboard()
+            size = (len(text) + 1) * ctypes.sizeof(ctypes.c_wchar)
+            handle = k32.GlobalAlloc(GMEM_MOVEABLE, size)
+            if not handle:
+                return False
+            ptr = k32.GlobalLock(handle)
+            if not ptr:
+                return False
+            try:
+                ctypes.memmove(ptr, ctypes.create_unicode_buffer(text), size)
+            finally:
+                k32.GlobalUnlock(handle)
+            if not u32.SetClipboardData(CF_UNICODETEXT, handle):
+                k32.GlobalFree(handle)
+                return False
+            return True  # 成功后系统接管 handle，勿再释放
+        finally:
+            u32.CloseClipboard()
+    except Exception:
+        return False
+
+
 def reset_user(username: str) -> int:
-    """找回密码·本机取码（2.1.5）：签发一枚 15 分钟一次性重置码并弹窗展示。
+    """找回密码·本机取码（2.1.5）：签发一枚 15 分钟一次性重置码，
+    自动复制到剪贴板并弹窗展示。
 
     需要能 import custom_backend（开发布局=仓库根在 APP.parent；打包布局
     =应用代码已在 sys.path）。数据目录与后端同口径（COBOOKSHELF_DATA_DIR
@@ -256,9 +293,12 @@ def reset_user(username: str) -> int:
     if code is None:
         message("重置码生成失败：无法写入数据目录。")
         return 1
+    copied = _copy_to_clipboard_windows(code)
+    hint = ("已复制到剪贴板，直接在重置面板 Ctrl+V 粘贴即可。"
+            if copied else "请手动完整复制下面的重置码。")
     message(f"用户「{username}」的重置码（15 分钟内有效、一次性）：\n\n"
-            f"{code}\n\n请在登录页「忘记密码」中输入该码与新密码。",
-            error=False)
+            f"{code}\n\n{hint}", error=False)
+    print(code, file=sys.stderr)  # 无 GUI/重定向场景的第二通道
     return 0
 
 

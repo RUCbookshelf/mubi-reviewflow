@@ -257,12 +257,19 @@ class IssueChannelPins(unittest.TestCase):
             "windows_start_under_test", REPO / "build" / "windows_start.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        with mock.patch.object(module, "message") as msg:
+        with mock.patch.object(module, "message") as msg, \
+                mock.patch.object(module, "_copy_to_clipboard_windows",
+                                  return_value=True) as clip:
             rc = module.reset_user("deskbuddy")
         self.assertEqual(rc, 0)
         text = msg.call_args[0][0]
         self.assertIn("rf-", text, "弹窗文本含重置码")
         self.assertIn("15", text, "提示 15 分钟时效")
+        # 2026-11-11 用户实测反馈：MessageBox 不可选中复制——码必须自动
+        # 进剪贴板，弹窗文案提示 Ctrl+V。
+        clip.assert_called_once()
+        self.assertTrue(clip.call_args[0][0].startswith("rf-"))
+        self.assertIn("Ctrl+V", text, "提示可直接粘贴")
 
 
 if __name__ == "__main__":
