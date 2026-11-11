@@ -110,7 +110,15 @@ jobs:
           python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest pyyaml
           # MM8-02: the test suite (1,222+ assertions) runs in CI before the
           # validators; any failure fails the job.
-          python -m pytest build/tests -q
+          # P2（发布前对抗审查 2026-11-11）：与本地门禁的分段口径对齐——
+          # test_w4_study_design 与 test_r6_undo_collab_fixes 存在存量跨文件
+          # 状态泄漏（w4 模块级 fixture 对 main 单例的污染，stash 验证非新引入），
+          # 同进程联跑 5 败、分进程 35+24 全绿；根因修复另立工单，CI 先分段。
+          python -m pytest build/tests -q \
+            --ignore=build/tests/test_w4_study_design.py \
+            --ignore=build/tests/test_r6_undo_collab_fixes.py
+          python -m pytest build/tests/test_w4_study_design.py -q
+          python -m pytest build/tests/test_r6_undo_collab_fixes.py -q
           python build/validate_import_review.py
           python build/validate_screening_rounds.py
           node build/validate_import_review_static.cjs
@@ -161,8 +169,26 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         run: cd release-assets && sha256sum * > SHA256SUMS.txt
-      - name: Point release tag to this build
+      - name: Point release tag to this build (P1-1 tag guards)
         run: |
+          # P1-1（发布前对抗审查 2026-11-11，本地裸仓库 12 组复现：4 组改写
+          # 已有标签、3 组触发标签与 VERSION 不一致仍成功）三重守卫：
+          # ①标签触发时，触发标签必须与 VERSION 一致（防错版发布）；
+          # ②远端已有标签且指向不同提交 → 拒绝改写（防覆盖上一版本标签；
+          #   原实现无条件 tag -f + push --force）；
+          # ③远端标签指向本提交 → 幂等重跑放行。
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF" != "refs/tags/v${APP_VERSION}" ]; then
+            echo "::error::trigger tag ${GITHUB_REF} does not match VERSION ${APP_VERSION}; refusing to publish" >&2
+            exit 1
+          fi
+          existing="$(git ls-remote origin "refs/tags/v${APP_VERSION}")"
+          if [ -n "$existing" ]; then
+            current="${existing%%[[:space:]]*}"
+            if [ "$current" != "$GITHUB_SHA" ]; then
+              echo "::error::tag v${APP_VERSION} already exists at ${current}; refusing to move it to ${GITHUB_SHA}. Bump VERSION or delete the tag deliberately." >&2
+              exit 1
+            fi
+          fi
           git tag -f "v${APP_VERSION}" "$GITHUB_SHA"
           git push origin "refs/tags/v${APP_VERSION}" --force
       - name: Create versioned release and upload installers
