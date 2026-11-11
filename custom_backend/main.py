@@ -730,7 +730,7 @@ tasks_mod.register_inflight_counter(TaskLockMiddleware.inflight)
 # 等头结构异常仍由内层上传中间件按 400 口径拒绝，两者职责不重叠。
 app.add_middleware(
     AuthBodyLimitMiddleware,
-    paths=[r"^/api/auth/login$", r"^/api/auth/register$"],
+    paths=[r"^/api/auth/login$", r"^/api/auth/register$", r"^/api/auth/reset$"],
     limit=AUTH_JSON_BODY_LIMIT_BYTES,
     cors_origins=_cors_origins(),
 )
@@ -901,6 +901,15 @@ def require_user(
             401, "访问令牌无效或已过期，请重新登录。", headers={"WWW-Authenticate": "Bearer"}
         ) from None
     username = str(payload["username"])
+    if "pv" in payload:
+        # 2.1.5 记住我：长时（remember）令牌带 pv——逐请求核对 users.pwd_version，
+        # 改密/重置后 +1 即全量吊销；默认 24h 短令牌不带 pv，本检查零成本跳过。
+        row = auth.get_user(username)
+        if row is None or int(payload["pv"]) != row.get("pwd_version", 1):
+            raise HTTPException(
+                401, "访问令牌无效或已过期，请重新登录。",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
     if auth.screener_storage_conflict(username):
         raise HTTPException(409, "多个旧账号映射到同一个筛选员数据库。已暂停访问，请先人工核对并拆分数据。")
     if any(name and name != username for name in request.query_params.getlist("screener")):
@@ -1011,6 +1020,15 @@ def _server_mode() -> bool:
 class CredentialsIn(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=8, max_length=128)
+    # 2.1.5 记住我：true → 7 天令牌（载荷带 pv 版本戳，改密/重置即时吊销）。
+    remember: bool = False
+
+
+class PasswordResetIn(BaseModel):
+    """找回密码（2.1.5）：用户名+重置码+新密码（码经管理员/本机工具线下获取）。"""
+    username: str = Field(min_length=3, max_length=64)
+    code: str = Field(min_length=16, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class TaskCreateIn(BaseModel):
@@ -1875,8 +1893,72 @@ def login(body: CredentialsIn, request: Request) -> dict:
     login_limiter.refund(peer_key)
     login_limiter.reset(account_key)
     login_limiter.reset(global_account_key)
-    return {"token": auth.create_access_token(user["id"], user["username"]),
-            "user": user, "warnings": warnings}
+    # 2.1.5 记住我：remember=true → 7 天令牌+pv 版本戳（改密/重置即时吊销）；
+    # 缺省仍 24h 短令牌（载荷不带 pv，与既往逐字节一致）。
+    hours = auth.TOKEN_TTL_HOURS * 7 if body.remember else None
+    token = auth.create_access_token(
+        user["id"], user["username"], ttl_hours=hours,
+        pwd_version=user.get("pwd_version", 1))
+    return {"token": token, "user": user, "warnings": warnings,
+            "expires_in": (hours if hours is not None else auth.TOKEN_TTL_HOURS) * 3600}
+
+
+@app.post("/api/auth/reset")
+def password_reset(body: PasswordResetIn, request: Request) -> dict:
+    """找回密码（2.1.5，双模式重置码；用户裁定 2026-11-11）。
+
+    服务器部署=管理员跑 build/scripts/reset_code.py 取码线下转交；单机=
+    安装目录 windows_start.py --reset-user 弹码。限流/防枚举对齐 login：
+    peer check 占位+账号/全局键 peek；用户不存在与码不匹配同一文案，
+    不存在路径跑 dummy_verify 等时；新密码规则先行校验（不烧码）；成功
+    set_password（哈希+pwd_version+1，全部长时令牌即时失效）。
+    """
+    from custom_backend import auth_recovery
+
+    peer_key = rate_limit_key(
+        "reset",
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    )
+    allowed, retry_after = login_limiter.check(peer_key)
+    if not allowed:
+        raise HTTPException(
+            429, "重置尝试过于频繁，请 1 分钟后再试（按连接来源 IP 计数）。",
+            headers={"Retry-After": str(retry_after)})
+    username_key = str(body.username).strip().lower()
+    account_key = f"{peer_key}|reset:acct={username_key}"
+    global_key = f"reset:acct={username_key}"
+    account_allowed, account_retry = login_limiter.peek(account_key)
+    if not account_allowed:
+        login_limiter.refund(peer_key)
+        raise HTTPException(
+            429, "该账号重置失败次数过多，请 1 分钟后再试（按账号计数）。",
+            headers={"Retry-After": str(account_retry)})
+    global_allowed, global_retry = login_limiter.peek(global_key)
+    if not global_allowed:
+        raise HTTPException(
+            429, "该账号重置失败次数过多，请 1 分钟后再试（按账号计数）。",
+            headers={"Retry-After": str(global_retry)})
+    try:
+        auth.validate_password(body.new_password)  # 规则先行：不烧码
+    except auth.AuthError as exc:
+        login_limiter.refund(peer_key)  # 校验类失败不占额（register 同口径）
+        raise _bad(str(exc)) from exc
+    user = auth.get_user(body.username)
+    if user is not None:
+        ok = auth_recovery.consume_reset_code(body.username, body.code)
+    else:
+        auth_recovery.dummy_verify(body.code)  # 等时垫，结果不使用
+        ok = False
+    if not ok:
+        login_limiter.record(account_key)
+        login_limiter.record(global_key)
+        raise _bad("用户名或重置码无效。", 401)
+    auth.set_password(user["id"], body.new_password)
+    login_limiter.refund(peer_key)
+    login_limiter.reset(account_key)
+    login_limiter.reset(global_key)
+    return {"ok": True}
 
 
 @app.get("/api/auth/me")

@@ -92,6 +92,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_USERS_SCHEMA)
+    _ensure_pwd_version_column(conn)
     if created:
         _restrict_db_permissions(path)
     else:
@@ -136,6 +137,40 @@ def _tighten_existing_db_permissions(path: Path) -> None:
             os.chmod(str(path), 0o600)
     except OSError:
         pass
+
+
+def _ensure_pwd_version_column(conn: sqlite3.Connection) -> None:
+    """users.pwd_version 幂等补列（2.1.5 记住我）。
+
+    ALTER 先例：coscreen/db.py._add_column_if_missing——先查 pragma_table_info，
+    缺列才 ALTER；撞 duplicate column（并发补列）按幂等成功。默认 1，改密/
+    重置时 +1，使携带 pv 的 7 天令牌即时失效。
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "pwd_version" in cols:
+        return
+    try:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN pwd_version INTEGER NOT NULL DEFAULT 1")
+        conn.commit()
+    except sqlite3.OperationalError:
+        cols_after = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "pwd_version" not in cols_after:
+            raise
+
+
+def set_password(user_id: int, new_password: str) -> None:
+    """重置/改密落库（2.1.5 找回密码）：写新哈希并 pwd_version+1。
+
+    调用方负责 validate_password 与重置码校验；+1 使所有携带 pv 的长时
+    令牌在下一次 require_user 核验时失效（默认 24h 令牌按原语义自然过期）。
+    """
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE users SET password_hash=?, pwd_version=pwd_version+1 WHERE id=?",
+            (hash_password(new_password), int(user_id)))
+        if cur.rowcount == 0:
+            raise AuthError("用户不存在。")
 
 
 def _now_iso() -> str:
@@ -273,13 +308,18 @@ def screener_storage_conflict(username: str) -> bool:
 
 
 def get_user(username: str) -> dict | None:
-    """按用户名取用户行；不存在返回 None。"""
+    """按用户名取用户行（含 pwd_version，2.1.5 记住我）；不存在返回 None。"""
     with closing(_connect()) as conn:
         row = conn.execute(
-            "SELECT id, username, password_hash FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, pwd_version"
+            " FROM users WHERE username = ?",
             ((username or "").strip(),),
         ).fetchone()
-    return {"id": int(row[0]), "username": str(row[1]), "password_hash": str(row[2])} if row else None
+    if not row:
+        return None
+    return {"id": int(row[0]), "username": str(row[1]),
+            "password_hash": str(row[2]),
+            "pwd_version": int(row[3] if row[3] is not None else 1)}
 
 
 def get_user_by_id(user_id: int) -> dict | None:
@@ -304,7 +344,10 @@ def authenticate(username: str, password: str) -> dict | None:
     target = user["password_hash"] if user else _timing_equalizer_hash()
     ok = verify_password(password or "", target)
     if user and ok:
-        return {"id": user["id"], "username": user["username"]}
+        # pwd_version 透传（2.1.5 记住我）：login 端点据此给 remember 令牌
+        # 盖版本戳；多余键对既有调用方无影响。
+        return {"id": user["id"], "username": user["username"],
+                "pwd_version": user.get("pwd_version", 1)}
     return None
 
 
@@ -620,17 +663,28 @@ def _secret() -> str:
         return persisted if _secret_shape_ok(persisted) else secret
 
 
-def create_access_token(user_id: int, username: str) -> str:
-    """签发 HS256 JWT（24h 过期；载荷含 sub/username/iat/exp/jti/iss）。"""
+def create_access_token(user_id: int, username: str, *,
+                        ttl_hours: int | None = None,
+                        pwd_version: int | None = None) -> str:
+    """签发 HS256 JWT（默认 24h；remember 令牌 7 天且载荷带 pv）。
+
+    2.1.5 记住我：``ttl_hours`` 给定时签发长时令牌并附带 ``pv``（签发时
+    users.pwd_version 快照）；require_user 对**带 pv 的令牌**逐请求核验，
+    改密/重置（pwd_version+1）即全量失效。默认调用（不传参）载荷与既往
+    逐字节一致——24h 令牌路径零行为变化。
+    """
     now = datetime.now(timezone.utc)
+    hours = TOKEN_TTL_HOURS if ttl_hours is None else int(ttl_hours)
     payload = {
         "sub": str(int(user_id)),
         "username": username,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(hours=TOKEN_TTL_HOURS)).timestamp()),
+        "exp": int((now + timedelta(hours=hours)).timestamp()),
         "jti": uuid.uuid4().hex,
         "iss": JWT_ISSUER,
     }
+    if ttl_hours is not None:
+        payload["pv"] = int(pwd_version if pwd_version is not None else 1)
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 

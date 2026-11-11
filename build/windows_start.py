@@ -231,6 +231,37 @@ def replace_overlay(overlay: Path, target: Path) -> None:
     target.rename(overlay)
 
 
+def reset_user(username: str) -> int:
+    """找回密码·本机取码（2.1.5）：签发一枚 15 分钟一次性重置码并弹窗展示。
+
+    需要能 import custom_backend（开发布局=仓库根在 APP.parent；打包布局
+    =应用代码已在 sys.path）。数据目录与后端同口径（COBOOKSHELF_DATA_DIR
+    环境变量或默认）。
+    """
+    root = APP.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from custom_backend import auth, auth_recovery
+    except Exception as exc:  # 打包布局差异/依赖缺失：给可操作的提示
+        message(f"重置码生成失败：无法加载应用模块（{exc}）。\n"
+                f"请从安装目录运行本工具，或联系维护者。")
+        return 1
+    user = auth.get_user(username)
+    if user is None:
+        # 中性提示：操作者持本机数据目录，措辞不区分「不存在」与「目录不对」。
+        message(f"未能为「{username}」生成重置码：用户名不存在或数据目录不对。")
+        return 1
+    code = auth_recovery.issue_reset_code(username)
+    if code is None:
+        message("重置码生成失败：无法写入数据目录。")
+        return 1
+    message(f"用户「{username}」的重置码（15 分钟内有效、一次性）：\n\n"
+            f"{code}\n\n请在登录页「忘记密码」中输入该码与新密码。",
+            error=False)
+    return 0
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--check':
         if len(sys.argv) > 2:
@@ -238,5 +269,10 @@ if __name__ == '__main__':
         failures = check_dependencies()
         print(json.dumps(failures, ensure_ascii=False))
         raise SystemExit(bool(failures))
+    elif len(sys.argv) > 1 and sys.argv[1] == '--reset-user':
+        if len(sys.argv) < 3:
+            print('用法: windows_start.py --reset-user <用户名>', file=sys.stderr)
+            raise SystemExit(2)
+        raise SystemExit(reset_user(sys.argv[2]))
     else:
         raise SystemExit(main(force_repair='--repair' in sys.argv[1:]))
