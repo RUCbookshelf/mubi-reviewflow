@@ -190,7 +190,15 @@ class ImportRuntime:
                         if not protected:
                             activation = self.initial_save(conn, fresh.owner_db, bid, legacy)
                         store.refresh_statuses(conn)
-                        conn.execute('UPDATE workflow_state SET version=version+1 WHERE singleton=1')
+                        # sec29b（W2 写闸热路径一·导入提交）：条件推进。复用
+                        # review_workflow_api.WorkflowRuntime.bump_version——
+                        # self.workflow 即 app.state.review_workflow 同一实例，
+                        # 无需跨模块 import。write_guard(expected_version=version)
+                        # 的前置比对只做快失败；快照读版本与提交 UPDATE 之间的
+                        # 跨进程推进窗口由 AND version=? 原子兜底：rowcount=0 →
+                        # 409 workflow_version_conflict，随 with conn 回滚本事务
+                        # 全部导入写入（与已修 settings PUT 同语义）。
+                        self.workflow.bump_version(conn, expected_version=version, ctx=fresh)
                         result = self.compat_result(conn, bid, files, batch, legacy if not protected else None, plan, activation)
                         result['import_id'] = hid
                         result['policy_version'] = conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
@@ -588,7 +596,15 @@ def register_review_import_routes(app, require_user, **dependencies):
                     extra=operation(conn,ctx) or {}
                     changed = conn.total_changes != before_changes
                     if changed:
-                        conn.execute('UPDATE workflow_state SET version=version+1 WHERE singleton=1')
+                        # sec29b（W2 写闸热路径二·评审 mutate）：条件推进——
+                        # 语义同 review_workflow_api.bump_version（settings PUT/
+                        # save_source 已修路径），runtime.workflow 即同一
+                        # WorkflowRuntime 实例，直接复用其 helper。
+                        # expected_policy_version 给定时提交处 AND version=?
+                        # 原子复核，rowcount=0 → 409 workflow_version_conflict，
+                        # 随 with conn 回滚本事务评审写入；None 缺省走 helper
+                        # 的无条件推进分支，保持旧行为（内部流程兼容）。
+                        runtime.workflow.bump_version(conn, expected_version=body.expected_policy_version, ctx=ctx)
                     result={**store.batch_summary(conn,batch_id),**extra}
                     result['policy_version']=conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
                     if changed and undo_kind:
