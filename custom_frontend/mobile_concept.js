@@ -243,19 +243,15 @@
       search.addEventListener('input',()=>{const text=search.value.trim().toLocaleLowerCase();for(const topic of qa('.rf-mobile-help-topic',host))topic.hidden=!topic.textContent.toLocaleLowerCase().includes(text);});}
     if(!search.closest('.rf-mobile-search')){search.placeholder=tr('Find a topic');search.setAttribute('aria-label',tr('Find a topic'));}
   }
-  function login(){
-    const brand=q('#authCard>.auth-brand'),card=q('#authCard');if(brand)move(brand,card.parentNode,card);
-    if(!q('.rf-mobile-auth-title',card))add(node('h2','rf-mobile-auth-title',()=>q('#submitText').textContent),card,q('#authForm'));
-  }
   function compose(){
     observer.disconnect();
     for(const [n,a] of moves)if(!n.isConnected&&!a.isConnected)moves.delete(n);
     for(const n of added)if(!n.isConnected){added.delete(n);labels.delete(n);}
     for(const n of states.keys())if(!n.isConnected)states.delete(n);
-    try{if(!media.matches)restore();else{home();screening();documents('fulltext');documents('bench');imports();exports();tables();prisma();trace();help();login();
+    try{if(!media.matches)restore();else{home();screening();documents('fulltext');documents('bench');imports();exports();tables();prisma();trace();help();
       for(const [id] of stageOrder)stageTabs(page(id));}
       for(const [n,key] of labels)if(n.isConnected&&n.textContent!==tr(key))n.textContent=tr(key);refreshHeader();
-    }finally{observer.observe(q('#appMain>.view'),{childList:true,subtree:true});observer.observe(q('#authCard'),{childList:true,subtree:true});observer.observe(q('#capScreen'),{childList:true,subtree:true});observer.observe(q('#barScreen'),{attributes:true,attributeFilter:['style']});}
+    }finally{observer.observe(q('#appMain>.view'),{childList:true,subtree:true});observer.observe(q('#capScreen'),{childList:true,subtree:true});observer.observe(q('#barScreen'),{attributes:true,attributeFilter:['style']});}
   }
   function schedule(){if(!frame)frame=requestAnimationFrame(()=>{frame=0;compose();});}
   const menu=button('展开侧边栏',()=>RFNavigationSheet.setOpen(q('#rfSidebarToggle')?.getAttribute('aria-expanded')!=='true',{immediate:true}));

@@ -325,23 +325,6 @@
   .rf-mobile-help-topic .help-card>h3{display:none}
   .help-contents{position:static;border:0;padding:0}
   .rf-mobile-help-search{margin-bottom:16px}
-  #authScreen{padding:82px 16px 24px;overflow:auto;background:var(--page);--page:#f3f7f5;--surface:#fff;--ink:#233c3b;--muted:#607772;--border:#d8e5e0;--input:#fff;--primary:#2f6f6a;--primary-dark:#2f6f6a}
-  #authScreen>.auth-brand{width:100%;max-width:420px;margin:10px auto 24px;flex:none}
-  #authScreen .site-header{top:16px;left:16px;right:16px;justify-content:flex-end}
-  #authScreen :is(#auMotion,#motionText,#themeText,#rf-language-current){display:none}
-  #authScreen .control{padding:12px;width:48px}
-  #authScreen #rf-language-button{width:48px;padding:12px}
-  #authScreen #rf-language-button span{display:none}
-  #authCard{width:100%;max-width:420px;margin:0 auto;padding:24px 20px;border-radius:17px;box-shadow:none;background:var(--surface);border:1px solid var(--border);flex:none}
-  #authCard:before{display:none}
-  #authCard .rf-mobile-auth-title{font:600 23px/1.3 Georgia,'Microsoft YaHei',serif;margin:0 0 20px}
-  #authScreen .submit{letter-spacing:normal;font-size:14px}
-  #authCard input{font-size:16px;min-height:48px}
-  #authCard button{min-height:48px;border-radius:12px}
-  #authScreen .login-bg,#authScreen .card-aura,#authScreen .masthead,#authScreen .flow-caption{display:none}
-  #authScreen .controls{gap:5px}
-  #authScreen .control{min-height:48px;min-width:48px;border-radius:14px}
-  [data-theme=dark] #authScreen{--page:#0D1117;--surface:#161B22;--ink:#E6EDF3;--muted:#9DB0BE;--border:#3A4553;--primary:#62A29D;--primary-dark:#8FC3BD;background:var(--page)}
   .wf-dirty-dialog,.wf-source-dialog{width:calc(100% - 24px);max-width:none;max-height:85dvh;border-radius:24px;padding:20px}
   #alStopPanel,.rf-screen-help{left:12px!important;right:12px;top:auto!important;bottom:12px;width:auto!important;max-width:none;max-height:75dvh;border-radius:24px}
   @keyframes rf-mobile-sheet-in{from{transform:translateY(100%);opacity:.5}to{transform:translateY(0);opacity:1}}
