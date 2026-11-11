@@ -574,6 +574,8 @@ class _MultipartPartCounter:
     :class:`MultipartStructureRejected`——该 part 的内容不会再被转发给
     解析器（r5 评审：21×1.1MiB 已认证 import-batch 曾在文件数校验前全部
     spool；r6 复审 #38：50×1MiB 字段 part 曾在 422 前整体进内存）。
+    ``max_total_bytes`` 设定时对**全部**流经字节（含文件 part）累计设
+    预算，超预算同通道拒绝（sec29：兜住「实际字节 > CL 声明」的违规流）。
 
     - part 头部块（到空行 ``\\r\\n\\r\\n`` 为止）含 ``filename`` → 文件
       part：第 ``max_files + 1`` 个的头部出现即拒绝；
@@ -608,12 +610,15 @@ class _MultipartPartCounter:
 
     def __init__(self, boundary: bytes, max_files: int,
                  max_fields: int = MAX_FIELD_PARTS,
-                 max_field_bytes: int = MAX_FIELD_PART_BYTES) -> None:
+                 max_field_bytes: int = MAX_FIELD_PART_BYTES,
+                 max_total_bytes: int | None = None) -> None:
         self._delim = b"\r\n--" + boundary
         self._lead = b"--" + boundary
         self._max_files = max_files
         self._max_fields = max_fields
         self._max_field_bytes = max_field_bytes
+        self._max_total_bytes = max_total_bytes
+        self._total_bytes = 0
         self.files = 0
         self.fields = 0
         self._field_bytes = 0
@@ -654,6 +659,16 @@ class _MultipartPartCounter:
             )
 
     def feed(self, chunk: bytes) -> None:
+        if self._max_total_bytes is not None:
+            # sec29（DS·上传闸·发现2 纵深）：CL 只在握手时校验声明值，实际
+            # 流过的字节若超过声明（协议违规/中间层改写），计数器此前照单
+            # 全收。feed 是全部 body 字节的必经之路，累计超预算即与文件数/
+            # 字段超限同通道拒绝（413）。缓冲区字节首次 feed 时已计入，不
+            # 重复累计。
+            self._total_bytes += len(chunk)
+            if self._total_bytes > self._max_total_bytes:
+                raise MultipartStructureRejected(
+                    "上传数据累计超过该端点的大小上限，连接已中止。")
         data = self._buf + chunk
         self._buf = b""
         pos = 0
@@ -744,13 +759,19 @@ class MultipartStructureRejected(UploadRejected, HTTPException):
         HTTPException.__init__(self, status_code=413, detail=message)
 
 
+#: CL+TE 双带拒绝文案（sec29·DS·上传闸发现1/2 共用；RFC 7230 §3.3.3）。
+CL_TE_DUAL_HEADER_MESSAGE = (
+    "请求头结构异常（Content-Length 与 Transfer-Encoding 同时存在）。")
+
+
 class UploadSizeLimitMiddleware:
     """multipart 上传的 ASGI 级预检：**解析请求体之前**拒绝异常请求。
 
     背景：FastAPI/Starlette 在进入端点/依赖前已完整解析 multipart，>1MB 的
     文件 part 会 spool 到系统临时目录——端点内的 ``check_size``/文件数校验
     永远发生在落盘之后（G3/U5-P3 同一根因）。本中间件在解析发生前依次检查
-    （顺序：400 重复头 → 411 → 401 → 400 boundary 缺失 → 413 字节上限），
+    （顺序：400 重复头 → 400 CL+TE 双带 → 411 → 401 → 400 boundary 缺失
+    → 413 字节上限；放行后计数器另按端点上限预算总字节），
     放行后仍在 receive 层流式限制文件 part 数与字段 part 数/大小：
 
     0. **Content-Type / Content-Length 头重复 → 400**：同名头取值以先到者
@@ -860,17 +881,27 @@ class UploadSizeLimitMiddleware:
             return
         content_types: list[bytes] = []
         content_lengths: list[bytes] = []
+        transfer_encodings: list[bytes] = []
         for key, value in scope.get("headers") or []:
             lowered = key.lower()
             if lowered == b"content-type":
                 content_types.append(value)  # 原值保留：boundary 大小写敏感
             elif lowered == b"content-length":
                 content_lengths.append(value)
+            elif lowered == b"transfer-encoding":
+                transfer_encodings.append(value)
         if len(content_types) > 1 or len(content_lengths) > 1:
             # 双 Content-Type（前 multipart 后 json）可让预检按后值放行、
             # Starlette 按前值照常解析（评审实测绕过）；重复头一律拒绝。
             await self._reject(scope, send, 400,
                                "请求头结构异常（Content-Type/Content-Length 重复）。")
+            return
+        if content_lengths and transfer_encodings:
+            # sec29（DS·上传闸·发现1）：RFC 7230 §3.3.3——CL 与 TE 双带时，
+            # 「按 CL 预检体积」与「按 TE 分块读体」的前后端分歧正是请求
+            # 走私的载体。预检不依赖具体服务器的协议级拒绝（h11 会拒，但
+            # ASGI 层须自成防线）：双带一律 400；纯 TE 仍走 411 路径。
+            await self._reject(scope, send, 400, CL_TE_DUAL_HEADER_MESSAGE)
             return
         content_type_header = content_types[0] if content_types else b""
         # R6-S3：Content-Type 的解析与 Starlette 同源（python-multipart
@@ -937,7 +968,12 @@ class UploadSizeLimitMiddleware:
                                    "上传请求体超过大小上限，请在压缩或减少文件数量后重试。")
                 return
             if max_files >= 1:
-                counter = _MultipartPartCounter(boundary, max_files)
+                # sec29：总字节预算=端点上限+64KB multipart 封装余量，与
+                # 上面的 CL 预检同界，只兜「实际流过字节 ≠ CL 声明」的
+                # 协议违规流（多 part 的 boundary/CRLF 封装均计入 body）。
+                counter = _MultipartPartCounter(
+                    boundary, max_files,
+                    max_total_bytes=limit + 64 * 1024)
 
                 async def receive_wrapper():
                     message = await receive()
@@ -964,6 +1000,8 @@ class AuthBodyLimitMiddleware:
 
     - **Content-Length 预检**：超限直接 413，不读请求体（与
       :class:`UploadSizeLimitMiddleware` 的 413 预检同一层）；
+    - **CL+TE 双带 → 400**（sec29）：RFC 7230 §3.3.3 的请求走私载体，
+      与 UploadSizeLimitMiddleware 同口径拒绝；
     - **缺头/非法头（chunked）**：有界读取（上限 +1 字节封顶，不做无界
       读入）后精确判定，超限同样 413——与 report_evidence ``size_guard``
       的「读后精确校验」同口径，杜绝缺头 fail-open；
@@ -981,8 +1019,9 @@ class AuthBodyLimitMiddleware:
         self.limit = limit
         self.cors_origins = list(cors_origins) if cors_origins else []
 
-    async def _reject(self, scope, send) -> None:  # noqa: ANN001
-        body = json.dumps({"detail": _AUTH_BODY_LIMIT_MESSAGE},
+    async def _reject(self, scope, send, status: int = 413,
+                      detail: str = _AUTH_BODY_LIMIT_MESSAGE) -> None:  # noqa: ANN001
+        body = json.dumps({"detail": detail},
                           ensure_ascii=False).encode("utf-8")
         headers = [(b"content-type", b"application/json"),
                    (b"content-length", str(len(body)).encode("ascii")),
@@ -991,7 +1030,7 @@ class AuthBodyLimitMiddleware:
         headers.extend(cors_response_headers(
             self._origin_of(scope), self.cors_origins))
         # 未（完整）读请求体即应答：要求关闭连接，避免服务端继续吸收数据。
-        await send({"type": "http.response.start", "status": 413,
+        await send({"type": "http.response.start", "status": status,
                     "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
@@ -1013,10 +1052,21 @@ class AuthBodyLimitMiddleware:
                 pattern.match(scope.get("path", "")) for pattern in self.paths):
             await self.app(scope, receive, send)
             return
-        lengths = [value for key, value in scope.get("headers") or []
+        headers = scope.get("headers") or []
+        lengths = [value for key, value in headers
                    if key.lower() == b"content-length"]
+        chunked = any(key.lower() == b"transfer-encoding"
+                      for key, _ in headers)
+        if lengths and chunked:
+            # sec29（DS·上传闸·发现2）：CL+TE 双带时快路径按 CL 放行、后端
+            # 若按 TE 读体即绕开本上限（请求走私载体，RFC 7230 §3.3.3 一律
+            # 拒绝）；与 UploadSizeLimitMiddleware 同口径 400。
+            await self._reject(scope, send, 400, CL_TE_DUAL_HEADER_MESSAGE)
+            return
         content_length = None
-        if len(lengths) == 1:  # 重复头交给内层 UploadSizeLimitMiddleware 400
+        if len(lengths) == 1 and not chunked:
+            # 重复头交给内层 UploadSizeLimitMiddleware 400；纯 TE（chunked
+            # 合法登录，r7 曾修）不信任 CL，走下方有界读取分支。
             try:
                 content_length = int(lengths[0])
             except ValueError:
