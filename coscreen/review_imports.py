@@ -916,20 +916,73 @@ def batch_summary(conn: sqlite3.Connection, bid: str) -> dict:
     proposals = conn.execute('''SELECT p.action FROM workflow_import_metadata p WHERE p.record_id IN
                               (SELECT record_id FROM workflow_import_members WHERE batch_id=?)''', (bid,)).fetchall()
     candidates = candidate_rows(conn, bid, include_members=False)
-    roots = {record_target(conn, r['id']) for r in records}
+    # perf 段7·run3：原实现对每条记录逐条调 record_target()/首批次查询
+    # （本基准 126 条 ≈ 330 次 SQL）。改为批量预取 + 内存解析，链式语义
+    # （canonical 别名链、target 链、环检测、ValueError 文案）与
+    # record_target/canonical 逐位一致，由基准门禁哈希与测试钉。
+    _chain = {r['id']: (r['canonical_key'], r['target_record_id']) for r in records}
+
+    def _row(rid: str):
+        if rid not in _chain:
+            fetched = conn.execute(
+                'SELECT canonical_key,target_record_id FROM workflow_source_records WHERE id=?',
+                (rid,)).fetchone()
+            if fetched is None:
+                raise ValueError('Missing source record target.')
+            _chain[rid] = (fetched[0], fetched[1])
+        return _chain[rid]
+
+    _dup_of: dict[str, str | None] = {}
+
+    def _canon(key: str) -> str:
+        seen = set()
+        while key not in seen:
+            seen.add(key)
+            if key not in _dup_of:
+                row = conn.execute('SELECT is_duplicate_of FROM articles WHERE zotero_key=?',
+                                   (key,)).fetchone()
+                if row is None:
+                    raise ValueError('Canonical article no longer exists; refresh the import review.')
+                _dup_of[key] = row[0]
+            nxt = _dup_of[key]
+            if nxt is None:
+                return key
+            key = nxt
+        raise ValueError('Existing duplicate identity cycle requires manual repair.')
+
+    def _target(rid: str) -> tuple[str | None, str]:
+        seen = set()
+        while rid not in seen:
+            seen.add(rid)
+            key, nxt = _row(rid)
+            if key:
+                return _canon(key), rid
+            if not nxt:
+                return None, rid
+            rid = nxt
+        raise ValueError('Source record target cycle requires review.')
+
+    roots = {_target(r['id']) for r in records}
     # Current cumulative provenance counts, distinct from each activation call's deltas.
     # A retained source row can belong to later reimports; attribute new roots only
     # to their first batch, never count the same introduced article again.
+    # 首批次：一条全量 JOIN 预取（record_id → 按 (created_at,rowid) 字典序最小的
+    # batch_id），替代逐记录 LIMIT 1 查询；取小序与 SQL 的 ORDER BY 语义一致。
+    _first_batch: dict[str, str] = {}
+    for member_id, batch_id, created, rowid in conn.execute(
+            '''SELECT m.record_id, b.id, b.created_at, b.rowid FROM workflow_import_members m
+               JOIN workflow_import_batches b ON b.id=m.batch_id'''):
+        held = _first_batch.get(member_id)
+        if held is None or (created, rowid) < held[0]:
+            _first_batch[member_id] = ((created, rowid), batch_id)
+    _first_batch = {rid: pair[1] for rid, pair in _first_batch.items()}
     introduced = set()
     for row in records:
         if (row['state'] != 'active' or row['target_record_id'] is not None
                 or row['outcome'] not in ('new', 'identity_conflict')
                 or row['canonical_key'] not in (row['staged_key'], row['incoming_key'])):
             continue
-        first = conn.execute('''SELECT b.id FROM workflow_import_members m
-            JOIN workflow_import_batches b ON b.id=m.batch_id WHERE m.record_id=?
-            ORDER BY b.created_at,b.rowid LIMIT 1''', (row['id'],)).fetchone()
-        if first and first[0] == bid:
+        if _first_batch.get(row['id']) == bid:
             introduced.add(row['canonical_key'])
     screening_total = conn.execute('''SELECT COUNT(*) FROM articles a WHERE a.is_duplicate_of IS NULL
         AND NOT EXISTS (SELECT 1 FROM title_duplicate_members m
