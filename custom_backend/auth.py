@@ -119,6 +119,21 @@ def _now_iso() -> str:
 # 密码哈希（bcrypt，直接使用 bcrypt 库 —— passlib 1.7.4 与 bcrypt>=4 不兼容）
 # ---------------------------------------------------------------------------
 
+#: 缺失用户路径的哑哈希缓存单元（首次使用时计算一次；sec29）。此前每次
+#: 「用户不存在」登录都现算 rounds=12 hashpw——缺失路径 hashpw+checkpw
+#: 两次 bcrypt、真实路径 checkpw 一次，~2× 反向时延差本身构成用户名枚举
+#: 的时序侧信道，且未认证者可用随机用户名把每请求 CPU 放大一倍。
+_TIMING_EQUALIZER_HASH: list[str] = []
+
+
+def _timing_equalizer_hash() -> str:
+    if not _TIMING_EQUALIZER_HASH:
+        _TIMING_EQUALIZER_HASH.append(
+            bcrypt.hashpw(b"timing-equalizer",
+                          bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode("ascii"))
+    return _TIMING_EQUALIZER_HASH[0]
+
+
 def hash_password(password: str) -> str:
     """bcrypt 哈希（rounds=12）；返回 ASCII 可存储的哈希串。
 
@@ -133,9 +148,16 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    """恒定时间校验 bcrypt 哈希；哈希损坏按不匹配处理（绝不抛异常）。"""
+    """恒定时间校验 bcrypt 哈希；哈希损坏按不匹配处理（绝不抛异常）。
+
+    sec29（DS·凭据与令牌）：口令统一截到 72 字节再入 checkpw——bcrypt 5.x
+    对超长输入抛 ``ValueError``（此前折叠成 False），截断后与 bcrypt 自身
+    「前 72 字节等价」语义对齐、两条路径行为一致；注册侧仍由
+    validate_password/G-01 拒绝超长口令，语义不变。
+    """
     try:
-        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("ascii"))
+        return bcrypt.checkpw((password or "").encode("utf-8")[:72],
+                              password_hash.encode("ascii"))
     except (ValueError, TypeError):
         return False
 
@@ -247,11 +269,12 @@ def get_user_by_id(user_id: int) -> dict | None:
 def authenticate(username: str, password: str) -> dict | None:
     """校验用户名密码；成功返回 ``{id, username}``，失败返回 None。
 
-    用户不存在时也对恒定哈希执行一次校验，抹平“用户不存在”与“密码错误”
-    的响应时间差（防用户名枚举的时序侧信道）。
+    用户不存在时也对**预置**哑哈希执行一次同构校验，抹平「用户不存在」与
+    「密码错误」的响应时间差（防用户名枚举的时序侧信道；sec29 前现算哈希
+    造成 ~2× 反向时延差与 CPU 放大，见 ``_TIMING_EQUALIZER_HASH``）。
     """
     user = get_user(username)
-    target = user["password_hash"] if user else hash_password("timing-equalizer")
+    target = user["password_hash"] if user else _timing_equalizer_hash()
     ok = verify_password(password or "", target)
     if user and ok:
         return {"id": user["id"], "username": user["username"]}
