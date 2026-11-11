@@ -108,14 +108,22 @@ def _cosine_matrix(vectors: Sequence[Mapping[str, float]]) -> csr_matrix:
     rows: list[int] = []
     cols: list[int] = []
     data: list[float] = []
+    # perf 段5·run2（autoresearch 2026-11-11）：段4 run3 组合变体在同日锚点下重放——
+    # ①逐项操作绑定局部名（数组内容与顺序逐位不变）；②行范数改 data*data +
+    # indptr 边界 reduceat（scipy csr.sum(axis=1) 内部即同边界 reduceat，累加
+    # 次序逐位相同；空行显式置 0 等价），免去 multiply 物化 nnz 级稀疏临时量。
+    vocab_get = vocabulary.get
+    rows_append = rows.append
+    cols_append = cols.append
+    data_append = data.append
     for row, vector in enumerate(vectors):
         for term, weight in vector.items():
-            column = vocabulary.get(term)
+            column = vocab_get(term)
             if column is None:
                 column = vocabulary[term] = len(vocabulary)
-            rows.append(row)
-            cols.append(column)
-            data.append(float(weight))
+            rows_append(row)
+            cols_append(column)
+            data_append(float(weight))
     matrix = csr_matrix(
         (np.asarray(data, dtype=np.float64),
          (np.asarray(rows, dtype=np.int64), np.asarray(cols, dtype=np.int64))),
@@ -124,7 +132,13 @@ def _cosine_matrix(vectors: Sequence[Mapping[str, float]]) -> csr_matrix:
     )
     matrix.sum_duplicates()   # 同一 (行, 列) 的重复项按既定顺序合并
     matrix.sort_indices()     # 行内列号升序 → 累加顺序固定
-    norms = np.sqrt(np.asarray(matrix.multiply(matrix).sum(axis=1)).ravel())
+    squared = matrix.data * matrix.data
+    row_nnz = np.diff(matrix.indptr)
+    norms = np.zeros(len(vectors), dtype=np.float64)
+    nonempty = row_nnz > 0
+    if nonempty.any():
+        norms[nonempty] = np.add.reduceat(squared, matrix.indptr[:-1][nonempty])
+    norms = np.sqrt(norms)
     nonzero = norms > 0.0
     if nonzero.any():
         scale = np.zeros(len(vectors), dtype=np.float64)
