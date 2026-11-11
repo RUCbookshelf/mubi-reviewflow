@@ -1,6 +1,8 @@
 """用户管理与 JWT 鉴权（custom_backend 专用，不改动 coscreen / ui）。
 
 - 用户凭据存 ``{data_dir}/users.db``（SQLite，bcrypt 哈希，绝不存明文）；
+  POSIX 建库后随即把库文件收紧为 0600（Windows 无 POSIX 权限位，no-op，
+  依赖部署侧目录 ACL，见 docs/deployment/UBUNTU_SERVER.md 数据目录小节）；
 - JWT：HS256 + 24h 过期，载荷含 sub(user_id) / username / iat / exp / jti；
 - 签名密钥：优先环境变量 ``COBOOKSHELF_JWT_SECRET``，否则持久化到
   ``{data_dir}/.jwt_secret``（0600 权限创建），重启后令牌不失效；
@@ -85,10 +87,28 @@ def _users_db() -> Path:
 def _connect() -> sqlite3.Connection:
     path = _users_db()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # H组#4：是否本次建库（之后立即收紧权限）；已存在的库不再重复 chmod。
+    created = not path.exists()
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_USERS_SCHEMA)
+    if created:
+        _restrict_db_permissions(path)
     return conn
+
+
+def _restrict_db_permissions(path: Path) -> None:
+    """users.db 权限收紧为 0600（H组#4，仅 POSIX 实际生效）。
+
+    deepseek 复审：sqlite3.connect 按进程 umask 建库，POSIX 默认 0644，
+    同机其他账户可读 bcrypt 哈希表。建库后立即 chmod 0600；Windows 无
+    POSIX 权限位（FAT/网络盘同理），任何 ``OSError`` 都按 no-op 吞掉，
+    绝不影响建库/鉴权主路径（与 ai_keys._chmod_best_effort 同口径）。
+    """
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
 
 
 def _now_iso() -> str:

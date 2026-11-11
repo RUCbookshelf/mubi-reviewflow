@@ -13,12 +13,16 @@
   保存**本人**每日目标（每日篇数 0=未设 / 提醒时间 HH:MM / 提醒开关默认关 /
   可选截止日期与 IANA 时区）。
 - ``POST /api/tasks/{task_id}/screening/ics-tokens``
-  生成一次性明文订阅令牌（库内只存 SHA-256 摘要）；``GET`` 列本人令牌、
+  生成一次性明文订阅令牌（库内只存 SHA-256 摘要；H组#2：默认 365 天过期，
+  过期与撤销同 404 形状，现有撤销语义不动；H组#3：每成员活跃令牌上限 10，
+  超出先撤最旧，写时裁剪已撤销条目）；``GET`` 列本人令牌、
   ``DELETE …/{token_id}`` 撤销。
 - ``GET  /api/tasks/{task_id}/screening/daily-status.ics?token=``
   **认证外只读** ICS（未来 90 天每日提醒）；摘要只含数字，绝不含文献内容；
-  任务不存在与令牌缺失/超长/无效/撤销/属主已非任务成员一律 404——状态码、
-  响应体逐字节同一形状（#21：认证外端点不得成为任务存在性 oracle）。
+  任务不存在与令牌缺失/超长/无效/撤销/过期/属主已非任务成员一律 404——状态码、
+  响应体逐字节同一形状（#21：认证外端点不得成为任务存在性 oracle）；且
+  任务不存在路径补做与令牌侧等量的固定工作（一次令牌表读取 + 摘要比对）
+  再 404，抹平两类 404 的时序差（H组#1）。
   事件 UID 混入成员标识哈希前缀（#17）：同任务不同成员 UID 不同、
   不含成员名明文。
 - ``GET/PUT /api/tasks/{task_id}/screening/notify/channels``
@@ -48,7 +52,7 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -64,6 +68,15 @@ _REMIND_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # 凭据环境变量名的形状+专用前缀判定统一走 notify.validate_env_name
 # （REVIEWFLOW_NOTIFY_ 白名单前缀，保存侧与发送侧同一口径，不复制正则）。
 _USERNAME_MAX = 64
+
+#: H组#2（低危）：ICS 订阅令牌 TTL。令牌明文随 URL 分发且此前永不过期，
+#: 泄露即永久有效；默认 365 天过期，过期与撤销同 404 形状（不新增可区分
+#: 的错误形状），撤销语义保持不动。
+ICS_TOKEN_TTL_DAYS = 365
+#: H组#3（低危）：每成员活跃（未撤销）令牌上限；生成超出上限时先撤最旧
+#: （created_at 稳定排序，秒级并列按登记顺序破平），且写时裁剪已撤销
+#: 条目，令牌库不再无限增长。
+ICS_TOKENS_PER_MEMBER_LIMIT = 10
 
 _DEFAULT_SETTINGS: dict[str, Any] = {
     "daily_target": 0,
@@ -404,15 +417,84 @@ def register_streak_routes(
     def _token_digest(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
+    def _parse_utc(value: object) -> datetime | None:
+        """ISO 时间戳解析（记录里的 ``created_at``/``expires_at`` 等）。
+
+        失败返回 None；naive 值按 UTC 解释（本模块写入的恒为 UTC 且带
+        tzinfo，naive 只可能来自手工编辑的存量记录）。
+        """
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _token_expired(record: dict, now: datetime) -> bool:
+        """H组#2：令牌是否已过期（TTL 默认 ``ICS_TOKEN_TTL_DAYS`` 天）。
+
+        - 新令牌显式带 ``expires_at``；
+        - 存量/手工编辑记录缺 ``expires_at`` 时按 ``created_at + TTL`` 兜底
+          （legacy 令牌同样有界，不会永久有效）；
+        - 两个字段都缺/不可解析 → 不视为过期：不无差别杀死形状异常但仍在
+          用的旧记录；过期与撤销一样由调用方折叠为同一 404 形状。
+        """
+        expiry = _parse_utc(record.get("expires_at"))
+        if expiry is None:
+            created = _parse_utc(record.get("created_at"))
+            if created is None:
+                return False
+            expiry = created + timedelta(days=ICS_TOKEN_TTL_DAYS)
+        return now >= expiry
+
     def _find_token(records: list[dict], token: str) -> dict | None:
         digest = _token_digest(token)
+        now = datetime.now(timezone.utc)
         for record in records:
             if record.get("revoked_at"):
+                continue
+            if _token_expired(record, now):
+                # H组#2：过期令牌与撤销令牌同一处理——调用方（认证外订阅
+                # 源）一律返回同一 404 形状，不新增可区分的错误形状。
                 continue
             stored = record.get("sha256")
             if isinstance(stored, str) and hmac.compare_digest(digest, stored):
                 return record
         return None
+
+    def _prune_revoked(records: list[dict], *, keep: dict | None = None) -> list[dict]:
+        """H组#3：写时裁剪已撤销条目（令牌库只保留活跃记录）。
+
+        ``keep`` 保留**本次事务刚撤销**的那条（撤销端点用）——重复撤销
+        幂等（本人/负责人对刚撤销的令牌再 DELETE 仍 200）依赖它在下一次
+        读取时仍可见；生成端点不传 ``keep``，撤销即裁剪。
+        """
+        return [record for record in records
+                if not record.get("revoked_at") or record is keep]
+
+    def _enforce_member_token_cap(records: list[dict], username: str,
+                                  now: datetime) -> list[dict]:
+        """H组#3：每成员活跃令牌上限，超出先撤最旧（撤后随写裁剪）。
+
+        活跃 = 未撤销（过期未撤销的记录同样占额，被裁掉的往往是它们）。
+        ``created_at`` 秒级精度可并列：按 ``created_at`` 稳定排序，并列时
+        保持登记顺序（先建先撤），新插入的令牌永不被自己这次写入回收。
+        """
+        active = [record for record in records
+                  if record.get("username") == username
+                  and not record.get("revoked_at")]
+        if len(active) <= ICS_TOKENS_PER_MEMBER_LIMIT:
+            return records
+        overflow = len(active) - ICS_TOKENS_PER_MEMBER_LIMIT
+        oldest = sorted(
+            active, key=lambda record: str(record.get("created_at") or ""))[:overflow]
+        stamp = now.isoformat(timespec="seconds")
+        for record in oldest:
+            record["revoked_at"] = record.get("revoked_at") or stamp
+        return _prune_revoked(records)
 
     def _ics_member_active(info, record: dict) -> bool:
         """令牌属主是否仍是任务参与者（被移出任务后订阅立即失效）。
@@ -440,6 +522,72 @@ def register_streak_routes(
             return str(owner.get("owner_username") or "") == username
         except Exception:  # noqa: BLE001 - 公开只读源 fail-closed
             return False
+
+    def _ics_timing_work(task_id: str, token: str) -> None:
+        """H组#1：任务不存在路径的等量固定工作（抹平 404 时序通道）。
+
+        deepseek 复审：未知任务 ~1.55ms vs 已知任务+坏令牌 ~3.23ms——后者的
+        成本大头是 ``task_or_404`` 里 find_task 的真实 task.json 读取/解析/
+        TaskInfo 构建（实测 ~1.9ms）加令牌表读取/解析（~0.3ms），存在性
+        oracle 不止响应形状，还有响应时间。本函数对**形状合法但不存在**的
+        task_id 补做同构的真实工作链：在任务注册表根下取第一个真实任务
+        目录（``os.scandir`` 惰性迭代、遇目录即停——成本 O(1)，不随任务数
+        线性放大），对其完整跑一遍 ``find_task``（同样的 task.json 读+解析
+        +构建）与令牌表读取/解析，再做一次 SHA-256 摘要与全表比对，然后
+        由调用方抛同一 404。单任务部署（探测目标即唯一任务）时两侧读的是
+        同一批文件，成本逐位对齐。
+
+        约束：只读（绝不产生写副作用）、结果绝不使用（不外发、不影响
+        判定）、绝不抛错（任何失败静默降级为无垫片）；注册表根不存在或
+        没有任何任务目录时退化为同形状路径的读取尝试 + 摘要。形状非法的
+        id（task_or_404 与 find_task 的廉价前置检查两侧等价失败）不垫——
+        且绝不用未校验的 id 拼接读取路径（防目录逃逸读探针）。
+        """
+        if (not task_id or len(task_id) > 200 or task_id in {".", ".."}
+                or "/" in task_id or "\\" in task_id or "\x00" in task_id
+                or Path(task_id).name != task_id):
+            return
+        try:
+            from coscreen import tasks as tasks_mod
+
+            # 与 main.DATA_DIR 同源（main 在导入期读取同一环境变量；此处
+            # 调用期动态读取，避免对 main 的循环导入）。
+            data_dir = os.environ.get("COBOOKSHELF_DATA_DIR", "data")
+            root = tasks_mod.tasks_root(data_dir)
+            probe_dir: Path | None = None
+            try:
+                with os.scandir(root) as entries:
+                    for entry in entries:  # 惰性：遇第一个目录即停
+                        if entry.is_dir(follow_symlinks=False):
+                            probe_dir = Path(entry.path)
+                            break
+            except OSError:
+                probe_dir = None
+            records: list[dict] = []
+            if probe_dir is not None:
+                # 已知任务侧同构成本：task.json 读取+解析+TaskInfo 构建，
+                # 以及 task_or_404/_tokens_path 的 resolve/relative_to 路径
+                # 校验文件系统调用。
+                tasks_mod.find_task(probe_dir.name, data_dir)
+                tokens_path = probe_dir / "daily_nudge_tokens.json"
+                try:
+                    probe_dir.resolve().relative_to(root.resolve())
+                    tokens_path.resolve().relative_to(probe_dir.resolve())
+                except (OSError, ValueError):
+                    pass
+            else:
+                tokens_path = root / task_id / "daily_nudge_tokens.json"
+            try:
+                stored = json.loads(tokens_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                stored = None
+            if (isinstance(stored, dict)
+                    and isinstance(stored.get("tokens"), list)):
+                records = [record for record in stored["tokens"]
+                           if isinstance(record, dict)]
+            _find_token(records, token)  # 含一次 SHA-256 摘要与全表比对
+        except Exception:  # noqa: BLE001 - 时序垫片绝不改变 404 行为
+            return
 
     # ---- 端点 --------------------------------------------------------------
     @app.get("/api/tasks/{task_id}/screening/daily-status")
@@ -505,24 +653,35 @@ def register_streak_routes(
         token = secrets.token_urlsafe(32)
         digest = _token_digest(token)
         token_id = digest[:16]
-        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc)
+        created_at = now.isoformat(timespec="seconds")
+        # H组#2：显式过期时间（默认 365 天）；过期校验同时兜底存量记录
+        # （缺 expires_at 时按 created_at + TTL）。
+        expires_at = (now + timedelta(days=ICS_TOKEN_TTL_DAYS)).isoformat(
+            timespec="seconds")
         with _TOKEN_LOCK:
             records = _load_tokens(info)
             if any(record.get("id") == token_id for record in records):
                 token_id = digest[:24]
+            # H组#3：写时裁剪已撤销条目（生成路径无 keep——撤销即裁剪）。
+            records = _prune_revoked(records)
             records.append({
                 "id": token_id,
                 "sha256": digest,
                 "username": user["username"],
                 "user_id": user["user_id"],
                 "created_at": created_at,
+                "expires_at": expires_at,
                 "revoked_at": None,
             })
+            # H组#3：每成员活跃令牌上限（超出先撤最旧，随后一并裁剪）。
+            records = _enforce_member_token_cap(records, user["username"], now)
             _save_or_409(_tokens_path(info), {"version": 1, "tokens": records})
         return {
             "token": token,
             "token_id": token_id,
             "created_at": created_at,
+            "expires_at": expires_at,
             "feed_path": (f"/api/tasks/{info.task_id}/screening/"
                           f"daily-status.ics?token={token}"),
         }
@@ -566,6 +725,10 @@ def register_streak_routes(
             revoked_at = found.get("revoked_at") or datetime.now(timezone.utc).isoformat(
                 timespec="seconds")
             found["revoked_at"] = revoked_at
+            # H组#3：写时裁剪其余已撤销条目；**本次刚撤销的保留在表内**——
+            # 重复撤销幂等（本人/负责人紧接着再 DELETE 仍 200，终审既有
+            # 钉）依赖它在下一次读取时仍可见，下一次生成写入时才被裁掉。
+            records = _prune_revoked(records, keep=found)
             _save_or_409(_tokens_path(info), {"version": 1, "tokens": records})
         return {"revoked": True, "token_id": token_id, "revoked_at": revoked_at}
 
@@ -574,7 +737,7 @@ def register_streak_routes(
                          token: str = Query("")) -> Response:
         """认证外的只读订阅源：令牌即能力；一律同一 404 形状。
 
-        任务不存在与令牌缺失/超长/无效/撤销/属主已非成员全部返回逐字节相同
+        任务不存在与令牌缺失/超长/无效/撤销/过期/属主已非成员全部返回逐字节相同
         的 ``404 {"detail":"Not Found"}``（#21 统一形状：不泄露任务存在性）。
         长度在 handler 内判定（不用 Query 校验），保证任何坏令牌都得到同一个
         404 形状，而不是 422。
@@ -589,6 +752,11 @@ def register_streak_routes(
         try:
             info = task_or_404(task_id)
         except HTTPException:
+            # H组#1：任务不存在路径先补做一次与令牌侧等量的固定工作
+            # （令牌表读取 + 摘要比对，见 _ics_timing_work）再 404——
+            # 否则两类 404 有稳定时序差（~1.7ms），形状同形仍可被计时
+            # 区分。响应形状保持逐字节不变。
+            _ics_timing_work(task_id, token)
             raise HTTPException(404, "Not Found") from None
         try:
             records = _load_tokens(info)

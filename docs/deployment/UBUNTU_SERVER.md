@@ -38,6 +38,15 @@ mkdir -p /home/ubuntu/reviewflow-data
 
 服务器模式要求 `COBOOKSHELF_DATA_DIR` 使用绝对路径。账户、任务数据库、导入原件、PDF 和筛选决定均保存到该目录。请定期备份整个目录。
 
+**数据目录权限要求（必须执行）**：该目录保存账户库 `users.db`（bcrypt 口令哈希）、JWT 签名密钥 `.jwt_secret` 以及各任务的筛选决定数据库。应用在 POSIX 上会以 0600 创建 `.jwt_secret`，并在建库后把 `users.db` 收紧为 0600，但**目录本身**的访问权限必须由部署者保证：数据目录必须归属运行服务的专用账户，且权限为 0700（per-user，其他用户与组不可读、写、列目录）——否则同机其他本地账户可以绕过应用直接读取密钥与数据库文件（Windows 部署 `.jwt_secret` 没有应用层 ACL 保护，更必须依赖 NTFS 目录 ACL 只授予运行账户）：
+
+```bash
+sudo chown -R ubuntu:ubuntu /home/ubuntu/reviewflow-data
+sudo chmod 700 /home/ubuntu/reviewflow-data
+```
+
+备份、迁移与归档该目录时同理：不得放宽权限，不得复制到其他账户可读的共享位置。
+
 ### 4. 以服务器模式启动（团队协作必需）
 
 **不要用 `build/launcher.py` 启动团队服务器。** 该启动入口不会以团队模式运行（设置 `REVIEWFLOW_MODE=server` 时会直接报错退出、返回码 2，且不读取也不改动你的数据目录），也不提供团队邀请和共享进度 API。服务器应直接通过 `build_app()` 启动完整的 API 和前端服务：
@@ -235,6 +244,16 @@ sudo nginx -t && sudo systemctl reload nginx
   校验是**格式门槛，不是内容安全边界**——恶意构造的 PDF 内容本身仍可能
   利用阅读器漏洞。部署时应保持同源回放（本应用即是）、`X-Content-Type-
   Options: nosniff` 与 CSP（应用默认已加），不要把回放域名与站点主域混用。
+- **日历订阅令牌视同密码（ICS query 令牌与反代日志脱敏）**：打卡提醒的
+  ICS 订阅地址（`/api/tasks/{task_id}/screening/daily-status.ics?token=…`）
+  把令牌明文放在 URL query 里，任何拿到该 URL 的人都能以对应成员身份
+  读取其每日数字摘要——请把令牌当密码对待：不要粘贴到公开渠道/工单/聊天
+  记录；令牌默认 365 天自动过期，泄露后可随时在任务页撤销并重新生成。
+  同时注意 Nginx 访问日志默认记录完整 query（`$request` 含 `?token=…`），
+  日志文件可能比令牌本身存活更久：反代层应做日志脱敏——例如用
+  `map $request $request_scrubbed`（或对 `$args`）把 `token=…` 参数替换为
+  `REDACTED` 后再写入 `log_format`，或对该路径使用不含 `$args`/
+  `$query_string` 的日志格式；应用日志与错误日志同理。
 
 ### 6. 开启团队协作
 
@@ -286,6 +305,15 @@ mkdir -p /home/ubuntu/reviewflow-data
 ```
 
 Server mode requires an absolute `COBOOKSHELF_DATA_DIR`. Accounts, task databases, imported originals, PDFs, and screening decisions are stored there. Back up the entire directory regularly.
+
+**Data-directory permission requirements (mandatory)**: the directory holds the account database `users.db` (bcrypt password hashes), the JWT signing key `.jwt_secret`, and per-task screening databases. On POSIX the app creates `.jwt_secret` with 0600 and tightens `users.db` to 0600 after creating it, but the **directory itself** must be protected by the deployer: the data directory must belong to the dedicated service account with mode 0700 (per-user; no read/write/list access for other users or groups) — otherwise other local accounts on the same host can bypass the app and read the key and database files directly (on Windows `.jwt_secret` has no app-level ACL protection, so NTFS directory ACLs granting only the service account are even more important):
+
+```bash
+sudo chown -R ubuntu:ubuntu /home/ubuntu/reviewflow-data
+sudo chmod 700 /home/ubuntu/reviewflow-data
+```
+
+The same applies to backups, migrations, and archives of this directory: never widen the permissions and never copy it to shared locations readable by other accounts.
 
 ### 4. Start in server mode (required for team collaboration)
 
@@ -447,6 +475,7 @@ Validate and reload Nginx with `sudo nginx -t && sudo systemctl reload nginx`. O
 - **Upload size**: `client_max_body_size 100m` matches the app-level per-file cap (100MB). The batch-import endpoint accepts up to 20 files per request; if you really need a single >100MB multi-file batch, raise this value deliberately (e.g. `2000m`) — note that nginx buffers request bodies to its own temp disk first, so a higher limit enlarges that surface. Splitting large batches is safer. The app itself pre-checks Content-Length *before* parsing the body and rejects oversized requests with 413 immediately; the pre-check caps mirror each endpoint's real limit (with slack): 100MB single-file text/PDF imports, 20×100MB batch import, 9×100MB for the multi-file merge/agreement/arbitration endpoints, 128MB trace packages, 10MB coding evidence. Multipart requests without Content-Length (chunked), unauthenticated multipart requests, and requests with duplicate Content-Type/Content-Length headers are rejected with 411/401/400 before parsing; a multipart request whose boundary is missing or unparseable is likewise rejected with 400 immediately (boundary parsing matches Starlette: the last duplicate parameter wins, quoted values are unquoted). Requests whose file-part count exceeds the endpoint's declared maximum (e.g. 20 for batch import), whose field parts exceed 16, or whose single form field exceeds 1MB are cut off before the excess parts touch the disk or memory (413); an unclassifiable oversized part header is conservatively counted as a file part — malformed requests are rejected rather than under-counted. Note: if you submit trace packages (≤128MB+slack) through the proxy, raise `client_max_body_size` accordingly (e.g. `client_max_body_size 130m`).
 - **Login/register rate limiting (the app buckets by direct peer IP; behind a proxy the proxy must do the limiting)**: the app rate-limits by *direct peer IP* and **completely ignores `X-Forwarded-For`** (it is client-forgeable and cannot be trusted as a bucketing key). Behind a reverse proxy every request peers with the proxy, so app-level limiting degenerates to one shared bucket — throttling must be done at the proxy by real client IP (`$binary_remote_addr`), exactly the `limit_req` blocks in the two example configs above: the `limit_req_zone` declaration in the `http{}` context plus `limit_req zone=rf_auth burst=5 nodelay;` and `limit_req_status 429;` inside the exact-match `location = /api/auth/login` / `location = /api/auth/register` blocks (429 aligns with the app's own semantics; nginx's 429 carries no Retry-After, clients retry at their default interval). Direct deployments (start.sh / the desktop launcher) are unaffected: they pass `proxy_headers=False` explicitly, so uvicorn never rewrites the peer address from a forgeable XFF, and peer-IP bucketing equals real-client-IP bucketing.
 - **PDF upload checks are a format gate, not a content-security boundary**: the `%PDF-` header and pypdf parseability checks reject malformed files, but a maliciously crafted PDF could still exploit reader bugs. Keep same-origin playback (the default), `X-Content-Type-Options: nosniff` and CSP (enabled by default); do not mix the playback origin with your main site domain.
+- **Treat calendar-subscription tokens as passwords (ICS query tokens; sanitize proxy logs)**: the daily-nudge ICS subscription URL (`/api/tasks/{task_id}/screening/daily-status.ics?token=…`) carries the token in plaintext in the URL query, and anyone holding that URL can read the member's daily numeric digest as that member. Treat tokens like passwords: never paste them into public channels, tickets, or chat logs; tokens expire automatically after 365 days by default, and after a leak they can be revoked and regenerated from the task page at any time. Also note that Nginx access logs record the full query by default (`$request` includes `?token=…`), and log files may outlive the token itself: sanitize logs at the proxy — e.g. use a `map $request $request_scrubbed` (or on `$args`) that replaces the `token=…` parameter with `REDACTED` before it reaches your `log_format`, or use a log format for this path that omits `$args`/`$query_string`; the same applies to app and error logs.
 
 ### 6. Enable team collaboration
 
