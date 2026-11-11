@@ -966,12 +966,18 @@ def batch_summary(conn: sqlite3.Connection, bid: str) -> dict:
     # Current cumulative provenance counts, distinct from each activation call's deltas.
     # A retained source row can belong to later reimports; attribute new roots only
     # to their first batch, never count the same introduced article again.
-    # 首批次：一条全量 JOIN 预取（record_id → 按 (created_at,rowid) 字典序最小的
-    # batch_id），替代逐记录 LIMIT 1 查询；取小序与 SQL 的 ORDER BY 语义一致。
+    # 首批次：按**本批成员的 record_id 集**收域的 JOIN 预取（record_id → 按
+    # (created_at,rowid) 字典序最小的 batch_id），替代逐记录 LIMIT 1 查询；
+    # 取小序与 SQL 的 ORDER BY 语义一致。sec29：此前为全库 JOIN（全部历史
+    # 批次×成员）——查表只按本批 record 的 id 进行，收域后语义不变、扫描量
+    # 从「历史全量」降到「本批 record 的跨批成员行」。
     _first_batch: dict[str, str] = {}
     for member_id, batch_id, created, rowid in conn.execute(
             '''SELECT m.record_id, b.id, b.created_at, b.rowid FROM workflow_import_members m
-               JOIN workflow_import_batches b ON b.id=m.batch_id'''):
+               JOIN workflow_import_batches b ON b.id=m.batch_id
+               WHERE m.record_id IN
+                   (SELECT record_id FROM workflow_import_members WHERE batch_id=?)''',
+            (bid,)):
         held = _first_batch.get(member_id)
         if held is None or (created, rowid) < held[0]:
             _first_batch[member_id] = ((created, rowid), batch_id)

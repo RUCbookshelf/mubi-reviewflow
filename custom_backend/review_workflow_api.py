@@ -679,9 +679,33 @@ class WorkflowRuntime:
                     "maybe_allowed": maybe_allowed,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 
-    @staticmethod
-    def bump_version(conn: sqlite3.Connection) -> None:
-        conn.execute("UPDATE workflow_state SET version=version+1 WHERE singleton=1")
+    def bump_version(self, conn: sqlite3.Connection,
+                     expected_version: int | None = None,
+                     ctx: WorkflowContext | None = None) -> None:
+        """推进 owner 库 workflow_state.version（全局乐观锁）。
+
+        sec29（DS·锁与写闸）：``expected_version`` 给定时**条件推进**——版本
+        已被并发写推进则 rowcount=0，抛与 write_guard 前置检查同码的 409，
+        由调用方 ``with conn`` 事务回滚本次数据写入（先写数据后条件推进，
+        失败即整体回滚，提交是原子的）。write_guard 的进程内 RLock 只覆盖
+        单进程；跨进程并发写（多 worker/桌面与服务器共用数据目录）的检测
+        落到 SQLite 原子条件更新上——前置读版本与提交写之间的窗口不再可穿。
+        内部流程（如迁移后同步）不传 ``expected_version``，保持无条件推进。
+        """
+        if expected_version is None:
+            conn.execute("UPDATE workflow_state SET version=version+1 WHERE singleton=1")
+            return
+        cur = conn.execute(
+            "UPDATE workflow_state SET version=version+1 WHERE singleton=1 AND version=?",
+            (expected_version,))
+        if cur.rowcount == 0:
+            row = conn.execute(
+                "SELECT version FROM workflow_state WHERE singleton=1").fetchone()
+            payload = {"code": "workflow_version_conflict",
+                       "version": row[0] if row else expected_version}
+            if ctx is not None:
+                payload["workflow_settings"] = self.settings(ctx)
+            raise HTTPException(409, payload)
 
     def reason_db(self, ctx: WorkflowContext) -> Path:
         if ctx.task_kind == "personal":
@@ -746,7 +770,9 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                 conn.execute('DELETE FROM workflow_evidence_requirements')
                 conn.executemany('INSERT INTO workflow_evidence_requirements VALUES(?,?)',
                                  [(fid, coding_evidence.definition(dimensions[fid])) for fid in set(field_ids)])
-                runtime.bump_version(conn)
+                # sec29：条件推进——跨进程并发写在提交时原子检出（409 回滚
+                # 本事务的全部写入），不再依赖前置读版本的 TOCTOU 窗口。
+                runtime.bump_version(conn, expected_version=body.expected_version, ctx=ctx)
             runtime.notify(ctx, "settings")
             return runtime.settings(ctx)
 
@@ -781,7 +807,9 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                                          (sid, body.source_type, 'confirmed:' + sid))
                     else:
                         conn.execute("INSERT INTO workflow_sources VALUES(?,?,?,?,datetime('now'))", (sid, text, norm, body.active))
-                    runtime.bump_version(conn)
+                    # sec29：同 settings PUT——expected_version 给定时条件推进
+                    # （SourceIn 可不传，None 走无条件路径保持旧行为）。
+                    runtime.bump_version(conn, expected_version=body.expected_version, ctx=ctx)
             except sqlite3.IntegrityError as exc:
                 raise HTTPException(409, "A source with this name already exists.") from exc
             runtime.notify(ctx, "source")
