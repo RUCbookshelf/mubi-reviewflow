@@ -539,14 +539,16 @@ def register_streak_routes(
 
         约束：只读（绝不产生写副作用）、结果绝不使用（不外发、不影响
         判定）、绝不抛错（任何失败静默降级为无垫片）；注册表根不存在或
-        没有任何任务目录时退化为同形状路径的读取尝试 + 摘要。形状非法的
-        id（task_or_404 与 find_task 的廉价前置检查两侧等价失败）不垫——
-        且绝不用未校验的 id 拼接读取路径（防目录逃逸读探针）。
+        没有任何任务目录时退化为同形状路径的读取尝试 + 摘要。sec29b
+        （复审#12）：形状非法的 id **同样垫**（此前两类 404 时延可分辨
+        ~1.2ms）；输入 id 绝不进路径——无任务目录时的回退读取用固定占位
+        名，不随输入变化（防目录逃逸读探针）。
         """
-        if (not task_id or len(task_id) > 200 or task_id in {".", ".."}
-                or "/" in task_id or "\\" in task_id or "\x00" in task_id
-                or Path(task_id).name != task_id):
-            return
+        shape_ok = not (not task_id or len(task_id) > 200
+                        or task_id in {".", ".."} or "/" in task_id
+                        or "\\" in task_id or "\x00" in task_id
+                        or Path(task_id).name != task_id)
+        probe_name = task_id if shape_ok else "_ics_timing_shape_probe"
         try:
             from coscreen import tasks as tasks_mod
 
@@ -576,7 +578,7 @@ def register_streak_routes(
                 except (OSError, ValueError):
                     pass
             else:
-                tokens_path = root / task_id / "daily_nudge_tokens.json"
+                tokens_path = root / probe_name / "daily_nudge_tokens.json"
             try:
                 stored = json.loads(tokens_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -725,10 +727,10 @@ def register_streak_routes(
             revoked_at = found.get("revoked_at") or datetime.now(timezone.utc).isoformat(
                 timespec="seconds")
             found["revoked_at"] = revoked_at
-            # H组#3：写时裁剪其余已撤销条目；**本次刚撤销的保留在表内**——
-            # 重复撤销幂等（本人/负责人紧接着再 DELETE 仍 200，终审既有
-            # 钉）依赖它在下一次读取时仍可见，下一次生成写入时才被裁掉。
-            records = _prune_revoked(records, keep=found)
+            # H组#3/sec29b（复审#10）：撤销写入**不裁剪任何已撤销条目**——
+            # 此前 keep=found 会把更早撤销的条目裁掉，跨另一次撤销后旧 id
+            # 的重复 DELETE 从幂等 200 变 404（终审钉只盖了紧邻重复场景）。
+            # 裁剪只在生成端点写入时进行，每成员上限仍在那里兜住表大小。
             _save_or_409(_tokens_path(info), {"version": 1, "tokens": records})
         return {"revoked": True, "token_id": token_id, "revoked_at": revoked_at}
 

@@ -452,6 +452,16 @@ def _send_apprise(config: Mapping[str, Any], text: str, *, timeout: float) -> No
         host = host.split(":", 1)[0]
         if _check_host_literal(host) == "private_host":
             raise NotifyError("private_host")
+        # sec29b（复审#18）：十进制/十六进制/短写 IPv4（2130706433、0x7f…、
+        # 127.1）不被 ipaddress 识别而被当域名放行（apprise 是唯一无 DNS
+        # 复核的通道）——先经 inet_aton 归一再按私网判。
+        try:
+            normalized = socket.inet_ntoa(socket.inet_aton(host))
+        except (OSError, ValueError):
+            normalized = None
+        if (normalized is not None
+                and _check_host_literal(normalized) == "private_host"):
+            raise NotifyError("private_host")
     try:
         import apprise  # lazy import：未安装不影响其余功能
     except Exception:  # noqa: BLE001 - ImportError / 依赖内部错误

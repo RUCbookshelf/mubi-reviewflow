@@ -968,9 +968,11 @@ def batch_summary(conn: sqlite3.Connection, bid: str) -> dict:
     # to their first batch, never count the same introduced article again.
     # 首批次：按**本批成员的 record_id 集**收域的 JOIN 预取（record_id → 按
     # (created_at,rowid) 字典序最小的 batch_id），替代逐记录 LIMIT 1 查询；
-    # 取小序与 SQL 的 ORDER BY 语义一致。sec29：此前为全库 JOIN（全部历史
-    # 批次×成员）——查表只按本批 record 的 id 进行，收域后语义不变、扫描量
-    # 从「历史全量」降到「本批 record 的跨批成员行」。
+    # 取小序与 SQL 的 ORDER BY 语义一致。sec29 收域后语义不变（归属判定只
+    # 依赖本批 record 的成员行）。sec29b（复审#4）口径修正：无 record_id
+    # 索引时 SQLite 计划外层仍是 SCAN m（配子查询物化 + Bloom filter）——
+    # 收域收紧的是**候选集与语义保证**，并非消除全表扫描本身；members 表
+    # 巨大的任务可再补 record_id 索引收量级。
     _first_batch: dict[str, str] = {}
     for member_id, batch_id, created, rowid in conn.execute(
             '''SELECT m.record_id, b.id, b.created_at, b.rowid FROM workflow_import_members m

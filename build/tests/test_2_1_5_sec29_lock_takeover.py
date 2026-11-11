@@ -142,5 +142,28 @@ class TakeoverRaceTests(unittest.TestCase):
             self.assertTrue(tasks.release_task_lock(got, force=True))
 
 
+    def test_empty_lock_creation_window_not_stolen(self):
+        # sec29b（复审#2）：O_EXCL 刚建好、PID 尚未写入的空锁文件（size=0）
+        # = 建窗——不得接管（此前 lock_holder 两侧 None、None!=None 恒假，
+        # 复核拦不住空内容窗口，POSIX 实测双持锁）。
+        with tempfile.TemporaryDirectory(prefix="rf_sec29b_empty_") as tmp:
+            directory, lock = self._lock(tmp, 999999)
+            lock.write_text("", encoding="utf-8")  # 清空=模拟建窗
+            self.assertIsNone(tasks.acquire_task_lock(
+                "sec29task", data_dir=tmp, task_dir=directory))
+            self.assertTrue(lock.exists() and lock.stat().st_size == 0,
+                            "建窗锁不得被删/重建")
+
+    def test_nonempty_garbage_lock_still_takeoverable(self):
+        # 对照：非空但不可解析=损坏残留，接管语义保持。
+        with tempfile.TemporaryDirectory(prefix="rf_sec29b_gar_") as tmp:
+            directory, lock = self._lock(tmp, 999999)
+            lock.write_text("not-a-pid-line", encoding="utf-8")
+            got = tasks.acquire_task_lock(
+                "sec29task", data_dir=tmp, task_dir=directory)
+            self.assertIsNotNone(got)
+            self.assertTrue(tasks.release_task_lock(got, force=True))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -813,7 +813,16 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
             except sqlite3.IntegrityError as exc:
                 raise HTTPException(409, "A source with this name already exists.") from exc
             runtime.notify(ctx, "source")
-            return {"source": next(source for source in store.sources(ctx.owner_db) if source["id"] == sid), "version": store.settings(ctx.owner_db)["version"]}
+            # sec29b（复审#5，存量）：孤儿来源被 import_sources.decorate 过滤
+            # 后 next() 无默认值 → StopIteration 兜成 500；改 404（写入已提交，
+            # 仅取回展示失败——与列表不可见口径一致）。
+            found_source = next(
+                (source for source in store.sources(ctx.owner_db)
+                 if source["id"] == sid), None)
+            if found_source is None:
+                raise HTTPException(404, "Source not found.")
+            return {"source": found_source,
+                    "version": store.settings(ctx.owner_db)["version"]}
 
     @app.post("/api/tasks/{task_id}/sources", status_code=201)
     def create_source(task_id: str, body: SourceIn, user: dict = Depends(require_user)) -> dict:

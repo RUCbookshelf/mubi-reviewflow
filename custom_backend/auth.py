@@ -87,13 +87,15 @@ def _users_db() -> Path:
 def _connect() -> sqlite3.Connection:
     path = _users_db()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # H组#4：是否本次建库（之后立即收紧权限）；已存在的库不再重复 chmod。
+    # H组#4：是否本次建库（之后立即收紧权限）；存量库走补收紧（sec29b）。
     created = not path.exists()
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_USERS_SCHEMA)
     if created:
         _restrict_db_permissions(path)
+    else:
+        _tighten_existing_db_permissions(path)
     return conn
 
 
@@ -107,6 +109,31 @@ def _restrict_db_permissions(path: Path) -> None:
     """
     try:
         os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+
+
+#: 已补收紧过的存量库路径（进程内去重，避免每连接重复 chmod 系统调用）。
+_PERMS_TIGHTENED: set[str] = set()
+
+
+def _tighten_existing_db_permissions(path: Path) -> None:
+    """存量 users.db 的补收紧（sec29b·复审#3/#11）。
+
+    H 组只对「本次新建」chmod 0600——升级部署的既有库保持 umask 的
+    0644，原发现对存量未关闭。进程内每路径只补一次：POSIX 上组/其他位
+    有权限才 chmod；Windows 无 POSIX 位（st_mode 恒 0666 形态），直接
+    登记跳过以免每连接空转（部署文档已按目录 ACL 口径兜底）。
+    """
+    key = str(path.resolve())
+    if key in _PERMS_TIGHTENED:
+        return
+    _PERMS_TIGHTENED.add(key)
+    if os.name != "posix":
+        return
+    try:
+        if path.stat().st_mode & 0o077:
+            os.chmod(str(path), 0o600)
     except OSError:
         pass
 

@@ -899,6 +899,18 @@ def acquire_task_lock(
             holder = lock_holder(lock_path)
             if holder and pid_alive(int(holder.get("pid", 0))):
                 return None  # 活进程持有：只读提示，不抢
+            if holder is None:
+                # sec29b（复审#2）：lock_holder 对「空文件」与「损坏内容」同为
+                # None，而空文件=他进程 O_EXCL 刚建好、PID 尚未写入的建窗——
+                # 复核 None!=None 恒假拦不住它，POSIX 上删打开中的空文件照样
+                # 成功（实测双持锁）。按文件尺寸区分：size==0 一律按建窗放弃
+                # 本轮；非空不可解析才是损坏残留，允许接管（写入中途的可解析
+                # 半行由下方复核拦下）。
+                try:
+                    if lock_path.stat().st_size == 0:
+                        return None
+                except OSError:
+                    return None
             # sec29（DS·锁与写闸）：判死到删除之间锁内容可能被并发接管者
             # 重写——删除前复核，内容与判定时不一致则保守放弃本轮，避免
             # 按陈旧快照误删他人的活锁（重建仍由 O_EXCL 仲裁并行接管者）。

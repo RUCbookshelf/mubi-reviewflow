@@ -1,6 +1,7 @@
 """Public GitHub release lookup for the desktop update notice."""
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
@@ -128,6 +129,10 @@ def _http_url_or_none(value: object) -> str | None:
         return None
     if any(ch.isspace() or ord(ch) < 0x20 for ch in text):
         return None                        # 空白/控制字符不得进 window.open
+    if "@" in (parts.netloc or ""):
+        return None                        # sec29b（复审#19）：userinfo 不进 window.open
+    if "\\" in text:
+        return None                        # 反斜杠混淆（WHATWG 解析分歧面）
     return text
 
 
@@ -147,8 +152,11 @@ def check_latest_release() -> dict:
     try:
         with _OPENER.open(request, timeout=_TIMEOUT_SECONDS) as response:
             raw = response.read(_MAX_RELEASE_JSON_BYTES + 1)   # 有界读取（sec29 F-1②）
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        # 拒重定向后 30x 也走 HTTPError → 503（绝不跟跳）。
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError,
+            http.client.HTTPException) as exc:
+        # 拒重定向后 30x 也走 HTTPError → 503（绝不跟跳）。sec29b（复审#17）：
+        # 补 http.client.HTTPException——垃圾状态行（BadStatusLine）与分块
+        # 截断（IncompleteRead）不在原捕获族里，曾冒泡全局兜底成 500。
         raise HTTPException(503, "Could not check GitHub releases. Please try again later.") from exc
     if len(raw) > _MAX_RELEASE_JSON_BYTES:
         raise HTTPException(503, "GitHub release response exceeded the read limit.")
