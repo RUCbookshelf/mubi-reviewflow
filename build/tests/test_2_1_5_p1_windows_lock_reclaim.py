@@ -28,6 +28,12 @@ class WindowsLockReclaimTests(unittest.TestCase):
     def test_pid_alive_true_for_self(self):
         self.assertTrue(tasks.pid_alive(os.getpid()))
 
+    def test_never_existed_pid_is_dead(self):
+        # 对抗评审 HIGH 的兜底路径钉：OpenProcess 对不存在 PID 失败 87
+        # （ERROR_INVALID_PARAMETER）→ 必须判死；初版把比较方向写反
+        # （!= 5）时本断言为红。999999 为远超常规 PID 复用窗口的合法格式值。
+        self.assertFalse(tasks.pid_alive(999999))
+
     def test_lock_lifecycle_live_block_then_stale_reclaim(self):
         with tempfile.TemporaryDirectory(prefix="rf_p1_lock_") as tmp:
             sleeper = Path(tmp) / "sleeper.py"

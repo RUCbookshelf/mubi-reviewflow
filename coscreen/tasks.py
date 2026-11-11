@@ -826,17 +826,25 @@ def _pid_alive_windows(pid: int) -> bool:
     import ctypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000；STILL_ACTIVE = 259
-    handle = kernel32.OpenProcess(0x1000, False, pid)
-    if handle:
-        try:
-            code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return code.value == 259
-            return False
-        finally:
-            kernel32.CloseHandle(handle)
-    return ctypes.get_last_error() != 5  # ERROR_ACCESS_DENIED → 保守存活
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    # PROCESS_QUERY_LIMITED_INFORMATION(0x1000) | SYNCHRONIZE(0x00100000)
+    handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+    if not handle:
+        # 5=ERROR_ACCESS_DENIED：进程存在但无权查询——保守视为存活（对齐
+        # POSIX EPERM 口径）；87=ERROR_INVALID_PARAMETER 等其余=PID 不存在
+        # → 死亡。（对抗评审 HIGH 修正：初版此处比较方向写反——87 判活会让
+        # 被系统完全回收的崩溃残留锁永不接管（P1 换形态复发），5 判死会让
+        # 活着的受保护/他户进程锁被抢占。）
+        return ctypes.get_last_error() == 5
+    try:
+        # WAIT_TIMEOUT(258)=仍在运行；WAIT_OBJECT_0(0)=已终止——用等待结果
+        # 替代 GetExitCodeProcess 的退出码判断，消除 STILL_ACTIVE(259) 与
+        # 真实退出码同值的歧义（评审 low#1）。
+        return kernel32.WaitForSingleObject(handle, 0) == 258
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def lock_holder(lock_path: str | Path) -> dict | None:
