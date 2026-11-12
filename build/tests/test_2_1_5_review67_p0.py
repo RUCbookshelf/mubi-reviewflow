@@ -33,7 +33,11 @@ from custom_backend import auth as auth_mod  # noqa: E402
 from custom_backend import pdf_fetch_api as pdf_mod  # noqa: E402
 from custom_backend.main import app  # noqa: E402
 
-DATA_ROOT = Path(os.environ["COBOOKSHELF_DATA_DIR"])
+# review67 round2（deepseek 门禁观察）：本文件自建 env 推 DATA_ROOT 在
+# 整目录收集时必红——main.DATA_DIR 先被其他模块导入钉死，读 task.json
+# FileNotFoundError。改与 test_ai_suggest 同口径：以 main.DATA_DIR 为准。
+from custom_backend.main import DATA_DIR  # noqa: E402
+DATA_ROOT = Path(DATA_DIR)
 PW = "R67-P0-2026!!"
 
 
@@ -119,10 +123,17 @@ class CsvInjectionPins(unittest.TestCase):
                  "\tab": "'\tab", "\r\nx": "'\r\nx",
                  # 数值字面量原样（tables_api._csv_cell 同款口径，集成修订）
                  "-0.5": "-0.5", "+0.5": "+0.5", "-2": "-2", "-1e-3": "-1e-3",
-                 "'已有前导撇": "''已有前导撇", "普通文本": "普通文本", "123": "123"}
+                 "'已有前导撇": "''已有前导撇", "普通文本": "普通文本", "123": "123",
+                 "'Tis the season": "''Tis the season"}
         for raw, escaped in cases.items():
             self.assertEqual(export_mod._csv_escape_cell(raw), escaped, raw)
             self.assertEqual(export_mod._csv_unescape_cell(escaped), raw, raw)
+        # round2（deepseek M-11）：外部 CSV 的**单**前导撇（非本产品双写
+        # 转义形态）不得被无条件剥掉——「'Tis the season」原样保留。
+        self.assertEqual(export_mod._csv_unescape_cell("'Tis the season"),
+                         "'Tis the season")
+        self.assertEqual(export_mod._csv_unescape_cell("'普通外部标题"),
+                         "'普通外部标题")
 
     def test_all_four_export_sites_escape(self):
         # 四处 to_csv 前必须统一过 _df_csv_safe（matrix/long 无往返约束，
@@ -194,9 +205,13 @@ class PinnedBasePins(unittest.TestCase):
         # captured 无 "pins" → KeyError。统一改用合法形状 10.12345/r67-test。
         captured = {}
 
+        # review67 修复注：产品侧 _get_json 在配置端点路径额外传
+        # allow_private=True（限定自托管回环放行的入口标记），假实现必须
+        # 同步收下，否则 TypeError 先于 captured 写入 → KeyError: 'pins'。
         def fake_get_json(url, *, timeout=pdf_mod.API_TIMEOUT_SECONDS,
-                          pinned_address=None):
+                          pinned_address=None, allow_private=False):
             captured["url"] = url
+            self.assertTrue(allow_private, "配置端点路径应带 allow_private=True")
             captured["pins"] = pinned_address
             return {"is_oa": False}
 
@@ -210,7 +225,7 @@ class PinnedBasePins(unittest.TestCase):
         captured.clear()
 
         def fake_get_json2(url, *, timeout=pdf_mod.API_TIMEOUT_SECONDS,
-                           pinned_address=None):
+                           pinned_address=None, allow_private=False):
             captured["pins"] = pinned_address
             return {"message": {"issued": {"date-parts": [[2020]]}}}
 
@@ -227,8 +242,9 @@ class PinnedBasePins(unittest.TestCase):
         # 走不到（被 mock 的）_get_json。改用合法形状 10.12345/r67-test。
         captured = {}
 
+        # 同上：fetch_crossref_work 的出站缝同样带 allow_private=True。
         def fake_get_json(url, *, timeout=pdf_mod.API_TIMEOUT_SECONDS,
-                          pinned_address=None):
+                          pinned_address=None, allow_private=False):
             captured["pins"] = pinned_address
             return {"message": {}}
 

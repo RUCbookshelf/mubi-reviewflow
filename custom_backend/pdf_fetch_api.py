@@ -197,7 +197,12 @@ class _PinnedConnectionMixin:
         except OSError:
             sock.close()
             raise
-        if _is_private_address(peer):
+        # review67 round2（deepseek 复审 M-15 阻断）：peer 公网复核对配置端点
+        # 钉扎路径（桌面自托管回环/RFC1918）豁免——_allow_private_peer 由
+        # handler 按请求的 allow_private_pin 置位；外部载荷（OA 候选）不置
+        # 位，第二道防线原样生效。
+        if _is_private_address(peer) and not getattr(
+                type(self), "_allow_private_peer", False):
             sock.close()
             raise OSError("钉住的连接 peer 不属于公网地址。")
         return sock
@@ -219,7 +224,10 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         if not pinned:
             return super().http_open(req)
         conn_class = type("_BoundPinnedHTTPConnection",
-                          (_PinnedHTTPConnection,), {"_pinned_address": pinned})
+                          (_PinnedHTTPConnection,), {
+                              "_pinned_address": pinned,
+                              "_allow_private_peer": bool(
+                                  getattr(req, "allow_private_pin", False))})
         return self.do_open(conn_class, req)
 
 
@@ -231,7 +239,10 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         if not pinned:
             return super().https_open(req)
         conn_class = type("_BoundPinnedHTTPSConnection",
-                          (_PinnedHTTPSConnection,), {"_pinned_address": pinned})
+                          (_PinnedHTTPSConnection,), {
+                              "_pinned_address": pinned,
+                              "_allow_private_peer": bool(
+                                  getattr(req, "allow_private_pin", False))})
         return self.do_open(conn_class, req, context=self._context,
                             check_hostname=self._check_hostname)
 
@@ -603,6 +614,9 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
     for index, address in enumerate(attempts):
         if address is not None:
             request.pinned_address = address
+            # review67 round2 M-15：随钉扎地址同行下发私有豁免旗（配置端点
+            # 自托管路径），由 handler 置入连接类、_connect_pinned 据以放行。
+            request.allow_private_pin = bool(allow_private_pin)
         try:
             with _open(request, timeout) as response:  # noqa: S310
                 data = response.read(max_bytes + 1)

@@ -65,9 +65,16 @@ def _csv_escape_cell(value):
 
 def _csv_unescape_cell(value):
     """写侧转义的对称剥离（decisions.csv「导出→回导无损」约定；Excel 同名
-    惯例：前导 ``'`` 表示被转义单元格）。"""
+    惯例：前导 ``'`` 表示被转义单元格）。
+
+    review67 round2（deepseek 复审 M-11）：**只在剥后确实是转义形态时才剥**
+    ——本产品的转义只产生于「公式前缀/前导撇」双写，其余前导撇是外部数据
+    的合法字符（如标题 ``'Tis the season``）；无条件剥会静默改写外部 CSV。
+    """
     if isinstance(value, str) and value.startswith("'"):
-        return value[1:]
+        rest = value[1:]
+        if rest.startswith(_CSV_FORMULA_PREFIXES) or rest.startswith("'"):
+            return rest
     return value
 
 
@@ -677,6 +684,10 @@ def export_coding_matrix(db_path: StrPath, out_csv: StrPath) -> Path:
     """
     table = coding_matrix_table(db_path)  # 单一事实源（2.1.5 W7 Table 1 同一函数）
     df = pd.DataFrame(table["rows"], columns=table["columns"])
+    # review67 round2（deepseek 复审 M-11）：**表头**（含用户命名的维度名）
+    # 与数据格同口径转义——_df_csv_safe 只处理数据格，=HYPERLINK 式维度名
+    # 曾原样落表头（报告点名的注入面）。
+    df.columns = [_csv_escape_cell(str(column)) for column in df.columns]
     out = Path(out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
     df = _df_csv_safe(df)  # review67 M-11：公式注入转义（四导出同口径）

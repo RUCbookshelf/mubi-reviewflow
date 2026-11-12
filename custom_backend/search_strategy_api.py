@@ -292,9 +292,35 @@ def register_search_strategy_routes(
             # DDL、不迁移；库缺失时上层拿到空内存库按「暂无条目」展示），
             # 只读 GET 绝不产生磁盘写；仅 legacy 迁移待完成且调用方可管理
             # 时例外（见 _legacy_migration_pending）。
-            if write or _legacy_migration_pending(info, user):
+            # review67 round2（deepseek 复审 M-12）：迁移探针（migration_info）
+            # 对 0 字节/缺表残留同样抛 DatabaseError——视同无待迁移，走只读
+            # 路径（其自身的自愈回落接住），不得让探针在 try 外裸奔 500。
+            try:
+                migrate_pending = (write or _legacy_migration_pending(info, user))
+            except sqlite3.DatabaseError:
+                logger.warning("检索式库迁移探针失败，按无待迁移处理：%s", path.name)
+                migrate_pending = False
+            if migrate_pending:
                 return core.ensure_library(info.dir)
-            return core.ensure_library(info.dir, readonly=True)
+            try:
+                conn = core.ensure_library(info.dir, readonly=True)
+                # review67 round2（deepseek M-12 根因）：0 字节/缺列的库
+                # **只读打开不抛、首次查询才抛**——主动用 migration_info 探
+                # 一次（查迁移表与 last_run_date/legacy_fingerprint 列），
+                # 空壳/早期库在此抛 DatabaseError 落入下方自愈回落，否则
+                # 裸抛发生在路由级首查（/strategies 500、与 /appendix 503
+                # 口径分裂）。
+                core.migration_info(conn)
+                return conn
+            except sqlite3.DatabaseError:
+                # review67 round2（deepseek 复审 M-12）：只读打开对「已存在
+                # 但 schema 非当前」的库（0 字节残留/缺列的早期开发库）不再
+                # 自愈——修前这些库经可写 ensure 自愈为 200，只读化使其在
+                # 端点内抛 500 且与 /appendix 的 503 口径分裂。回落一次可写
+                # ensure（自愈=既有行为，仅此场景产生磁盘写），仍失败才走
+                # 下方 503/错误映射。
+                logger.warning("检索式库只读打开失败，回落自愈路径：%s", path.name)
+                return core.ensure_library(info.dir)
         except core.SearchStrategyError as exc:
             raise _translate_error(exc) from None
         except sqlite3.OperationalError as exc:

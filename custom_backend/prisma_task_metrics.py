@@ -39,6 +39,12 @@ def decisions(path: Path, table: str) -> dict:
         if 'locked' in str(exc).lower() or 'busy' in str(exc).lower():
             raise HTTPException(
                 503, '筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。') from exc
+        # review67 round2（deepseek 复审 L-47）：现存文件打不开/disk I/O
+        # error 同样是「暂时不可读」→503（对齐 screening_arbitration 的
+        # M-08 口径）——此前静默 return {} 会把该成员当「无决策」少算。
+        if 'unable to open' in str(exc).lower() or 'disk i/o' in str(exc).lower():
+            raise HTTPException(
+                503, '筛选员决策库暂时无法读取（存储暂时不可用），请稍后重试。') from exc
         return {}
     except OSError as exc:
         # IO 故障（磁盘/权限/网络盘抖动）同样是暂时不可读（同仲裁先例口径）。

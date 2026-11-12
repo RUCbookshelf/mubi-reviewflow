@@ -201,7 +201,10 @@ def _decision_rows_read_only(path: Path, stage: str) -> list[dict[str, str]]:
         # 不可写）同样是「暂时不可读」——此前一律 return [] 会把缺员面板
         # 当成「该成员无决策」照常算 κ/一致率，还可能被 server-save 落成
         # append-only 记录。不存在/非普通文件的路径维持「无决策」降级。
-        if "unable to open" in message and path.is_file():
+        # round2 收口（deepseek 复审）：字面量 'unable to open' 覆盖不全
+        # （disk I/O error 同类）——现存文件上任何非 locked/busy 的
+        # OperationalError 一律 503。
+        if path.is_file():
             raise ScreenerLibraryUnavailableError(
                 f"screener library cannot be opened: {path.name}") from exc
         return []
