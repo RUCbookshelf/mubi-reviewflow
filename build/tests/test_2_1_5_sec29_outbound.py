@@ -365,11 +365,16 @@ class PdfBaseUrlPinningPins(unittest.TestCase):
             srv.server_close()
 
     def test_mutation_pin_dropped_pin_goes_red(self):
-        """破坏性变异：_get_json 丢弃 pinned_addresses（旧口径）→ 钉必红。"""
+        """破坏性变异：_get_json 丢弃 pinned_address（旧口径）→ 钉必红。
+
+        四线汇合移植注：kwarg 随正名 pinned_addresses→pinned_address
+        （+allow_private，review67 M-15 命名统率）；受保护可观察面不变
+        ——拆钉后连接必须未钉扎。
+        """
         real = pdf_fetch_api._get_json
 
         def _unpinned(url, *, timeout=pdf_fetch_api.API_TIMEOUT_SECONDS,
-                      pinned_addresses=None):
+                      pinned_address=None, allow_private=False):
             return real(url, timeout=timeout)
 
         opener = _RecordingOpener(json.dumps({"is_oa": False}).encode())

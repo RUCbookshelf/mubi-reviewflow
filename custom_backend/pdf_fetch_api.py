@@ -236,8 +236,13 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         conn_class = type("_BoundPinnedHTTPConnection",
                           (_PinnedHTTPConnection,),
                           {"_pinned_address": pinned,
+                           # 并读两旗：_get_bytes 双写 allow_private_pin（review67
+                           # round2 钉面）+pinned_allow_private（sec29b 钉面）；
+                           # ai_suggest_api._provider_generate 直设后者（AI
+                           # provider 出站共用本 _OPENER——漏读即断 AI 自托管）。
                            "_pinned_allow_private": bool(
-                               getattr(req, "allow_private_pin", False))})
+                               getattr(req, "allow_private_pin", False)
+                               or getattr(req, "pinned_allow_private", False))})
         return self.do_open(conn_class, req)
 
 
@@ -251,8 +256,11 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         conn_class = type("_BoundPinnedHTTPSConnection",
                           (_PinnedHTTPSConnection,),
                           {"_pinned_address": pinned,
+                           # 同 _PinnedHTTPHandler：并读两旗（_get_bytes 双写 +
+                           # ai_suggest_api 直设 pinned_allow_private）。
                            "_pinned_allow_private": bool(
-                               getattr(req, "allow_private_pin", False))})
+                               getattr(req, "allow_private_pin", False)
+                               or getattr(req, "pinned_allow_private", False))})
         return self.do_open(conn_class, req, context=self._context,
                             check_hostname=self._check_hostname)
 

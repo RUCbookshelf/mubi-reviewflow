@@ -365,7 +365,7 @@ class PdfGuardFailClosedPins(unittest.TestCase):
         with mock.patch.object(pf, "_OPENER", opener):
             with self.assertRaises(pf.OutboundError) as ctx:
                 pf._get_bytes("http://x-w4.test/a", timeout=1, max_bytes=10,
-                              accept="*/*", pinned_address=[], pinned_public_only=False)
+                              accept="*/*", pinned_address=[], allow_private_pin=True)
         self.assertEqual(ctx.exception.reason, "unreachable")
         self.assertEqual(opener.calls, [], "空表不得退化为未钉扎发送")
 
