@@ -97,7 +97,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+_OPENER = urllib.request.build_opener(
+    # review67 L-51：显式空 ProxyHandler——urllib 默认读环境 http_proxy/
+    # https_proxy，在场时 PubMed 出站（含检索式全文）会被第三方代理中转；
+    # 与 pdf_fetch_api.py 的空代理纪律对齐（其注释明言否则「隐私披露变成
+    # 假话」）。重定向拒绝/固定端点/读取上限不受影响。
+    urllib.request.ProxyHandler({}), _NoRedirectHandler,
+)
 
 
 def _open(url: str, timeout: float, *,
@@ -188,6 +194,23 @@ def _normalize_since(since_date: str) -> str:
     return (since_date or "").strip().replace("-", "/")
 
 
+class PubMedUpdates(list):
+    """``fetch_pubmed_updates`` 的返回载体：list 兼容 + 携带 NCBI 命中数。
+
+    review67 L-50：调用方此前只能用 ``len(articles) >= RETMAX`` 反推截断，
+    产出缺口（esearch 空白项、medline 无 PMID 记录被跳过）会让截断窗口被
+    误判为完整增量入库。esearch 的 ``count`` 经 ``total_hits`` 随载体暴露，
+    调方可直接对权威命中数判截断；``total >= RETMAX`` 的必然截断本插件已
+    在 esearch 阶段短路抛错（见 fetch_pubmed_updates），不依赖调用方兜底。
+    """
+
+    __slots__ = ("total_hits",)
+
+    def __init__(self, items=(), *, total_hits: int = 0):
+        super().__init__(items)
+        self.total_hits = int(total_hits)
+
+
 def fetch_pubmed_updates(
     query: str,
     since_date: str,
@@ -205,7 +228,12 @@ def fetch_pubmed_updates(
        maxdate 必须成对**：真网实测只给 mindate 时 NCBI 会整段丢弃日期过滤
        （'network meta-analysis[tiab]' 无过滤 16849、只给 mindate 仍 16849、
        成对给 24），因此本函数总是同时发送两端。超过 ESEARCH_PAGE_SIZE 时
-       用 retstart 分页，总计不超过 RETMAX；
+       用 retstart 分页，总计不超过 RETMAX；分页跨页对 PMID 去重
+       （review67 L-49：edat 窗口实时增长使 retstart 重发整式查询时结果集
+       漂移，重复 PMID 原样透传会灌水待审计数）。NCBI ``count`` 经返回载体
+       :class:`PubMedUpdates` 的 ``total_hits`` 暴露；``total >= RETMAX`` 的
+       必然截断在 esearch 阶段即抛 :class:`PubMedPluginError` 短路
+       （review67 L-50：不再空跑 50 批 efetch，也不依赖 len() 反推截断）；
     2. ``efetch.fcgi``：**POST** 表单 ``db=pubmed, id=<PMID,...>,
        rettype=medline, retmode=text``，按 ``EFETCH_PAGE_SIZE``（200 条）
        分批。真网实测单条约 4.1-4.2 KB，10000 条 ≈39.7 MiB 会撞读取上限；
@@ -250,6 +278,8 @@ def fetch_pubmed_updates(
     since = _normalize_since(since_date)
     until = _normalize_since(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     pmids: list[str] = []
+    seen: set[str] = set()
+    total = 0
     retstart = 0
     while True:
         params = urllib.parse.urlencode({
@@ -272,13 +302,29 @@ def fetch_pubmed_updates(
             raise PubMedPluginError(f"esearch 响应不可解析：{exc}") from exc
         if not isinstance(page, list):
             raise PubMedPluginError("esearch 响应中的 idlist 不是列表")
-        pmids.extend(str(pmid) for pmid in page if str(pmid).strip())
+        # review67 L-50：count 是 NCBI 的权威命中数（此前解析后即丢弃）。
+        # total ≥ RETMAX 时窗口必然截断——第一页即可判定，直接短路抛
+        # PubMedPluginError（调用方 main._pubmed_unavailable 对含「截断」
+        # 文案给体量类可执行指引），不再空跑后续 esearch 分页和 50 批
+        # efetch；也不再依赖 len(articles) 反推截断（esearch 空白项、
+        # medline 无 PMID 记录等产出缺口会让截断被误判为完整增量）。
+        if total >= RETMAX:
+            raise PubMedPluginError(
+                f"本次增量命中 {total} 条，超过单次上限 {RETMAX} 条，结果被截断")
+        # review67 L-49：retstart 分页不做 PMID 去重时，跨页结果集漂移
+        #（edat 窗口实时增长）造成的重复 PMID 会原样透传——灌水待审计数、
+        # 翻倍 efetch 流量。这里跨页去重（保持首见顺序，空白项照旧丢弃）。
+        for pmid in page:
+            norm = str(pmid).strip()
+            if norm and norm not in seen:
+                seen.add(norm)
+                pmids.append(norm)
         retstart += ESEARCH_PAGE_SIZE
         if not page or retstart >= min(total, RETMAX) or len(pmids) >= RETMAX:
             break
     pmids = pmids[:RETMAX]
     if not pmids:
-        return []
+        return PubMedUpdates([], total_hits=total)
 
     # efetch 分页（r8-r3 评审 blocking，真网实测）：单条约 4.1-4.2 KB，10000 条
     # ≈39.7 MiB，会直接撞上读取上限。按 EFETCH_PAGE_SIZE 拉取，任一批失败整次
@@ -301,7 +347,7 @@ def fetch_pubmed_updates(
         articles.extend(parse_medline_records(text))
     if not articles:
         raise PubMedPluginError("efetch 返回的 MEDLINE 文本中没有任何记录")
-    return articles
+    return PubMedUpdates(articles, total_hits=total)
 
 
 # ---------------------------------------------------------------------------

@@ -1216,6 +1216,12 @@ def save_upload_to_tempdir(data: bytes, filename: str) -> Path:
     返回的路径由调用方负责删除（或清理其临时目录）。
     """
     safe_name = Path(filename or "upload.pdf").name or "upload.pdf"
+    # review67 L-11：全点号名（如 "..."；"."/".." 的 name 为空、已被上一行
+    # 兜住）在 Windows 上 CreateFile 直接拒绝，write_bytes 抛未处理
+    # PermissionError——本函数当前全仓无调用方（match_pdfs 已改为直接收
+    # 路径），属潜伏缺陷防御：纯点串一律回落到默认名，不依赖平台行为。
+    if not safe_name.strip("."):
+        safe_name = "upload.pdf"
     tmpdir = tempfile.mkdtemp(prefix="cobookshelf_pdf_")
     path = Path(tmpdir) / safe_name
     path.write_bytes(data)

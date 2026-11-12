@@ -203,6 +203,11 @@ class _PinnedConnectionMixin:
         except OSError:
             sock.close()
             raise
+        # review67 round2（deepseek 复审 M-15 阻断）+ sec29 F-3 细分口径
+        # （四线汇合并集）：peer 公网复核对配置端点钉扎路径（桌面自托管
+        # 回环/RFC1918）豁免「仅公网」防线——_pinned_allow_private 由
+        # handler 按请求旗置位；外部载荷（OA 候选）不置旗，防线原样生效。
+        # 但链路本地/云元数据/ULA/CGNAT 即使豁免也拦（更严一侧胜出）。
         if type(self)._pinned_allow_private:
             if _blocked_host_reason(peer):
                 sock.close()
@@ -232,7 +237,7 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
                           (_PinnedHTTPConnection,),
                           {"_pinned_address": pinned,
                            "_pinned_allow_private": bool(
-                               getattr(req, "pinned_allow_private", False))})
+                               getattr(req, "allow_private_pin", False))})
         return self.do_open(conn_class, req)
 
 
@@ -247,7 +252,7 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                           (_PinnedHTTPSConnection,),
                           {"_pinned_address": pinned,
                            "_pinned_allow_private": bool(
-                               getattr(req, "pinned_allow_private", False))})
+                               getattr(req, "allow_private_pin", False))})
         return self.do_open(conn_class, req, context=self._context,
                             check_hostname=self._check_hostname)
 
@@ -521,6 +526,19 @@ def _guard_base_url_outbound(base_url: str) -> list[str]:
     return addresses
 
 
+def _pinned_base_addresses(base_url: str) -> "list[str] | None":
+    """review67 M-15 配置端点出站钉扎表（四线汇合后的兼容缝）。
+
+    与 sec29 F-3 的 ``_guard_base_url_outbound`` 为同族重复实现（两侧各自
+    独立修复同一 DNS 重绑定缝），2026-11-12 汇合统一委托后者，并采纳
+    sec29b W4② 更严裁定：**域名不可解析同样失败关闭**（``unresolvable_host``，
+    可重试降级）——M-15 处置记录中披露的 ``None``=不钉扎旧径（连接期重新
+    解析=重绑定缝，probe_rebind §1/probe_servfail 实证）就此收口。返回表
+    恒非空；签名保留 ``| None`` 仅为历史兼容，该返回值已不可达。
+    """
+    return _guard_base_url_outbound(base_url)
+
+
 
 def _validate_and_pin(hostname: str, port: int) -> tuple[list[str] | None, str | None]:
     """字面规则 + **单次** DNS 解析 + 公网校验：``(已校验地址列表, 拒绝原因)``。
@@ -602,7 +620,7 @@ def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
 
 def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
                pinned_address: str | Iterable[str] | None = None,
-               pinned_public_only: bool = True) -> bytes:
+               allow_private_pin: bool = False) -> bytes:
     """GET 指定 URL：显式 UA + 短超时 + 读取上限 + 拒绝重定向（30x=HTTPError）。
 
     ``pinned_address`` 给定（PDF 候选下载）时，连接钉住**分类阶段一次解析**
@@ -612,11 +630,11 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
     ``socket.create_connection`` 的逐地址回退同语义，但**不重新解析**、且每个
     地址都已在分类阶段核验为公网）。未给定时（无法钉扎的回退形态）保持原行为。
 
-    sec29 F-3：``pinned_public_only=False`` 供 **base_url 端点**（Unpaywall/
-    Crossref/W9）使用——钉扎地址来自 ``_guard_base_url_outbound`` 的同一次
-    复核，回环/RFC1918 自托管端点是既有卖点，此时跳过「仅公网」防御纵深，
-    连接期第二道防线由 ``_PinnedConnectionMixin`` 按链路本地/CGNAT/ULA/
-    云元数据同口径接管。
+    sec29 F-3 + review67 M-15（四线汇合统一命名）：``allow_private_pin=True``
+    供 **base_url 端点**（Unpaywall/Crossref/W9）使用——钉扎地址来自
+    ``_guard_base_url_outbound`` 的同一次复核，回环/RFC1918 自托管端点是
+    既有卖点，此时跳过「仅公网」防御纵深，连接期第二道防线由
+    ``_PinnedConnectionMixin`` 按链路本地/CGNAT/ULA/云元数据同口径接管。
     """
     request = urllib.request.Request(  # noqa: S310  URL 经上方白名单校验
         url, method="GET",
@@ -632,18 +650,24 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
         if not addresses:
             raise OutboundError("unreachable", "没有可用的钉扎地址。")
         # 防御纵深：只接受公网 IP（正常调用方传的是分类阶段已校验的地址）。
-        # base_url 端点（pinned_public_only=False）例外：guard 已按其口径复核。
-        if pinned_public_only:
-            for address in addresses:
-                if _is_private_address(address):
-                    raise OutboundError(
-                        "private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
+        # 配置端点（allow_private_pin=True，review67 M-15 + sec29 F-3 同
+        # 裁定）例外：guard 已按桌面自托管口径（回环/RFC1918=卖点放行）
+        # 复核，连接层不重复外部载荷口径的公网-only。
+        for address in addresses:
+            if not allow_private_pin and _is_private_address(address):
+                raise OutboundError(
+                    "private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
     attempts: list[str | None] = list(addresses) or [None]
     error: OutboundError | None = None
     for index, address in enumerate(attempts):
         if address is not None:
             request.pinned_address = address
-            request.pinned_allow_private = not pinned_public_only
+            # review67 round2 M-15：随钉扎地址同行下发私有豁免旗（配置端点
+            # 自托管路径），由 handler 置入连接类、_connect_pinned 据以放行。
+            # 双写 sec29 名 pinned_allow_private——两轮对抗钉（round2 读
+            # allow_private_pin、sec29b 读 pinned_allow_private）共守此缝。
+            request.allow_private_pin = bool(allow_private_pin)
+            request.pinned_allow_private = bool(allow_private_pin)
         try:
             with _open(request, timeout) as response:  # noqa: S310
                 data = response.read(max_bytes + 1)
@@ -685,18 +709,20 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
 
 
 def _get_json(url: str, *, timeout: float = API_TIMEOUT_SECONDS,
-              pinned_addresses: list[str] | None = None) -> Any:
+              pinned_address: list[str] | None = None,
+              allow_private: bool = False) -> Any:
     """GET JSON（Unpaywall/Crossref/W9 端点查询）。
 
-    sec29 F-3：``pinned_addresses`` 给定时（来自 ``_guard_base_url_outbound``
-    同一次复核），连接钉住该地址表——此前 ``_get_json`` 未传
-    ``pinned_address``，出站连接会对 base 域名**重新解析**，guard 校验（公网）
-    与实际连接（可被重绑定到内网）之间留有缝。回环/RFC1918 自托管端点
-    既有放行口径不变（``pinned_public_only=False``）。
+    sec29 F-3 + review67 M-15（四线汇合统一）：``pinned_address`` 给定时
+    （来自 ``_guard_base_url_outbound`` 同一次复核），连接钉住该地址表——
+    此前 ``_get_json`` 未传钉扎地址，出站连接会对 base 域名**重新解析**，
+    guard 校验（公网）与实际连接（可被重绑定到内网）之间留有缝。
+    回环/RFC1918 自托管端点既有放行口径不变（``allow_private=True``，
+    逐调用点显式标注）。
     """
     data = _get_bytes(url, timeout=timeout, max_bytes=MAX_JSON_BYTES,
-                      accept="application/json",
-                      pinned_address=pinned_addresses, pinned_public_only=False)
+                      accept="application/json", pinned_address=pinned_address,
+                      allow_private_pin=allow_private)
     try:
         return json.loads(data.decode("utf-8", "replace"))
     except ValueError:
@@ -738,10 +764,23 @@ def _strip_jats(text: Any) -> str:
 
 
 def _crossref_year(message: dict) -> int | None:
+    # review67 M-16（2026-11-12 评审 verified）：畸形上游 JSON 形状防御——
+    # issued 等键可为 list/str（真值但无 .get → AttributeError）、date-parts
+    # 可为数字（可下标但非列表 → TypeError），此前未捕获使 metadata-
+    # suggestions 端点 500，违背本模块「响应形状异常一律降级、绝不 500」
+    # 红线（对齐同文件既有 isinstance 防御口径）。
+    if not isinstance(message, dict):
+        return None
     for key in ("issued", "published-print", "published-online"):
-        parts = ((message.get(key) or {}).get("date-parts") or [[]])[0]
-        if parts and isinstance(parts[0], int):
-            return parts[0]
+        entry = message.get(key)
+        if not isinstance(entry, dict):
+            continue
+        parts = entry.get("date-parts")
+        if not isinstance(parts, list) or not parts or not isinstance(parts[0], list):
+            continue
+        row = parts[0]
+        if row and isinstance(row[0], int):
+            return row[0]
     return None
 
 
@@ -852,11 +891,13 @@ def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[dict], lis
     逐个钉住（``address`` 保留字典序首个，兼容旧调用方）。
     """
     base = settings["unpaywall_base_url"]
-    pinned = _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
+    # 终审 #30：被拦 base 零出站；sec29 F-3 + review67 M-15：检查期闸+
+    # 钉扎表一步取得（guard 同次解析），连接期对原域名零次再解析。
+    pinned = _guard_base_url_outbound(base)
     email = settings["email"]
     query = f"?email={quote(email, safe='')}" if email else ""
     url = f"{base}/v2/{quote(doi, safe='')}{query}"
-    payload = _get_json(url, pinned_addresses=pinned)   # sec29 F-3：钉扎同次解析
+    payload = _get_json(url, pinned_address=pinned, allow_private=True)
     if not isinstance(payload, dict):
         raise OutboundError("bad_response", "Unpaywall 响应形状异常。")
     if not payload.get("is_oa"):
@@ -889,11 +930,13 @@ def _crossref_message(article: dict, settings: dict) -> tuple[dict | None, str]:
     返回 ``(message, how)``：``how`` ∈ {"doi","title",""}（""=未命中）。
     """
     base = settings["crossref_base_url"]
-    pinned = _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
+    # 终审 #30：被拦 base 零出站；检查期闸+钉扎表一步取得（guard 同次
+    # 解析），连接期对原域名零次再解析（sec29 F-3 + review67 M-15）。
+    pinned = _guard_base_url_outbound(base)
     doi = normalize_doi(article.get("doi"))
     if doi:
         payload = _get_json(f"{base}/works/{quote(doi, safe='')}",
-                            pinned_addresses=pinned)   # sec29 F-3：钉扎同次解析
+                            pinned_address=pinned, allow_private=True)
         message = payload.get("message") if isinstance(payload, dict) else None
         return (message if isinstance(message, dict) else None), "doi"
     title = _norm_title(article.get("title"))
@@ -901,7 +944,7 @@ def _crossref_message(article: dict, settings: dict) -> tuple[dict | None, str]:
         return None, ""
     payload = _get_json(
         f"{base}/works?query.bibliographic={quote(title, safe='')}&rows=3",
-        pinned_addresses=pinned)
+        pinned_address=pinned, allow_private=True)
     message = payload.get("message") if isinstance(payload, dict) else None
     if not isinstance(message, dict):
         # 上游偶发 {"message": null} / {"message": []}。与 DOI 路径同口径：
@@ -1001,8 +1044,11 @@ def fetch_crossref_work(base_url: str, doi: str) -> dict | None:
     （``crossref_works_url`` 内的闸只做拦截判定，这里再走一次同一闸取
     钉扎地址表——被拦形态在第一处已抛，不会真正解析两次出站）。
     """
-    url = crossref_works_url(base_url, doi)
-    payload = _get_json(url, pinned_addresses=_guard_base_url_outbound(base_url))
+    # review67 M-15 + sec29 F-3：撤稿检查共用配置端点钉扎口径（连接期零
+    # 再解析，guard 同次解析出的钉扎表直通）。
+    payload = _get_json(crossref_works_url(base_url, doi),
+                        pinned_address=_guard_base_url_outbound(base_url),
+                        allow_private=True)
     message = payload.get("message") if isinstance(payload, dict) else None
     return message if isinstance(message, dict) else None
 

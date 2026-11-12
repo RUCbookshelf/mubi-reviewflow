@@ -444,9 +444,21 @@ def _send_apprise(config: Mapping[str, Any], text: str, *, timeout: float) -> No
     # sec29 F-4：[IPv6] 形态剥方括号后同口径拦截（ULA/链路本地/映射内网）。
     authority = url.split("://", 1)[1].split("/", 1)[0] if "://" in url else ""
     host = authority.rsplit("@", 1)[-1]
+    # sec29 F-4 + review67 L-31（四线汇合并集）：IPv6 字面量两形态归一后
+    # 同口径拦截——方括号形态 ``[::1]``（可带端口 ``[::1]:8443``）剥壳取
+    # 字面量；裸形态多冒号（合法 host:port 至多一个冒号）即 IPv6 字面量，
+    # 整串参与校验、不按端口切分。此前方括号使 ip_address 抛 ValueError
+    # 被当主机名放行、裸 ``::1`` 被切成空串直接跳过检查，拦截面与模块头
+    # 承诺不符。
     if host.startswith("["):
         # [IPv6]:port → 取方括号内的字面量（残缺的 '[' 无 ']' 也按 fail closed）
         if _bracketed_ipv6_host_private(host[1:].partition("]")[0]):
+            raise NotifyError("private_host")
+    elif host.count(":") > 1:
+        # 裸 IPv6 字面量（含未带端口的 ::1）：同 helper 口径 fail closed——
+        # 多冒号且解析不出 IP 的串按私网处理（正常 Apprise URL 的 host 位
+        # 不取多冒号形态）。
+        if _bracketed_ipv6_host_private(host):
             raise NotifyError("private_host")
     elif host:
         host = host.split(":", 1)[0]

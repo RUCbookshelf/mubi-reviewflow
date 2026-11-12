@@ -547,18 +547,20 @@ def _ensure_effect_schema(conn: sqlite3.Connection) -> None:
                 "COALESCE(selected,1)" if "selected" in columns else "1",
                 "COALESCE(source_locator,'')" if "source_locator" in columns else "''",
             ]
-            # 2.1.5 waveA：固定字面量 + 内部只读列表达式；数据值不参与，
-            # 文本与原构造逐字节一致。
+            # review67 M-04：重建 DDL 的 measure CHECK 改由 _MEASURE_CHECK_SQL
+            # 拼接（measure_registry 单一事实源）。修复前此处逐字硬编码 22 个
+            # 代码：注册表追加第 23 码后，旧库经本路径重建出的 CHECK 仍缺新码
+            # ——layout() 永不满足（每次进程冷启动都重跑一次整表重建，schema_
+            # version 反复抬升不收敛），且新代码行被 CHECK 拒绝无法保存。列
+            # 布局/主键/其余约束不变；固定字面量 + 内部只读列表达式，数据值
+            # 不参与（2.1.5 waveA 口径保持）。
             conn.execute(
                 "CREATE TABLE review_effects_new ("
                 "result_id INTEGER PRIMARY KEY AUTOINCREMENT,"
                 "study_id TEXT NOT NULL REFERENCES review_studies(id),"
                 "comparison TEXT NOT NULL, outcome TEXT NOT NULL, timepoint TEXT NOT NULL,"
-                "measure TEXT NOT NULL CHECK(measure IN ("
-                "'RR','OR','RD','MD','SMD','HR','RATE_RATIO','FISHER_Z','MEAN','LOGIT_PROP',"
-                "'LOG_RATE','PAIRED_OR','PAIRED_RD','SMCR','SMCC','LOG_ROM','PHI',"
-                "'R_EQUIV_APPROX','IRR','PROP','RATE','NNT')) ,"
-                "estimate REAL NOT NULL, se REAL NOT NULL CHECK(se > 0),"
+                + _MEASURE_CHECK_SQL
+                + ",estimate REAL NOT NULL, se REAL NOT NULL CHECK(se > 0),"
                 "source_key TEXT NOT NULL REFERENCES articles(zotero_key),"
                 "input_json TEXT NOT NULL DEFAULT '{}', entry_method TEXT NOT NULL DEFAULT 'manual',"
                 "selected INTEGER NOT NULL CHECK(selected IN (0,1)), source_locator TEXT NOT NULL DEFAULT '')"
@@ -1291,7 +1293,11 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
         if not overlong:
             return 0  # 正常库：零写入（主库文件逐字节不变）
         references = _article_key_reference_columns(conn)
-        occupied = {row[0] for row in conn.execute(
+        # review67 L-06：occupied/taken 合一。撞键判定（下方循环）只读取本
+        # 集合；原先另有一个 occupied 集合在目标计算后的第二循环里做
+        # discard(old)/add(target) 回写，但此后无任何读取方，属死存储，已删
+        # （行为不变：撞键判定此前就基于 taken 的快照完成）。
+        taken = {row[0] for row in conn.execute(
             "SELECT zotero_key FROM articles").fetchall()}
         renames: list[tuple[str, str]] = []
         # r9 夜扫 b12·F3-37：合规目标必须先按**单键**计算，再检查是否与
@@ -1303,7 +1309,6 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
         # ——全键 sha256 后缀，单键可重算、互不折叠；目标仍与既有行撞键时
         # 才按 serial 重试。
         chosen: dict[str, str] = {}
-        taken = set(occupied)
         for old in overlong:
             target = compliant_key_for_overlong(old)
             if target in taken:
@@ -1321,11 +1326,7 @@ def migrate_overlong_keys(db_path: StrPath) -> int:
                 serial += 1
             taken.add(target)
             chosen[old] = target
-        for old in overlong:
-            target = chosen[old]
-            occupied.discard(old)
-            occupied.add(target)
-            renames.append((old, target))
+        renames.extend((old, chosen[old]) for old in overlong)
         # 既存悬挂外键快照（差量自检基线，见 docstring）：不阻断、不修复
         pre_violations = {tuple(row) for row in conn.execute(
             "PRAGMA foreign_key_check").fetchall()}

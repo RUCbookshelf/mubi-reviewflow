@@ -23,7 +23,10 @@
   逐位不变；
 - ``LinearSVC`` 没有 ``predict_proba``——用 ``decision_function`` 分数
   ``s`` 经 sigmoid ``1/(1+exp(-s))`` 归一到 [0,1]（:func:`_sigmoid`
-  为数值稳定实现，与 ``scipy.special.expit`` 逐位一致）；
+  为数值稳定实现，与 ``scipy.special.expit`` 数值等价、不承诺逐位一致：
+  200k 样本实测位级差 ≤3 ULP、绝对差 ≤2.22e-16，且两者各自与高精度
+  正确舍入值之差 ≤1 ULP；单调变换不改排序。基准钉在
+  ``build/tests/test_2_1_5_review67_lows.py``；review67 L-23）；
 - 退化输入（与 NB 载体行为对齐）：dict 模式下零样本预测（``X == []``，
   对应排序器"全筛完"的合法终态）直接返回空列表，不落入形态混用
   校验；``y`` 为 list/tuple 且只含一个类别时 :meth:`SVMClassifier.fit`
@@ -57,7 +60,13 @@ class SingleClassTrainingError(ValueError):
 
 
 def _sigmoid(scores) -> "numpy.ndarray":  # noqa: F821 - 延迟导入,仅注解
-    """数值稳定的 sigmoid ``1/(1+exp(-s))``（与 ``scipy.special.expit`` 逐位一致）。
+    """数值稳定的 sigmoid ``1/(1+exp(-s))``（与 ``scipy.special.expit`` 数值等价）。
+
+    review67 L-23：此前 docstring 宣称「逐位一致」——实测（numpy 2.4.6 /
+    scipy 1.17.1，均在钉定依赖区间）不成立：200k 样本中 ~24% 位级不同、
+    最大位级差 3 ULP、绝对差 ≤2.22e-16。位级承诺失实，改为「数值等价
+    （位级差 ≤3 ULP，绝对差 ≤2.22e-16）」并以基准测试钉住（见
+    ``build/tests/test_2_1_5_review67_lows.py``）。单调变换不改排序。
 
     直接计算 ``np.exp(-s)`` 在 ``s < -709`` 时上溢出 ``inf``（结果仍正确
     但触发 RuntimeWarning）；按符号分段计算避免该警告。

@@ -149,9 +149,13 @@ def _decision_rows_read_only(path: Path, stage: str) -> list[dict[str, str]]:
     SQL 全部为模块内固定字面量 + ``?`` 参数绑定；``mode=ro`` 保证不执行任何
     写入（含自愈 DDL）。stage 已由调用方校验为固定两值，不参与 SQL 拼装。
 
-    故障口径（补扫修复）：**锁忙超时**与 **IO 失败**是暂时不可读，抛
+    故障口径（补扫修复）：**锁忙超时**、**IO 失败**与**现存文件打不开**
+    （SQLite ``unable to open database file``：ACL 拒绝/网络盘抖动/WAL
+    ``-shm`` 不可写，review67 M-08）都是暂时不可读，抛
     :class:`ScreenerLibraryUnavailableError`（调用方按 503 重试语义处理）；
-    只有「确无决策 / 永久损坏（无法解析的库）」才降级为 ``[]``。
+    只有「确无决策 / 永久损坏（无法解析的库）」才降级为 ``[]``——不存在
+    或非普通文件的路径沿用「无决策」跳过（生产入口 ``TaskInfo.db_files``
+    已上游过滤，测试也依赖该口径不创建个人库）。
     """
     columns_no_tags = tuple(c for c in _SCREENER_DECISION_COLUMNS if c != "tags")
     try:
@@ -189,9 +193,20 @@ def _decision_rows_read_only(path: Path, stage: str) -> list[dict[str, str]]:
                 return [{**dict(zip(columns_no_tags, row)), "tags": ""} for row in rows]
     # 锁忙 / 读写冲突：暂时不可读，绝不等同于「该成员没有决策」。
     except sqlite3.OperationalError as exc:
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
             raise ScreenerLibraryUnavailableError(
                 f"screener library is temporarily locked: {path.name}") from exc
+        # review67 M-08：现存文件却打不开（ACL 拒绝/网络盘抖动/WAL -shm
+        # 不可写）同样是「暂时不可读」——此前一律 return [] 会把缺员面板
+        # 当成「该成员无决策」照常算 κ/一致率，还可能被 server-save 落成
+        # append-only 记录。不存在/非普通文件的路径维持「无决策」降级。
+        # round2 收口（deepseek 复审）：字面量 'unable to open' 覆盖不全
+        # （disk I/O error 同类）——现存文件上任何非 locked/busy 的
+        # OperationalError 一律 503。
+        if path.is_file():
+            raise ScreenerLibraryUnavailableError(
+                f"screener library cannot be opened: {path.name}") from exc
         return []
     except OSError as exc:
         # IO 故障（磁盘/权限/网络盘抖动）同样是暂时不可读。
@@ -247,8 +262,11 @@ def load_screener_decision_packages(
             continue
         try:
             identity = str(path.resolve())
-        except OSError:
-            continue
+        except OSError as exc:
+            # review67 M-08 同族收紧：连路径都无法解析（权限/网络盘故障）＝
+            # 暂时不可读，不得静默 continue 折叠成「该成员没有决策」。
+            raise ScreenerLibraryUnavailableError(
+                f"screener library path is temporarily unreadable: {path.name}") from exc
         if identity in seen_paths:
             continue
         seen_paths.add(identity)

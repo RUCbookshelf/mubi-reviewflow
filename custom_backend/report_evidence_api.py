@@ -73,6 +73,12 @@ class RelationIn(UndoIn):
     # 可选：仅 unlink 使用。同成员同 id 重复等极端场景下，携带关系对 (a, b) 以精确定位目标。
     a: str | None = Field(default=None, min_length=1, max_length=100)
     b: str | None = Field(default=None, min_length=1, max_length=100)
+    # 可选：仅 confirm 使用（review67 增补 F1·GitNexus P2 复核属实）：确认页所见
+    # 提案关系对的 sha256 摘要（sorted((a,b)) 以 \x1f 连接后哈希）。携带时服务端
+    # 在事务内与提案**当前**内容比对——提案人改对不碰共享版本，旧页面的确认
+    # 从 200 变 409，杜绝「确认了负责人没看过的关系」。缺省 None=旧客户端
+    # 行为不变（前端随后端批补齐携带）。
+    expected_pair_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 def _entry_subjects(entry):
@@ -782,7 +788,23 @@ def register_report_evidence_routes(app, require_user):
             row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
             if revision != body.expected_revision: raise HTTPException(409, "Evidence changed. Reload before undo.")
             if not row or not row[0]: raise HTTPException(409, "No personal change is available to undo.")
-            restored = validate(json.loads(row[0]), {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")})
+            # review67 L-48（对齐 undo_shared 的专用 409）：previous 快照引用的
+            # 报告此后被并入重复组/下线时，此前直接走 validate() 抛通用 422
+            # 「Choose two different active reports...」——真因被掩盖、文案误导，
+            # 且此后撤销永久不可用。与共享撤销同场景改给专用 409；快照在保存时
+            # 已过 validate，报告键失效的唯一来源是现役键集缩小，形状缺陷仍由
+            # validate 兜底 422。
+            snapshot = json.loads(row[0])
+            keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
+            stale = (any(link.get("a") not in keys or link.get("b") not in keys
+                         for link in snapshot.get("links", []))
+                     or any(draft.get("key") not in keys
+                            for draft in snapshot.get("drafts", []))
+                     or any(parts[1] not in keys for key in snapshot.get("appraisals", {})
+                            if len(parts := str(key).split("|", 1)) == 2))
+            if stale:
+                raise HTTPException(409, "A report is no longer active; old changes cannot be restored.")
+            restored = validate(snapshot, keys)
             # 撤销与对应保存使用同一轨迹阶段，避免阶段收窄后撤销事件被静默过滤。
             undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
             trace(c, ctx, actor, "撤销报告关联与证据变更", before, restored, stage=undo_stage)
@@ -809,6 +831,15 @@ def register_report_evidence_routes(app, require_user):
                 proposal = next((x for x in personal["links"] if x["id"] == body.link_id), None)
                 if not proposal: raise HTTPException(404, "Proposal no longer exists.")
                 if proposal["type"] == "uncertain" or not proposal.get("evidence", "").strip(): raise HTTPException(422, "Confirm the relationship and supply supporting evidence first.")
+                if body.expected_pair_digest is not None:
+                    # review67 增补 F1（GitNexus P2）：与提案**当前**关系对比对——
+                    # 提案人改对不碰共享版本，旧页面的确认必须 409（杜绝确认
+                    # 负责人没看过的关系）。摘要口径=sha256(sorted((a,b)) 以
+                    # \x1f 连接，UTF-8，hexdigest——与前端交接书逐字一致。
+                    current = hashlib.sha256("\x1f".join(sorted(
+                        (str(proposal["a"]), str(proposal["b"])))).encode()).hexdigest()
+                    if current != body.expected_pair_digest:
+                        raise HTTPException(409, "Proposal changed since you viewed it. Reload and re-confirm.")
                 keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
                 if proposal["a"] not in keys or proposal["b"] not in keys: raise HTTPException(409, "A report is no longer active.")
                 pair = {proposal["a"], proposal["b"]}

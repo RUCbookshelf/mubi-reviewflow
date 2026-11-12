@@ -5680,6 +5680,18 @@
             ],
             "title": "B"
           },
+          "expected_pair_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Pair Digest"
+          },
           "expected_revision": {
             "minimum": 0.0,
             "title": "Expected Revision",
@@ -10908,7 +10920,7 @@
     },
     "/api/tasks/{task_id}/al/profile": {
       "put": {
-        "description": "设置任务的 AL 模型预设（写入 task.json 的 \"al_profile\" 字段）。\n\n切换由用户显式操作（§0.4 第 4 条无静默默认变更）；已有的筛选标签\n不受影响，下一次重排起生效。字段随 TaskInfo/_json_payload round-trip，\n注册表写回（touch/rename/archive/register_screener）不会丢失。\ntask.json 缺失/损坏（降级只读）时 409，与 W5 protocol 同一口径。",
+        "description": "设置当前筛选员的 AL 模型预设（review67 L-03：改写失真 docstring）。\n\n实际行为：写入该筛选员的个人设置文件 ``al_settings_{slug}.json``\n（_save_al_settings 原子替换），并非 task.json 的 \"al_profile\" 字段；\ntask.json 的 \"al_profile\" 仅作为旧任务级偏好的**只读回退**，且只对\n已验证属主生效（_personal_al_profile）。GET /al/profiles 返回的\n\"al_profile\" 也是按用户解析后的值。切换由用户显式操作（§0.4 第 4\n条无静默默认变更）；已有筛选标签不受影响，下一次重排起生效。\ntask.json 缺失/损坏（info.degraded 降级只读）时统一 409 只读口径。",
         "operationId": "set_al_profile_api_tasks__task_id__al_profile_put",
         "parameters": [
           {

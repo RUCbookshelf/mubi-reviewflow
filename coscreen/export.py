@@ -34,6 +34,53 @@ from coscreen.models import Article
 
 StrPath = str | Path
 
+#: review67 M-11（2026-11-12 评审 verified）：CSV 公式注入防护——对齐
+#: tables_api._csv_cell / MM-05 仓内口径；以这些字符开头的字符串单元格
+#: 前缀 ``'``，防 Excel/WPS 打开即按公式执行（=HYPERLINK / +cmd / -2@ 等）。
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_escape_cell(value):
+    # review67 M-11 集成修订：带符号**数值字面量**（-0.5/+0.5/-1e-3）原样
+    # 输出——与 tables_api._csv_cell / analysis_audit_report.cell 的既有
+    # 口径对齐（r1/r2 评审裁定），否则同数据的导出与表格两出口数字分叉
+    # （test_2_1_5_w7_tables 逐行对钉）；真正的公式（=…/+cmd/-2+1 这类
+    # float 解析失败的带符号串）仍加 ' 前缀。
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        stripped = value.lstrip()
+        if stripped.startswith(("+", "-")):
+            try:
+                float(stripped)
+            except ValueError:
+                pass
+            else:
+                return value
+        return "'" + value
+    # 前导撇号本身也双写标记（对齐读侧 _csv_unescape_cell 的「剥一个撇」约定，
+    # 保证合法撇号开头数据往返无损——否则读侧会把用户数据的前导撇误剥）。
+    if isinstance(value, str) and value.startswith("'"):
+        return "'" + value
+    return value
+
+
+def _csv_unescape_cell(value):
+    """写侧转义的对称剥离（decisions.csv「导出→回导无损」约定；Excel 同名
+    惯例：前导 ``'`` 表示被转义单元格）。
+
+    review67 round2（deepseek 复审 M-11）：**只在剥后确实是转义形态时才剥**
+    ——本产品的转义只产生于「公式前缀/前导撇」双写，其余前导撇是外部数据
+    的合法字符（如标题 ``'Tis the season``）；无条件剥会静默改写外部 CSV。
+    """
+    if isinstance(value, str) and value.startswith("'"):
+        rest = value[1:]
+        if rest.startswith(_CSV_FORMULA_PREFIXES) or rest.startswith("'"):
+            return rest
+    return value
+
+
+def _df_csv_safe(df: "pd.DataFrame") -> "pd.DataFrame":
+    return df.apply(lambda col: col.map(_csv_escape_cell))
+
 DECISION_COLUMNS = [
     "zotero_key",
     "title",
@@ -113,6 +160,7 @@ def export_decisions(db_path: StrPath, out_csv: StrPath, *, source_db: StrPath |
     )
     out = Path(out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
+    df = _df_csv_safe(df)  # review67 M-11：公式注入转义（四导出同口径）
     df.to_csv(out, index=False, encoding="utf-8-sig")
     return out
 
@@ -147,6 +195,7 @@ def export_stage2_decisions(db_path: StrPath, out_csv: StrPath, *, source_db: St
     )
     out = Path(out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
+    df = _df_csv_safe(df)  # review67 M-11：公式注入转义（四导出同口径）
     df.to_csv(out, index=False, encoding="utf-8-sig")
     return out
 
@@ -157,6 +206,8 @@ def load_decisions_csv(path: StrPath) -> pd.DataFrame:
     missing = [c for c in ("zotero_key", "decision") if c not in df.columns]
     if missing:
         raise ValueError(f"决策 CSV 缺少必需列: {missing}，实际列为 {list(df.columns)}")
+    # review67 M-11：剥离本产品写侧的公式转义前缀（对称往返；Excel 同惯例）。
+    df = df.apply(lambda col: col.map(_csv_unescape_cell))
     df["decision"] = df["decision"].str.strip().str.lower()
     return df
 
@@ -633,8 +684,13 @@ def export_coding_matrix(db_path: StrPath, out_csv: StrPath) -> Path:
     """
     table = coding_matrix_table(db_path)  # 单一事实源（2.1.5 W7 Table 1 同一函数）
     df = pd.DataFrame(table["rows"], columns=table["columns"])
+    # review67 round2（deepseek 复审 M-11）：**表头**（含用户命名的维度名）
+    # 与数据格同口径转义——_df_csv_safe 只处理数据格，=HYPERLINK 式维度名
+    # 曾原样落表头（报告点名的注入面）。
+    df.columns = [_csv_escape_cell(str(column)) for column in df.columns]
     out = Path(out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
+    df = _df_csv_safe(df)  # review67 M-11：公式注入转义（四导出同口径）
     df.to_csv(out, index=False, encoding="utf-8-sig")
     return out
 
@@ -679,6 +735,7 @@ def export_coding_long(db_path: StrPath, out_csv: StrPath) -> Path:
     df = pd.DataFrame(rows, columns=CODING_LONG_COLUMNS)
     out = Path(out_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
+    df = _df_csv_safe(df)  # review67 M-11：公式注入转义（四导出同口径）
     df.to_csv(out, index=False, encoding="utf-8-sig")
     return out
 

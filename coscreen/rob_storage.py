@@ -196,13 +196,12 @@ def _consensus_inputs(conn: sqlite3.Connection, payload: dict, source_record_ids
     if not isinstance(domain_values, dict) or not set(item["key"] for item in mapping["domains"]).issubset(domain_values):
         raise RobContractError("consensus_judgement_required",
                                "Supply an explicit recorded or not_recorded value for every mapped domain")
-    try:
-        _text(payload.get("consensus_set_id"), "consensus_set_id")
-        _text(payload.get("study_id"), "study_id")
-        _text(payload.get("outcome"), "outcome")
-        _text(payload.get("timepoint"), "timepoint")
-    except RobContractError:
-        raise
+    # review67 L-41：此处原是 except RobContractError: raise 的无操作包装
+    # （异常对象与 traceback 均不变），删除脚手架后语义不变。
+    _text(payload.get("consensus_set_id"), "consensus_set_id")
+    _text(payload.get("study_id"), "study_id")
+    _text(payload.get("outcome"), "outcome")
+    _text(payload.get("timepoint"), "timepoint")
 
     supplied_by_id = {}
     for source in source_records:

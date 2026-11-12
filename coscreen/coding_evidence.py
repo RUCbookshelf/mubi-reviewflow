@@ -697,8 +697,12 @@ def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[i
         if submission_evidence:
             before['access_context'] = after['access_context'] = undo.SUBMISSION_EVIDENCE
         undo.record_save(conn, context, 'coding', key, before, after)
-        # r6 #21：仅在本次保存真的产生了撤销 journal（非 no-op）时落幂等摘要。
-        if pending_summary is not None and before != after:
+        # review67 增补 F3（GitNexus P2 复核属实）：幂等回执**无条件**落——
+        # r6 #21 曾把回执与「产生了内容变化」绑定：no-op 保存（请求 X 存原值）
+        # 不留回执，后续请求 Y 改值后重试 X 会因查无回执而重放，把 Y 的修改
+        # 覆盖回旧值。撤销 journal 仍只在 before != after 时产生（undo 快照
+        # 语义不变）；回执行有 prune 上界，no-op 回执不会膨胀。
+        if pending_summary is not None:
             conn.execute('INSERT INTO workflow_form_requests VALUES(?,?,?,?)', pending_summary)
             _prune_form_requests(conn, pending_summary[0], pending_summary[1])
         # 保存后复位不再被引用的上传附件标记，让 7 天垃圾回收可回收（U3-P8）；

@@ -48,13 +48,12 @@ def register_bayesian_robust_routes(app, require_user, task_or_404, screener_db,
             rows = selected_effects(path,body.comparison,body.outcome,body.timepoint,body.measure)
             result = (prior_sensitivity_grid(rows,priors=[prior.model_dump() for prior in body.priors])
                       if grid else fit_bayesian_robust_meta(rows,**body.prior.model_dump()))
-            if body.measure == 'FISHER_Z':
-                result['analysis_scale'] = result['standard_error_scale'] = 'fisher_z'
-                for cell in result['cells'] if grid else [result]:
-                    cell['mu']['scale'] = 'fisher_z'
-                    cell['tau']['scale'] = 'fisher_z_sd'
-                if grid:
-                    result['influence_overview'] = result['influence_overview'].replace('on the natural scale', 'on the Fisher z scale')
+            # review67 L-42：删除 FISHER_Z 分支的死 replace 与 no-op 重赋值——
+            # 概览文案由 _analysis_scale('FISHER_Z')='fisher_z' 拼出（目标串
+            # 'on the natural scale' 永不出现），mu/tau 的 scale 键也已由
+            # bayesian_robust_meta 原生置为 'fisher_z'/'fisher_z_sd'，此处
+            # 重赋同值纯属声明了不存在的变换；输出逐位不变（钉子见
+            # build/tests/test_2_1_5_review67_lows.py）。
             report = {**result,'request':body.model_dump(),'method_sources':METHOD_SOURCES,
                     'sources':[{key:row[key] for key in ('study_id','source_key','source_locator','result_id','estimate','se')} for row in rows],
                     'source_articles':source_articles(path, rows)}

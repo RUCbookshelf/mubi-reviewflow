@@ -7,10 +7,18 @@ from numbers import Real
 from typing import Mapping
 
 import numpy as np
-from scipy.stats import chi2
+from scipy.stats import chi2, norm
 
 RATIOS = {"RR", "OR"}
 MEASURES = RATIOS | {"RD", "MD", "SMD"}
+
+# L-24（review67）：95% CI 的 z 乘数统一为精确 norm.ppf(0.975)——此前本文件与
+# network_random 硬编码 1.96，与 meta_regression_model.py 的精确值不一致（相对差
+# 1.8e-5）。本模块持有唯一定义，network_random 复用同一常量。
+Z_975 = float(norm.ppf(0.975))
+# MM10-12 反向配对方向告警的固定前缀；network_random 以此识别并把该类告警并入
+# random 结果（review67 M-09：random 路径曾用静态文案整体覆盖 warnings，丢方向告警）。
+DIRECTION_WARNING_PREFIX = "Effect direction check needed:"
 
 
 def _finite_number(value: object, label: str) -> float:
@@ -178,6 +186,14 @@ def synthesize_network(studies: list[dict], measure: str, reference: str) -> dic
         _require_finite(score, "network score")
         blocks.append((design, values, covariance))
 
+    # review67 M-10: information 矩阵此前只靠 solve 的 LinAlgError 拒绝奇异，无
+    # 条数/秩护栏——方差跨度 ≥~16 个数量级时 information 在 float64 下数值秩亏
+    # （实测 cond=inf、det=7.6e+272、slogdet 符号仍为正）而 solve 照常返回，静默
+    # 产出错误 SE 与方向反转的点估计（探针 probe_stats_net6：SE 错 125 个数量级）。
+    # 与 network_random 的同阈值护栏对齐：条件数超 1e12 即结构化拒绝。
+    condition = float(np.linalg.cond(information))
+    if not math.isfinite(condition) or condition > 1e12:
+        raise ValueError("network information matrix is numerically ill-conditioned")
     try:
         with np.errstate(over="raise", invalid="raise", divide="raise"):
             parameter_covariance = np.linalg.solve(information, np.eye(p))
@@ -229,7 +245,8 @@ def synthesize_network(studies: list[dict], measure: str, reference: str) -> dic
             se = math.sqrt(variance)
             if not math.isfinite(se) or se <= 0:
                 raise ValueError("pairwise standard error must be positive and finite")
-            low, high = effect - 1.96 * se, effect + 1.96 * se
+            # L-24（review67）：z 乘数用精确 norm.ppf(0.975)，不再硬编码 1.96。
+            low, high = effect - Z_975 * se, effect + Z_975 * se
             _require_finite((low, high), "pairwise confidence interval")
             try:
                 if measure in RATIOS:
@@ -262,7 +279,7 @@ def synthesize_network(studies: list[dict], measure: str, reference: str) -> dic
     for pair, orientation in reversed_pairs.items():
         a, b = orientation
         warnings.append(
-            f"Effect direction check needed: the unordered treatment pair "
+            f"{DIRECTION_WARNING_PREFIX} the unordered treatment pair "
             f"'{a} vs {b}' appears with both orientations; same-signed estimates from "
             "the two rows are averaged as opposite design rows, which is only "
             "meaningful if the reversed entry carries the negated estimate.")

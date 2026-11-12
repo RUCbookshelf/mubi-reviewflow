@@ -1403,7 +1403,14 @@ def register_research_trace_routes(
                 if existing and existing["status"] == "duplicate":
                     duplicates += 1
                     continue
-                actor_key = str(event.get("actor_id", event.get("actor_alias", "")))
+                # review67 L-45（B08-N6 同类漏改点）：actor_id 键存在但为
+                # null/空串时（_validate_event 放行），.get(key, default) 的
+                # default 不生效，str(None) 产出幻影键 'None' → aliases 键查
+                # KeyError → 500。改为与导出侧 research_trace_export 的
+                # origin_actors 真值回退链同源：actor_id 真值优先，回退
+                # actor_alias，两者皆空落空串（与 required_aliases 的键集
+                # 逐值对齐，KeyError 不可达）。
+                actor_key = str(event.get("actor_id") or event.get("actor_alias") or "")
                 source_alias = aliases[actor_key]
                 mapped_subject = (mappings.get(str(event["subject_id"]))
                                   if event.get("stage") != "control" else None)

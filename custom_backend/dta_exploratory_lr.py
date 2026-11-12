@@ -16,6 +16,12 @@ class ExploratoryLrIn(BaseModel):
     confidence: float = Field(gt=0, lt=1, allow_inf_nan=False)
 
 
+def _quoted(values) -> str:
+    """把候选值集合渲染成稳定、可读的错误文案片段（review67 L-43，
+    与 dta_analysis._quoted 同形：排序后加引号）。"""
+    return ', '.join(repr(value) for value in sorted(values))
+
+
 def register_dta_exploratory_lr_routes(app, require_user, task_or_404, screener_db, bad):
     @app.post('/api/tasks/{task_id}/analysis/dta/exploratory-likelihood-ratios')
     def calculate(task_id: str, body: ExploratoryLrIn, user: dict = Depends(require_user),
@@ -24,8 +30,24 @@ def register_dta_exploratory_lr_routes(app, require_user, task_or_404, screener_
         from coscreen.dta_likelihood_ratios import pool_likelihood_ratios
         path = screener_db(task_or_404(task_id), user['username'])
         try:
-            rows = [row for row in list_results(path) if all(row[key] == getattr(body, key)
-                    for key in ('index_test','target_condition','threshold','reference_standard'))]
+            saved = list_results(path)
+            # review67 L-43（对齐 F3-94 / dta_analysis.synthesize 口径）：入库时
+            # 六个文本字段已 strip，这里过滤前对请求值同样 strip；值不在已收集
+            # 集合或组合命中零行时显式给出带候选值的诊断——此前 '5mm' vs 库内
+            # '5 mm' 这类错配静默得零行，真因被「at least two studies are
+            # required to pool likelihood ratios」掩盖。
+            wanted = {key: str(getattr(body, key)).strip()
+                      for key in ('index_test','target_condition','threshold','reference_standard')}
+            for key, label in (('index_test','index test'),('target_condition','target condition'),
+                               ('threshold','threshold'),('reference_standard','reference standard')):
+                recorded = {row[key] for row in saved}
+                if wanted[key] not in recorded:
+                    raise ValueError(f"{label} {wanted[key]!r} was not recorded in this task; "
+                                     f"recorded {label}s: {_quoted(recorded)}")
+            rows = [row for row in saved if all(row[key] == wanted[key] for key in wanted)]
+            if not rows:
+                raise ValueError('no diagnostic accuracy results for this combination of '
+                                 'index test, condition, threshold and reference standard')
             if len({row['study_id'] for row in rows}) != len(rows):
                 raise ValueError('Select one independent diagnostic table per study.')
             tables = [{key:row[key] for key in ('study_id','tp','fp','fn','tn')} for row in rows]
