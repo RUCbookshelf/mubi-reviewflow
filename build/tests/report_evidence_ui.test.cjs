@@ -62,8 +62,10 @@ class Element {
     ]);
   }
   querySelector(selector) {
-    return selector.startsWith('.') ? this.find(node => node.className === selector.slice(1)) : null;
+    return selector.startsWith('.') ? this.find(node => node.className === selector.slice(1)) : this.find(node => node.tagName === selector);
   }
+  querySelectorAll(selector) { return this.collect(node => selector === '[data-mp-mutation]' ? node.dataset?.mpMutation : node.tagName === selector); }
+  get children() { return this.childNodes.filter(node => node.tagName); }
   closest(selector) {
     for (let node = this; node; node = node.parentNode) {
       if (node.tagName === selector) return node;
@@ -119,7 +121,8 @@ async function mount(apiImpl) {
     taskApi: () => '/api/tasks/T1',
     S: { task: { task_id: 'T1' }, user: { user_id: owner }, page: 'merge' },
     MutationObserver: class { observe() {} },
-    Node: { TEXT_NODE: 3 }, crypto: webcrypto, TextEncoder
+    Node: { TEXT_NODE: 3 }, crypto: webcrypto, TextEncoder, structuredClone,
+    sessionStorage: (() => {const items = new Map(); return {getItem: key => items.get(key), setItem: (key,value) => items.set(key,value), removeItem: key => items.delete(key)};})()
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
@@ -210,9 +213,9 @@ test('F1 stale digest refreshes the displayed proposal, shows a translated messa
   assert.equal(env.calls.filter(call => call.options?.method === 'POST').length, 1);
   assert.ok(env.dialogs()[0].textContent.includes(latest.b));
   const notice = env.dialogs()[0].find(node => node.attrs?.role === 'alert');
-  assert.equal(notice.textContent, 'The proposer changed this proposal. Refresh the list and confirm again.');
+  assert.equal(notice.textContent, 'The proposal changed and the list has refreshed. Review the latest contents before confirming again.');
   assert.deepEqual(env.toasts, []);
-  const row = env.rows.find(row => row[0] === '提案已被提案人修改，请刷新后重新确认');
+  const row = env.rows.find(row => row[0] === '提案已更新，列表已自动刷新；请核对最新内容后重新确认。');
   assert.equal(row.length, 10);
   assert.ok(row.every(cell => cell.trim()));
 });
@@ -282,4 +285,65 @@ test('F1 does not reread or retry a distinct 422 validation error', async () => 
   await relationButton(env, 'Confirm relationship').onclick();
   assert.equal(env.calls.length, 2);
   assert.equal(env.dialogs()[0].querySelector('.mp-error').textContent, error.message);
+});
+
+// E-DYN-31：实际产品入口触发个人关系编辑，检验修订与确认闸，而非匹配实现字符串。
+for (const changedPair of [false, true]) test('E-DYN-31 blocks stale retries and replaces explicitly acknowledged ' + (changedPair ? 'changed pair' : 'fields'), async () => {
+  const original = {...proposal, actor_id:owner, type:'study', same:true, evidence:'old evidence', locator:'p. 1'};
+  const latest = {...original, b:changedPair ? 'R3' : 'R2', type:'partial', same:false, evidence:'new evidence', locator:'p. 9'};
+  let revision=1, record=original, writes=0;
+  const state = () => ({...snapshot([record]), revision, state:{links:[structuredClone(record)]}});
+  const env = await mount((url, options) => {
+    if (!options) return state();
+    writes++;
+    if (options.body.expected_revision !== revision) throw Object.assign(new Error('Evidence changed'),{status:409});
+    assert.equal(options.body.state.links.length,1,'changing pair must not leave duplicate old/new records');
+    record=options.body.state.links[0];revision++;return state();
+  });
+  await env.openAdjudication();
+  await relationButton(env,'Edit').onclick();
+  const editor=env.dialogs()[0], save=relationButton(env,'Save my proposal');
+  const evidence=editor.find(node=>node.tagName==='textarea'); evidence.value='local edited evidence';evidence.oninput();
+  record=latest;revision=2;
+  await save.onclick();
+  assert.equal(writes,1);assert.equal(save.disabled,true);
+  assert.match(editor.textContent,/old|local edited evidence/);assert.match(editor.textContent,/new evidence/);
+  assert.ok(editor.textContent.includes(changedPair ? 'R1 ↔ R3' : 'p. 9'));
+  await save.onclick();assert.equal(writes,1,'programmatic repeat click is also blocked');
+  assert.equal(record.evidence,'new evidence');
+  const ack=editor.find(node=>node.tagName==='label' && node.textContent==='I reviewed the differences and agree to save the current form values').querySelector('input');
+  ack.checked=true;ack.onchange();assert.equal(save.disabled,false);
+  await save.onclick();assert.equal(writes,2);assert.equal(record.evidence,'local edited evidence');
+  assert.equal(record.b,'R2');assert.equal(record.id,original.id);
+});
+
+test('E-DYN-31 failed refresh keeps writes blocked until latest version is read', async () => {
+  const original={...proposal,actor_id:owner};let reads=0,writes=0;
+  const env=await mount((url,options)=>{
+    if(options){writes++;throw Object.assign(new Error('Evidence changed'),{status:409});}
+    if(reads++===1)throw Error('offline');
+    return {...snapshot([original]),revision:reads,state:{links:[original]}};
+  });
+  await env.openAdjudication();await relationButton(env,'Edit').onclick();
+  const save=relationButton(env,'Save my proposal');await save.onclick();
+  assert.equal(save.disabled,true);
+  assert.ok(relationButton(env,'Reload latest version'));
+  await save.onclick();assert.equal(writes,1);
+  await relationButton(env,'Reload latest version').onclick();
+  assert.equal(save.disabled,true,'refresh alone is not acknowledgement');
+});
+
+test('E-DYN-31 reopening after a changed-pair conflict restores the draft and keeps acknowledgement locked', async () => {
+  const original={...proposal,actor_id:owner,type:'study',evidence:'old'},latest={...proposal,actor_id:owner,b:'R3',type:'partial',evidence:'remote'};
+  let record=original,revision=1;
+  const env=await mount((url,options)=>{
+    if(options)throw Object.assign(new Error('Evidence changed'),{status:409});
+    return {...snapshot([record]),revision,state:{links:[record]}};
+  });
+  await env.openAdjudication();await relationButton(env,'Edit').onclick();
+  const text=env.dialogs()[0].find(node=>node.tagName==='textarea');text.value='preserved local edit';text.oninput();
+  record=latest;revision=2;await relationButton(env,'Save my proposal').onclick();
+  await relationButton(env,'Cancel').onclick();await env.openAdjudication();await relationButton(env,'Edit').onclick();
+  assert.equal(env.dialogs()[0].find(node=>node.tagName==='textarea').value,'preserved local edit');
+  assert.equal(relationButton(env,'Save my proposal').disabled,true);
 });

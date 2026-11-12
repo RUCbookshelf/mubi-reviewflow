@@ -3,6 +3,7 @@
   'use strict';
   const W=WorkflowControls,E=window.WorkflowEvidence={};
   let mode='personal', discovery=null, current=null, ticket=0, baseline='', pending=0, saving=false, readOnlyKey=null, context='', uploadFailed=false, uploadStatus=false;
+  let loadFailure=null;
   const images=new Map(), urls=new Set();
   /* r9 L3（b11·F3-23 的前端面）：服务端语义是「keep_image_ids 列出即精确集合，
      不带该键即全部保留」。这里记住每个维度服务端已确认的图片 id —— 只有用户
@@ -25,17 +26,23 @@
   E.discard=()=>{baseline=signature();};
   E.context=()=>mode==='canonical'?'coding_submission_evidence':'personal';
   E.readOnly=key=>{readOnlyKey=key;};
-  function clear(){for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();savedIds.clear();current=null;baseline='';uploadFailed=false;uploadStatus=false;}
+  function clear(){loadFailure=null;for(const url of urls)URL.revokeObjectURL(url);urls.clear();images.clear();savedIds.clear();current=null;baseline='';uploadFailed=false;uploadStatus=false;}
   E.discovery=value=>{
     discovery=value;
     const show=!!value?.available && W.settings()?.task_kind==='team';
     let host=$('#wf-coding-entry');
     if(!host){host=node('div',null,{id:'wf-coding-entry',class:'row'});document.querySelector('section[data-p="bench"] .wf-queue-tools').after(host);}
-    if(host.dataset.available===String(show))return;
+    if(host.dataset.available===String(show)){for(const entry of host.querySelectorAll('[data-evidence-mode]')){const selected=entry.dataset.evidenceMode===mode;entry.setAttribute('aria-pressed',String(selected));entry.classList.toggle('b-inc',selected);}return;}
     host.dataset.available=String(show);host.replaceChildren();
-    if(show)host.append(btn('Personal coding',()=>switchMode('personal')),btn('Shared submission evidence',()=>switchMode('canonical')),node('span','Evidence-only editing uses your private notes and images. It does not submit shared coding values.',{class:'hint'}));
+    if(show){
+      for(const [value,label] of [['personal','Personal coding'],['canonical','Shared submission evidence']]){
+        const entry=btn(label,()=>switchMode(value));entry.dataset.evidenceMode=value;
+        entry.setAttribute('aria-pressed',String(mode===value));entry.classList.toggle('b-inc',mode===value);host.append(entry);
+      }
+      host.append(node('span','Evidence-only editing uses your private notes and images. It does not submit shared coding values.',{class:'hint'}));
+    }
   };
-  async function switchMode(next){if(!await W.guard())return;mode=next;await loadBench();}
+  async function switchMode(next){if(next===mode||!await W.guard())return;mode=next;const entry=$('#wf-coding-entry');if(entry)delete entry.dataset.available;E.discovery(discovery);await loadBench();}
   E.queue=async()=>{
     readOnlyKey=null;
     if(mode!=='canonical')return W.queue('coding');
@@ -112,17 +119,19 @@
     window.AppraisalWorkspace?.setArticle(cur,E.context());
     clear();S.codingFormReady=false;
     if($('#rfExtractPanel'))$('#rfExtractPanel').hidden=mode==='canonical';
+    $('#cbSave').textContent=T(mode==='canonical'?'polish.save_shared_evidence':'polish.save_article');
+    $('#cbSave').setAttribute('aria-label',T(mode==='canonical'?'polish.save_shared_evidence':'polish.save_article'));
     $('#cbLabel').textContent=T('第 {0} / {1} 篇',S.cbQueue.length?S.cbIdx+1:0,S.cbQueue.length);
     $('#cbTitle').textContent=cur?.title||cur?.zotero_key||'—';
     const forms=$('#cbForms');forms.replaceChildren();$('#cbSave').disabled=true;
-    if(!cur){forms.append(node('p',mode==='canonical'?'No canonical evidence targets are available in this scope.':'编码队列为空（复筛/初筛纳入后自动进入队列）。'));return;}
+    if(!cur){openBenchPdf();forms.append(node('p',mode==='canonical'?'No canonical evidence targets are available in this scope.':'编码队列为空（复筛/初筛纳入后自动进入队列）。'),btn('polish.open_screening',()=>go('fulltext')),btn('polish.open_scheme',()=>go('scheme')));return;}
     openBenchPdf();$('#cbStatus').textContent=T('Loading current saved work…');
     try{
       const item=mode==='canonical'?await api(discovery.read_url_template.replace('{zotero_key}',encodeURIComponent(cur.zotero_key))):await W.item('coding',cur.zotero_key);
       if(!item||scope!==identity()||t!==ticket||version!==S.taskVersion||screener!==S.screener||!W.renderAllowed())return;
       if(readOnlyKey===cur.zotero_key)item.writable=false;
       current=item;const dims=mode==='canonical'?item.dimensions:S.dims;
-      if(!dims.length){forms.append(node('p','方案为空 —— 请先到「编码方案」添加维度。'));return;}
+      if(!dims.length){forms.append(node('p','方案为空 —— 请先到「编码方案」添加维度。'),btn('polish.open_scheme',()=>go('scheme')));baseline=signature();$('#cbStatus').textContent='';return;}
       if(!item.writable)forms.append(node('p','Read-only: current policy or source scope does not allow saving.',{class:'wf-readonly'}),node('p',W.reason(item.reason)));
       for(const d of dims){
         const dim=String(d.id),saved=item.evidence?.[dim]||{},value=item.saved?.[dim]||'',writable=item.writable&&(mode!=='canonical'||d.writable);
@@ -148,7 +157,7 @@
       if(item.mapping_issues?.length)forms.append(node('p','Evidence field mapping needs owner review. Existing values are preserved.',{class:'wf-evidence-gap'}));
       S.codingFormReady=true;baseline=signature();updateGaps();updateBusy();
       document.dispatchEvent(new Event('reviewflow:coding-form-loaded'));
-    }catch(error){if(t!==ticket||scope!==identity()||!W.renderAllowed())return;forms.append(node('p',W.errorText(error)),btn('Retry / refresh',()=>E.render()));$('#cbStatus').textContent=T('Load failed');}
+    }catch(error){if(t!==ticket||scope!==identity()||!W.renderAllowed())return;const line=node('p',W.errorText(error));loadFailure={error,line,scope,t};forms.append(line,btn('Retry / refresh',()=>E.render()));$('#cbStatus').textContent=T('Load failed');}
   };
   E.save=async()=>{
     if(W.refreshing()||!current?.writable||current?.policy_version!==W.version()||pending||saving||window.WorkspaceUndo?.isBusy()||!S.codingFormReady)return false;
@@ -168,17 +177,34 @@
     try{
       const result=await api(mode==='canonical'?discovery.save_url:taskApi()+'/coding/values-batch'+scrQ(),{method:'POST',body});
       if(scope!==identity()||t!==ticket)return false;
-      // Rehydrate server association IDs only after the one form transaction succeeds.
-      for(const [dim,saved] of Object.entries(result.evidence||{})){images.set(dim,[...(saved.images||[])]);remember(dim,saved.images);}
+      // 保存后只合并附件关联，不重建表单/PDF；未改变的图片复用已下载的对象 URL。
+      for(const [dim,saved] of Object.entries(result.evidence||{})){
+        const previous=images.get(dim)||[];
+        const attached=(saved.images||[]).map(image=>{
+          const existing=previous.find(old=>image.id!=null&&old.id===image.id);
+          return existing?Object.assign(existing,image):image;
+        });
+        images.set(dim,attached);remember(dim,attached);
+        const changed=previous.length!==attached.length||previous.some((image,index)=>image!==attached[index]);
+        if(changed){
+          for(const old of previous)if(!attached.includes(old)&&old.objectURL){URL.revokeObjectURL(old.objectURL);urls.delete(old.objectURL);}
+          const section=$$('#cbForms .wf-evidence').find(section=>section.dataset.dim===dim);
+          const gallery=section?.querySelector('.wf-evidence-images');
+          if(gallery)drawImages(dim,gallery,scope,t,current.writable);
+        }
+      }
+      current={...current,evidence:{...current.evidence,...result.evidence}};
       baseline=signature();if(result.progress)applyCodingProgress(result.progress);
       document.dispatchEvent(new CustomEvent('reviewflow:coding-form-saved',{detail:key}));
-      await E.render();
+      updateGaps();
       if(mode==='personal')await W.updateProgress('coding');
       else await W.queue('coding',{url:discovery.queue_url,evidenceOnly:true});
       $('#cbStatus').textContent=T(mode==='canonical'?'Evidence saved':result.complete?'Saved — complete':'Saved as draft — required values or evidence are missing');
       toast($('#cbStatus').textContent,'inc');return true;
     }catch(error){if(scope===identity())W.error(error);return false;}finally{saving=false;WorkspaceUndo?.endSave('coding');updateBusy();}
   };
+  // 保存错误对象，切换界面语言时重译消息键、参数与详情，不重新请求当前文献。
+  document.addEventListener('reviewflow:language-changed',()=>{if(loadFailure&&loadFailure.scope===identity()&&loadFailure.t===ticket&&loadFailure.line.isConnected){loadFailure.line.textContent=W.errorText(loadFailure.error);$('#cbStatus').textContent=T('Load failed');}});
   E.setContext=access=>{mode=access==='coding_submission_evidence'?'canonical':'personal';};
   document.addEventListener('reviewflow:task-context-changed',()=>{if(context===W.scope())return;context=W.scope();ticket++;clear();mode='personal';readOnlyKey=null;E.discovery(null);});
   document.addEventListener('reviewflow:workspace-changed',event=>{if(event.detail!=='bench'&&!E.dirty()){ticket++;clear();}});

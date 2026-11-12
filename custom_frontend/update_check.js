@@ -50,7 +50,7 @@
     try {
       const result = await api('/api/app-update/check');
       if (!result.supported) {
-        if (!quiet) alert(T('服务器部署不能从应用内更新，请联系管理员。'));
+        if (!quiet) toast(T('服务器部署不能从应用内更新，请联系管理员。'),'info');
         return;
       }
       latest = result;
@@ -60,9 +60,9 @@
         notice.title = T('发现新版本');
         notice.setAttribute('aria-label', T('发现新版本'));
         if (!quiet) showDialog(result);
-      } else if (!quiet) alert(T('当前已是最新版本'));
+      } else if (!quiet) toast(T('当前已是最新版本'),'info');
     } catch (_) {
-      if (!quiet) alert(T('暂时无法检查更新，请稍后重试。'));
+      if (!quiet) toast(T('暂时无法检查更新，请稍后重试。'),'warn');
     } finally {
       if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
     }

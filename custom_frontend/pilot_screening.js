@@ -8,6 +8,7 @@
   anchor.before(host);
   document.querySelector('.page[data-p="screen"]')?.prepend(gate);
   const style = el('style', { text: [
+    '.rf-pilot-dialog [hidden]{display:none!important}',
     '.rf-pilot-dialog{width:min(760px,calc(100vw - 28px));max-height:calc(100dvh - 36px);margin:auto;overflow:auto;overscroll-behavior:contain}',
     '.rf-pilot-dialog .rf-pilot-header{justify-content:space-between;align-items:center;margin:0 0 8px}',
     '.rf-pilot-header h2{margin:0}',
@@ -33,7 +34,7 @@
   const screenEntry = button('pilot.entry', () => open(), { id: 'rfPilotEntry', hidden: true });
   document.querySelector('.page[data-p="screen"] .scr-status')?.append(screenEntry);
   const field = (key, input) => el('label', {}, tr('span', key), input);
-  const decisionKey = decision => ({ include: '纳入', exclude: '排除', maybe: '暂不确定' }[decision]);
+  const decisionKey = decision => ({ include: '纳入', exclude: '排除', maybe: 'pilot.decision_maybe' }[decision]);
   const verdictKey = verdict => ({ pass: 'pilot.verdict_pass', borderline: 'pilot.verdict_borderline', fail: 'pilot.verdict_fail' }[verdict]);
   const statusKey = status => ({
     draft: 'pilot.status_draft', published: 'pilot.status_published', archived: 'pilot.status_archived',
@@ -155,8 +156,8 @@
         if (session.busy || !session.live) return;
         session.busy = true;
         body.inert = true;
-        notice.textContent = '';
-        try { await fn(); }
+        notice.textContent = T('pilot.loading');
+        try { await fn(); if(session.live&&notice.textContent===T('pilot.loading'))notice.textContent=''; }
         catch (error) {
           if (session.live && recover) {
             try { await recover(error); } catch (_) { /* Keep the original diagnostic. */ }
@@ -194,7 +195,7 @@
     gate.replaceChildren(
       literal('p', errorText(error)),
       hint('pilot.gate_pending'),
-      button('pilot.open_required', () => open(setId)));
+      button('pilot.open_required', () => open(setId)),button('关闭',()=>{gate.hidden=true;}));
     gate.hidden = false;
     gate.setAttribute('tabindex', '-1');
     gate.focus();
@@ -296,13 +297,18 @@
     const pool = el('div', { class: 'rf-pilot-pool' });
     const selection = el('p', { class: 'hint', role: 'status' });
     const selected = new Set();
-    let catalogue;
+    let catalogue, poolPage=0;
+    const pageSize=50,pageStatus=el('span',{role:'status'});
+    const poolPrevious=button('pilot.prev',()=>{poolPage--;filterPool();});
+    const poolNext=button('pilot.next',()=>{poolPage++;filterPool();});
     function filterPool() {
       const text = filter.value.trim().toLowerCase();
       const rows = catalogue.filter(article => [article.title, article.authors, article.zotero_key]
         .some(value => String(value || '').toLowerCase().includes(text)));
       selection.textContent = T('pilot.selected_count', { n: selected.size });
-      pool.replaceChildren(...rows.map(article => {
+      const pages=Math.max(1,Math.ceil(rows.length/pageSize));poolPage=Math.max(0,Math.min(poolPage,pages-1));
+      pageStatus.textContent=T('pilot.pool_page',{page:poolPage+1,pages});poolPrevious.disabled=poolPage===0;poolNext.disabled=poolPage===pages-1;
+      pool.replaceChildren(...rows.slice(poolPage*pageSize,(poolPage+1)*pageSize).map(article => {
         const checkbox = el('input', { type: 'checkbox' });
         checkbox.checked = selected.has(article.zotero_key);
         checkbox.onchange = () => {
@@ -313,14 +319,14 @@
         return el('label', {}, checkbox, literal('span', article.title || article.zotero_key));
       }));
     }
-    filter.oninput = filterPool;
+    filter.oninput = ()=>{poolPage=0;filterPool();};
     const headings = ['pilot.step_sampling', 'pilot.step_size', 'pilot.step_curated', 'pilot.step_thresholds'];
     const stepHeading = el('h4');
     const panels = [
       el('div', {}, field('pilot.step_sampling', sampling)),
       el('div', { class: 'rf-pilot-fields' }, field('pilot.step_size', size), seedField),
-      el('div', {}, filter, selection, pool),
-      el('div', { class: 'rf-pilot-fields' }, thresholdFields.map(({ label, input }) => field(label, input)), field('备注', note)),
+      el('div', {}, filter, selection, pool,row(poolPrevious,pageStatus,poolNext)),
+      el('div', { class: 'rf-pilot-fields' }, thresholdFields.map(({ label, input }) => field(label, input)), field('pilot.note', note)),
     ];
     let step = 0;
     const prev = button('pilot.prev', () => move(-1));
@@ -331,10 +337,15 @@
         if (!session.live) return;
         filterPool();
       }
+      if(step===2&&sampling.value==='curated'){
+        if(selected.size<10||selected.size>100){session.notice.textContent=T('pilot.selection_limit');return;}
+        size.value=String(selected.size);
+      }
       move(1);
     }));
     const create = button('pilot.create', () => session.run(async () => {
       if (!thresholdFields.every(({ input }) => input.reportValidity())) return;
+      if(sampling.value==='curated')size.value=String(selected.size);
       const body = {
         size: Number(size.value), sampling: sampling.value, note: note.value,
         thresholds: Object.fromEntries(thresholdFields.map(({ key, input }) => [key, Number(input.value)])),
@@ -350,6 +361,7 @@
       panels.forEach((panel, index) => { panel.hidden = index !== step; });
       seedField.hidden = sampling.value === 'curated';
       stepHeading.textContent = T(headings[step]);
+      if(step===3&&sampling.value!=='random')stepHeading.textContent+=' · '+T('pilot.selected_count',{n:selected.size});
       prev.hidden = step === 0;
       next.hidden = step === 3;
       create.hidden = step !== 3;
@@ -580,6 +592,11 @@
 
   document.addEventListener('reviewflow:task-context-changed', discover);
   document.addEventListener('reviewflow:language-changed', () => renderHost());
-  window.PilotScreening = Object.freeze({ open, intercept });
+  document.addEventListener('reviewflow:decision-saved',()=>{gate.hidden=true;});
+  document.addEventListener('reviewflow:workspace-changed',()=>{
+    if(gate.hidden||!taskId())return;
+    const task=taskId();request(taskApi(),'/my-history').then(history=>{if(task===taskId()&&history.cleared)gate.hidden=true;}).catch(()=>{});
+  });
+  window.PilotScreening = Object.freeze({ open, intercept, decisionSaved:()=>{gate.hidden=true;} });
   if (taskId()) discover();
 })();

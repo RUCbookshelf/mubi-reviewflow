@@ -597,10 +597,11 @@
         const result = await api('/api/local-storage/browse',{method:'POST'});
         if (result.path) destination = result.path;
       },'')));
-      controls.append(button('迁移到新目录', () => {
+      controls.append(button('迁移到新目录', async () => {
         if (!destination.trim()) {message = '请输入新的绝对路径，例如 D:\\ReviewFlowData。'; render(); return;}
-        if (confirm(T('将全部本机研究数据迁移到所选目录？')+'\n'+destination))
-          act(() => api('/api/local-storage/migration',{method:'POST',body:{destination:destination.trim()}}),'已安排迁移，下次启动时执行。');
+        const selected=destination.trim(),user=S.user?.username;
+        if (await RFConfirm(T('将全部本机研究数据迁移到所选目录？')+'\n'+selected)&&S.user?.username===user)
+          act(() => api('/api/local-storage/migration',{method:'POST',body:{destination:selected}}),'已安排迁移，下次启动时执行。');
       }, true));
       panel.append(label, controls, node('p','请选择空文件夹，不能选择当前目录或其内部文件夹。',{class:'hint'}));
       panel.append(node('p','此设置对本机所有账号和任务生效。',{class:'hint'}));
@@ -608,8 +609,9 @@
     if (state.backup_path) {
       const backup = node('dl', null, {class:'local-storage-facts'}); backup.append(item('旧数据目录',state.backup_path)); panel.append(backup);
       panel.append(node('p','原目录保留为备份。确认 PDF 和研究数据正常后，可清理旧数据以释放磁盘空间。',{class:'hint'}));
-      panel.append(button('清理旧数据', () => {
-        if (confirm(T('永久删除旧目录中的研究数据？此操作无法撤销，请先确认新目录的数据完整。')))
+      panel.append(button('清理旧数据', async () => {
+        const backup=state.backup_path,user=S.user?.username;
+        if (await RFConfirm(T('永久删除旧目录中的研究数据？此操作无法撤销，请先确认新目录的数据完整。'))&&S.user?.username===user&&backup===state.backup_path)
           act(() => api('/api/local-storage/cleanup',{method:'POST',body:{confirm:true}}),'旧数据已清理。');
       }));
     }

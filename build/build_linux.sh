@@ -78,6 +78,7 @@ node "$BUILD/validate_team_prisma_static.js"
   --add-data "$ROOT/coscreen/assets:coscreen/assets" \
   --collect-all scipy --collect-all sklearn --collect-all statsmodels \
   --collect-all pandas --collect-data babel \
+  --hidden-import custom_backend.auth_recovery \
   "$BUILD/launcher.py" --distpath "$WORK/dist" --workpath "$WORK/pyinstaller"
 
 cp -a "$WORK/dist/ReviewFlow/." "$APPDIR/usr/bin/"

@@ -457,6 +457,59 @@ def _say(text: str, *, error: bool = False) -> None:
             pass
 
 
+def reset_user(username: str) -> int:
+    """Issue a local one-use recovery code without starting or migrating the app.
+
+    Read the same active data location as normal startup. Pending migrations
+    must finish through normal startup before recovery can touch either copy.
+    The code is written only to the invoking terminal, never to app log files.
+    """
+    from coscreen import local_storage
+
+    name = str(username or "").strip()
+    if not name:
+        _say("Usage: ReviewFlow --reset-user USERNAME", error=True)
+        return 2
+    stream = sys.stdout
+    terminal_stream = None
+    try:
+        # A macOS windowed bundle may have stdout=None even when invoked in
+        # Terminal. Recover the inherited descriptor, without opening a log.
+        if stream is None:
+            terminal_stream = os.fdopen(os.dup(1), "w", encoding="utf-8")
+            stream = terminal_stream
+        stream.write("")
+        stream.flush()
+        external = os.environ.get("COBOOKSHELF_DATA_DIR")
+        use_config = bool(os.environ.get(local_storage.CONFIG_ENV)) or not external
+        config = local_storage._read_config() if use_config else {}
+        if config.get("pending"):
+            _say("Open ReviewFlow to complete the pending data move, then retry recovery.", error=True)
+            return 1
+        data_path = Path(config.get("current_path") or external or default_data_dir()).expanduser().resolve()
+        if not data_path.is_dir():
+            _say("Recovery unavailable: check the account and active data folder.", error=True)
+            return 1
+        os.environ["COBOOKSHELF_DATA_DIR"] = str(data_path)
+        from custom_backend import auth, auth_recovery
+        if auth.get_user(name) is None:
+            _say("Recovery unavailable: check the account and active data folder.", error=True)
+            return 1
+        code = auth_recovery.issue_reset_code(name)
+        if not code:
+            _say("Recovery unavailable: the data folder could not store a recovery code.", error=True)
+            return 1
+        stream.write("One-use recovery code (valid for 15 minutes):\n" + code + "\n")
+        stream.flush()
+        return 0
+    except Exception:
+        _say("Recovery unavailable. Run this command in Terminal and check the active data folder.", error=True)
+        return 1
+    finally:
+        if terminal_stream is not None:
+            terminal_stream.close()
+
+
 def main(process_lock=None) -> int:
     """Start the desktop app.
 
@@ -488,6 +541,15 @@ def main(process_lock=None) -> int:
             "REVIEWFLOW_MODE=server。")
         return 2
     os.environ["REVIEWFLOW_MODE"] = "desktop"
+    if "--reset-user" in sys.argv[1:]:
+        if len(sys.argv) != 3 or sys.argv[1] != "--reset-user":
+            _say("Usage: ReviewFlow --reset-user USERNAME", error=True)
+            return 2
+        try:
+            return reset_user(sys.argv[2])
+        finally:
+            if process_lock is not None:
+                release_process_lock(process_lock)
     child_mode = "--restart-child" in sys.argv[1:]
 
     from coscreen import local_storage

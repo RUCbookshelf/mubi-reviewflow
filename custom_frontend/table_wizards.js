@@ -17,8 +17,18 @@
   const fields = (...controls) => node('div', null, { class: 'rf-tables-fields' }, controls);
   const resultMessage = (error, fallback) => error?.message || T(fallback);
   const componentLabel = component => 'tables.sof.judgment.component_' + component;
-  const formatEvidence = signal => Object.entries(signal || {}).filter(([key, value]) =>
-    key !== 'available' && ['string', 'number', 'boolean'].includes(typeof value)).map(([key, value]) => key + ' = ' + value).join(' · ');
+  // E-14：常用信号用可读量显示，完整机器字段仅留在审计披露中。
+  const formatEvidence = signal => {
+    if (!signal || signal.available === false) return T('tables.polish.no_signal');
+    const parts = [], number = value => typeof value === 'number' ? value.toLocaleString(undefined, { maximumSignificantDigits: 4 }) : value;
+    if (signal.high_risk_studies != null) parts.push(T('tables.polish.high_risk', signal.high_risk_studies, signal.n_studies ?? '—'));
+    if (signal.i2_percent != null) parts.push('I² = ' + number(signal.i2_percent) + '%');
+    if (signal.ci_low != null && signal.ci_high != null) parts.push('CI: ' + number(signal.ci_low) + ' – ' + number(signal.ci_high));
+    if (signal.ci_width_ratio != null) parts.push(T('tables.polish.ci_width', number(signal.ci_width_ratio)));
+    if (signal.p_value != null) parts.push('p = ' + number(signal.p_value));
+    if (signal.n_studies != null && signal.high_risk_studies == null) parts.push(T('tables.sof.n_studies') + ': ' + signal.n_studies);
+    return parts.join(' · ');
+  };
 
   function choices(items, keyOf, labelOf, changed, ordered = false) {
     const list = node('div', null, { class: 'rf-tables-choices' });
@@ -61,7 +71,8 @@
       const availability = value?.signal?.available;
       const reason = showEvidence ? formatEvidence(value?.signal) : '';
       list.append(tr('dt', componentLabel(component)), node('dd', level && availability !== false ? T('tables.level.' + level) : '', {},
-        reason ? raw('small', ' · ' + reason) : null));
+        reason ? raw('small', ' · ' + reason) : null,
+        showEvidence && value?.signal ? expanded('原始数据（保留字段名）', raw('pre', JSON.stringify(value.signal, null, 2))) : null));
     }
     list.append(tr('dt', 'tables.sof.judgment.overall'), node('dd', overall ? T('appraisal.rating.' + overall) : ''));
     return list;
@@ -103,15 +114,25 @@
     };
     const note = node('textarea', null, { class: 'input', rows: 3, translate: 'no' });
     note.value = row.judgment?.note || '';
-    const source = controlsFor('tables.sof.judgment.', ['manual', 'adopt'], 'manual');
+    // E-07：来源与已存判定一致；切换来源需独立确认，避免默认值将采纳记录改为人工。
+    const originalSource = row.judgment?.source === 'adopted' ? 'adopt' : 'manual';
+    const source = controlsFor('tables.sof.judgment.', ['manual', 'adopt'], originalSource);
+    const sourceAck = node('input', null, { type: 'checkbox' });
+    const sourceNotice = node('label', null, { class: 'rf-tables-choice' }, sourceAck, tr('span', 'tables.polish.source_confirm'));
+    sourceNotice.hidden = true;
     const chosen = Object.fromEntries(components.map(component => [
       component, controlsFor('tables.level.', ['', ...levels], row.judgment?.components?.[component] || '')
     ]));
     const overall = select([['', 'tables.level.'], ...grades.map(value => [value, 'appraisal.rating.' + value])], row.judgment?.overall || '');
     const manual = fields(...components.map(key => field(componentLabel(key), chosen[key])), field('tables.sof.judgment.overall', overall));
+    manual.hidden = source.value === 'adopt';
     const message = statusLine();
     const save = button('tables.sof.judgment.submit', async () => {
       if (!valid() || save.disabled) return;
+      if (row.judgment && source.value !== originalSource && !sourceAck.checked) {
+        message.textContent = T('tables.polish.source_confirm');
+        return;
+      }
       const adopt = source.value === 'adopt';
       const payload = { comparison: row.comparison, outcome: row.outcome, timepoint: row.timepoint, measure: row.measure, note: note.value };
       if (adopt) Object.assign(payload, params, { adopt_from_suggestion: true });
@@ -119,7 +140,7 @@
         payload.components = Object.fromEntries(Object.entries(chosen).filter(([, input]) => input.value).map(([key, input]) => [key, input.value]));
         if (overall.value) payload.overall = overall.value;
       }
-      const controls = [source, ...Object.values(chosen), overall, note, save];
+      const controls = [source, sourceAck, ...Object.values(chosen), overall, note, save, ...(restore ? [restore] : [])];
       controls.forEach(control => { control.disabled = true; });
       message.textContent = T('tables.generating');
       try {
@@ -133,13 +154,29 @@
         controls.forEach(control => { control.disabled = false; });
       }
     }, true);
-    source.addEventListener('change', () => { manual.hidden = source.value === 'adopt'; message.textContent = ''; });
+    const syncSource = () => {
+      manual.hidden = source.value === 'adopt';
+      sourceNotice.hidden = !row.judgment || source.value === originalSource;
+      sourceAck.checked = false;
+      message.textContent = '';
+    };
+    source.addEventListener('change', syncSource);
+    // E-18：后端仅支持新版本写回，明确以人工修订恢复上一版值，不冒充快照撤销或清空。
+    const restore = row.judgment?.prev ? button('tables.polish.previous_values', () => {
+      const previous = row.judgment.prev;
+      source.value = 'manual'; syncSource();
+      for (const key of components) chosen[key].value = previous.components?.[key] || '';
+      overall.value = previous.overall || '';
+      note.value = previous.note || '';
+      message.textContent = T('tables.polish.previous_loaded');
+    }) : null;
     const current = row.detail?.grade;
     body.append(raw('b', row.label),
       tr('h3', 'tables.current_suggestion'),
       suggestionsBlock(current?.suggestions, current?.quality?.final_quality, true),
-      field('tables.sof.judgment.source', source), manual, field('tables.sof.judgment.note', note),
-      tr('p', 'tables.sof.judgment.overwrite_hint', { class: 'hint' }), message,
+      field('tables.sof.judgment.source', source), sourceNotice, manual, field('tables.sof.judgment.note', note),
+      tr('p', 'tables.sof.judgment.overwrite_hint', { class: 'hint' }),
+      row.judgment ? tr('p', 'tables.polish.restore_limit', { class: 'hint' }) : null, restore, message,
       node('div', null, { class: 'row' }, save, button('tables.sof.judgment.cancel', () => dialog.close())));
   }
 
@@ -153,7 +190,10 @@
         tr('span', 'tables.sof.judged', { class: 'chip' }));
     }));
     const rowNotes = new Set((data.rows || []).flatMap(row => row.footnotes || []));
-    const area = node('div', null, {}, grid(cols, rows), noteList((data.footnotes || []).filter(note => !rowNotes.has(note))));
+    const area = node('div', null, {}, tr('p', 'tables.polish.provenance', { class: 'hint' }),
+      button('tables.polish.open_grade', async () => {
+        if (window.RFOpenGrade && await window.RFOpenGrade() !== false) wizard.close?.();
+      }), grid(cols, rows), noteList((data.footnotes || []).filter(note => !rowNotes.has(note))));
     for (const row of data.rows || []) {
       const audit = node('section', null, { class: 'card rf-tables-audit' }, raw('h3', row.label));
       audit.append(raw('p', row.comparison), noteList(row.footnotes));
@@ -182,10 +222,11 @@
     let request = 0;
     const previewButton = button('tables.preview', () => refresh());
     const downloadButton = button('tables.download', () => download(), true);
-    const wizard = { path, valid, refresh };
+    const wizard = { path, valid, refresh, close: () => dialog.close() };
     function changed() {
       ++request;
-      preview.replaceChildren();
+      // E-08：设置变化后保留明确恢复入口，避免无说明的空白。
+      preview.replaceChildren(tr('p', 'tables.polish.preview_changed', { class: 'hint', role: 'status' }));
       status.textContent = '';
     }
     async function run(action) {
@@ -292,6 +333,12 @@
     init();
   }
 
+  // E-05 / E-17：供 GRADE 面板互链；保留现有离页草稿守卫。
+  window.RFOpenSoFWizard = async () => {
+    if (typeof go === 'function' && (await go('export') === false || S.page !== 'export')) return false;
+    openWizard(true);
+    return true;
+  };
   const title = tr('h3', 'tables.title');
   const table1 = button('tables.table1.title', () => openWizard(false));
   const sof = button('tables.sof.title', () => openWizard(true));

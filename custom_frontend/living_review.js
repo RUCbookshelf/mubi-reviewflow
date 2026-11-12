@@ -167,6 +167,10 @@
       el('label', {}, el('span', { text: T('指标代码') }), msrInput),
       el('label', {}, el('span', { text: ' ' }), importBtn));
     importForm.append(importHint);
+    // This is a navigation entry. Files and outcome fields belong to the import
+    // workspace; showing inert copies here implied a transfer that never occurred.
+    const analysisFields=[[cmpInput,'比较组'],[outInput,'结局'],[tpInput,'时间点'],[msrInput,'指标代码']].map(([input,label])=>el('label',{},el('span',{text:T(label)}),input));
+    importForm.replaceChildren(importHint,importBtn,el('p',{class:'hint wide',text:T('Analysis context — used for later analysis, not file import.')}),...analysisFields);
 
     /* 变更报告 */
     const reportCaption = el('b', { class: 'sub', text: T('变更报告') });
@@ -379,10 +383,9 @@
         statusLine.textContent = T('Only the task owner can import sources.');
         return;
       }
-      statusLine.replaceChildren(el('span', {text:T('Living Review imports now use protected Import review. Export or select the original source file there, review metadata and candidates, then activate resolved records. Saved history is retained; analysis is run separately.')}),
-        el('button', {type:'button', class:'btn b-out sm', text:T('Open import review'), onclick:async()=>{
-          if (await go('import')) await WorkflowImports.list();
-        }}));
+      if(window.RFWorkspaceShell)await RFWorkspaceShell.navigate('import');
+      else await go('import');
+      if(S.page==='import')await WorkflowImports.list();
     }
     async function importUpdate() { try { await protectedImportRoute(); } catch (error) { WorkflowControls.error(error); } }
 

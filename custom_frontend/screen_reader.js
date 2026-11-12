@@ -15,7 +15,14 @@
   const order=el('div',{class:'rf-screen-order',role:'group'});mode.prepend(order);order.append(orderLabel,importButton,aiButton,orderNow);
   const focusLabel=el('span'),focusButton=el('button',{type:'button',id:'rfScreenFocus'},icon('M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5'),focusLabel);
   const helpButton=el('button',{type:'button',id:'rfScreenHelp','aria-expanded':'false','aria-controls':'rfScreenHelpPanel'},icon('M5 12h.01M12 12h.01M19 12h.01'));
-  const tools=el('div',{class:'rf-screen-tools'},focusButton,helpButton);mode.append(tools);
+  const helpLabel=el('span');helpButton.append(helpLabel);
+  const batchPdf=el('button',{type:'button',class:'btn b-out sm',onclick:async()=>{
+    await window.RFWorkspaceShell?.navigate('home');
+    if(S.page!=='home')return;
+    window.WorkflowControls?.homeTab('coding');
+    document.getElementById('rfPdfFetchCard')?.scrollIntoView({block:'nearest'});
+  }});
+  const tools=el('div',{class:'rf-screen-tools'},focusButton,helpButton,batchPdf);mode.append(tools);
   const helpTitle=el('strong'),helpClose=el('button',{type:'button'},icon('M6 6l12 12M18 6 6 18'));
   const escapeHint=el('p',{class:'hint'});
   const help=el('section',{id:'rfScreenHelpPanel',class:'rf-screen-help',hidden:'','aria-labelledby':'rfScreenHelpTitle'},el('header',{},helpTitle,helpClose));
@@ -65,6 +72,7 @@
   function refreshText(){
     focusLabel.textContent=T('专注阅读');exitLabel.textContent=T('退出专注');helpTitle.textContent=T('阅读帮助');escapeHint.textContent=T('按 Esc 退出专注阅读');
     helpButton.setAttribute('aria-label',T('阅读帮助'));helpClose.setAttribute('aria-label',T('关闭'));
+    helpLabel.textContent=T('阅读帮助');batchPdf.textContent=T('批量获取');batchPdf.title=T('PDF 自动获取（DOI→Unpaywall）');
     orderLabel.textContent=T('Screening order');order.setAttribute('aria-label',T('Screening order'));syncMode();syncPosition();syncMlStatus();syncOrderNow();
   }
   function enhanceMetadata(){
@@ -269,6 +277,16 @@
   const TIP_KEY='rf_screen_ml_tip';
   let tipSeen=()=>{try{return localStorage.getItem(TIP_KEY)==='1';}catch(e){return true;}/* 存储不可用：不打扰 */};
   let tipBar=null;
+  function syncTip(){
+    if(!tipBar)return;
+    const cluster=S.al.strategy==='cluster';
+    // Cluster ranking does not predict inclusion probabilities. The strategy
+    // arrives asynchronously after this tip may already have been constructed.
+    tipBar.hidden=cluster;
+    tipBar.style.display=cluster?'none':'';
+    tipBar.querySelector('span').textContent=T(cluster?'al.strategy.cluster.hint':'可以切换为机器学习排序：按模型预测的纳入概率排列待筛文献');
+    tipBar.querySelector('.btn').textContent=T(cluster?'al.strategy.cluster':'试试机器学习排序');
+  }
   function buildTip(){
     if(tipBar||tipSeen())return;
     const close=(dismiss)=>{try{localStorage.setItem(TIP_KEY,'1');}catch(e){}tipBar?.remove();tipBar=null;if(dismiss==='try')aiButton.click();};
@@ -277,7 +295,10 @@
       el('button',{type:'button',class:'btn b-out sm',text:T(S.al.strategy==='cluster'?'al.strategy.cluster':'试试机器学习排序'),onclick:()=>close('try')}),
       el('button',{type:'button',class:'rf-screen-ml-tip-close','aria-label':T('关闭提示'),text:'✕',onclick:()=>close('dismiss')}));
     mlStatus.before(tipBar);
+    syncTip();
   }
+  for(const event of ['reviewflow:al-settings-loaded','reviewflow:al-settings-saved','reviewflow:language-changed'])
+    document.addEventListener(event,syncTip);
 
   /* ---- F59（随版缓解）：重排期间的轻量指示 ----
      批准单 F59：每到更新间隔触发重排时卡片关键路径无任何反馈，界面停在退场

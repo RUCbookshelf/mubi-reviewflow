@@ -125,15 +125,17 @@
     }
 
     /* ---- 切换：确认 → PUT；取消 → 回退（§10 不变量 6） ---- */
-    for (const select of selectors) select.addEventListener('change', () => {
+    for (const select of selectors) select.addEventListener('change', async () => {
       try {
         const effective = current || defaultName;
         const next = select.value;
         if (select.closest('[hidden]') || next === effective || !next) return;
         const info = profiles[next] || {};
-        const ok = confirm(T('切换模型将重置 机器学习排序，已有的筛选标签不受影响。'));
-        if (!ok) { select.value = effective; return; }
         const taskId = (typeof S !== 'undefined' && S.task) ? S.task.task_id : null;
+        const confirmationVersion=version;
+        const ok = await RFConfirm(T('切换模型将重置 机器学习排序，已有的筛选标签不受影响。'));
+        if(confirmationVersion!==version||taskId!==S.task?.task_id)return;
+        if (!ok) { select.value = effective; return; }
         if (!taskId || typeof api !== 'function' || typeof taskApi !== 'function') { select.value = effective; return; }
         const ticket = ++version;
         const active = () => ticket === version && S.task?.task_id === taskId;

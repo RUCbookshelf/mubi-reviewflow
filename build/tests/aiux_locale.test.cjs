@@ -41,7 +41,7 @@ test('AIUX registers ten nonempty locales with consistent interpolation', () => 
 test('the catalog and localization load before either AI key surface', () => {
   const html = readFileSync(path.join(frontend, 'index.html'), 'utf8');
   const loadIndex = file => {
-    const index = html.indexOf('./' + file + '?v=20261112-aiux');
+    const index = html.search(new RegExp('(?:src|data-rf-app-src)="\\./' + file.replaceAll('.', '\\.') + '\\?v=20261112-(?:aiux|ui-polish)"'));
     assert.ok(index >= 0, 'missing AIUX script: ' + file);
     return index;
   };

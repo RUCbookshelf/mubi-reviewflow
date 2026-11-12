@@ -65,13 +65,13 @@
     header.style.width=width+'px';content.style.width=width+'px';content.style.height='auto';
     const height=Math.max(44,Math.min(46+shell.scrollHeight+2,mobile.matches ? window.innerHeight*.82 : window.innerHeight-24));
     dimensions={width,height};content.style.height=Math.max(0,height-46)+'px';
-    total=360+(revealGroups.length-1)*(1000/60)*4+150;
+    total=300;
     if(sheet.animate){
       const style=getComputedStyle(document.documentElement),ease='cubic-bezier(.22,1,.36,1)';
       const add=(node,keys,timing)=>{const animation=node.animate(keys,{...timing,fill:'both'});animation.pause();animations.push(animation);};
-      add(sheet,[{width:'44px',height:'44px',borderRadius:'22px',backgroundColor:style.getPropertyValue('--primary').trim(),borderColor:'transparent'},{width:width+'px',height:height+'px',borderRadius:'14px',backgroundColor:style.getPropertyValue('--surface').trim(),borderColor:style.getPropertyValue('--border').trim()}],{duration:360,easing:ease});
-      add(toggle,[{color:style.getPropertyValue('--surface').trim()},{color:style.getPropertyValue('--ink').trim()}],{duration:360,easing:ease});
-      revealGroups.forEach((group,index)=>group.forEach(node=>add(node,[{opacity:0,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{delay:360+index*(1000/60)*4,duration:150,easing:'ease-out'})));
+      add(sheet,[{width:'44px',height:'44px',borderRadius:'22px',backgroundColor:style.getPropertyValue('--primary').trim(),borderColor:'transparent'},{width:width+'px',height:height+'px',borderRadius:'14px',backgroundColor:style.getPropertyValue('--surface').trim(),borderColor:style.getPropertyValue('--border').trim()}],{duration:240,easing:ease});
+      add(toggle,[{color:style.getPropertyValue('--surface').trim()},{color:style.getPropertyValue('--ink').trim()}],{duration:240,easing:ease});
+      revealGroups.forEach((group,index)=>group.forEach(node=>add(node,[{opacity:0,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{delay:80+Math.min(index*10,100),duration:120,easing:'ease-out'})));
     }
     paint(ratio*total);syncAccess();
   }

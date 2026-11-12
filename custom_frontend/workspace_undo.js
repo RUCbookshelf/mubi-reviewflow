@@ -123,6 +123,7 @@
   document.addEventListener('reviewflow:task-context-changed', reset);
   document.addEventListener('reviewflow:language-changed', sync);
   document.addEventListener('keydown', event=>{
+    if(event.defaultPrevented || window.RFModalActive?.()) return;
     const stage = stages[S.page];
     if (!stage || !S.user || event.repeat || event.isComposing || event.altKey || event.shiftKey ||
         (event.code !== 'KeyZ' && (typeof event.key !== 'string' || event.key.toLowerCase() !== 'z')) || !(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return;

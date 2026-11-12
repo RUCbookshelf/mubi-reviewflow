@@ -109,17 +109,23 @@
     let doneLook = -1;      // 已完成抽验的最高 look 点（更高 look 才再次建议）
     let result = null;      // 已出具的判定 {look, pass, newRelevant, kT, m}
 
-    function safe(fn) { return function () { try { fn.apply(this, arguments); } catch (e) { /* 单点故障 */ } }; }
+    function safe(fn) { return function () { try { Promise.resolve(fn.apply(this, arguments)).catch(error=>window.WorkflowControls?.error(error)); } catch (e) { /* 单点故障 */ } }; }
     function fmt(n) { return String(Math.max(0, n | 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
     function taskId() { return (typeof S !== 'undefined' && S.task) ? S.task.task_id : null; }
+    const spotScope=()=>[location.origin,S.user?.id||S.user?.user_id,taskId(),S.screener].join('|');
+    let trackedScope='';
+    function persistSpot(){try{localStorage.setItem('rf_stop_sample:'+trackedScope,JSON.stringify({spot,result,doneLook}));}catch{}}
+    function restoreSpot(){try{const saved=JSON.parse(localStorage.getItem('rf_stop_sample:'+trackedScope)||'null');if(saved){spot=saved.spot;result=saved.result;doneLook=saved.doneLook??-1;}}catch{}}
 
     /* ---- 任务切换：复位 ---- */
     function onTask() {
       const id = taskId();
-      if (id === trackedTask) return;
+      if (spotScope() === trackedScope) return;
+      trackedScope=spotScope();
       trackedTask = id;
       version++;
       data = null; spot = null; result = null; doneLook = -1;
+      restoreSpot();
       anchor.hidden = true;
       setOpen(false);
       if (id && (typeof S !== 'undefined' && S.page === 'screen')) waitForScreen();
@@ -142,6 +148,8 @@
       const id = taskId();
       if (!id) { anchor.hidden = true; setOpen(false); return; }
       trackedTask = id;
+      if(spotScope()!==trackedScope){trackedScope=spotScope();spot=null;result=null;doneLook=-1;restoreSpot();}
+      promoteSpot();
       refresh(true);
     }
 
@@ -179,6 +187,7 @@
       result = { look: spot.look, pass: counts.newRelevant === 0, newRelevant: counts.newRelevant, kT: spot.kT, m: spot.m };
       doneLook = Math.max(doneLook, spot.look);
       spot = null;
+      persistSpot();
     }
 
     /* ---- 渲染（纯本地：data + spot + result + S.al.streak）。
@@ -265,9 +274,12 @@
       return arr;
     }
 
-    startBtn.addEventListener('click', safe(() => {
+    startBtn.addEventListener('click', safe(async() => {
       if (spot || !data || !data.at_look_point) return;
       const id = taskId();
+      const requested=spotScope();
+      if(window.WorkflowControls&&!await WorkflowControls.guard())return;
+      if(requested!==spotScope()||spot)return;
       if (!id || typeof S === 'undefined' || S.screenLoadedTask !== id || !Array.isArray(S.articles)) return;
       let m = data.required_sample_size | 0;
       const undecided = S.articles.filter(a => a && a.zotero_key && !(S.decisions[a.zotero_key]));
@@ -277,6 +289,7 @@
       const pickedSet = new Set(picked.map(a => a.zotero_key));
       S.articles = picked.concat(S.articles.filter(a => !pickedSet.has(a.zotero_key)));
       spot = { taskId: id, look: Number(data.look_fraction), m, kT: data.k_t | 0, keys: picked.map(a => a.zotero_key) };
+      persistSpot();
       S.scrIdx = (typeof nextUndecided === 'function') ? nextUndecided() : 0;
       if (typeof renderScreen === 'function') renderScreen();
       if (typeof toast === 'function') toast(T('已随机抽取 {0} 条置于队列顶部，请逐条判读完成抽验', String(m)), 'inc');

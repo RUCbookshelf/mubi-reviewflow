@@ -94,7 +94,8 @@ function makeEnv(apiImpl) {
     navigator: {},
     URL: { createObjectURL: (blob) => 'blob:stub-' + (opens.length + 1),
            revokeObjectURL: () => {} },
-    confirm: (message) => { confirms.push(message); return confirmAnswer; },
+    RFConfirm: async (message) => { confirms.push(message); return confirmAnswer; },
+    confirm: () => { throw Error('native confirmation must not be used'); },
   };
   sandbox.window = sandbox;
   sandbox.window.open = (url, target) => { opens.push([url, target]); return {}; };
@@ -453,8 +454,8 @@ test('review67 L-18: rapid clicks and a replaced screening card share one pendin
   assert.equal(secondRow.children.find(child => child.attrs.role === 'status').textContent, '未找到开放获取的 PDF。');
 });
 
-test('index.html loads the module with the review67 cache token', () => {
+test('index.html loads the module with the UI polish cache token', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', '..', 'custom_frontend', 'index.html'), 'utf8');
-  assert.ok(html.includes('./pdf_fetch.js?v=20261112-r67'),
-    'index.html 必须以 ?v=20261112-r67 令牌加载 pdf_fetch.js');
+  assert.ok(html.includes('./pdf_fetch.js?v=20261112-ui-polish'),
+    'index.html 必须以 ?v=20261112-ui-polish 令牌加载 pdf_fetch.js');
 });

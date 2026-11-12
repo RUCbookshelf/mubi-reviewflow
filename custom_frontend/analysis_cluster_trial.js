@@ -123,7 +123,7 @@
         if (S.task?.task_id === taskId) host.textContent = T('先前输入已保存为结果 {0}。再次保存前请检查效应量列表。', saved.result_id);
         else { host.replaceChildren(); toast(T('结果 {0} 已保存至先前的任务 {1}。', saved.result_id, taskId), 'warn'); }
       }
-    } catch (error) { if (request === activeRequest && (!original || context() === original)) { host.textContent = error.message; toast(error.message, 'warn'); } }
+    } catch (error) { if (request === activeRequest) { const message=original && context() !== original ? T('先前输入的保存失败：{0}',T(error.message)) : T(error.message); if(!taskId || S.task?.task_id===taskId) host.textContent=message; toast(message,'warn'); } }
     finally { clearInterval(timer); if (request === activeRequest) saveButton.disabled = false; }
   });
 })();

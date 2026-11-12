@@ -493,11 +493,13 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 
 /* ---------- 气泡提示（toast） ---------- */
 #toasts{position:fixed;top:64px;right:16px;z-index:2147483000;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:min(380px,80vw)}
-.toast{padding:10px 14px;border-radius:10px;font-size:.85rem;line-height:1.5;box-shadow:0 8px 22px rgba(0,0,0,.22);animation:tin .25s ease;background:var(--surface);border:1px solid var(--border);color:var(--ink)}
+.toast{pointer-events:auto;padding:10px 14px;border-radius:10px;font-size:.85rem;line-height:1.5;box-shadow:0 8px 22px rgba(0,0,0,.22);animation:tin .25s ease;background:var(--surface);border:1px solid var(--border);color:var(--ink)}
 .toast.t-inc{background:var(--primary);color:#fff;border-color:transparent}
 .toast.t-may{background:var(--accent);color:#1F2A37;border-color:transparent}
 .toast.t-exc{background:var(--danger);color:#fff;border-color:transparent}
 .toast.t-warn{background:var(--surface);border:1.5px solid var(--danger);color:var(--danger)}
+.scr-status{gap:6px}.scr-status #scrHist{display:flex;gap:4px;overflow:auto;max-width:100%}.scr-status #scrHist .chip{white-space:nowrap}.scr-status #scrHistCounts{margin-left:auto}
+@media(max-width:1050px){.scr-status #scrHist{max-width:45%}.scr-status #scrHistCap{display:none}.scr-status #scrHistCounts{font-size:.75rem}.scr-status #scrHist .chip{max-width:150px;overflow:hidden;text-overflow:ellipsis}}
 .toast.hide{animation:tout .3s ease forwards}
 @keyframes tin{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
 @keyframes tout{to{opacity:0;transform:translateY(-8px)}}
@@ -734,7 +736,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./screen_reader.css?v=20261110-w1-polish1">
 <link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
 <link rel="stylesheet" href="./workspace_layouts.css?v=20261012-rounds1">
-<link rel="stylesheet" href="./report_evidence.css?v=2.1.3">
+<link rel="stylesheet" href="./report_evidence.css?v=20261112-ui-polish">
 </head>
 <body>
 
@@ -814,7 +816,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
             <button class="eye-btn" id="pwEye" type="button" aria-label="显示密码" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path id="eyeSlash" d="m4 4 16 16" hidden/></svg></button>
           </div>
         </div>
-        <label class="remember" id="authRememberRow"><input id="authRemember" type="checkbox"> <span>记住我</span></label>
+        <label class="remember" id="authRememberRow"><input id="authRemember" aria-describedby="authRememberNote" type="checkbox"> <span>记住我</span></label>
+        <p class="hint" id="authRememberNote">记住我选项在下次登录时生效</p>
       </fieldset>
       <fieldset class="auth-fields" id="authResetFields" hidden disabled>
         <div class="field">
@@ -838,7 +841,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
             <input class="input" id="authResetPass" name="new_password" type="password" autocomplete="new-password" placeholder="8–128 位" minlength="8" maxlength="128" required aria-describedby="authErr">
           </div>
         </div>
-        <p class="reset-hint" id="authResetHint"><span id="authResetServerHint" hidden>请联系管理员获取重置码</span><span id="authResetDesktopHint">请运行安装目录的重置工具获取重置码<code><span translate="no">windows_start.py --reset-user </span><span>用户名</span></code></span></p>
+        <p class="reset-hint" id="authResetHint"><span id="authResetServerHint" hidden>请联系管理员获取重置码</span><span id="authResetDesktopHint"><span id="authResetSteps"></span><code id="authResetCommand" translate="no"></code><button class="btn b-out sm" id="authResetCopy" type="button">复制重置命令</button><span class="hint" id="authResetCopyStatus" role="status"></span></span></p>
       </fieldset>
       <p class="autherr" id="authErr" role="alert"></p>
       <button class="submit" id="authSubmit" type="submit"><span id="submitText">登录</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button>
@@ -1133,6 +1136,8 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
   </div>
   <div class="row scr-status" style="margin-top:0">
     <span class="chip" id="scrPos">—</span>
+    <button class="btn b-out sm" id="scrBrowsePrev" type="button">上一条</button>
+    <button class="btn b-out sm" id="scrBrowseNext" type="button">下一条</button>
     <span class="hint" style="margin:0" id="scrHistCap">决策历史：</span>
     <span id="scrHist"></span>
     <span id="scrHistCounts"></span>
@@ -2271,7 +2276,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 </div>
 </main>
 <div class="footer">© 2026 木笔 ReviewFlow</div>
-<div id="toasts"></div>
+<div id="toasts" aria-live="polite" aria-relevant="additions"></div>
 
 <script src="./prisma_citations.js?v=20260929-ui3"></script>
 <script src="./team_roles.js?v=20261012-team1"></script>
@@ -5280,6 +5285,7 @@ function createBackground(canvas) {
 <script src="./help_locale.js?v=20261110-215"></script>
 <script src="./navigation_locale.js?v=20261101-r10u4"></script>
 <script src="./navigation_registry.js?v=2.1.2.2"></script>
+<script src="./app_module_loader.js?v=20261112-ui-polish"></script>
 
 <script>
 'use strict';
@@ -5337,6 +5343,7 @@ function el(tag, attrs, ...children) {
 const TOKEN_KEY = 'rf_token';
 const REMEMBER_KEY = 'rf_remember';
 let AUTH_TOKEN = null;
+let authExpiryNoticeToken = null;
 /* 集成部署始终使用当前页面端口；独立前端开发服务才回退到 :8613。 */
 let API_BASE = '';
 let apiPendingWrites = 0;
@@ -5399,7 +5406,10 @@ async function apiRequest(path, opts = {}) {
        片段保留由“不清除 hash”实现；本 toast 挂在 #toasts（appMain 之外），
        切到登录页后仍可见，9000ms 停留避免被错过。401 统一登出架构保持不变：
        仍是此唯一入口调用 logout() 一次。 */
-    toast('登录已过期。当前页面地址已保留，重新登录后将回到此处。', 'warn', 9000);
+    if (authExpiryNoticeToken !== requestToken) {
+      authExpiryNoticeToken = requestToken;
+      toast('登录已过期。当前页面地址已保留，重新登录后将回到此处。', 'warn', 9000);
+    }
     /* MM5-02（r7-frontsec）：写请求 401 强制登出（force 跳过草稿守卫）。401 分支
        触发时失败的这次写仍被 api() 计入 apiPendingWrites（finally 尚未执行），
        guard() 的 pendingWork() 因此恒真——旧行为把写 401 的登出无条件拦死在
@@ -5408,7 +5418,7 @@ async function apiRequest(path, opts = {}) {
        GET 401 没有在途写计数，保持原守卫路径（有草稿时仍弹“未保存的改动”
        对话框，行为不变）。 */
     // 会话恢复时 /auth/me 先于工作区加载，失效令牌直接清除。
-    logout('登录已过期，请重新登录。', {
+    logout(null, {
       token: requestToken,
       force: path === '/api/auth/me' || (opts.method || 'GET').toUpperCase() !== 'GET',
     });
@@ -5532,6 +5542,7 @@ function restoreToken() {
   try { return sessionStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
 }
 function saveToken(tok, remember = false) {
+  authExpiryNoticeToken = null;
   AUTH_TOKEN = tok;
   clearStoredToken();
   try {
@@ -5615,6 +5626,8 @@ const HL_LABEL = { jade: '玉青', amber: '花芽黄', terra: '陶红' };
    记录可反查到的规范中文源串，切换语言时用 refreshToasts() 重译。 */
 const LIVE_TOASTS = [];
 function toast(msg, kind, holdMs) {
+  // The session handler owns expiry feedback; callers still receive a 401.
+  if (msg === '登录已过期' || msg === T('登录已过期')) return;
   msg = T(msg);
   kind = kind || 'info';
   const box = el('div', { class: 'toast t-' + kind, text: msg });
@@ -5673,6 +5686,7 @@ function RFConfirm(options) {
       message.classList.add('rf-sensitive-warning');
       message.prepend(rfWarningIcon());
     }
+    const input = opts.input ? el('input', {class:'input', value:opts.value || '', 'aria-label':opts.inputLabel || opts.title || T('名称')}) : null;
     const actions = el('div', { class: 'rf-confirm-actions' });
     let settled = false;
     /* F52：收尾必须同步完成。dialog.close() 的 close 事件是异步排队的——若只在
@@ -5691,12 +5705,15 @@ function RFConfirm(options) {
       resolve(value);
     };
     const cancel = el('button', { type: 'button', class: 'btn b-out', text: T(opts.cancelLabel || '取消'), onclick: () => finish(false) });
-    const confirm = el('button', { type: 'button', class: 'btn ' + (opts.danger === false ? 'b-inc' : 'b-exc'), text: T(opts.confirmLabel || '确定'), onclick: () => finish(true) });
+    const confirm = el('button', { type: 'button', class: 'btn ' + (opts.danger === false ? 'b-inc' : 'b-exc'), text: T(opts.confirmLabel || '确定'), onclick: () => finish(input ? input.value.trim() : true) });
     actions.append(cancel, confirm);
-    dialog.append(title, message, actions);
+    dialog.append(title, message);
+    if (input) dialog.append(input);
+    dialog.append(actions);
     document.body.append(dialog);
     dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
     dialog.addEventListener('keydown', event => {
+      if (input && event.target === input && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); finish(input.value.trim()); return; }
       if (event.key !== 'Tab') return;
       const items = [...dialog.querySelectorAll(RF_CONFIRM_FOCUSABLE)];
       if (!items.length) return;
@@ -5710,7 +5727,8 @@ function RFConfirm(options) {
       if (!settled) { settled = true; restoreFocus(); resolve(false); }
     });
     dialog.showModal();
-    cancel.focus();
+    (input || cancel).focus();
+    input?.select();
   });
 }
 window.RFConfirm = RFConfirm;
@@ -5765,10 +5783,45 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape' && do
 mobileNavQuery.addEventListener('change', () => setMobileNav(false));
 $$('#appShell .nav svg').forEach(icon => icon.setAttribute('aria-hidden', 'true'));
 setMobileNav(false);
+const workspacePositions = new Map();
+let screenAnimationVersion = 0;
+function clearScreenAnimation() {
+  screenAnimationVersion++;
+  screenSaving = null;
+  $('#scrCard')?.classList.remove('out');
+}
+function workspacePositionKey(page = S.page) {
+  const phase = {screen:'screen',fulltext:'fulltext',bench:'coding'}[page];
+  const context = page === 'bench' ? window.WorkflowEvidence?.context?.() : [window.WorkflowControls?.selectedSource?.(phase),window.WorkflowControls?.order?.()];
+  return JSON.stringify([S.user?.username,S.task?.task_id,S.screener,page,context || 'personal']);
+}
+function rememberWorkspacePosition() {
+  if (!S.user || !S.task) return;
+  const page = S.page, queue = page === 'screen' ? S.articles : page === 'fulltext' ? S.ftQueue : S.cbQueue;
+  const index = page === 'screen' ? S.scrIdx : page === 'fulltext' ? S.ftIdx : S.cbIdx;
+  const active = document.activeElement;
+  workspacePositions.set(workspacePositionKey(page), {
+    key:queue?.[index]?.zotero_key,
+    view:$('.view')?.scrollTop || 0,
+    abstract:$('#scrBody .absbox')?.scrollTop || 0,
+    focus:active?.closest('.page.on') && active.id ? active.id : null
+  });
+}
+function restoreWorkspacePosition(page) {
+  const saved = workspacePositions.get(workspacePositionKey(page));
+  if (!saved || S.page !== page) return;
+  if ($('.view')) $('.view').scrollTop = saved.view;
+  if (page === 'screen' && S.articles[S.scrIdx]?.zotero_key === saved.key && $('#scrBody .absbox')) $('#scrBody .absbox').scrollTop = saved.abstract;
+  const focus = saved.focus && document.getElementById(saved.focus);
+  if (focus?.closest('.page.on') && !focus.disabled && !window.RFModalActive?.()) focus.focus({preventScroll:true});
+}
 async function go(p, opts = {}) {
   if (!opts.guarded && window.WorkflowControls && !await WorkflowControls.guard()) return false;
   if (!Array.from(document.querySelectorAll('#appMain section.page[data-p]')).some(node => node.dataset.p === p)) return;
   if (document.body.classList.contains('mobile-nav-open')) setMobileNav(false);
+  if (!opts.scopeChanged) rememberWorkspacePosition();
+  clearScreenAnimation();
+  const navigationScope = workspacePositionKey(p);
   /* 切页时静默退出上一页的高亮编辑模式（复筛/编码两个阅读器实例各自持有
      AnnotationEditorUIManager，均监听全局选区；同时处于 HIGHLIGHT 会互相抢占） */
   if (S.page === 'fulltext' && p !== 'fulltext' && typeof FtPdf !== 'undefined') FtPdf.exitHiMode();
@@ -5801,9 +5854,18 @@ async function go(p, opts = {}) {
   if (p === 'prisma') prRefreshLangUI();
   document.dispatchEvent(new CustomEvent('reviewflow:workspace-changed', {detail:p}));
   await loading;
+  if (workspacePositionKey(p) === navigationScope) restoreWorkspacePosition(p);
   return true;
 }
 $$('[data-nav]').forEach(elm => elm.addEventListener('click', () => go(elm.dataset.nav)));
+const featureRoutes=[['import', null], ['home', 'ml'], ['screen', null], ['fulltext', null], ['bench', null], ['merge', null], ['prisma', null], ['analysis', null], ['analysis', null], ['trace', null], ['home', 'tasks'], ['export', null]];
+$$('.page[data-p="home"] .steps .step').forEach((card,index)=>{
+  const [page,tab]=featureRoutes[index] || ['home',null];
+  card.setAttribute('role','button');card.tabIndex=0;
+  const open=async()=>{if(await go(page)){if(tab)window.WorkflowControls?.homeTab?.(tab);if(index===8)window.RFWorkspaceShell?.navigate?.({page:'analysis',group:'data',tool:'risk-of-bias'});}};
+  card.addEventListener('click',open);
+  card.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
+});
 
 /* ---------- 语言切换：重渲染所有带插值的动态文本 ----------
    静态文本已由引擎的 translateTree(整页) 覆盖；这里只补 T() 合成句所在区域。 */
@@ -6019,6 +6081,9 @@ async function refreshTeam() {
   try {
     const data = await api(taskApi() + '/team-progress');
     if (ticket !== teamVersion || S.task?.task_id !== taskId) return;
+    const signature = JSON.stringify([taskId,data,document.documentElement.lang]);
+    if (panel.dataset.renderSignature === signature) return;
+    panel.dataset.renderSignature = signature;
     $('#teamInvite').hidden = !data.can_manage;
     $('#teamMessage').textContent = '';
     const list = $('#teamList'); list.textContent = '';
@@ -6122,7 +6187,9 @@ async function loadTasks() {
   const token = AUTH_TOKEN, ticket = ++taskListVersion;
   const d = await api('/api/tasks?include_archived=true');
   if (AUTH_TOKEN !== token || !S.user || ticket !== taskListVersion) return;
+  if (JSON.stringify(S.tasks) === JSON.stringify(d.tasks) && $('#taskSel').options.length === d.tasks.length) return;
   S.tasks = d.tasks;
+  renderHub();
   /* F13/F14：任务列表到货即通知工作流控制台重算「当前任务」卡与第一步引导卡。
      零任务新用户此前永远停在「正在载入范围…」占位——因为空列表不会触发
      task-context-changed 之外的填充点。 */
@@ -6140,6 +6207,8 @@ async function pickTask(taskId, opts = {}) {
   const previousTaskId = S.task?.task_id;
   if (previousTaskId === taskId) { S.task = S.tasks.find(t => t.task_id === taskId) || S.task; $('#taskSel').value = taskId || ''; return true; }
   if (window.WorkflowControls && !await WorkflowControls.guard()) { $('#taskSel').value = previousTaskId || ''; return false; }
+  rememberWorkspacePosition();
+  clearScreenAnimation();
   S.task = S.tasks.find(t => t.task_id === taskId) || null;
   $('#taskSel').value = S.task ? S.task.task_id : '';
   renderScreenerSel();
@@ -6171,7 +6240,7 @@ async function pickTask(taskId, opts = {}) {
     FtPdf.close(); CbPdf.close();
     resetImportUI();
     document.dispatchEvent(new Event('reviewflow:analysis-task-changed'));
-    if (S.page) go(S.page);
+    if (S.page) go(S.page, {scopeChanged:true,guarded:true});
   }
   syncMergeServerLoad();
   return true;
@@ -6183,6 +6252,10 @@ function renderScreenerSel() {
   sel.append(el('option', { value: S.screener, translate:'no', text: S.screener }));
   sel.value = S.screener;
   sel.disabled = true;
+  sel.hidden = runtimeMode === 'desktop';
+  let identity = $('#screenerIdentity');
+  if(!identity){identity=el('span',{id:'screenerIdentity',translate:'no'});sel.after(identity);}
+  identity.textContent=S.screener; identity.hidden=runtimeMode !== 'desktop';
 }
 $('#taskSel').addEventListener('change', async e => {
   if (!await pickTask(e.target.value)) return;
@@ -6198,6 +6271,10 @@ $('#showArchived').addEventListener('change', renderHub);
 $('#logoutBtn').addEventListener('click', () => logout('已退出登录'));
 
 /* ---------- 首页：任务管理 ---------- */
+function formatTaskDate(value) {
+  const date=new Date(value); if(!value || Number.isNaN(date.valueOf())) return '—';
+  return new Intl.DateTimeFormat(document.documentElement.lang || 'zh-CN',{dateStyle:'medium',timeStyle:'short'}).format(date);
+}
 function renderHub() {
   const grid = $('#hubGrid');
   grid.textContent = '';
@@ -6210,7 +6287,7 @@ function renderHub() {
   for (const t of list) {
     const meta = el('div', { class: 'meta' },
       el('span', { text: T('筛选员：{0}', (t.screeners || []).join('、') || '—') }),
-      el('br'), el('span', { text: T('创建 {0} · 上次使用 {1}', t.created_at || '—', t.last_used_at || '—') }),
+      el('br'), el('span', { text: T('创建 {0} · 上次使用 {1}', formatTaskDate(t.created_at), formatTaskDate(t.last_used_at)) }),
       t.archived ? el('span', { class: 'archived-mark', text: ' · 已归档' }) : null
     );
     const card = el('div', { class: 'hubcard' },
@@ -6228,7 +6305,7 @@ function renderHub() {
           go('screen');
         } }),
         el('button', { class: 'btn b-out', text: T('重命名'), onclick: async () => {
-          const name = prompt(T('新的任务名称：'), t.name);
+          const name = await RFConfirm({title:T('重命名'),message:T('新的任务名称：'), input:true,value:t.name,danger:false});
           if (!name || name === t.name) return;
           try { await api(taskPath(t), { method: 'PUT', body: { name } }); await loadTasks(); toast(T('已重命名'), 'inc'); } catch (e) { toast(e.message, 'warn'); }
         } }),
@@ -6248,9 +6325,14 @@ function renderHub() {
 function taskPath(t) { return '/api/tasks/' + encodeURIComponent(t.task_id); }
 
 $('#newTaskBtn').addEventListener('click', async () => {
+  const button = $('#newTaskBtn');
+  if (button.disabled) return;
   if (window.WorkflowControls && !await WorkflowControls.guard()) return;
+  if (button.disabled) return;
   const name = $('#newTaskName').value.trim();
   if (!name) { toast('任务名不能为空', 'warn'); return; }
+  const label = button.textContent;
+  button.disabled = true; button.setAttribute('aria-busy','true'); button.textContent = T('正在创建任务…');
   try {
     const t = await api('/api/tasks', { method: 'POST', body: { name, description: $('#newTaskDesc').value.trim() } });
     $('#newTaskName').value = ''; $('#newTaskDesc').value = '';
@@ -6259,6 +6341,10 @@ $('#newTaskBtn').addEventListener('click', async () => {
     $('#newTaskNext').hidden = false;
     toast(T('已创建任务《{0}》，你已登记为筛选员', t.name), 'inc');
   } catch (e) { toast(e.message, 'warn'); }
+  finally { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = label; }
+});
+$('#newTaskName').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.isComposing && !window.RFModalActive?.()) { event.preventDefault(); $('#newTaskBtn').click(); }
 });
 
 /* ---------- 侧栏进度（真实数据） ---------- */
@@ -6817,12 +6903,22 @@ function nzArticle(a) {
   a.year = (a.year === null || a.year === undefined) ? null : a.year;
   return a;
 }
+async function browseScreen(delta) {
+  if (screenSaving || !await WorkflowControls.guard()) return;
+  const index = Math.min(S.articles.length-1, Math.max(0,S.scrIdx+delta));
+  const article=S.articles[index]; if(!article) return;
+  clearScreenAnimation(); S.scrIdx=index; S.screenEditingKey=article.zotero_key; await renderScreen();
+}
+$('#scrBrowsePrev').addEventListener('click',()=>browseScreen(-1));
+$('#scrBrowseNext').addEventListener('click',()=>browseScreen(1));
 function nextUndecided() {
   for (let i = 0; i < S.articles.length; i++) if (!S.decisions[S.articles[i].zotero_key]) return i;
   return -1;
 }
 function renderScreenHist() {
   const box = $('#scrHist');
+  $('#scrBrowsePrev').disabled = S.scrIdx <= 0;
+  $('#scrBrowseNext').disabled = S.scrIdx < 0 || S.scrIdx >= S.articles.length-1;
   box.textContent = '';
   const history = [], counts = {include:0, exclude:0};
   S.articles.forEach((a, i) => {
@@ -6835,7 +6931,7 @@ function renderScreenHist() {
   const visible = history.length > 5 ? [...history.slice(0, 2), null, ...history.slice(-2)] : history;
   visible.forEach(item => {
     box.append(item
-      ? el('button', {type:'button',class:'chip c-' + DEC_KEY[item.d.decision], title:item.a.title || '', text:'#' + (item.i + 1),onclick:async()=>{if(!await WorkflowControls.guard())return;S.screenEditingKey=item.a.zotero_key;S.scrIdx=item.i;await renderScreen();}})
+      ? el('button', {type:'button',class:'chip c-' + DEC_KEY[item.d.decision], title:item.a.title || '', 'aria-label':(item.a.title || item.a.zotero_key)+' · '+T(DEC_LABEL[item.d.decision]), text:'#' + (item.i + 1)+' '+(item.a.title || item.a.zotero_key).slice(0,24),onclick:async()=>{if(!await WorkflowControls.guard())return;S.screenEditingKey=item.a.zotero_key;S.scrIdx=item.i;await renderScreen();}})
       /* F28（随版缓解）：被省略的「…」不再是不可点的文本——改成按钮，打开
          完整已决列表浮层（只读展示；多步撤销需后端能力，未在本期范围）。 */
       : el('button', {type:'button',class:'chip rf-hist-more',text:'…','aria-haspopup':'dialog','aria-label':T('查看全部已决文献'),title:T('查看全部已决文献'),onclick:()=>window.RFScreenHistory?.open()}));
@@ -6887,6 +6983,8 @@ async function refreshScreeningState() {
   } catch (_) { return; }
   syncScreeningNoticeElement('ftScreeningNotice');
 }
+let screenRenderVersion = 0;
+let screenSaving = null;
 async function renderScreen() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   renderScreenHist();
@@ -6895,10 +6993,11 @@ async function renderScreen() {
   if (!cur || (S.decisions[cur.zotero_key] && S.screenEditingKey !== cur.zotero_key)) S.scrIdx = i = nextUndecided();
   $('#scrPos').textContent = '#' + (i < 0 ? S.articles.length : i + 1) + ' / ' + S.articles.length;
   const body = $('#scrBody');
-  body.textContent = '';
+  const screenLoadTicket = ++screenRenderVersion;
   const screeningNotice = screeningParticipationNotice();
-  if (screeningNotice) body.append(screeningNotice);
   if (i < 0) {
+    body.replaceChildren();
+    if (screeningNotice) body.append(screeningNotice);
     WorkflowControls.markDecisionClean('screen');
     $('#scrCard').classList.remove('ai-active');
     if (!S.articles.length) {
@@ -6921,15 +7020,18 @@ async function renderScreen() {
   }
   let r = S.articles[i];
   const itemKey = r.zotero_key, renderTask = S.taskVersion, renderScreener = S.screener;
-  body.append(el('p', {text:T('Loading current saved work…')}));
+  body.setAttribute('aria-busy','true');
+  body.querySelectorAll('button,input,select').forEach(control=>control.disabled=true);
+  if (!body.children.length) body.append(el('p', {role:'status',text:T('正在载入下一篇…')}));
   try {
     const item = await WorkflowControls.item('screen', itemKey);
-    if (!item || renderTask !== S.taskVersion || renderScreener !== S.screener || S.articles[S.scrIdx]?.zotero_key !== itemKey || !WorkflowControls.renderAllowed()) return;
+    if (!item || screenLoadTicket !== screenRenderVersion || renderTask !== S.taskVersion || renderScreener !== S.screener || S.articles[S.scrIdx]?.zotero_key !== itemKey || !WorkflowControls.renderAllowed()) return;
     r = {...r, ...item.article}; S.articles[i] = r;
     if (item.saved) S.decisions[itemKey] = {...item.saved, reason:item.saved.exclusion_reason || item.saved.reason || ''};
     body.replaceChildren();
     if (screeningNotice) body.append(screeningNotice);
-  } catch (error) { if(renderTask !== S.taskVersion || renderScreener !== S.screener || !WorkflowControls.renderAllowed())return; body.replaceChildren(el('p', {text:error.message}), el('button', {class:'btn b-out',text:T('Retry / refresh'),onclick:()=>renderScreen()})); return; }
+  } catch (error) { if(screenLoadTicket !== screenRenderVersion || renderTask !== S.taskVersion || renderScreener !== S.screener || !WorkflowControls.renderAllowed())return; body.replaceChildren(el('p', {role:'status',text:T(error.message)}), el('button', {class:'btn b-out',text:T('Retry / refresh'),onclick:()=>renderScreen()})); return; }
+  finally { if (screenLoadTicket === screenRenderVersion) body.removeAttribute('aria-busy'); }
   const aiOn = S.al.mode === 'ai' && S.al.available;
   const score = aiOn ? S.al.scores[r.zotero_key] : null;
   $('#scrCard').classList.toggle('ai-active', aiOn);
@@ -6985,16 +7087,17 @@ let screenRequestVersion = 0;
 async function loadScreen() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   const ticket = ++screenRequestVersion, taskId = S.task?.task_id, screener = S.screener;
-  const reopenKey = S.screenEditingKey;
+  clearScreenAnimation();
+  const reopenKey = S.screenEditingKey || workspacePositions.get(workspacePositionKey('screen'))?.key;
   S.screenEditingKey = null;
   S.screenLoadedTask = null;
   const body = $('#scrBody');
   body.textContent = '';
   if (!S.task) { body.append(el('div', { class: 'hint', text: T('请先在首页选择或创建任务。') })); return; }
   body.append(el('div', { class: 'hint', text: T('正在载入文献队列…') }));
-  await refreshScreeningState();
-  if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
   try {
+    await refreshScreeningState();
+    if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
     S.al.mode = WorkflowControls.order() === 'ai' ? 'ai' : 'import';
     const d = await WorkflowControls.queue('screen');
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
@@ -7019,14 +7122,15 @@ async function loadScreen() {
   } catch (e) {
     if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
     body.textContent = '';
-    body.append(el('div', { class: 'hint', text: T('载入失败：') + e.message }));
+    body.append(el('div', { class: 'hint', role:'status', text: T('载入失败：') + T(e.message) }), el('button',{class:'btn b-out',text:T('重试'),onclick:loadScreen}));
   }
 }
 async function screenDecide(decision) {
   if (!window.WorkflowControls?.canSave('screen', decision)) return;
   if (!S.task || S.screenLoadedTask !== S.task.task_id) return;
-  if (window.WorkspaceUndo?.isBusy() || $('#scrCard').classList.contains('out')) return;
+  if (screenSaving || $('#scrBody').getAttribute('aria-busy') === 'true' || window.WorkspaceUndo?.isBusy() || $('#scrCard').classList.contains('out')) return;
   const ticket = screenRequestVersion, taskId = S.task.task_id, screener = S.screener;
+  const focusId = document.activeElement?.closest('#scrCard') ? document.activeElement.id : null;
   const i = S.scrIdx;
   const r = S.articles[i];
   if (!r || (S.decisions[r.zotero_key] && S.screenEditingKey !== r.zotero_key)) { toast('本批文献已全部完成', 'info'); return; }
@@ -7052,6 +7156,11 @@ async function screenDecide(decision) {
   }
   const savedDecision = WorkflowControls.activeItem('screen')?.saved;
   const preserved = Object.fromEntries(['notes','tags'].filter(key => savedDecision && Object.hasOwn(savedDecision,key)).map(key => [key,savedDecision[key]]));
+  const saving = Symbol('screen-save'); screenSaving = saving;
+  const controls = [...$('#scrBody').querySelectorAll('button,input,select')].map(control=>[control,control.disabled]);
+  controls.forEach(([control])=>control.disabled=true);
+  const status = el('p',{id:'scrSaveStatus',role:'status',text:T('保存中…')});
+  $('#scrBody').append(status);
   window.WorkspaceUndo?.beginSave();
   try {
     const d = await api(taskApi() + '/decisions' + scrQ(), {
@@ -7072,27 +7181,37 @@ async function screenDecide(decision) {
     refreshALStatus(); // Lightweight progress read, never awaited by next-item navigation.
     window.RFDailyNudge?.refreshStatus();
     WorkflowControls.markDecisionClean('screen');
+    window.PilotScreening?.decisionSaved();
     WorkflowControls.updateProgress('screen').catch(WorkflowControls.error);
     S.screenEditingKey = null;
     /* 保存反馈（F03）：toast 标明题名片段与理由，并延长停留时间，
        使“保存了哪条”在连续筛选时可被感知。 */
     const name = (r.title || '').slice(0, 22) + '…';
     toast({ include: T('✓ 已纳入《{0}》', name), exclude: T('✗ 已排除《{0}》 · 理由：{1}', name, reason) }[decision], DEC_KEY[decision], 4500);
+    const animation = ++screenAnimationVersion;
     $('#scrCard').classList.add('out');
     setTimeout(async () => {
-      if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
+      try {
+      if (animation !== screenAnimationVersion || ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
       if (S.al.mode === 'ai') await advanceALQueue(); /* 批次内沿用排序，到间隔才重训 */
       else S.scrIdx = nextUndecided();
-      if (ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
+      if (animation !== screenAnimationVersion || ticket !== screenRequestVersion || S.task?.task_id !== taskId || S.screener !== screener || !WorkflowControls.renderAllowed()) return;
       $('#scrCard').classList.remove('out');
-      if (S.al.mode !== 'ai') renderScreen();
+      if (S.al.mode !== 'ai') await renderScreen();
+      if (animation !== screenAnimationVersion || ticket !== screenRequestVersion || S.task?.task_id !== taskId) return;
+      if (focusId && S.page === 'screen' && !window.RFModalActive?.()) document.getElementById(focusId)?.focus({preventScroll:true});
       const s1 = d.progress;
       $('#barScreen').style.width = (s1.total ? s1.screened / s1.total * 100 : 0).toFixed(1) + '%';
       $('#capScreen').textContent = T('初筛进度 {0} / {1} · 纳入 {2}', s1.screened, s1.total, s1.include);
+      } catch (error) { if (animation === screenAnimationVersion) { WorkflowControls.error(error); await renderScreen(); } }
+      finally { if (animation === screenAnimationVersion) $('#scrCard').classList.remove('out'); }
     }, 220);
   } catch (e) {
     if (ticket === screenRequestVersion && S.task?.task_id === taskId && !window.PilotScreening?.intercept(e)) WorkflowControls.error(e);
   } finally {
+    if (screenSaving === saving) screenSaving = null;
+    status.remove();
+    if (ticket === screenRequestVersion && S.task?.task_id === taskId && !$('#scrCard').classList.contains('out')) controls.forEach(([control,disabled])=>{ if(control.isConnected) control.disabled=disabled; });
     window.WorkspaceUndo?.endSave('screen');
   }
 }
@@ -7102,6 +7221,8 @@ let fulltextLoadVersion = 0;
 async function loadFulltext() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   const version = S.taskVersion, screener = S.screener, ticket = ++fulltextLoadVersion;
+  const positionScope = workspacePositionKey('fulltext');
+  const reopenKey = (S.fulltextPositionScope === positionScope && S.fulltextLoadedTask === S.task?.task_id ? S.ftQueue[S.ftIdx]?.zotero_key : null) || workspacePositions.get(positionScope)?.key;
   S.fulltextLoadedTask = null;
   S.ftUndoSaved = null;
   const empty = $('#pdfEmptyText');
@@ -7112,17 +7233,20 @@ async function loadFulltext() {
     const dd = await api(taskApi() + '/stage2/decisions' + scrQ());
     if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion || !WorkflowControls.renderAllowed()) return;
     S.ftQueue = d.queue;
+    S.fulltextPositionScope = positionScope;
     S.ftDec = {};
     for (const r of dd.decisions) S.ftDec[r.zotero_key] = r.decision;
     S.fulltextLoadedTask = S.task.task_id;
     window.WorkspaceUndo?.sync();
-    S.ftIdx = 0;
+    S.ftIdx = Math.max(0,S.ftQueue.findIndex(article=>article.zotero_key===reopenKey));
     await refreshScreeningState();
     if (version !== S.taskVersion || screener !== S.screener || ticket !== fulltextLoadVersion || !WorkflowControls.renderAllowed()) return;
     if (!S.ftQueue.length) {
       $('#ftDocTitle').textContent = T('当前范围没有初筛纳入的文献可供复筛。');
       window.RFRetraction?.mountBadge($('#ftDocTitle'), null);
-      renderFtDoc(); return;
+      await renderFtDoc(); await openFtPdf();
+      $('#annList').replaceChildren(el('button',{class:'btn b-out',text:T('文献初筛'),onclick:()=>go('screen')}),el('button',{class:'btn b-out',text:T('导入文献'),onclick:()=>go('import')}));
+      return;
     }
     await renderFtDoc();
     await openFtPdf();
@@ -7136,6 +7260,7 @@ async function renderFtDoc() {
   const cur = curFt();
   const taskVersion = S.taskVersion, screener = S.screener;
   const reason = $('#ftReason'), customReason = $('#ftCustomReason');
+  $('#ftLoadError')?.remove();
   // Wait for the saved reason to be restored before accepting a new choice.
   for (const control of [$('#ftInc'), $('#ftExc'), reason, customReason]) control.disabled = true;
   if (cur) {
@@ -7145,7 +7270,13 @@ async function renderFtDoc() {
       Object.assign(cur,item.article);
       if(item.saved) {S.ftDec[cur.zotero_key]=item.saved.decision;S.ftUndoSaved={key:cur.zotero_key,decision:item.saved};}
       window.WorkspaceUndo?.restoreReason(reason,customReason,item.saved?.exclusion_reason||item.saved?.reason||'');
-    } catch(error) {WorkflowControls.error(error);return;}
+    } catch(error) {
+      if(taskVersion !== S.taskVersion || screener !== S.screener || curFt()?.zotero_key !== cur.zotero_key) return;
+      $('#ftDocTitle').textContent=cur.title || cur.zotero_key;
+      $('#ftDocLabel').textContent=T('Full-text report {0} / {1}',S.ftIdx+1,S.ftQueue.length);
+      $('#ftDocTitle').after(el('div',{id:'ftLoadError',role:'status',style:'flex-basis:100%;padding:8px 0'},el('p',{text:T('尚未载入本篇，请重试。')+' '+T(error.message)}),el('button',{class:'btn b-out',text:T('重试'),onclick:renderFtDoc})));
+      return;
+    }
   }
   $('#ftDocLabel').textContent = T('Full-text report {0} / {1}', S.ftQueue.length ? S.ftIdx + 1 : 0, S.ftQueue.length);
   $('#ftDocTitle').textContent = cur ? (cur.title || cur.zotero_key) : '—';
@@ -9093,6 +9224,8 @@ let benchLoadVersion = 0;
 async function loadBench() {
   if (window.WorkflowControls && !WorkflowControls.renderAllowed()) return;
   const version = S.taskVersion, screener = S.screener, ticket = ++benchLoadVersion;
+  const positionScope = workspacePositionKey('bench');
+  const reopenKey = (S.codingPositionScope === positionScope ? S.cbQueue[S.cbIdx]?.zotero_key : null) || workspacePositions.get(positionScope)?.key;
   S.codingFormReady = false;
   benchRenderVersion++;
   if (!S.task) { $('#cbForms').textContent = ''; $('#cbForms').append(el('div', { class: 'card hint', text: T('请先选择任务。') })); return; }
@@ -9100,11 +9233,12 @@ async function loadBench() {
     const d = await WorkflowEvidence.queue();
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion || !WorkflowControls.renderAllowed()) return;
     S.cbQueue = d.queue;
+    S.codingPositionScope = positionScope;
     if (WorkflowEvidence.context()==='personal' && d.overall_progress) applyCodingProgress({total:d.overall_progress.total,coded:d.overall_progress.completed,remaining:d.overall_progress.pending});
     if (d.progress) applyCodingProgress(d.progress);  // 复筛纳入后切页即同步进度
     await Promise.all([loadDims()]);
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion || !WorkflowControls.renderAllowed()) return;
-    S.cbIdx = 0;
+    S.cbIdx = Math.max(0,S.cbQueue.findIndex(article=>article.zotero_key===reopenKey));
     await renderBench();
   } catch (e) {
     if (version !== S.taskVersion || screener !== S.screener || ticket !== benchLoadVersion || !WorkflowControls.renderAllowed()) return;
@@ -9130,7 +9264,7 @@ $('#cbSave').addEventListener('click', () => WorkflowEvidence.save());
    · 自定义理由输入框补 Enter=排除提交（有理由时），数字键按普通文本输入；
    · 其余输入控件内仍不触发决策（原有行为不变）。 */
 document.addEventListener('keydown', e => {
-  if (e.isComposing) return;
+  if (e.isComposing || window.RFModalActive?.() || document.querySelector('dialog[open]')) return;
   const tag = (e.target.tagName || '').toLowerCase();
   const id = e.target.id || '';
   const reasonSelect = tag === 'select' && (id === 'excReason' || id === 'ftReason');
@@ -9183,12 +9317,14 @@ function setAuthMode(mode, languageOnly = false) {
   $('#authSwitchPre').textContent = T(isLogin ? '还没有账号？' : '已有账号？');
   $('#authSwitchPre').hidden = isReset;
   $('#authRememberRow').hidden = !isLogin;
+  $('#authRememberNote').hidden = !isLogin;
   $('#authForgot').hidden = !isLogin;
   $('#authCredentials').hidden = $('#authCredentials').disabled = isReset;
   $('#authResetFields').hidden = $('#authResetFields').disabled = !isReset;
   $('#authPass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
   $('#authResetServerHint').hidden = runtimeMode !== 'server';
   $('#authResetDesktopHint').hidden = runtimeMode === 'server';
+  updateResetCommand();
   setPasswordVisibility(languageOnly && $('#authPass').type === 'text');
   if (!languageOnly) {
     clearAuthMessage();
@@ -9197,6 +9333,23 @@ function setAuthMode(mode, languageOnly = false) {
     $('#authResetPass').value = '';
   }
 }
+function updateResetCommand() {
+  const name=$('#authResetUser').value.trim(), platform=navigator.userAgentData?.platform || navigator.platform || '';
+  const posix=value=>"'"+value.replace(/'/g,"'\"'\"'")+"'";
+  let command='', hint='';
+  if(/Mac/i.test(platform)){command='"/Applications/ReviewFlow.app/Contents/MacOS/ReviewFlow" --reset-user '+posix(name);hint='macOS：打开“终端”，运行以下命令';}
+  else if(/Win/i.test(platform)){command="& './runtime/pythonw.exe' './windows_start.py' --reset-user '"+name.replace(/'/g,"''")+"'";hint='Windows：在安装目录运行以下命令';}
+  else {command='./ReviewFlow.AppImage --reset-user '+posix(name);hint='Linux：在 AppImage 所在目录打开终端（请替换文件名）';}
+  $('#authResetSteps').textContent=T(name ? hint : '先填写上方用户名，再复制命令');
+  $('#authResetCommand').textContent=name ? command : '';
+  $('#authResetCopy').disabled=!name;
+  $('#authResetCopyStatus').textContent='';
+}
+$('#authResetUser').addEventListener('input',updateResetCommand);
+$('#authResetCopy').addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText($('#authResetCommand').textContent);$('#authResetCopyStatus').textContent=T('已复制命令');}
+  catch(_){const range=document.createRange();range.selectNodeContents($('#authResetCommand'));const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);$('#authResetCopyStatus').textContent=T('请在终端运行以下命令');}
+});
 authInputIds.forEach(id => $('#' + id).addEventListener('input', clearAuthMessage));
 $('#authRemember').addEventListener('change', e => {
   try { localStorage.setItem(REMEMBER_KEY, String(e.target.checked)); } catch (error) {}
@@ -9348,6 +9501,7 @@ async function loadAnalysis() {
   const progress = () => { if (current()) status.textContent = T('正在载入研究与报告…已等待 {0} 秒。', ((performance.now()-started)/1000).toFixed(1)); };
   progress(); analysisLoadTimer = setInterval(progress, 500);
   const loadTimer = analysisLoadTimer;
+  let failed = false;
   try {
     const [studies, effects, articles] = await Promise.all([
       api(base + '/analysis/studies'), api(base + '/analysis/effects'),
@@ -9391,12 +9545,14 @@ async function loadAnalysis() {
     document.dispatchEvent(new CustomEvent('reviewflow:analysis-loaded', { detail:{ dimensions:dims.dimensions } }));
     $('#anRobList').textContent = JSON.stringify(rob.assessments, null, 2);
     $('#anDtaResult').textContent = JSON.stringify(dta.results, null, 2);
+    // E-13 / E-15：可读来源记录与已存评估编辑入口；保留原始数据披露。
+    window.AnalysisRobEditor?.loaded(rob.assessments, dta.results);
     anOptions('anQualFindingSelect', qualFindings.findings.filter(f => f.credibility !== 'unsupported')
       .map(f => [String(f.id), f.study_id + ': ' + f.finding.slice(0, 90)]));
     anOptions('anQualCategorySelect', qualCategories.categories.map(c => [String(c.id), c.label]));
     $('#anQualResult').textContent = JSON.stringify({ findings:qualFindings.findings,
       categories:qualCategories.categories, syntheses:qualSyntheses.syntheses }, null, 2);
-  } catch (e) { if (current()) toast(e.message, 'warn'); }
+  } catch (e) { if (current()) { failed=true;status.replaceChildren(el('span',{role:'status',text:T('载入失败：')+T(e.message)}),el('button',{class:'btn b-out',text:T('重试'),onclick:loadAnalysis})); } }
   finally {
     /* 高2（F02 “查看原始信息”点不开的根因之一）：交互性恢复不得绑定在
        current() 上。任务/筛选员在加载中途变化时 current() 为假，旧代码会
@@ -9406,7 +9562,7 @@ async function loadAnalysis() {
        本地引用清理，避免误杀新一代加载的进度计时。 */
     clearInterval(loadTimer);
     if (ticket === analysisLoadGeneration) {
-      status.hidden = true; status.textContent = '';
+      if(!failed){status.hidden = true; status.textContent = '';}
       analysisPage.inert = false; analysisPage.removeAttribute('aria-busy');
     }
   }
@@ -9834,24 +9990,8 @@ $('#anExport').addEventListener('click', () => {
   const link = el('a', { href:url, download:'review_effects.csv' }); document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-$('#anRobSave').addEventListener('click', async () => {
-  try {
-    if (!anValue('anRobFramework')) throw new Error('Choose a risk-of-bias framework.');
-    if (!anValue('anRobOverall')) throw new Error('Choose an overall risk-of-bias judgment.');
-    const domains = {};
-    $$('#anRobDomains [data-domain]').forEach(row => {
-      const judgement = row.querySelector('select').value;
-      if (!judgement) throw new Error(`Choose a judgment for ${row.dataset.domain}.`);
-      domains[row.dataset.domain] = { judgement, rationale:row.querySelector('input').value.trim() };
-    });
-    await api(taskApi() + '/analysis/risk-of-bias', { method:'PUT', body:{
-      study_id:anValue('anRobStudy'), comparison:anValue('anRobComparison'), outcome:anValue('anRobOutcome'), timepoint:anValue('anRobTimepoint'),
-      framework:anValue('anRobFramework'), source_key:anValue('anRobSource'),
-      source_locator:anValue('anRobSourceLocator'),
-      overall:anValue('anRobOverall'), overall_rationale:anValue('anRobOverallWhy'), domains } });
-    await loadAnalysis();
-  } catch (e) { toast(e.message, 'warn'); }
-});
+// E-15 / E-22：由可回填且保护范围和草稿的编辑器执行保存。
+$('#anRobSave').addEventListener('click', () => window.AnalysisRobEditor?.save());
 $('#anDtaSave').addEventListener('click', () => anButtonWithProgress($('#anDtaSave'), async () => {
   const taskId = S.task?.task_id, taskName = S.task?.name;
   const fields = ['anDtaStudy','anDtaTest','anDtaCondition','anDtaThreshold','anDtaReference',
@@ -9910,7 +10050,13 @@ $('#anQualSaveSynthesis').addEventListener('click', () => anSaveQualitative('anQ
   return {finding:anValue('anQualSynthesis'),category_ids};
 },'Synthesis saved.'));
 async function enterApp() {
-  S.user = await api('/api/auth/me');
+  const loginToken = AUTH_TOKEN;
+  const user = await api('/api/auth/me');
+  $('#authErr').textContent = T('正在载入工作区…');
+  await window.RFAppModules.ready();
+  if (AUTH_TOKEN !== loginToken) return;
+  S.user = user;
+  clearAuthMessage();
   try {
     const runtime = await api('/api/runtime');
     runtimeMode = runtime.mode; restartSupported = runtime.restart_supported === true;
@@ -9922,7 +10068,13 @@ async function enterApp() {
   $('#appShell').style.display = '';
   $('#appMain').style.display = '';
   $('.footer').style.display = '';
-  await loadTasks();
+  const taskSelector = $('#taskSel');
+  taskSelector.replaceChildren(el('option',{text:T('正在载入任务…')})); taskSelector.disabled = true;
+  try { await loadTasks(); }
+  catch (error) {
+    $('#hubGrid').replaceChildren(el('p',{role:'status',text:T('载入失败：')+T(error.message)}),el('button',{class:'btn b-out',text:T('重试'),onclick:()=>enterApp().catch(e=>toast(e.message,'warn'))}));
+    throw error;
+  } finally { taskSelector.disabled = false; }
   connectEvents();
   await refreshProgress();
   await refreshTeam();
@@ -10018,7 +10170,11 @@ restartButton.addEventListener('click', async () => {
   AUTH_TOKEN = restoreToken();
   prInitChain();                                       /* PRISMA 推导链：字段打 ✨/✏️ 标签并启动联动 */
   if (AUTH_TOKEN) {
-    try { await enterApp(); return; } catch (e) { /* 令牌失效：api() 已回登录屏 */ }
+    const form = $('#authForm'), submit = $('#submitText'), label = submit.textContent;
+    form.inert = true; form.setAttribute('aria-busy','true'); submit.textContent = T('正在恢复登录…');
+    $('#authErr').textContent = T('正在恢复登录…');
+    try { await enterApp(); return; } catch (e) { if (e.status !== 401) $('#authErr').textContent = T(e.message); }
+    finally { form.inert = false; form.removeAttribute('aria-busy'); submit.textContent = label; if ($('#authErr').textContent === T('正在恢复登录…')) clearAuthMessage(); }
   }
   /* r8 W5 第 3 轮评审：离线登录说明改由 offline_banner.js 统一创建/清理
      （内联 static 定位会被 .login-bg 盖住，且 navigator.onLine 在后端挂掉时
@@ -10031,143 +10187,146 @@ restartButton.addEventListener('click', async () => {
 $('#auTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused());
 </script>
-<script src="./import_guide_locale.js?v=20261005-guide4"></script>
-<script src="./title_duplicate_review.js?v=20261028-r7-frontsec1"></script>
-<script src="./analysis_runner.js?v=20260930-p0p1"></script>
-<script src="./analysis_forest.js?v=20261030-r8fl4-2"></script>
-<script src="./analysis_dose_nonlinear.js?v=20261002-language-wrap-final1"></script><script src="./analysis_ipd_survival.js?v=20260929-ui3"></script>
-<script src="./analysis_ipd_interaction.js?v=20260929-ui3"></script>
-<script src="./analysis_effect_formats.js?v=20261002-release1"></script>
-<script src="./analysis_standardized_change.js?v=20260929-ui3"></script>
-<script src="./analysis_paired_binary_entry.js?v=20261002-release1"></script>
-<script src="./analysis_summary_stats.js?v=20260929-ui3"></script>
-<script src="./analysis_dose_arms.js?v=20260929-ui3"></script>
-<script src="./analysis_survival_median.js?v=20261002-language-wrap-final1"></script>
-<script src="./analysis_subgroup_random.js?v=20261030-r8fl5"></script>
-<script src="./analysis_measure_registry.js?v=20260929-ui3"></script>
-<script src="./analysis_cluster_trial.js?v=20260929-ui3"></script>
-<script src="./analysis_zero_cell.js?v=20260929-ui3"></script>
-<script src="./analysis_publication_bias.js?v=20260929-ui3"></script>
-<script src="./analysis_rosenberg.js?v=20260929-ui3"></script>
-<script src="./analysis_meta_regression.js?v=20260929-ui3"></script>
-<script src="./analysis_binary_pooling.js?v=20260929-ui3"></script>
-<script src="./analysis_trim_fill.js?v=20260929-ui3"></script>
-<script src="./analysis_pet_peese.js?v=20260929-ui3"></script>
-<script src="./analysis_influence.js?v=2.1.4-r4"></script>
-<script src="./analysis_bayesian.js?v=20260929-ui3"></script>
-<script src="./analysis_bayesian_robust.js?v=20260929-ui3"></script>
-<script src="./analysis_tau_profile.js?v=2.1.4-r4"></script>
-<script src="./analysis_audit_download.js?v=20261030-r8fl4"></script>
-<script src="./analysis_network_gls.js?v=20260929-ui3"></script>
-<script src="./analysis_network_inconsistency.js?v=20260929-ui3"></script>
-<script src="./analysis_network_pscores.js?v=20261030-r8fl5"></script>
-<script src="./analysis_network_ranks.js?v=20261030-r8fl5"></script>
-<script src="./analysis_network_node_split.js?v=20260929-ui3"></script>
-<script src="./analysis_network_arms.js?v=20260929-ui3"></script>
-<script src="./analysis_result_variants.js?v=20260929-ui3"></script>
-<script src="./analysis_single_group_counts.js?v=20260929-ui3"></script>
-<script src="./analysis_peters.js?v=20260929-ui3"></script>
-<script src="./analysis_study_intervals.js?v=20260929-ui3"></script>
-<script src="./analysis_paired_interval.js?v=20260929-ui3"></script>
-<script src="./analysis_nnt.js?v=20260929-ui3"></script>
-<script src="./analysis_report_export.js?v=20260929-ui3"></script>
-<script src="./analysis_estimator_sensitivity.js?v=2.1.4-r4"></script>
-<script src="./analysis_sensitivity_view.js?v=2.1.4-r4"></script>
-<script src="./analysis_entry_guidance.js?v=20261002-language-wrap-final1"></script>
-<script src="./analysis_multi_arm.js?v=20260929-ui3"></script>
-<script src="./analysis_dependent_synthesis.js?v=20261031-r81fl4-polish1"></script>
-<script src="./analysis_multilevel.js?v=20260929-ui3"></script>
-<script src="./analysis_dta_threshold.js?v=20260929-ui3"></script>
-<script src="./analysis_dta_synthesis.js?v=20261030-r8fl4"></script>
-<script src="./analysis_dta_likelihood_ratios.js?v=20260929-ui3"></script>
-<script src="./analysis_dta_exploratory_lr.js?v=20261030-r8fl4"></script>
-<script src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
-<script src="./analysis_navigation.js?v=20261101-r10u4"></script>
-<script src="./workspace_shell.js?v=20261101-r10u4"></script>
-<script src="./sidebar_sheet.js?v=20261101-r10u4"></script>
-<script src="./analysis_interface.js?v=20260929-ui3"></script>
-<script src="./workflow_locale.js?v=20261110-215-final"></script>
-<script src="./research_trace.js?v=20261101-r10u6-trace1"></script>
-<script src="./import_review_locale.js?v=20261030-r8fl4"></script>
-<script src="./import_review_model.js?v=20261028-r7-frontsec1"></script>
-<script src="./import_guide.js?v=2.1.2.2"></script>
-<script src="./import_history.js?v=20261028-r7-frontsec1"></script>
-<script src="./local_storage.js?v=20261003-storage3"></script>
-<script src="./connection_repair.js?v=20261003-repair1"></script>
-<script src="./update_check.js?v=20261005-update1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_guide_locale.js?v=20261005-guide4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./title_duplicate_review.js?v=20261028-r7-frontsec1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_runner.js?v=20260930-p0p1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_forest.js?v=20261030-r8fl4-2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dose_nonlinear.js?v=20261002-language-wrap-final1"></script><script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_ipd_survival.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_ipd_interaction.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_effect_formats.js?v=20261002-release1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_standardized_change.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_paired_binary_entry.js?v=20261002-release1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_summary_stats.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dose_arms.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_survival_median.js?v=20261002-language-wrap-final1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_subgroup_random.js?v=20261030-r8fl5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_measure_registry.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_cluster_trial.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_zero_cell.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_publication_bias.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_rosenberg.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_meta_regression.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_binary_pooling.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_trim_fill.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_pet_peese.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_influence.js?v=2.1.4-r4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_bayesian.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_bayesian_robust.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_tau_profile.js?v=2.1.4-r4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_audit_download.js?v=20261030-r8fl4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_network_gls.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_network_inconsistency.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_network_pscores.js?v=20261030-r8fl5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_network_ranks.js?v=20261030-r8fl5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_network_node_split.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_network_arms.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_result_variants.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_single_group_counts.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_peters.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_study_intervals.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_paired_interval.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_nnt.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_report_export.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_estimator_sensitivity.js?v=2.1.4-r4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_sensitivity_view.js?v=2.1.4-r4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_entry_guidance.js?v=20261002-language-wrap-final1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_multi_arm.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dependent_synthesis.js?v=20261031-r81fl4-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_multilevel.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dta_threshold.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dta_synthesis.js?v=20261030-r8fl4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dta_likelihood_ratios.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_dta_exploratory_lr.js?v=20261030-r8fl4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_rob_sensitivity.js?v=20260929-ui3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_navigation.js?v=20261101-r10u4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workspace_shell.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./sidebar_sheet.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_interface.js?v=20260929-ui3"></script>
+<script src="./workflow_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./research_trace.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_locale.js?v=20261030-r8fl4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_model.js?v=20261028-r7-frontsec1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_guide.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_history.js?v=20261028-r7-frontsec1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./local_storage.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./connection_repair.js?v=20261003-repair1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./update_check.js?v=20261112-ui-polish"></script>
 <!-- AL 模型升级前端三件套（规格书 2026-09-30 §7；追加式接入，各自独立容错） -->
-<script src="./al_profile_selector.js?v=20261110-215"></script>
-<script src="./al_stop_panel.js?v=20261029-lastfix"></script>
-<script src="./al_blind_mode.js?v=20261012-home-wording1"></script>
-<script src="./screen_reader.js?v=20261110-215"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./al_profile_selector.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./al_stop_panel.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./al_blind_mode.js?v=20261012-home-wording1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./screen_reader.js?v=20261112-ui-polish"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §1.5/§2.5/§3.5；追加式接入，各自独立容错） -->
-<script src="./screening_tools_locale.js?v=20261110-215-polish1"></script>
-<script src="./criteria_panel.js?v=20261110-215-polish1"></script>
-<script src="./daily_nudge.js?v=20261110-215-polish1"></script>
-<script src="./keyword_highlight.js?v=20261110-215-polish1"></script>
-<script src="./protocol_designer.js?v=20261030-r8fl5-20261110-215"></script>
-<script src="./extraction_workbench.js?v=20261029-lastfix"></script>
-<script src="./workspace_layouts.js?v=20261013-disclosure5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./screening_tools_locale.js?v=20261110-215-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./criteria_panel.js?v=20261110-215-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./daily_nudge.js?v=20261110-215-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./keyword_highlight.js?v=20261110-215-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./protocol_designer.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./extraction_workbench.js?v=20261029-lastfix"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workspace_layouts.js?v=20261013-disclosure5"></script>
 <link rel="stylesheet" href="./workflow_controls.css?v=2.1.3">
-<script src="./workflow_controls.js?v=20261107-r15-20261110-215"></script>
-<script src="./arbitration_reader.js?v=20261110-arbitration-polish1"></script>
-<script src="./pilot_screening_locale.js?v=20261110-215-polish2"></script>
-<script src="./pilot_screening.js?v=20261110-215-polish1"></script>
-<script src="./workflow_evidence.js?v=20261110-215"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workflow_controls.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./arbitration_reader.js?v=20261110-arbitration-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./pilot_screening_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./pilot_screening.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workflow_evidence.js?v=20261112-ui-polish"></script>
 <link rel="stylesheet" href="./import_review.css?v=2.1.2.2">
-<script src="./import_export_locale.js?v=20261101-r10u2"></script>
-<script src="./import_export_help_locale.js?v=20261028-r7-frontsec1"></script>
-<script src="./import_export_workspace.js?v=20261101-r10u2"></script>
-<script src="./import_review_loading.js?v=2.1.4-r4"></script>
-<script src="./import_review_refined_locale.js?v=20261112-r67"></script>
-<script src="./import_review_updates.js?v=20261110-215"></script>
-<script src="./import_review_quality_locale.js?v=20261110-215-polish1"></script>
-<script src="./ai_providers_locale.js?v=20261112-aiux"></script>
-<script src="./import_review_aiux_locale.js?v=20261112-aiux"></script>
-<script src="./ai_providers_catalog.js?v=20261112-aiux"></script>
-<script src="./import_review_ai.js?v=20261112-aiux"></script>
-<script src="./unified_import_workspace.js?v=20261112-r67"></script>
-<script src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
-<script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
-<script src="./workspace_undo.js?v=20261101-r10u1b"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_export_locale.js?v=20261101-r10u2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_export_help_locale.js?v=20261028-r7-frontsec1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_export_workspace.js?v=20261101-r10u2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_loading.js?v=2.1.4-r4"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_refined_locale.js?v=20261112-r67"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_updates.js?v=20261110-215"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_quality_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./ai_providers_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_aiux_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./ai_providers_catalog.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./import_review_ai.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./unified_import_workspace.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workspace_undo.js?v=20261112-ui-polish"></script>
 <!-- review67 L-38：注册风险偏倚契约错误。 -->
-<script src="./analysis_rob_locale.js?v=20261112-r67"></script>
-<script src="./analysis_grade.js?v=20261112-r67"></script>
-<script src="./assessment_tables_locale.js?v=20261110-215-polish1"></script>
-<script src="./appraisal_workspace.js?v=20261110-215-polish1"></script>
-<script src="./table_wizards.js?v=20261110-215-final-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_rob_locale.js?v=20261112-r67"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_rob_editor_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_rob_editor.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./assessment_tables_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_grade.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./appraisal_workspace.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./table_wizards_polish_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./table_wizards.js?v=20261112-ui-polish"></script>
 <!-- 衍生产品前端三件套（规格书 2026-09-30 §4.4/§5.5/§6.4；追加式接入，各自独立容错） -->
-<script src="./analysis_manuscript.js?v=20261002-release1"></script>
-<script src="./search_strategy_locale.js?v=20261110-215-polish1"></script>
-<script src="./search_strategy.js?v=20261110-215-polish1"></script>
-<script src="./living_review.js?v=20261110-215-polish1"></script>
-<script src="./evidence_mapper.js?v=20261030-r8fl5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./analysis_manuscript.js?v=20261002-release1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./search_strategy_locale.js?v=20261110-215-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./search_strategy.js?v=20261110-215-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./living_review.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./evidence_mapper.js?v=20261030-r8fl5"></script>
 <link rel="stylesheet" href="./mobile_concept.css?v=20261111-auth-atlas">
-<script src="./mobile_concept_locale.js?v=20261101-r10u3"></script>
-<script src="./mobile_concept.js?v=20261111-auth-atlas"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./mobile_concept_locale.js?v=20261101-r10u3"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./mobile_concept.js?v=20261111-auth-atlas"></script>
 <link rel="stylesheet" href="./mobile_motion.css?v=20261013-motion13">
 <link rel="stylesheet" href="./disclosure_controls.css?v=20261013-svg2-polish1">
-<script src="./mobile_motion.js?v=2.1.2.2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./mobile_motion.js?v=2.1.2.2"></script>
 <link rel="stylesheet" href="import_export_workspace.css?v=2.1.2.2">
-<link rel="stylesheet" href="import_review_refined.css?v=20261110-215-polish2">
-<script src="./report_evidence_locale.js?v=20261112-r67"></script>
-<script src="./report_evidence.js?v=20261112-r67"></script>
+<link rel="stylesheet" href="import_review_refined.css?v=20261112-ui-polish">
+<script type="application/x-reviewflow-workspace" data-rf-app src="./report_evidence_locale.js?v=20261112-ui-polish"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./report_evidence.js?v=20261112-ui-polish"></script>
 <!-- AI 抽取建议（BYOK）：建议卡+逐条确认流+设置页（任务 B7；追加式接入，自带十语言词条，独立容错） -->
-<script src="./ai_suggest.js?v=20261112-aiux"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./ai_suggest.js?v=20261112-ui-polish"></script>
 <!-- W1 Zotero 直连（2.1.4-r8）：导入页「从本机 Zotero 导入」入口+集合选择对话框（回环 127.0.0.1:23119，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./zotero_import.js?v=20261030-r8-zotero1-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./zotero_import.js?v=20261030-r8-zotero1-polish1"></script>
 <!-- R11 ERIC 教育检索（2.1.4-r11）：导入页「从 ERIC 检索文献」入口+命中预览+检索并导入（api.ies.ed.gov 官方 API，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./eric_search.js?v=20261102-r11eric1-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./eric_search.js?v=20261102-r11eric1-polish1"></script>
 <!-- W2 PDF 自动获取（2.1.4-r8）：初筛文献卡「获取全文」+任务设置卡开关/批量入口（DOI→Unpaywall；联网默认关、仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./pdf_fetch.js?v=20261112-r67"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./pdf_fetch.js?v=20261112-ui-polish"></script>
 <!-- W4 预置分类器（2.1.4-r8）：初筛卡研究设计徽标+排除理由预填不代存（纯本地规则端点，无联网；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./study_design_badge.js?v=20261110-215"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./study_design_badge.js?v=20261110-215"></script>
 <!-- W5 PWA 离线壳（2.1.4-r8）：离线只读快照提示条模块（自包含 IIFE＋十语言词条，textContent 渲染）＋ Service Worker 注册（相对路径；本组独占文档最末锚点） -->
-<script src="./task_dialog.js?v=2.1.5-polish1"></script>
-<script src="./task_transfer.js?v=2.1.5-polish1"></script>
-<script src="./task_delete.js?v=2.1.5-polish1"></script>
-<script src="./retraction_watch.js?v=2.1.5-polish1"></script>
-<script src="./topic_cluster.js?v=2.1.5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./task_dialog.js?v=2.1.5-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./task_transfer.js?v=2.1.5-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./task_delete.js?v=2.1.5-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./retraction_watch.js?v=2.1.5-polish1"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./topic_cluster.js?v=2.1.5"></script>
 <script src="./offline_banner.js?v=20261030-r8-W5PWA1"></script>
 <script>
 'use strict';

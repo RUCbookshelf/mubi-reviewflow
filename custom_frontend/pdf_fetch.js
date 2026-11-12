@@ -231,9 +231,10 @@
           /* 前端 ApiError 只透传 code/reasons/fields，不携带 detail.existing，
              因此这里用不带页数的确认文案（后端仍回传 existing 供其它客户端用）。 */
           if (pending.view.status.isConnected === false) return;
-          const confirmed = typeof confirm === 'function'
-            ? confirm(T('该文献已有全文 PDF。继续将覆盖既有文件，是否继续？'))
+          const confirmed = typeof window.RFConfirm === 'function'
+            ? await window.RFConfirm(T('该文献已有全文 PDF。继续将覆盖既有文件，是否继续？'))
             : false;
+          if (pending.view.status.isConnected === false) return;
           if (!confirmed) { pending.view.status.textContent = ''; return; }
           const overwritePath = path + (path.includes('?') ? '&' : '?') + 'overwrite=1';
           result = await api(overwritePath, { method: 'POST' });

@@ -157,7 +157,19 @@ const range=node('section',null,{class:'trace-panel trace-range'});range.append(
  }
  function technicalView(value){const wrap=node('div'),pre=dataNode('pre',JSON.stringify(value,null,2));pre.hidden=true;const toggle=button('查看完整记录',()=>{pre.hidden=!pre.hidden;toggle.setAttribute('aria-expanded',String(!pre.hidden));},'btn b-out');toggle.setAttribute('aria-expanded','false');wrap.append(toggle,pre);return wrap;}
  async function detail(event){const requested=actorScope(),view=state.ticket,ticket=++detailTicket;const originFocus=document.activeElement?.closest('.wf-trace-menu')?.querySelector('button')||document.activeElement;try{event=await authoritativeEvent(event);}catch(e){if(requested===actorScope()&&view===state.ticket&&ticket===detailTicket)error(e);return;}if(requested!==actorScope()||view!==state.ticket||ticket!==detailTicket)return;document.querySelector('.trace-drawer')?.remove();const drawer=node('aside',null,{class:'trace-drawer',role:'dialog','aria-label':T('变更详情'),tabindex:'-1'}),header=node('header');const close=()=>{detailTicket++;drawer.remove();originFocus?.focus();};header.append(node('h2','变更详情'),button('关闭',close));drawer.append(header,node('p',time(event.recorded_at)),dataNode('h3',event.subject_title||event.subject_id||T(actionLabel(event.action))));for(const [label,value]of [['修改前',event.before],['修改后',event.after]])drawer.append(node('h3',label),dataNode('p',readableValue(value),{class:'trace-change-value'}));if(event.field)drawer.append(node('h3','字段定义'),dataNode('p',event.field.label||event.field.name||event.field.field_id||'—'));drawer.append(eventMenu(event),technicalView(event));drawer.addEventListener('keydown',e=>{if(e.key==='Escape')close();});document.body.append(drawer);drawer.focus();}
- async function clearHistory(){if(state.clearing)return;if(!state.pendingClear&&!window.confirm(T('确认清除当前任务的个人轨迹？')))return;state.clearing=true;state.pendingClear=state.pendingClear||{confirm:true,expected_version:state.settings?.version,operation_id:crypto.randomUUID()};try{state.clearResult=await api(base()+'/history',{method:'DELETE',body:state.pendingClear});if(state.clearResult.status!=='partial')state.pendingClear=null;await load();}catch(e){error(e);}finally{state.clearing=false;}}
+ async function clearHistory(){
+  if(state.clearing)return;
+  const requested=actorScope(),view=state.ticket;state.clearing=true;
+  try{
+   if(!state.pendingClear&&!await RFConfirm(T('确认清除当前任务的个人轨迹？')))return;
+   if(requested!==actorScope()||view!==state.ticket)return;
+   state.pendingClear=state.pendingClear||{confirm:true,expected_version:state.settings?.version,operation_id:crypto.randomUUID()};
+   const result=await api(base()+'/history',{method:'DELETE',body:state.pendingClear});
+   if(requested!==actorScope())return;
+   state.clearResult=result;
+   if(state.clearResult.status!=='partial')state.pendingClear=null;await load();
+  }catch(e){if(requested===actorScope())error(e);}finally{if(requested===actorScope())state.clearing=false;}
+ }
  function exportPreviewContent(preview, host) {
   host.replaceChildren(node('h3','导出预览'));
   const summary=node('dl',null,{class:'trace-export-summary'});

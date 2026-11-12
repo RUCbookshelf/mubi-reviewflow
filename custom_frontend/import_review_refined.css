@@ -128,3 +128,14 @@
 #wf-import-review .bulk-list label{display:grid;gap:4px;margin:4px 0}
 #wf-import-review .rf-import-ai-pick{background:var(--primary-light);border-inline-start:2px solid var(--primary)}
 #wf-import-review .rf-import-ai-pick small{display:block;width:fit-content}
+
+/* Verdict text remains explicit; these colors are an additional scanning cue. */
+#wf-import-review .rf-import-ai-badge{white-space:normal;line-height:1.4;border:1px solid transparent}
+#wf-import-review .rf-import-ai-badge.green{color:#14613d;background:#def4e7;border-color:#9ad4af}
+#wf-import-review .rf-import-ai-badge.amber{color:#805100;background:#fff0c7;border-color:#e3c06a}
+#wf-import-review .rf-import-ai-badge.gray,#wf-import-review .rf-import-ai-badge.neutral{color:var(--muted);background:var(--surface);border-color:var(--border)}
+[data-theme="dark"] #wf-import-review .rf-import-ai-badge.green{color:#a9e7bf;background:#193d2c;border-color:#3a7a50}
+[data-theme="dark"] #wf-import-review .rf-import-ai-badge.amber{color:#f6d88d;background:#43361d;border-color:#8b7139}
+#wf-import-review .rf-import-ai-outside label{display:flex;align-items:flex-start;gap:8px;padding:6px 0}
+#wf-import-review .rf-import-ai-outside{border-top:1px solid var(--border);margin-top:12px}
+#wf-import-review .rf-import-key-form [role="status"]{min-height:1.5em;overflow-wrap:anywhere}

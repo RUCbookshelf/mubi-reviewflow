@@ -109,6 +109,7 @@
 
     /* ---- 状态 ---- */
     let version = 0;                 // 异步票据：任务切换纪元（跨任务作废所有在途响应）
+    let lastSofData = null;
     let sofTicket = 0;               // SoF 导出票据（面板级动作，仅相互抑制）
     let restoredTask = null;
     let assessmentReadReady = false;
@@ -116,6 +117,25 @@
     const rowState = new Map();      // combo key -> 状态（跨重渲染保留）
     function comboKey(c) { return (c.comparison || '') + '\u0001' + (c.outcome || '') + '\u0001' + (c.timepoint || ''); }
 
+    // 仅持久化该账号/任务的研究评估草稿；不存 DOM、凭据或其它账号状态。
+    const draftScope = () => JSON.stringify([S.task?.task_id, S.user?.user_id || S.user?.username, S.screener]);
+    const draftKey = combo => 'rf_grade_draft_v1:' + draftScope() + ':' + comboKey(combo);
+    const draftData = st => ({combo:st.combo,initial_design:st.initial_design,outcome_type:st.outcome_type,downgrades:st.downgrades,upgrades:st.upgrades,suggested:st.suggested,signals:st.signals,synthesis:st.synthesis,overridden:st.overridden,note:st.note,legacyNote:st.legacyNote||'',dirty:!!st.dirty});
+    function persistDraft(st) {
+      try { if(st.dirty)localStorage.setItem(draftKey(st.combo),JSON.stringify(draftData(st)));else localStorage.removeItem(draftKey(st.combo)); }
+      catch (_) { /* 存储不可用时仍由内存和导航守卫保护。 */ }
+    }
+    function markEdited(st) { st.dirty=true;st.revision=(st.revision||0)+1;persistDraft(st); }
+    function discardDrafts() {
+      for(const st of rowState.values()){st.dirty=false;persistDraft(st);}
+      rowState.clear();restoredTask=null;assessmentReadReady=false;renderRows();return restoreAssessments();
+    }
+    window.WorkflowControls?.registerDraft?.('grade',{
+      dirty:()=>[...rowState.values()].some(st=>st.dirty),
+      saving:()=>[...rowState.values()].some(st=>st.pending),
+      discard:discardDrafts,
+      save:async()=>{for(const st of rowState.values())if(st.dirty&&(!st.ui||!await runSave(st,st.ui.rowEl,st.ui)))return false;return true;}
+    });
     function stateFor(combo) {
       const key = comboKey(combo);
       let st = rowState.get(key);
@@ -127,9 +147,13 @@
           upgrades: { large_effect: 'none', dose_response: 'none', plausible_confounding: 'none' },
           suggested: null, signals: {}, synthesis: null,
           overridden: {},   // factor -> {auto, user}
-          note: '',
+          note: '', legacyNote: '', revision: 0, pending: 0,
           autoTicket: 0, saveTicket: 0,   // R3-04：行 × 动作票据（跨行动作互不失效；同行同动作后发抑制先发）
         };
+        try {
+          const saved=JSON.parse(localStorage.getItem(draftKey(combo))||'null');
+          if(saved?.dirty&&saved.downgrades&&saved.upgrades&&typeof saved.note==='string')Object.assign(st,saved,{combo});
+        } catch (_) { /* 损坏的缓存不影响服务端读取。 */ }
         rowState.set(key, st);
       }
       return st;
@@ -139,13 +163,21 @@
     const heading = el('h3', { text: T('GRADE 评估') });
     const hint = el('p', { class: 'hint', style: 'margin:2px 0 8px', text: T('按 GRADE 框架评估每个结局的证据质量（高→中→低→极低）。[自动建议] 从已保存的合成/RoB/发表偏倚结果推导降级因子；间接性无法自动推导，须人工判断。修改预填值会标记「已覆盖」并记入备注。') });
     const sofBtn = el('button', { class: 'btn b-out', type: 'button', text: T('导出 SoF 表') });
+    const sourceHint = el('p',{class:'hint',text:T('polish.grade_source')});
+    const wizardLink = el('button',{type:'button',class:'btn b-out',text:T('polish.open_sof_wizard')});
+    wizardLink.addEventListener('click',()=>window.RFOpenSoFWizard?.());
     const sofBox = el('div', { class: 'rf-sof', hidden: '' });
     const rowsBox = el('div', { id: 'rfGradeRows' });
     const emptyLine = el('p', { class: 'hint', text: T('尚无已保存的效应量——先在「效应量录入」保存结果，再回到这里做 GRADE 评估。') });
     const panel = el('section', { class: 'card rf-grade', id: 'rfGradePanel', 'aria-label': T('GRADE 评估') },
-      heading, hint, el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, sofBtn),
+      heading, hint, sourceHint, el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, sofBtn, wizardLink),
       sofBox, emptyLine, rowsBox);
     synthesisCard.after(panel);
+    window.RFOpenGrade = async () => {
+      if(window.RFWorkspaceShell){await RFWorkspaceShell.navigate({page:'analysis',group:'report',tool:'grade'});if(S.page!=='analysis'||window.RFAnalysisWorkspace?.currentRoute()?.tool!=='grade')return false;}
+      else if(await go('analysis')===false||S.page!=='analysis')return false;
+      panel.scrollIntoView({block:'start'});return true;
+    };
 
     /* ---- 从 anEffects 取结局组合（去重，稳定排序） ---- */
     function outcomeCombos() {
@@ -177,8 +209,7 @@
     function buildRow(rec) {
       const st = stateFor(rec.combo);
       const rowEl = el('div', { class: 'rf-grade-row', 'data-combo': comboKey(rec.combo) });
-      rowEl.addEventListener('input', () => { st.dirty = true; });
-      rowEl.addEventListener('change', () => { st.dirty = true; });
+
 
       /* 头部：结局 + 时间点 + 比较 + 指标 + 已覆盖标记 */
       const overrideChip = el('span', { class: 'chip-ovr', text: T('已覆盖') });
@@ -229,6 +260,7 @@
 
       const statusLine = el('p', { class: 'hint', style: 'margin:6px 0 0', role: 'status' });
       const rationaleBox = el('div', { class: 'rf-grade-rationale hint', hidden: '' });
+      const overrideBox = el('p', {class:'hint rf-grade-overrides',hidden:''});
       if (assessmentReadReady && window.AppraisalWorkspace) {
         const appraisalBtn = el('button', { class: 'btn b-out', type: 'button', hidden: '',
           text: T('appraisal.grade_input') });
@@ -244,14 +276,17 @@
             st.suggested = { ...st.suggested, rob: level };
             st.signals = { ...st.signals, rob: signal };
             delete st.overridden.rob;
-            st.dirty = true;
+            markEdited(st);
             syncFromState();
             statusLine.textContent = T('appraisal.grade_hint');
           });
         });
       }
 
-      rowEl.append(head, ctl, statusLine, rationaleBox);
+      rowEl.append(head, ctl);
+      // 旧版本的混合备注原样保留在只读区；新增人工备注独立编辑，不反复拼接机器摘要。
+      if(st.legacyNote)rowEl.append(el('details',{},el('summary',{text:T('polish.grade_legacy_note')}),el('p',{translate:'no',text:st.legacyNote})));
+      rowEl.append(overrideBox,statusLine, rationaleBox);
 
       /* ---- 同步状态 → 控件 ---- */
       function syncFromState() {
@@ -277,9 +312,11 @@
       function refreshOverrideMark() {
         const any = Object.keys(st.overridden).length > 0;
         rowEl.classList.toggle('has-override', any);
+        overrideBox.hidden=!any;overrideBox.textContent='';
         if (any) {
           const parts = Object.entries(st.overridden).map(([f, o]) => T('{0}: {1}→{2}', T(FACTOR_LABELS[f]), T(levelLabel('down', o.auto)), T(levelLabel('down', o.user))));
           overrideChip.title = parts.join('；');
+          overrideBox.textContent=T('已覆盖')+' — '+parts.join('；');
         }
       }
       function levelLabel(kind, v) {
@@ -293,23 +330,26 @@
         if (st.initial_design !== 'observational') {
           for (const f of UPGRADE_FACTORS) st.upgrades[f] = 'none';
         }
+        markEdited(st);
         syncFromState();
       }));
-      typeSel.addEventListener('change', safe(() => { st.outcome_type = typeSel.value; }));
+      typeSel.addEventListener('change', safe(() => { st.outcome_type = typeSel.value; markEdited(st); }));
       for (const f of DOWNGRADE_FACTORS) {
         factorSelects[f].addEventListener('change', safe(() => {
           st.downgrades[f] = factorSelects[f].value;
           trackOverride(f, factorSelects[f].value);
+          markEdited(st);
           refreshBadge(); refreshOverrideMark();
         }));
       }
       for (const f of UPGRADE_FACTORS) {
         factorSelects[f].addEventListener('change', safe(() => {
           st.upgrades[f] = factorSelects[f].value;
+          markEdited(st);
           refreshBadge();
         }));
       }
-      noteInput.addEventListener('input', safe(() => { st.note = noteInput.value; }));
+      noteInput.addEventListener('input', safe(() => { st.note = noteInput.value; markEdited(st); }));
 
       function trackOverride(factor, value) {
         if (!st.suggested) return;
@@ -324,7 +364,8 @@
       })));
 
       /* ---- [保存评估] ---- */
-      saveBtn.addEventListener('click', safe(() => runSave(st, rowEl, { saveBtn, statusLine, badge, refreshBadge })));
+      st.ui = {rowEl,saveBtn,statusLine,badge,refreshBadge};
+      saveBtn.addEventListener('click', safe(() => runSave(st, rowEl, st.ui)));
 
       syncFromState();
       if (!assessmentReadReady) {
@@ -344,10 +385,12 @@
         return T('{0}：{1}', T(FACTOR_LABELS[factor]), T(String(signal.reason || '无数据，需人工判断')));
       }
       const parts = [];
-      if (signal.rule) parts.push(T('规则 {0}', String(signal.rule)));
+      const rules={majority_high_risk:'polish.rule_majority_high',some_high_risk_studies:'polish.rule_some_high',no_high_risk_studies:'polish.rule_no_high',i2_below_50:'polish.rule_i2_low',i2_above_75:'polish.rule_i2_high',i2_50_75_conservative:'polish.rule_i2_mid'};
+      if(rules[signal.rule])parts.push(T(rules[signal.rule]));
+      const fields={high_risk_studies:'polish.high_risk_count',n_studies:'polish.study_count',affected_studies:'polish.affected_count',i2_percent:'I² (%)',ci_width_ratio:'polish.ci_ratio',ci_low:'polish.ci_low',ci_high:'polish.ci_high',total_events:'polish.events',p_value:'p',egger_p:'Egger p',begg_p:'Begg p'};
       for (const [k, v] of Object.entries(signal)) {
         if (k === 'available' || k === 'rule' || v === null || v === undefined || v === '') continue;
-        parts.push(k + '=' + (typeof v === 'number' ? fmtNum(v) : String(v)));
+        if(fields[k])parts.push(T(fields[k]) + ': ' + (typeof v === 'number' ? fmtNum(v) : String(v)));
       }
       return T('{0}：{1}', T(FACTOR_LABELS[factor]), parts.join(' · ') || T('可用'));
     }
@@ -381,12 +424,11 @@
         }
       }
       lines.push(T('以上为自动建议；间接性完全依赖人工判断。请逐项确认或覆盖。'));
-      rationaleBox.replaceChildren(el('span', { text: lines.join('\n') }));
+      rationaleBox.replaceChildren(el('span', { text: lines.join('\n') }),el('details',{},el('summary',{text:T('polish.signal_details')}),el('pre',{translate:'no',text:JSON.stringify(st.signals,null,2)})));
       rationaleBox.hidden = false;
     }
 
     async function runAutoSuggest(st, ui) {
-      st.dirty = true;
       let ticket;
       let epoch = version;   // 任务切换纪元：函数作用域，catch 分支同样可见
       try {
@@ -406,6 +448,7 @@
           if (['fixed', 'random', 'random_pm', 'random_reml'].includes(model)) q += '&model=' + encodeURIComponent(model);
         }
         ticket = ++st.autoTicket;
+        st.pending++;
         ui.autoBtn.disabled = true;
         ui.autoBtn.dataset.requestTicket = String(ticket);
         ui.statusLine.textContent = T('正在推导自动建议…');
@@ -422,10 +465,12 @@
           st.signals = (d && d.signal_sources) || {};
           st.synthesis = (d && d.synthesis) || null;
           st.overridden = {};
+          markEdited(st);
           ui.syncFn();
           ui.statusLine.textContent = T('已按自动建议预填（初始质量：{0}，建议最终质量：{1}）。',
             T(LEVEL_LABEL[(d && d.initial_quality) || 'high']), T(LEVEL_LABEL[(d && d.final_quality) || 'high']));
         } finally {
+          st.pending--;
           if (ui.autoBtn.dataset.requestTicket === String(ticket)) ui.autoBtn.disabled = false;
         }
       } catch (e) {
@@ -435,17 +480,13 @@
     }
 
     function overrideNotesText(st) {
-      const parts = [];
-      for (const [f, o] of Object.entries(st.overridden)) {
-        parts.push(T('{0}: {1} → {2}', T(FACTOR_LABELS[f]),
-          T(DOWN_LABEL_TEXT[o.auto] || o.auto), T(DOWN_LABEL_TEXT[o.user] || o.user)));
-      }
-      if (st.note && st.note.trim()) parts.push(st.note.trim());
-      return parts.join('；');
+      return [st.legacyNote, st.note?.trim()].filter(Boolean).join('\n');
     }
 
     async function runSave(st, rowEl, ui) {
-      st.dirty = true;
+      if(st.pending)return false;
+      markEdited(st);
+      const revision=st.revision;
       let ticket;
       let epoch = version;   // 任务切换纪元：函数作用域，catch 分支同样可见
       try {
@@ -466,10 +507,11 @@
           large_effect_upgrade: st.upgrades.large_effect,
           dose_response_upgrade: st.upgrades.dose_response,
           plausible_confounding_upgrade: st.upgrades.plausible_confounding,
-          signal_sources: st.signals && Object.keys(st.signals).length ? st.signals : { initial_design: st.initial_design },
+          signal_sources: {...st.signals, _reviewflow_notes:{version:1,human_note:st.note||'',legacy_note:st.legacyNote||'',overrides:st.overridden||{}}},
           override_notes: overrideNotesText(st),
         };
         ticket = ++st.saveTicket;
+        st.pending++;
         ui.saveBtn.disabled = true;
         ui.saveBtn.dataset.requestTicket = String(ticket);
         ui.statusLine.textContent = T('正在保存 GRADE 评估…');
@@ -477,15 +519,19 @@
           const d = await api(taskApi() + '/analysis/grade/save', { method: 'POST', body: body });
           if (epoch !== version || ticket !== st.saveTicket) return;
           ui.statusLine.textContent = T('✓ 已保存（最终质量已重新计算：{0}）。', T(LEVEL_LABEL[(d && d.final_quality) || 'high']));
+          if(st.revision===revision){st.dirty=false;persistDraft(st);}
           ui.refreshBadge();
           if (typeof toast === 'function') toast(T('✓ 已保存「{0}」的 GRADE 评估', combo.outcome), 'inc');
+          return !st.dirty;
         } finally {
+          st.pending--;
           if (ui.saveBtn.dataset.requestTicket === String(ticket)) ui.saveBtn.disabled = false;
         }
       } catch (e) {
         if (ticket !== undefined && (epoch !== version || ticket !== st.saveTicket)) return;
         ui.statusLine.textContent = T('保存失败：') + ((e && e.message) || '');
         if (typeof toast === 'function') toast(T('保存失败：') + ((e && e.message) || ''), 'warn');
+        return false;
       }
     }
 
@@ -511,7 +557,14 @@
         if (sofBtn.dataset.requestTicket === String(ticket)) sofBtn.disabled = false;
       }
     }
+    const sofHeaderKeys = {
+      'Outcomes':'polish.sof_outcomes','№ of participants (studies)':'polish.sof_participants',
+      'Risk of bias':'偏倚风险','Inconsistency':'不一致性','Indirectness':'间接性',
+      'Imprecision':'不精确性','Publication bias':'发表偏倚','Overall certainty':'polish.sof_certainty','Comments':'polish.sof_comments'
+    };
+    const sofHeader = column => T(sofHeaderKeys[column] || String(column));
     function renderSof(d) {
+      lastSofData=d;
       sofBox.replaceChildren();
       if (!d || !Array.isArray(d.columns) || !Array.isArray(d.rows)) {
         sofBox.append(el('p', { class: 'hint', text: T('SoF 表数据格式异常。') }));
@@ -519,7 +572,7 @@
         return;
       }
       const table = el('table', {},
-        el('thead', {}, el('tr', {}, d.columns.map(c => el('th', { text: String(c) })))),
+        el('thead', {}, el('tr', {}, d.columns.map(c => el('th', { text: sofHeader(c) })))),
         el('tbody', {}, d.rows.map(r => el('tr', {}, (r || []).map(cell => el('td', { text: String(cell == null ? '' : cell) }))))));
       sofBox.append(el('b', { text: String(d.title || T('GRADE 证据概要（Summary of Findings）')) }), table);
       for (const line of d.legend || []) sofBox.append(el('p', { class: 'hint', style: 'margin:4px 0 0', text: String(line) }));
@@ -531,7 +584,7 @@
     function downloadSofCsv(d) {
       try {
         const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-        const lines = [d.columns.map(esc).join(',')];
+        const lines = [d.columns.map(sofHeader).map(esc).join(',')];
         for (const r of d.rows || []) lines.push((r || []).map(esc).join(','));
         const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
         const a = document.createElement('a');
@@ -549,6 +602,8 @@
         heading.textContent = T('GRADE 评估');
         hint.textContent = T('按 GRADE 框架评估每个结局的证据质量（高→中→低→极低）。[自动建议] 从已保存的合成/RoB/发表偏倚结果推导降级因子；间接性无法自动推导，须人工判断。修改预填值会标记「已覆盖」并记入备注。');
         sofBtn.textContent = T('导出 SoF 表');
+        sourceHint.textContent=T('polish.grade_source');wizardLink.textContent=T('polish.open_sof_wizard');
+        if(lastSofData)renderSof(lastSofData);
         panel.setAttribute('aria-label', T('GRADE 评估'));
         renderRows();
       } catch (e) { /* 单点故障 */ }
@@ -572,8 +627,13 @@
           st.outcome_type = assessment.outcome_type || 'important';
           Object.assign(st.downgrades, assessment.downgrades || {});
           Object.assign(st.upgrades, assessment.upgrades || {});
-          st.signals = assessment.signal_sources || {};
-          st.note = assessment.override_notes || '';
+          st.signals = {...assessment.signal_sources};
+          const notes=st.signals._reviewflow_notes;
+          delete st.signals._reviewflow_notes;
+          st.note = notes?.version===1 ? notes.human_note||'' : '';
+          st.legacyNote = notes?.version===1 ? notes.legacy_note||'' : assessment.override_notes||'';
+          st.overridden = notes?.version===1 ? notes.overrides||{} : {};
+          st.suggested = Object.fromEntries(Object.entries(st.overridden).map(([factor,value])=>[factor,value.auto]));
         }
         assessmentReadReady = true;
         renderRows();
@@ -593,7 +653,7 @@
       version++;
       restoredTask = null;
       assessmentReadReady = false; assessmentReadError = '';
-      rowState.clear();
+      rowState.clear();lastSofData=null;
       for (const button of rowsBox.querySelectorAll('button')) button.disabled = false;
       rowsBox.replaceChildren();
       emptyLine.hidden = false;

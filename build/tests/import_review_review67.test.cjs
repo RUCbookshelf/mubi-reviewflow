@@ -42,7 +42,8 @@ function scene(api = async () => ({})) {
   const reviewHost = new Element('div');
   const node = (tag, text, attrs) => new Element(tag, text, attrs);
   const context = {
-    window: {},
+    window: { addEventListener() {} },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
     document: { addEventListener: (name, fn) => handlers.set(name, fn) },
     ImportReviewModel: {},
     ImportReviewUpdates: updates,
@@ -114,7 +115,8 @@ test('M-13 toolbar and dialog read backend eligibility in the batch scope', () =
   page.seed([allowed, blocked, legacy, missing], { can_manage: true });
   assert.deepEqual(Array.from(page.batchGroups(), row => row.review_id),
     ['author-title-year', 'journal-doi', 'unknown']);
-  assert.match(workspace, /function render\([^)]*\)\{const groups=batchGroups\(\)/);
+  const renderBody = workspace.slice(workspace.indexOf('function render('), workspace.indexOf('function empty('));
+  assert.match(renderBody, /const groups=batchGroups\(\)/);
   assert.match(workspace, /'Confirm eligible duplicates',\(\)=>bulkDialog\('candidate'\),!groups\.some\(group=>group\.bulk_eligible===true\)/);
   page.bulkDialog('candidate');
   const dialog = page.root.children.find(child => child.tag === 'dialog');

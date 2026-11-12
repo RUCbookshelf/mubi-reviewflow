@@ -39,7 +39,7 @@
         ...(result.method_sources || []).map(text => el('p',{class:'hint',text})),
         el('p', { class:'hint', text:T('请比较合理的先验设定，并引用方法、先验依据和研究报告。') }),
         el('p', { class:'hint', lang:'en', text:`Sources: ${result.sources.map(row => `${row.study_id} (${row.source_key}${row.source_locator ? `, ${row.source_locator}` : ''}, result ${row.result_id})`).join('; ')}` }));
-    } catch (error) { if (ticket === generation) { host.replaceChildren(el('span',{lang:'en',text:error.message})); toast(error.message, 'warn'); } }
+    } catch (error) { if (ticket === generation) { host.replaceChildren(el('span',{lang:document.documentElement.lang || 'zh-CN',text:T(error.message)})); toast(error.message, 'warn'); } }
     finally { if (ticket === generation) { clearInterval(timer); button.disabled = false; } }
   });
 })();

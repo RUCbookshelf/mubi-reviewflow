@@ -11,6 +11,7 @@
  body.append(list,message,retry);card.append(summary,body);(main.querySelector('[data-p="import"]')||main).prepend(card);card.hidden=true;
  let context='',ticket=0,progress=null,imported=false,error=false,staged=false,reviewSummary=null;
  const session=new Map();
+ let renderSignature='';
  function key(){return S.user&&S.task?JSON.stringify([S.user.username,S.task.task_id,S.screener||S.user.username]):'';}
  function saved(){if(!context)return {};try{return JSON.parse(localStorage.getItem('rf_import_guide:'+context)||'{}');}catch(_){return session.get(context)||{};}}
  function save(value){session.set(context,value);try{localStorage.setItem('rf_import_guide:'+context,JSON.stringify(value));}catch(_){}}
@@ -48,6 +49,8 @@
  }
  function visitTrace(){if(!context)return;save({...saved(),traceVisited:true});render();}
  function render(){
+  const signature=JSON.stringify([key(),S.page,progress,imported,error,reviewSummary,saved(),card.open,RFLang.get()]);
+  if(signature===renderSignature)return;renderSignature=signature;
   retry.hidden=!error;retry.textContent=T('Retry / refresh');
   const state=saved();
   const workflow=ImportReviewModel.guideState({imported,progress,summary:reviewSummary,traceVisited:state.traceVisited,error});

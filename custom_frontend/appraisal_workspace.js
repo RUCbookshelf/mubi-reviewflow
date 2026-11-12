@@ -65,7 +65,8 @@
     const body = node('div', null, { class: 'rf-assessment-body' });
     const dialog = node('dialog', null, { class: 'rf-assessment-dialog', 'aria-labelledby': heading.id },
       node('header', null, { class: 'row' }, heading, button(sharedClose, () => dialog.close())), body);
-    const remove = () => dialog.remove();
+    const trigger = document.activeElement;
+    const remove = () => { dialog.remove(); if (trigger?.isConnected) trigger.focus(); };
     dialog.addEventListener('close', remove, { once: true });
     document.body.append(dialog);
     dialog.showModal();
@@ -132,12 +133,34 @@
   let activeScope = scope();
   let drafts = new Map();
   let feedback = '';
+  let returnFocus = null;
   const queryTool = id => query({ tool: id });
   const endpoint = () => taskApi() + '/appraisal';
   const recordPath = () => endpoint() + '/' + encodeURIComponent(article.zotero_key);
   const draftKey = () => JSON.stringify([article?.zotero_key, toolId]);
   const active = () => selectedTab && !!article && activeScope === scope();
   const valid = (request, identity) => request === ticket && identity === scope() && active();
+  // 草稿按任务、账号、评阅者、文献、工具隔离；任务版本只用于异步响应校验。
+  const storageKey = (key = draftKey()) => 'rf_appraisal_draft_v1:' + JSON.stringify([S.task?.task_id, S.user?.user_id || S.user?.username, S.screener, key]);
+  function persistDraft(draft) {
+    try { if (draft?.dirty) localStorage.setItem(storageKey(), JSON.stringify(draft)); else localStorage.removeItem(storageKey()); }
+    catch (_) { /* 存储不可用时仍保留内存草稿和离开提示。 */ }
+  }
+  function storedDraft() {
+    try {
+      const draft = JSON.parse(localStorage.getItem(storageKey()) || 'null');
+      return draft?.dirty && draft.responses && draft.comments && typeof draft.note === 'string' ? draft : null;
+    } catch (_) { return null; }
+  }
+  const dirty = () => activeScope === scope() && [...drafts.values()].some(draft => draft.dirty);
+  WorkflowControls.registerDraft?.('appraisal', {
+    dirty, saving: () => saving,
+    save,
+    discard: () => {
+      for (const key of drafts.keys()) { try { localStorage.removeItem(storageKey(key)); } catch (_) {} }
+      drafts.clear(); feedback = ''; if (active()) render();
+    }
+  });
 
   function showTab() {
     host.hidden = !selectedTab;
@@ -149,8 +172,9 @@
     appraisalTab.setAttribute('aria-pressed', String(selectedTab));
   }
 
-  function chooseTab(open) {
+  async function chooseTab(open) {
     if (saving || (open && !article)) return;
+    if (open !== selectedTab && !await WorkflowControls.guard()) return;
     selectedTab = open;
     showTab();
     if (open && !catalog) load();
@@ -217,6 +241,7 @@
 
   async function loadTool(id, preserveMessage = '') {
     if (!active() || saving) return;
+    if (id !== toolId && drafts.get(draftKey())?.dirty && !await WorkflowControls.guard()) { render(); return; }
     const request = ++ticket;
     const identity = scope();
     toolId = id;
@@ -307,7 +332,7 @@
   function editRecord() {
     const key = draftKey();
     if (!drafts.has(key)) {
-      drafts.set(key, {
+      drafts.set(key, storedDraft() || {
         variant: record.variant || record.tool.default_variant || '',
         responses: { ...record.responses },
         comments: { ...record.comments },
@@ -351,6 +376,7 @@
     const itemOptions = item.response_options || tool.response_options || [];
     const options = itemOptions.map(value => [value, optionLabel(tool, value), true]);
     const answer = select([['', 'appraisal.unanswered'], ...options], draft.responses[item.id] ?? '');
+    answer.dataset.appraisalAnswer = item.id;
     const comment = node('textarea', null, { class: 'input', maxlength: 20000, rows: 2, translate: 'no' });
     comment.value = draft.comments[item.id] || '';
     const prompt = raw('p', item.text);
@@ -361,12 +387,14 @@
       draft.dirty = true;
       if (answer.value) draft.responses[item.id] = answer.value;
       else delete draft.responses[item.id];
+      persistDraft(draft);
       updateProgress();
     });
     comment.addEventListener('input', () => {
       draft.dirty = true;
       if (comment.value.trim()) draft.comments[item.id] = comment.value;
       else delete draft.comments[item.id];
+      persistDraft(draft);
     });
     const row = node('div', null, { class: 'rf-appraisal-item', 'data-item': item.id },
       raw('b', item.number), prompt);
@@ -460,17 +488,24 @@
         draft.variant = picker.value;
         draft.override = null;
         draft.dirty = true;
+        persistDraft(draft);
         feedback = T('appraisal.variant_reset');
         render();
       });
       form.append(field('appraisal.variant', picker), tr('p', 'appraisal.same_variant', { class: 'hint' }));
     }
-    form.append(node('p', '', { 'data-appraisal-progress': '', role: 'status' }));
+    const topSave=button('appraisal.save',save,true);topSave.dataset.appraisalFocus='top-save';
+    const jumpNext=button('polish.next_unanswered',()=>{
+      const next=[...form.querySelectorAll('[data-appraisal-answer]')].find(input=>!input.value);
+      if(next){next.focus({preventScroll:true});next.closest('.rf-appraisal-item').scrollIntoView({block:'center'});}
+    });
+    const domainNav=node('div',null,{class:'row rf-appraisal-domain-nav'});
+    form.append(node('div',null,{class:'rf-appraisal-toolbar'},node('span','',{'data-appraisal-progress':'',role:'status'}),topSave,jumpNext,domainNav));
     const critical = new Set(record.overall?.critical_items || []);
     for (const group of itemGroups(tool, draft.variant)) {
       if (!group.items.length) continue;
       const groupBox = node('fieldset', null, { class: 'rf-appraisal-items' });
-      if (group.title) groupBox.append(raw('legend', group.title));
+      if (group.title) {groupBox.append(raw('legend', group.title));domainNav.append(node('button',group.title,{type:'button',class:'btn b-out sm',translate:'no',onclick:()=>groupBox.scrollIntoView({block:'start'})}));}
       for (const item of group.items) groupBox.append(itemRow(tool, item, draft, readOnly, critical.has(item.id)));
       form.append(groupBox);
     }
@@ -478,7 +513,7 @@
     if (ruleBlock) form.append(ruleBlock);
     const note = node('textarea', null, { class: 'input', maxlength: 20000, rows: 3, translate: 'no' });
     note.value = draft.note;
-    note.addEventListener('input', () => { draft.note = note.value; draft.dirty = true; });
+    note.addEventListener('input', () => { draft.note = note.value; draft.dirty = true; persistDraft(draft); });
     form.append(field('appraisal.note', note));
     const manualChoices = tool.overall_judgement_options || [];
     let manualAction = () => {};
@@ -496,6 +531,7 @@
         reason.disabled = !selected;
         draft.override = selected ? { [confidence ? 'confidence' : 'judgement']: selected, reason: reason.value } : null;
         draft.dirty = true;
+        persistDraft(draft);
         updateProgress();
       };
       choice.addEventListener('change', update);
@@ -510,18 +546,20 @@
         reason.focus();
       };
     }
-    form.append(button('appraisal.save', save, true));
+    const saveButton = button('appraisal.save', save, true);
+    saveButton.dataset.appraisalFocus = 'save';
+    form.append(saveButton);
     const output = draft.dirty ? null : summary(record.overall, tool, manualAction);
     return node('div', null, {}, citation(tool, true), form, output);
   }
 
   async function save() {
-    if (!active() || !record?.available || saving) return;
+    if (!active() || !record?.available || saving) return false;
     const draft = editRecord();
     if (draft.override && !draft.override.reason.trim()) {
       feedback = T('appraisal.overall_invalid');
       render();
-      return;
+      return false;
     }
     const identity = scope(), request = ticket, key = draftKey();
     const payload = {
@@ -537,9 +575,11 @@
       if (!valid(request, identity)) return;
       if (!data.available) throw Error(resultMessage(data, unavailable));
       drafts.delete(key);
+      persistDraft(null);
       record = data;
       fieldError = null;
       feedback = T('appraisal.saved');
+      return true;
     } catch (error) {
       if (!valid(request, identity)) return;
       fieldError = error.params || null;
@@ -553,6 +593,7 @@
         await load();
         feedback = message;
       }
+      persistDraft(draft);
       if (error.messageKey === 'appraisal.item_unknown') {
         saving = false;
         const message = feedback;
@@ -561,6 +602,7 @@
         if (identity !== scope() || key !== draftKey()) return;
         fieldError = problem;
       }
+      return false;
     } finally {
       if (valid(request, identity)) saving = false;
       if (identity === scope() && key === draftKey() && active()) render();
@@ -597,7 +639,7 @@
       row.article_key, row.title, ready.has(row.article_key) ? T('appraisal.rating.' + ready.get(row.article_key)) : '',
       T('appraisal.basis.' + row.basis)
     ]);
-    return node('section', null, {}, tr('p', 'appraisal.grade_hint'), grid(labels(['article', 'article_title', 'risk', 'basis']), rows));
+    return node('section', null, {}, tr('p', rows.length ? 'appraisal.grade_hint' : 'polish.no_appraisal_input'), grid(labels(['article', 'article_title', 'risk', 'basis']), rows));
   }
 
   function openGrade(combo, initialDesign, prefill) {
@@ -713,7 +755,11 @@
 
   function render(retryAction = null) {
     if (!active() || !catalog || !recommendation) return;
+    const focusKey = host.contains(document.activeElement) ? document.activeElement.dataset.appraisalFocus : null;
+    if(focusKey)returnFocus=focusKey;
+    const scrollTop = host.scrollTop;
     const chooser = toolsSelect(catalog.tools, toolId);
+    chooser.dataset.appraisalFocus = 'tool';
     chooser.disabled = saving;
     chooser.addEventListener('change', () => loadTool(chooser.value));
     const messages = node('div', null, { role: 'status', 'aria-live': 'polite' }, raw('p', feedback, { class: 'hint' }));
@@ -723,10 +769,13 @@
     const form = editor();
     host.replaceChildren(raw('h2', article.title || article.zotero_key), field('appraisal.tool', chooser), messages,
       ...(form ? [form] : selected ? [citation(selected, true)] : []),
+      tr('p','polish.appraisal_source',{class:'hint'}),button('polish.open_legacy_rob',async()=>{if(window.RFWorkspaceShell)await RFWorkspaceShell.navigate({page:'analysis',group:'data',tool:'risk-of-bias'});else if(await go('analysis')!==false)document.getElementById('anJumpRob')?.scrollIntoView({block:'start'});}),
       recommendationCards(), linkedTools());
     const team = teamActions();
     if (team) host.append(team);
     updateProgress();
+    host.scrollTop = scrollTop;
+    if (returnFocus) {const control=host.querySelector('[data-appraisal-focus="' + returnFocus + '"]');control?.focus({ preventScroll: true });if(document.activeElement===control)returnFocus=null;}
   }
 
   const style = document.createElement('style');
@@ -746,7 +795,10 @@
     .rf-assessment-table th{background:var(--bg)}
     .rf-assessment-stack{display:grid;gap:.65rem;margin:.7rem 0}
     .rf-assessment-stack>.card{margin:0}
+    .rf-appraisal-toolbar{position:sticky;top:-1px;z-index:1;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;background:var(--surface);border-bottom:1px solid var(--border);padding:.5rem;margin-bottom:.5rem}
+    .rf-appraisal-domain-nav{flex-basis:100%}
     .rf-appraisal-editor,.rf-appraisal-items{min-width:0;margin:.75rem 0;padding:.75rem;border:1px solid var(--border);border-radius:10px}
+    .rf-appraisal-items{scroll-margin-top:9rem}
     .rf-appraisal-item{padding:.75rem 0;border-bottom:1px solid var(--border)}
     .rf-appraisal-item:last-child{border-bottom:0}
     .rf-appraisal-item [aria-invalid=true]{border-color:var(--danger)}
@@ -791,6 +843,7 @@
     .rf-tables-choices{display:flex;flex-wrap:wrap;gap:.3rem .9rem}
     .rf-tables-choices>.hint{flex-basis:100%;margin:0}
     .rf-tables-choice{display:flex;align-items:center;gap:.45rem;min-height:32px;max-width:100%;cursor:pointer}
+    .rf-tables-choice[hidden]{display:none}
     .rf-tables-choice input{flex:none;accent-color:var(--primary)}
     .rf-tables-choice-order:empty{display:none}
     .rf-tables-choice-order{color:var(--primary-dark);font-size:.8rem;font-variant-numeric:tabular-nums}
@@ -825,6 +878,6 @@
   });
 
   window.AppraisalWorkspace = Object.freeze({
-    setArticle, canAssess, openGrade, fileResponse, popup, grid, select, toolsSelect, node, raw, tr, button, field, statusLine
+    setArticle, canAssess, openGrade, open: () => chooseTab(true), dirty, save, fileResponse, popup, grid, select, toolsSelect, node, raw, tr, button, field, statusLine
   });
 })();

@@ -149,7 +149,17 @@ jobs:
                       build/tests/analysis_grade_ui.test.cjs \
                       build/tests/analysis_rob_locale.test.cjs \
                       build/tests/import_review_review67.test.cjs \
-                      build/tests/report_evidence_ui.test.cjs
+                      build/tests/report_evidence_ui.test.cjs \
+                      build/tests/ai_settings_drafts.test.cjs \
+                      build/tests/analysis_rob_editor_ui.test.cjs \
+                      build/tests/table_wizards_polish.test.cjs \
+                      build/tests/workflow_evidence_save_ui.test.cjs \
+                      build/tests/workflow_ui_polish.test.cjs \
+                      build/tests/import_ai_ui_polish.test.cjs \
+                      build/tests/app_module_loader.test.cjs \
+                      build/tests/ui_polish_core.test.cjs \
+                      build/tests/ui_polish_recovery.test.cjs \
+                      build/tests/screen_reader_e10.test.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}

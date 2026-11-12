@@ -175,6 +175,7 @@ TARGET_ARCH="$(resolve_target_arch "${REVIEWFLOW_MACOS_ARCH:-$(uname -m)}")" || 
   --add-data "$ROOT/coscreen/assets:coscreen/assets" \
   --collect-all scipy --collect-all sklearn --collect-all statsmodels \
   --collect-all pandas --collect-data babel \
+  --hidden-import custom_backend.auth_recovery \
   "$BUILD/launcher.py" --distpath "$DIST" --workpath "$BUILD/work-macos/pyinstaller"
 
 APP="$DIST/$APP_NAME.app"

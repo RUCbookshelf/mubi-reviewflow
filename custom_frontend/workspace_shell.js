@@ -42,7 +42,7 @@
     [...control.childNodes].filter(node=>node.nodeType===3).forEach(node=>node.remove());
     control.append(el('span',{'data-rf-nav-label':control.dataset.nav}));
   }
-  const homeHeading=el('h2',{class:'rf-page-title','data-rf-page-title':'home'});main.querySelector('section[data-p="home"]').prepend(homeHeading);
+  const homeHeading=el('h2',{class:'rf-page-title','data-rf-page-title':'home',hidden:true,style:'display:none'});main.querySelector('section[data-p="home"]').prepend(homeHeading);
   /* F19（随版缓解，只做挂链入口）：帮助页此前全应用无任何页面链入。初筛/编码两页
      页首各挂一个「查看帮助」；分析页的同类入口由 analysis_navigation.js 挂进页头
      工具区，两者共用 data-rf-help-entry 标记，文字由 syncVocabulary 重新翻译。
@@ -206,7 +206,8 @@
   document.addEventListener('reviewflow:workspace-changed',()=>{
     if(!navigating&&S.page){
       const expected=registry.parse(location.hash);
-      if(expected?.page!==S.page)history.replaceState({workspace:S.page},'',registry.href(currentRoute()));
+      if(expected?.page!==S.page)history.pushState({workspace:S.page},'',registry.href(currentRoute()));
+      const stage=registry.page(S.page)?.stage;if(stage)stageLast[stage]=S.page;
     }
     refresh();
   });

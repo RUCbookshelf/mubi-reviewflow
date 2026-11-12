@@ -38,7 +38,9 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
   const verdicts=new Set(['same','different','unsure']);
   let settings=null,settingsError=null,loading=null,epoch=0,submitting=false,counts=null,authDenied=false;
   const suggestions=new Map(),audits=new Map(),selected=new Map(),conflicts=new Map();
-  const requestedKeepers=new WeakMap(),appliedByBatch=new Map();
+  const requestedKeepers=new WeakMap(),appliedByBatch=new Map(),selectedTitles=new Map(),keyDrafts=new Map();
+  let activeRequest=null,scorecardCache=null;
+  const detailState=new Map();
   const scopeKey=()=>W.scope()+':'+epoch;
   const identity=item=>JSON.stringify([item.batch_id,item.kind,item.item_id]);
   const available=()=>settings?.enabled===true&&settings.has_key===true;
@@ -124,7 +126,8 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
   }
 
   function settingsDialog(host,redraw){
-    const view=dialog(host,ui+'settings'),snapshot=settings,scope=scopeKey();
+    const view=dialog(host,ui+'settings'),scope=scopeKey();
+    let snapshot=settings;
     const enable=!snapshot.enabled;
     if(enable)showDisclosure(view.content);
     const change=b(ui+(enable?'enable':'disable'),async()=>{
@@ -141,6 +144,12 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
         if(error.messageKey===lang+'settings_version_conflict'||error.messageKey===lang+'settings_owner_only'){
           await load();
           view.panel.addEventListener('close',redraw,{once:true});
+          if(error.messageKey===lang+'settings_version_conflict'&&settings?.can_manage){
+            snapshot=settings;
+            if(settings.enabled===enable){view.close();redraw();return;}
+            change.textContent=T('已刷新设置，重试更改');
+            change.disabled=false;
+          }
           return;
         }
         change.disabled=false;
@@ -152,11 +161,14 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
   function selectionDialog(host,batchId,items,all,redraw,refresh,currentKeeper,candidates){
     const refs=items.map(item=>[item,reference(batchId,item,true)]).filter(([,ref])=>ref);
     const allItems=candidates.map(item=>[item,reference(batchId,item,true)]).filter(([,ref])=>ref);
+    for(const [item,ref] of allItems)selectedTitles.set(identity(ref),item.members?.[0]?.article?.title||item.members?.[0]?.record?.article?.title||item.article?.title||item.original?.title||T('Untitled record'));
     const known=refs.map(([,ref])=>ref);
     if(all)for(const ref of known)selected.set(identity(ref),ref);
     const view=dialog(host,ui+'entry');
     showDisclosure(view.content);
-    const list=n('div',null,{class:'rf-import-ai-selection'});
+    const list=n('div',null,{class:'rf-import-ai-selection'}),outside=n('div',null,{class:'rf-import-ai-outside'});
+    view.content.append(n('p','选择本页项目；之前页面的选择列在下方。'));
+    const clear=b('清空本批次选择',()=>{for(const [key,ref] of selected)if(ref.batch_id===batchId)selected.delete(key);for(const input of list.querySelectorAll('input'))input.checked=false;update();});
     const indicator=n('p',null,{role:'status'});
     for(const [item,ref] of refs){
       const key=identity(ref),checkbox=n('input',null,{type:'checkbox',checked:selected.has(key)});
@@ -171,9 +183,10 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     const crossCheck=n('input',null,{type:'checkbox','aria-describedby':'rf-import-cross-check-help'});
     const crossLabel=n('label');
     crossLabel.append(crossCheck,n('span','双源交叉验证'));
-    view.content.append(indicator,list,crossLabel,n('p','需配置不同厂商的个人和任务共享 LLM 钥匙。结果一致时提高置信度，不一致时标记为不确定。',{
+    view.content.append(indicator,clear,list,outside,crossLabel,n('p','需配置不同厂商的个人和任务共享通用模型 API Key。结果一致时提高置信度，不一致时标记为不确定。',{
       class:'hint',id:'rf-import-cross-check-help'
     }));
+    view.content.append(n('p','仅适用于重复组。第二来源状态尚无法预先核验；请先配置个人与任务共享的不同厂商通用模型 API Key。第二源不可用时仅返回主源结果。',{class:'hint'}),b(ui+'keys',()=>{view.close();keyDialog(host,redraw);}));
     const selectedRefs=()=>[...selected.values()].filter(ref=>ref.batch_id===batchId);
     const generate=b(ui+'generate',async()=>{
       const refs=selectedRefs();
@@ -195,6 +208,13 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
       const size=selectedRefs().length;
       crossCheck.disabled=!selectedRefs().some(ref=>ref.kind==='duplicate_group');
       indicator.textContent=T(ui+'selected',{n:size,max:maxItems()});
+      const current=new Set(known.map(identity)),hidden=selectedRefs().filter(ref=>!current.has(identity(ref)));
+      outside.replaceChildren();
+      if(hidden.length){
+        outside.append(l('h3',T('其他页面已选：{0} 项',hidden.length)));
+        for(const ref of hidden){const label=n('label'),check=n('input',null,{type:'checkbox',checked:true});check.onchange=()=>{selected.delete(identity(ref));update();};label.append(check,l('span',selectedTitles.get(identity(ref))||String(ref.item_id)));outside.append(label);}
+      }
+      clear.disabled=!size;
       view.status.textContent=size>maxItems()?T(lang+'too_many_items',{max_items:maxItems()}):'';
       generate.disabled=!size||size>maxItems()||submitting;
     }
@@ -203,39 +223,45 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
 
   async function request(view,generate,items,apply,redraw,refresh,crossCheck=false){
     if(submitting||!available())return;
-    const scope=scopeKey();
-    submitting=true;generate.disabled=true;view.lock(true);
-    const inputs=[...view.panel.querySelectorAll('input,select')];
+    const scope=scopeKey(),controller=new AbortController(),started=Date.now();
+    activeRequest=controller;submitting=true;generate.disabled=true;
+    const inputs=[...view.panel.querySelectorAll('input,select')],disabled=inputs.map(input=>input.disabled);
     for(const input of inputs)input.disabled=true;
-    view.status.textContent=T('AI 建议生成中…');
+    const cancel=b('取消等待',()=>{controller.abort();view.close();});
+    const cancelOnClose=()=>controller.abort();
+    view.panel.addEventListener('close',cancelOnClose,{once:true});
+    view.actions.append(cancel);
+    const progress=()=>{view.status.textContent=T('正在请求 {0} 项 AI 建议 · 已等待 {1} 秒',items.length,Math.floor((Date.now()-started)/1000));};
+    const notice=n('p','可取消等待；已发送的请求仍可能在服务端完成并记入审计。',{class:'hint'});
+    view.content.append(notice);progress();
+    const timer=setInterval(progress,1000);
     try{
-      const result=await api(apiPath(),{method:'POST',body:{items,cross_check:crossCheck}});
-      if(scope!==scopeKey())return;
+      const result=await api(apiPath(),{method:'POST',signal:controller.signal,body:{items,cross_check:crossCheck}});
+      if(scope!==scopeKey()||controller.signal.aborted||!view.panel.open)return;
       for(const row of result.suggestions||[]){
         if(row.audit_id!=null)audits.set(row.audit_id,row);
         if(row.kind!=='merge_conflict')suggestions.set(identity(row),row);
       }
-      apply(result);
-      view.close();
+      apply(result);view.close();
     }catch(error){
-      if(scope!==scopeKey())return;
+      if(scope!==scopeKey()||controller.signal.aborted||!view.panel.open)return;
       const key=error.messageKey;
       view.status.textContent=message(error);
       if([lang+'disabled',lang+'key_missing','coding.collaboration_owner_unset',lang+'owner_required'].includes(key)||(error.status===403&&!key)){
-        await load();
-        view.panel.addEventListener('close',redraw,{once:true});
+        await load();view.panel.addEventListener('close',redraw,{once:true});
       }else if([lang+'item_not_found',lang+'item_unavailable'].includes(key)){
         for(const item of items)selected.delete(identity(item));
         view.actions.append(b('Refresh',()=>{view.close();refresh();}));
       }else if(key===lang+'too_many_items'){
-        const excess=items.slice(maxItems());
-        for(const item of excess)selected.delete(identity(item));
+        for(const item of items.slice(maxItems()))selected.delete(identity(item));
         view.panel.addEventListener('close',redraw,{once:true});
-      }else generate.disabled=false;
+      }
     }finally{
+      clearInterval(timer);cancel.remove();notice.remove();view.panel.removeEventListener('close',cancelOnClose);
+      if(activeRequest===controller)activeRequest=null;
       if(scope===scopeKey()){
-        submitting=false;view.lock(false);
-        for(const input of inputs)input.disabled=false;
+        submitting=false;generate.disabled=!available();
+        inputs.forEach((input,index)=>{input.disabled=disabled[index];});
         if(!view.panel.open)redraw();
       }
     }
@@ -251,12 +277,11 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     const row=rowSuggestion(batchId,item)||[...conflicts.values()].find(entry=>
       ref?.kind==='duplicate_group'&&entry.row.batch_id===batchId&&entry.row.item_id===ref.item_id&&
       entry.fingerprint===JSON.stringify(item.members))?.row;
-    const grade=confidenceGrade(row);
-    if(!grade)return null;
+    if(!row)return null;
+    const grade=confidenceGrade(row)||(row.verdict==='different'?'neutral':'amber');
     const label={green:'高置信（≥0.90）',amber:'待复核（置信度 ≥0.60 且 <0.90，或判定为不确定）',gray:'已降级'}[grade];
-    const attrs={class:'badge '+grade,title:T(label)};
-    if(grade==='gray')attrs.style='color:var(--muted);background:var(--border)';
-    return n('span',grade==='amber'?lang+'verdict.'+row.verdict:label,attrs);
+    const text=[verdicts.has(row.verdict)?T(lang+'verdict.'+row.verdict):T('待复核'),typeof row.confidence==='number'?row.confidence.toFixed(2):'',grade==='green'?T('高置信（≥0.90）'):grade==='amber'?T('待复核'):grade==='gray'?T('已降级'):''].filter(Boolean).join(' · ');
+    return l('span',text,{class:'badge rf-import-ai-badge '+grade,title:label?T(label):text});
   }
 
   function summary(row,link=true){
@@ -388,119 +413,90 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
   function keyDialog(host,redraw){
     const view=dialog(host,ui+'keys'),scope=scopeKey(),keys=window.RFAIProviders;
     const personal='/api/ai/key',shared=taskApi()+'/ai-suggest/shared-key';
-    const owner=settings?.can_manage===true;
+    const owner=settings?.can_manage===true,forms=new Map();
     let changed=false;
+    const draftId=(endpoint,kind)=>scope+':'+endpoint+':'+kind;
+    function captureDrafts(){
+      for(const [id,form] of forms)keyDrafts.set(id,{values:form.inputs.map(input=>input.type==='checkbox'?input.checked:input.value),wizards:keys.snapshotWizards?.(form.section)});
+    }
     view.panel.addEventListener('close',()=>{
-      if(changed&&scope===scopeKey())redraw();
+      if(scope!==scopeKey())return;
+      captureDrafts();if(changed)redraw();
     },{once:true});
     view.status.textContent=T('Loading…');
-    void renderForms().then(()=>{
-      if(scope===scopeKey()&&view.panel.open)view.status.textContent='';
-    });
+    void renderForms().then(()=>{if(scope===scopeKey()&&view.panel.open)view.status.textContent='';});
 
     async function renderForms(){
       const [personalMeta,sharedMeta]=await Promise.allSettled([api(personal),owner?api(shared):Promise.resolve(null)]);
       if(scope!==scopeKey()||!view.panel.open)return;
-      view.content.replaceChildren();
+      forms.clear();view.content.replaceChildren();
       renderSection(personal,personalMeta,false);
       if(owner)renderSection(shared,sharedMeta,true);
     }
-
     function renderSection(endpoint,result,isShared){
-      view.content.append(n('h3',isShared?'任务共享钥匙（全员可用）':'个人钥匙（全局）'));
-      if(result.status==='rejected'){
-        view.content.append(l('p',message(result.reason)));
-        return;
-      }
+      view.content.append(n('h3',isShared?'任务共享 API Key（全员可用）':'个人 API Key（全局）'));
+      if(result.status==='rejected'){view.content.append(l('p',message(result.reason)));return;}
       const aggregate=isShared&&!result.value?.llm&&!result.value?.decision;
-      if(aggregate)view.content.append(n('p',ui+(result.value?.enabled?'key_present':'key_absent')));
-      for(const kind of ['llm','decision']){
-        const meta=keys.slot(result.value,kind);
-        view.content.append(keyForm(endpoint,meta,isShared,kind,aggregate&&result.value?.enabled));
-      }
+      if(aggregate)view.content.append(n('p','共享槽详细状态暂不可用；无法显示各槽的服务商、模型和用量。',{class:'hint'}));
+      for(const kind of ['llm','decision'])view.content.append(keyForm(endpoint,keys.slot(result.value,kind),isShared,kind,aggregate));
     }
-
-    function keyForm(endpoint,meta,isShared,kind,aggregateConfigured){
-      const section=n('section',null,{class:'rf-import-key-form'});
-      section.append(n('h4',kind==='llm'?'通用 LLM 钥匙':'专用判定钥匙'));
-      if(aggregateConfigured)section.append(n('p','共享钥匙状态由任务统一显示。',{class:'hint'}));
-      else section.append(n('p',ui+(meta?.configured?'key_present':'key_absent')));
+    function keyForm(endpoint,meta,isShared,kind,aggregate){
+      const id=draftId(endpoint,kind),section=n('section',null,{class:'rf-import-key-form'});
+      section.append(n('h4',kind==='llm'?'通用模型 API Key':'决策模型 API Key'));
+      if(!aggregate)section.append(n('p',ui+(meta?.configured?'key_present':'key_absent')));
       keys.appendMeta(section,meta);
       const actions=n('div',null,{class:'buttons'}),status=n('p',null,{role:'status',class:'hint'});
       const addTest=()=>actions.append(keys.testButton({endpoint,kind,status}));
-      if(meta?.source==='env'){
-        addTest();
-        section.append(actions,status);
-        return section;
-      }
+      if(meta?.source==='env'){addTest();section.append(actions,status);return section;}
       const provider=n('input',null,{class:'input',maxlength:'50',translate:'no'});
       const secret=n('input',null,{class:'input',type:'password',autocomplete:'new-password',minlength:'8',maxlength:'4096',translate:'no'});
-      const url=n('input',null,{class:'input',maxlength:'500',translate:'no'});
-      const model=n('input',null,{class:'input',maxlength:'100',translate:'no'});
-      const verify=n('input',null,{type:'checkbox'});
-      provider.value=meta?.provider||'';
-      url.value=meta?.base_url||'';model.value=meta?.model||'';
-      const wizard=keys.mount({kind,provider,baseUrl:url,model,format:meta?.format});
-      const add=(label,input)=>{
-        input.setAttribute('aria-label',T(label));
-        const control=n('label');control.append(n('span',label),input);section.append(control);
-      };
+      const url=n('input',null,{class:'input',maxlength:'500',translate:'no'}),model=n('input',null,{class:'input',maxlength:'100',translate:'no'}),verify=n('input',null,{type:'checkbox'});
+      provider.value=meta?.provider||'';url.value=meta?.base_url||'';model.value=meta?.model||'';
+      const wizard=keys.mount({kind,provider,baseUrl:url,model,format:meta?.format,draftName:id});
+      const inputs=[provider,secret,url,model,verify];
+      const add=(label,input)=>{input.setAttribute('aria-label',T(label));const control=n('label');control.append(n('span',label),input);section.append(control);};
       section.append(wizard.element);
-      if(kind==='decision')section.append(n('p','ai_keys.kind.decision_hint',{class:'hint'}));
-      add('服务商',provider);add('API Key（仅保存在数据目录）',secret);add(ui+'endpoint',url);
-      add('模型名（如 gpt-4o-mini）',model);add('保存前验证连通性',verify);
-      actions.append(b(isShared?'保存共享钥匙':'保存钥匙',()=>{
-        if(!provider.value.trim()||!secret.value.trim()){
-          view.status.textContent=T('服务商与 API Key 不能为空。');return;
-        }
-        return execute(async()=>{
-          await api(endpoint,{method:'PUT',body:{provider:provider.value.trim(),key:secret.value,base_url:url.value.trim()||null,
-            model:model.value.trim()||null,kind,format:wizard.getFormat(),verify:verify.checked}});
-          secret.value='';
-          await keysChanged();
-          return T('已保存，可测试连接。');
+      if(kind==='decision')section.append(n('p','决策模型 API Key 仅用于导入复核的同判定建议；AI 抽取和合并字段建议使用通用模型 API Key。',{class:'hint'}));
+      add('自定义服务商 ID',provider);add('API Key（仅保存在数据目录）',secret);add('API 接口地址',url);add('模型 ID',model);add('保存前验证连通性',verify);
+      const draft=keyDrafts.get(id);
+      if(draft){inputs.forEach((input,index)=>{if(input.type==='checkbox')input.checked=!!draft.values[index];else input.value=draft.values[index]??'';});keys.restoreWizards?.(section,draft.wizards);}
+      forms.set(id,{section,inputs,status});
+      actions.append(b(isShared?'保存共享 API Key':'保存 API Key',()=>{
+        if(!provider.value.trim()||!secret.value.trim()){status.textContent=T('服务商与 API Key 不能为空。');return;}
+        return execute(id,async()=>{
+          await api(endpoint,{method:'PUT',body:{provider:provider.value.trim(),key:secret.value,base_url:url.value.trim()||null,model:model.value.trim()||null,kind,format:wizard.getFormat(),verify:verify.checked}});
+          await keysChanged(id);return T('已保存，可测试连接。');
         });
       },'primary'));
-      if(meta?.configured||aggregateConfigured)addTest();
-      if(meta?.configured||aggregateConfigured)actions.append(b(isShared?'删除共享钥匙':'删除钥匙',()=>{
-        if(!confirm(T(isShared?'确认删除任务共享钥匙？':'确认删除个人 AI 钥匙？')))return;
-        return execute(async()=>{
-          await api(endpoint+'?kind='+kind,{method:'DELETE'});
-          await keysChanged();
-          return T('已删除。');
-        });
+      if(meta?.configured||aggregate)addTest();
+      if(meta?.configured||aggregate)actions.append(b(aggregate?'清除此槽配置':isShared?'删除共享 API Key':'删除 API Key',async()=>{
+        const accepted=await RFConfirm({title:T('删除 API Key'),message:T(aggregate?'共享槽详细状态暂不可用。确认清除此槽配置？其他槽不受影响。':isShared?'确认删除任务共享 API Key？':'确认删除个人 API Key？'),danger:true});
+        if(!accepted||scope!==scopeKey()||!view.panel.open)return;
+        return execute(id,async()=>{await api(endpoint+'?kind='+kind,{method:'DELETE'});await keysChanged(id);return T(aggregate?'清除请求已完成。':'已删除。');});
       }));
-      section.append(actions,status);
-      return section;
+      section.append(actions,status);return section;
     }
-
-    async function execute(action){
+    async function execute(id,action){
       if(scope!==scopeKey()||view.panel.getAttribute('aria-busy')==='true')return;
-      const controls=[...view.content.querySelectorAll('button,input,select')];
-      const disabled=controls.map(control=>control.disabled);
+      captureDrafts();
+      const controls=[...view.content.querySelectorAll('button,input,select')],disabled=controls.map(control=>control.disabled);
       view.panel.setAttribute('aria-busy','true');view.lock(true);
       for(const control of controls)control.disabled=true;
-      view.status.textContent=T('Saving…');
-      try{
-        const result=await action();
-        if(scope===scopeKey()&&view.panel.open)view.status.textContent=result;
-      }catch(error){
-        if(scope===scopeKey()&&view.panel.open)view.status.textContent=message(error);
-      }finally{
-        view.panel.removeAttribute('aria-busy');view.lock(false);
-        controls.forEach((control,index)=>{control.disabled=disabled[index];});
-      }
+      forms.get(id).status.textContent=T('Saving…');
+      try{const result=await action();if(scope===scopeKey()&&view.panel.open&&forms.has(id))forms.get(id).status.textContent=result;}
+      catch(error){if(scope===scopeKey()&&view.panel.open&&forms.has(id))forms.get(id).status.textContent=message(error);}
+      finally{view.panel.removeAttribute('aria-busy');view.lock(false);controls.forEach((control,index)=>{control.disabled=disabled[index];});}
     }
-
-    async function keysChanged(){
+    async function keysChanged(id){
       if(scope!==scopeKey())return;
-      changed=true;
+      changed=true;keyDrafts.delete(id);
       await Promise.all([load(),renderForms()]);
       if(scope===scopeKey())document.dispatchEvent(new Event('reviewflow:ai-keys-changed'));
     }
   }
-  function reportDialog(host,batchId){
+  function reportDialog(host,batchId,batchName){
     const view=dialog(host,'导出 AI 使用报告'),scope=scopeKey();
+    view.content.append(n('p','仅导出当前导入批次的 AI 使用记录。'),l('p',batchName||batchId));
     for(const format of ['csv','json']){
       view.actions.append(b(format.toUpperCase(),async()=>{
         view.lock(true);
@@ -527,12 +523,17 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
   function scorecard(){
     const box=n('details',null,{class:'rf-plain-disclosure'}),body=n('div',null,{role:'status'});
     const scope=scopeKey();
-    box.append(n('summary','AI-人工一致率'),body);
+    box.append(n('summary','AI-人工一致率'),n('p','统计范围：当前任务的已判定样本。',{class:'hint'}),body);
+    box.open=detailState.get('scorecard')===true;
     box.addEventListener('toggle',async()=>{
+      if(!box.isConnected)return;
+      detailState.set('scorecard',box.open);
       if(!box.open)return;
       body.textContent=T('Loading…');
       try{
-        const data=await api(apiPath()+'/scorecard');
+        const version=W.version();
+        const data=scorecardCache?.scope===scope&&scorecardCache.version===version?scorecardCache.data:await api(apiPath()+'/scorecard');
+        if(scope===scopeKey())scorecardCache={scope,version,data};
         if(scope!==scopeKey()||!box.isConnected||!box.open)return;
         const byKind=data.by_kind||{};
         const percent=new Intl.NumberFormat(document.documentElement.lang||'en',{maximumFractionDigits:1});
@@ -560,11 +561,8 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     for(const item of items){
       if(item.bulk_eligible!==true||reference(batchId,item,true)?.kind!=='duplicate_group')continue;
       const suggestion=rowSuggestion(batchId,item);
-      const currentConflicts=[...conflicts.values()].filter(entry=>entry.row.batch_id===batchId&&
-        entry.row.item_id===item.review_id&&entry.fingerprint===JSON.stringify(item.members)&&
-        confidenceGrade(entry.row)==='green'&&entry.row.audit_id!=null).map(entry=>entry.row);
       const duplicate=confidenceGrade(suggestion)==='green'&&suggestion.audit_id!=null?suggestion:null;
-      if(duplicate||currentConflicts.length)rows.push({item,duplicate,currentConflicts});
+      if(duplicate)rows.push({item,duplicate});
     }
     return rows;
   }
@@ -573,7 +571,7 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     const scope=scopeKey(),path=batchPath(batchId),view=dialog(host,'Confirm bulk review');
     let policyVersion=W.version(),applied=0,steps=0,failed=false;
     const list=n('div',null,{class:'bulk-list'}),entries=[];
-    view.content.append(n('p','import.review.bulk_authority'),list);
+    view.content.append(n('p','import.review.bulk_authority'),n('p','仅批量应用高置信的重复判定；合并字段建议请在阅读卡逐条确认。'),n('p','每次提交最多 100 项。分块提交时只能撤销最后成功的一块。',{class:'hint'}),list);
     const submit=b('Confirm bulk review',async()=>{
       if(scope!==scopeKey()||failed)return;
       const chosen=entries.filter(entry=>entry.check.checked&&!entry.done);
@@ -581,16 +579,19 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
       view.lock(true);submit.disabled=true;
       const controls=[...view.content.querySelectorAll('input,select')];
       for(const control of controls)control.disabled=true;
-      view.status.textContent=T('Saving…');
+      view.status.textContent=T('已完成 {0}/{1} 项 · 分块 {2}/{3}',0,chosen.length,0,Math.ceil(chosen.length/100));
       try{
+        let completed=0;
         for(const chunk of bulkChunks(chosen)){
+          view.status.textContent=T('已完成 {0}/{1} 项 · 正在提交分块 {2}/{3}',completed,chosen.length,Math.floor(completed/100)+1,Math.ceil(chosen.length/100));
           const result=await api(path+'/bulk-review',{method:'POST',body:{
             expected_policy_version:policyVersion,actions:chunk.map(entry=>entry.action)
           }});
           if(scope!==scopeKey())return;
           policyVersion=result.policy_version;
           W.acceptImportVersion(policyVersion,W.scope());
-          applied+=chunk.length;steps++;
+          applied+=chunk.length;steps++;completed+=chunk.length;
+          view.status.textContent=T('已完成 {0}/{1} 项 · 分块 {2}/{3}',completed,chosen.length,Math.ceil(completed/100),Math.ceil(chosen.length/100));
           appliedByBatch.set(batchId,{applied,steps,policyVersion});
           for(const entry of chunk){entry.done=true;entry.check.checked=false;}
         }
@@ -598,7 +599,7 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
       }catch(error){
         if(scope!==scopeKey())return;
         const detail=error.messageKey==='import_merge.bulk_ineligible'&&error.params?.reason?
-          ' '+T('import_merge.ineligible.'+error.params.reason):'';
+          ' '+T('importMerge.ineligible.'+error.params.reason):'';
         failed=error.status===409;
         view.status.textContent=[message(error)+detail,
           applied?T('部分操作已完成：已应用 {0} 条。',applied):'',
@@ -615,37 +616,26 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
       const chosen=entries.filter(entry=>entry.check.checked&&!entry.done);
       submit.disabled=failed||!chosen.length||chosen.some(entry=>!entry.action);
     }
-    for(const {item,duplicate,currentConflicts} of rows){
+    for(const {item,duplicate} of rows){
       const active=item.members.filter(member=>member.ref_type==='active');
       const members=active.length?active:item.members;
       const title=member=>member?.article?.title||member?.record?.article?.title||member?.ref_id||T('Untitled record');
       const row=n('div'),check=n('input',null,{type:'checkbox',checked:true});
       const label=n('label');label.append(check,l('strong',title(item.members[0])));
       const select=n('select',null,{'aria-label':T('Retain selected record')});
-      for(const member of members)select.append(l('option',title(member),{value:member.ref_id}));
-      const defaultId=requestedKeepers.get(duplicate)??keeperId(currentConflicts[0]?.keeper)??currentKeeper(item);
+      for(const member of members){const article=member.article||member.record?.article||{};select.append(l('option',[title(member),article.year,article.doi,'#'+String(member.ref_id).slice(-8)].filter(Boolean).join(' · '),{value:member.ref_id}));}
+      const defaultId=requestedKeepers.get(duplicate)??currentKeeper(item);
       if(members.some(member=>member.ref_id===defaultId))select.value=defaultId;
       const choice=n('label');choice.append(n('span','Retain selected record'),select);
       const details=n('div'),entry={check,select,done:false,action:null};
       function update(){
         const member=members.find(candidate=>candidate.ref_id===select.value);
-        const conflict=currentConflicts.find(candidate=>keeperId(candidate.keeper)===select.value);
-        const suggestion=conflict||duplicate;
+        const suggestion=duplicate;
         details.replaceChildren();
         entry.action=member&&suggestion?{
-          kind:'candidate',id:item.review_id,...memberKeeper(member),
-          ai_suggestion_id:String(suggestion.audit_id),...(conflict?{conflict_picks:conflict.field_picks}:{})
+          kind:'candidate',id:item.review_id,...memberKeeper(member),ai_suggestion_id:String(suggestion.audit_id)
         }:null;
         if(suggestion)details.append(l('p',T(lang+'verdict.'+suggestion.verdict)+' · '+suggestion.confidence.toFixed(2)));
-        if(conflict&&Object.keys(conflict.field_picks||{}).length){
-          const summary=n('details'),fields=n('ul');
-          for(const [field,pick] of Object.entries(conflict.field_picks)){
-            const info=conflict.fields?.find(entry=>entry.field===field);
-            const value=pick==='keeper'?info?.left:info?.candidates?.find(entry=>entry.record_id===pick)?.value??info?.right;
-            fields.append(l('li',fieldLabel(field)+' · '+(value||'—')));
-          }
-          summary.append(n('summary','合并冲突字段'),fields);details.append(summary);
-        }
         updateSubmit();
       }
       check.onchange=updateSubmit;select.onchange=update;
@@ -656,7 +646,7 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     view.panel.addEventListener('close',()=>{if(scope===scopeKey()&&(applied||failed))void refresh();},{once:true});
   }
 
-  function toolbar({host,batchId,visible,busy,redraw,refresh,candidates=visible,canManage=false,undoAvailable=false,
+  function toolbar({host,batchId,visible,busy,redraw,refresh,candidates=visible,canManage=false,undoAvailable=false,batchName='',
     currentKeeper=item=>keeperId(item.suggested_keeper)}){
     if(authDenied){
       if(!host.querySelector('.rf-import-ai-denied')){
@@ -672,13 +662,15 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     if(settings)tools.append(b(ui+'keys',()=>keyDialog(host,redraw)));
     const hasPending=visible.some(item=>reference(batchId,item,true));
     if(available()&&hasPending){
-      const choose=b(ui+'entry',()=>selectionDialog(host,batchId,visible,false,redraw,refresh,currentKeeper,candidates));
-      const page=b(ui+'this_page',()=>selectionDialog(host,batchId,visible,true,redraw,refresh,currentKeeper,candidates));
+      const choose=b('选择本页项目生成 AI 建议',()=>selectionDialog(host,batchId,visible,false,redraw,refresh,currentKeeper,candidates));
+      const page=b('为本页全部项目生成 AI 建议',()=>selectionDialog(host,batchId,visible,true,redraw,refresh,currentKeeper,candidates));
       choose.title=page.title=disclosure().join('\n');
       choose.disabled=page.disabled=busy||submitting;
       tools.append(choose,page);
     }
-    if(settings)tools.append(b('导出 AI 使用报告',()=>reportDialog(host,batchId)),scorecard());
+    if(settings&&!available())tools.append(n('p',!settings.enabled?'AI 建议未开启。':'尚未配置可用的 API Key。',{class:'hint',role:'status'}));
+    else if(settings&&!hasPending)tools.append(n('p','本页没有可生成 AI 建议的待核验项目。',{class:'hint',role:'status'}));
+    if(settings)tools.append(b('导出 AI 使用报告',()=>reportDialog(host,batchId,batchName)),scorecard());
     const eligible=canManage?bulkCandidates(batchId,candidates):[];
     if(eligible.length){
       const apply=b('应用 {0} 条高置信建议',()=>bulkPreview(host,batchId,eligible,refresh,currentKeeper));
@@ -689,24 +681,7 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
     const latest=appliedByBatch.get(batchId);
     if(latest&&undoAvailable&&latest.policyVersion===W.version()){
       const banner=n('div',null,{role:'status'});
-      const undo=b('已应用 {0} 条 · 撤销',async()=>{
-        undo.disabled=true;
-        const scope=scopeKey();
-        try{
-          const result=await api(batchPath(batchId)+'/undo',{method:'POST',body:{expected_policy_version:latest.policyVersion}});
-          if(scope!==scopeKey())return;
-          W.acceptImportVersion(result.policy_version,W.scope());
-          appliedByBatch.delete(batchId);
-          void refresh();
-        }catch(error){
-          if(scope!==scopeKey())return;
-          toast(message(error),'warn');
-          if(error.status===409)void refresh();else undo.disabled=false;
-        }
-      });
-      undo.disabled=busy;
-      undo.textContent=T('已应用 {0} 条 · 撤销',latest.applied);
-      banner.append(undo);
+      banner.append(l('p',T('已应用 {0} 条。可在上方使用“撤销上一步”。',latest.applied)));
       if(latest.steps>1)banner.append(n('p','每次只能撤销最近一步；更早的步骤无法通过此操作撤销。',{class:'hint'}));
       tools.append(banner);
     }
@@ -719,13 +694,16 @@ if (typeof module === 'object' && module.exports) module.exports = RFImportAICon
         link.append(l('span',' · #'+row.audit_id));
         links.append(link);
       }
-      tools.append(el('details',{class:'rf-plain-disclosure rf-import-ai-audit'},n('summary',ui+'audit'),links));
+      const history=el('details',{class:'rf-plain-disclosure rf-import-ai-audit'},n('summary',ui+'audit'),links);
+      history.open=detailState.get('audit:'+batchId)===true;
+      history.addEventListener('toggle',()=>{if(history.isConnected)detailState.set('audit:'+batchId,history.open);});
+      tools.append(history);
     }
     if(tools.childNodes.length)host.append(tools);
   }
 
   window.ImportReviewAI={
     load,toolbar,badge,suggestion:rowSuggestion,summary,conflict,
-    reset(){epoch++;settings=null;settingsError=null;loading=null;submitting=false;counts=null;authDenied=false;suggestions.clear();audits.clear();selected.clear();conflicts.clear();appliedByBatch.clear();}
+    reset(){activeRequest?.abort();activeRequest=null;scorecardCache=null;keyDrafts.clear();detailState.clear();selectedTitles.clear();epoch++;settings=null;settingsError=null;loading=null;submitting=false;counts=null;authDenied=false;suggestions.clear();audits.clear();selected.clear();conflicts.clear();appliedByBatch.clear();}
   };
 })();

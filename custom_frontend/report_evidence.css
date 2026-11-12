@@ -21,3 +21,8 @@
 .mp-error{color:var(--danger);font-size:12px}.mp-dialog [hidden]{display:none!important}.mp-dialog :focus-visible{outline:2px solid var(--primary);outline-offset:3px}
 @media(max-width:760px){.mp-entry{font-size:11px;padding:6px 9px;min-height:36px}.mp-dialog header,.mp-dialog-body{padding:14px}.mp-dialog footer{padding:11px 14px}.mp-dialog footer>.btn{min-height:42px;flex:1}.mp-types,.mp-confidence-grid{grid-template-columns:1fr}.mp-actions .btn{min-height:40px}.mp-dialog h2{font-size:18px}.mp-link-summary{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.mp-dialog *{transition:none!important;animation:none!important}}
+
+/* E-DYN-31：并列差异在窄屏纵向展开，长依据不得撑破弹窗。 */
+.mp-conflict{border:1px solid var(--accent);border-radius:8px;padding:12px;margin-bottom:16px;background:var(--bg)}
+.mp-conflict h3,.mp-conflict h4{margin:0 0 8px}.mp-conflict-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}.mp-conflict-columns>section{min-width:0;padding:10px;border:1px solid var(--border);border-radius:6px}.mp-conflict-columns strong{font-size:12px;color:var(--muted)}.mp-conflict-columns p{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0 12px;font-size:13px}.mp-conflict .mp-check{align-items:flex-start}
+@media(max-width:560px){.mp-conflict-columns{grid-template-columns:1fr}}

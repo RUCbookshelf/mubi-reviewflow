@@ -15,7 +15,7 @@
  function msg(t){if(typeof toast==='function')toast(T(t));}
  // 写操作按钮按中文源键标记 data-mp-mutation（与界面语言无关）；lockState 汇总「旧任务冻结/在途/打开时无权限」三种禁用来源。
  // mpLock 由 draw() 在撤销栈耗尽等状态性禁用时设置：finally/syncStaleDialogs 的统一恢复不得覆盖该禁用（F06）。
- const lockState=b=>{const dlg=b.closest('dialog');return b.dataset.mpLock==='1'||dlg?.mpDraftScope!==undefined&&dlg.mpDraftScope!==task||b.dataset.mpBusy==='1'||b.dataset.mpNoWrite==='1';};
+ const lockState=b=>{const dlg=b.closest('dialog');return b.dataset.mpLock==='1'||b.dataset.mpConflict==='1'||dlg?.mpDraftScope!==undefined&&dlg.mpDraftScope!==task||b.dataset.mpBusy==='1'||b.dataset.mpNoWrite==='1';};
  function btn(text,fn,kind='b-out'){const b=n('button',text,{type:'button',class:'btn '+kind+' sm'});const mutation=/^(保存|解除|确认关系|撤销)/.test(text);if(mutation)b.dataset.mpMutation='1';if(/^(保存|解除)/.test(text)&&server&&!server.can_write){b.dataset.mpNoWrite='1';b.disabled=true;}b.onclick=async()=>{if(mutation){b.dataset.mpBusy='1';b.disabled=true;}try{await fn();}catch(e){const d=b.closest('dialog'),existing=d?.querySelector('.mp-error');if(d){const p=existing||n('p',null,{class:'mp-error',role:'alert'});p.textContent=window.WorkflowControls?.errorText(e)||e.message;if(!existing)d.querySelector('.mp-dialog-body')?.prepend(p);}else msg(window.WorkflowControls?.errorText(e)||e.message);}finally{if(mutation){delete b.dataset.mpBusy;if(b.isConnected)b.disabled=lockState(b);}}};return b;}
  function actions(...buttons){const a=n('div',null,{class:'mp-actions'});a.append(...buttons);return a;}
  function note(text){return n('p',text,{class:'mp-note'});}
@@ -44,7 +44,7 @@
  const STALE=/Evidence changed|Confirmed relationships changed/;
  const CONFLICT='报告关联与证据已被其他成员或窗口更新，已自动刷新为最新内容；请基于最新内容重新确认。';
  function conflictError(){return Error(T(CONFLICT));}
- async function change(text,fn,m=null){if(m&&m.d.mpDraftScope!==undefined&&m.d.mpDraftScope!==task)throw Error('任务已变化，请重新载入。');if(!scopeInit())throw Error('任务已变化，请重新载入。');if(saving)throw Error('正在保存，请稍候。');if(!server?.can_write)throw Error('当前成员无权保存报告关联与证据。');const scope=task,before=structuredClone(model);saving=true;++loadTicket;try{fn();const state=structuredClone(model);state.links=state.links.filter(l=>l.status==='mine').map(l=>{delete l.actor_id;return l;});delete state.trace;const result=await api(base(),{method:'PUT',body:{expected_revision:server.revision,operation_id:crypto.randomUUID(),state,label:text,stage:['screen','fulltext'].includes(context()?.page)?context().page:'coding'}});if(scope!==task)return;absorb(result);}catch(e){if(scope===task)model=before;if(scope===task&&e?.status===409&&STALE.test(e.message||'')){await load(true);throw conflictError();}throw e;}finally{saving=false;}}
+ async function change(text,fn,m=null){if(m&&m.d.mpDraftScope!==undefined&&m.d.mpDraftScope!==task)throw Error('任务已变化，请重新载入。');if(!scopeInit())throw Error('任务已变化，请重新载入。');if(saving)throw Error('正在保存，请稍候。');if(!server?.can_write)throw Error('当前成员无权保存报告关联与证据。');const scope=task,before=structuredClone(model);saving=true;++loadTicket;try{fn();const state=structuredClone(model);state.links=state.links.filter(l=>l.status==='mine').map(l=>{delete l.actor_id;return l;});delete state.trace;const result=await api(base(),{method:'PUT',body:{expected_revision:m?.expectedRevision??server.revision,operation_id:crypto.randomUUID(),state,label:text,stage:['screen','fulltext'].includes(context()?.page)?context().page:'coding'}});if(scope!==task)return;absorb(result);}catch(e){if(scope===task)model=before;if(scope===task&&e?.status===409&&STALE.test(e.message||'')){const previous=server;await load(true);if(scope===task&&scopeInit())m?.onConflict?.(server!==previous);if(server===previous)throw Error(T('暂时无法取得最新内容；请重试读取，当前输入已保留。'));throw conflictError();}throw e;}finally{saving=false;}}
  // undo/adjudicate 与 change() 同级的在途守卫：saving 互斥、递增 loadTicket 使旧载入响应失效（F07），
  // 期间触发的普通 load() 被 saving 挡下，避免旧快照覆盖撤销/裁决后的状态。
  async function undo(shared=false){if(!scopeInit())throw Error('任务已变化，请重新载入。');if(saving)throw Error('正在保存，请稍候。');const scope=task;saving=true;++loadTicket;try{const result=await api(base()+(shared?'/relations/undo':'/undo'),{method:'POST',body:{expected_revision:shared?server.shared_revision:server.revision}});if(scope===task)absorb(result);}catch(e){if(scope===task&&e?.status===409&&STALE.test(e.message||'')){await load(true);msg(CONFLICT);return;}throw e;}finally{saving=false;}}
@@ -62,7 +62,7 @@
    const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(first+'\x1f'+second));
    return Array.from(new Uint8Array(hash),byte=>byte.toString(16).padStart(2,'0')).join('');
  }
- const PAIR_CHANGED='提案已被提案人修改，请刷新后重新确认';
+ const PAIR_CHANGED='提案已更新，列表已自动刷新；请核对最新内容后重新确认。';
  const PAIR_CHANGED_DETAIL='Proposal changed since you viewed it. Reload and re-confirm.';
  async function adjudicate(link,action){
    if(!scopeInit())throw Error('任务已变化，请重新载入。');
@@ -99,8 +99,9 @@
      if(scope===task&&e?.status===409){
        const changedPair=e.message===PAIR_CHANGED_DETAIL;
        if(changedPair||STALE.test(e.message||'')){
-         await load(true);
+         const previous=server;await load(true);
          if(scope!==task)return;
+         if(server===previous)return '暂时无法取得最新内容；请重试读取，当前输入已保留。';
          if(changedPair)return PAIR_CHANGED;
          msg(CONFLICT);
          return;
@@ -118,7 +119,92 @@
  function select(options,value,fn,label,dataOptions=false){const s=n('select',null,{'aria-label':label});for(const[v,t]of options)s.append((dataOptions?literal:n)('option',t,{value:v}));s.value=value;s.onchange=()=>{fn(s.value);persist();};return s;}
  function check(text,value,fn){const l=n('label',null,{class:'mp-check'}),i=n('input',null,{type:'checkbox'});i.checked=!!value;i.onchange=()=>{fn(i.checked);persist();};l.append(i,n('span',text));return l;}
  function fold(title){const d=n('details',null,{class:'mp-section'}),s=n('summary');s.append(n('span',title));s.insertAdjacentHTML('beforeend',svg('chevron'));d.append(s);return d;}
- function openRelated(key,existing=null){if(!getReport(key))return msg('请先载入文献。');if(fixtures.length<2)return msg('至少需要两篇文献才能建立报告关系。');active=key;const m=dialog('关联报告'),r=getReport(key);m.body.append(reportBox(key),note('关联不会复制筛选决定或删除报告。独立工作阶段先保存为个人线索。'));let other=existing?(existing.a===key?existing.b:existing.a):fixtures.find(f=>f.key!==key).key,type=existing?.type||'study',same=existing?.same||false,evidence=existing?.evidence||'',locator=existing?.locator||'';const draftKey='related|'+key+'|'+(existing?[existing.a,existing.b].sort().join('|'):'new'),base=[other,type,same,evidence,locator],stashed=readStash(draftKey);if(stashed&&stashed.type in labels&&fixtures.some(f=>f.key===stashed.other&&f.key!==key)){other=stashed.other;type=stashed.type;same=!!stashed.same;evidence=String(stashed.evidence??'');locator=String(stashed.locator??'');restoreNote(m);}trackDraft(m,draftKey,()=>[other,type,same,evidence,locator].some((v,i)=>v!==base[i]),()=>({other,type,same,evidence,locator}));const pick=select(fixtures.filter(f=>f.key!==key).map(f=>[f.key,f.title]),other,v=>other=v,'选择相关报告',true);m.body.append(field('选择相关报告',pick));const fset=n('fieldset',null,{class:'mp-types'});fset.append(n('legend','关系类型'));const sample=check('已单独核对：两篇报告使用相同样本',same,v=>same=v);sample.hidden=type!=='study';for(const[v,t]of Object.entries(labels)){const l=n('label',null,{class:'mp-radio'}),i=n('input',null,{type:'radio',name:'mp-relationship',value:v});i.checked=type===v;i.onchange=()=>{type=v;sample.hidden=type!=='study';persist();};l.append(i,n('span',t));fset.append(l);}m.body.append(fset,sample,field('依据／原文片段（可稍后补充）',input(evidence,v=>evidence=v,true)),field('页码／位置',input(locator,v=>locator=v)),note('作者或样本量相同只提供线索。同一研究不自动等于同一样本。'));m.foot.append(btn('查看已有关系',()=>{m.d.close();manage(false);}),btn('取消',()=>m.d.close()),btn('保存我的线索',async()=>{await change('保存个人关联线索',()=>{const pair=[key,other].sort().join('|');model.links=model.links.filter(l=>!(l.status==='mine'&&[l.a,l.b].sort().join('|')===pair));model.links.push({id:crypto.randomUUID(),a:key,b:other,type,same:type==='study'&&same,evidence,locator,status:'mine'});},m);savedClose(m);msg('个人线索已保存；团队确认前不作为共享关系。');},'b-inc'));m.show();}
+ // E-DYN-31：编辑器绑定打开时的修订；409 后只刷新比较数据，显式确认差异前禁止再次写入。
+ function openRelated(key,existing=null){
+   if(!getReport(key))return msg('请先载入文献。');
+   if(fixtures.length<2)return msg('至少需要两篇文献才能建立报告关系。');
+   active=key;
+   const m=dialog('关联报告');
+   m.expectedRevision=server.revision;
+   m.body.append(reportBox(key),note('关联不会复制筛选决定或删除报告。独立工作阶段先保存为个人线索。'));
+   let other=existing?(existing.a===key?existing.b:existing.a):fixtures.find(f=>f.key!==key).key,
+     type=existing?.type||'study',same=existing?.same||false,evidence=existing?.evidence||'',locator=existing?.locator||'';
+   const originalId=existing?.status==='mine'?existing.id:null;
+   const draftKey=originalId?'related|id:'+originalId:'related|'+key+'|'+(existing?[existing.a,existing.b].sort().join('|'):'new'),
+     initial=[other,type,same,evidence,locator],stashed=readStash(draftKey);
+   let conflictPending=false,comparison=null;
+   if(stashed&&stashed.type in labels&&fixtures.some(f=>f.key===stashed.other&&f.key!==key)){
+     other=stashed.other;type=stashed.type;same=!!stashed.same;evidence=String(stashed.evidence??'');locator=String(stashed.locator??'');
+     restoreNote(m);
+   }
+   const current=()=>({a:key,b:other,type,same:type==='study'&&same,evidence,locator});
+   trackDraft(m,draftKey,()=>conflictPending||[other,type,same,evidence,locator].some((v,i)=>v!==initial[i]),
+     ()=>({other,type,same,evidence,locator,conflict:conflictPending,revision:m.expectedRevision}));
+   const pick=select(fixtures.filter(f=>f.key!==key).map(f=>[f.key,f.title]),other,v=>other=v,'选择相关报告',true);
+   m.body.append(field('选择相关报告',pick));
+   const fset=n('fieldset',null,{class:'mp-types'}),radios=[];
+   fset.append(n('legend','关系类型'));
+   const sample=check('已单独核对：两篇报告使用相同样本',same,v=>same=v);
+   sample.hidden=type!=='study';
+   for(const[v,t]of Object.entries(labels)){
+     const l=n('label',null,{class:'mp-radio'}),i=n('input',null,{type:'radio',name:'mp-relationship',value:v});
+     i.checked=type===v;radios.push([v,i]);
+     i.onchange=()=>{type=v;sample.hidden=type!=='study';persist();};l.append(i,n('span',t));fset.append(l);
+   }
+   const evidenceInput=input(evidence,v=>evidence=v,true),locatorInput=input(locator,v=>locator=v);
+   m.body.append(fset,sample,field('依据／原文片段（可稍后补充）',evidenceInput),field('页码／位置',locatorInput),note('作者或样本量相同只提供线索。同一研究不自动等于同一样本。'));
+   const save=btn('保存我的线索',async()=>{
+     // 除 disabled 外再校验状态，阻止脚本点击及过期事件触发写入。
+     if(conflictPending)throw Error(T('请先核对并确认差异，再保存当前输入。'));
+     await change('保存个人关联线索',()=>{
+       const pair=[key,other].sort().join('|');
+       model.links=model.links.filter(l=>!(l.status==='mine'&&(l.id===originalId||[l.a,l.b].sort().join('|')===pair)));
+       model.links.push({id:originalId||crypto.randomUUID(),...current(),status:'mine'});
+     },m);
+     savedClose(m);msg('个人线索已保存；团队确认前不作为共享关系。');
+   },'b-inc');
+   const setConflict=on=>{conflictPending=on;if(on)save.dataset.mpConflict='1';else delete save.dataset.mpConflict;save.disabled=lockState(save);persist();};
+   const pairOf=l=>[l.a,l.b].sort().join('|');
+   m.onConflict=refreshed=>{
+     setConflict(true);
+     comparison?.remove();
+     comparison=n('section',null,{class:'mp-conflict',role:'alert'});
+     comparison.append(n('h3','其他窗口已更新这条线索'),note('当前输入尚未保存。请并列核对最新内容，确认差异后再保存。'));
+     if(!refreshed){
+       comparison.append(note('暂时无法取得最新内容；请重试读取，当前输入已保留。'),btn('重新读取最新内容',async()=>{
+         const previous=server;await load(true);if(m.d.mpDraftScope===task)m.onConflict(server!==previous);
+       }));
+     }else{
+       m.expectedRevision=server.revision;
+       const local=current(),latest=model.links.find(l=>l.status==='mine'&&(originalId?l.id===originalId:pairOf(l)===pairOf(local))),
+         columns=n('div',null,{class:'mp-conflict-columns'});
+       const column=(title,value)=>{
+         const box=n('section');box.append(n('h4',title));
+         if(!value){box.append(note('最新版本已移除这条线索；保存当前输入会重新建立它。'));return box;}
+         const fields=[['选择相关报告',value.a+' ↔ '+value.b],['关系类型',T(labels[value.type])],
+           ['相同样本',T(value.same?'相同样本已单独核对':'样本关系尚未单独确认')],['依据／原文片段（可稍后补充）',value.evidence||'—'],['页码／位置',value.locator||'—']];
+         for(const[label,value]of fields)box.append(n('strong',label),literal('p',value));return box;
+       };
+       columns.append(column('冲突时的当前输入',local),column('服务器最新内容',latest));comparison.append(columns);
+       const acknowledged=check('我已核对差异，确认以表单中的当前输入保存',false,checked=>setConflict(!checked));
+       comparison.append(acknowledged);
+       // 被替换的报告对可能不再含原锚点，此时只能明确确认恢复原报告对，不能伪装已载入最新值。
+       if(latest&&(latest.a===key||latest.b===key))comparison.append(btn('将最新内容载入表单',()=>{
+         other=latest.a===key?latest.b:latest.a;type=latest.type;same=!!latest.same;evidence=latest.evidence||'';locator=latest.locator||'';
+         pick.value=other;for(const[value,radio]of radios)radio.checked=value===type;
+         sample.querySelector('input').checked=same;sample.hidden=type!=='study';evidenceInput.value=evidence;locatorInput.value=locator;
+         // 载入最新值仍不替用户确认；须读完差异后主动勾选。
+         setConflict(true);acknowledged.querySelector('input').checked=false;persist();
+       }));
+     }
+     m.body.prepend(comparison);persist();
+   };
+   m.foot.append(btn('查看已有关系',()=>{m.d.close();manage(false);}),btn('取消',()=>m.d.close()),save);
+   // 恢复草稿也要检查它依据的修订，避免关闭后重新打开绕过 409 确认。
+   if(stashed&&(stashed.conflict||stashed.revision!==undefined&&stashed.revision!==server.revision))m.onConflict(true);
+   m.show();
+ }
+
  function manage(adjudicateView=false){const m=dialog(adjudicateView?'报告关系裁决':'研究与样本关系');m.body.append(note(adjudicateView?'团队裁决需要所有者／仲裁者权限，并暂停独立筛选与编码。':'我的线索与已确认关系分开显示；其他成员的个人线索在独立阶段不可见。'));const host=n('div');let personalUndo,sharedUndo;
  // 撤销可用性属状态性禁用：置 disabled 时同步标记 mpLock，防止点击收尾逻辑把按钮重新启用（F06）。
  function setUndoLock(b,disable){b.disabled=disable;if(disable)b.dataset.mpLock='1';else delete b.dataset.mpLock;}
@@ -184,7 +270,9 @@
   m.body.append(field('参考报告',select(fixtures.map(r=>[r.key,r.title]),source,v=>{source=v;draw();},'定性评价的参考报告',true)),field('评价工具',select([['jbi','JBI 定性研究评价'],['casp','CASP 定性研究评价']],tool,v=>{tool=v;draw();},'定性评价工具')),note('评价针对研究的方法学；可结合关联报告，逐项记录依据。中文问题为释义，可打开原始清单核对。'),progress,host);
   function draft(){const k=tool+'|'+source;return drafts[k]??(drafts[k]={items:{},summary:''});}
   function update(){progress.textContent=T('已填写 {0} / 10 项 · 可保存未完成草稿',Object.values(draft().items).filter(i=>i.judgment).length);}
-  function draw(){host.replaceChildren();const d=draft();questions[tool].forEach((q,index)=>{const i=d.items[index]??(d.items[index]={judgment:'',reason:'',locator:''}),section=fold((index+1)+'. '+T(q));section.open=index===0;const options=[['','未评估'],['yes','是'],['no','否'],['unclear',tool==='casp'?'无法判断':'不明确']];if(tool==='jbi')options.push(['na','不适用']);section.append(field('判断',select(options,i.judgment,v=>{i.judgment=v;update();},T('判断')+' '+(index+1))),field('判断依据',input(i.reason,v=>i.reason=v,true)),field('报告／页码／位置',input(i.locator,v=>i.locator=v)));host.append(section);});host.append(field('综合说明与未解决问题',input(d.summary,v=>d.summary=v,true)));const reference=n('p',null,{class:'mp-note'});reference.append(n('a',tool==='jbi'?'查看 JBI 原始清单':'查看 CASP 2024 原始清单',{href:urls[tool],target:'_blank',rel:'noopener noreferrer'}));host.append(reference,note('不生成质量总分，不自动排除研究，也不把评价转换为效应量权重。'));update();}
+  // E-12：按问题序号延续展开位置，切换报告或工具后仍可对照同一问题。
+  let expandedQuestions=null;
+  function draw(){if(host.children.length)expandedQuestions=new Set([...host.querySelectorAll('details')].map((section,index)=>section.open?index:-1));host.replaceChildren();const d=draft();questions[tool].forEach((q,index)=>{const i=d.items[index]??(d.items[index]={judgment:'',reason:'',locator:''}),section=fold((index+1)+'. '+T(q));section.open=expandedQuestions?expandedQuestions.has(index):index===0;const options=[['','未评估'],['yes','是'],['no','否'],['unclear',tool==='casp'?'无法判断':'不明确']];if(tool==='jbi')options.push(['na','不适用']);section.append(field('判断',select(options,i.judgment,v=>{i.judgment=v;update();},T('判断')+' '+(index+1))),field('判断依据',input(i.reason,v=>i.reason=v,true)),field('报告／页码／位置',input(i.locator,v=>i.locator=v)));host.append(section);});host.append(field('综合说明与未解决问题',input(d.summary,v=>d.summary=v,true)));const reference=n('p',null,{class:'mp-note'});reference.append(n('a',tool==='jbi'?'查看 JBI 原始清单':'查看 CASP 2024 原始清单',{href:urls[tool],target:'_blank',rel:'noopener noreferrer'}));host.append(reference,note('不生成质量总分，不自动排除研究，也不把评价转换为效应量权重。'));update();}
   draw();m.foot.append(btn('取消',()=>m.d.close()),btn('保存评价草稿',async()=>{await change('保存定性方法学评价草稿',()=>{model.appraisalTool=tool;const k=tool+'|'+source;if(entryDiff(k)){model.appraisals={...(model.appraisals||{})};if(draftFilled(drafts[k]))model.appraisals[k]=structuredClone(drafts[k]);else delete model.appraisals[k];}},m);savedClose(m);msg('评价草稿已保存。');},'b-inc'));m.show();
  }
  function start(){document.addEventListener('reviewflow:language-changed',()=>{for(const e of document.querySelectorAll('[data-mp-text]')){const node=[...e.childNodes].find(x=>x.nodeType===Node.TEXT_NODE);if(node)node.textContent=T(e.dataset.mpText);}/* review67 L-21 */for(const close of document.querySelectorAll('.mp-dialog[open] [data-mp-close]'))close.setAttribute('aria-label',T('关闭'));});let pending=false;new MutationObserver(()=>{if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;mount();addMethodEntries();});}).observe($('#appMain'),{childList:true,subtree:true});function update(){const scope=[context()?.task?.task_id,context()?.user?.user_id].join('|');if(scope!==task){persist();if(!discardPrompt){const dialogs=[...document.querySelectorAll('.mp-dialog')],dirtyList=dialogs.filter(d=>d.mpDraftDirty?.());let prompt=false;for(const d of dialogs){if(d.mpDraftDirty?.()){if(!d.dataset.mpDraftPrompt){d.dataset.mpDraftPrompt='1';prompt=true;}}else d.close();}if(prompt)confirmDiscard(dirtyList);}task='';model=null;server=null;fixtures=[];active='';last=null;mount();void load();}else{mount();addMethodEntries();if(catalogueDirty&&context().page!=='import'&&!saving)void load();}syncStaleDialogs();}document.addEventListener('reviewflow:workspace-changed',update);document.addEventListener('reviewflow:task-context-changed',update);document.addEventListener('reviewflow:import-completed',()=>{catalogueDirty=true;if(context()?.page!=='import'&&!saving)void load();});document.addEventListener('reviewflow:workflow-changed',()=>{if(!saving)void load();});if(context()?.task)void load();}

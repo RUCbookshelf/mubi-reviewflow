@@ -482,8 +482,8 @@
         if (!taskId && anchoredTaskId) taskId = anchoredTaskId;
         if (!taskId) {
           if (!isSave) {
-            const ok = confirm(T('生成检索式需要先把方案保存到一个任务。将创建新任务《{0}》，是否继续？', body.title));
-            if (!ok) return;
+            const ok = await RFConfirm(T('生成检索式需要先把方案保存到一个任务。将创建新任务《{0}》，是否继续？', body.title));
+            if (!ok || ticket!==version || revision!==formRevision) return;
           }
           try {
             const t = await api('/api/tasks', { method: 'POST', body: { name: body.title, description: body.research_question } });

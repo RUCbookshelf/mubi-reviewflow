@@ -2,6 +2,16 @@
 (function () {
   'use strict';
   const W = window.WorkflowControls = {};
+  // Every global shortcut uses the same modal boundary, including dialogs opened
+  // by independently loaded workspaces.
+  window.RFModalActive = () => [...document.querySelectorAll('dialog[open], [role="dialog"][aria-modal="true"]')]
+    .some(dialog => !dialog.hidden && dialog.getClientRects().length > 0);
+  const registeredDrafts = new Map();
+  W.registerDraft = (name, handlers) => {
+    registeredDrafts.set(name, handlers);
+    return () => { if(registeredDrafts.get(name) === handlers) registeredDrafts.delete(name); };
+  };
+  const extraDirty = () => [...registeredDrafts.values()].some(draft => draft.dirty?.());
   const stages = ['screen', 'fulltext', 'coding'];
   const stagePage = {screen:'screen', fulltext:'fulltext', coding:'bench'};
   const selected = {screen:'', fulltext:'', coding:''};
@@ -21,6 +31,11 @@
   const syncSettingsDirty=()=>{settingsDirty=!!draft&&draftBaseline!==null&&draftSignature(draft)!==draftBaseline;return settingsDirty;};
   // Catalogue counters and the mutation version are not editable policy changes.
   const policySignature=value=>JSON.stringify({draft:draftSignature(value),can_manage:value?.can_manage,task_kind:value?.task_kind,sources:(value?.sources||[]).map(s=>[s.id,s.active]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))),fields:value?.evidence_fields,issues:value?.mapping_issues,submission:value?.submission_evidence?.available});
+  const stageSignature=(value,stage)=>JSON.stringify({stage:value?.stages?.[stage],sources:(value?.sources||[]).filter(source=>value?.stages?.[stage]?.mode!=='selected'||value.stages[stage].source_ids.includes(source.id)).map(source=>[source.id,source.active,source.linked_count]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))),coding:stage==='coding'?[value?.evidence_required_field_ids,value?.evidence_fields,value?.mapping_issues,value?.submission_evidence?.available]:null});
+  const pendingStages=new Set();
+  let editorRendered=null,reasonsRendered=null;
+  let pollFailures=0,nextPollAt=0,pollNoticeDismissed=false;
+  let savingSettings=false;
   let editRevision = 0, autoReload = null, deferredRefresh = false, reasonsTicket = 0, pendingPolicyRefresh = false;
   let policyFlight = null;
   let context = '', refreshTicket = 0, activeTab = 'overview', animation = null, dialogPromise = null;
@@ -85,7 +100,7 @@
   W.reasonDraftOnly=()=>{
     const draftInfo=W.reasonDraft();
     if(!draftInfo)return null;
-    const other=W.settingsDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
+    const other=W.settingsDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty()||extraDirty();
     return other?null:draftInfo;
   };
   W.clearReasonDraft=stage=>{
@@ -98,9 +113,9 @@
     W.markDecisionClean(target);
     return true;
   };
-  W.anyDirty=()=>W.settingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
-  const pendingWork=()=>apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving();
-  const policyDraftDirty=()=>syncSettingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty();
+  W.anyDirty=()=>W.settingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty()||extraDirty();
+  const pendingWork=()=>apiPendingWrites>0||window.WorkspaceUndo?.isBusy()||window.WorkflowEvidence?.uploading()||window.WorkflowExtraction?.saving()||[...registeredDrafts.values()].some(draft=>draft.saving?.());
+  const policyDraftDirty=()=>syncSettingsDirty()||W.decisionDirty()||window.WorkflowEvidence?.dirty()||window.WorkflowExtraction?.dirty()||extraDirty();
   const retainDraft=()=>{if(!pendingPolicyReview||!policyDraftDirty())return;$('#wf-settings-notice').textContent=T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.');$('#wf-policy-recovery').hidden=false;};
   for(const event of ['input','change'])document.addEventListener(event,e=>{if(!['taskSel','screenerSel'].includes(e.target.id))editRevision++;},true);
   W.refreshing=()=>!!autoReload;
@@ -113,7 +128,7 @@
     const contextControls=['taskSel','screenerSel'].map(id=>[document.getElementById(id),document.getElementById(id).disabled]);
     for(const [control] of contextControls)control.disabled=true;
     autoReload=token;page.inert=true;page.setAttribute('aria-busy','true');
-    try{if(W.renderAllowed()){await W.reload(stage);if(W.renderAllowed()){pendingPolicyRefresh=false;pendingPolicyReview=false;}}}
+    try{if(W.renderAllowed()){await W.reload(stage);if(W.renderAllowed()){pendingStages.delete(stage);pendingPolicyRefresh=pendingStages.size>0;pendingPolicyReview=false;}}}
     finally{autoReload=null;for(const [control,disabled] of contextControls)control.disabled=disabled;page.inert=inert;if(busy==null)page.removeAttribute('aria-busy');else page.setAttribute('aria-busy',busy);if(deferredRefresh){deferredRefresh=false;run(()=>W.refresh('deferred'));}}
   }
 
@@ -142,6 +157,7 @@
   };
   W.sourceLabel = source => source.reserved || source.id==='00000000-0000-0000-0000-000000000000' ? T('Source not recorded') : source.name;
   W.error = error => {
+    if(error.status===401)return; // The auth owner already gives one session-expired notice.
     toast(W.errorText(error), 'warn');
     if (error.status === 409 && (error.workflowSettings || ['workflow_version_conflict','stage_paused','article_outside_scope'].includes(error.code))) run(() => W.refresh('conflict'));
   };
@@ -185,11 +201,6 @@
     /* F14（r10-u1）：零任务状态下概览顶部的一步引导卡（与 F13 空态同批）。
        只在「任务列表已载入且为空」时出现，加载中不闪；样式克制（单行 + 一个
        主按钮），不与下方 12 张功能卡抢视觉优先级。 */
-    const firstStep = n('div', null, {id:'wf-first-step', class:'card wf-first-step', hidden:''});
-    firstStep.append(n('b','First step: create a task'),
-      n('p','Screening, coding and analysis all run inside a task. Create one to start.',{class:'hint'}),
-      button('Create a task',()=>{activate('tasks');document.getElementById('newTaskName')?.focus();}));
-    panels.overview.prepend(firstStep);
     panels.overview.append(n('div', null, {id:'wf-pending-imports', class:'card', hidden:''}));
     const lang = n('select', null, {class:'input', 'aria-label':T('Language')});
     for (const [value,label] of [['zh-CN','简体中文'],['en','English'],['fr','Français'],['ru','Русский'],['es','Español'],['ja','日本語'],['pt','Português'],['de','Deutsch'],['sr','Српски'],['ko','한국어']]) lang.append(el('option',{value,text:label,translate:'no'}));
@@ -216,7 +227,8 @@
     teamBox.append(n('section',null,{id:'wf-sources'}));
     const savebar=n('div',null,{class:'wf-settings-save'});
     savebar.append(button('Save current task workflow settings',()=>run(W.saveSettings)),button('Reload current task workflow settings',()=>run(async()=>{if(await W.guard()) {settingsDirty=false; await W.refresh('reload');}})),n('span',null,{id:'wf-settings-notice',role:'status'}));
-    home.append(n('p',"此按钮保存当前任务的阶段来源与证据要求。排除理由、来源名称和机器学习设置分别保存。显示偏好自动保存在本浏览器。",{class:'hint'}),savebar);
+    const saveHint=n('p',"此按钮保存当前任务的阶段来源与证据要求。排除理由、来源名称和机器学习设置分别保存。显示偏好自动保存在本浏览器。",{class:'hint'});
+    home.append(saveHint,savebar);
     const recovery=n('div',null,{id:'wf-policy-recovery',class:'card',hidden:'',role:'status'});
     recovery.append(n('p','Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'),button('Review current policy',()=>{const details=n('dialog',null,{class:'wf-source-dialog','aria-label':T('Current workflow policy')});details.append(n('h3','Current workflow policy'),literal('pre',JSON.stringify(settings,null,2)),button('Apply current policy version to retained draft',()=>run(async()=>{if(draft)draft.version=settings.version;await window.WorkflowEvidence?.revalidate();if(['screen','fulltext'].includes(S.page)){const stage=S.page,key=stage==='screen'?S.articles[S.scrIdx]?.zotero_key:curFt()?.zotero_key;if(key){await W.item(stage,key);W.decorateStage(stage);}}details.close();details.remove();recovery.hidden=true;})),button('Stay',()=>{details.close();details.remove();}));document.body.append(details);details.showModal();}));
     document.querySelector('#appMain').prepend(recovery);
@@ -244,11 +256,17 @@
       frames[0]={left:start+'px',width:oldWidth+'px',offset:0};frames[frames.length-1]={left:left+'px',width:width+'px',offset:1};
       animation=indicator.animate(frames,{duration:460,fill:'none'});
     }
+    const tabScroll=new Map();
     function activate(key) {
+      const scroller=document.querySelector('#appMain .view');
+      if(scroller&&key!==activeTab)tabScroll.set(activeTab,scroller.scrollTop);
       activeTab=key;
       for(const tab of tabs.querySelectorAll('[role=tab]')) {const on=tab.id==='wf-tab-'+key;tab.setAttribute('aria-selected',String(on));tab.tabIndex=on?0:-1;}
       for(const [id,panel] of Object.entries(panels)) panel.hidden=id!==key;
+      savebar.hidden=saveHint.hidden=!['tasks','coding'].includes(key);
+      savebar.style.display=savebar.hidden?'none':'';
       measure();
+      if(scroller)scroller.scrollTop=tabScroll.get(key)||0;
     }
     activate(activeTab);
     const resize=new ResizeObserver(()=>measure(true));resize.observe(tabs);for(const tab of tabs.querySelectorAll('[role=tab]'))resize.observe(tab);
@@ -273,9 +291,12 @@
     const host=document.getElementById('wf-current-task'),first=document.getElementById('wf-first-step');
     if(!host)return;
     const noTasks=Array.isArray(S.tasks)&&S.tasks.length===0;
+    const signature=JSON.stringify([scope(),S.task?.name,noTasks,RFLang.get()]);
+    if(host.dataset.wfRendered===signature&&host.childNodes.length)return;
+    host.dataset.wfRendered=signature;
     if(first)first.hidden=!noTasks;
     if(S.task){
-      host.replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue title-and-abstract screening',()=>go('screen')),button('Continue data extraction & coding',()=>go('bench')));
+      host.replaceChildren(n('b','Current task'),literal('p',S.task.name||S.task.task_id),button('Continue title-and-abstract screening',()=>go('screen')),button('Full-text screening',()=>go('fulltext')),button('Continue data extraction & coding',()=>go('bench')));
       return;
     }
     if(noTasks){
@@ -288,6 +309,9 @@
   }
   function policyEditor() {
     if(!settings || W.settingsDirty()) return;
+    const signature=JSON.stringify([scope(),policySignature(settings),settings.sources,RFLang.get()]);
+    if(editorRendered===signature&&draft){draft.version=settings.version;return;}
+    editorRendered=signature;
     draft=structuredClone(settings);
     draftBaseline=draftSignature(draft);
     $('#wf-team-title').textContent=T(settings.task_kind==='team'?'Team Management':'Task workflow');
@@ -324,16 +348,22 @@
     sourceEditor();
   }
   W.saveSettings=async()=>{
-    if(!draft || !settings.can_manage)return false;
+    if(savingSettings||!draft || !settings.can_manage)return false;
     for(const stage of stages) if(draft.stages[stage].mode==='selected'&&!draft.stages[stage].source_ids.length)throw Error(T('Select at least one source, or choose Paused.'));
     const current=scope();
     const payload={expected_version:draft.version,stages:structuredClone(draft.stages),evidence_required_field_ids:[...draft.evidence_required_field_ids]};
+    savingSettings=true;
+    const buttons=[...document.querySelectorAll('.wf-settings-save button')],states=buttons.map(button=>button.disabled);
+    buttons.forEach(button=>button.disabled=true);$('#wf-settings-notice').textContent=T('Saving…');
+    try{
     const result=await api(taskApi()+'/workflow-settings',{method:'PUT',body:payload});
     if(current!==scope())return false;
     draftBaseline=draftSignature(payload);
     settingsDirty=JSON.stringify(payload.stages)!==JSON.stringify(draft.stages)||JSON.stringify(payload.evidence_required_field_ids)!==JSON.stringify(draft.evidence_required_field_ids);
     if(result.version!=null)draft.version=result.version;
-    await W.refresh('saved');return !settingsDirty;
+    await W.refresh('saved');$('#wf-settings-notice').textContent=T('Saved.');return !settingsDirty;
+    }catch(error){if(current===scope())$('#wf-settings-notice').textContent=W.errorText(error);throw error;}
+    finally{savingSettings=false;buttons.forEach((button,index)=>button.disabled=states[index]);}
   };
   function sourceEditor() {
     const host=$('#wf-sources');host.replaceChildren(n('h4','Imported sources'));
@@ -342,7 +372,7 @@
       const row=n('div',null,{class:'row'}),name=el('input',{class:'input','aria-label':T('Source'),'data-wf-aria':'Source',value:W.sourceLabel(source),translate:source.reserved?'yes':'no',maxlength:'200'});name.readOnly=true;name.disabled=source.reserved;
       trackLibrary(name);
       name.addEventListener('input',()=>editLibrary(name));
-      if(source.reserved)row.append(n('span','Source not recorded',{class:'input'}));else row.append(name);
+      if(source.reserved)row.append(n('span','Source not recorded',{class:'input'}));else row.append(el('span',{class:'input',text:name.value,translate:'no'}));
       row.append(n('span',({metadata:'Database identified from RIS',confirmed:'Confirmed source',inferred:'Suggested database — review identification',file:'Source named from imported filename',legacy:'Legacy source'})[source.identification],{class:'hint'}),el('span',{text:T('Retained import records: {0} · Active articles: {1}',source.record_count||0,source.linked_count||0)}),literal('small',(source.files||[]).join(', ')));
       if(settings.can_manage&&!source.reserved) {
         const type=n('select',null,{class:'input','aria-label':T('Source type')});
@@ -357,12 +387,14 @@
       host.append(row);
     }
   }
-  async function loadReasons(refresh=null) {
+  async function loadReasons(refresh=null,prefetched=null) {
     const current=scope(),ticket=++reasonsTicket;
-    const results=await Promise.all(['screen','fulltext'].map(stage=>api(taskApi()+'/reason-library?stage='+stage)));
+    const results=prefetched||await Promise.all(['screen','fulltext'].map(stage=>api(taskApi()+'/reason-library?stage='+stage)));
     if(current!==scope()||ticket!==reasonsTicket||(refresh!=null&&refresh!==refreshTicket))return;
     for(let i=0;i<2;i++)reasons[['screen','fulltext'][i]]=results[i].entries||[];
-    if(!libraryDirty) {
+    const signature=JSON.stringify([scope(),results,RFLang.get()]);
+    if(!libraryDirty&&reasonsRendered!==signature) {
+      reasonsRendered=signature;
       const host=$('#wf-reasons');host.replaceChildren(n('h3','Reusable exclusion reasons'),n('p',results[0].task_kind==='personal'?'Personal exclusion reasons':'Team exclusion reasons',{class:'hint'}));
       ['screen','fulltext'].forEach((stage,i)=>{
         host.append(n('h4',stage==='screen'?'Title-and-abstract screening':'Full-text screening'));
@@ -418,27 +450,23 @@
   W.decorateReasons=stage=>{
     const select=$(stage==='screen'?'#excReason':'#ftReason'),custom=$(stage==='screen'?'#excCustomReason':'#ftCustomReason');if(!select)return;
     const value=select.value;
+    const signature=JSON.stringify([reasons[stage],!!settings?.can_manage,RFLang.get()]);
+    if(select.dataset.wfLibraryRendered===signature&&select.querySelector('[value="__custom__"]'))return;
+    select.dataset.wfLibraryRendered=signature;
     select.querySelectorAll('[data-library]').forEach(o=>o.remove());
     for(const entry of reasons[stage])if(![...select.options].some(o=>o.value===entry.text)){const option=el('option',{value:entry.text,text:entry.text,translate:'no','data-library':'true'});select.insertBefore(option,select.querySelector('[value="__custom__"]'));}
     if([...select.options].some(o=>o.value===value))select.value=value;
     else if(value&&value!==SAVE_REASON_VALUE){select.value='__custom__';custom.value=value;custom.hidden=false;}
-    /* 特殊选项：位置固定在下拉末尾，重复调用不叠加。 */
-    let saveOption=select.querySelector('[data-wf-save-reason]');
+    // Saving a reusable reason is an explicit action, not a selectable reason.
+    select.setAttribute('aria-label',T('排除理由（必选）'));
+    select.querySelector('[data-wf-save-reason]')?.remove();
+    let saveAction=select.parentElement.querySelector('[data-wf-save-reason-action]');
     if(settings?.can_manage){
-      if(!saveOption){saveOption=el('option',{value:SAVE_REASON_VALUE,'data-wf-save-reason':'','translate':'no',text:T('＋ 将此理由存为常用')});select.append(saveOption);}
-      else select.append(saveOption);
-      if(!select.dataset.wfSaveReasonBound){
-        select.dataset.wfSaveReasonBound='1';
-        let previous=select.value||'';
-        select.addEventListener('change',()=>{
-          if(select.value!==SAVE_REASON_VALUE){previous=select.value;return;}
-          /* 还原选择：保存理由不改变本次排除理由的取值。 */
-          select.value=previous;
-          const text=previous==='__custom__'?(custom?.value||'').trim():previous;
-          saveReasonToLibrary(stage,text);
-        });
+      if(!saveAction){
+        saveAction=button('＋ 将此理由存为常用',()=>saveReasonToLibrary(stage,select.value==='__custom__'?(custom?.value||'').trim():select.value));
+        saveAction.dataset.wfSaveReasonAction='1';select.after(saveAction);
       }
-    }else saveOption?.remove();
+    }else saveAction?.remove();
     if(custom&&!custom.parentElement.classList.contains('wf-custom-reason-row')){
       /* 自定义理由仍包在 .wf-custom-reason-row 内：移动端 CSS 以该行整行排布，
          审批单 F24 只移除行内的「存为常用」按钮，不改输入框的布局契约。 */
@@ -479,6 +507,7 @@
       select.value=selected[stage];
       const p=result.scope_progress;host.querySelector('.wf-scope-progress').textContent=T(evidenceOnly?'Evidence scope: {0} / {1} requirements complete':'Scope: {0} / {1} complete',p.completed,p.total);
       host.querySelector('.wf-readonly').textContent=result.paused?T('Paused — saved work is read-only.'):'';
+      pendingStages.delete(stage);pendingPolicyRefresh=pendingStages.size>0;
       W.clearRecovery();
       return result;
     } catch(error){if(current===scope()&&ticket===tickets[stage])host.querySelector('.wf-scope-progress').textContent=T('Queue unavailable. Use Retry / refresh.')+' '+W.errorText(error);throw error;}
@@ -591,11 +620,21 @@
     if(!S.task||!S.user)return;
     if(autoReload){if(reason!=='entry')deferredRefresh=true;return;}
     const current=scope(),ticket=++refreshTicket,revision=editRevision,page=S.page;
-    const result=await api(taskApi()+'/workflow-settings');
+    const [result,reasonResults]=await Promise.all([api(taskApi()+'/workflow-settings'),Promise.all(['screen','fulltext'].map(stage=>api(taskApi()+'/reason-library?stage='+stage)))]);
     if(current!==scope()||ticket!==refreshTicket||(settings&&result.version<settings.version))return;
-    const policyChanged=!!settings&&policySignature(settings)!==policySignature(result);
+    const previous=settings;
+    const policyChanged=!!previous&&policySignature(previous)!==policySignature(result);
+    for(const stage of stages){
+      if(previous&&stageSignature(previous,stage)!==stageSignature(result,stage))pendingStages.add(stage);
+      // An unrelated policy version must not invalidate the article being read.
+      // Keep the server concurrency token current without replacing its DOM.
+      if(!pendingStages.has(stage)){
+        if(items[stage])items[stage].policy_version=result.version;
+        if(queues[stage])queues[stage].policy_version=result.version;
+      }
+    }
     pendingPolicyReview=pendingPolicyReview||policyChanged;
-    pendingPolicyRefresh=!!(pendingPolicyRefresh||policyChanged||((settings&&settings.version!==result.version)));
+    pendingPolicyRefresh=pendingStages.size>0;
     const changed=pendingPolicyRefresh;
     if(draft&&!policyChanged)draft.version=result.version;
     settings=result;
@@ -606,7 +645,7 @@
     $('#wf-settings-notice').textContent=pendingPolicyReview&&policyDraftDirty()?T('Workflow changed. Your draft is retained. Refresh the policy, review the changes and retry.'):'';
     if(pendingPolicyReview&&policyDraftDirty())$('#wf-policy-recovery').hidden=false;else W.clearRecovery();
     if(!W.settingsDirty())policyEditor();
-    await loadReasons(ticket); // Libraries can change without a policy version increment.
+    await loadReasons(ticket,reasonResults); // Libraries can change without a policy version increment.
     if(current!==scope()||ticket!==refreshTicket)return;
     renderCurrentTask();
     window.WorkflowEvidence?.discovery(result.submission_evidence);
@@ -614,16 +653,28 @@
     if(S.page==='home'&&window.WorkflowImports)await WorkflowImports.notice();
     if(current!==scope()||ticket!==refreshTicket)return;
     if(changed&&(W.anyDirty()||pendingWork()||revision!==editRevision))retainDraft();
-    if(changed&&reload&&page===S.page&&stages.includes({bench:'coding'}[page]||page))await automaticReload({bench:'coding'}[page]||page,{scope:current,page,ticket,revision});
+    const currentStage={bench:'coding'}[page]||page;
+    if(changed&&pendingStages.has(currentStage)&&reload&&page===S.page&&stages.includes(currentStage))await automaticReload(currentStage,{scope:current,page,ticket,revision});
     if(reason==='conflict'&&draft&&!settingsDirty)draft.version=result.version;
     if(reason==='reload'&&!W.anyDirty())W.clearRecovery();
   };
+  function pollNotice(failed){
+    let host=document.getElementById('wf-connection-notice');
+    if(!failed){host?.remove();pollNoticeDismissed=false;return;}
+    if(host||pollNoticeDismissed)return;
+    host=n('div',null,{id:'wf-connection-notice',class:'card',role:'status',style:'margin:8px 22px;padding:10px 14px;flex:none'});
+    host.append(n('p','Connection interrupted. Your work is retained. Retrying automatically.'),
+      button('Retry / refresh',()=>run(()=>W.refresh('retry'))),
+      button('Dismiss',()=>{pollNoticeDismissed=true;host.remove();}));
+    document.querySelector('#appMain .top').after(host);
+  }
   W.refresh=async(reason='poll',reload=true)=>{
     if(!S.task||!S.user)return null;
+    if(['poll','focus'].includes(reason)&&Date.now()<nextPollAt)return settings;
     const requested=scope();
     if(autoReload){if(reason!=='entry')deferredRefresh=true;return settings;}
     if(policyFlight?.scope===requested){
-      await policyFlight.promise;
+        try{await policyFlight.promise;}catch(error){if(['poll','focus'].includes(reason))return settings;throw error;}
       if(requested!==scope())throw Error(T('The task changed. Reload the queue.'));
       // Mutation/event refreshes arriving during a read must observe a fresh read.
       if(!['entry','bootstrap','focus','poll','context'].includes(reason))return W.refresh(reason,reload);
@@ -635,7 +686,16 @@
     try{
       await flight.promise;
       if(requested!==scope()||!settings)throw Error(T('The task changed. Reload the queue.'));
+      pollFailures=0;nextPollAt=0;pollNotice(false);
       return settings;
+    }catch(error){
+      if(requested===scope()&&['poll','focus','retry'].includes(reason)){
+        if(error.status===401)return settings;
+        pollFailures++;nextPollAt=Date.now()+Math.min(300000,30000*2**(pollFailures-1));
+        pollNotice(true);
+        return settings;
+      }
+      throw error;
     }finally{if(policyFlight===flight)policyFlight=null;}
   };
   W.guard=async()=>{
@@ -643,6 +703,7 @@
     if(pendingWork()){toast(T('Wait for the current save or upload to finish.'),'warn');return false;}
     if(!W.anyDirty())return true;
     if(dialogPromise)return dialogPromise;
+    const invokingElement=document.activeElement;
     dialogPromise=new Promise(resolve=>{
       const dialog=n('dialog',null,{class:'wf-dirty-dialog','aria-label':T('Unsaved changes')});
       dialog.append(n('h3','Unsaved changes'),n('p','Save your changes, discard them, or stay here.'));
@@ -690,14 +751,14 @@
         fields.append(n('p','理由随纳入或排除决定一同保存。关闭此对话框后即可选择决定。',{class:'hint'}));
         const clearDraft=button('Clear draft',()=>{
           W.clearReasonDraft(reasonDraft.stage);
-          finish(true);
+          finish(!W.anyDirty());
         });
         clearDraft.dataset.wfClearReasonDraft='1';
         fields.append(clearDraft);
         dialog.append(fields);
       }
       dialog.append(validationMessage);
-      const finish=value=>{dialog.close();dialog.remove();dialogPromise=null;resolve(value);};
+      const finish=value=>{dialog.close();dialog.remove();dialogPromise=null;if(!value&&invokingElement?.isConnected)invokingElement.focus({preventScroll:true});resolve(value);};
       const saveButton=button('Save',()=>run(async()=>{
         if(!W.anyDirty()){finish(true);return;}
         for(const {input,validateReason} of editors){
@@ -715,6 +776,7 @@
         if(alDirty&&!await saveALSettings())return;
         if(window.WorkflowEvidence?.dirty()&&!await WorkflowEvidence.save())return;
         if(window.WorkflowExtraction?.dirty()&&!await WorkflowExtraction.save())return;
+        for(const draft of registeredDrafts.values())if(draft.dirty?.()&&(!draft.save||!await draft.save()))return;
         finish(true);
         }finally{controls.forEach(control=>control.disabled=false);}
       }));
@@ -725,8 +787,8 @@
         saveButton.title=T('请先保存纳入或排除决定，或清空理由草稿。');
         saveButton.setAttribute('aria-disabled','true');
       }
-      dialog.append(saveButton,button('Discard',()=>{settingsDirty=false;for(const field of dirtyFields)field.wfRestore?.();libraryDirty=false;dirtyFields.clear();if(alBaseline)for(const id of alIds)$('#'+id).value=alBaseline[id];alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);draftBaseline=null;policyEditor();W.clearRecovery();finish(true);}),button('Stay',()=>finish(false)));
-      dialog.addEventListener('cancel',event=>{event.preventDefault();if(dialog.querySelector('button')?.disabled)return;finish(false);});document.body.append(dialog);dialog.showModal();
+      dialog.append(saveButton,button('Discard',()=>{settingsDirty=false;for(const field of dirtyFields)field.wfRestore?.();libraryDirty=false;dirtyFields.clear();if(alBaseline)for(const id of alIds)$('#'+id).value=alBaseline[id];alDirty=false;window.WorkflowEvidence?.discard();window.WorkflowExtraction?.discard();for(const draft of registeredDrafts.values())if(draft.dirty?.())draft.discard?.();for(const stage of ['screen','fulltext'])W.markDecisionClean(stage);draftBaseline=null;editorRendered=null;policyEditor();W.clearRecovery();finish(true);}),button('Stay',()=>finish(false)));
+      dialog.addEventListener('cancel',event=>{event.preventDefault();if(pendingWork())return;finish(false);});document.body.append(dialog);dialog.showModal();dialog.lastElementChild?.focus();
     });
     return dialogPromise;
   };
@@ -744,6 +806,7 @@
   for(const event of ['reviewflow:al-settings-loaded','reviewflow:al-settings-saved'])document.addEventListener(event,e=>{alBaseline=e.detail?.values||alValues();syncALDirty();});
   document.addEventListener('reviewflow:task-context-changed',()=>{
     if(context===scope())return;
+    pendingStages.clear();editorRendered=null;reasonsRendered=null;pollFailures=0;nextPollAt=0;pollNotice(false);
     binaryResetSummary = null;
     binaryResetRequest = null;
     renderBinaryReset();
