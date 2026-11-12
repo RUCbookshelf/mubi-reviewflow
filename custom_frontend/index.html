@@ -5311,6 +5311,10 @@ window.RFRegisterServerMessages = sources => {
 };
 window.RFServerMessage = (key, params = {}) => {
   if (typeof key !== 'string') return null;
+  /* review67 L-38：同一错误可携带单个域名或不在映射内的域名列表。 */
+  if (key === 'analysis.rob.invalid_domain' && Array.isArray(params?.domains)) {
+    params = { ...params, domain: params.domains };
+  }
   const source = serverMessageSources.get(key) || key;
   return RFLang.has(source) ? T(source, params) : null;
 };
@@ -5495,6 +5499,10 @@ async function apiRequest(path, opts = {}) {
     }
     const error = new ApiError(r.status, detail);
     if (translatedHit) error.rfLocalized = true;
+    /* review67 F1：保留校验错误的字段位置和类型，供旧接口兼容识别。 */
+    if (r.status === 422 && Array.isArray(payload)) {
+      error.validationIssues = payload.map(issue => ({ type: issue?.type, loc: issue?.loc }));
+    }
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
       error.code = payload.code;
       error.errorCode = payload.error_code;
@@ -10111,18 +10119,20 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <script src="./import_export_help_locale.js?v=20261028-r7-frontsec1"></script>
 <script src="./import_export_workspace.js?v=20261101-r10u2"></script>
 <script src="./import_review_loading.js?v=2.1.4-r4"></script>
-<script src="./import_review_refined_locale.js?v=20261101-r10u2"></script>
+<script src="./import_review_refined_locale.js?v=20261112-r67"></script>
 <script src="./import_review_updates.js?v=20261110-215"></script>
 <script src="./import_review_quality_locale.js?v=20261110-215-polish1"></script>
 <script src="./ai_providers_locale.js?v=20261112-aiux"></script>
 <script src="./import_review_aiux_locale.js?v=20261112-aiux"></script>
 <script src="./ai_providers_catalog.js?v=20261112-aiux"></script>
 <script src="./import_review_ai.js?v=20261112-aiux"></script>
-<script src="./unified_import_workspace.js?v=20261112-aiux"></script>
+<script src="./unified_import_workspace.js?v=20261112-r67"></script>
 <script src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261101-r10u1b"></script>
-<script src="./analysis_grade.js?v=20261030-r8fl5-20261110-215"></script>
+<!-- review67 L-38：注册风险偏倚契约错误。 -->
+<script src="./analysis_rob_locale.js?v=20261112-r67"></script>
+<script src="./analysis_grade.js?v=20261112-r67"></script>
 <script src="./assessment_tables_locale.js?v=20261110-215-polish1"></script>
 <script src="./appraisal_workspace.js?v=20261110-215-polish1"></script>
 <script src="./table_wizards.js?v=20261110-215-final-polish1"></script>
@@ -10140,8 +10150,8 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <script src="./mobile_motion.js?v=2.1.2.2"></script>
 <link rel="stylesheet" href="import_export_workspace.css?v=2.1.2.2">
 <link rel="stylesheet" href="import_review_refined.css?v=20261110-215-polish2">
-<script src="./report_evidence_locale.js?v=20261030-r8fl4"></script>
-<script src="./report_evidence.js?v=2.1.4-r5"></script>
+<script src="./report_evidence_locale.js?v=20261112-r67"></script>
+<script src="./report_evidence.js?v=20261112-r67"></script>
 <!-- AI 抽取建议（BYOK）：建议卡+逐条确认流+设置页（任务 B7；追加式接入，自带十语言词条，独立容错） -->
 <script src="./ai_suggest.js?v=20261112-aiux"></script>
 <!-- W1 Zotero 直连（2.1.4-r8）：导入页「从本机 Zotero 导入」入口+集合选择对话框（回环 127.0.0.1:23119，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
@@ -10149,7 +10159,7 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <!-- R11 ERIC 教育检索（2.1.4-r11）：导入页「从 ERIC 检索文献」入口+命中预览+检索并导入（api.ies.ed.gov 官方 API，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./eric_search.js?v=20261102-r11eric1-polish1"></script>
 <!-- W2 PDF 自动获取（2.1.4-r8）：初筛文献卡「获取全文」+任务设置卡开关/批量入口（DOI→Unpaywall；联网默认关、仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
-<script src="./pdf_fetch.js?v=20261030-r8-w2pdf1-20261110-polish1"></script>
+<script src="./pdf_fetch.js?v=20261112-r67"></script>
 <!-- W4 预置分类器（2.1.4-r8）：初筛卡研究设计徽标+排除理由预填不代存（纯本地规则端点，无联网；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./study_design_badge.js?v=20261110-215"></script>
 <!-- W5 PWA 离线壳（2.1.4-r8）：离线只读快照提示条模块（自包含 IIFE＋十语言词条，textContent 渲染）＋ Service Worker 注册（相对路径；本组独占文档最末锚点） -->

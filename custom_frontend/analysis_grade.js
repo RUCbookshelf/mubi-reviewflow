@@ -260,6 +260,7 @@
         syncUpgradeVisibility();
         refreshBadge();
         refreshOverrideMark();
+        renderRationale(st, factorInfo, rationaleBox);   // review67 L-44：重建行时恢复推导依据
       }
       function syncUpgradeVisibility() {
         const upgradeBox = rowEl.querySelector('.rf-upgrades');
@@ -317,9 +318,9 @@
         else delete st.overridden[factor];
       }
 
-      /* ---- [自动建议]：预填 + 推导依据 ---- */
-      autoBtn.addEventListener('click', safe(() => runAutoSuggest(st, rowEl, {
-        autoBtn, statusLine, rationaleBox, factorSelects, factorInfo, syncFn: syncFromState,
+      /* ---- [自动建议]：预填后经状态同步恢复推导依据（review67 L-44） ---- */
+      autoBtn.addEventListener('click', safe(() => runAutoSuggest(st, {
+        autoBtn, statusLine, syncFn: syncFromState,
       })));
 
       /* ---- [保存评估] ---- */
@@ -351,7 +352,40 @@
       return T('{0}：{1}', T(FACTOR_LABELS[factor]), parts.join(' · ') || T('可用'));
     }
 
-    async function runAutoSuggest(st, rowEl, ui) {
+    /* review67 L-44：行重建与自动建议共用推导依据；合成口径仅来自本会话。 */
+    function renderRationale(st, factorInfo, rationaleBox) {
+      const lines = [];
+      let hasSignal = false;
+      for (const f of DOWNGRADE_FACTORS) {
+        const signal = st.signals[f];
+        const text = formatSignal(f, signal);
+        const info = factorInfo[f];
+        info.title = text;
+        info.hidden = !signal;
+        info.setAttribute('aria-label', text);
+        lines.push(text);
+        hasSignal ||= !!signal;
+      }
+      if (!hasSignal && !st.synthesis) {
+        rationaleBox.replaceChildren();
+        rationaleBox.hidden = true;
+        return;
+      }
+      if (st.synthesis) {
+        const sy = st.synthesis;
+        lines.push(T('合成口径：{0} 模型 · {1} 项研究 · 合并效应 {2}（95% CI {3} 至 {4}）· I²={5}%',
+          String(sy.model || 'random'), String(sy.n_studies == null ? '—' : sy.n_studies),
+          fmtNum(sy.pooled), fmtNum(sy.ci_low), fmtNum(sy.ci_high), fmtNum(sy.i2_percent)));
+        if (sy.publication_bias_test_available === false) {
+          lines.push(T('发表偏倚检验不可用（研究数不足或单组指标），该因子需人工评估。'));
+        }
+      }
+      lines.push(T('以上为自动建议；间接性完全依赖人工判断。请逐项确认或覆盖。'));
+      rationaleBox.replaceChildren(el('span', { text: lines.join('\n') }));
+      rationaleBox.hidden = false;
+    }
+
+    async function runAutoSuggest(st, ui) {
       st.dirty = true;
       let ticket;
       let epoch = version;   // 任务切换纪元：函数作用域，catch 分支同样可见
@@ -389,28 +423,6 @@
           st.synthesis = (d && d.synthesis) || null;
           st.overridden = {};
           ui.syncFn();
-          /* 每个预填因子旁的 ⓘ 显示推导依据 */
-          for (const f of DOWNGRADE_FACTORS) {
-            const info = ui.factorInfo[f];
-            if (!info) continue;
-            const text = formatSignal(f, st.signals[f]);
-            info.title = text;
-            info.hidden = !st.signals[f];
-            info.setAttribute('aria-label', text);
-          }
-          const lines = DOWNGRADE_FACTORS.map(f => formatSignal(f, st.signals[f]));
-          if (st.synthesis) {
-            const sy = st.synthesis;
-            lines.push(T('合成口径：{0} 模型 · {1} 项研究 · 合并效应 {2}（95% CI {3} 至 {4}）· I²={5}%',
-              String(sy.model || 'random'), String(sy.n_studies == null ? '—' : sy.n_studies),
-              fmtNum(sy.pooled), fmtNum(sy.ci_low), fmtNum(sy.ci_high), fmtNum(sy.i2_percent)));
-            if (sy.publication_bias_test_available === false) {
-              lines.push(T('发表偏倚检验不可用（研究数不足或单组指标），该因子需人工评估。'));
-            }
-          }
-          lines.push(T('以上为自动建议；间接性完全依赖人工判断。请逐项确认或覆盖。'));
-          ui.rationaleBox.replaceChildren(el('span', { text: lines.join('\n') }));
-          ui.rationaleBox.hidden = false;
           ui.statusLine.textContent = T('已按自动建议预填（初始质量：{0}，建议最终质量：{1}）。',
             T(LEVEL_LABEL[(d && d.initial_quality) || 'high']), T(LEVEL_LABEL[(d && d.final_quality) || 'high']));
         } finally {

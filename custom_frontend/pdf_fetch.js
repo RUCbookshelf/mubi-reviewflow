@@ -45,7 +45,12 @@
       ["批量获取", "Batch fetch", "Récupération par lot", "Пакетная загрузка", "Obtención por lotes", "一括取得", "Busca em lote", "Stapelabruf", "Групно преузимање", "일괄 가져오기"],
       ["篇数上限（1-50）", "Article limit (1–50)", "Limite d’articles (1-50)", "Лимит публикаций (1–50)", "Límite de artículos (1-50)", "件数上限（1〜50）", "Limite de artigos (1-50)", "Artikellimit (1–50)", "Ограничење чланака (1-50)", "문헌 수 제한(1-50)"],
       ["批量完成：成功 {0} · 无开放 PDF {1} · 失败 {2} · 跳过 {3}", "Batch done: {0} saved · {1} no OA · {2} failed · {3} skipped", "Lot terminé : {0} obtenus · {1} sans OA · {2} échecs · {3} ignorés", "Пакет завершён: получено {0} · без OA {1} · ошибок {2} · пропущено {3}", "Lote terminado: {0} obtenidos · {1} sin OA · {2} fallidos · {3} omitidos", "一括完了：成功 {0}・OAなし {1}・失敗 {2}・スキップ {3}", "Lote concluído: {0} obtidos · {1} sem OA · {2} falhas · {3} ignorados", "Stapel fertig: {0} abgerufen · {1} ohne OA · {2} fehlgeschlagen · {3} übersprungen", "Група завршена: преузето {0} · без OA {1} · грешака {2} · прескочено {3}", "일괄 완료: 성공 {0} · OA 없음 {1} · 실패 {2} · 건너뜀 {3}"],
-      ["另有 {0} 条内容无效，{1} 条未找到。", "{0} had invalid content, {1} were not found.", "{0} avaient un contenu invalide, {1} introuvables.", "У {0} некорректное содержимое, {1} не найдены.", "{0} tenían contenido no válido, {1} no encontrados.", "{0} 件は内容が無効、{1} 件は未検出です。", "{0} tinham conteúdo inválido, {1} não encontrados.", "{0} hatten ungültigen Inhalt, {1} wurden nicht gefunden.", "Код {0} неисправан садржај, {1} није пронађено.", "{0}건은 내용이 유효하지 않고, {1}건은 찾지 못했습니다."],
+      /* review67 L-20：分别保留无效、安全拒绝、解析失败、幂等冲突及未找到的含义。 */
+      ["内容无效 {0}", "{0} with invalid content", "{0} contenus non valides", "Недопустимое содержимое: {0}", "{0} con contenido no válido", "内容が無効 {0} 件", "{0} com conteúdo inválido", "{0} mit ungültigem Inhalt", "Неисправан садржај: {0}", "유효하지 않은 콘텐츠 {0}건"],
+      ["安全拒绝 {0}", "{0} blocked for security", "{0} bloqués pour des raisons de sécurité", "Отклонено политикой безопасности: {0}", "{0} bloqueados por seguridad", "安全上の理由で拒否 {0} 件", "{0} bloqueados por segurança", "{0} aus Sicherheitsgründen blockiert", "Безбедносна блокада: {0}", "보안 정책 차단 {0}건"],
+      ["域名无法解析 {0}", "{0} with unresolved domains", "{0} domaines non résolus", "Не удалось разрешить домен: {0}", "{0} con dominios sin resolver", "ドメイン名を解決できず {0} 件", "{0} com domínios não resolvidos", "{0} mit nicht aufgelösten Domains", "Неразрешен домен: {0}", "도메인 확인 실패 {0}건"],
+      ["幂等冲突 {0}", "{0} with request ID conflicts", "{0} conflits d’identifiant de requête", "Конфликт идентификатора запроса: {0}", "{0} con conflictos de ID de solicitud", "リクエスト ID の競合 {0} 件", "{0} com conflitos de ID de solicitação", "{0} mit Konflikten bei der Anfrage-ID", "Сукоб идентификатора захтева: {0}", "요청 ID 충돌 {0}건"],
+      ["未找到 {0}", "{0} not found", "{0} introuvables", "Не найдено: {0}", "{0} no encontrados", "見つからず {0} 件", "{0} não encontrados", "{0} nicht gefunden", "Није пронађено: {0}", "찾을 수 없음 {0}건"],
       ["该文献已有全文 PDF。继续将覆盖既有文件，是否继续？", "This article already has a full-text PDF. Continuing will overwrite it. Continue?", "Cet article a déjà un PDF en texte intégral. Continuer l’écrasera. Continuer ?", "У этой публикации уже есть полный текст PDF. Продолжение перезапишет его. Продолжить?", "Este artículo ya tiene un PDF de texto completo. Continuar lo sobrescribirá. ¿Continuar?", "この文献には既に全文PDFがあります。続行すると上書きされます。続行しますか？", "Este artigo já tem um PDF completo. Continuar irá substituí-lo. Continuar?", "Dieser Artikel hat bereits ein Volltext-PDF. Fortfahren überschreibt es. Fortfahren?", "Овај чланак већ има пун текст у PDF-у. Наставак ће га заменити. Наставити?", "이 문헌에는 이미 전문 PDF가 있습니다. 계속하면 덮어씁니다. 계속할까요?"],
       ["开放获取链接指向本机或内网地址，已拒绝访问。", "The open-access link points to a local or private address and was refused.", "Le lien en accès ouvert pointe vers une adresse locale ou privée ; accès refusé.", "Ссылка OA ведёт на локальный или внутренний адрес — доступ отклонён.", "El enlace de acceso abierto apunta a una dirección local o privada; acceso rechazado.", "オープンアクセスのリンクがローカル／内部アドレスを指すため拒否しました。", "O link de acesso aberto aponta para um endereço local ou privado; acesso recusado.", "Der Open-Access-Link zeigt auf eine lokale oder interne Adresse; Zugriff abgelehnt.", "Веза отвореног приступа води на локалну или интерну адресу; приступ одбијен.", "오픈액세스 링크가 로컬 또는 내부 주소를 가리켜 거부했습니다."],
       ["当前阶段已暂停或该文献不在当前来源范围内，暂不能写入全文。", "This stage is paused or the article is outside the current source scope, so the full text cannot be written now.", "Cette étape est en pause ou l’article est hors du périmètre de sources actuel ; impossible d’écrire le texte intégral.", "Этап приостановлен или публикация вне текущего диапазона источников — запись полного текста невозможна.", "La etapa está en pausa o el artículo está fuera del alcance de fuentes actual; no se puede escribir el texto completo.", "この段階は一時停止中か、文献が現在のソース範囲外のため全文を書き込めません。", "Esta etapa está pausada ou o artigo está fora do escopo de fontes atual; não é possível gravar o texto completo.", "Diese Stufe ist pausiert oder der Artikel liegt außerhalb des aktuellen Quellenbereichs; Volltext kann nicht geschrieben werden.", "Ова фаза је паузирана или је чланак ван тренутног опсега извора; пун текст се не може уписати.", "이 단계가 일시 중지되었거나 문헌이 현재 소스 범위를 벗어나 전문을 기록할 수 없습니다."],
@@ -63,7 +68,14 @@
       ["工作流拦截 {0}", "{0} blocked by workflow", "{0} bloqués par le flux de travail", "{0} заблокировано рабочим процессом", "{0} bloqueados por el flujo de trabajo", "ワークフローにより {0} 件ブロック", "{0} bloqueados pelo fluxo de trabalho", "{0} durch Workflow blockiert", "{0} блокирано током рада", "워크플로에 의해 차단 {0}건"],
       ["上游不可达中止 {0}", "{0} skipped after upstream failure", "{0} ignorés après échec de l’amont", "{0} пропущено после сбоя верхнего сервиса", "{0} omitidos tras fallo del servicio", "上流障害で {0} 件スキップ", "{0} ignorados após falha do serviço", "{0} nach Upstream-Fehler übersprungen", "{0} прескочено након слома горњег сервиса", "업스트림 장애로 건너뜀 {0}건"],
       ["跳过明细：{0}", "Skipped: {0}", "Ignorés : {0}", "Пропущено: {0}", "Omitidos: {0}", "スキップ内訳：{0}", "Ignorados: {0}", "Übersprungen: {0}", "Прескочено: {0}", "건너뜀 상세: {0}"],
-      ["开放获取链接的域名无法解析，请稍后重试。", "The open-access link’s domain could not be resolved; please try again later.", "Le domaine du lien en accès ouvert est introuvable ; réessayez plus tard.", "Не удалось разрешить домен ссылки OA; попробуйте позже.", "No se pudo resolver el dominio del enlace de acceso abierto; inténtelo más tarde.", "オープンアクセスリンクのドメインを解決できません。後でもう一度お試しください。", "Não foi possível resolver o domínio do link de acesso aberto; tente novamente mais tarde.", "Die Domain des Open-Access-Links konnte nicht aufgelöst werden; bitte später erneut versuchen.", "Домен везе отвореног приступа није могуће разрешити; покушајте касније.", "오픈액세스 링크의 도메인을 확인할 수 없습니다. 나중에 다시 시도하세요."],
+      /* review67 L-19：单篇 DNS 错误沿用上游错误，删去无调用的词条。 */
+      /* review67 L-14/L-15/L-16/L-17 */
+      ["后端服务暂不可用，请稍后重试。", "The server is temporarily unavailable. Please try again later.", "Le serveur est temporairement indisponible. Réessayez plus tard.", "Сервер временно недоступен. Повторите попытку позже.", "El servidor no está disponible temporalmente. Inténtalo más tarde.", "サーバーは一時的に利用できません。しばらくしてから再試行してください。", "O servidor está temporariamente indisponível. Tente novamente mais tarde.", "Der Server ist vorübergehend nicht verfügbar. Bitte später erneut versuchen.", "Сервер је привремено недоступан. Покушајте поново касније.", "서버를 일시적으로 사용할 수 없습니다. 나중에 다시 시도하세요."],
+      ["自托管端点被安全策略拒绝，请检查配置。", "The self-hosted endpoint was blocked by the security policy. Check its configuration.", "Le point d’accès autohébergé a été bloqué par la politique de sécurité. Vérifiez sa configuration.", "Политика безопасности заблокировала собственную конечную точку. Проверьте её настройки.", "La política de seguridad bloqueó el punto de acceso autohospedado. Revisa la configuración.", "セルフホストのエンドポイントはセキュリティポリシーにより拒否されました。設定を確認してください。", "A política de segurança bloqueou o endpoint auto-hospedado. Verifique a configuração.", "Der selbst gehostete Endpunkt wurde durch die Sicherheitsrichtlinie blockiert. Prüfen Sie die Konfiguration.", "Безбедносна политика је блокирала самостално хостовану крајњу тачку. Проверите подешавања.", "보안 정책에 따라 자체 호스팅 엔드포인트가 차단되었습니다. 설정을 확인하세요."],
+      ["无法连接服务器，请检查网络。", "Cannot connect to the server. Check your network connection.", "Impossible de se connecter au serveur. Vérifiez votre connexion réseau.", "Не удалось подключиться к серверу. Проверьте подключение к сети.", "No se puede conectar con el servidor. Comprueba la conexión de red.", "サーバーに接続できません。ネットワーク接続を確認してください。", "Não foi possível conectar ao servidor. Verifique a conexão de rede.", "Keine Verbindung zum Server. Prüfen Sie Ihre Netzwerkverbindung.", "Веза са сервером није успела. Проверите мрежну везу.", "서버에 연결할 수 없습니다. 네트워크 연결을 확인하세요."],
+      ["你没有执行该操作的权限。", "You do not have permission to perform this action.", "Vous n’avez pas l’autorisation d’effectuer cette action.", "У вас нет разрешения на это действие.", "No tienes permiso para realizar esta acción.", "この操作を実行する権限がありません。", "Você não tem permissão para realizar esta ação.", "Sie haben keine Berechtigung für diese Aktion.", "Немате дозволу да извршите ову радњу.", "이 작업을 수행할 권한이 없습니다."],
+      ["浏览器拦截了弹出窗口，请允许本站弹出窗口后重试。", "Your browser blocked the pop-up. Allow pop-ups for this site and try again.", "Votre navigateur a bloqué la fenêtre. Autorisez les fenêtres contextuelles pour ce site, puis réessayez.", "Браузер заблокировал всплывающее окно. Разрешите всплывающие окна для этого сайта и повторите попытку.", "El navegador bloqueó la ventana emergente. Permite las ventanas emergentes para este sitio y vuelve a intentarlo.", "ブラウザーがポップアップをブロックしました。このサイトのポップアップを許可してから再試行してください。", "O navegador bloqueou a janela pop-up. Permita pop-ups para este site e tente novamente.", "Ihr Browser hat das Pop-up blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut.", "Прегледач је блокирао искачући прозор. Дозволите искачуће прозоре за овај сајт и покушајте поново.", "브라우저가 팝업을 차단했습니다. 이 사이트의 팝업을 허용한 후 다시 시도하세요."],
+      ["缺少有效 DOI {0}", "{0} without a valid DOI", "{0} sans DOI valide", "Без действительного DOI: {0}", "{0} sin un DOI válido", "有効な DOI なし {0} 件", "{0} sem DOI válido", "{0} ohne gültigen DOI", "Без важећег DOI: {0}", "유효한 DOI 없음 {0}건"],
       ["缺少联系 email，请负责人在任务设置中补填。", "The contact email is missing; the owner must add it in task settings.", "L’e-mail de contact est manquant ; le responsable doit l’ajouter dans les paramètres.", "Контактный e-mail отсутствует; владелец должен добавить его в настройках.", "Falta el correo de contacto; el responsable debe añadirlo en los ajustes.", "連絡用メールが未設定です。責任者がタスク設定で入力してください。", "Falta o e-mail de contato; o responsável deve adicioná-lo nas configurações.", "Die Kontakt-E-Mail fehlt; der Verantwortliche muss sie in den Aufgaben­einstellungen ergänzen.", "Контакт имејл недостаје; власник га мора додати у подешавањима задатка.", "연락용 이메일이 없습니다. 소유자가 작업 설정에서 입력해야 합니다."],
       ["端点地址不合法（需 http/https 且含主机名）。", "Invalid endpoint URL (http/https with a host is required).", "URL de point d’accès invalide (http/https avec un hôte requis).", "Недопустимый адрес эндпоинта (нужен http/https с именем хоста).", "URL del endpoint no válido (se requiere http/https con host).", "エンドポイントURLが不正です（ホスト名付きのhttp/httpsが必要）。", "URL do endpoint inválida (http/https com host é obrigatório).", "Ungültige Endpunkt-URL (http/https mit Host erforderlich).", "Неисправан URL крајње тачке (потребан http/https са именом хоста).", "엔드포인트 URL이 잘못되었습니다(호스트가 포함된 http/https 필요)."],
       ["该文献在当前筛选库中不存在。", "This article does not exist in the current screening library.", "Cet article n’existe pas dans la bibliothèque de tri actuelle.", "Эта публикация отсутствует в текущей базе скрининга.", "Este artículo no existe en la biblioteca de cribado actual.", "この文献は現在のスクリーニングライブラリに存在しません。", "Este artigo não existe na biblioteca de triagem atual.", "Dieser Artikel existiert in der aktuellen Screening-Bibliothek nicht.", "Овај чланак не постоји у текућој библиотеци скрининга.", "이 문헌은 현재 스크리닝 라이브러리에 없습니다."],
@@ -107,11 +119,10 @@
     };
     const taskApi = () => (typeof S !== 'undefined' && S.task)
       ? '/api/tasks/' + encodeURIComponent(S.task.task_id) : '';
-    /* 查询串拆两段：单篇路径的 screener 用 '?'；overwrite=1 时先有 '?' 再拼 '&'。 */
+    /* review67 L-18：发起获取时固定筛选员查询串，覆盖确认复用同一请求路径。 */
     const scrValue = () => (typeof S !== 'undefined' && S.screener)
       ? 'screener=' + encodeURIComponent(S.screener) : '';
     const screenerQuery = () => { const value = scrValue(); return value ? '?' + value : ''; };
-    const scrSep = () => (scrValue() ? '&' + scrValue() : '');
 
     /* =====================================================================
      * 三、任务级判定（settings 一次拉取；未启用 → 全部入口零渲染）
@@ -136,7 +147,8 @@
     }
 
     /* 错误 code → 本地化提示（后端 pdf_fetch_api.py 的结构化 code） */
-    function messageFor(error) {
+    /* review67 L-14/L-16 */
+    function messageFor(error, settingsSave = false) {
       const code = error && error.code;
       if (code === 'pdf_fetch_disabled') return T('任务未启用 PDF 自动获取（默认关）。');
       if (code === 'pdf_fetch_doi_missing') return T('该文献缺少 DOI，无法自动获取。');
@@ -147,15 +159,22 @@
       if (code === 'pdf_fetch_email_invalid') return T('邮箱格式不正确。');
       if (code === 'pdf_fetch_base_url_invalid' || code === 'pdf_fetch_base_url_insecure')
         return T('端点地址不合法（需 http/https 且含主机名）。');
-      if (code === 'pdf_fetch_base_url_blocked') return T('taskPackage.pdfEndpointBlocked');
+      if (code === 'pdf_fetch_base_url_blocked') return T('自托管端点被安全策略拒绝，请检查配置。');
+      if (code === 'pdf_fetch_storage') return T('后端服务暂不可用，请稍后重试。');
+      if (code === 'pdf_fetch_upstream' || (!code && error?.status === 502))
+        return T('无法连接获取服务，请稍后重试。');
       if (code === 'pdf_fetch_settings_version_conflict') return T('设置已被他人更新，请刷新后重试。');
       if (code === 'pdf_fetch_article_missing') return T('该文献在当前筛选库中不存在。');
       if (code === 'pdf_fetch_trace_conflict') return T('出现未知错误，请稍后重试。');
       if (code === 'stage_paused' || code === 'article_outside_scope' || code === 'task_read_only'
           || code === 'article_not_eligible')
         return T('当前阶段已暂停或该文献不在当前来源范围内，暂不能写入全文。');
-      if (error && error.status === 403) return T('只有任务负责人可以修改该设置。');
-      if (error && error.status === 502) return T('无法连接获取服务，请稍后重试。');
+      if (!code && error?.status === 403)
+        return T(settingsSave ? '只有任务负责人可以修改该设置。' : '你没有执行该操作的权限。');
+      if (error?.status === 0) return T('无法连接服务器，请检查网络。');
+      /* API 层已从响应中取出可展示的 detail；本地异常没有 HTTP 状态，不展示技术原文。 */
+      if (typeof error?.status === 'number' && typeof error.message === 'string' && error.message.trim())
+        return error.message;
       return T('出现未知错误，请稍后重试。');
     }
 
@@ -168,6 +187,7 @@
       const blob = await api(base + '/fulltext/' + encodeURIComponent(articleKey) + screenerQuery(),
                              { blob: true });
       const url = URL.createObjectURL(blob);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
       /* r3 复审⑦：``window.open(url,'_blank','noopener')`` 按规范恒返回 null，
          旧写法会落进兜底分支再点一次 anchor → 用户看到两个标签页。这里只用
          单一路径：先试 window.open（不带 noopener 特性），成功就断 opener。 */
@@ -179,8 +199,9 @@
         document.body.append(link);
         link.click();
         link.remove();
+        /* review67 L-17：兜底链接无法确认是否成功打开，提示站点弹窗设置。 */
+        toastMsg(T('浏览器拦截了弹出窗口，请允许本站弹出窗口后重试。'));
       }
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
     /* =====================================================================
@@ -191,36 +212,39 @@
       return S.articles[S.scrIdx] || null;
     }
 
-    async function fetchOne(status) {
-      const article = currentArticle();
-      if (!article || !article.zotero_key) return;
-      const base = taskApi();
-      if (!base) return;
-      const key = article.zotero_key;
-      status.textContent = T('获取中…');
+    /* review67 L-18：锁绑定到任务、文献和筛选员，请求未完成时重绘也不重复提交。 */
+    const pendingFetches = new Map();
+
+    async function fetchOne(path, key, view) {
+      if (view.button.disabled || pendingFetches.has(path)) return;
+      const pending = { view };
+      pendingFetches.set(path, pending);
+      view.button.disabled = true;
+      view.status.textContent = T('获取中…');
       try {
         let result;
         try {
-          result = await api(base + '/fulltext/' + encodeURIComponent(key) + '/fetch' + screenerQuery(),
-                             { method: 'POST' });
+          result = await api(path, { method: 'POST' });
         } catch (firstError) {
           /* 不静默覆盖：已有全文时后端 409，确认后才带 overwrite=1 重发。 */
           if (!firstError || firstError.code !== 'pdf_fetch_would_replace') throw firstError;
           /* 前端 ApiError 只透传 code/reasons/fields，不携带 detail.existing，
              因此这里用不带页数的确认文案（后端仍回传 existing 供其它客户端用）。 */
+          if (pending.view.status.isConnected === false) return;
           const confirmed = typeof confirm === 'function'
             ? confirm(T('该文献已有全文 PDF。继续将覆盖既有文件，是否继续？'))
             : false;
-          if (!confirmed) { status.textContent = ''; return; }
-          status.textContent = T('获取中…');
-          result = await api(base + '/fulltext/' + encodeURIComponent(key) + '/fetch?overwrite=1' + scrSep(),
-                             { method: 'POST' });
+          if (!confirmed) { pending.view.status.textContent = ''; return; }
+          const overwritePath = path + (path.includes('?') ? '&' : '?') + 'overwrite=1';
+          result = await api(overwritePath, { method: 'POST' });
         }
+        const { status } = pending.view;
+        if (status.isConnected === false) return;
         if (result && result.outcome === 'saved') {
           status.textContent = T('已获取全文（{0} 页）。', String(result.n_pages)) + ' ';
           const openButton = btn('打开 PDF', async () => {
             try { await openPdfBlob(key); }
-            catch (error) { toastMsg(error.status === 404 ? T('taskPackage.fulltext.recovery') : error.message, 'warn'); }
+            catch (error) { toastMsg(error?.status === 404 ? T('taskPackage.fulltext.recovery') : messageFor(error)); }
           });
           status.append(openButton);
           toastMsg(T('已获取全文（{0} 页）。', String(result.n_pages)), 'inc');
@@ -234,7 +258,10 @@
           status.textContent = T('出现未知错误，请稍后重试。');
         }
       } catch (error) {
-        status.textContent = messageFor(error);
+        pending.view.status.textContent = messageFor(error);
+      } finally {
+        pendingFetches.delete(path);
+        pending.view.button.disabled = false;
       }
     }
 
@@ -276,14 +303,24 @@
       if (!body || !body.querySelector('.scr-decisions')) return;
       if (document.getElementById('rfPdfFetchRow')) return;
       const article = currentArticle();
-      if (!article || !article.zotero_key) return;
+      const base = taskApi();
+      if (!article || !article.zotero_key || !base) return;
       const row = mk('div', null, { class: 'row', id: 'rfPdfFetchRow', style: 'gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap' });
       const status = mk('span', '', { class: 'hint', role: 'status', style: 'min-width:0;overflow-wrap:anywhere' });
       const hasDoi = !!(article.doi && String(article.doi).trim());
-      const fetchButton = btn('获取全文', () => fetchOne(status));
+      /* review67 L-18：同一文献重绘时，把在途状态和结果交给新挂载的控件。 */
+      const path = base + '/fulltext/' + encodeURIComponent(article.zotero_key) + '/fetch' + screenerQuery();
+      const view = { status };
+      const fetchButton = btn('获取全文', () => fetchOne(path, article.zotero_key, view));
+      view.button = fetchButton;
+      const pending = pendingFetches.get(path);
       if (!hasDoi) {
         fetchButton.disabled = true;
         fetchButton.title = T('该文献缺少 DOI，无法自动获取。');
+      } else if (pending) {
+        pending.view = view;
+        fetchButton.disabled = true;
+        status.textContent = T('获取中…');
       }
       row.append(fetchButton, btn('元数据建议', () => {
         const host = document.getElementById('rfPdfFetchSuggestions');
@@ -356,7 +393,7 @@
           renderCard();
           decorateScreenCard();
         } catch (error) {
-          formStatus.textContent = messageFor(error);
+          formStatus.textContent = messageFor(error, true); /* review67 L-16 */
         } finally {
           save.disabled = false;
         }
@@ -398,18 +435,18 @@
           batchStatus.textContent = T('批量完成：成功 {0} · 无开放 PDF {1} · 失败 {2} · 跳过 {3}',
             String(summary.saved || 0), String(summary.no_oa || 0),
             String(summary.failed || 0), String(summary.skipped || 0));
-          /* 后端 summary 还有 invalid / missing / blocked / unresolvable /
-             trace_conflict：不展示会让这些条目「凭空消失」，成功态显得比实际好。 */
-          const extra = (summary.invalid || 0) + (summary.blocked || 0)
-            + (summary.unresolvable || 0) + (summary.trace_conflict || 0);
-          const missing = summary.missing || 0;
-          if (extra || missing) {
-            batchStatus.append(document.createTextNode(
-              ' ' + T('另有 {0} 条内容无效，{1} 条未找到。', String(extra), String(missing))));
-          }
+          /* review67 L-20：各结果桶有独立含义，仅展示非零桶。 */
+          const extra = [
+            ['invalid', '内容无效 {0}'],
+            ['blocked', '安全拒绝 {0}'],
+            ['unresolvable', '域名无法解析 {0}'],
+            ['trace_conflict', '幂等冲突 {0}'],
+            ['missing', '未找到 {0}']
+          ].filter(([key]) => summary[key]).map(([key, label]) => T(label, summary[key]));
+          if (extra.length) batchStatus.append(document.createTextNode(' · ' + extra.join(' · ')));
           /* r3 复审⑩：skipped 混着四种原因（已有全文/键非法/工作流拦截/熔断），
              必须按 reason 拆开展示，否则用户会把「阶段暂停」误读成「没有 DOI」。 */
-          const reasons = {};
+          const reasons = Object.create(null); /* review67 L-15：按后端原因键计数。 */
           for (const row of ((result && result.results) || [])) {
             if (row && row.outcome === 'skipped' && row.reason) {
               reasons[row.reason] = (reasons[row.reason] || 0) + 1;
@@ -418,6 +455,7 @@
           const breakdown = [];
           if (reasons.already_has_pdf) breakdown.push(T('已有全文 {0}', String(reasons.already_has_pdf)));
           if (reasons.invalid_key) breakdown.push(T('键非法 {0}', String(reasons.invalid_key)));
+          if (reasons.doi_missing) breakdown.push(T('缺少有效 DOI {0}', String(reasons.doi_missing))); /* review67 L-15 */
           const workflowBlocked = (reasons.stage_paused || 0) + (reasons.article_outside_scope || 0)
             + (reasons.task_read_only || 0) + (reasons.article_not_eligible || 0)
             + (reasons.workflow_blocked || 0);
