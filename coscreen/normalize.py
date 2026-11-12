@@ -1,5 +1,7 @@
-"""字段规范化工具 —— DOI/标题/作者/年份/唯一键 的清洗与派生（见 SPEC.md §3）。
+"""字段规范化工具 —— DOI/标题/作者/年份/唯一键 的清洗与派生。
 
+各字段的清洗规则以本模块各函数 docstring 为准（历史版本的模块头曾引用
+外部 "SPEC.md §3" 锚点，该文件从未入库，review67 L-10 改为就地说明）。
 所有函数均为纯函数：无 IO、无随机性、无时间依赖，输出确定性。
 """
 
@@ -51,6 +53,38 @@ _NAME_PARTICLES: frozenset[str] = frozenset(
 # （'John Smith Jr' 的末 token 'Jr' 曾被当姓氏 → 姓 'jr'）。'v'（罗马数字 5）
 # 与单字母缩写形态上不可区分，不列入——按缩写处理对兼容性判定无害。
 _NAME_SUFFIXES: frozenset[str] = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
+# 作者分隔符（review67 M-07）：ASCII 分号（Zotero "Creator" 列约定）之外，
+# CJK 文献元数据常以全角分号/全角逗号罗列作者（"王小明，李华"）——不作分隔
+# 时整串成为第一作者姓氏（'王小明，李华' 与 '王小明' 相似度 66.67<80，
+# 同题文献静默漏报）。ASCII 逗号是 "Smith, John" 的姓名内分隔符，**不在
+# 此列**；全角逗号在 CJK 语境只作罗列分隔，与姓名内分隔不冲突。
+_AUTHOR_SEP_RE = re.compile(r"[;；，]")
+
+# 'et al.' 截断标记（review67 M-06）：PubMed/RIS 导出常以 "Smith JA, et al."
+# （逗号形态：'et al' 曾被当第一作者的名 token）、"Smith J et al."（无逗号
+# 形态：姓氏曾损坏成 'smith j et'）、"John Smith et al."（四实词形态：曾被
+# 误判为机构作者整串比较）截断作者清单——标记本身不是姓名，解析第一作者
+# 前剥离（含前置逗号/分号与可选句点；大小写不敏感）。
+_ET_AL_TAIL_RE = re.compile(r"\s*[,;]?\s*\bet\.?\s*al\.?\s*$", re.IGNORECASE)
+
+
+def _first_author_head(authors: str | list | None) -> str:
+    """取第一作者原文段：按作者分隔符取首段，并剥离尾部 'et al.' 截断标记。
+
+    None/空串/空列表返回 ""；list/tuple 取首元素。分隔符与 et al. 的口径见
+    上方常量注释（review67 M-06/M-07）。仅用于比较/派生（姓氏、名、备选
+    读法），不回写存储形态——authors 字段原样保留来源文本。
+    """
+    if authors is None:
+        return ""
+    if isinstance(authors, (list, tuple)):
+        head = str(authors[0]).strip() if authors else ""
+    else:
+        head = _AUTHOR_SEP_RE.split(str(authors), 1)[0].strip()
+    if not head:
+        return ""
+    return _ET_AL_TAIL_RE.sub("", head).strip(" ,;")
 
 
 def _strip_name_suffixes(words: list[str]) -> list[str]:
@@ -147,7 +181,9 @@ def _strip_doi_tail_punct(s: str) -> str:
 def normalize_title(title: str) -> str:
     """规范化标题：压缩内部空白、剥离首尾标点与空白。
 
-    不做小写化——小写在去重比较时进行（见 SPEC.md §4 / dedup.py）。
+    不做小写化——小写在去重比较时进行（见 dedup.py 的 _norm_title /
+    normalize_title_candidate，历史引用的外部 "SPEC.md §4" 锚点从未入库，
+    review67 L-10 改指向仓库内实现）。
     """
     if not title:
         return ""
@@ -161,16 +197,18 @@ def _clean_part(part: object) -> str:
 
 
 def normalize_authors(raw: str | list | None) -> str:
-    """规范化作者字段：list → "a; b"；str 按分号拆分后清洗再拼回。
+    """规范化作者字段：list → "a; b"；str 按作者分隔符拆分后清洗再拼回。
 
-    空段丢弃；无有效作者时返回 ""。与 Zotero "Creator" 列的 "; " 分隔约定一致。
+    分隔符 = ASCII 分号 + 全角分号/全角逗号（review67 M-07：'王小明，李华'
+    此前整串成为第一作者姓氏，拆分后与 '; ' 分隔形态同口径）。空段丢弃；
+    无有效作者时返回 ""。与 Zotero "Creator" 列的 "; " 分隔约定一致。
     """
     if raw is None:
         return ""
     if isinstance(raw, (list, tuple)):
         parts = [_clean_part(p) for p in raw]
     else:
-        parts = [_clean_part(p) for p in str(raw).split(";")]
+        parts = [_clean_part(p) for p in _AUTHOR_SEP_RE.split(str(raw))]
     return "; ".join(p for p in parts if p)
 
 
@@ -301,6 +339,10 @@ def first_author_surname(authors: str | list | None) -> str:
 
     - 识别两种姓名顺序："Smith, John"（姓在前，逗号分隔）与 "John Smith"
       （名在前）都得到 "smith"；带缩写尾的 "Smith J"/"Smith J. A." 亦然；
+    - 首段提取按 _first_author_head：全角分号/全角逗号同作作者分隔符
+      （review67 M-07：'王小明，李华' 的姓氏取 '王小明'），尾部 'et al.'
+      截断标记先剥离（review67 M-06：'Smith JA, et al.'/'Smith J et al.'/
+      'John Smith et al.' 与对应未截断形态同姓氏）；
     - 世代后缀（Jr/Sr/III/IV，R6-D3）判定前从尾部剔除："John Smith Jr" ->
       "smith"（修复前 'jr' 被当姓氏，同人 'John Smith' 被判键冲突）；
     - 姓氏助词前缀（van/von/de/der/di/da/…）剥离后比较：
@@ -315,13 +357,7 @@ def first_author_surname(authors: str | list | None) -> str:
 
     纯函数、确定性；仅用于比较，不回写解析结果。
     """
-    head = ""
-    if authors is None:
-        return ""
-    if isinstance(authors, (list, tuple)):
-        head = str(authors[0]).strip() if authors else ""
-    else:
-        head = str(authors).split(";")[0].strip()
+    head = _first_author_head(authors)
     if not head:
         return ""
 
@@ -371,19 +407,16 @@ def first_author_given_names(authors: str | list | None) -> str:
 
     - "Smith, John" -> "john"；"Smith, J. A." -> "j a"；
     - "John Wu" -> "john"（末词为姓）；"Smith JA" -> "ja"（缩写也是名）；
+    - 首段提取与 first_author_surname 同一口径（_first_author_head）：
+      全角分隔符拆分（M-07）、尾部 'et al.' 剥离（M-06："Smith JA, et al."
+      -> "ja"，修复前 'et al' 曾被当名 token 参与兼容判定）；
     - 世代后缀（Jr/Sr/III…，R6-D3）不是名："John Smith Jr" -> "john"，
       "Smith, John Jr" -> "john"（修复前 given 含 'jr'）；
     - 空作者/空首段 -> ""（调用方按「缺名视为兼容」处理，不得两空相等）。
 
     纯函数；与 first_author_surname 共用同一姓名顺序/缩写判定口径。
     """
-    head = ""
-    if authors is None:
-        return ""
-    if isinstance(authors, (list, tuple)):
-        head = str(authors[0]).strip() if authors else ""
-    else:
-        head = str(authors).split(";")[0].strip()
+    head = _first_author_head(authors)
     if not head:
         return ""
     if "," in head:

@@ -796,8 +796,29 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             unknown_delta += sum(1 for item in failed
                                  if item["doi"].lower() not in known)
 
-        new_offset = int(row["cursor_pos"]) + len(batch)
-        done = new_offset >= int(row["total_count"])
+        # review67 L-28：游标的读-改-写必须与出站（可达数分钟）隔离后原子
+        # 落库。此前直接按**出站前的陈旧基线** UPDATE+commit：并发续跑同一
+        # run 会各自重复出站同一批、迟到提交把 cursor_pos 写回旧值（进度
+        # 回归），旧 run 已 done 时迟到 UPDATE 置回 running 还会撞部分唯一
+        # 索引（idx_retraction_runs_active）被外层误映射成 503 伪存储故障。
+        # 现在先提交本批发现（INSERT OR IGNORE 幂等，重放安全），再
+        # BEGIN IMMEDIATE 抢写锁并**重读** run 行，按最新游标决定回写或跳过。
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        baseline = int(row["cursor_pos"])
+        intended = baseline + len(batch)
+        fresh_lock = _run_row(conn, info.task_id, run_id)
+        if (fresh_lock is None or str(fresh_lock["status"]) == "done"
+                or int(fresh_lock["cursor_pos"]) > baseline):
+            # 并发写入者已推进过本批读时基线（或已收尾）：回写只会倒退
+            # 进度/复活已 done 的 run。幂等跳过（与顺序重放同一回报口径）；
+            # fresh == baseline（含空批 0==0）时本请求仍是首个写者，照常
+            # 回写（空批也能把 total==0 的 run 置 done）。
+            conn.rollback()
+            return _progress_payload(fresh_lock or row, processed_delta=0,
+                                     findings_delta=0, unknown_delta=0)
+        new_offset = intended
+        done = new_offset >= int(fresh_lock["total_count"])
         finished_at = _now() if done else None
         found_count = int(conn.execute(
             "SELECT COUNT(*) AS n FROM retraction_findings WHERE run_id=?",
@@ -806,7 +827,7 @@ def register_retraction_routes(app, require_user, task_lookup, task_visible,
             "UPDATE retraction_runs SET status=?, cursor_pos=?, checked_count=?, "
             "found_count=?, unknown_count=?, finished_at=? WHERE run_id=?",
             ("done" if done else "running", new_offset, new_offset, found_count,
-             int(row["unknown_count"]) + unknown_delta, finished_at, run_id))
+             int(fresh_lock["unknown_count"]) + unknown_delta, finished_at, run_id))
         conn.commit()
         fresh = _run_row(conn, info.task_id, run_id)
         return _progress_payload(fresh, processed_delta=len(batch),

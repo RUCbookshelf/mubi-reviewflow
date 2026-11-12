@@ -2565,13 +2565,15 @@ def update_task(
         if body.name is not None:
             tasks_mod.rename_task(task_id, body.name, DATA_DIR)
         if body.description is not None:
-            info = tasks_mod.find_task(task_id, DATA_DIR)
-            if info is None or info.degraded:
-                raise ValueError("任务描述文件已损坏，无法修改。")
-            info.description = body.description.strip()
-            tasks_mod._write_task_json(  # noqa: SLF001  与 rename 同一条写路径
-                info.dir, tasks_mod._json_payload(info)
-            )
+            # review67 M-01+M-02（2026-11-12 评审 verified×2，同根同修）：收敛到
+            # _mutate_task 锁定合并骨架——此前 find_task→_json_payload 整盘重写
+            # 会静默丢弃其他模块读-改-写进 task.json 的扩展键（protocol/
+            # living_review_auto 等），且是绕过 _task_json_lock 的无锁读改写，
+            # 与并发 touch/register_screener/protocol 保存交错时整盘覆盖丢更新。
+            # 与 rename/archive/register_screener/touch 同一写路径不变式。
+            tasks_mod._mutate_task(  # noqa: SLF001  锁定+扩展键合并骨架（rename 族写路径）
+                task_id, DATA_DIR,
+                lambda info: setattr(info, "description", body.description.strip()))
         if body.archived is not None:
             tasks_mod.archive_task(task_id, DATA_DIR, archived=body.archived)
     except ValueError as exc:
@@ -3236,9 +3238,17 @@ def _trace_context(info, user, source="manual"):
         from coscreen.research_trace import TraceContext
     except Exception as exc:
         # Disabled users retain the ordinary save path if this optional module fails.
-        for path in {_screener_db(info, user["username"]), _coding_owner_db(info)}:
+        # review67 L-01：legacy（无属主）任务 _coding_owner_db 返回 None，原集合
+        # 直接纳 None 进 sqlite3.connect(None) → TypeError（非 sqlite3.Error，
+        # 不被下方 503 兜底捕获，穿透成全局 500）。入集合前过滤 None；连接用
+        # closing 显式关闭（with 语句对 sqlite3 连接只管事务不管关闭，遗留
+        # 打开的句柄在 Windows 上会锁住库文件）。
+        from contextlib import closing
+        for path in {candidate for candidate in (_screener_db(info, user["username"]),
+                                                _coding_owner_db(info))
+                     if candidate is not None}:
             try:
-                with sqlite3.connect(path) as conn:
+                with closing(sqlite3.connect(path)) as conn:
                     if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='trace_settings'").fetchone():
                         continue
                     row = conn.execute("SELECT status FROM trace_settings WHERE task_id=? AND actor_id=?",
@@ -3925,6 +3935,16 @@ async def _save_server_sourced_arbitration(
     except ScreenerLibraryUnavailableError as exc:
         # 暂时不可读（锁忙/IO）：503 稍后重试，绝不落盘缺员合并表。
         raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+    except sqlite3.OperationalError as exc:
+        # review67 L-13：append_decision_arbitration 对协作库 BEGIN IMMEDIATE
+        # 15s 锁忙超时原样抛 OperationalError，此前只捕 ValueError 落全局 500；
+        # 对齐 arbitration_session 的 503 口径（同一底层故障、三条保存链一致）。
+        logger.warning("仲裁决策写协作库失败（server-save 降级 503）：%r", exc)
+        raise HTTPException(503, {
+            "error_code": "arbitration_session_store_unavailable",
+            "message_key": "team.arbitration_session_store_unavailable",
+            "params": {}, "details": str(exc),
+            "message": "仲裁会话存储暂时不可用，请稍后重试。"}) from exc
     except ValueError as exc:
         raise _arbitration_resolution_error(exc) from exc
 
@@ -3964,6 +3984,16 @@ async def save_screening_arbitration(
             store, stage=stage, merged=merged, resolutions=choices,
             arbitrator_id=user["user_id"],
         )
+    except sqlite3.OperationalError as exc:
+        # review67 L-13：同 server-save——CSV 上传保存此前同样漏捕协作库锁忙
+        # OperationalError 落全局 500，补齐 arbitration_session 的 503 口径
+        # （同一底层故障三条保存链一致；事务回滚无部分写入）。
+        logger.warning("仲裁决策写协作库失败（CSV 上传降级 503）：%r", exc)
+        raise HTTPException(503, {
+            "error_code": "arbitration_session_store_unavailable",
+            "message_key": "team.arbitration_session_store_unavailable",
+            "params": {}, "details": str(exc),
+            "message": "仲裁会话存储暂时不可用，请稍后重试。"}) from exc
     except ValueError as exc:
         raise _arbitration_resolution_error(exc) from exc
     return saved
@@ -4413,7 +4443,13 @@ def analysis_confirm_effect_direction(task_id: str, result_id: int,
             confirmed_at=datetime.now().isoformat(timespec="seconds"),
         )
     except ValueError as exc:
-        raise _bad(exc, 404 if str(exc) == "effect result does not exist" else 400) from exc
+        # review67 L-04：404 不再钉死 core 异常文案全等（"effect result does not
+        # exist" 一旦改写即静默降级 400）。改为按库内状态判定：失败后复查该
+        # 效应是否仍存在，不存在 → 404；其余 ValueError 均为方向确认契约错误 → 400。
+        if not any(effect["result_id"] == result_id
+                   for effect in analysis_mod.list_effects(db)):
+            raise _bad("effect result does not exist", 404) from exc
+        raise _bad(exc) from exc
     return {"effects": analysis_mod.list_effects(db)}
 
 
@@ -4731,14 +4767,28 @@ def analysis_save_result_moderator(task_id: str, result_id: int, body: ResultMod
     db = _screener_db(_task_or_404(task_id), user["username"])
     with closing(db_mod._connect(db)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        # review67 L-04：409 判定不再依赖 core 异常文案子串（"revision conflict"
+        # 一旦改写即静默降级 400，客户端刷新修订号的重试语义失真）。同一
+        # BEGIN IMMEDIATE 事务内按库内状态预检：效应存在且该 (result_id, name)
+        # 当前最大修订号（无记录视为 0）与请求 expected_revision 不一致 →
+        # 结构化 409；随后 core 的 ValueError 一律是入参/契约错误 → 400。
+        # 修订号过期与其他错误并存时 409 优先（客户端本就需要先重载）。
+        effect_exists = conn.execute(
+            "SELECT 1 FROM review_effects WHERE result_id=?", (result_id,)).fetchone()
+        current = conn.execute(
+            "SELECT MAX(revision) FROM review_result_moderators WHERE result_id=? AND name=?",
+            (result_id, body.name.strip())).fetchone()
+        if effect_exists is not None and (current[0] or 0) != body.expected_revision:
+            raise HTTPException(409, {"error_code": "result_moderator_conflict",
+                                      "message_key": "analysis.result_moderator_invalid", "params": {},
+                                      "details": "result moderator revision conflict",
+                                      "message": "result moderator revision conflict"})
         try:
             return save_result_moderator(conn, result_id, **body.model_dump())
         except ValueError as exc:
-            status = 409 if "revision conflict" in str(exc) else 400
-            raise HTTPException(status, {"error_code": "result_moderator_conflict" if status == 409
-                                         else "result_moderator_invalid",
-                                         "message_key": "analysis.result_moderator_invalid", "params": {},
-                                         "details": str(exc), "message": str(exc)}) from exc
+            raise HTTPException(400, {"error_code": "result_moderator_invalid",
+                                      "message_key": "analysis.result_moderator_invalid", "params": {},
+                                      "details": str(exc), "message": str(exc)}) from exc
 
 
 @app.get("/api/tasks/{task_id}/analysis/effects/moderators")
@@ -4764,15 +4814,28 @@ def analysis_set_effect_design(task_id: str, result_id: int, body: EffectDesignI
     db = _screener_db(_task_or_404(task_id), user["username"])
     with closing(db_mod._connect(db)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        # review67 L-04：同 result-moderator 端点——409 不再以 "revision conflict"
+        # 子串判 core 文案，改按库内状态预检（同一事务，参数绑定）：效应存在且
+        # 其设计行当前修订号（无设计行视为 0）与 expected_revision 不一致 →
+        # 结构化 409；core 的 ValueError 一律 → 400。效应不存在时不抢答 409，
+        # 交给 core 报 unknown result ID（与原口径一致）。
+        effect_exists = conn.execute(
+            "SELECT 1 FROM review_effects WHERE result_id=?", (result_id,)).fetchone()
+        current = conn.execute(
+            "SELECT revision FROM review_effect_design WHERE result_id=?",
+            (result_id,)).fetchone()
+        if effect_exists is not None and body.expected_revision != (current[0] if current else 0):
+            raise HTTPException(409, {"error_code": "effect_design_conflict",
+                                      "message_key": "analysis.effect_design_invalid", "params": {},
+                                      "details": "effect design revision conflict",
+                                      "message": "effect design revision conflict"})
         try:
             return set_effect_design(conn, result_id, **body.model_dump())
         except ValueError as exc:
-            status = 409 if "revision conflict" in str(exc) else 400
-            raise HTTPException(status, {"error_code": "effect_design_conflict" if status == 409
-                                          else "effect_design_invalid",
-                                          "message_key": "analysis.effect_design_invalid",
-                                          "params": {}, "details": str(exc),
-                                          "message": str(exc)}) from exc
+            raise HTTPException(400, {"error_code": "effect_design_invalid",
+                                      "message_key": "analysis.effect_design_invalid",
+                                      "params": {}, "details": str(exc),
+                                      "message": str(exc)}) from exc
 
 
 @app.get("/api/tasks/{task_id}/analysis/effects/designs")
@@ -6461,7 +6524,16 @@ def _trace_personal_store(info, user):
 
 
 def _trace_validate_subject(info, stage, subject_id):
-    return db_mod.get_article(_coding_owner_db(info), subject_id) is not None
+    # review67 L-46：legacy（无属主）桌面任务 _coding_owner_db 返回 None，
+    # get_article(None,…) → os.path.exists(None) 抛 TypeError → 500。守卫后
+    # 与 research_trace_api 1378-1379 的 validate_subject 缺位分支同口径：
+    # 无法确认来源引用归属 → 结构化 400（提示可保留未链接继续），不再 500。
+    owner_db = _coding_owner_db(info)
+    if owner_db is None:
+        raise HTTPException(
+            400, "We cannot confirm that the source reference belongs to this task. "
+                 "You can keep it unlinked and continue.")
+    return db_mod.get_article(owner_db, subject_id) is not None
 
 
 from custom_backend.workspace_undo_api import register_workspace_undo_routes
@@ -7291,12 +7363,15 @@ def get_al_profiles(task_id: str, user: dict = Depends(require_user)) -> dict:
 @app.put("/api/tasks/{task_id}/al/profile")
 def set_al_profile(task_id: str, body: ALProfileSetIn,
                    user: dict = Depends(require_user)) -> dict:
-    """设置任务的 AL 模型预设（写入 task.json 的 "al_profile" 字段）。
+    """设置当前筛选员的 AL 模型预设（review67 L-03：改写失真 docstring）。
 
-    切换由用户显式操作（§0.4 第 4 条无静默默认变更）；已有的筛选标签
-    不受影响，下一次重排起生效。字段随 TaskInfo/_json_payload round-trip，
-    注册表写回（touch/rename/archive/register_screener）不会丢失。
-    task.json 缺失/损坏（降级只读）时 409，与 W5 protocol 同一口径。
+    实际行为：写入该筛选员的个人设置文件 ``al_settings_{slug}.json``
+    （_save_al_settings 原子替换），并非 task.json 的 "al_profile" 字段；
+    task.json 的 "al_profile" 仅作为旧任务级偏好的**只读回退**，且只对
+    已验证属主生效（_personal_al_profile）。GET /al/profiles 返回的
+    "al_profile" 也是按用户解析后的值。切换由用户显式操作（§0.4 第 4
+    条无静默默认变更）；已有筛选标签不受影响，下一次重排起生效。
+    task.json 缺失/损坏（info.degraded 降级只读）时统一 409 只读口径。
     """
     from coscreen.al.profiles import PROFILES
 
@@ -7741,46 +7816,10 @@ def _living_review_write_gate(info: tasks_mod.TaskInfo, user: dict) -> None:
         })
 
 
-def _lr_validate_measure(measure: str) -> str:
-    """指标代码校验：必须是合并引擎接受的指标（review_analysis.MEASURES）。"""
-    if measure not in analysis_mod.MEASURES:
-        raise _bad(f"不支持的指标代码：{measure}", 400)
-    return measure
-
-
-def _lr_history_entry(result, *, source: str, label: str,
-                      comparison: str, outcome: str, timepoint: str,
-                      measure: str) -> dict:
-    """IncrementalResult -> 历史条目（GET history 的每行摘要）。"""
-    return {
-        "when": datetime.now().isoformat(timespec="seconds"),
-        "source": source,  # "manual" | "pubmed"
-        "label": label,    # 文件名 / 插件拉取标识
-        "comparison": comparison, "outcome": outcome,
-        "timepoint": timepoint, "measure": measure,
-        "n_new": len(result.new_articles),
-        "duplicates_removed": result.duplicates_removed,
-        "al_available": result.al_available,
-        "conclusion_changed": result.conclusion_changed,
-        "meta_before": result.meta_before,
-        "meta_after": result.meta_after,
-        "change_report": result.change_report,
-    }
-
-
-def _lr_ranker_for_task(info: tasks_mod.TaskInfo, screener: str) -> ActiveLearningRanker:
-    """按任务级 AL 设置构建热启动排序器（策略/种子/min_labeled/预设与 /al/rank 同源；
-    预设只能是用户显式设置的 task.json "al_profile"，被篡改成未知名时显式 409）。"""
-    from coscreen.al.profiles import PROFILES
-
-    settings = _load_al_settings(info, screener)
-    profile = _personal_al_profile(info, screener)
-    if profile is not None and profile not in PROFILES:
-        raise _bad(f"任务保存的 AI 模型预设无效：{profile}", 409)
-    return ActiveLearningRanker(
-        strategy=settings["strategy"], seed=settings["seed"],
-        min_labeled=settings["min_labeled"], profile=profile,
-    )
+# review67 L-02：W13 遗留三件套 _lr_validate_measure/_lr_history_entry/
+# _lr_ranker_for_task 已删除——检索式改存统一库、增量改走受保护导入后全仓
+# 无任何调用方（grep 仅命中定义行）；现行链路 living_review_import_update
+# 固定 409，PubMed/ERIC check-now 各自内联构造历史条目。
 
 
 @app.get("/api/tasks/{task_id}/living-review/search-records")

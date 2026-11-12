@@ -508,6 +508,18 @@ def create_synthesis_run(db_path, specification: dict, project_id: str,
         require_compatible_effects(rows, measure)
         if any(row["measure"] != measure for row in rows):
             raise ValueError("selected effect measures do not match the requested measure")
+        # review67 M-03: 合成运行持久化路径此前绕过 synthesize()→selected_effects()
+        # 的「已登记 cluster/sample 互异」独立性守卫——同一选层读端点 400 拒绝而
+        # POST 落库成功（读写不一致）。这里对同一选层复用同一守卫函数（参数绑定
+        # 查询本选层已选结果的设计行），共享已登记 cluster/sample 即 ValueError，
+        # 由 API 层按既有契约转 400，绝不持久化矛盾声明。
+        placeholders = ",".join("?" * len(rows))
+        recorded_designs = conn.execute(
+            f"SELECT cluster_id,sample_id FROM review_effect_design "
+            f"WHERE result_id IN ({placeholders})",
+            [row["result_id"] for row in rows],
+        ).fetchall()
+        review_analysis._reject_shared_recorded_design(recorded_designs)
         versions = effect_versions(conn, [row["result_id"] for row in rows])
         article_fields = ("zotero_key", "title", "authors", "journal", "year", "doi", "url")
         source_articles = {}
@@ -520,14 +532,31 @@ def create_synthesis_run(db_path, specification: dict, project_id: str,
                 raise ValueError(f"source report is missing: {key}")
             source_articles[key] = dict(zip(article_fields, source))
         result = review_analysis._synthesize_rows(rows, measure, model, ci_method)
+        # review67 M-03: 独立性声明按实际登记情况落库——守卫通过只说明「已登记
+        # 的设计两两互异或无登记」，不再无条件写死
+        # "one independent study per selected effect"（守卫加入前该字面对共享
+        # cluster 的选层是虚假声明）。n_clusters 同步按实：全登记时守卫已保证
+        # 登记行两两互异，簇数即登记数。
+        n_recorded = len(recorded_designs)
+        if n_recorded == len(rows):
+            cluster_assumption = "recorded cluster and sample designs are pairwise distinct"
+            n_clusters = n_recorded
+        elif n_recorded:
+            cluster_assumption = (f"{n_recorded} of {len(rows)} selected effects carry recorded, "
+                                  "pairwise-distinct cluster/sample designs; the rest are assumed "
+                                  "one independent study per selected effect")
+            n_clusters = len(groups)
+        else:
+            cluster_assumption = "one independent study per selected effect"
+            n_clusters = len(groups)
         run_spec = {**specification, "project_id": project_id,
                     "algorithm_version": "legacy_inverse_variance_v1",
                     "result_selection": "selected_exact_stratum", "exclusion_rules": [],
                     "random_seed": None}
         snapshot = {"effects": versions, "source_articles": source_articles,
                     "n_effects": len(versions),
-                    "n_studies": len(groups), "n_clusters": len(groups),
-                    "cluster_assumption": "one independent study per selected effect",
+                    "n_studies": len(groups), "n_clusters": n_clusters,
+                    "cluster_assumption": cluster_assumption,
                     "coding_freeze": coding_freeze}
         attach_method_sources(result, snapshot, synthesis_method_source_ids(model, ci_method))
         snapshot["data_sha256"] = hashlib.sha256(json.dumps(

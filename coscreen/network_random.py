@@ -7,10 +7,8 @@ import math
 import numpy as np
 from scipy.optimize import minimize_scalar
 
-from coscreen.network_gls import RATIOS, synthesize_network
-
-
-_Z_975 = 1.96
+from coscreen.network_gls import (DIRECTION_WARNING_PREFIX, RATIOS, Z_975,
+                                  synthesize_network)
 
 
 def synthesize_network_random(studies: list[dict], measure: str, reference: str) -> dict:
@@ -261,7 +259,8 @@ def synthesize_network_random(studies: list[dict], measure: str, reference: str)
             if not math.isfinite(effect) or not math.isfinite(variance) or variance <= 0:
                 raise ValueError("pairwise estimate or standard error is outside the finite numerical range")
             se = math.sqrt(variance)
-            low, high = effect - _Z_975 * se, effect + _Z_975 * se
+            # L-24（review67）：z 乘数复用 network_gls 的精确 norm.ppf(0.975)。
+            low, high = effect - Z_975 * se, effect + Z_975 * se
             if measure in RATIOS:
                 try:
                     estimate, ci_low, ci_high = map(math.exp, (effect, low, high))
@@ -289,6 +288,13 @@ def synthesize_network_random(studies: list[dict], measure: str, reference: str)
         "Uses independent arm-level study deviations with one common contrast-level tau-squared; treatment-specific heterogeneity is not modeled.",
         "Within-study covariance matrices must be provided on the declared analysis scale and are treated as known.",
         "Normal Wald intervals condition on the fitted heterogeneity variance and do not include its estimation uncertainty.",
+        # review67 M-09: fixed_result 的 warnings 不得被上面的静态文案整体覆盖——
+        # 同型输入（A vs B / B vs A 并存）fixed 路径有 MM10-12 方向告警而 random
+        # 路径曾丢失，API 原样透传，random 模型用户失去方向性提示。上面的 5 条
+        # 描述 random 模型语义（fixed 的 3 条通用文案如 fixed-effect Q 的解释不
+        # 适用 random 结果），故只并入 fixed 路径新增的方向类告警，合并而非覆盖。
+        *[warning for warning in fixed_result["warnings"]
+          if warning.startswith(DIRECTION_WARNING_PREFIX)],
     ]
     result = {
         **fixed_result,

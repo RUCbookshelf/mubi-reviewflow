@@ -9,6 +9,10 @@ custom_backend/research_trace_api.py:360#ATTACH 的 schema 别名是 SQLite 标�
 custom_backend/research_trace_api.py:382#跨库 UNION ALL 分支数随 store 数变化且分支内 schema 为 ATTACH 标识符；数据过滤值全部为 ? 参数
 # ---- 2.1.5 waveA 泳道 S1（coscreen）：仅 SQLite 语法无法绑定、且值来自内部
 # 元数据/固定常量的 3 处；每条对应源码处均已有注释说明。----
-coscreen/db.py:749#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）
-coscreen/db.py:1344#迁移目标表/列名取自 sqlite_master 发现的实际库结构（内部元数据，非外部输入），标识符不能参数绑定；数据值全部 ? 绑定
+# 【review67 行号复原：M-04 重建 DDL 改拼注册表后 749→751、1344→1345 平移】
+coscreen/db.py:751#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）
+coscreen/db.py:1345#迁移目标表/列名取自 sqlite_master 发现的实际库结构（内部元数据，非外部输入），标识符不能参数绑定；数据值全部 ? 绑定
 coscreen/review_workflow.py:158#executescript 不支持参数绑定；脚本由模块内固定 _SCHEMA 常量与会话前缀 BEGIN IMMEDIATE 拼接，无外部输入
+# ---- review67（2026-11-12）：两处新命中皆非外部输入 ——
+coscreen/db.py:557#整表重建 DDL 的 measure CHECK 改拼模块级注册表常量 _MEASURE_CHECK_SQL（review67 M-04：消灭硬编码清单；拼入内容为固定代码常量，无任何外部输入）
+coscreen/analysis_storage.py:517#IN(?) 占位符个数由选中效应 result_id 数量决定（review67 M-03 独立性守卫前置）；拼入内容仅为 '?'，id 值经参数绑定

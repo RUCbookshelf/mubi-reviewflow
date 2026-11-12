@@ -1,4 +1,7 @@
-"""文献去重 —— 两层去重（精确 DOI/Key + 模糊标题/作者候选）与传递闭包（见 SPEC.md §4）。
+"""文献去重 —— 两层去重（精确 DOI/Key + 模糊标题/作者候选）与传递闭包。
+
+（模块头的分层规则以本 docstring 为准——历史引用的外部 "SPEC.md §4" 锚点
+从未入库，review67 L-10 改为就地说明。）
 
 第 1 层 精确（自动合并仅保留可机器核验的证据，U1-P1/U1-P3，与 Web 导入的
     受保护核验/人工候选哲学对齐）：
@@ -11,13 +14,15 @@
        token_set_ratio>=90 自动合并，同键同题同作者异年也不再静默覆盖）。
     键相等但 DOI 不等、标题不完全相等或首作者不兼容 → key_conflict_pairs
     候选（不合并，由 stabilize_conflicting_keys 消歧键后各自入库）。
-第 2 层 模糊（U1-P1/U1-P10）：仅对精确层存活且双方 DOI 均为空的条目做
-    O(n^2) 两两扫描，标题相似度（rapidfuzz.fuzz.token_set_ratio，小写 +
-    空白折叠形式）>= 90 且第一作者门（first_author_surname 相似度 >= 80，
-    任一侧作者缺失则门控不通过）达标。模糊证据只报告 fuzzy_pairs 候选，
-    不再自动合并——由调用方进入人工确认（Web/活体综述候选清单、CLI 打印）。
-    候选边经并查集生成树去重（每连通分量至多 n-1 条边）并有总量上限
-    FUZZY_PAIR_LIMIT，n 条同模板标题不再产生 O(n^2) 条驻留内存的配对。
+第 2 层 模糊（U1-P1/U1-P10）：仅对精确层存活且双方身份 DOI（:func:`_identity_doi`
+    口径，review67 M-05：期刊样式 DOI 视同缺 DOI，不再把整刊样式 DOI 的记录
+    排除出模糊候选扫描）均为空的条目做 O(n^2) 两两扫描，标题相似度
+    （rapidfuzz.fuzz.token_set_ratio，NFKC/casefold/标点折叠形式）>= 90 且
+    第一作者门（first_author_surname 相似度 >= 80，任一侧作者缺失则门控
+    不通过）达标。模糊证据只报告 fuzzy_pairs 候选，不再自动合并——由调用方
+    进入人工确认（Web/活体综述候选清单、CLI 打印）。候选边经并查集生成树
+    去重（每连通分量至多 n-1 条边）并有总量上限 FUZZY_PAIR_LIMIT，n 条同
+    模板标题不再产生 O(n^2) 条驻留内存的配对。
 传递闭包：A~B、B~C 时 B、C 均指向最终保留的 A（并查集实现，根即保留条目）；
     仅精确层参与并查集。
 
@@ -43,6 +48,7 @@ from rapidfuzz import fuzz, process
 from coscreen import config
 from coscreen.models import Article, compute_content_hash
 from coscreen.normalize import (
+    _first_author_head,
     _strip_name_suffixes,
     first_author_given_names,
     first_author_surname,
@@ -112,8 +118,15 @@ class DedupReport:
 # ---------------------------------------------------------------------------
 
 def _norm_title(title: str) -> str:
-    """标题比较形式：转小写 + 连续空白折叠为单个空格 + 去首尾空白。"""
-    return " ".join(title.lower().split())
+    """标题比较形式：与 normalize_title_candidate 同口径（review67 L-09）。
+
+    修复前只做「小写 + 空白折叠」，CJK 标题的全/半角标点差异（'数字阅读
+    （综述）' vs '数字阅读(综述)'）使同文标题判不等：同键 → exact_key_
+    conflict 误报、异键 → token_set_ratio 75<90 模糊层零候选，与 Web 导入
+    复核的 NFKC 标题分组双口径并存。现统一委托 NFKC + casefold + 标点/符号
+    折叠（精确层标题全等、模糊层相似度、内容匹配键、元数据改写提示共用）。
+    """
+    return normalize_title_candidate(title)
 
 
 def normalize_title_candidate(title: str) -> str:
@@ -199,10 +212,12 @@ def _caseless_alt_reading(authors: str, other: str) -> tuple[str, str] | None:
     条件（评审 R2/R3）：本侧整体无大写（无大小写信号），且**对面一侧含大写
     字母**（由对面提供「谁是大写姓氏」的证据）。任一侧带逗号时不做（姓前
     形态无歧义）。两侧都全小写 -> None：'wu li' 与 'li wu' 是不同作者的
-    姓名倒序，不得静默合并。
+    姓名倒序，不得静默合并。首段提取与 first_author_surname 同口径
+    （normalize._first_author_head：全角分隔符拆分 + 'et al.' 剥离，
+    review67 M-06/M-07）。
     """
-    head = str(authors or "").split(";")[0].strip()
-    other_head = str(other or "").split(";")[0].strip()
+    head = _first_author_head(authors)
+    other_head = _first_author_head(other)
     if not head or "," in head or "," in other_head:
         return None
     if head != head.lower():
@@ -378,7 +393,12 @@ def find_duplicates(
     if progress_callback:
         progress_callback("exact", n, n)
 
-    # ---- 第 2 层：模糊扫描（仅存活条目、双方 DOI 均为空；只出候选）----
+    # ---- 第 2 层：模糊扫描（仅存活条目、双方身份 DOI 均为空；只出候选）----
+    # 资格口径（review67 M-05）：用 _identity_doi 而非 _norm_doi——期刊样式
+    # DOI（"(issn)" 整刊标识）视同缺 DOI。修复前只看 DOI 字面非空，ERIC 等
+    # 来源给每条记录都填整刊 DOI 时，全部记录被排除出模糊候选扫描（同题同
+    # 作者异键零候选，静默漏报），与 _identity_doi 的「视同缺 DOI/避免各
+    # 消费点口径分叉」承诺分叉。
     # 候选边经并查集生成树去重（复审 #4/#10）：同一连通分量只保留至多
     # n-1 条边（每合并两个分量记一条），消费方（候选复核组/标题审阅组）
     # 只依赖连通性，生成树与完全图等价；内存从 O(n^2) 条配对降为 O(n)。
@@ -386,7 +406,7 @@ def find_duplicates(
     survivors = [i for i in range(n) if uf.find(i) == i]
     fuzzy_candidates = [
         i for i in survivors
-        if not _norm_doi(articles[i].doi) and _norm_title(articles[i].title)
+        if not _identity_doi(articles[i].doi) and _norm_title(articles[i].title)
     ] if include_fuzzy else []
     total_candidates = len(fuzzy_candidates)
     if total_candidates >= 2:
@@ -424,13 +444,18 @@ def find_duplicates(
                         continue
                     if candidate_uf.find(i) == candidate_uf.find(j):
                         continue  # 同组冗余边：连通性已具备，不重复入清单
-                    candidate_uf.union(i, j)
-                    # 候选待确认（不 union 精确层）：写入 fuzzy_events 供人工清单使用
-                    fuzzy_events.append((i, j, "fuzzy"))
                     if len(fuzzy_events) >= FUZZY_PAIR_LIMIT:
+                        # 真实截断：第 LIMIT+1 条合格边被丢弃才置位（review67
+                        # L-07——修复前在追加第 LIMIT 条边后即置位，边数恰好
+                        # 等于上限时事件序列与不设限逐条相同却误报「已截断」，
+                        # CLI 以「警告：」打印误导用户）。置位后即停：其余相似
+                        # 标题组未全部展开。
                         truncated = True
                         stop = True
                         break
+                    candidate_uf.union(i, j)
+                    # 候选待确认（不 union 精确层）：写入 fuzzy_events 供人工清单使用
+                    fuzzy_events.append((i, j, "fuzzy"))
             if progress_callback:
                 progress_callback("fuzzy", end, total_candidates)
         if truncated:
@@ -938,7 +963,9 @@ def stabilize_conflicting_keys(
         return None
 
     adopted_targets: dict[str, list[int]] = {}  # 库内键 -> 命中的本批下标
-    seen_doi = set()  # 本批已接受身份的 DOI（r8 #2 来源键路径跨行归属）
+    # （review67 L-08：此处原有一个 seen_doi 集合，注释声称承担 r8 #2 的跨行
+    # DOI 归属检查，实际定义后从未被读取——该检查由 doi_index/_doi_owned_
+    # elsewhere 与下方 final_doi_owner 扫描承担。死状态已删。）
 
     def _doi_owned_elsewhere(art: Article, target: str) -> str | None:
         """入批 DOI 是否已属于**另一条**库内行或本批已接受的其他键（r8 #2）。

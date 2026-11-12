@@ -47,6 +47,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import re
 from typing import Callable
 
 __all__ = [
@@ -805,6 +806,19 @@ def _section_results_flow(data: dict) -> dict:
     return _ok(["The study flow is summarised below."], table=table, figure=figure)
 
 
+def _median_label(years: list[int]) -> str:
+    """排序后年份列表的中位数文案（review67 L-26）。
+
+    偶数个年份取中间两数均值（两数之和为奇数时形如 ``2001.5``）；
+    奇数个年份仍是正中那一年。只用于成句展示，不参与任何数值计算。
+    """
+    mid = len(years) // 2
+    if len(years) % 2:
+        return str(years[mid])
+    total = years[mid - 1] + years[mid]
+    return str(total // 2) if total % 2 == 0 else f"{total / 2:.1f}"
+
+
 def _section_results_characteristics(data: dict) -> dict:
     articles = [a for a in data.get("articles") or [] if isinstance(a, dict)]
     if not articles:
@@ -819,8 +833,10 @@ def _section_results_characteristics(data: dict) -> dict:
             journals[journal] = journals.get(journal, 0) + 1
     sentences = [f"{len(articles)} unique records were included in the review library."]
     if years:
+        # review67 L-26：偶数个年份取中间两数均值——此前直接取上中位
+        # （years[len//2]）会让稿件统计句的 median 偏差一年。
         sentences.append(f"Publication years ranged from {years[0]} to {years[-1]} "
-                         f"(median {years[len(years) // 2]}).")
+                         f"(median {_median_label(years)}).")
     rows = [[journal, count] for journal, count in
             sorted(journals.items(), key=lambda kv: (-kv[1], kv[0]))[:10]]
     table = {"columns": ["Journal", "Records"], "rows": rows} if rows else None
@@ -1121,6 +1137,30 @@ def _latex_escape(text: str) -> str:
     return "".join(_LATEX_ESCAPES.get(ch, ch) for ch in str(text))
 
 
+#: verbatim 环境结束标记（含空白变体 ``\\end {verbatim}`` 等——按注入形态
+#: 一并处理，宁枉勿纵；review67 L-27）。preformatted 块承载成员可编辑的
+#: 检索策略查询串，标记原样内插会提前终止环境、其后内容按 LaTeX 正文执行。
+_VERBATIM_END_RE = re.compile(r"\\end\s*\{\s*verbatim\s*\}")
+
+
+def _verbatim_latex(block: str) -> list[str]:
+    """把一个 preformatted 块排进若干个 verbatim 环境（review67 L-27）。
+
+    内容含 ``\\end{verbatim}`` 时按标记切开、逐段放进独立环境：注入的
+    结束标记退化为环境边界，其后内容仍留在 verbatim 内按字面排版，
+    不会被编译器当正文执行（标记本身不再逐字显示，属病态输入下的
+    防御语义——正常查询串不含该标记，输出与原实现逐字相同）。
+    """
+    parts = _VERBATIM_END_RE.split(str(block))
+    lines: list[str] = []
+    for index, part in enumerate(parts):
+        if index:
+            lines.extend([r"\end{verbatim}", r"\begin{verbatim}"])
+        lines.append(part)
+    lines.extend([r"\end{verbatim}"])
+    return [r"\begin{verbatim}", *lines]
+
+
 def _table_latex(table: dict) -> str:
     columns = table.get("columns") or []
     if not columns:
@@ -1155,7 +1195,9 @@ def render_latex(manuscript: dict) -> str:
             body.append(_latex_escape(paragraph) if not section.get("placeholder")
                         else r"\textit{" + _latex_escape(paragraph) + "}")
         for block in section.get("preformatted") or []:
-            body.extend(["", r"\begin{verbatim}", block, r"\end{verbatim}"])
+            # review67 L-27：preformatted 内容经 _verbatim_latex 防注入切分，
+            # 不再原样内插（查询串含 \end{verbatim} 时会逃逸出 verbatim）。
+            body.extend(["", *_verbatim_latex(block)])
         if section.get("table"):
             rendered = _table_latex(section["table"])
             if rendered:

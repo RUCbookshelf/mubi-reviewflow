@@ -3,7 +3,8 @@
 cohen_kappa 将两列决策按位置配对，仅保留双方均非空且属于 labels 的配对，
 计算 po（实际一致率）、pe（随机期望一致率）与 kappa = (po - pe) / (1 - pe)。
 结果与 sklearn.metrics.cohen_kappa_score(a, b, labels=labels) 数学完全一致
-（sklearn 仅在测试中作基准，见 tests/test_kappa.py）。
+（sklearn 仅在测试中作基准，见 build/tests/test_2_1_5_review67_kappa_sklearn.py——
+review67 L-25 落成的常驻 3580 例对拍基准）。
 """
 
 from __future__ import annotations

@@ -880,10 +880,20 @@ def _build_package_zip(info: Any, data_dir: str | Path, include_pdfs: bool,
     zip_path = _contained(workdir, "package.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
                          compresslevel=6) as archive:
+        written_total = 0
         for source in collected["sources"]:
             digest, size = _add_file_to_zip(
                 archive, source["arcname"], source["path"], allowed_roots=allowed_roots)
             members.append({"path": source["arcname"], "sha256": digest, "size": size})
+            written_total += size
+            # review67 L-30：流中总量复核（对齐归档导出终审 #44 的闸）——
+            # PDF 成员直接从任务目录流式读取，收集期 stat 与写入之间被并发
+            # 抓取增大的文件会整份写入 zip；超限即刻中止（异常沿 _build 的
+            # except 分支清掉整个 workdir），绝不产出超过 2GB 上限的整包，
+            # 也不让 X-Package-Bytes 头报收集期的陈旧值。
+            if written_total > MAX_PACKAGE_BYTES:
+                raise _package_limit_error(written_total, pdf_bytes,
+                                           len(collected["fulltexts"]))
         member_hash = {member["path"]: member["sha256"] for member in members}
         manifest = {
             "schema": PACKAGE_SCHEMA,
@@ -923,12 +933,16 @@ def _build_package_zip(info: Any, data_dir: str | Path, include_pdfs: bool,
                 "pdf_exported": len(collected["fulltexts"]),
                 "pdf_skipped": len(collected["skipped_fulltexts"]),
                 "pdf_bytes": pdf_bytes,
-                "total_bytes": collected["total_bytes"],
+                # review67 L-30：摘要/响应头报**实际写入**的成员字节总量
+                #（流中累计），收集期 stat 值只在预检用——并发抓取使 PDF
+                # 在收集与写入间增长时两者才会分歧，此时上方流中闸已先行
+                # 拒绝，成功路径两值恒等。
+                "total_bytes": written_total,
             },
         }
         archive.writestr(_zip_info("manifest.json"), _json_bytes(manifest))
 
-    return zip_path, {"summary": manifest["summary"], "total_bytes": collected["total_bytes"]}
+    return zip_path, {"summary": manifest["summary"], "total_bytes": written_total}
 
 
 def _package_inventory(info: Any, data_dir: str | Path, include_pdfs: bool
@@ -1866,7 +1880,15 @@ def register_task_package_routes(
                                 user: dict = Depends(require_user)) -> dict:
         info = _manage_info(task_id, user)
         _sweep_stale_package_temp(Path(tasks_mod.tasks_root(data_dir)))
-        return await _run_or_error(_package_inventory, info, data_dir, include_pdfs)
+        # review67 L-29：体检会对全部成员库做 SQLite backup 快照（rf-package-
+        # preflight- 工作目录，单次瞬态可达 ~2GB），与持锁在途的导入/导出叠加
+        # 会突破模块头「磁盘峰值恒定 ≤4GB 瞬态」承诺——与导出/归档/导入抢
+        # 同一把全局整包操作互斥锁；抢不到直接 409（与其他端点同一口径）。
+        _acquire_package_op_lock_or_409()
+        try:
+            return await _run_or_error(_package_inventory, info, data_dir, include_pdfs)
+        finally:
+            _PACKAGE_OP_LOCK.release()
 
     # ---- 整包导出 --------------------------------------------------------
     @app.post("/api/tasks/{task_id}/package/export")

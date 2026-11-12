@@ -704,6 +704,17 @@ def _transcribe(query: str, database: str) -> dict[str, Any]:
             "warnings": warnings,
         }
     tokens = _scan_tokens(query)
+    # review67 L-32：词中括号形态（``cancer[tiab]x``、``cancer[tiab]AND``
+    # 粘连等——括号不在词尾，无法按 ``[field]`` 标签解读）不得当自由词静默
+    # 转写进目标库语法（曾产出 ``TS=(cancer[tiab]x)`` 且零警告）；保持
+    # 自由词输出但显式降级 + 结构化警告。引号短语内的括号是普通字符，不标。
+    midword_bracket = any(
+        kind == "term" and field is None and not value.startswith('"')
+        and ("[" in value or "]" in value)
+        for kind, value, field in tokens)
+    if midword_bracket:
+        warnings.append({"code": "search_strategy.field_tag_malformed",
+                         "params": {"database": database}})
     node, pos, ok = _parse_expr(tokens, 0)
     if (node is None or not ok or pos < len(tokens) or _contains_unary_not(node)
             or any(kind == "term" and not value.strip('"').strip()
@@ -722,6 +733,8 @@ def _transcribe(query: str, database: str) -> dict[str, Any]:
             "warnings": warnings,
         }
     translated, degraded = _render_node(node, database, warnings)
+    if midword_bracket:
+        degraded = True  # 词中括号：见上方 scan 阶段的 field_tag_malformed。
     if _has_implicit_phrase(tokens):
         # 未加引号的多词 + 字段标签：短语/隐式 AND 语义随词表版本而异，
         # 保留 AND 输出但显式降级提示人工核对。
@@ -745,6 +758,9 @@ def translate_pubmed_query(query: object) -> dict[str, Any]:
     - 括号/双引号不配对：三库条目均降级返回原文 + ``query_unbalanced`` 警告
       （单引号/撇号是词条普通字符，PubMed 短语只用双引号）；
     - 未映射字段（如 ``[cp]``）：按自由词降级 + ``field_unmapped`` 警告；
+    - 词中括号形态（如 ``cancer[tiab]x``，标签无法解读）：按自由词转写但
+      显式 ``field_tag_malformed`` 警告 + ``degraded=True``（review67 L-32，
+      不再零警告产出 ``TS=(cancer[tiab]x)`` 这类目标库非法语法）；
     - ``[dp]`` 年限区间 ``2010:2020`` 转连字符区间；带月/日/斜杠等其余值
       形态降级 + ``field_value_unmapped`` 警告（不静默产出非法年份表达式）；
     - WoS 无 MeSH 字段：``[mh]`` 按 ``TS=`` 降级 + ``mesh_unmapped`` 警告；

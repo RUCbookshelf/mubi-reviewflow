@@ -125,7 +125,18 @@ def _optional_text(value: Any, name: str, limit: int) -> str | None:
     return result
 
 
-def _json(value: Any) -> str:
+#: 导入侧 origin_json 单列预算（review67 L-37）：导出侧单事件行上限
+#: ``research_trace_export.MAX_EVENT_BYTES = 5MB``（含 before/after/field 的
+#: 全量序列化），而 import_event 把整条 origin 记录重序列化进**单列**
+#: origin_json——若沿用 1MB，「各列均 <1MB、整行 <5MB」的合法导出会在
+#: 重导入时被拒，破坏导出→导入的无损 round-trip。故 origin 记录的序列化
+#: （origin_json 落库与 origin_event_sha256 摘要）单列放宽到与导出侧对齐
+#: （无损方向）；before/after/field 等其余列仍用 ``_MAX_JSON_BYTES``（与
+#: 写路径对称）。测试钉死两常量相等，防漂移。
+_MAX_ORIGIN_JSON_BYTES = 5 * 1024 * 1024
+
+
+def _json(value: Any, *, limit: int = _MAX_JSON_BYTES) -> str:
     try:
         result = json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -133,8 +144,8 @@ def _json(value: Any) -> str:
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("Trace values must be finite JSON data") from exc
-    if len(result.encode("utf-8")) > _MAX_JSON_BYTES:
-        raise ValueError("Trace value exceeds 1 MB")
+    if len(result.encode("utf-8")) > limit:
+        raise ValueError(f"Trace value exceeds {limit // 1_000_000} MB")
     return result
 
 
@@ -315,7 +326,9 @@ def _insert_event(
     origin_json = None
     origin_vals: tuple[Any, ...] = (None,) * 8
     if origin is not None:
-        origin_json = _json(origin["event"])
+        # review67 L-37：origin_json 单列用导入侧放宽预算（与导出侧行上限
+        # 对齐），见 _MAX_ORIGIN_JSON_BYTES 注释。
+        origin_json = _json(origin["event"], limit=_MAX_ORIGIN_JSON_BYTES)
         origin_vals = (
             origin["store_id"], origin["event_id"], origin["sequence"],
             origin["actor_id"], origin["imported_at"], origin.get("alias"),
@@ -467,20 +480,24 @@ def begin_write_request(
         return False, None
     operation = _text(operation, "operation", 80)
     subject = _text(str(subject_id), "subject_id", 500)
-    digest = hashlib.sha256(_json({
-        "stage": stage, "operation": operation, "subject_id": subject, "payload": payload,
-    }).encode("utf-8")).hexdigest()
     row = conn.execute(
         "SELECT stage,operation,subject_id,payload_sha256,result_json FROM trace_write_operations "
         "WHERE task_id=? AND actor_id=? AND request_id=?",
         (context.task_id, str(context.actor_id), context.request_id),
     ).fetchone()
+    # review67 L-36：1MB 载荷预算门（_json 在 digest 计算处）必须在
+    # is_recording 判定**之后**——轨迹显式关闭时这里是纯读路径，>1MB 的
+    # 合法业务载荷不该在摘要计算处被轨迹层拒绝（docstring 声明的 opt-in
+    # 边界）。既无已存行（重放核对需要 digest）又不在录制 → 直接早退。
+    if row is None and not is_recording(conn, context, stage):
+        return False, None
+    digest = hashlib.sha256(_json({
+        "stage": stage, "operation": operation, "subject_id": subject, "payload": payload,
+    }).encode("utf-8")).hexdigest()
     if row is not None:
         if tuple(row[:4]) != (stage, operation, subject, digest):
             raise TraceConflict("request ID was already used with different content")
         return True, json.loads(row[4])
-    if not is_recording(conn, context, stage):
-        return False, None
     conn.execute(
         "INSERT INTO trace_write_operations(task_id,actor_id,request_id,stage,operation,subject_id,"
         "payload_sha256,result_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -960,8 +977,15 @@ def _origin_record(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def origin_event_sha256(event: dict[str, Any]) -> str:
-    """Canonical digest used for import-preview duplicate/conflict checks."""
-    return hashlib.sha256(_json(_origin_record(event)).encode()).hexdigest()
+    """Canonical digest used for import-preview duplicate/conflict checks.
+
+    review67 L-37：origin 记录按 ``_MAX_ORIGIN_JSON_BYTES``（5MB，与导出侧
+    单事件行上限对齐）序列化——预检/落库/重导入三处共用同一摘要口径，
+    各列均 <1MB 而整行 <5MB 的合法导出不再被 1MB 门挡在门外。
+    """
+    return hashlib.sha256(
+        _json(_origin_record(event), limit=_MAX_ORIGIN_JSON_BYTES).encode()
+    ).hexdigest()
 
 
 def lookup_import(
@@ -1311,7 +1335,9 @@ def import_event(
     if event["stage"] not in (*STAGES, "control"):
         raise ValueError("origin stage is invalid")
     original = _origin_record(event)
-    original_json = _json(original)
+    # review67 L-37：origin_json 落库用导入侧放宽预算（整条 origin 记录
+    # 重序列化可达各列之和，1MB 会拒掉合法导出；见 _MAX_ORIGIN_JSON_BYTES）。
+    original_json = _json(original, limit=_MAX_ORIGIN_JSON_BYTES)
     digest = origin_event_sha256(event)
     existing = conn.execute(
         "SELECT event_id,sequence,origin_sha256 FROM trace_events WHERE task_id=? AND actor_id=? "
@@ -1344,7 +1370,7 @@ def import_event(
          _optional_text(event.get("batch_id"), "batch_id", 300), _text(str(event["recorded_at"]), "recorded_at", 80),
          str(event.get("schema_version") or SCHEMA_VERSION), str(event.get("app_version") or "unknown"),
          origin["store_id"], origin["event_id"], origin["sequence"], origin["actor_id"], origin["imported_at"],
-         origin["alias"], _json(original), digest),
+         origin["alias"], original_json, digest),
     )
     return {"status": "imported", "event_id": local_event_id, "sequence": int(cur.lastrowid)}
 

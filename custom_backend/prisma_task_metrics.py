@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import csv
 import io
+import sqlite3
 from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
@@ -18,16 +19,34 @@ from coscreen import review_workflow as workflow, tasks, task_collaboration
 def decisions(path: Path, table: str) -> dict:
     if not path.is_file():
         return {}
-    with closing(workflow.connect(path, read_only=True)) as conn:
-        if not workflow.has_table(conn, table):
-            return {}
-        # table 只来自本模块固定枚举（outcomes() 传入 decisions / stage2_decisions），
-        # 两个分支各写一条字面量 SQL，不再把表名拼进语句。
-        if table == 'stage2_decisions':
-            rows = conn.execute('SELECT * FROM stage2_decisions')
-        else:
-            rows = conn.execute('SELECT * FROM decisions')
-        return {r['zotero_key']: dict(r) for r in rows}
+    # review67 L-47（对齐 screening_arbitration/appraisal_agreement/
+    # arbitration_session 对同一批 {slug}.db 的读口径）：busy_timeout 15s
+    # 后的锁忙 OperationalError 与 IO 故障是「暂时不可读」→ 503 稍后重试，
+    # 不再让 GET /prisma-metrics 整页 500；确无决策/永久损坏（无法解析的
+    # 库）降级为空——与「该成员没有决策」同口径跳过该成员，不阻塞其余成员。
+    try:
+        with closing(workflow.connect(path, read_only=True)) as conn:
+            if not workflow.has_table(conn, table):
+                return {}
+            # table 只来自本模块固定枚举（outcomes() 传入 decisions / stage2_decisions），
+            # 两个分支各写一条字面量 SQL，不再把表名拼进语句。
+            if table == 'stage2_decisions':
+                rows = conn.execute('SELECT * FROM stage2_decisions')
+            else:
+                rows = conn.execute('SELECT * FROM decisions')
+            return {r['zotero_key']: dict(r) for r in rows}
+    except sqlite3.OperationalError as exc:
+        if 'locked' in str(exc).lower() or 'busy' in str(exc).lower():
+            raise HTTPException(
+                503, '筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。') from exc
+        return {}
+    except OSError as exc:
+        # IO 故障（磁盘/权限/网络盘抖动）同样是暂时不可读（同仲裁先例口径）。
+        raise HTTPException(
+            503, '筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。') from exc
+    except sqlite3.DatabaseError:
+        # 永久损坏/无法解析：跳过该成员（不阻塞其余筛选员）。
+        return {}
 
 
 def outcomes(ctx, stage: str, mode: str) -> tuple[dict, int]:

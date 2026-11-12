@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from collections import Counter
 from contextlib import closing
 from datetime import datetime
@@ -32,6 +33,11 @@ ROB = {
 RATIOS = {"RR", "OR", "HR", "RATE_RATIO"}
 SINGLE_GROUP = {"MEAN", "LOGIT_PROP", "LOG_RATE", "SMCR", "SMCC"}
 MEASURES = RATIOS | {"RD", "MD", "SMD", "FISHER_Z", "LOG_ROM", "PAIRED_OR", "PAIRED_RD", "PHI", "R_EQUIV_APPROX"} | SINGLE_GROUP
+
+# L-05（review67）：逆方差权重 w=1/se² 的「平方溢出」阈值——任一 w 超过它则
+# w²（以及 Σw²）超出 float64 上限。此域由 save_effect 的合法小 se（<~2.7e-78）
+# 触发，字面 c=Σw−Σw²/Σw 会因 Σw²=inf 而变负，τ² 被静默钳 0。
+_W_SQUARE_OVERFLOW_LIMIT = math.sqrt(sys.float_info.max)
 
 
 def binary_effect(events_t: int, total_t: int, events_c: int, total_c: int, measure: str) -> dict:
@@ -488,6 +494,22 @@ def confirm_effect_direction(db: DbPath, result_id: int, effect_direction: str,
     return result_id
 
 
+def _reject_shared_recorded_design(recorded_designs: list[tuple]) -> None:
+    """选层「已登记 cluster/sample 互异」独立性守卫（review67 M-03 双路径复用）。
+
+    selected_effects（读/synthesize 路径）与 analysis_storage.create_synthesis_run
+    （合成运行持久化路径）必须共用同一判定：此前只有读路径生效，同一选层
+    GET 400 而 POST 落库成功，且落库快照写死独立性声明，形成读写不一致。
+    """
+    # ponytail: this catches only explicitly recorded sample overlap; detecting unrecorded overlap needs adjudicated sample IDs.
+    for column in (0, 1):
+        values = [row[column] for row in recorded_designs]
+        if len(values) != len(set(values)):
+            raise ValueError(
+                "selected effects share a recorded cluster or sample; use a dependent-effects analysis"
+            )
+
+
 def selected_effects(db: DbPath, comparison: str, outcome: str, timepoint: str,
                      measure: str | None = None) -> list[dict]:
     """Return one explicitly selected result per independent study in an exact stratum."""
@@ -514,13 +536,9 @@ def selected_effects(db: DbPath, comparison: str, outcome: str, timepoint: str,
             "WHERE e.comparison=? AND e.outcome=? AND e.timepoint=? AND e.selected=1",
             (comparison, outcome, timepoint),
         ).fetchall()
-    # ponytail: this catches only explicitly recorded sample overlap; detecting unrecorded overlap needs adjudicated sample IDs.
-    for column in (0, 1):
-        values = [row[column] for row in recorded_designs]
-        if len(values) != len(set(values)):
-            raise ValueError(
-                "selected effects share a recorded cluster or sample; use a dependent-effects analysis"
-            )
+    # ponytail 守卫语义原样迁入 _reject_shared_recorded_design（review67 M-03
+    # 提取为双路径共用），本读路径与 create_synthesis_run 持久化路径同判定。
+    _reject_shared_recorded_design(recorded_designs)
     keys = ("result_id", "study_id", "comparison", "outcome", "timepoint", "measure", "estimate", "se",
             "source_key", "input_data", "entry_method", "selected", "source_locator")
     effects = [dict(zip(keys, (*row[:9], json.loads(row[9]), *row[10:]))) for row in rows]
@@ -622,12 +640,58 @@ def _synthesize_rows(rows: list[dict], measure: str, model: str, ci_method: str)
     q = sum(a*(b-fixed)**2 for a, b in zip(w, y))
     df = len(rows) - 1
     c = sum(w) - sum(a*a for a in w) / sum(w)
+    # L-05（review67）：权重极端悬殊（任一 w>√float_max≈1.34e154，即 se<~2.7e-78
+    # 的荒谬域，save_effect 合法输入）时 Σw² 溢出为 inf，上面的字面式把 c 变成
+    # -inf，τ² 被静默钳 0——实测双研究 se=1e-80 输出 i2=100% 但 CI 宽为 0 的自
+    # 相矛盾结果。此时改用数学等价的成对式 c = 2·Σw·Σᵢ<ⱼ rᵢrⱼ（r=w/Σw）按可
+    # 用精度重算（各 r≤1，成对积求和既不溢出也不吞掉小权重对应的 catastrophic
+    # cancellation）；正常域仍走字面式，合法输入逐位不变（MM10-01 口径）。
+    if not math.isfinite(c):
+        total_w = sum(w)
+        shares = [weight / total_w for weight in w]
+        pair_sum = sum(shares[i] * shares[j]
+                       for i in range(len(shares)) for j in range(i + 1, len(shares)))
+        c = 2.0 * total_w * pair_sum
     tau2 = max(0.0, (q-df)/c) if c > 0 else 0.0
     if model == "random_pm":
         import numpy as np
         from statsmodels.stats.meta_analysis import combine_effects
-        tau2 = float(combine_effects(np.asarray(y), np.asarray([r["se"]**2 for r in rows]),
-                                     method_re="iterated").tau2)
+        variances = [r["se"]**2 for r in rows]
+        if max(w) > _W_SQUARE_OVERFLOW_LIMIT:
+            # L-05（review67）：同域下 statsmodels 的 Paule-Mandel 不可用——固定
+            # 效应预计算 1/v 的平方溢出为 inf（RuntimeWarning 后静默 τ²=0），而
+            # 其 Newton 迭代的导数项 w² 在 subnormal 域精度崩塌、步长过冲真解
+            # 后按 ee<0 截 0（缩放重调亦复现，实测停在 2^50 或返回 0）。PM 的
+            # 估计方程 q(τ²)=Σ(yᵢ−μ̂(τ²))²/(vᵢ+τ²)=k−1 本身各项数值健康且对
+            # τ² 单调减，故在此域改用 brentq 求同方程的根——与正常域 statsmodels
+            # 的 "iterated"（DerSimonian-Kacker 2007 App.8 迭代解同一方程）是
+            # 同一估计量；正常域保持既有 statsmodels 调用不变。
+            k = len(y)
+
+            def pm_equation(tau2_value: float) -> float:
+                weights_re = [1.0 / (v_i + tau2_value) for v_i in variances]
+                total = sum(weights_re)
+                mean_re = sum(w_i * y_i for w_i, y_i in zip(weights_re, y)) / total
+                return sum(w_i * (y_i - mean_re) ** 2
+                           for w_i, y_i in zip(weights_re, y)) - (k - 1)
+
+            if q - df <= 0:
+                tau2 = 0.0  # PM 边界解，与 statsmodels 的 ee<0 截 0 同语义
+            else:
+                from scipy.optimize import brentq
+                upper = 2.0 * max(tau2, max(variances))
+                while pm_equation(upper) > 0:
+                    upper *= 2.0
+                    if not math.isfinite(upper):
+                        raise ValueError("study standard errors are outside the supported "
+                                         "numeric range for the Paule-Mandel estimator")
+                tau2 = float(brentq(pm_equation, 0.0, upper))
+            if not math.isfinite(tau2):
+                raise ValueError("study standard errors are outside the supported numeric "
+                                 "range for the Paule-Mandel estimator")
+        else:
+            tau2 = float(combine_effects(np.asarray(y), np.asarray(variances),
+                                         method_re="iterated").tau2)
     elif model == "random_reml":
         from coscreen.meta_regression_model import profile_reml_tau2
         tau2, _ = profile_reml_tau2(y, [r["se"]**2 for r in rows])

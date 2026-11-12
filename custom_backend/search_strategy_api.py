@@ -253,6 +253,31 @@ def register_search_strategy_routes(
         return info
 
     # ---- 存储 -----------------------------------------------------------
+    def _legacy_migration_pending(info, user: dict) -> bool:
+        """review67 M-12：读分支是否仍需可写打开（触发一次性 legacy 迁移）。
+
+        只读 GET 的纪律是「零磁盘写」；唯一例外是**可管理任务的一方**访问
+        且 ``living_review.json`` 迁移尚未完成——「首次访问触发一次性迁移」
+        是既有产品行为（test_2_1_5_w3_strategy.py 两颗钉：迁移成功 + 坏
+        .bak 409）。普通参与者与已迁移/无旧文件的任务一律只读打开。
+        """
+        if not (Path(info.dir) / core.LEGACY_FILENAME).is_file():
+            return False  # 无旧文件：任何读都零写，直接走只读打开。
+        if not _can_manage(info, user):
+            return False  # 普通参与者不得触发迁移写（review67 M-12）。
+        store = core.store_path(info.dir)
+        if not store.is_file():
+            return True  # 库尚不存在 → 标记必然未置，迁移待触发。
+        try:
+            with closing(core.connect(store, readonly=True)) as probe:
+                marker = probe.execute(
+                    "SELECT value FROM search_strategy_meta WHERE key = ?",
+                    (core.LEGACY_MARKER_KEY,)).fetchone()
+        except (sqlite3.Error, OSError):
+            # 现存库打不开/损坏：交回可写路径，按既有错误口径映射（503）。
+            return True
+        return marker is None
+
     def _library(task_id: str, user: dict, *, write: bool = False):
         info = _write_info(task_id, user) if write else _read_info(task_id, user)
         path = core.store_path(info.dir)
@@ -263,7 +288,13 @@ def register_search_strategy_routes(
             # storage_unavailable 路径同一状态码（契约 §七：503）。
             raise _error(503, "storage_unavailable") from None
         try:
-            return core.ensure_library(info.dir)
+            # review67 M-12：读分支默认 readonly=True（mode=ro 不建库、不跑
+            # DDL、不迁移；库缺失时上层拿到空内存库按「暂无条目」展示），
+            # 只读 GET 绝不产生磁盘写；仅 legacy 迁移待完成且调用方可管理
+            # 时例外（见 _legacy_migration_pending）。
+            if write or _legacy_migration_pending(info, user):
+                return core.ensure_library(info.dir)
+            return core.ensure_library(info.dir, readonly=True)
         except core.SearchStrategyError as exc:
             raise _translate_error(exc) from None
         except sqlite3.OperationalError as exc:

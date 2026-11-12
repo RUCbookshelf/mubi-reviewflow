@@ -782,7 +782,23 @@ def register_report_evidence_routes(app, require_user):
             row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
             if revision != body.expected_revision: raise HTTPException(409, "Evidence changed. Reload before undo.")
             if not row or not row[0]: raise HTTPException(409, "No personal change is available to undo.")
-            restored = validate(json.loads(row[0]), {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")})
+            # review67 L-48（对齐 undo_shared 的专用 409）：previous 快照引用的
+            # 报告此后被并入重复组/下线时，此前直接走 validate() 抛通用 422
+            # 「Choose two different active reports...」——真因被掩盖、文案误导，
+            # 且此后撤销永久不可用。与共享撤销同场景改给专用 409；快照在保存时
+            # 已过 validate，报告键失效的唯一来源是现役键集缩小，形状缺陷仍由
+            # validate 兜底 422。
+            snapshot = json.loads(row[0])
+            keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
+            stale = (any(link.get("a") not in keys or link.get("b") not in keys
+                         for link in snapshot.get("links", []))
+                     or any(draft.get("key") not in keys
+                            for draft in snapshot.get("drafts", []))
+                     or any(parts[1] not in keys for key in snapshot.get("appraisals", {})
+                            if len(parts := str(key).split("|", 1)) == 2))
+            if stale:
+                raise HTTPException(409, "A report is no longer active; old changes cannot be restored.")
+            restored = validate(snapshot, keys)
             # 撤销与对应保存使用同一轨迹阶段，避免阶段收窄后撤销事件被静默过滤。
             undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
             trace(c, ctx, actor, "撤销报告关联与证据变更", before, restored, stage=undo_stage)

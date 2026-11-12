@@ -137,7 +137,8 @@ def _json_copy(value, field: str):
 def _required_text(value, field: str, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str) or (not allow_empty and not value.strip()):
         raise RobContractError("invalid_field", f"{field} must be a non-empty string", field=field)
-    return value.strip() if not allow_empty else value.strip()
+    # review67 L-40：两分支原本同为 value.strip()（死条件），去三元保留行为。
+    return value.strip()
 
 
 def _result_links(value) -> list[dict]:
@@ -317,8 +318,21 @@ def revise_assessment(current: dict, changes: dict, *, expected_revision: int,
     for field in ("framework", "tool_version", "variant", "mapping_version", "mapping_id"):
         if merged.get(field) != current.get(field):
             raise RobContractError("immutable_mapping", "Tool version or mapping changes require a new record", field=field)
-    revised_at = merged.get("assessed_at") if "assessed_at" in changes else \
-        datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # review67 L-39：assessed_at 携带记录与修订台账的时间语义，修订载荷
+    # 只接受可解析的 ISO-8601 时间戳；任意字符串不得混入记录/导出/sidecar。
+    if "assessed_at" in changes:
+        supplied = changes["assessed_at"]
+        if not isinstance(supplied, str):
+            raise RobContractError("invalid_field", "assessed_at must be an ISO-8601 timestamp",
+                                   field="assessed_at")
+        try:
+            datetime.fromisoformat(supplied)
+        except ValueError as exc:
+            raise RobContractError("invalid_field", "assessed_at must be an ISO-8601 timestamp",
+                                   field="assessed_at") from exc
+        revised_at = supplied
+    else:
+        revised_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     new = create_assessment(merged, reviewer_id=current.get("reviewer_id"),
                             actor_id=actor_id or current.get("updated_by") or current.get("created_by"),
                             assessed_at=revised_at)

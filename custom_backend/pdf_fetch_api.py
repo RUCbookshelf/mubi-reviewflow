@@ -438,6 +438,56 @@ def _guard_base_url_outbound(base_url: str) -> None:
             "unsafe_url", "配置端点指向链路本地/云元数据地址，已拒绝出站。")
 
 
+def _pinned_base_addresses(base_url: str) -> "list[str] | None":
+    """review67 M-15（2026-11-12 评审 verified）：配置端点出站钉扎表。
+
+    旧径 ``_guard_base_url_outbound`` 只在检查期判定，连接期 stdlib 二次
+    解析与检查相互独立——DNS 重绑定（低 TTL 检查期答公网、连接期答链路
+    本地）可绕过被拦集合（评审 probe2_plugin_big 实证：guard 过、连接
+    目标=169.254.169.254）。本函数在**同一被拦集合**（``_base_url_block_reason``，
+    桌面模式回环=自托管卖点照旧放行）之上产出钉扎表：
+
+    - 字面 IP：过闸即钉住该 IP（连接期零再解析；桌面回环自托管走此径）；
+    - 域名可解析：单次解析+逐地址复核（任一被拦即拒），全表钉住——可解析
+      主机的重绑定缝就此关闭；
+    - 域名暂不可解析：返回 None=不钉扎照旧径（与 ``_resolved_blocked_reason``
+      检查期 fail-open 同语义——隔离网络里的合法自托管域名不能当攻击拦；
+      此残余窗口=运维自配端点上的检查/连接期解析差，影响面远小于外部
+      载荷 URL，已在 M-15 处置记录中披露）。
+
+    调用方把返回表传 ``_get_json(pinned_address=...)``，None 传 None。
+    """
+    reason = _base_url_block_reason(base_url)
+    if reason is not None:
+        raise OutboundError(
+            "unsafe_url", "配置端点指向链路本地/云元数据地址，已拒绝出站。")
+    parts = urlsplit(base_url or "")
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    host = (parts.hostname or "").strip().strip("[]").lower().rstrip(".")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        return [str(literal)]
+    try:
+        addresses = list(_resolve_host(host, port) or [])
+    except (OSError, ValueError):
+        return None
+    if not addresses:
+        return None
+    for address in addresses:
+        if _blocked_host_reason(address):
+            raise OutboundError(
+                "unsafe_url", "配置端点指向链路本地/云元数据地址，已拒绝出站。")
+    return addresses
+
+
 
 def _validate_and_pin(hostname: str, port: int) -> tuple[list[str] | None, str | None]:
     """字面规则 + **单次** DNS 解析 + 公网校验：``(已校验地址列表, 拒绝原因)``。
@@ -518,7 +568,8 @@ def _classify_fetchable_url(url: Any) -> tuple[str | None, str | None]:
 
 
 def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
-               pinned_address: str | Iterable[str] | None = None) -> bytes:
+               pinned_address: str | Iterable[str] | None = None,
+               allow_private_pin: bool = False) -> bytes:
     """GET 指定 URL：显式 UA + 短超时 + 读取上限 + 拒绝重定向（30x=HTTPError）。
 
     ``pinned_address`` 给定（PDF 候选下载）时，连接钉住**分类阶段一次解析**
@@ -539,8 +590,12 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
         if not addresses:
             raise OutboundError("unreachable", "没有可用的钉扎地址。")
         # 防御纵深：只接受公网 IP（正常调用方传的是分类阶段已校验的地址）。
+        # review67 M-15 集成修订：allow_private_pin=True 供配置端点
+        # （Unpaywall/Crossref base）钉扎路径——其合法性已由
+        # _pinned_base_addresses 的 _base_url_block_reason 闸（桌面回环=
+        # 自托管卖点照旧放行）判定，连接层不重复外部载荷口径的公网-only。
         for address in addresses:
-            if _is_private_address(address):
+            if not allow_private_pin and _is_private_address(address):
                 raise OutboundError(
                     "private_host", "开放获取链接指向本机或内网地址，已拒绝访问。")
     attempts: list[str | None] = list(addresses) or [None]
@@ -588,9 +643,15 @@ def _get_bytes(url: str, *, timeout: float, max_bytes: int, accept: str,
     return data
 
 
-def _get_json(url: str, *, timeout: float = API_TIMEOUT_SECONDS) -> Any:
+def _get_json(url: str, *, timeout: float = API_TIMEOUT_SECONDS,
+              pinned_address: list[str] | None = None,
+              allow_private: bool = False) -> Any:
+    # review67 M-15：pinned_address 直通 _get_bytes（连接期钉住检查期解析
+    # 结果，堵 DNS 重绑定缝）；缺省 None=既有行为（调用方自证无需钉扎）。
+    # allow_private=True 限配置端点钉扎路径（桌面自托管回环合法）。
     data = _get_bytes(url, timeout=timeout, max_bytes=MAX_JSON_BYTES,
-                      accept="application/json")
+                      accept="application/json", pinned_address=pinned_address,
+                      allow_private_pin=allow_private)
     try:
         return json.loads(data.decode("utf-8", "replace"))
     except ValueError:
@@ -632,10 +693,23 @@ def _strip_jats(text: Any) -> str:
 
 
 def _crossref_year(message: dict) -> int | None:
+    # review67 M-16（2026-11-12 评审 verified）：畸形上游 JSON 形状防御——
+    # issued 等键可为 list/str（真值但无 .get → AttributeError）、date-parts
+    # 可为数字（可下标但非列表 → TypeError），此前未捕获使 metadata-
+    # suggestions 端点 500，违背本模块「响应形状异常一律降级、绝不 500」
+    # 红线（对齐同文件既有 isinstance 防御口径）。
+    if not isinstance(message, dict):
+        return None
     for key in ("issued", "published-print", "published-online"):
-        parts = ((message.get(key) or {}).get("date-parts") or [[]])[0]
-        if parts and isinstance(parts[0], int):
-            return parts[0]
+        entry = message.get(key)
+        if not isinstance(entry, dict):
+            continue
+        parts = entry.get("date-parts")
+        if not isinstance(parts, list) or not parts or not isinstance(parts[0], list):
+            continue
+        row = parts[0]
+        if row and isinstance(row[0], int):
+            return row[0]
     return None
 
 
@@ -746,11 +820,12 @@ def _unpaywall_pdf_candidates(doi: str, settings: dict) -> tuple[list[dict], lis
     逐个钉住（``address`` 保留字典序首个，兼容旧调用方）。
     """
     base = settings["unpaywall_base_url"]
-    _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
+    # review67 M-15：检查期闸+钉扎表一步取得，连接期对原域名零次再解析。
+    pinned = _pinned_base_addresses(base)
     email = settings["email"]
     query = f"?email={quote(email, safe='')}" if email else ""
     url = f"{base}/v2/{quote(doi, safe='')}{query}"
-    payload = _get_json(url)
+    payload = _get_json(url, pinned_address=pinned, allow_private=True)
     if not isinstance(payload, dict):
         raise OutboundError("bad_response", "Unpaywall 响应形状异常。")
     if not payload.get("is_oa"):
@@ -783,17 +858,20 @@ def _crossref_message(article: dict, settings: dict) -> tuple[dict | None, str]:
     返回 ``(message, how)``：``how`` ∈ {"doi","title",""}（""=未命中）。
     """
     base = settings["crossref_base_url"]
-    _guard_base_url_outbound(base)      # 终审 #30：被拦 base 零出站
+    # review67 M-15：检查期闸+钉扎表一步取得，连接期对原域名零次再解析。
+    pinned = _pinned_base_addresses(base)
     doi = normalize_doi(article.get("doi"))
     if doi:
-        payload = _get_json(f"{base}/works/{quote(doi, safe='')}")
+        payload = _get_json(f"{base}/works/{quote(doi, safe='')}",
+                            pinned_address=pinned, allow_private=True)
         message = payload.get("message") if isinstance(payload, dict) else None
         return (message if isinstance(message, dict) else None), "doi"
     title = _norm_title(article.get("title"))
     if not title:
         return None, ""
     payload = _get_json(
-        f"{base}/works?query.bibliographic={quote(title, safe='')}&rows=3")
+        f"{base}/works?query.bibliographic={quote(title, safe='')}&rows=3",
+        pinned_address=pinned, allow_private=True)
     message = payload.get("message") if isinstance(payload, dict) else None
     if not isinstance(message, dict):
         # 上游偶发 {"message": null} / {"message": []}。与 DOI 路径同口径：
@@ -889,7 +967,10 @@ def fetch_crossref_work(base_url: str, doi: str) -> dict | None:
     降级处理，绝不 500）。响应非 dict / ``message`` 非 dict 一律按「未命中」
     返回 None（与 ``_crossref_message`` 的既有口径一致，避免 .get 抛 500）。
     """
-    payload = _get_json(crossref_works_url(base_url, doi))
+    # review67 M-15：撤稿检查共用配置端点钉扎口径（连接期零再解析）。
+    payload = _get_json(crossref_works_url(base_url, doi),
+                        pinned_address=_pinned_base_addresses(base_url),
+                        allow_private=True)
     message = payload.get("message") if isinstance(payload, dict) else None
     return message if isinstance(message, dict) else None
 

@@ -1365,14 +1365,18 @@ class PdfFetchBaseUrlGovernanceTests(PdfFetchFixture, unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text[:160])
 
     def test_mutation_outbound_guard_removed_pin_goes_red(self):
-        """破坏性变异：出站闸删掉（no-op）→ 出站真的发往 169.254.169.254。"""
+        """破坏性变异：出站闸删掉（no-op）→ 出站真的发往 169.254.169.254。
+
+        （review67 M-15 集成修订：出站闸自 _guard_base_url_outbound 迁至
+        _pinned_base_addresses——同一被拦集合+连接期钉扎；变异靶随之更新，
+        证明语义不变：闸被拆掉时被拦地址真的可达。）"""
         self.write_settings_file(unpaywall_base_url="http://169.254.169.254")
         self.set_routes(
             (lambda url: url.startswith("http://169.254.169.254/v2/"),
              json.dumps(OA_NO).encode("utf-8")),
             crossref_json({"message": {}}))
         self.opener.calls.clear()
-        with mock.patch.object(pdf_fetch_api, "_guard_base_url_outbound",
+        with mock.patch.object(pdf_fetch_api, "_pinned_base_addresses",
                                lambda base: None):
             resp = self.client.post(f"/api/tasks/{self.task}/fulltext/A1/fetch",
                                     headers=self.auth(0))

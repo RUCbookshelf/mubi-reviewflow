@@ -413,7 +413,17 @@ def _send_apprise(config: Mapping[str, Any], text: str, *, timeout: float) -> No
     # 标识不受影响。Apprise 引擎自身的传输由其实现负责（契约已披露）。
     authority = url.split("://", 1)[1].split("/", 1)[0] if "://" in url else ""
     host = authority.rsplit("@", 1)[-1]
-    if host and not host.startswith("["):
+    # review67 L-31：IPv6 字面量两形态归一后再查——方括号形态 ``[::1]``
+    # （可带端口 ``[::1]:8443``）剥壳取字面量；裸形态多冒号（合法
+    # host:port 至多一个冒号）即 IPv6 字面量，整串参与校验、不按端口切分。
+    # 此前方括号使 ip_address 抛 ValueError 被当主机名放行、裸 ``::1`` 被
+    # 切成空串直接跳过检查，拦截面与模块头承诺不符。
+    if host.startswith("["):
+        end = host.find("]")
+        host = host[1:end] if end > 1 else host
+    elif host.count(":") > 1:
+        pass                    # 裸 IPv6 字面量（含未带端口的 ::1）
+    elif host:
         host = host.split(":", 1)[0]
     if host and _check_host_literal(host) == "private_host":
         raise NotifyError("private_host")
