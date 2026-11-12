@@ -73,6 +73,12 @@ class RelationIn(UndoIn):
     # 可选：仅 unlink 使用。同成员同 id 重复等极端场景下，携带关系对 (a, b) 以精确定位目标。
     a: str | None = Field(default=None, min_length=1, max_length=100)
     b: str | None = Field(default=None, min_length=1, max_length=100)
+    # 可选：仅 confirm 使用（review67 增补 F1·GitNexus P2 复核属实）：确认页所见
+    # 提案关系对的 sha256 摘要（sorted((a,b)) 以 \x1f 连接后哈希）。携带时服务端
+    # 在事务内与提案**当前**内容比对——提案人改对不碰共享版本，旧页面的确认
+    # 从 200 变 409，杜绝「确认了负责人没看过的关系」。缺省 None=旧客户端
+    # 行为不变（前端随后端批补齐携带）。
+    expected_pair_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 def _entry_subjects(entry):
@@ -825,6 +831,15 @@ def register_report_evidence_routes(app, require_user):
                 proposal = next((x for x in personal["links"] if x["id"] == body.link_id), None)
                 if not proposal: raise HTTPException(404, "Proposal no longer exists.")
                 if proposal["type"] == "uncertain" or not proposal.get("evidence", "").strip(): raise HTTPException(422, "Confirm the relationship and supply supporting evidence first.")
+                if body.expected_pair_digest is not None:
+                    # review67 增补 F1（GitNexus P2）：与提案**当前**关系对比对——
+                    # 提案人改对不碰共享版本，旧页面的确认必须 409（杜绝确认
+                    # 负责人没看过的关系）。摘要口径=sha256(sorted((a,b)) 以
+                    # \x1f 连接，UTF-8，hexdigest——与前端交接书逐字一致。
+                    current = hashlib.sha256("\x1f".join(sorted(
+                        (str(proposal["a"]), str(proposal["b"])))).encode()).hexdigest()
+                    if current != body.expected_pair_digest:
+                        raise HTTPException(409, "Proposal changed since you viewed it. Reload and re-confirm.")
                 keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
                 if proposal["a"] not in keys or proposal["b"] not in keys: raise HTTPException(409, "A report is no longer active.")
                 pair = {proposal["a"], proposal["b"]}

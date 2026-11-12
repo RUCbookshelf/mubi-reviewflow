@@ -130,6 +130,35 @@ class UndoRepairTests(unittest.TestCase):
         result = workspace_undo.undo(self.db, self.ctx(source='undo'), 'screen', entry)
         self.assertTrue(result['undone'])
 
+    def test_review67_f3_noop_save_still_writes_receipt(self):
+        # review67 增补 F3（GitNexus P2 复核属实）：无内容变化的保存也必须落
+        # 幂等回执——修前 no-op 保存（r6 #21 把回执与 before!=after 绑定）不
+        # 留 workflow_form_requests 行，后续修改后旧请求重试会因查无回执而
+        # 重放，把新值覆盖回旧值。
+        dim = coding.add_dimension(self.db, '表单F3', 'text', [])
+        articles_db.save_decision(self.db, 'K1', 'include', trace_context=self.ctx())
+        req_x = self.ctx(request_id='req-r67-x')
+        req_y = self.ctx(request_id='req-r67-y')
+        coding_evidence.save_form(self.db, 'K1', {dim: 'A'}, notes={dim: ''},
+                                  evidence=None, trace_context=req_x)  # X 首存 A
+        coding_evidence.save_form(self.db, 'K1', {dim: 'A'}, notes={dim: ''},
+                                  evidence=None, trace_context=req_x)  # X 同值重发=no-op
+        with closing(_connect(self.db)) as conn:
+            n = conn.execute(
+                'SELECT COUNT(*) FROM workflow_form_requests WHERE request_id=?',
+                ('req-r67-x',)).fetchone()[0]
+        self.assertEqual(n, 1, 'no-op 保存也必须落幂等回执（修前为 0）')
+        coding_evidence.save_form(self.db, 'K1', {dim: 'B'}, notes={dim: ''},
+                                  evidence=None, trace_context=req_y)  # Y 改 B
+        coding_evidence.save_form(self.db, 'K1', {dim: 'A'}, notes={dim: ''},
+                                  evidence=None, trace_context=req_x)  # X 旧请求重试=命中回执幂等返回
+        with closing(_connect(self.db)) as conn:
+            value = conn.execute(
+                'SELECT value FROM coding_values WHERE zotero_key=? AND dimension_id=?',
+                ('K1', dim)).fetchone()
+        self.assertIsNotNone(value)
+        self.assertEqual(value[0], 'B', '旧请求重试不得把后续修改覆盖回旧值')
+
     # ------------------------------------------------------------------
     # U3-P3：布局编辑不阻断 coding 撤销；description 属语义键集仍阻断
     # ------------------------------------------------------------------

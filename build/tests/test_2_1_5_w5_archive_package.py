@@ -379,6 +379,47 @@ class PackagePins(_ApiBase):
         self.assertEqual(body["fulltexts"]["count"], 1)
         self.assertFalse(body["over_limit"])
 
+    def test_review67_f2_trace_follows_package_restore(self):
+        # review67 增补 F2（GitNexus P2 复核属实）：整包恢复后成员库内嵌
+        # trace 五表 task_id 旧→新重写——旧事件在新任务轨迹查询可见、原记录
+        # 设置（仅初筛）随包携带，不被新任务三阶段缺省覆盖（修前按旧任务号
+        # 沉底+设置漂移，轨迹页/摘要/导出全读不到）。
+        self.new_task()
+        from coscreen.research_trace import TraceContext, capture_event, ensure_schema
+        owner_slug = tasks_mod.slugify_screener(self.users[0]["username"])
+        owner_db = self.info.dir / f"{owner_slug}.db"
+        with closing(sqlite3.connect(str(owner_db))) as c:
+            ensure_schema(c)
+            actor = str(self.users[0]["user_id"])
+            c.execute(
+                "INSERT INTO trace_settings (task_id,actor_id,stages_json,"
+                "status,operation_id,version,updated_at) VALUES (?,?,?,?,?,?,?)",
+                (self.task, actor, json.dumps(["screen"]), "recording",
+                 "op-r67-f2", 1, "2026-11-12T00:00:00"))
+            capture_event(c, TraceContext(task_id=self.task, actor_id=actor,
+                                          request_id="req-r67-f2"),
+                          stage="screen", action="screening_decision_saved",
+                          subject_id="K-TRACE-R67-F2", before=None, after={})
+            c.commit()
+        payload, _headers = self._export()
+        # 同账号整包恢复（反馈复现口径）：导入者=导出任务属主本人——
+        # 其个人库经 slug_map 映射到位，轨迹按新任务号可查。
+        imported = self.client.post(
+            "/api/tasks/import-package",
+            files={"package": ("pkg.zip", payload, "application/zip")},
+            headers=self.auth())
+        self.assertEqual(imported.status_code, 200, imported.text)
+        new_id = imported.json()["task_id"]
+        self.assertNotEqual(new_id, self.task)
+        r = self.client.get(f"/api/tasks/{new_id}/trace/events?search=K-TRACE-R67-F2",
+                            headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("K-TRACE-R67-F2", r.text, "恢复后旧轨迹事件须按新任务号可查")
+        r = self.client.get(f"/api/tasks/{new_id}/trace/settings", headers=self.auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("screen", r.text)
+        self.assertNotIn("coding", r.text, "原「仅初筛」记录设置须随包携带而非三阶段缺省")
+
     def test_task_json_redaction_and_zero_credentials_in_package(self):
         self.new_task()
         self.add_pdf("K01")

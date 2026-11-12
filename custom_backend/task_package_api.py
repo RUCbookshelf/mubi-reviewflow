@@ -1673,6 +1673,9 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
         # zip ≤2GB + 解压内容 ≤2GB = ≤4GB 瞬态，全局互斥下全服务器恒定）。
         package_path.unlink(missing_ok=True)
 
+        # review67 增补 F2（GitNexus P2 复核属实）：捕获原任务号——成员库内嵌
+        # trace 表的 task_id 需要随之旧→新重写（见 _atomic_write_task_json 后）。
+        old_task_id = str(task_payload.get("task_id") or "")
         task_payload.update({
             "task_id": new_id,
             "display_name": display_name,
@@ -1683,6 +1686,55 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
             "archived": False,
         })
         _atomic_write_task_json(temp_dir, task_payload)
+        if old_task_id and old_task_id != new_id:
+            # review67 增补 F2：成员库内嵌 trace 五表的 task_id 旧→新重写——
+            # 此前事件按旧任务号沉底（轨迹页/摘要/导出按新号查询全读不到）、
+            # 记录设置被新任务的缺省初始化覆盖（原「仅初筛」口径丢失）。
+            # actor_id 原样保留（原事件作者归属不变）；settings 先删同键缺省
+            # 再改写避免主键冲突；表缺失（老库从未启用 trace）静默跳过；
+            # 逐库独立事务，任一失败即整包导入失败（不留半改库）。
+            for db_file in sorted(temp_dir.glob("*.db")):
+                conn = sqlite3.connect(str(db_file))
+                try:
+                    try:
+                        existing = {row[0] for row in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'")}
+                    except sqlite3.DatabaseError:
+                        # 垃圾/炸弹成员（SecurityLimitsPins 构造的非库字节）——
+                        # trace 改写尽力而为，处置交由既有的成员校验路径。
+                        continue
+                    if not existing & {"trace_settings", "trace_events"}:
+                        continue
+                    with conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        if "trace_settings" in existing:
+                            conn.execute(
+                                "DELETE FROM trace_settings WHERE task_id=? AND actor_id IN "
+                                "(SELECT actor_id FROM trace_settings WHERE task_id=?)",
+                                (new_id, old_task_id))
+                            conn.execute(
+                                "UPDATE trace_settings SET task_id=? WHERE task_id=?",
+                                (new_id, old_task_id))
+                        # 全字面量四连（execute 位零变量零拼接——Mimosa SQL
+                        # 约束；值一律 ? 参数绑定；表缺失经守卫跳过）。
+                        if "trace_operations" in existing:
+                            conn.execute(
+                                "UPDATE trace_operations SET task_id=? WHERE task_id=?",
+                                (new_id, old_task_id))
+                        if "trace_clear_operations" in existing:
+                            conn.execute(
+                                "UPDATE trace_clear_operations SET task_id=? WHERE task_id=?",
+                                (new_id, old_task_id))
+                        if "trace_write_operations" in existing:
+                            conn.execute(
+                                "UPDATE trace_write_operations SET task_id=? WHERE task_id=?",
+                                (new_id, old_task_id))
+                        if "trace_events" in existing:
+                            conn.execute(
+                                "UPDATE trace_events SET task_id=? WHERE task_id=?",
+                                (new_id, old_task_id))
+                finally:
+                    conn.close()
         if final_dir.exists():  # 理论上不可达（new_task_id 已避让），防御性兜底。
             raise TaskPackageError("import_failed", status=409,
                                    params={"reason": "task_id_collision"})

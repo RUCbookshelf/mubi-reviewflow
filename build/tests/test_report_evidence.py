@@ -395,6 +395,27 @@ class EvidenceTests(unittest.TestCase):
         task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
         self.assertEqual(self.client.post(self.base+'/relations',json=body,headers=self.auth()).status_code,200)
 
+    def test_confirm_rejects_stale_pair_digest(self):
+        # review67 增补 F1（GitNexus P2 复核属实）：提案人改对（同 link_id）不碰
+        # 共享版本——确认请求携带 expected_pair_digest（确认页所见提案关系对的
+        # sha256，sorted(pair) 以 \x1f 连接）时与提案当前内容比对：不符 → 409
+        # （杜绝确认没看过的关系）；相符 → 200。缺省不携带=旧客户端行为不变
+        # （上一测已钉无摘要 200 路径）。
+        task_collaboration.grant_role(self.ctx.collaboration_db,actor_user_id=self.users[0]['user_id'],user_id=self.users[1]['user_id'],role='coder',task_id=self.task)
+        self.save(self.link(self.state()),actor=1)  # 提案 L1 = R1–R2
+        with closing(review_workflow.connect(self.ctx.owner_db)) as c,c:
+            row=c.execute('SELECT stages_json FROM workflow_state').fetchone();stages=json.loads(row[0])
+            for s in stages.values():s['mode']='paused'
+            c.execute('UPDATE workflow_state SET stages_json=?',(json.dumps(stages),))
+        stale=hashlib.sha256("\x1f".join(sorted(('R1','R9'))).encode()).hexdigest()
+        fresh=hashlib.sha256("\x1f".join(sorted(('R1','R2'))).encode()).hexdigest()
+        base={'expected_revision':0,'actor_id':str(self.users[1]['user_id']),'link_id':'L1','action':'confirm'}
+        r=self.client.post(self.base+'/relations',json={**base,'expected_pair_digest':stale},headers=self.auth())
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('Proposal changed',r.text)
+        self.assertEqual(len(self.client.get(self.base,headers=self.auth()).json()['proposals']),1)  # 提案未被消费
+        r=self.client.post(self.base+'/relations',json={**base,'expected_pair_digest':fresh},headers=self.auth())
+        self.assertEqual(r.status_code,200,r.text)
+
     def test_same_id_shared_unlink_and_undo_leave_trace(self):
         # 回归（M1）：跨成员同 id 重复共享关系按 (id, actor_id) 多重映射计算增量——
         # unlink 必须留痕且只归因被解除的那一条，撤销恢复同样留痕；
