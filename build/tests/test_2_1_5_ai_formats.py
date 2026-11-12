@@ -455,11 +455,14 @@ class SharedKeyTestEndpointTests(_AiFormatsTestBase):
 
 
 class CatalogTests(_AiFormatsTestBase):
-    """13 条目厂商目录静态完整性 + GET /api/ai/providers 端点。"""
+    """14 条目厂商目录静态完整性 + GET /api/ai/providers 端点。
+
+    目检反馈④（2026-11-12）：+TypeSafe（Jev 官方，systemone 同线）→ 14 条。
+    """
 
     def test_unique_ids_and_entry_count(self):
         snapshot = ai_providers.snapshot()
-        self.assertEqual(len(snapshot), 13, "目录必须恰好 13 条")
+        self.assertEqual(len(snapshot), 14, "目录必须恰好 14 条")
         ids = [entry["id"] for entry in snapshot]
         self.assertEqual(len(set(ids)), len(ids), "目录 id 必须唯一")
 
@@ -525,7 +528,7 @@ class CatalogTests(_AiFormatsTestBase):
         response = self.client.get("/api/ai/providers", headers=self.auth(0))
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(len(body["providers"]), 13)
+        self.assertEqual(len(body["providers"]), 14)
         self.assertEqual(body["providers"], ai_providers.snapshot())
         self.assertTrue(str(body["version"] or "").strip(), "目录版本号必须非空")
         self.assertEqual(body["supported_formats"], {

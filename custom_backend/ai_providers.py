@@ -23,7 +23,7 @@
 from __future__ import annotations
 
 #: 目录数据版本（发布线刷新；前端缓存键）。
-CATALOG_VERSION = "20261112.1"
+CATALOG_VERSION = "20261112.2"
 
 #: wire 格式常量（与 ai_keys.KEY_FORMATS 同名同值；此处独立定义避免反向依赖）。
 FORMAT_OPENAI_CHAT = "openai_chat"
@@ -164,6 +164,19 @@ _CATALOG: tuple[dict, ...] = (
         "formats": [
             {"format": FORMAT_SYSTEMONE, "base_url": "https://api.commandcode.ai/provider",
              "models": ["typesafe/jev-1.14.0", "jev-latest"]},
+        ],
+    },
+    {
+        # 目检反馈④（2026-11-12）：Jev 官方厂商补全——TypeSafe 官方 API 与
+        # systemone 适配器同线（POST {base}/v1/systemone + Bearer，docs.
+        # typesafe.ai quickstart 实核），与 CommandCode 中转并存供选。
+        "id": "typesafe",
+        "type": TYPE_OFFICIAL,
+        "name_key": "ai_providers.typesafe",
+        "kinds": ["decision"],
+        "formats": [
+            {"format": FORMAT_SYSTEMONE, "base_url": "https://api.typesafe.ai",
+             "models": ["jev-latest"]},
         ],
     },
     {

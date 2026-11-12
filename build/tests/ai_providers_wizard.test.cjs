@@ -133,5 +133,5 @@ test('kind-scoped connection test disables control in flight and reports success
 test('wizard locale rows populate all ten languages and expose all provider aliases', () => {
   const {locales} = setup();
   assert.ok(locales.every(row => row.length === 10 && [...row].every(Boolean)));
-  assert.equal(locales.filter(row => row.aliases?.[0].startsWith('ai_providers.')).length,13);
+  assert.equal(locales.filter(row => row.aliases?.[0].startsWith('ai_providers.')).length,14);
 });

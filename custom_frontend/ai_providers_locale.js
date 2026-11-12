@@ -30,6 +30,7 @@
     Object.assign(["Mistral AI","Mistral AI","Mistral AI","Mistral AI","Mistral AI","Mistral AI","Mistral AI","Mistral AI","Mistral AI","Mistral AI"], { aliases:['ai_providers.mistral'] }),
     Object.assign(["OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go","OpenCode Go"], { aliases:['ai_providers.opencode_go'] }),
     Object.assign(["CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT","CommandCode GOAT"], { aliases:['ai_providers.commandcode_goat'] }),
+    Object.assign(["TypeSafe（Jev 官方）","TypeSafe (official Jev)","TypeSafe (Jev officiel)","TypeSafe (официальный Jev)","TypeSafe (Jev oficial)","TypeSafe（Jev 公式）","TypeSafe (Jev oficial)","TypeSafe (offizielles Jev)","TypeSafe (званични Jev)","TypeSafe(공식 Jev)"], { aliases:['ai_providers.typesafe'] }),
     Object.assign(["Ollama","Ollama","Ollama","Ollama","Ollama","Ollama","Ollama","Ollama","Ollama","Ollama"], { aliases:['ai_providers.local_ollama'] })
   ]);
 })();
