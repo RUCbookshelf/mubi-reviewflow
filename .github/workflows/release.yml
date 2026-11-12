@@ -141,7 +141,11 @@ jobs:
                       build/tests/ml_batch.test.cjs \
                       build/tests/study_design_badge.test.cjs \
                       build/tests/pdf_fetch_ui.test.cjs \
-                      build/tests/living_review.test.cjs
+                      build/tests/living_review.test.cjs \
+                      build/tests/auth_remember_reset.test.cjs \
+                      build/tests/ai_providers_wizard.test.cjs \
+                      build/tests/ai_import_bulk.test.cjs \
+                      build/tests/aiux_locale.test.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: reviewflow-${{ matrix.platform }}

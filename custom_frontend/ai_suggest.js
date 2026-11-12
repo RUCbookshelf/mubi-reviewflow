@@ -30,6 +30,8 @@
 (function () {
   'use strict';
   try {
+    const keyUI = window.RFAIProviders;
+    if (!keyUI) return;
     if (typeof document === 'undefined' || typeof T !== 'function' ||
         typeof el !== 'function' || typeof api !== 'function' ||
         typeof RFLang === 'undefined') return;
@@ -265,11 +267,15 @@
     }
     async function detect(force = false) {
       const scope = scopeKey();
-      if (!S.task || !S.user || typeof taskApi !== 'function') { detection = null; return null; }
+      if (!S.user || typeof taskApi !== 'function') { detection = null; return null; }
       if (!force && detection && detection.scope === scope) return detection;
       if (detecting && detecting.scope === scope) return detecting.promise;
       const flight = { scope, promise: null };
       flight.promise = (async () => {
+        /* Personal metadata is global, even when no task has been selected. */
+        let personal = null;
+        try { personal = await api('/api/ai/key'); } catch (_) { /* Keep the form available. */ }
+        if (!S.task || scope !== scopeKey()) return inactiveDetection(scope, { personal });
         const base = taskApi();
         let taskSettings = null, sharedMeta = null, isOwner = false;
         try {
@@ -278,23 +284,25 @@
         } catch (e) {
           if (e && (e.status === 403 || e.status === 404)) {
             try { sharedMeta = await api(base + '/ai-suggest/status'); }
-            catch (e2) { return inactiveDetection(scope); } // 失败静默：未启用
+            catch (e2) { return inactiveDetection(scope, { personal }); } // 失败静默：未启用
           } else {
-            return inactiveDetection(scope);                // 网络等错误：静默退出
+            return inactiveDetection(scope, { personal }); // 网络等错误：静默退出
           }
         }
-        /* 个人钥匙元数据（永回掩码；设置页“未配置”显示与编码页钥匙可用性判定共用） */
-        let personal = null;
-        try { personal = await api('/api/ai/key'); } catch (e) { personal = null; }
-
         const sharedConfigured = isOwner
           ? taskSettings.shared_key_enabled === true : sharedMeta.shared_available === true;
-        let sharedKind = null;
-        if (sharedConfigured) {
+        let sharedSlots = null, sharedKind = null;
+        if (isOwner && sharedConfigured) {
+          try { sharedSlots = await api(base + '/ai-suggest/shared-key'); }
+          catch (_) { /* Keep the task-level fallback when details are unavailable. */ }
+        }
+        if (sharedSlots?.llm || sharedSlots?.decision) {
+          sharedKind = sharedSlots.llm?.configured ? 'llm' : sharedSlots.decision?.configured ? 'decision' : null;
+        } else if (sharedConfigured) {
           try {
             const assist = await api(base + '/import-review/ai-assist/settings');
             if (assist.key_source === 'shared') sharedKind = assist.key_kind || 'llm';
-          } catch (_) { /* The shared-key metadata intentionally omits its kind. */ }
+          } catch (_) { /* The legacy shared-key metadata omits kind. */ }
         }
         const enabled = isOwner ? taskSettings.enabled === true : sharedMeta.enabled === true;
         let prefs = null;
@@ -303,7 +311,7 @@
         }
         const sharedAvailable = sharedKind !== 'decision' && sharedConfigured &&
           (isOwner ? taskSettings.key_mode === 'shared' : sharedMeta.key_mode === 'shared');
-        const personalConfigured = !!(personal && personal.configured && personal.kind !== 'decision');
+        const personalConfigured = !!keyUI.slot(personal, 'llm')?.configured;
         const personalEffective = !prefs || prefs.use_personal_key === undefined ? personalConfigured
           : (prefs.use_personal_key !== false && personalConfigured);
         return {
@@ -316,7 +324,7 @@
                        || (sharedMeta && sharedMeta.field_labels) || null,
           contextPrompt: isOwner ? (taskSettings.context_prompt || '') : '',
           sharedAvailable: !!sharedAvailable,
-          sharedKind,
+          sharedKind, sharedSlots,
           sharedProviderName: sharedKind === 'llm'
             ? (isOwner ? taskSettings.shared_provider_name : sharedMeta.shared_provider_name) : null,
           owner_unset: !isOwner && !!(sharedMeta && sharedMeta.owner_unset),   /* B9 F13 */
@@ -346,7 +354,7 @@
     /* 局部状态变化后重派生派生量（钥匙可用性/共享披露），避免整轮重新判定 */
     function rederive() {
       if (!detection) return;
-      const personalConfigured = !!(detection.personal && detection.personal.configured && detection.personal.kind !== 'decision');
+      const personalConfigured = !!keyUI.slot(detection.personal, 'llm')?.configured;
       const usePersonal = !detection.prefs || detection.prefs.use_personal_key !== false;
       detection.sharedAvailable = detection.isOwner
         ? (detection.settings && detection.settings.key_mode === 'shared' &&
@@ -777,74 +785,82 @@
     }
 
     /* ---- 个人钥匙卡（全局；仅本人 JWT；掩码显示，永回明文） ---- */
-    function renderKeyCard(preserve) {
-      const snap = preserve ? snapshotInputs(keyCard) : null;
-      keyCard.replaceChildren(node('h3', '个人钥匙（全局）', { style: 'margin:0 0 6px' }));
-      const personal = detection && detection.personal;
-      const meta = personal?.kind === 'decision' ? null : personal;
-      if (!meta || !meta.configured) {
-        keyCard.append(node('p', '未配置', { class: 'hint' }));
-      } else {
-        keyCard.append(literal('p', T('当前：{0} · 来源：{1}', meta.masked || '—', meta.source || 'file'), { class: 'hint' }));
+    const keyNotices = new Map();
+    function renderSlot({ endpoint, kind, meta, shared, canDelete }) {
+      const title = kind === 'llm' ? '通用 LLM 钥匙' : '专用判定钥匙';
+      const box = el('section', { class: 'rf-ai-shared', 'aria-label': T(title) }, node('h4', title));
+      keyUI.appendMeta(box, meta);
+      if (meta?.configured) box.append(literal('p', T('当前：{0} · 来源：{1}', meta.masked || meta.provider || '—', meta.source || 'file'), { class:'hint' }));
+      else if (!shared || meta) box.append(node('p', '未配置', { class:'hint' }));
+      const status = el('p', { class: 'rf-ai-hint', role:'status' });
+      const test = keyUI.testButton({ endpoint, kind, status });
+      if (meta?.source === 'env') {
+        box.append(node('p', '由管理员通过环境变量配置，仅可在服务器端更换或移除。', { class:'rf-ai-hint' }),
+          el('div', { class:'rf-ai-actions' }, test, status));
+        return box;
       }
-      if (meta && meta.source === 'env') {
-        keyCard.append(node('p', '由管理员通过环境变量配置，仅可在服务器端更换或移除。', { class: 'rf-ai-hint' }));
-        keyCard.append(node('p', '钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
-        return;
-      }
-      const provider = el('input', { class: 'input', value: (meta && meta.provider) || '', translate: 'no', maxlength: '50', 'data-rf-name': 'provider', 'aria-label': T('服务商') });
-      const secret = el('input', { class: 'input', type: 'password', autocomplete: 'off', translate: 'no', maxlength: '4096', 'data-rf-name': 'key', 'aria-label': T('API Key（仅保存在数据目录）') });
-      const baseUrl = el('input', { class: 'input', value: (meta && meta.base_url) || '', translate: 'no', maxlength: '500', 'data-rf-name': 'base_url', 'aria-label': T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') });
-      const model = el('input', { class: 'input', value: (meta && meta.model) || '', translate: 'no', maxlength: '100', 'data-rf-name': 'model', 'aria-label': T('模型名（如 gpt-4o-mini）') });
-      const verify = el('input', { type: 'checkbox', 'data-rf-name': 'verify' });
-      const status = el('p', { class: 'rf-ai-hint', role: 'status' });
-      const grid = el('div', { class: 'rf-ai-grid' });
-      grid.append(
-        el('div', {}, el('label', { class: 'lbl', text: T('服务商') }), provider),
-        el('div', {}, el('label', { class: 'lbl', text: T('API Key（仅保存在数据目录）') }), secret),
-        el('div', {}, el('label', { class: 'lbl', text: T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') }), baseUrl),
-        el('div', {}, el('label', { class: 'lbl', text: T('模型名（如 gpt-4o-mini）') }), model));
-      const save = btn('保存钥匙', async () => {
+      const field = (name, text, value, attrs = {}) => el('input', {
+        class:'input', translate:'no', value:value || '', 'data-rf-name':kind + '_' + name,
+        'aria-label':T(text), ...attrs
+      });
+      const provider = field('provider', '服务商', meta?.provider, { maxlength:'50' });
+      const secret = field('key', 'API Key（仅保存在数据目录）', '', { type:'password', autocomplete:'off', maxlength:'4096' });
+      const baseUrl = field('base_url', '接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）', meta?.base_url, { maxlength:'500' });
+      const model = field('model', '模型名（如 gpt-4o-mini）', meta?.model, { maxlength:'100' });
+      const verify = el('input', { type:'checkbox', 'data-rf-name':kind + '_verify' });
+      const wizard = keyUI.mount({ kind, provider, baseUrl, model, format:meta?.format, draftName:kind + '_format' });
+      const row = (label, input) => el('label', {}, el('span', { class:'lbl', text:T(label) }), input);
+      const grid = el('div', { class:'rf-ai-grid' },
+        row('服务商', provider), row('API Key（仅保存在数据目录）', secret),
+        row('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）', baseUrl),
+        row('模型名（如 gpt-4o-mini）', model));
+      const slotScope = scopeKey();
+      const noticeKey = slotScope + '|' + endpoint + '|' + kind;
+      const notice = keyNotices.get(noticeKey);
+      if (notice) status.textContent = T(notice);
+      const save = btn(shared ? '保存共享钥匙' : '保存钥匙', async () => {
         if (!provider.value.trim() || !secret.value.trim()) { status.textContent = T('服务商与 API Key 不能为空。'); return; }
         save.disabled = true;
         try {
-          const result = await api('/api/ai/key', { method: 'PUT', body: { provider: provider.value.trim(), key: secret.value, base_url: baseUrl.value.trim() || null, model: model.value.trim() || null, verify: verify.checked } });
-          if (detection) { detection.personal = result; rederive(); }
-          toast(T('已保存。'), 'inc');
+          await api(endpoint, { method:'PUT', body:{
+            provider:provider.value.trim(), key:secret.value, base_url:baseUrl.value.trim() || null,
+            model:model.value.trim() || null, verify:verify.checked, kind, format:wizard.getFormat()
+          } });
           secret.value = '';
-          renderKeyCard(false);
-          renderBenchTools();
-        } catch (e) {
-          status.textContent = T('AI 服务调用失败：{0}', (e && e.message) || '');
+          keyNotices.set(noticeKey, '已保存，可测试连接。');
+          status.textContent = T('已保存，可测试连接。');
+          toast(T('已保存。'), 'inc');
+          if (slotScope === scopeKey()) await detect(true);
+        } catch (error) {
+          status.textContent = T('AI 服务调用失败：{0}', error?.message || '');
         } finally { save.disabled = false; }
       }, 'btn b-inc sm');
-      const test = btn('测试连接', async () => {
-        test.disabled = true;
-        status.textContent = T('测试连接') + '…';
-        try {
-          const result = await api('/api/ai/key/test', { method: 'POST' });
-          status.textContent = T('连接正常 · 延迟 {0} ms', String(result.latency_ms ?? '—'));
-        } catch (e) {
-          status.textContent = (e && e.status === 409) ? T('未配置可用的 AI 钥匙，请先在设置页配置。') : T('AI 服务调用失败：{0}', (e && e.message) || '');
-        } finally { test.disabled = false; }
-      });
-      const del = btn('删除钥匙', async () => {
-        if (!confirm(T('确认删除个人 AI 钥匙？'))) return;
+      const del = btn(shared ? '删除共享钥匙' : '删除钥匙', async () => {
+        if (!confirm(T(shared ? '确认删除任务共享钥匙？' : '确认删除个人 AI 钥匙？'))) return;
         del.disabled = true;
         try {
-          await api('/api/ai/key', { method: 'DELETE' });
-          if (detection) { detection.personal = null; rederive(); }
+          await api(endpoint + '?kind=' + kind, { method:'DELETE' });
+          // Refresh from the scoped read endpoint; its response can report the remaining slot.
+          keyNotices.set(noticeKey, '已删除。');
           toast(T('已删除。'), 'inc');
-          renderKeyCard(false);
-          scheduleDetect(true);
-        } catch (e) {
-          status.textContent = String((e && e.message) || e);
-        } finally { del.disabled = false; }
+          if (slotScope === scopeKey()) await detect(true);
+        } catch (error) { status.textContent = String(error?.message || error); }
+        finally { del.disabled = false; }
       });
-      keyCard.append(grid,
-        el('label', { class: 'rf-ai-checks' }, verify, el('span', { text: T('保存前验证连通性'), style: 'font-size:.8rem' })),
-        el('div', { class: 'rf-ai-actions' }, save, personal?.kind === 'decision' ? null : test, meta && meta.configured ? del : null, status),
-        node('p', '钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。', { class: 'rf-ai-hint' }));
+      box.append(wizard.element, grid,
+        el('label', { class:'rf-ai-checks' }, verify, el('span', { text:T('保存前验证连通性') })),
+        el('div', { class:'rf-ai-actions' }, save, test, canDelete ? del : null, status));
+      return box;
+    }
+
+    function renderKeyCard(preserve) {
+      const snap = preserve ? snapshotInputs(keyCard) : null;
+      keyCard.replaceChildren(node('h3', '个人钥匙（全局）', { style: 'margin:0 0 6px' }));
+      for (const kind of ['llm', 'decision']) {
+        const meta = keyUI.slot(detection?.personal, kind);
+        keyCard.append(renderSlot({ endpoint:'/api/ai/key', kind, meta, canDelete:meta?.configured }));
+      }
+      keyCard.append(node('p', '钥匙仅保存在数据目录（桌面版为本机、服务器版为服务器；权限 0600 尽力而为，一期不加密），不会保存在浏览器、任务目录或导出包。', { class:'rf-ai-hint' }));
       restoreInputs(keyCard, snap);
     }
 
@@ -882,51 +898,19 @@
       mode.value = s.key_mode === 'shared' ? 'shared' : 'personal';
       const modeRow = el('div', { class: 'rf-ai-grid' }, el('div', {}, el('label', { class: 'lbl', text: T('钥匙模式') }), mode));
       taskCard.append(modeRow);
-      /* 共享钥匙配置（owner 写；掩码确认/删除） */
+      /* Shared details on legacy servers are task-wide, never attributed to a slot. */
       const sharedBox = el('div', { class: 'rf-ai-shared' });
-      const sharedStatus = detection.sharedAvailable
-        ? (detection.sharedProviderName
-            ? literal('p', T('共享钥匙已启用：{0}', detection.sharedProviderName), { class: 'hint' })
-            : node('p', 'import.review.ai.shared_configured', { class: 'hint' }))
-        : node('p', '未配置共享钥匙。', { class: 'hint' });
-      sharedBox.append(sharedStatus);
-      const provider = el('input', { class: 'input', translate: 'no', maxlength: '50', 'data-rf-name': 'shared_provider', 'aria-label': T('服务商') });
-      const secret = el('input', { class: 'input', type: 'password', autocomplete: 'off', translate: 'no', maxlength: '4096', 'data-rf-name': 'shared_key', 'aria-label': T('API Key（仅保存在数据目录）') });
-      const baseUrl = el('input', { class: 'input', translate: 'no', maxlength: '500', 'data-rf-name': 'shared_base_url', 'aria-label': T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') });
-      const model = el('input', { class: 'input', translate: 'no', maxlength: '100', 'data-rf-name': 'shared_model', 'aria-label': T('模型名（如 gpt-4o-mini）') });
-      const verify = el('input', { type: 'checkbox', 'data-rf-name': 'shared_verify' });
-      const sharedStatus2 = el('p', { class: 'rf-ai-hint', role: 'status' });
-      const grid = el('div', { class: 'rf-ai-grid' });
-      grid.append(
-        el('div', {}, el('label', { class: 'lbl', text: T('服务商') }), provider),
-        el('div', {}, el('label', { class: 'lbl', text: T('API Key（仅保存在数据目录）') }), secret),
-        el('div', {}, el('label', { class: 'lbl', text: T('接口地址 base_url（兼容 OpenAI 协议，可指向本地服务）') }), baseUrl),
-        el('div', {}, el('label', { class: 'lbl', text: T('模型名（如 gpt-4o-mini）') }), model));
-      const saveShared = btn('保存共享钥匙', async () => {
-        if (!provider.value.trim() || !secret.value.trim()) { sharedStatus2.textContent = T('服务商与 API Key 不能为空。'); return; }
-        saveShared.disabled = true;
-        try {
-          await api(taskApi() + '/ai-suggest/shared-key', { method: 'PUT', body: { provider: provider.value.trim(), key: secret.value, base_url: baseUrl.value.trim() || null, model: model.value.trim() || null, verify: verify.checked } });
-          toast(T('已保存。'), 'inc');
-          await detect(true);
-        } catch (e) {
-          sharedStatus2.textContent = (e && e.status === 502) ? T('AI 服务调用失败：{0}', e.message || '') : String((e && e.message) || e);
-        } finally { saveShared.disabled = false; }
-      }, 'btn b-inc sm');
-      const delShared = btn('删除共享钥匙', async () => {
-        if (!confirm(T('确认删除任务共享钥匙？'))) return;
-        delShared.disabled = true;
-        try {
-          await api(taskApi() + '/ai-suggest/shared-key', { method: 'DELETE' });
-          toast(T('已删除。'), 'inc');
-          await detect(true);
-        } catch (e) { sharedStatus2.textContent = String((e && e.message) || e); }
-        finally { delShared.disabled = false; }
-      });
-      sharedBox.append(grid,
-        el('label', { class: 'rf-ai-checks' }, verify, el('span', { text: T('保存前验证连通性'), style: 'font-size:.8rem' })),
-        el('div', { class: 'rf-ai-actions' }, saveShared, detection.sharedAvailable ? delShared : null, sharedStatus2),
-        node('p', '任务由负责人启用共享钥匙后，成员无需各自配置钥匙。', { class: 'rf-ai-hint' }));
+      if (detection.sharedSlots?.enabled || s.shared_key_enabled) {
+        sharedBox.append(node('p', 'import.review.ai.shared_configured', { class:'hint' }));
+      } else {
+        sharedBox.append(node('p', '未配置共享钥匙。', { class:'hint' }));
+      }
+      for (const kind of ['llm', 'decision']) {
+        const meta = keyUI.slot(detection.sharedSlots, kind);
+        const canDelete = meta ? meta.configured : detection.sharedSlots?.enabled || s.shared_key_enabled;
+        sharedBox.append(renderSlot({ endpoint:taskApi() + '/ai-suggest/shared-key', kind, meta, shared:true, canDelete }));
+      }
+      sharedBox.append(node('p', '任务由负责人启用共享钥匙后，成员无需各自配置钥匙。', { class:'rf-ai-hint' }));
       const syncSharedVisibility = safe(() => { sharedBox.hidden = mode.value !== 'shared'; });
       mode.addEventListener('change', syncSharedVisibility);
       syncSharedVisibility();
@@ -1221,6 +1205,6 @@
     }));
 
     /* 首次加载已停在编码/首页（hash 直达）：立即判定 */
-    if (typeof S !== 'undefined' && S.task && S.user) detect().then(safe(renderAll)).catch(() => {});
+    if (typeof S !== 'undefined' && S.user) detect().then(safe(renderAll)).catch(() => {});
   } catch (e) { /* 单点故障：模块初始化失败不影响主应用 */ }
 })();

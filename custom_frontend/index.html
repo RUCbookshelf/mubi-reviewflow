@@ -633,6 +633,7 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 #authScreen .pw-wrap .input{padding-right:46px}
 #authScreen .eye-btn{position:absolute;top:5px;right:5px;width:35px;height:35px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:var(--muted)}
 #authScreen .eye-btn:hover{color:var(--primary-dark);background:var(--soft)}
+#authScreen #authPass::-ms-reveal{display:none}
 #authScreen .eye-btn .icon{width:17px;height:17px}
 #authScreen .remember{display:inline-flex;align-items:center;gap:7px;min-height:28px;margin-top:8px;color:var(--muted);font-size:12px;cursor:pointer}
 #authScreen .remember input{margin:0;accent-color:var(--primary)}
@@ -5363,8 +5364,9 @@ async function api(path, opts = {}) {
 }
 
 async function apiRequest(path, opts = {}) {
+  const requestToken = AUTH_TOKEN;
   const headers = {};
-  if (AUTH_TOKEN) headers.Authorization = 'Bearer ' + AUTH_TOKEN;
+  if (requestToken) headers.Authorization = 'Bearer ' + requestToken;
   if ((opts.method || 'GET').toUpperCase() !== 'GET') headers['X-Request-ID'] = opts.requestId || crypto.randomUUID();
   let body;
   if (opts.form) body = opts.form;
@@ -5386,6 +5388,7 @@ async function apiRequest(path, opts = {}) {
     }
   }
   if (resp.status === 401 && (!path.startsWith('/api/auth/') || path === '/api/auth/me')) {
+    if (requestToken !== AUTH_TOKEN) throw new ApiError(401, '登录已过期');
     /* 高1（F01 会话静默丢失）：统一登出前先给出显式提示（十语言注册），并明确
        当前地址已保留、重登录后回到此处。logout() 不修改 location.hash，
        enterApp() 会按 hash 复原页面（见 enterApp 内 initialRoute 解析），因此
@@ -5401,7 +5404,10 @@ async function apiRequest(path, opts = {}) {
        GET 401 没有在途写计数，保持原守卫路径（有草稿时仍弹“未保存的改动”
        对话框，行为不变）。 */
     // 会话恢复时 /auth/me 先于工作区加载，失效令牌直接清除。
-    logout('登录已过期，请重新登录。', { force: path === '/api/auth/me' || (opts.method || 'GET').toUpperCase() !== 'GET' });
+    logout('登录已过期，请重新登录。', {
+      token: requestToken,
+      force: path === '/api/auth/me' || (opts.method || 'GET').toUpperCase() !== 'GET',
+    });
     throw new ApiError(401, '登录已过期');
   }
   if (opts.blob || opts.response) {
@@ -5525,11 +5531,12 @@ function saveToken(tok, remember = false) {
     storage.setItem(TOKEN_KEY, tok);
   } catch (e) { /* 隐私模式等：仅内存持有 */ }
 }
-async function logout(msg, opts = {}) {
-  /* MM5-02（r7-frontsec）：opts.force=true 跳过草稿守卫强制登出（会话 401 时写
+async function logout(msg, { token = AUTH_TOKEN, force = false } = {}) {
+  /* MM5-02（r7-frontsec）：force=true 跳过草稿守卫强制登出（会话 401 时写
      请求的守卫恒假，见 apiRequest 401 分支注释）；其余调用（用户主动登出/切任务）
      仍走守卫，行为不变。 */
-  if (!opts.force && window.WorkflowControls && !await WorkflowControls.guard()) return;
+  if (!force && window.WorkflowControls && !await WorkflowControls.guard()) return;
+  if (token !== AUTH_TOKEN) return;
   closeTeamMemberMenus();
   closeEvents();
   AUTH_TOKEN = null;
@@ -5549,8 +5556,14 @@ async function logout(msg, opts = {}) {
   analysisPage.inert = false; analysisPage.removeAttribute('aria-busy');
   $('#anLoadStatus').hidden = true; $('#authPass').value = '';
   window.RFWorkspaceShell?.close();
-  try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
-  try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  if (token) {
+    try {
+      if (localStorage.getItem(TOKEN_KEY) === token) localStorage.removeItem(TOKEN_KEY);
+    } catch (e) {}
+    try {
+      if (sessionStorage.getItem(TOKEN_KEY) === token) sessionStorage.removeItem(TOKEN_KEY);
+    } catch (e) {}
+  }
   $('#appShell').style.display = 'none';
   $('#appMain').style.display = 'none';
   $('.footer').style.display = 'none';
@@ -9146,6 +9159,13 @@ function clearAuthMessage() {
   $('#authErr').removeAttribute('data-success');
   authInputIds.forEach(id => $('#' + id).removeAttribute('aria-invalid'));
 }
+function setPasswordVisibility(visible) {
+  $('#authPass').type = visible ? 'text' : 'password';
+  const eye = $('#pwEye');
+  eye.setAttribute('aria-pressed', String(visible));
+  eye.setAttribute('aria-label', T(visible ? '隐藏密码' : '显示密码'));
+  $('#eyeSlash')?.toggleAttribute('hidden', !visible);
+}
 function setAuthMode(mode, languageOnly = false) {
   authMode = mode;
   $('#authScreen').dataset.authMode = mode;
@@ -9161,6 +9181,7 @@ function setAuthMode(mode, languageOnly = false) {
   $('#authPass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
   $('#authResetServerHint').hidden = runtimeMode !== 'server';
   $('#authResetDesktopHint').hidden = runtimeMode === 'server';
+  setPasswordVisibility(languageOnly && $('#authPass').type === 'text');
   if (!languageOnly) {
     clearAuthMessage();
     if (!isLogin) $('#authPass').value = '';
@@ -9183,13 +9204,7 @@ $('#authForgot').addEventListener('click', () => {
 });
 /* 密码可见性切换（概念稿小眼睛：可见时显示斜线） */
 $('#pwEye').addEventListener('click', () => {
-  const pass = $('#authPass'), eye = $('#pwEye');
-  const visible = pass.type === 'password';
-  pass.type = visible ? 'text' : 'password';
-  eye.setAttribute('aria-pressed', String(visible));
-  eye.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
-  const slash = document.getElementById('eyeSlash');
-  if (slash) slash.toggleAttribute('hidden', !visible);
+  setPasswordVisibility($('#authPass').type === 'password');
 });
 $('#authForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -10099,8 +10114,11 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <script src="./import_review_refined_locale.js?v=20261101-r10u2"></script>
 <script src="./import_review_updates.js?v=20261110-215"></script>
 <script src="./import_review_quality_locale.js?v=20261110-215-polish1"></script>
-<script src="./import_review_ai.js?v=20261110-215-polish2"></script>
-<script src="./unified_import_workspace.js?v=20261110-215-final"></script>
+<script src="./ai_providers_locale.js?v=20261112-aiux"></script>
+<script src="./import_review_aiux_locale.js?v=20261112-aiux"></script>
+<script src="./ai_providers_catalog.js?v=20261112-aiux"></script>
+<script src="./import_review_ai.js?v=20261112-aiux"></script>
+<script src="./unified_import_workspace.js?v=20261112-aiux"></script>
 <script src="./team_prisma_locale.js?v=20261101-r10u5a"></script>
 <script src="./prisma_task_ui.js?v=20261012-team-prisma5"></script>
 <script src="./workspace_undo.js?v=20261101-r10u1b"></script>
@@ -10125,7 +10143,7 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <script src="./report_evidence_locale.js?v=20261030-r8fl4"></script>
 <script src="./report_evidence.js?v=2.1.4-r5"></script>
 <!-- AI 抽取建议（BYOK）：建议卡+逐条确认流+设置页（任务 B7；追加式接入，自带十语言词条，独立容错） -->
-<script src="./ai_suggest.js?v=20261110-215-polish1"></script>
+<script src="./ai_suggest.js?v=20261112-aiux"></script>
 <!-- W1 Zotero 直连（2.1.4-r8）：导入页「从本机 Zotero 导入」入口+集合选择对话框（回环 127.0.0.1:23119，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
 <script src="./zotero_import.js?v=20261030-r8-zotero1-polish1"></script>
 <!-- R11 ERIC 教育检索（2.1.4-r11）：导入页「从 ERIC 检索文献」入口+命中预览+检索并导入（api.ies.ed.gov 官方 API，仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
