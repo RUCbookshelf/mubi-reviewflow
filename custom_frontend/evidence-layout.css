@@ -1,0 +1,113 @@
+/* Faithful compact preview: existing palette, fonts, PDF stages and form widgets.
+ * Removing the shared body class restores every CSS declaration immediately. */
+@media (min-width:761px) {
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools {
+  gap:6px 10px;padding:2px 0 6px;font-size:12px;flex-shrink:0;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools>.input {
+  max-width:210px;min-height:30px;padding:4px 8px;font-size:12px;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools>.btn {
+  min-height:30px;padding:4px 8px;font-size:12px;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools>.wf-scope-progress {
+  flex:1;min-width:130px;overflow-wrap:anywhere;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools>.wf-readonly:not(:empty) {
+  flex-basis:100%;line-height:1.5;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools>.wf-readonly:empty {display:none}
+body.rf-layout-preview-compact .rf-fulltext-reader>.wf-queue-tools>.hint {
+  margin:0;font-size:11px;flex-basis:100%;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.rf-document-toolbar {
+  gap:6px;min-height:36px;padding:5px 0 7px;margin:0 0 6px!important;border-bottom:1px solid var(--border);
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.rf-document-toolbar>.btn {
+  min-height:34px;padding:5px 9px;
+}
+body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.rf-document-toolbar>button,
+body.rf-layout-preview-compact .rf-fulltext-reader .rf-document-toolbar>.rf-criteria-panel>.rf-criteria-toggle,
+body.rf-layout-preview-compact .rf-document-toolbar>.rf-preview-evidence-more>summary,
+body.rf-layout-preview-compact .rf-preview-evidence-menu button {
+  font-size:12px;font-weight:500;border-radius:8px;min-height:34px;border:1px solid var(--border);color:var(--ink);
+}
+body.rf-layout-preview-compact :is(#ftDocLabel,#cbLabel) {font-variant-numeric:tabular-nums;white-space:nowrap}
+body.rf-layout-preview-compact :is(#ftDocTitle,#cbTitle) {min-width:120px;line-height:1.5}
+body.rf-layout-preview-compact #ftDocChip {flex-shrink:0}
+body.rf-layout-preview-compact #ftScreeningNotice:not([hidden]) {margin:0 0 6px;line-height:1.5}
+body.rf-layout-preview-compact .rf-fulltext-reader .rf-document-toolbar>.rf-criteria-panel {flex-shrink:0}
+body.rf-layout-preview-compact .rf-fulltext-reader .rf-document-toolbar .rf-criteria-toggle {min-height:34px;padding:5px 9px;font-size:12px}
+body.rf-layout-preview-compact #rf-retraction-tools:has(>.hint:empty) {margin:0;gap:0;min-height:0}
+body.rf-layout-preview-compact #rf-retraction-tools>.hint {overflow-wrap:anywhere}
+body.rf-layout-preview-compact:has(#rf-retraction-tools[hidden]) :is(#rf-retraction-start,#rf-retraction-history) {display:none!important}
+
+/* Native details contains the existing low-frequency buttons; no clones. */
+body.rf-layout-preview-compact .rf-preview-evidence-more {position:relative;flex-shrink:0}
+body.rf-layout-preview-compact .rf-preview-evidence-more>summary {
+  min-height:34px;padding:5px 9px;list-style:none;cursor:pointer;font-size:12px;
+}
+body.rf-layout-preview-compact .rf-preview-evidence-more>summary::-webkit-details-marker {display:none}
+body.rf-layout-preview-compact .rf-preview-evidence-more>summary::after {content:none}
+body.rf-layout-preview-compact .rf-preview-evidence-menu {
+  position:absolute;inset-inline-end:0;top:calc(100% + 5px);z-index:45;display:grid;gap:6px;
+  width:238px;max-width:calc(100vw - 32px);padding:8px;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);
+}
+body.rf-layout-preview-compact .rf-preview-evidence-menu>section {display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-width:0}
+body.rf-layout-preview-compact .rf-preview-evidence-menu>section+section {border-top:1px solid var(--border);padding-top:7px;margin-top:2px}
+body.rf-layout-preview-compact .rf-preview-evidence-group-label {font-size:11px;line-height:1.5;color:var(--muted);padding:1px 4px 2px}
+body.rf-layout-preview-compact .rf-preview-evidence-menu :is(.btn,.rf-help-entry) {
+  display:flex!important;align-items:center;justify-content:center;gap:7px;min-width:0;width:100%;min-height:36px;
+  padding:6px 10px;margin:0!important;font:500 12px/1.5 var(--font-body)!important;white-space:normal;text-align:center;
+  border:1px solid var(--border);border-radius:8px;color:var(--ink)!important;text-decoration:none!important;
+}
+body.rf-layout-preview-compact .rf-preview-evidence-menu [hidden] {display:none!important}
+body.rf-layout-preview-compact .rf-preview-evidence-control {display:inline-flex;align-items:center;justify-content:center;gap:7px}
+body.rf-layout-preview-compact .rf-preview-evidence-control>svg:not(.rf-preview-evidence-icon) {display:none!important}
+body.rf-layout-preview-compact .rf-preview-evidence-control>.rf-preview-evidence-icon {
+  display:block!important;order:-1;flex:0 0 16px;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;
+}
+body.rf-layout-preview-compact .rf-preview-evidence-more:not([open])>.rf-preview-evidence-menu {display:none}
+
+/* Reading tools retain native sequence and handlers; separators expose groups. */
+body.rf-layout-preview-compact :is(#pdfToolbar,#cbPdfToolbar) {height:36px;gap:4px;padding:3px 9px}
+body.rf-layout-preview-compact :is(#pdfToolbar,#cbPdfToolbar)>.pdf-sep {margin:0 6px}
+body.rf-layout-preview-compact :is(#pdfToolbar,#cbPdfToolbar)>.pdfbtn {min-width:26px;min-height:27px}
+body.rf-layout-preview-compact :is(#pdfPageNum,#cpPageNum) {font-variant-numeric:tabular-nums;min-width:48px;text-align:center}
+body.rf-layout-preview-compact :is(#pdfZoomLevel,#cpZoomLevel) {font-variant-numeric:tabular-nums}
+
+/* The actual decision controls remain one persistent, wrapping action bar. */
+body.rf-layout-preview-compact .rf-fulltext-reader .ft-decide {padding:8px 0 0}
+body.rf-layout-preview-compact .rf-fulltext-reader .ft-decide>.row {flex-wrap:wrap;gap:7px;align-items:center}
+body.rf-layout-preview-compact .rf-fulltext-reader .ft-decide .btn {width:auto;min-height:36px;padding:7px 14px}
+body.rf-layout-preview-compact .rf-fulltext-reader .ft-decide :is(#ftInc,#ftExc) {flex:0 0 auto;min-width:112px}
+body.rf-layout-preview-compact .rf-fulltext-reader #ftReason {flex:1;min-width:200px;width:auto;min-height:36px}
+body.rf-layout-preview-compact .rf-fulltext-reader .wf-custom-reason-row {flex-basis:100%;min-width:0}
+body.rf-layout-preview-compact .rf-fulltext-reader #ftCustomReason {width:100%;min-width:0}
+body.rf-layout-preview-compact .rf-fulltext-reader [data-wf-save-reason-action] {flex:0 0 auto;font-size:12px;padding:6px 9px}
+body.rf-layout-preview-compact .rf-fulltext-reader .ft-side {width:276px}
+
+/* Honor the current splitter share, hidden state, draft state and disabled state. */
+body.rf-layout-preview-compact .rf-coding-reader .rf-coding-divider {width:14px;flex-basis:14px}
+body.rf-layout-preview-compact .rf-coding-reader .rf-coding-header {gap:5px 8px;padding:7px 10px;font-size:12px}
+body.rf-layout-preview-compact .rf-coding-reader .rf-coding-header .btn {font-size:11px;min-height:29px;padding:4px 7px}
+body.rf-layout-preview-compact .rf-coding-reader .rf-assessment-tabs {padding:5px 10px;gap:5px}
+body.rf-layout-preview-compact .rf-coding-reader .rf-assessment-tabs .btn {min-height:30px;padding:4px 9px;font-size:12px}
+body.rf-layout-preview-compact .rf-coding-reader #cbForms {padding:0 10px 8px}
+body.rf-layout-preview-compact .rf-coding-reader #cbForms summary {padding:9px 0}
+body.rf-layout-preview-compact .rf-coding-reader #cbForms .row {margin-bottom:9px!important}
+body.rf-layout-preview-compact .rf-coding-reader .rf-extract {margin:0 10px 8px}
+body.rf-layout-preview-compact .rf-coding-reader .rf-extract-head {padding:7px 9px}
+body.rf-layout-preview-compact .rf-coding-reader .rf-coding-savebar {gap:5px 8px;padding:8px 10px}
+body.rf-layout-preview-compact .rf-coding-reader #cbStatus {white-space:normal;overflow-wrap:anywhere}
+body.rf-layout-preview-compact .rf-coding-reader #cbSave {min-height:36px}
+
+@media (pointer:coarse) {
+  body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader) .rf-document-toolbar .btn,
+  body.rf-layout-preview-compact .rf-preview-evidence-menu .btn,
+  body.rf-layout-preview-compact :is(.rf-fulltext-reader,.rf-coding-reader)>.wf-queue-tools>.btn,
+  body.rf-layout-preview-compact .rf-fulltext-reader .ft-decide .btn,
+  body.rf-layout-preview-compact .rf-coding-reader .rf-coding-savebar .btn {min-height:44px}
+}
+}

@@ -83,3 +83,19 @@ zlib/libpng 许可，允许商业使用。构建工具不决定本项目代码�
 - CairoSVG 2.9.1：非Windows图像渲染，LGPL-3.0-or-later；上游：https://github.com/Kozea/CairoSVG 。原始源码也保存在third_party_sources。
 
 Windows构建的实际版本以runtime-lock.txt及site-packages内发行元数据为准；不应把Linux环境的版本表当作Windows版本锁定文件。
+
+
+## 2026-11-13：界面字体与主题来源
+
+字体按用户选择从应用自身的静态目录加载。以下原始字体文件、版权及 SIL Open Font License 1.1 文本随产品分发；完整文件大小、SHA-256、来源与字重见 `custom_frontend/font-assets/manifest.json`。
+
+| 字体 | 上游来源 | 随包许可证 |
+| --- | --- | --- |
+| Noto Sans SC | https://github.com/google/fonts/tree/main/ofl/notosanssc | `custom_frontend/font-assets/noto-sans-sc-OFL.txt` |
+| Noto Serif SC Regular | https://github.com/google/fonts/tree/main/ofl/notoserifsc | `custom_frontend/font-assets/noto-serif-sc-OFL.txt` |
+| LXGW WenKai Lite | https://github.com/lxgw/LxgwWenKai-Lite | `custom_frontend/font-assets/wenkai-OFL.txt` |
+| Inter | https://github.com/rsms/inter | `custom_frontend/font-assets/inter-OFL.txt` |
+| Source Serif 4 | https://github.com/adobe-fonts/source-serif | `custom_frontend/font-assets/source-serif-OFL.txt` |
+| JetBrains Mono | https://github.com/JetBrains/JetBrainsMono | `custom_frontend/font-assets/jetbrains-mono-OFL.txt` |
+
+主题套系为 ReviewFlow 独立编写的界面风格适配。设置页保留每套主题的原始来源链接，未分发上游主题 CSS、脚本、字体或图片。对应关系：素简—Minimal、澄蓝—Things、柔彩—AnuPpuccin、蓝晶—Blue Topaz、霜境—Obsidian Nord、墨夜—Obsidianite、石墨—Atom。玉青为 ReviewFlow 原有默认外观。相关原始来源与适配记录见 `docs/APPROVED_UI_INTEGRATION_20261113.md`。

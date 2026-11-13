@@ -1,0 +1,22 @@
+/* Opt-in type only. Do not target .pdfViewer, .textLayer, canvas, or PDF glyphs. */
+:root[data-rf-font]{--font-body:var(--rff-selected-family)!important;--font-heading:var(--rff-selected-family)!important;--font-latin:var(--rff-selected-family)!important}
+:root[data-rf-font] body{font-family:var(--rff-selected-family)}
+:root[data-rf-font] :is(#appMain,#appShell,#rfThemeSuites,.rfma-more,.rfma-bottom-nav) :is(button,input,select,textarea,h1,h2,h3,h4,.scr-title,.scr-meta,.absbox,.rf-mobile-stage-tab,#rfMobilePageTitle,#ftDocTitle,#cbTitle,#wf-current-task>p){font-family:var(--rff-selected-family)!important}
+:root[data-rf-font] #rfMobilePageTitle{font-family:var(--rff-selected-family)!important}
+#rfThemeSuites .rff-settings{min-width:0;margin:0;padding:16px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:transparent}
+#rfThemeSuites .rff-controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+#rfThemeSuites .rff-field{display:grid;gap:7px;flex:1 1 280px;min-width:0}
+#rfThemeSuites .rff-label{font-size:13px;font-weight:600;color:var(--ink)}
+#rfThemeSuites .rff-field select{width:100%;min-width:0;margin:0}
+#rfThemeSuites .rff-actions{display:flex;gap:8px;flex-wrap:wrap}
+#rfThemeSuites .rff-actions button{margin:0;min-height:40px;white-space:normal}
+#rfThemeSuites :is(.rff-note,.rff-privacy,.rff-status){margin:8px 0 0;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+#rfThemeSuites .rff-preview{font:400 17px/1.65 var(--font-body);margin:12px 0;padding:12px 14px;background:var(--primary-light);border-radius:8px;color:var(--ink);overflow-wrap:anywhere}
+#rfThemeSuites .rff-status{color:var(--primary-dark)}
+#rfThemeSuites .rff-settings [hidden]{display:none!important}
+@media(max-width:760px){
+ #rfThemeSuites .rff-controls{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+ #rfThemeSuites .rff-actions{display:flex}
+ #rfThemeSuites .rff-actions button,#rfThemeSuites .rff-field select{min-height:44px}
+ #rfThemeSuites .rff-preview{font-size:16px}
+}

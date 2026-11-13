@@ -1498,6 +1498,15 @@ class HighlightsIn(BaseModel):
     events: list[HighlightEventIn] = Field(min_length=1, max_length=500)
 
 
+class HighlightNoteUpdateIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    zotero_key: str = Field(min_length=1, max_length=300)
+    note: str = Field(max_length=4000)
+    expected_note: str = Field(max_length=4000)
+    expected_policy_version: int | None = Field(default=None, ge=1)
+
+
 class SchemeImportIn(BaseModel):
     scheme: dict
     replace: bool = True
@@ -6463,6 +6472,44 @@ def add_highlights(task_id: str, body: HighlightsIn, screener: str | None = None
     except sqlite3.IntegrityError as exc:
         raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
     return {"saved": count, "highlights": get_highlights_with_rects(db, body.zotero_key)}
+
+
+@app.patch("/api/tasks/{task_id}/highlights/{highlight_id}")
+def update_highlight_note_ep(task_id: str, highlight_id: int, body: HighlightNoteUpdateIn,
+                             screener: str | None = None,
+                             user: dict = Depends(require_user)) -> dict:
+    """Edit one actor-owned highlight without overwriting a newer comment."""
+    from contextlib import closing
+
+    if not _KEY_RE.match(body.zotero_key):
+        raise _bad("非法文献键。", 400)
+    info = _task_or_404(task_id)
+    if not _screening_allowed(info, user):
+        raise _screening_disabled_error()
+    note = body.note.strip()
+    # require_user rejects foreign screener parameters, including repeated ones.
+    # The workflow context derives actor_db from the verified token identity.
+    with app.state.review_workflow.write_guard(
+            task_id, user, "fulltext", body.zotero_key,
+            body.expected_policy_version) as workflow:
+        with closing(db_mod._connect(workflow.actor_db)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            previous = conn.execute(
+                "SELECT note FROM highlights WHERE id=? AND zotero_key=?",
+                (highlight_id, body.zotero_key),
+            ).fetchone()
+            if previous is None:
+                raise _bad("高亮不存在或已删除。", 404)
+            if (previous[0] or "") != body.expected_note:
+                raise _bad("此批注已在其他窗口更新。请查看最新内容后再保存；当前草稿已保留。", 409)
+            changed = conn.execute(
+                "UPDATE highlights SET note=? WHERE id=? AND zotero_key=? AND COALESCE(note,'')=?",
+                (note, highlight_id, body.zotero_key, body.expected_note),
+            )
+            if changed.rowcount != 1:
+                raise _bad("批注已发生变化，请重新读取。", 409)
+    # Return this committed edit, not a later concurrent writer's reread value.
+    return {"highlight": {"id": highlight_id, "zotero_key": body.zotero_key, "note": note}}
 
 
 @app.delete("/api/tasks/{task_id}/highlights/{highlight_id}")

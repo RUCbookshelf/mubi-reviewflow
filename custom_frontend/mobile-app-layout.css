@@ -1,0 +1,156 @@
+@media(max-width:760px){
+ body.rf-mobile-app-preview{--rfma-nav:calc(58px + env(safe-area-inset-bottom,0px));--rfma-top:56px;--rfma-dock:62px;}
+ body.rf-mobile-app-preview #appMain>.top{position:fixed!important;inset:0 0 auto;z-index:65;height:56px;min-height:56px!important;grid-template-columns:minmax(0,1fr) auto!important;grid-template-rows:25px 16px!important;padding:7px 14px!important;gap:0!important;}
+ body.rf-mobile-app-preview #appMain .top #rfMobilePageTitle{grid-column:1;grid-row:1;font-size:16px}
+ body.rf-mobile-app-preview #appMain .top #rfTaskContext{grid-column:1;grid-row:2}
+ body.rf-mobile-app-preview #appMain .top #rfCurrentTask{max-width:70vw}
+ body.rf-mobile-app-preview #rfMobileNavigation,body.rf-mobile-app-preview #appMain .top>.trace-shortcut-status,body.rf-mobile-app-preview #appMain .top>div:last-child,body.rf-mobile-app-preview #rfNavigationSheet:not(:has(#rfSidebarToggle[aria-expanded=true])){display:none!important}
+ body.rf-mobile-app-preview #rfmaAppTools{grid-column:2;grid-row:1/3;min-height:44px;padding:0 10px;border:0;border-radius:10px;background:var(--primary-light);color:var(--primary);font-size:12px}
+ body.rf-mobile-app-preview #appMain{padding-top:56px!important;height:100dvh;box-sizing:border-box}
+ body.rf-mobile-app-preview #appMain>.view{padding:8px 12px calc(var(--rfma-nav) + var(--rfma-dock) + 16px)!important;scroll-padding-bottom:calc(var(--rfma-nav) + var(--rfma-dock) + 16px);height:100%;min-height:0;}
+ body.rf-mobile-app-preview .rfma-bottom-nav{position:fixed;inset:auto 0 0;z-index:70;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:4px 6px calc(4px + env(safe-area-inset-bottom,0px));height:var(--rfma-nav);box-sizing:border-box;background:var(--surface);border-top:1px solid var(--border)}
+ body.rf-mobile-app-preview .rfma-nav-item{border:0;background:transparent;color:var(--muted);min-width:0;min-height:44px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font:500 10px/1.2 var(--font-body)}
+ body.rf-mobile-app-preview .rfma-nav-item[aria-current=page]{color:var(--primary-dark);background:var(--primary-light)}
+ body.rf-mobile-app-preview .rfma-nav-item svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round}
+ body.rf-mobile-app-preview #appMain .rf-mobile-stage-tabs{display:none!important}
+ body.rf-mobile-app-preview #rfNavigationSheet:has(#rfSidebarToggle[aria-expanded=true]){z-index:110}
+ body.rf-mobile-app-preview.mobile-nav-open #mobileNavBackdrop{z-index:109!important}
+ body.rf-mobile-app-preview #appMain :is(button,.btn,select.input,input.input){min-height:44px}
+ body.rf-mobile-app-preview #appMain .btn{border-radius:10px;padding:8px 10px}
+ body.rf-mobile-app-preview :is(.rfma-more,.rf-mobile-sheet){position:fixed!important;inset:auto 0 0!important;width:100%!important;max-width:none!important;max-height:85dvh!important;margin:0!important;border:1px solid var(--border);border-radius:20px 20px 0 0!important;padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px))!important;background:var(--surface);color:var(--ink);box-sizing:border-box;overflow:auto;}
+ body.rf-mobile-app-preview :is(.rfma-more,.rf-mobile-sheet)::backdrop{background:#0006}
+ body.rf-mobile-app-preview .rfma-sheet-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+ body.rf-mobile-app-preview .rfma-sheet-heading h2{font:600 19px/1.4 var(--font-body)!important;margin:0}
+ body.rf-mobile-app-preview .rfma-more button{min-height:44px}
+ body.rf-mobile-app-preview .rfma-more-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+ body.rf-mobile-app-preview .rfma-more-links .btn{margin:0;text-align:left;white-space:normal;padding:12px}
+ body.rf-mobile-app-preview .rfma-preferences{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px;border-top:1px solid var(--border);padding-top:16px}
+ body.rf-mobile-app-preview .rfma-preferences #themeBtnText,body.rf-mobile-app-preview .rfma-preferences #rf-app-language-current{display:inline}
+ body.rf-mobile-app-preview .rfma-source-backdrop{display:none;position:fixed;inset:0;background:#0006;z-index:100}
+ body.rf-mobile-app-preview.rfma-source-modal .rfma-source-backdrop{display:block}
+ body.rf-mobile-app-preview #appMain [data-rfma-source]{display:none!important}
+ body.rf-mobile-app-preview #appMain [data-rfma-source].rfma-source-open{display:flex!important;flex-direction:column;gap:14px;position:fixed;inset:auto 0 0;max-height:82dvh;overflow:auto;padding:18px 18px calc(24px + env(safe-area-inset-bottom,0px));margin:0;background:var(--surface);border:1px solid var(--border);border-radius:20px 20px 0 0;z-index:101;box-sizing:border-box}
+ body.rf-mobile-app-preview #appMain .rfma-source-open .rf-mobile-source{display:block!important;width:100%}
+ body.rf-mobile-app-preview #appMain .rfma-source-open .wf-queue-tools{display:grid;gap:12px;width:100%}
+ body.rf-mobile-app-preview #appMain .rfma-source-open .wf-queue-tools>button,body.rf-mobile-app-preview #appMain .rfma-source-open .wf-queue-tools>.hint{display:block}
+ body.rf-mobile-app-preview #appMain .rfma-source-open .rf-screen-order-label{display:none}
+ body.rf-mobile-app-preview #appMain .rfma-source-open>.rfma-sheet-heading{width:100%;margin:0}
+ body.rf-mobile-app-preview #appMain :is(.rf-mobile-document-status,.rf-mobile-document-actions,.rf-mobile-screen-actions){margin:0 0 6px;padding:0;min-height:44px;}
+ body.rf-mobile-app-preview #appMain :is(.rf-fulltext-reader,.rf-coding-reader){position:relative}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-actions{display:grid;grid-template-columns:44px minmax(0,1fr) 44px 76px;gap:5px;}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-actions>.rf-mobile-options-open{grid-column:4;grid-row:1;font-size:12px;padding:6px}
+ body.rf-mobile-app-preview #appMain :is(.rf-mobile-options-open,.rf-mobile-screen-options){display:none!important}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-actions{grid-template-columns:44px minmax(0,1fr) 44px}
+ body.rf-mobile-app-preview #ftPrevDoc,body.rf-mobile-app-preview #cbPrev{grid-column:1;grid-row:1;font-size:22px!important}
+ body.rf-mobile-app-preview #ftNextDoc{grid-column:3;grid-row:1;font-size:22px!important}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-status{position:absolute;top:0;left:50px;right:125px;min-height:44px;margin:0;justify-content:center;pointer-events:none}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-status .chip{padding:0;font-size:12px;background:transparent;white-space:nowrap}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-status{right:50px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-status #ftSideToggle,body.rf-mobile-app-preview #appMain :is(.rf-mobile-document-actions,.rf-mobile-screen-actions)>[data-undo-stage],body.rf-mobile-app-preview #rfPilotEntry{display:none!important}
+ body.rf-mobile-app-preview #appMain :is(#ftDocTitle,#cbTitle){font:600 16px/1.45 var(--font-body)!important;margin:2px 0 8px!important;display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+ body.rf-mobile-app-preview #appMain .rf-fulltext-reader .ft-layout{margin:0!important}
+ body.rf-mobile-app-preview #appMain .rf-fulltext-reader .pdfstage{height:calc(100dvh - 56px - var(--rfma-nav) - var(--rfma-dock) - 116px)!important;min-height:240px;max-height:none;border-radius:12px;}
+ body.rf-mobile-app-preview #appMain .pdf-toolbar{flex-wrap:nowrap!important;height:44px!important;min-height:44px;padding:0 4px;overflow:auto;gap:2px;white-space:nowrap}
+ body.rf-mobile-app-preview #appMain .pdf-toolbar>*{flex-shrink:0}
+ body.rf-mobile-app-preview #appMain .pdf-toolbar .pdfbtn{min-width:44px;min-height:44px}
+ body.rf-mobile-app-preview #appMain .pdf-toolbar>.pdf-sep{display:none}
+ body.rf-mobile-app-preview #appMain .pdf-toolbar>*{order:7}
+ body.rf-mobile-app-preview #appMain :is(#pdfPrev,#cpPrev){order:0}
+ body.rf-mobile-app-preview #appMain :is(#pdfPageNum,#cpPageNum){order:1;min-width:46px;text-align:center}
+ body.rf-mobile-app-preview #appMain :is(#pdfNext,#cpNext){order:2}
+ body.rf-mobile-app-preview #appMain :is(#pdfZoomOut,#cpZoomOut){order:3}
+ body.rf-mobile-app-preview #appMain :is(#pdfZoomLevel,#cpZoomLevel){order:4;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center}
+ body.rf-mobile-app-preview #appMain :is(#pdfZoomIn,#cpZoomIn){order:5}
+ body.rf-mobile-app-preview #appMain :is(#pdfHiMode,#cpHiMode){order:6}
+ body.rf-mobile-app-preview #appMain .pdfwrap .pdf-container{top:44px!important}
+ body.rf-mobile-app-preview #appMain :is(.ft-decide,.scr-decisions,.rf-mobile-coding-footer){position:fixed!important;inset:auto 0 var(--rfma-nav)!important;margin:0!important;padding:8px 12px!important;border:0;border-top:1px solid var(--border);border-radius:0!important;background:var(--surface);z-index:60;box-shadow:none!important;}
+ body.rf-mobile-app-preview #appMain .ft-decide>.row{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ body.rf-mobile-app-preview #appMain .ft-decide .btn,body.rf-mobile-app-preview #appMain .scr-decisions>.btn{min-height:44px!important;padding:7px 10px;font-size:14px}
+ body.rf-mobile-app-preview #appMain .ft-decide>.row>.hint{display:none}
+ body.rf-mobile-app-preview #appMain .ft-decide:not(.rfma-reason-open) :is(#ftReason,#ftCustomReason,.wf-custom-reason-row){display:none!important}
+ body.rf-mobile-app-preview #appMain .ft-decide:not(.rfma-reason-open) [data-wf-save-reason-action],body.rf-mobile-app-preview #appMain .scr-decisions.rf-reason-collapsed [data-wf-save-reason-action]{display:none!important}
+ body.rf-mobile-app-preview #appMain :is(.ft-decide,.scr-decisions) [data-wf-save-reason-action]{grid-column:1/-1}
+ body.rf-mobile-app-preview #appMain .ft-decide #ftReason,body.rf-mobile-app-preview #appMain .ft-decide #ftCustomReason{grid-column:1/-1;max-width:none!important;width:100%!important}
+ body.rf-mobile-app-preview #appMain .scr-decisions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ body.rf-mobile-app-preview #appMain .scr-decisions>:not(.btn):not([hidden]){grid-column:1/-1}
+ body.rf-mobile-app-preview #appMain #scrCard{padding:0 2px 14px!important;border:0;background:transparent;margin:0!important}
+ body.rf-mobile-app-preview #appMain .scr-title{font:600 19px/1.45 var(--font-body);margin:10px 0 8px}
+ body.rf-mobile-app-preview #appMain .scr-meta{margin:6px 0 8px}
+ body.rf-mobile-app-preview #appMain .scr-meta .scr-authors{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ body.rf-mobile-app-preview #appMain #scrBody .absbox{font-size:16px;line-height:1.8;padding-top:10px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-screen-actions>.chip{margin-right:auto;background:transparent;padding:0}
+ body.rf-mobile-app-preview #appMain .rf-mobile-screen-actions>.rf-criteria-panel{margin:0}
+ body.rf-mobile-app-preview #appMain .rf-mobile-screen-actions .btn{min-height:44px;padding:6px 10px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-screen-actions .rf-mobile-screen-options{font-size:20px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-sheet .rf-screen-ml-tip{padding:12px;margin:12px 0;font-size:13px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-sheet :is(.btn,.rfma-source-entry){max-width:100%;margin-top:8px}
+ body.rf-mobile-app-preview #appMain .rfma-coding-switch{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--bg);border:1px solid var(--border);border-radius:11px;padding:3px;margin:8px 0 12px}
+ body.rf-mobile-app-preview #appMain .rfma-coding-switch button{border:0;background:transparent}
+ body.rf-mobile-app-preview #appMain .page[data-p=bench].on{display:flex!important;flex-direction:column!important}
+ body.rf-mobile-app-preview #appMain .page[data-p=bench]>.rf-mobile-document-actions{order:1}
+ body.rf-mobile-app-preview #appMain #cbTitle{order:2}
+ body.rf-mobile-app-preview #appMain .rfma-coding-switch{order:3}
+ body.rf-mobile-app-preview #appMain #benchLayout{order:4}
+ body.rf-mobile-app-preview #appMain .rfma-coding-switch [aria-pressed=true]{background:var(--primary-light);color:var(--primary)}
+ body.rf-mobile-app-preview #appMain [data-rfma-coding=form] .rf-mobile-document,body.rf-mobile-app-preview #appMain [data-rfma-coding=pdf] .bench-form,body.rf-mobile-app-preview #appMain [data-rfma-coding=pdf] .rf-mobile-document>summary{display:none!important}
+ body.rf-mobile-app-preview #appMain [data-rfma-coding=pdf] .rf-mobile-document{display:block;border:0;margin:0;padding:0}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document .bench-pdf{height:calc(100dvh - 300px);min-height:260px}
+ body.rf-mobile-app-preview #appMain .bench-form{padding:12px;border-radius:12px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-coding-footer .rf-coding-savebar{padding:0!important}
+ body.rf-mobile-app-preview #appMain .rf-mobile-coding-footer .rf-coding-savebar>.hint:empty{display:none}
+ body.rf-mobile-app-preview #appMain .rf-mobile-coding-footer .row{margin:0}
+ body.rf-mobile-app-preview #appMain .page[data-p=home] .wf-tabs{display:none}
+ body.rf-mobile-app-preview #appMain .page[data-p=home]:has(#wf-tab-overview[aria-selected=true]) .wf-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;overflow:visible;margin:0 0 16px;padding:0;border:0}
+ body.rf-mobile-app-preview #appMain .page[data-p=home] .wf-tabs [role=tab]{min-height:48px;white-space:normal;text-align:left;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+ body.rf-mobile-app-preview #appMain .page[data-p=home] .wf-tabs :is(#wf-tab-overview,.wf-tab-indicator){display:none!important}
+ body.rf-mobile-app-preview #rfmaHomeBack{min-height:44px;margin-bottom:12px;border:0;background:transparent;color:var(--primary);padding:0;font-size:14px}
+ body.rf-mobile-app-preview .page[data-p=home]:has(#wf-tab-overview[aria-selected=true]) #rfmaHomeBack{display:none}
+ body.rf-mobile-app-preview #appMain .rf-mobile-settings-footer:not(:has(.wf-settings-save:not([hidden]))){display:none}
+ body.rf-mobile-app-preview #appMain .rf-mobile-shortcuts .rf-mobile-link{min-height:44px;margin:0;border:0;border-bottom:1px solid var(--border);border-radius:0}
+ body.rf-mobile-app-preview #appMain #wf-panel-overview :is(.rf-mobile-home-intro,.rf-mobile-shortcuts,.rf-mobile-disclosure){display:none!important}
+ body.rf-mobile-app-preview #appMain #wf-current-task>h3,body.rf-mobile-app-preview #appMain #wf-current-task>.btn:nth-of-type(n+2){display:none!important}
+ body.rf-mobile-app-preview #appMain #wf-current-task>p{font-size:19px;line-height:1.45}
+ body.rf-mobile-app-preview #appMain #wf-current-task{padding:16px;gap:7px;margin-bottom:12px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-metrics{margin:10px 0}
+ body.rf-mobile-app-preview #appMain #wf-panel-overview>.rf-mobile-full{display:none}
+ body.rf-mobile-app-preview .rf-pilot-dialog{inset:0!important;width:100%!important;height:100dvh!important;max-height:none!important;max-width:none!important;border:0;border-radius:0!important;margin:0!important;padding:16px!important;box-sizing:border-box}
+ body.rf-mobile-app-preview .rf-pilot-dialog .rf-pilot-header{position:sticky;top:-16px;background:var(--surface);padding:12px 0;z-index:3}
+ body.rf-mobile-app-preview .rf-pilot-dialog button{min-height:44px}
+ body.rf-mobile-app-preview dialog:modal{max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);box-sizing:border-box}
+ body.rf-mobile-app-preview #rf-app-language-menu{z-index:200;top:64px}
+ body.rf-mobile-app-preview .rfma-preferences #rf-app-language-menu{position:static;max-height:40dvh;flex-basis:100%;width:100%;}
+ body.rf-mobile-app-preview .rfma-preferences{flex-wrap:wrap}
+ :root[data-theme=dark] body.rf-mobile-app-preview .b-inc{color:var(--rft-on-primary,#142d2b)}
+ :root[data-theme=dark] body.rf-mobile-app-preview .b-exc{color:var(--rft-on-danger,#321d18)}
+ body.rf-mobile-app-preview.rfma-keyboard{--rfma-nav:0px}
+ body.rf-mobile-app-preview.rfma-keyboard .rfma-bottom-nav{display:none}
+ body.rf-mobile-app-preview #appMain [hidden],body.rf-mobile-app-preview .rfma-more [hidden]{display:none!important}
+}
+@media(max-width:760px) and (max-height:450px){
+ body.rf-mobile-app-preview{--rfma-top:44px;--rfma-nav:calc(48px + env(safe-area-inset-bottom,0px));--rfma-dock:53px}
+ body.rf-mobile-app-preview #appMain>.top{height:44px;min-height:44px!important;grid-template-rows:44px!important;padding:0 12px!important}
+ body.rf-mobile-app-preview #appMain .top #rfTaskContext{display:none}
+ body.rf-mobile-app-preview #appMain .top #rfMobilePageTitle{align-self:center}
+ body.rf-mobile-app-preview #rfmaAppTools{grid-row:1}
+ body.rf-mobile-app-preview #appMain{padding-top:44px!important}
+ body.rf-mobile-app-preview #appMain>.view{padding-top:4px!important}
+ body.rf-mobile-app-preview .rfma-bottom-nav{padding-top:2px;padding-bottom:calc(2px + env(safe-area-inset-bottom,0px))}
+ body.rf-mobile-app-preview .rfma-nav-item{flex-direction:row;gap:6px;font-size:12px}
+ body.rf-mobile-app-preview #appMain :is(.rf-mobile-document-actions,.rf-mobile-screen-actions){margin-bottom:4px}
+ body.rf-mobile-app-preview #appMain :is(#ftPrevDoc,#ftNextDoc,#cbPrev){height:44px;box-sizing:border-box;padding:0!important}
+ body.rf-mobile-app-preview #appMain .page[data-p=bench]{position:relative}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-status{min-height:20px;height:20px}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document-status .chip{font-size:11px}
+ body.rf-mobile-app-preview #appMain :is(#ftDocTitle,#cbTitle){position:absolute;top:21px;left:56px;right:56px;margin:0!important;font-size:13px!important;line-height:20px!important;-webkit-line-clamp:1;pointer-events:none}
+ body.rf-mobile-app-preview #appMain .rf-fulltext-reader .pdfstage{height:calc(100dvh - 92px - var(--rfma-nav) - var(--rfma-dock) - 4px)!important;min-height:0}
+ body.rf-mobile-app-preview #appMain :is(.ft-decide,.scr-decisions,.rf-mobile-coding-footer){padding-top:4px!important;padding-bottom:4px!important}
+ body.rf-mobile-app-preview #appMain .rfma-coding-switch{margin:0 0 8px;padding:0}
+ body.rf-mobile-app-preview #appMain .rf-mobile-document .bench-pdf{height:calc(100dvh - 146px - var(--rfma-nav) - var(--rfma-dock));min-height:120px}
+}
+@media(min-width:600px) and (max-width:760px) and (max-height:450px){
+ body.rf-mobile-app-preview #appMain .bench-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px 12px}
+ body.rf-mobile-app-preview #appMain .rf-coding-header{grid-column:1;gap:6px;padding:0;font-size:12px;align-items:center}
+ body.rf-mobile-app-preview #appMain .rf-assessment-tabs{grid-column:2;margin:0;padding:0;border:0;align-items:center}
+ body.rf-mobile-app-preview #appMain #cbForms{grid-column:1/-1;padding:0}
+ body.rf-mobile-app-preview #appMain .rf-coding-reader #cbForms>.wf-coding-unit:first-child{margin-top:0!important}
+}

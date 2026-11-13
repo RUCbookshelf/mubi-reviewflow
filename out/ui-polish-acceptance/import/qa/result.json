@@ -1,0 +1,18 @@
+{
+  "fixture": {
+    "candidate_groups": 25,
+    "source_records": 50
+  },
+  "C-DYN-03": "Cross-page item is visible and clearable",
+  "C-DYN-01": "Elapsed/items visible; Escape closes and selected item survives",
+  "C-DYN-02": "Green badge includes verdict, confidence and high grade",
+  "C-DYN-16": {
+    "same": true,
+    "reads": 1,
+    "mobileOptions": 0
+  },
+  "C-DYN-04": "Saving one slot preserves other unsaved card fields",
+  "C-DYN-19": "Success appears inside the saved card",
+  "responsive": "Desktop 1440 and mobile 390 render without page overflow",
+  "page_errors": []
+}

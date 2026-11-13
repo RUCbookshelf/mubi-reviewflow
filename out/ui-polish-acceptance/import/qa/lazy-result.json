@@ -1,0 +1,29 @@
+{
+  "signed_out_script_requests": 17,
+  "signed_out_scripts": [
+    "/prisma_citations.js",
+    "/team_roles.js",
+    "/analysis_locale.js",
+    "/interface_locale.js",
+    "/research_trace_locale.js",
+    "/import_history_locale.js",
+    "/title_duplicate_locale.js",
+    "/import_progress_locale.js",
+    "/update_check_locale.js",
+    "/restart_app_locale.js",
+    "/batch6_locale.js",
+    "/help_locale.js",
+    "/navigation_locale.js",
+    "/navigation_registry.js",
+    "/app_module_loader.js",
+    "/workflow_locale.js",
+    "/offline_banner.js"
+  ],
+  "inert_workspace_scripts": 123,
+  "failed_module_retry": "passed; successfully loaded modules did not execute twice",
+  "restore_login": "passed",
+  "import_deeplink": "passed",
+  "auth_theme_and_atlas": "passed",
+  "page_errors": [],
+  "note": "Service workers blocked to count document cold-start scripts consistently."
+}

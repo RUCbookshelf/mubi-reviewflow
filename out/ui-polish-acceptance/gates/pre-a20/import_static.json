@@ -1,0 +1,12 @@
+{
+  "gate": "import_static",
+  "command": [
+    "node",
+    "build/validate_import_review_static.cjs"
+  ],
+  "exit_code": 0,
+  "seconds": 8.923,
+  "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+  "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+  "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\import_static.log"
+}

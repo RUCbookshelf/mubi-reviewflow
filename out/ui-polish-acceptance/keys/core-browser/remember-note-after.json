@@ -1,0 +1,21 @@
+{
+  "login": {
+    "selfHidden": false,
+    "parentId": "authCredentials",
+    "parentHidden": false,
+    "visible": true
+  },
+  "reset": {
+    "selfHidden": true,
+    "parentId": "authCredentials",
+    "parentHidden": true,
+    "visible": false
+  },
+  "register": {
+    "selfHidden": true,
+    "parentId": "authCredentials",
+    "parentHidden": false,
+    "visible": false
+  },
+  "page_errors": []
+}

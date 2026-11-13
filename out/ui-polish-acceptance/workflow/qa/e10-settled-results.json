@@ -1,0 +1,8 @@
+{
+  "strategy": "cluster",
+  "mode": "ai",
+  "tipVisible": false,
+  "button": "主题聚类 (cluster)",
+  "recordVisible": true,
+  "errors": []
+}

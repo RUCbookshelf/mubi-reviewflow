@@ -1,0 +1,44 @@
+{
+  "reading_0": {
+    "card": true,
+    "abstract": true,
+    "option": true,
+    "scroll": 850,
+    "originalScroll": 850,
+    "focus": "excReason",
+    "modal": false
+  },
+  "reading_1": {
+    "card": true,
+    "abstract": true,
+    "option": true,
+    "scroll": 850,
+    "originalScroll": 850,
+    "focus": "excReason",
+    "modal": false
+  },
+  "reading_2": {
+    "card": true,
+    "abstract": true,
+    "option": true,
+    "scroll": 850,
+    "originalScroll": 850,
+    "focus": "excReason",
+    "modal": false
+  },
+  "reading_3": {
+    "card": true,
+    "abstract": true,
+    "option": true,
+    "scroll": 850,
+    "originalScroll": 850,
+    "focus": "excReason",
+    "modal": false
+  },
+  "sourcePreserved": true,
+  "trainingOpen": "筛选训练\n关闭\n\n训练中，不计入正式数据\n\n返回训练集清单\n新建训练集\n抽样方式\n抽样方式\n随机抽样\n手选样本\n手选加随机补齐\n下一步",
+  "errors": [],
+  "task": "Syntheticworkflowpreservationpolish_workflow_1794487978-17bd",
+  "url": "http://127.0.0.1:18931/#workspace/screen",
+  "title": "文献初筛 · ReviewFlow"
+}

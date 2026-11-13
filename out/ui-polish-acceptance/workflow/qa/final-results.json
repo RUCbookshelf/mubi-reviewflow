@@ -1,0 +1,10 @@
+{
+  "shared_modal_active": true,
+  "notice_below_top": true,
+  "mobile_width": {
+    "body": 390,
+    "viewport": 390
+  },
+  "profile_writes": 0,
+  "errors": []
+}

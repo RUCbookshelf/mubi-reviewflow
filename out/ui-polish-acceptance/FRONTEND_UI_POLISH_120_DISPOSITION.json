@@ -1,0 +1,1723 @@
+{
+  "source_report": "E:\\mubi-reviewflow\\out\\release_plan\\frontend_formal_verification_2026-11-12\\frontend_formal_verification_report.md",
+  "source_sha256": "a55a87901c79ad4f3a74ef50fbe47ec977f1eecb0c3ec499b311af80273f0269",
+  "row_count": 120,
+  "lane_counts": {
+    "A": 22,
+    "B": 16,
+    "C": 19,
+    "D": 19,
+    "E": 26,
+    "F": 18
+  },
+  "original_severity_counts": {
+    "medium": 68,
+    "low": 42,
+    "high": 10
+  },
+  "rows": [
+    {
+      "id": "A-DYN-01",
+      "lane": "A",
+      "original_location": "概览空态，`workflow_controls.js:188` 和 `workflow_controls.js:282`",
+      "original_issue": "中文概览连续展示两张英文的新建任务卡，两个按钮均为「Create a task」。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "零任务概览合为一卡；修正八行中文列中的英文占位。",
+      "verification": "Node词条/源码；无专属浏览器断言。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-02",
+      "lane": "A",
+      "original_location": "首页顶栏与页内标题",
+      "original_issue": "同一个页面显示两次「首页与设置」。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "隐藏重复首页标题，保留面包屑。",
+      "verification": "源码检查；专属视觉验收未记录。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-03",
+      "lane": "A",
+      "original_location": "首页设置标签",
+      "original_issue": "标签返回后已填内容仍在，阅读位置和当前输入焦点丢失。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "设置标签按标签记忆阅读区滚动。",
+      "verification": "真实浏览器：切回保持300→300。",
+      "refs": [
+        "W-follow"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-04",
+      "lane": "A",
+      "original_location": "忘记密码桌面提示，`index.html:841`",
+      "original_issue": "桌面流程给出含「用户名」占位符的 Python 命令，页面上没有取码工具入口或可直接使用的步骤。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "找回密码按平台给可复制命令；launcher增加reset-user入口，macOS/Linux打包纳入恢复模块。",
+      "verification": "Node调用真实Python隔离恢复一次消费；真实Windows登录页复制恢复命令。macOS/Linux打包清单源码检查，未运行其成品安装器。",
+      "refs": [
+        "N-recovery",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-05",
+      "lane": "A",
+      "original_location": "桌面导航，`sidebar_sheet.js:37`",
+      "original_issue": "导航展开后要等整个分批动效结束，已经显示的项目才可操作。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "导航展开总动画调整为300ms。",
+      "verification": "样式/语法检查；未记录最终设备上的耗时实测。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-06",
+      "lane": "A",
+      "original_location": "任务与团队→新建任务，`index.html:6247`",
+      "original_issue": "请求在途时按钮仍显示「＋ 新建任务」且可点击。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "新建任务在途锁按钮并显示正在创建，结束后恢复。",
+      "verification": "当前树源码检查；本波未记录专属慢响应浏览器断言。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-07",
+      "lane": "A",
+      "original_location": "首页设置保存栏，`workflow_controls.js:217`",
+      "original_issue": "当前任务的流程设置保存和重新载入控件显示在六个标签的底部，包括外观与存储。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "工作流保存条仅在任务/编码设置显示。",
+      "verification": "真实浏览器：外观标签保存条隐藏。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-08",
+      "lane": "A",
+      "original_location": "侧栏「筛选员」，`index.html:6179`",
+      "original_issue": "桌面单用户下显示一个始终禁用的下拉，仅含当前账号。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "桌面单账号显示只读身份文本，隐藏恒禁用下拉。",
+      "verification": "当前树源码检查。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-09",
+      "lane": "A",
+      "original_location": "概览→当前任务，`workflow_controls.js:278`",
+      "original_issue": "当前任务卡可继续初筛或编码，缺少继续全文复筛入口。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "当前任务卡补全文复筛入口。",
+      "verification": "源码检查。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-10",
+      "lane": "A",
+      "original_location": "首页设置自动轮询，`workflow_controls.js:765`",
+      "original_issue": "空闲停留时，概览当前任务卡仍被销毁并重建。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "设置签名不变时保留来源选择、当前任务卡及焦点。",
+      "verification": "真实浏览器：刷新后原来源节点/焦点保持；Node相关回归。",
+      "refs": [
+        "W-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-11",
+      "lane": "A",
+      "original_location": "记住我会话恢复，`index.html:10018`",
+      "original_issue": "会话恢复进行时，页面仍显示可操作的登录表单。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "恢复会话期间登录表单inert并标明正在恢复登录。",
+      "verification": "源码检查；最终登录恢复回归见懒加载剧本，未单独证明慢响应全时窗。",
+      "refs": [
+        "I-lazy"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-12",
+      "lane": "A",
+      "original_location": "任务与团队→已导入来源，`workflow_controls.js:342`",
+      "original_issue": "来源名呈现为输入框，能够聚焦但无法编辑。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "来源名称呈明确只读文本，来源类型仍可修改。",
+      "verification": "源码检查。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-13",
+      "lane": "A",
+      "original_location": "任务与团队任务卡，`index.html:6221`",
+      "original_issue": "重命名、归档、恢复均返回成功，当前任务卡仍显示旧标题或旧操作。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "任务列表收到新值后重绘任务卡，重命名/归档/恢复成功后显示新状态；相同列表不重建。",
+      "verification": "当前树loadTasks/renderHub源码检查；不将新建按钮busy覆盖冒认此项。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-14",
+      "lane": "A",
+      "original_location": "登录后加载任务，`index.html:9919`",
+      "original_issue": "任务列表加载中登录屏已收起，主界面显示功能卡和「未选择任务」，任务区没有加载指示。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "登入后任务下拉显示载入状态并禁用；失败保留重试入口。",
+      "verification": "源码检查；主代理最终慢任务列表剧本待补。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-15",
+      "lane": "A",
+      "original_location": "当前任务流程设置保存，`workflow_controls.js:326`",
+      "original_issue": "保存工作流设置在途没有忙碌状态，成功后没有状态提示。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "工作流保存增加互斥、控件禁用与保存中/成功/失败状态。",
+      "verification": "源码与相关回归；专属慢响应浏览器门禁待主代理。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-16",
+      "lane": "A / F",
+      "original_location": "登录页脚本加载，`index.html:10034`<br>冷启动资源，`index.html:10040–10185`、`:5244`",
+      "original_issue": "登录页在解析期间加载 136 个同步外部 JS，包含导入与分析模块。<br>登录首载需要约 2 MB HTML 和 136 个同步外部脚本。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "认证前仅载入登录必需模块；认证后按原顺序激活123个工作区脚本，失败可重试且不重复执行已成功模块。",
+      "verification": "真实冷启动17脚本/123延迟模块，登录重试、深链、存储令牌恢复；Node4例；Service Worker被阻止以统一计数。",
+      "refs": [
+        "I-lazy"
+      ],
+      "merged_alias": "F-DYN-17"
+    },
+    {
+      "id": "A-DYN-17",
+      "lane": "A",
+      "original_location": "概览→功能一览，`index.html:1019`",
+      "original_issue": "功能介绍卡看起来像功能入口，点击仍留在概览。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "功能介绍卡增加可点击/键盘操作和对应功能导航。",
+      "verification": "当前树源码检查。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-18",
+      "lane": "A",
+      "original_location": "新建任务键盘，`index.html:999`",
+      "original_issue": "新建任务空态会把焦点移到名称输入框，输入后按 Enter 不提交。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "新建任务输入支持Enter，并尊重输入法及模态状态。",
+      "verification": "源码检查；输入确认组件Enter/取消语义有Node回归。",
+      "refs": [
+        "N-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-19",
+      "lane": "A",
+      "original_location": "会话过期提示，`index.html:5402`、`:5411`",
+      "original_issue": "一次过期触发两个不同措辞的过期 toast，工作流入口还显示第三个通用失败提示。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "会话过期由统一处理器公告，抑制调用方重复过期toast。",
+      "verification": "源码检查；并发401终跑结果待主代理回填。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-20",
+      "lane": "A",
+      "original_location": "记住我跨标签，`index.html:9201`",
+      "original_issue": "在另一个已停留登录表单的标签取消「记住我」后，已保存会话仍让新标签自动登录。",
+      "original_severity": "low",
+      "status": "语义澄清并修复可见性",
+      "change": "记住我旁明示选项在下次登录生效；说明移出隐藏找回密码字段组，登录时可见并关联aria-describedby。",
+      "verification": "新增Node布局回归先红后绿；真实login→reset→register→login：仅登录可见、关联正确、JS错误0。会话所有权语义保持。",
+      "refs": [
+        "B-A20",
+        "N-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "A-DYN-21",
+      "lane": "A / F",
+      "original_location": "任务重命名，`index.html:6230`<br>任务与团队→重命名，`index.html:6231`",
+      "original_issue": "重命名弹出浏览器原生 prompt。<br>任务重命名使用 Chromium 原生输入弹窗，未保存更改使用应用内弹窗。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "任务重命名改应用内可输入RFConfirm；Enter提交输入，取消按钮保留取消语义并归还焦点。",
+      "verification": "Node；真实浏览器重命名取消与Enter分项通过。原表合并F-DYN-10。",
+      "refs": [
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": "F-DYN-10"
+    },
+    {
+      "id": "A-DYN-22",
+      "lane": "A",
+      "original_location": "任务卡元数据，`index.html:6213`",
+      "original_issue": "创建与使用日期直接显示为 ISO 字符串。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "创建/最近使用日期按当前界面语言格式化。",
+      "verification": "当前树Intl.DateTimeFormat源码检查。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-01",
+      "lane": "B",
+      "original_location": "两槽厂商格式向导，`ai_providers_catalog.js:98`",
+      "original_issue": "取消格式选择会丢掉刚选的厂商，再从格式按钮确认会进入自定义，地址和模型未填。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "取消格式选择保留厂商意图；重开按当前意图选择，未确认多协议时阻止旧组合提交。",
+      "verification": "Node+真实浏览器取消/重开及唯一协议。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-02",
+      "lane": "B",
+      "original_location": "两槽手填数据，`ai_providers_catalog.js:23`",
+      "original_issue": "换协议会覆盖手填地址和模型，切到自定义还会留下原厂商的值，允许协议和地址错配。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "只更新仍等于旧目录默认的地址/模型，手填值保留；自定义明确手填。",
+      "verification": "Node+真实浏览器编辑值保留。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-03",
+      "lane": "B / C",
+      "original_location": "个人钥匙两槽，`ai_suggest.js:833`<br>导入复核模型钥匙弹窗，import_review_ai.js:404、495",
+      "original_issue": "保存或删除个人槽时，其他槽和任务 AI 面板的部分未保存输入被静默清空。<br>保存个人 LLM 卡清空另一张个人决策卡的未保存服务商与 Key",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "两配置入口保留未提交槽、任务表单和向导状态；草稿仅账号/任务作用域页面内存，删除只清目标槽。",
+      "verification": "Node+真实浏览器两入口保存/关闭重开；原表合并C-DYN-04。",
+      "refs": [
+        "B-live",
+        "I-live"
+      ],
+      "merged_alias": "C-DYN-04"
+    },
+    {
+      "id": "B-DYN-04",
+      "lane": "B",
+      "original_location": "测试连接，`ai_providers_catalog.js:145`",
+      "original_issue": "输入未保存的新地址后，「测试连接」仍验证已保存的旧配置，返回成功且未说明来源。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "明确测试的是已保存配置，未保存输入不参与，成功回执说明来源。",
+      "verification": "真实新树后端连接本机模拟模型；未使用真实第三方AI或真实Key。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-05",
+      "lane": "B / C",
+      "original_location": "个人钥匙卡，`ai_suggest.js:790`<br>导入复核模型钥匙弹窗，import_review_ai.js:410、425、450、465",
+      "original_issue": "标题和按钮写「钥匙」，字段写「API Key」。<br>同张卡使用「通用 LLM 钥匙」「API Key」及「保存钥匙」等不同术语",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "两个入口统一API Key术语并保留品牌名。",
+      "verification": "十语言词条检查+真实界面；原表合并C-DYN-08。",
+      "refs": [
+        "B",
+        "I"
+      ],
+      "merged_alias": "C-DYN-08"
+    },
+    {
+      "id": "B-DYN-06",
+      "lane": "B",
+      "original_location": "机器学习→专用判定钥匙，`ai_suggest.js:789`",
+      "original_issue": "个人和任务共享决策槽均缺用途说明，仍给出 OpenAI 兼容地址和 gpt-4o-mini 示例。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "说明决策槽仅用于导入同判定；字段采用中性API地址/模型ID标签。",
+      "verification": "Node+真实浏览器TypeSafe决策配置。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-07",
+      "lane": "B",
+      "original_location": "厂商目录加载失败，`ai_providers_catalog.js:126`",
+      "original_issue": "目录 503 时只剩禁用的自定义占位和手填字段，无目录失败说明；运行模式接口失败时桌面版的 Ollama 也被禁用。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "目录失败显示手填/重试；运行模式未知时明确桌面专属厂商暂不可选。",
+      "verification": "Node目录失败、重试及模式失败；无专属真实慢网剧本。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-08",
+      "lane": "B",
+      "original_location": "厂商向导，`ai_providers_catalog.js:52` 和 `ai_providers_catalog.js:77`",
+      "original_issue": "格式按钮和选项显示 `openai_chat`、`openai_responses`、`systemone` 等内部标识。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "协议显示本地语名称及技术枚举。",
+      "verification": "Node十语言检查。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-09",
+      "lane": "B",
+      "original_location": "厂商显示与服务商字段，`ai_providers_catalog.js:25`",
+      "original_issue": "厂商显示名和自动填的服务商 ID 不一致。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "已知厂商显示品牌并隐藏内部ID；自定义才提供ID输入。",
+      "verification": "Node+真实浏览器隐藏TypeSafe内部ID。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-10",
+      "lane": "B",
+      "original_location": "编码证据要求→AI 抽取建议→审计与报告，`ai_suggest.js:1113`",
+      "original_issue": "Methods 尚未生成时，点「复制中文」会清空已有剪贴板并提示「已复制。」。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "Methods空内容时禁用复制；重建保留已生成文本，旧任务响应隔离。",
+      "verification": "Node生产函数行为验证。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-11",
+      "lane": "B",
+      "original_location": "编码页 AI 建议，`ai_suggest.js:497` 和 `ai_suggest.js:663`",
+      "original_issue": "对某字段的建议点「忽略」后，其他字段建议的手动展开状态也被重置。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "建议展开态按账号/任务/文献/模式保存，忽略另一项不重置当前折叠。",
+      "verification": "Node；未声称多人真实浏览器协作已跑。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-12",
+      "lane": "B",
+      "original_location": "AI 配置语言切换，`ai_suggest.js:1200`",
+      "original_issue": "切换界面语言会关闭未完成的格式向导并丢掉刚选的厂商，已填写的模型草稿仍在。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "语言重绘先恢复表单，再恢复厂商/格式意图与向导开闭。",
+      "verification": "Node+真实中英往返。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-13",
+      "lane": "B",
+      "original_location": "厂商向导手改服务商，`ai_providers_catalog.js:55`",
+      "original_issue": "仅将服务商拼写改为品牌写法，已选的原生协议仍被切成默认 OpenAI chat。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "手改厂商进入自定义模式但保留所选协议。",
+      "verification": "Node Anthropic协议保持。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-14",
+      "lane": "B",
+      "original_location": "任务共享模型钥匙，`ai_suggest.js:903` 和 `ai_suggest_api.py:1132`",
+      "original_issue": "只配置决策槽时，两槽都显示空表单和删除按钮。删空的通用槽仍提示「已删除」，已配置的决策槽仍保留。",
+      "original_severity": "medium",
+      "status": "前端缓解/后端边界",
+      "change": "显示共享槽详细状态暂不可用；未知槽使用清除请求措辞，不把总览推断为每槽配置。",
+      "verification": "真实浏览器验证提示及清空通用槽不影响决策槽；每槽metadata/用量/空槽禁删需后端契约。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-20",
+      "lane": "B",
+      "original_location": "编码证据要求与个人编码建议，ai_suggest.js:243–255、483–487、874–885、936–952",
+      "original_issue": "负责人可配置「样本量→Synthetic sample size」并点击「采纳」填入 48。受邀编码成员可用该共享模型并编辑自己的同名维度，设置页却没有字段映射控件。成员建议卡只有「复制」「编辑后采纳」「忽略」，旁边仍写「采纳将复制建议值」",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "普通成员也可编辑本人字段映射；保留账号/任务隔离，未映射建议给明确操作。",
+      "verification": "Node；真实受邀成员协作端到端未记录。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "B-DYN-21",
+      "lane": "B",
+      "original_location": "数据提取与编码 → AI 建议，`ai_suggest.js:408`、`:689`，`workflow_controls.js:643`、`index.html:9118`",
+      "original_issue": "生成未完成时缺少取消按钮，点击下一篇仍停在原文献，提示「请等待当前保存或上传完成。」完成后下一篇立即恢复正常。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "编码生成提供取消等待，中断浏览器请求；说明服务端可能继续，旧请求收尾不干扰新请求。",
+      "verification": "Node取消signal/状态释放；未实测真实慢第三方模型。",
+      "refs": [
+        "B"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-01",
+      "lane": "C",
+      "original_location": "AI 建议对话框，import_review_ai.js:112、207",
+      "original_issue": "生成期间关闭按钮禁用，Escape 无效，页面由模态框占用",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "生成模态显示项数/耗时，关闭/Escape/停止等待中断浏览器请求并保留选择。",
+      "verification": "Node+真实浏览器/本机模拟模型；只证明取消等待，不宣称服务端停止计算。",
+      "refs": [
+        "I-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-02",
+      "lane": "C",
+      "original_location": "重复候选队列徽章，import_review_ai.js:249",
+      "original_issue": "高置信和一般队列徽章颜色相同。中置信同一文献只显示判定，灰色只显示降级",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "三色徽标并列判定、置信度和等级，颜色不单独承载含义。",
+      "verification": "真实浏览器浅深色桌面及390px移动端。",
+      "refs": [
+        "I-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-03",
+      "lane": "C",
+      "original_location": "AI 建议选择对话框，import_review_ai.js:156、177",
+      "original_issue": "第 2 页没有勾选项时，仍可提交第 1 页看不见的题录",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "跨页选择显式列出，可逐条移除或清空；当前页范围明示。",
+      "verification": "真实25组/50条合成数据浏览器。",
+      "refs": [
+        "I-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-05",
+      "lane": "C",
+      "original_location": "批量预览的保留者下拉，import_review_ai.js:620–629",
+      "original_issue": "题名相同的记录在下拉中显示两项完全相同的标签，尽管期刊和 DOI 不同",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "保留记录选项并列标题、年份、DOI和稳定短ID。",
+      "verification": "源码检查；无专属同标题真实断言记录。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-06",
+      "lane": "C",
+      "original_location": "批量预览的合并冲突摘要，import_review_ai.js:4–10、560–566、641–648",
+      "original_issue": "单条生成的 0.97 期刊和摘要建议未进入批量预览，已有同组高置信重复建议时也没有可展开摘要",
+      "original_severity": "medium",
+      "status": "按裁定保留并澄清",
+      "change": "批量仅应用高置信度same建议；删除不可达冲突分支，说明字段合并须逐条确认。",
+      "verification": "Node确认字段建议不能入批量；未增加conflict_picks。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-07",
+      "lane": "C",
+      "original_location": "导入复核 AI 设置，import_review_ai.js:130–148",
+      "original_issue": "版本冲突后弹窗提示重试，原按钮却保留旧文案并禁用",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "设置409刷新版本后可重试；若目标已生效则更新并关闭；失权仍只读。",
+      "verification": "Node生产函数行为验证；非真实后端并发剧本。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-09",
+      "lane": "C",
+      "original_location": "重复候选队列，import_review_ai.js:4–10、249–260",
+      "original_issue": "0.97 的「不同文献」建议在队列没有任何徽章，打开阅读区才看得见",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "different建议显示中性徽标及置信度，不进入重复项批量。",
+      "verification": "Node行为验证。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-10",
+      "lane": "C",
+      "original_location": "AI 使用报告对话框，import_review_ai.js:502–510",
+      "original_issue": "弹窗只有标题和 CSV／JSON，实际下载请求只包含当前批次",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "审计导出注明当前导入批次及批次名。",
+      "verification": "源码检查。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-11",
+      "lane": "C",
+      "original_location": "多块批量确认反馈，import_review_ai.js:584–596",
+      "original_issue": "应用 102 条时两个实际请求分别提交 100 和 2 条，第二块开始时仍只显示「正在保存…」",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "应用前说明100项分块/最后成功块撤销范围；执行中显示项数及块进度，后块失败保留前块成功。",
+      "verification": "Node102项产生100+2请求，版本链及受控409；非真实后端事务测试。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-12",
+      "lane": "C",
+      "original_location": "批量预览错误反馈，import_review_ai.js:600–601",
+      "original_issue": "批量资格 409 错误显示原始键 import_merge.ineligible.doi_conflict",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "资格原因使用实际存在的importMerge.ineligible词典前缀。",
+      "verification": "源码/词条检查及导入静态验证器。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-13",
+      "lane": "C",
+      "original_location": "批量应用撤销入口，import_review_ai.js:688–711",
+      "original_issue": "应用成功后同时出现两处撤销，刷新并重开批次后仅通用「撤销上一步」可用",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "移除重复AI撤销按钮，成功反馈指向权威通用撤销入口。",
+      "verification": "源码检查；复用后台批次状态恢复。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-14",
+      "lane": "C",
+      "original_location": "双源交叉验证，import_review_ai.js:171–176、196",
+      "original_issue": "单选一条元数据差异时双源开关不可用，说明只写厂商配置要求",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "说明双源交叉检查仅适用于重复组；纯元数据保持禁用。",
+      "verification": "源码检查。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-15",
+      "lane": "C",
+      "original_location": "AI 建议两个入口，import_review_ai.js:674–680",
+      "original_issue": "「AI 建议」与「AI 建议（本页）」打开同一组 20 条当前页题录，前者初始勾 0 条，后者初始勾 20 条",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "两个入口区分选择本页项目与预选本页全部项目。",
+      "verification": "源码/词条检查；不冒充全批次选择。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-16",
+      "lane": "C",
+      "original_location": "导入核验队列重绘，unified_import_workspace.js:30、47、155–176",
+      "original_issue": "点一条队列记录时整队列及桌面隐藏的移动选择框被重建，选择框生成 104 项，该次同步操作读取暂缓记录键 644 次",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "每轮渲染只读一次暂缓状态；签名相同复用队列按钮，桌面不生成隐藏移动选项。",
+      "verification": "真实浏览器：reads=1、节点同一、桌面mobileOptions=0；390px布局。",
+      "refs": [
+        "I-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-17",
+      "lane": "C",
+      "original_location": "记分卡与审计折叠区，import_review_ai.js:527–552、714–723",
+      "original_issue": "展开的记分卡和审计区随队列点击关闭。重开记分卡再次请求任务级数据，旁边导出走批次级且两处均未写清范围",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "记录切换保留记分卡/审计展开态，同版本复用数据，明确任务与批次范围。",
+      "verification": "源码检查；无专属真实端到端计时记录。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-18",
+      "lane": "C",
+      "original_location": "导入 AI 工具栏空态，import_review_ai.js:659–688",
+      "original_issue": "未启用且无 Key 与已启用但无 Key 两个状态的工具栏文字完全相同，均无生成按钮与原因说明",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "工具条说明AI禁用、无可用Key、当前页无合格待处理项。",
+      "verification": "源码检查。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-19",
+      "lane": "C",
+      "original_location": "导入复核模型钥匙弹窗，import_review_ai.js:106、483–492",
+      "original_issue": "个人 LLM 卡下点击保存，空 Key 错误与保存成功均在长表单底部，当前视口看不到反馈",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "Key验证、保存、错误、成功反馈放在对应卡内，失败保留未提交输入。",
+      "verification": "真实浏览器保存卡反馈及草稿。",
+      "refs": [
+        "I-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-20",
+      "lane": "C",
+      "original_location": "双源交叉验证，import_review_ai.js:171–176、196",
+      "original_issue": "仅有个人主源时仍能勾选双源验证，生成后才报告「第二个 AI 来源不可用」",
+      "original_severity": "low",
+      "status": "前端缓解/后端边界",
+      "change": "发送前说明重复组适用及独立第二来源要求，并提供配置入口；不从共享总览推断第二模型已就绪。",
+      "verification": "源码检查；现API无第二来源就绪预查，降级响应仍保留。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "C-DYN-21",
+      "lane": "C",
+      "original_location": "导入核验后台轮询，unified_import_workspace.js:515–520、import_review_loading.js:6–10",
+      "original_issue": "仅另会话暂停编码阶段、未修改导入记录，也会让下一次导入核验轮询重新读取全部批次页并重建队列与工具条",
+      "original_severity": "medium",
+      "status": "DOM修复/网络边界",
+      "change": "签名不变保留队列/工具条/阅读面及引导节点；全局版本改变仍读取分页数据。",
+      "verification": "源码+相关浏览器节点复用；后端无导入专用revision/digest，必要GET保留，未宣称消除全部轮询。",
+      "refs": [
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-01",
+      "lane": "D",
+      "original_location": "文献初筛长摘要，workflow_controls.js:590、617、765",
+      "original_issue": "任务另一阶段策略变更后，下轮轮询重建当前初筛卡，长摘要回顶，原焦点落到 BODY。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "活跃阶段策略签名不变时不重载阅读面，版本单独更新。",
+      "verification": "真实四轮自然轮询124秒及另一客户端暂停编码：卡片/摘要/焦点不变，滚动850。",
+      "refs": [
+        "W-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-02",
+      "lane": "D",
+      "original_location": "初筛排除理由，workflow_controls.js:421–423、765",
+      "original_issue": "策略未变时，30 秒轮询仍替换常用理由的选项节点。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "理由集合与下拉装饰按签名更新。",
+      "verification": "同124秒真实轮询+Node同库测试。",
+      "refs": [
+        "W-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-03",
+      "lane": "D",
+      "original_location": "初筛决策，index.html:7055–7092",
+      "original_issue": "保存响应较慢时，按键后看不到进行中状态。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "判定保存期间显示状态、禁用操作并防重复提交。",
+      "verification": "当前树screenDecide源码检查；本波未记录专属慢响应浏览器断言。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-04",
+      "lane": "D",
+      "original_location": "数据分析 → 报告与审计 → 活体综述 → 手动导入更新，living_review.js:155–168、374–388",
+      "original_issue": "选过 RIS 后，需连点两个同名按钮才能进入导入核验，文件未随跳转进入导入队列。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "Living Review导入入口单次导航；移除无效文件选择器，另标分析上下文。",
+      "verification": "7项既有Living Review回归；入口源码检查，专属浏览器目标点击待补。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-05",
+      "lane": "D",
+      "original_location": "初筛 → 未保存的更改弹窗，workflow_controls.js:685–691",
+      "original_issue": "默认中文下，理由草稿标题和清除按钮仍显示英文。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "筛选理由草稿图例/按钮改为正确中文词条。",
+      "verification": "词条回归。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-06",
+      "lane": "D",
+      "original_location": "初筛排除理由下拉，index.html:6936，workflow_controls.js:425–440",
+      "original_issue": "下拉无可访问名称，且键盘 End 会选到「将此理由存为常用」动作并回到先前值。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "理由下拉有可访问名称，另设保存常用理由按钮，End不触发写操作。",
+      "verification": "真实阅读截图+源码；专属End键写入断言未记录。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-07",
+      "lane": "D",
+      "original_location": "初筛换卡加载态，index.html:6924–6932、keyword_highlight.js:105–108",
+      "original_issue": "下一篇在加载期间暂时没有题名和摘要。启用高亮时，高亮可能比正文晚出现。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "下一篇加载时保留旧内容并锁控件，成功后整体替换，错误给持续重试。",
+      "verification": "当前树renderScreen源码检查；未记录专属慢卡加载浏览器断言。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-08",
+      "lane": "D",
+      "original_location": "初筛 → 停止建议 → 开始抽验，al_stop_panel.js:268–284",
+      "original_issue": "启动抽验直接更换筛选卡并清掉未提交理由。重新打开同一任务后，抽验进度消失。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "抽样前先检查草稿；样本状态按账号/任务/筛选员保存恢复。",
+      "verification": "Node范围恢复与账号隔离；后端正式决定仍独立保存。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-09",
+      "lane": "D",
+      "original_location": "英文筛选训练 → 新建训练集，pilot_screening.js:323",
+      "original_issue": "英文界面的训练向导仍显示中文标签「备注」。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "训练备注及暂不确定注册十语言别名。",
+      "verification": "Node+真实英文训练界面Comments。",
+      "refs": [
+        "W-follow"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-10",
+      "lane": "D",
+      "original_location": "筛选训练 → 手选训练题录，pilot_screening.js:147–149、305–314、329–333",
+      "original_issue": "1,500 条题录一次生成所有勾选行，等待时只留下旧步骤，界面无加载提示。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "训练名单显示加载状态并按50项分页，选择跨页保存。",
+      "verification": "Node1500项渲染50；真实60项任务加载与分页。",
+      "refs": [
+        "W-follow"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-11",
+      "lane": "D",
+      "original_location": "新建训练集 → 手选训练题录，pilot_screening.js:16、319–324、347–351",
+      "original_issue": "手选题录步骤同时显示样本数、随机种子和最后一步的阈值与备注。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "训练步骤hidden优先于网格样式。",
+      "verification": "真实手选步骤：阈值/样本量字段网格可见数0。",
+      "refs": [
+        "W-follow"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-12",
+      "lane": "D",
+      "original_location": "初筛后台轮询断连，workflow_controls.js:765",
+      "original_issue": "浏览器离线期间，同一服务连接告警约每 30 秒再弹一次。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "断连合为一个可收起提示，退避最长5分钟，手动重试绕过延迟。",
+      "verification": "Node断连恢复+真实中断/恢复及提示定位。",
+      "refs": [
+        "W-final"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-13",
+      "lane": "D",
+      "original_location": "初筛状态行，index.html:1134–1139",
+      "original_issue": "开启筛选训练后，较窄的桌面窗口中，进度与工具控件混在一个状态行内换成两排。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "窄屏筛选页将训练与辅助操作归组。",
+      "verification": "当前树布局源码检查；390px整体布局已记录，非所有桌面宽度矩阵。",
+      "refs": [
+        "ROOT",
+        "W-final"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-DYN-20",
+      "lane": "D",
+      "original_location": "文献初筛 → 快速切任务，index.html:7028、7081–7087",
+      "original_issue": "保存判定后，在旧卡退场动画期间切换任务，新任务卡片保留透明退场态，快捷键不能提交判定。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "任务/导航切换清理退出态并作废旧回调；旧回调不清除新动画。",
+      "verification": "Node过期/失败/新旧动画竞争；真实任务切换后可见且可继续操作。",
+      "refs": [
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-DYN-21",
+      "lane": "D",
+      "original_location": "筛选训练 → 新建训练集，pilot_screening.js:283、317–356",
+      "original_issue": "手选 20 条后进入阈值步，「已手选 20 条」提示消失，样本量仍为 50，按钮允许提交，服务端返回 400 后才说明数量不一致",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "纯手选样本量取实际选择数，最终步骤前校验10–100并显示数量。",
+      "verification": "Node+真实20项POST201，size=20。",
+      "refs": [
+        "W-follow"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-DYN-22",
+      "lane": "D",
+      "original_location": "文献初筛训练门禁，pilot_screening.js:190–216",
+      "original_issue": "强制门禁提示没有关闭按钮，Escape、关闭训练弹窗和导航往返均保留提示。另一会话通过训练后，本页正式初筛请求已成功，旧提示仍称需要完成训练",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "训练门槛提示可关闭，导航重查，成功决定后触发重查。",
+      "verification": "源码检查及主代理成功决定接线；未单列另一客户端通过后的完整实时剧本。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-DYN-23",
+      "lane": "D",
+      "original_location": "初筛 → 阅读帮助，`screen_reader.js:17`、`:21`，`index.html:1122`",
+      "original_issue": "说明键盘操作、排除理由和即时保存的整句默认收起。入口为没有可见文字的三点图标。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "阅读帮助入口恢复可见标签。",
+      "verification": "真实Edge截图。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-DYN-24",
+      "lane": "D",
+      "original_location": "初筛题录卡与决策历史，`index.html:1127`、`:6824`、`:9132`，`screen_reader.js:337`",
+      "original_issue": "当前初筛卡没有直接的前后切换或跳过控件，内联已决历史只有序号。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "初筛补不提交判定的前后浏览操作，历史项增加题名。",
+      "verification": "当前树源码检查；未记录专属前后浏览与历史标题的浏览器断言。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "D-DYN-25",
+      "lane": "D",
+      "original_location": "初筛卡与首页设置 → 编码证据要求，`pdf_fetch.js:314`、`:337`、`:416`",
+      "original_issue": "同一任务的单篇和批量全文获取分处不同入口。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "初筛批量获取入口导航至编码PDF获取设置。",
+      "verification": "真实按钮可见；目标路径源码检查，专属点击验收未记录。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-01",
+      "lane": "E",
+      "original_location": "数据提取与编码 → 文献评价，`appraisal_workspace.js:131`、`workflow_controls.js:101`",
+      "original_issue": "同任务返回保留输入，重载后只恢复上次保存的内容。编码证据干净时，评价评注不会触发离页保护，切任务再切回后静默丢失。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "完整评价独立注册草稿守卫，并按任务/用户/筛选员/文献/工具暂存。",
+      "verification": "真实仅修改备注：离页守卫、留页、重载恢复、保存清理。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-02",
+      "lane": "E",
+      "original_location": "文献评价 → RoB 2，`appraisal_workspace.js:432`、`:468`、`:513`",
+      "original_issue": "默认变体 22 题按 5 域全部展开。总进度在表顶，保存位于表尾。到最后一题看不到进度，也没有域跳转或下一未答入口。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "评价表增加置顶进度/保存/下一未答及域跳转。",
+      "verification": "真实默认RoB2仍22题、5域，未改工具算法。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-03",
+      "lane": "E",
+      "original_location": "文献评价 → 工具切换与保存，`appraisal_workspace.js:226`、`:566`、`:724`",
+      "original_issue": "工具切换及保存后焦点落到 BODY。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "评价工具/保存按钮按稳定焦点键恢复，弹窗关闭归还触发点。",
+      "verification": "真实键盘工具/置顶保存焦点检查。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-04",
+      "lane": "E",
+      "original_location": "数据分析 → 偏倚风险评价与编码 → 文献评价，`index.html:2117`、`appraisal_workspace.js:536`",
+      "original_issue": "编码中已保存完整 RoB 2，分析页旧偏倚风险列表仍显示 `[]`。旧表单提示不执行官方信号问题算法，页面没有到完整评价表的链接。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "完整评价说明逐文献来源并直达分析RoB；legacy说明结果级人工判定独立存储，反向按钮只定位匹配来源报告。",
+      "verification": "Node守卫/精确来源/缺失不替代；真实正反向点击，Stay保留草稿，R1准确定位，390px无横溢，JS错误0。",
+      "refs": [
+        "E",
+        "R-E04"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-05",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估，导出结果 → 证据概览表（SoF），`table_wizards.js:155`、`:297`",
+      "original_issue": "GRADE 评估面板有「导出 SoF 表」和研究局限性输入，实际「GRADE 判定写回」位于导出向导的逐结局审计卡。GRADE 评估面板缺少指向写回入口的引导。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "GRADE指向SoF写回，反向按真实分析子路由返回，并遵从导航守卫。",
+      "verification": "真实已填SoF打开与GRADE返回。",
+      "refs": [
+        "E",
+        "R"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-06",
+      "lane": "E",
+      "original_location": "合并仲裁 → 报告关系裁决，`report_evidence.js:65`、`:99`",
+      "original_issue": "旧提案确认返回 409，弹窗已更新到新报告对，却提示「请刷新后重新确认」。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "共享提案409成功重读后提示列表已自动刷新，失败重读不误报成功。",
+      "verification": "Node摘要/兼容/刷新路径回归；本波未单列真实共享409。",
+      "refs": [
+        "R"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-07",
+      "lane": "E",
+      "original_location": "导出结果 → SoF → GRADE 判定写回，`table_wizards.js:106`",
+      "original_issue": "审计卡显示「采纳自动建议」，重开已保存判定时来源下拉显示「人工定稿」。原备注依然预填。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "已采纳来源按adopt回填；切换已存来源须确认后写入。",
+      "verification": "Node+真实：未确认仍adopted，确认后manual。",
+      "refs": [
+        "R-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-08",
+      "lane": "E",
+      "original_location": "导出结果 → SoF 预览，`table_wizards.js:186`",
+      "original_issue": "勾选结局后预览和审计卡立刻消失，状态栏为空。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "设置变化后明确提示重新预览，不留无说明空白。",
+      "verification": "真实结局勾选后提示检查。",
+      "refs": [
+        "R-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-09",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估 → GRADE 研究局限性输入，`appraisal_workspace.js:631`",
+      "original_issue": "尚无 RoB 评价时只显示表头，预填按钮缺席，通用提示仍要求确认后保存。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "无关联评价时解释须完成文献评价及效应来源链接，不伪造可预填动作。",
+      "verification": "真实CASP空结果与说明。",
+      "refs": [
+        "E"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-10",
+      "lane": "E",
+      "original_location": "首页与设置 → 机器学习，文献初筛 → 筛选顺序，`screen_reader.js:274`",
+      "original_issue": "主题聚类成功运行后，初筛仍展示「按模型预测的纳入概率」和「试试机器学习排序」引导。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "聚类排序时隐藏机器学习纳入概率引导，异步设置加载/保存后同步已建提示；页码译名为补充项。",
+      "verification": "新增Node先红后绿；真实旧ML→cluster设置/排序完成：聚类按钮、文献载入、旧提示隐藏，JS错误0。",
+      "refs": [
+        "W",
+        "W-E10"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-11",
+      "lane": "E",
+      "original_location": "数据提取与编码 → 备注与证据，`workflow_evidence.js:28`、`:75`、`:175`",
+      "original_issue": "只改一项评注并保存时，两项编码维度的三张已存图片全部再次请求。三轮每轮三个 HTTP 200，均为 `private, no-store`，浏览器记录每张都有字节传输。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "保存证据合并关联ID并复用未变图片/URL，只更新变化画廊。",
+      "verification": "真实仅改备注：0图片GET、原图片URL保持。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-12",
+      "lane": "E",
+      "original_location": "数据分析 → 偏倚风险评价 → 定性研究评价，`report_evidence.js:184`、`:187`",
+      "original_issue": "切参考报告、切评价工具都会把展开的问题重置为仅第 1 题。切回原报告或原工具再展开第 6 题，原答案和依据仍可读取。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "定性JBI/CASP保留题目展开序号。",
+      "verification": "真实第1/6题在参考报告及工具往返后仍展开。",
+      "refs": [
+        "R-qual"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-13",
+      "lane": "E",
+      "original_location": "数据分析 → 偏倚风险评价、诊断准确性，`index.html:9392`、`analysis_interface.js:55`",
+      "original_issue": "已存 RoB 及 DTA 来源记录在相应披露区中以原始 JSON 显示，未在列表中提供逐条编辑或删除按钮。定性综合另有独立可读的记录分组。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "RoB与DTA提供可读判断/依据/来源记录，保留原始JSON；RoB支持载入编辑。",
+      "verification": "Node字面文本与DTA显示；真实RoB。DTA编辑/删除未新增。",
+      "refs": [
+        "R"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-14",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估；导出结果 → SoF 建议快照，`analysis_grade.js:258`、`table_wizards.js:18`",
+      "original_issue": "中文界面把建议依据渲染为机器字段。两篇高风险评价时，GRADE 显示「规则 majority_high_risk · high_risk_studies=2 · n_studies=2」。SoF 快照同样展示 `i2_percent`、`ci_width_ratio` 等字段。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "GRADE与SoF将已知规则/计数/I²/CI/p转为可读标签，原始信号折叠保留。",
+      "verification": "GRADE既有Node信号测试；真实SoF截图。展示数值4位有效数字，原始值未改。",
+      "refs": [
+        "E",
+        "R"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-15",
+      "lane": "E",
+      "original_location": "数据分析 → 偏倚风险评价，`index.html:9324`、`:9392`、`:9837`",
+      "original_issue": "旧表单保存后，再打开同一研究、同一框架，原比较组、结局、时间点、总体判定、总体依据和五域的十个判定／依据控件为空。已存记录可从原始数据披露读取。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "旧RoB完整回填；同范围修订，改范围显式确认新建或修改目标记录；草稿按账号任务隔离。",
+      "verification": "Node+真实：同范围1条；改时间点取消1条、确认2条。",
+      "refs": [
+        "R-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-16",
+      "lane": "E",
+      "original_location": "数据提取与编码 → PDF 阅读与保存，`workflow_evidence.js:119`、`:175`、`index.html:7397`",
+      "original_issue": "点「保存本篇」后，同一 PDF 被再次下载，阅读从第 8 页、120% 回到第 1 页、104% 适宽。滚动从 9,451 px 回到 15 px。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "证据保存不再重建PDF阅读器。",
+      "verification": "真实第8/9页、116%缩放、8646滚动及PDF对象保持，无PDF GET。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-17",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估 → 导出 SoF 表；导出结果 → SoF 向导，`analysis_grade.js:502`、`table_wizards.js:297`",
+      "original_issue": "同一合成结局，前一入口按已保存 GRADE 评估显示「中」及研究者备注，另一入口仍显示自动建议「高」。两份预览列不同。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "两份SoF明确分别使用分析已存GRADE与向导判定/当前建议，并互链。",
+      "verification": "真实来源说明及跨入口导航；未合并两套后端记录。",
+      "refs": [
+        "E",
+        "R-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-18",
+      "lane": "E",
+      "original_location": "导出结果 → SoF 结局 → GRADE 判定写回，`table_wizards.js:113`",
+      "original_issue": "采纳后没有撤销或清空控制。审计卡仅有写回，写回弹窗仅有关闭、保存和取消，以及人工定稿／采纳两个来源。",
+      "original_severity": "medium",
+      "status": "前端缓解/后端边界",
+      "change": "上一版值可回填为人工修订；明确当前不支持清空为未判定。",
+      "verification": "Node无立即写入且为manual新版本；真实入口。真正撤销/删除/历史采纳快照恢复缺API。",
+      "refs": [
+        "R-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-19",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估 → 覆盖备注，`analysis_grade.js:437`、`:576`",
+      "original_issue": "手填备注保存后再开，输入框前部被混入自动生成的降级差异文本。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "人工备注与系统覆盖差异分开；旧混合文本只读保留，避免猜测拆分。",
+      "verification": "Node重复保存回读+真实后端重载。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-20",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估未保存输入，`analysis_grade.js:596`、`workflow_controls.js:101`",
+      "original_issue": "更改降级和备注后重载，没有未保存提醒。降级和备注恢复成原保存值。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "GRADE行级草稿注册守卫并按完整结局范围暂存；只清本次成功提交版本。",
+      "verification": "真实重载恢复/保存清理；Node账号任务隔离及保存竞争。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-21",
+      "lane": "E",
+      "original_location": "数据分析 → GRADE 评估 → 导出 SoF 表，`analysis_grade.js:522`",
+      "original_issue": "中文标题和图例下的同一表头出现 `Outcomes`、`№ of participants (studies)`、`Risk of bias`、`Comments`，中间列为中文。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "GRADE SoF预览/CSV九列表头本地化，切语言重绘缓存表头。",
+      "verification": "真实中文九列检查。",
+      "refs": [
+        "E-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-22",
+      "lane": "E",
+      "original_location": "数据分析 → 偏倚风险评价 → 保存评估，`index.html:9844`",
+      "original_issue": "漏填随机化域依据时，HTTP 400 原文 `domain rationale is required: randomization process` 直接作为通知显示。去掉域判定时，前端也显示英文句。",
+      "original_severity": "medium",
+      "status": "已实现/后端待结构化",
+      "change": "必填范围/总体/域判断及依据在请求前校验并聚焦；映射已知后端英文错误。",
+      "verification": "Node+真实中文缺域依据；后端code+params升级未做。",
+      "refs": [
+        "R-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-DYN-11",
+      "lane": "E",
+      "original_location": "数据分析→效应量录入与计算→整群随机试验，`analysis_cluster_trial.js:126`",
+      "original_issue": "保存期间编辑 ICC 来源，返回 503 后结果区为空，按钮恢复可用，没有错误通知。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "整群试验保存后继续编辑也保留失败通知，标明对应先前提交输入。",
+      "verification": "当前树源码检查；未记录专属受控503加保存后继续编辑的浏览器复测。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-DYN-32",
+      "lane": "E",
+      "original_location": "数据分析→贝叶斯随机效应合并，`analysis_bayesian.js:42`",
+      "original_issue": "空先验触发中文校验句，结果节点标记 `lang=\"en\"`，页面语言为 `zh`。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "贝叶斯本地化校验文本沿用当前界面语言属性。",
+      "verification": "当前树源码检查；无真实屏幕阅读器测试。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-DYN-30",
+      "lane": "E",
+      "original_location": "编码工作台的模式开关，workflow_evidence.js:26–41",
+      "original_issue": "从个人编码切到共享提交证据后，两个开关的颜色、样式及辅助技术状态均未改变，页名、网址、说明与保存按钮也相同。编码值输入与提取面板消失，笔记仍可编辑",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "个人/共享证据按钮有选中样式和aria-pressed；保存区写明共享提交的私有证据范围。",
+      "verification": "Node模式及缓存发现更新；真实受邀共享权限团队剧本未记录。",
+      "refs": [
+        "E"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "E-DYN-31",
+      "lane": "E",
+      "original_location": "分析 → 研究与报告 → 样本关系 → 修改，`report_evidence.js:47`、`:121`，`report_evidence_api.py:769`",
+      "original_issue": "个人线索保存遇到 409 后，界面提示已刷新到最新，但相关报告、类型、同样本勾选、依据和页码仍为旧值。再次保存会覆盖另一个窗口的新依据，或把已替换的旧报告对写回。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "个人关系409并列本地/最新值，确认差异前锁写；稳定ID替换，跨关闭重开保持草稿与确认闸。",
+      "verification": "Node4例；真实两标签页同字段/改报告对409，未确认不覆盖，确认后单关系、共享revision不变；桌面/手机。",
+      "refs": [
+        "R-conflict"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-01",
+      "lane": "F",
+      "original_location": "初筛长摘要，`index.html:5789`、`:6990`",
+      "original_issue": "切去其他面板再回初筛，同一篇长摘要回到顶部。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "按账号/任务/筛选员/来源/顺序记忆阅读位置和摘要滚动。",
+      "verification": "Node作用域隔离+真实阅读位置往返分项通过。",
+      "refs": [
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-02",
+      "lane": "F",
+      "original_location": "初筛键盘流，`index.html:6936`、`:7055`",
+      "original_issue": "键盘可以判定，提交成功后焦点回到 BODY。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "判定后新卡恢复原判定区焦点。",
+      "verification": "真实键盘下一卡分项通过；不代表完整辅助技术审计。",
+      "refs": [
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-03",
+      "lane": "F",
+      "original_location": "全局通知，`index.html:2274`、`:5617`",
+      "original_issue": "登录和初筛保存通知可见，通知及其容器均没有 live region 或 status 语义。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "普通toast容器增加status/aria-live公告语义。",
+      "verification": "当前DOM源码检查；未使用屏幕阅读器实际朗读测试。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-04",
+      "lane": "F",
+      "original_location": "文献复筛与数据提取编码，`index.html:7119`、`:9107`",
+      "original_issue": "两个工作区都在翻到第 2 篇、离开再返回后回到第 1 篇。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "复筛/编码以报告键保存队列位置，同来源重载优先当前阅读位置。",
+      "verification": "Node两工作区来源隔离；真实复筛往返位置通过；编码位置未单列专属真实剧本。",
+      "refs": [
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-05",
+      "lane": "F",
+      "original_location": "本地服务停止时的分析面板，`index.html:9343`、`:9399`",
+      "original_issue": "分析显示方法目录和短时错误通知，启动引导隐藏，面板没有可见重试按钮。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "分析加载失败保留持续状态与重试入口。",
+      "verification": "当前树源码检查；未记录专属分析断连浏览器剧本。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-06",
+      "lane": "F",
+      "original_location": "本地服务停止时的初筛，`index.html:6993`、`:6994`",
+      "original_issue": "服务停止后打开初筛，点击「重试／刷新」后仍显示「正在载入文献队列…」。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "初筛前置队列失败显示明确错误及重试，不停留在载入中。",
+      "verification": "当前树源码检查；未记录专属初筛前置队列断连浏览器剧本。",
+      "refs": [
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-07",
+      "lane": "F",
+      "original_location": "可撤销通知，`index.html:495`、`workflow_controls.js:406`",
+      "original_issue": "可见的「撤销」按钮收不到鼠标点击，事件穿透至底层。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "toast内容接收pointer事件，外层透明区域仍穿透。",
+      "verification": "Node样式断言+真实鼠标点击撤销分项通过。",
+      "refs": [
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-08",
+      "lane": "F",
+      "original_location": "首页→机器学习，`ai_suggest.js:856`、`:1192`",
+      "original_issue": "切离首页后返回时，个人通用模型的未保存输入静默清空。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "API Key设置跨面板返回保留同账号任务内存草稿。",
+      "verification": "真实import→home往返；不跨刷新保存秘密字段。",
+      "refs": [
+        "B-live"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-09",
+      "lane": "F",
+      "original_location": "未保存更改弹窗，`workflow_controls.js:662`",
+      "original_issue": "弹窗初始焦点落到克隆的策略下拉。",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "草稿守卫先聚焦留在当前页，取消恢复调用点。",
+      "verification": "源码+模态相关Node；真实旧RoB草稿选择Stay保留内容，未单列所有入口焦点矩阵。",
+      "refs": [
+        "W",
+        "N-core",
+        "R-E04"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-11",
+      "lane": "F",
+      "original_location": "数据提取与编码空方案，`workflow_evidence.js:23`、`:124`",
+      "original_issue": "编码方案为空且从未编辑，离开时仍弹出「未保存的更改」。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "空个人/共享编码方案载入后建立干净基线并清载入态。",
+      "verification": "新增Node个人/共享两模式：dirty=false、无可提交表单、返回仍干净；未单列空方案真实浏览器剧本。",
+      "refs": [
+        "N-evidence"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-15",
+      "lane": "F",
+      "original_location": "初筛加载，`index.html:6995–7005`、`workflow_controls.js:597–611`",
+      "original_issue": "入页读卡有多段前后依赖，同时存在并行请求。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "工作流与两理由库并发读取，保留必要版本依赖。",
+      "verification": "源码与相关刷新回归；未给出优化后首卡耗时基准。",
+      "refs": [
+        "W"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-16",
+      "lane": "F",
+      "original_location": "导入与报告空闲轮询，`import_guide.js:90`、`workflow_controls.js:765`",
+      "original_issue": "导入与报告前台空闲时，每轮发出 7 项 GET，导入区节点每轮发生两批替换。",
+      "original_severity": "low",
+      "status": "DOM修复/网络边界",
+      "change": "无变化的工作流/导入提示保留DOM；为其他客户端变化继续必要轮询。",
+      "verification": "workflow真实自然轮询及import节点复用；不宣称所有7个GET已消失。",
+      "refs": [
+        "W-live",
+        "I"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-12",
+      "lane": "F",
+      "original_location": "文献初筛→未保存的更改弹窗，`index.html:9132`",
+      "original_issue": "焦点在弹窗的「留在此页」按钮时按 `1`，底层文献被实际纳入，弹窗仍打开。",
+      "original_severity": "high",
+      "status": "已实现",
+      "change": "原生/应用模态期间拦截初筛及复筛数字快捷键。",
+      "verification": "Node两阶段1/3；真实模态无后台写入分项通过。",
+      "refs": [
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-13",
+      "lane": "F",
+      "original_location": "文献初筛→应用内确认弹窗，`workspace_undo.js:125`",
+      "original_issue": "焦点在确认弹窗按钮时按 `Ctrl+Z`，底层筛选决定被撤销，确认弹窗仍打开。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "全局撤销键尊重共享模态守卫。",
+      "verification": "Node真实键盘回调；真实模态快捷键分项通过。",
+      "refs": [
+        "W",
+        "N-core",
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-14",
+      "lane": "F",
+      "original_location": "空任务的初筛、复筛、编码，`index.html:6904`、`:7123`、`workflow_evidence.js:118`",
+      "original_issue": "初筛空态有「导入文献」，复筛和编码空队列都缺少通往前置阶段的主操作。复筛还显示「该文献尚未上传 PDF」，编码显示「正在载入 PDF…」。",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "空复筛/编码队列给前置阶段入口并隐藏无文献PDF动作；空方案给配置入口。",
+      "verification": "源码及空schema Node；未运行空任务所有入口的完整浏览器矩阵。",
+      "refs": [
+        "E",
+        "N-evidence",
+        "ROOT"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-18",
+      "lane": "F",
+      "original_location": "复筛单篇加载，index.html:7135–7150",
+      "original_issue": "点下一篇时单篇请求失败，页面仍显示上一条标题和 1／4 序号，纳入、排除及理由均禁用。错误 toast 消失后无本篇状态提示",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "复筛本篇失败在始终可见ftLoadError中持续显示并提供重试，成功后清除。",
+      "verification": "真实受控503：持续失败区域可见；恢复后重试成功。核心浏览器9/9全部通过。",
+      "refs": [
+        "R-core"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-19",
+      "lane": "F",
+      "original_location": "编码工作台错误行，workflow_evidence.js:151",
+      "original_issue": "编码单篇的错误行留在中文，切换英文后，旁边重试按钮和状态已变成英文",
+      "original_severity": "low",
+      "status": "已实现",
+      "change": "保留错误对象/作用域并随语言切换重译已有行，不重复请求。",
+      "verification": "真实注入契约404：中文→英文且0重请求。",
+      "refs": [
+        "E-error"
+      ],
+      "merged_alias": ""
+    },
+    {
+      "id": "F-DYN-20",
+      "lane": "F",
+      "original_location": "帮助页内跳转与侧栏，index.html:5806、workspace_shell.js:177–208",
+      "original_issue": "「帮助→打开导出结果」替换当前历史，阶段菜单仍指向复筛，浏览器后退跳过帮助页。同一目标用侧栏入口时，后退返回帮助，阶段菜单指向导出",
+      "original_severity": "medium",
+      "status": "已实现",
+      "change": "页内导航复用历史与阶段记忆逻辑，后退能回到帮助。",
+      "verification": "真实go(export)从Help返回Help。",
+      "refs": [
+        "W-follow"
+      ],
+      "merged_alias": ""
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "loading_visible": "Screening training\nClose\n\nTraining activity, kept separate from formal data\n\nLoading…\n\nBack to training sets\nCreate training set\nTraining sample size\nTraining sample size\nPrevious step\nNext step",
+  "curated_fields": 0,
+  "curated_create_status": 201,
+  "created_size": 20,
+  "scroll_return": [
+    300,
+    300
+  ],
+  "history_returns_help": true,
+  "errors": []
+}

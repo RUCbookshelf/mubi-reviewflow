@@ -1,0 +1,37 @@
+{
+  "rows": 120,
+  "unique_ids": 120,
+  "unmatched_ids": [],
+  "lane_counts": {
+    "A": 22,
+    "B": 16,
+    "C": 19,
+    "D": 19,
+    "E": 26,
+    "F": 18
+  },
+  "original_severity_counts": {
+    "medium": 68,
+    "low": 42,
+    "high": 10
+  },
+  "merged_aliases": {
+    "A-DYN-16": "F-DYN-17",
+    "A-DYN-21": "F-DYN-10",
+    "B-DYN-03": "C-DYN-04",
+    "B-DYN-05": "C-DYN-08"
+  },
+  "source_report_sha256": "a55a87901c79ad4f3a74ef50fbe47ec977f1eecb0c3ec499b311af80273f0269",
+  "generated_utc": "2026-11-12T13:52:28.303521+00:00",
+  "core_browser_passed": 9,
+  "gate_snapshot_node_passed": 195,
+  "gate_snapshot_time": "2026-11-12T13:41:41.545840+00:00",
+  "commit": "6c14965d8021b164435996a8b6964f0b3f58102a",
+  "secrets_copied": false,
+  "final_node_passed": 196,
+  "root_verified_source_ids": 120,
+  "root_verified_source_hash": true,
+  "tracked_clean_after_commit": true,
+  "pushed": false,
+  "published": false
+}

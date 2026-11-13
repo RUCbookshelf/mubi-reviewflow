@@ -1,0 +1,152 @@
+{
+  "root": "E:\\rf215-authfe",
+  "branch": "feat/2.1.5-ui-polish",
+  "HEAD": "2230523caf296b01af0c465805ddf3ff49a1afd2",
+  "completed_utc": "2026-11-12T13:41:41.545840+00:00",
+  "node": {
+    "tests": 195,
+    "pass": 195,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "validators_passed": 6,
+  "source_digest": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+  "ci_change": {
+    "file": "E:\\rf215-authfe\\.github\\workflows\\release.yml",
+    "change": "Append screen_reader_e10.test.cjs to existing Node CI invocation",
+    "HEAD": {
+      "crlf": 0,
+      "lf": 212,
+      "bom": false,
+      "sha256": "51c0f0f3741764d9f83a9c465cd0fa655467e8f7aa87b6cd0ac589ce4b50cbe4"
+    },
+    "before": {
+      "crlf": 0,
+      "lf": 221,
+      "bom": false,
+      "sha256": "c4f6de78cb8613c5577dac7be2ea43131e43ca028aef987a0330c1730008e7cb"
+    },
+    "after": {
+      "crlf": 0,
+      "lf": 222,
+      "bom": false,
+      "sha256": "58b8e68e212a6b3b4c5a5b27eabbd362ee2563dccf67881b4d2e77b71b174da8"
+    },
+    "only_expected_replace": true
+  },
+  "gates": [
+    {
+      "gate": "node_all",
+      "command": [
+        "node",
+        "--test",
+        "build/tests/ai_import_bulk.test.cjs",
+        "build/tests/ai_providers_wizard.test.cjs",
+        "build/tests/ai_settings_drafts.test.cjs",
+        "build/tests/aiux_locale.test.cjs",
+        "build/tests/analysis_grade_ui.test.cjs",
+        "build/tests/analysis_rob_editor_ui.test.cjs",
+        "build/tests/analysis_rob_locale.test.cjs",
+        "build/tests/app_module_loader.test.cjs",
+        "build/tests/auth_remember_reset.test.cjs",
+        "build/tests/import_ai_ui_polish.test.cjs",
+        "build/tests/import_review_model.test.cjs",
+        "build/tests/import_review_review67.test.cjs",
+        "build/tests/import_review_updates.test.cjs",
+        "build/tests/import_workspace_activation.test.cjs",
+        "build/tests/living_review.test.cjs",
+        "build/tests/ml_batch.test.cjs",
+        "build/tests/pdf_fetch_ui.test.cjs",
+        "build/tests/report_evidence_ui.test.cjs",
+        "build/tests/screen_reader_e10.test.cjs",
+        "build/tests/study_design_badge.test.cjs",
+        "build/tests/table_wizards_polish.test.cjs",
+        "build/tests/ui_polish_core.test.cjs",
+        "build/tests/ui_polish_recovery.test.cjs",
+        "build/tests/w5_pwa_sw.test.cjs",
+        "build/tests/workflow_evidence_save_ui.test.cjs",
+        "build/tests/workflow_ui_polish.test.cjs",
+        "build/tests/zotero_import.test.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 4.933,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\node_all.log"
+    },
+    {
+      "gate": "import_static",
+      "command": [
+        "node",
+        "build/validate_import_review_static.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 8.923,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\import_static.log"
+    },
+    {
+      "gate": "prisma_static",
+      "command": [
+        "node",
+        "build/validate_team_prisma_static.js"
+      ],
+      "exit_code": 0,
+      "seconds": 0.783,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\prisma_static.log"
+    },
+    {
+      "gate": "evidence_locale",
+      "command": [
+        "node",
+        "build/validate_evidence_locale_static.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 0.489,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\evidence_locale.log"
+    },
+    {
+      "gate": "import_api",
+      "command": [
+        "C:\\Users\\16073\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        "build/validate_import_review.py"
+      ],
+      "exit_code": 0,
+      "seconds": 12.335,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\import_api.log"
+    },
+    {
+      "gate": "screening_api",
+      "command": [
+        "C:\\Users\\16073\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        "build/validate_screening_rounds.py"
+      ],
+      "exit_code": 0,
+      "seconds": 7.175,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\screening_api.log"
+    },
+    {
+      "gate": "prisma_api",
+      "command": [
+        "C:\\Users\\16073\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        "build/validate_team_prisma.py"
+      ],
+      "exit_code": 0,
+      "seconds": 9.335,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\prisma_api.log"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "task": "E-DYN-31isolatedrelations_9a4b78ade2-eb2a",
+  "origin": "http://127.0.0.1:18931",
+  "results": [
+    {
+      "scenario": "same_pair_fields",
+      "conflict_status": 409,
+      "revision_before_ack": 2,
+      "revision_after_ack": 3,
+      "shared_revision": 0,
+      "count_after_ack": 1,
+      "local_input_retained": true,
+      "latest_visible": true,
+      "save_blocked_until_ack": true
+    },
+    {
+      "scenario": "changed_pair",
+      "conflict_status": 409,
+      "revision_before_ack": 4,
+      "revision_after_ack": 5,
+      "shared_revision": 0,
+      "count_after_ack": 1,
+      "local_input_retained": true,
+      "latest_visible": true,
+      "save_blocked_until_ack": true
+    }
+  ],
+  "page_errors": []
+}

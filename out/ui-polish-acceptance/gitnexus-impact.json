@@ -1,0 +1,70 @@
+{
+  "staged": {
+    "summary": {
+      "changed_count": 269,
+      "affected_count": 3,
+      "changed_files": 60,
+      "risk_level": "medium"
+    },
+    "affected_processes": [
+      {
+        "id": "proc_195_appraise",
+        "name": "Appraise → N",
+        "process_type": "intra_community",
+        "step_count": 4,
+        "changed_steps": [
+          {
+            "symbol": "appraise",
+            "step": 1
+          },
+          {
+            "symbol": "btn",
+            "step": 3
+          }
+        ]
+      },
+      {
+        "id": "proc_196_appraise",
+        "name": "Appraise → Msg",
+        "process_type": "intra_community",
+        "step_count": 4,
+        "changed_steps": [
+          {
+            "symbol": "appraise",
+            "step": 1
+          },
+          {
+            "symbol": "btn",
+            "step": 3
+          }
+        ]
+      },
+      {
+        "id": "proc_197_appraise",
+        "name": "Appraise → LockState",
+        "process_type": "intra_community",
+        "step_count": 4,
+        "changed_steps": [
+          {
+            "symbol": "appraise",
+            "step": 1
+          },
+          {
+            "symbol": "btn",
+            "step": 3
+          }
+        ]
+      }
+    ]
+  },
+  "compared_to_main": {
+    "summary": {
+      "changed_count": 1361,
+      "affected_count": 122,
+      "changed_files": 196,
+      "risk_level": "critical"
+    },
+    "note": "This comparison includes the release/2.1.5 baseline and earlier frontend/backend work; it is not the scope of the current 60 staged files."
+  },
+  "limits": "Indexed callgraph only; inline browser functions and unresolved symbols require source and behavioral validation."
+}

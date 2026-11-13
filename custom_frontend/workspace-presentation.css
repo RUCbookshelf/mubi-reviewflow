@@ -1,0 +1,7 @@
+/* Accepted product presentation. Internal layout classes are retained so the
+   reviewed components and mobile restore journals keep their existing contract. */
+body.rf-layout-preview-compact .rf-screen-ml-tip .btn{font:500 12px/1.4 var(--font-body);min-height:32px;padding:5px 9px;border-radius:8px}
+body.rf-layout-preview-compact .rf-screen-ml-tip>span{min-width:220px;line-height:1.6}
+/* The original reset clears native dialog auto margins. Keep mobile sheets
+   anchored while restoring centering for other native modal dialogs. */
+body.rf-layout-preview-compact dialog:modal:not(.rf-mobile-sheet){margin:auto}

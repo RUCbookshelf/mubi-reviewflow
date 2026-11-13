@@ -1,0 +1,12 @@
+{
+  "modal_shortcuts_no_write": true,
+  "rename_cancel_enter": true,
+  "keyboard_focus_next_card": true,
+  "screen_reading_position": true,
+  "task_switch_animation_visible_and_usable": true,
+  "toast_mouse_click": true,
+  "fulltext_position": true,
+  "fulltext_failure_retry": true,
+  "platform_reset_command": true,
+  "page_errors": []
+}

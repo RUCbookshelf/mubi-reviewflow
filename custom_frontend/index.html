@@ -737,6 +737,12 @@ pre.dot{background:var(--bg);border:1px solid var(--border);border-radius:10px;p
 <link rel="stylesheet" href="./sidebar_sheet.css?v=20261011-sheet2">
 <link rel="stylesheet" href="./workspace_layouts.css?v=20261012-rounds1">
 <link rel="stylesheet" href="./report_evidence.css?v=20261112-ui-polish">
+<link rel="stylesheet" href="./workflow-layout.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./evidence-layout.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./keyword-layout.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./home-layout.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./annotation-layout.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./workspace-presentation.css?v=20261113-ui-approved2">
 </head>
 <body>
 
@@ -10320,6 +10326,7 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <!-- W2 PDF 自动获取（2.1.4-r8）：初筛文献卡「获取全文」+任务设置卡开关/批量入口（DOI→Unpaywall；联网默认关、仅显式点击触发；自带十语言词条，textContent 渲染，独立容错） -->
 <script type="application/x-reviewflow-workspace" data-rf-app src="./pdf_fetch.js?v=20261112-ui-polish"></script>
 <!-- W4 预置分类器（2.1.4-r8）：初筛卡研究设计徽标+排除理由预填不代存（纯本地规则端点，无联网；自带十语言词条，textContent 渲染，独立容错） -->
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workflow-layout.js?v=20261113-ui-approved2"></script>
 <script type="application/x-reviewflow-workspace" data-rf-app src="./study_design_badge.js?v=20261110-215"></script>
 <!-- W5 PWA 离线壳（2.1.4-r8）：离线只读快照提示条模块（自包含 IIFE＋十语言词条，textContent 渲染）＋ Service Worker 注册（相对路径；本组独占文档最末锚点） -->
 <script type="application/x-reviewflow-workspace" data-rf-app src="./task_dialog.js?v=2.1.5-polish1"></script>
@@ -10327,6 +10334,17 @@ $('#auMotion').addEventListener('click', () => window.RFAuthAtlas?.togglePaused(
 <script type="application/x-reviewflow-workspace" data-rf-app src="./task_delete.js?v=2.1.5-polish1"></script>
 <script type="application/x-reviewflow-workspace" data-rf-app src="./retraction_watch.js?v=2.1.5-polish1"></script>
 <script type="application/x-reviewflow-workspace" data-rf-app src="./topic_cluster.js?v=2.1.5"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./evidence-layout.js?v=20261113-ui-approved2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./keyword-layout.js?v=20261113-ui-approved2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./home-layout.js?v=20261113-ui-approved2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./annotation-layout.js?v=20261113-ui-approved2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./mobile-app-layout.js?v=20261113-ui-approved2"></script>
+<script type="application/x-reviewflow-workspace" data-rf-app src="./workspace-presentation.js?v=20261113-ui-approved2"></script>
+<link rel="stylesheet" href="./theme-suites.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./mobile-app-layout.css?v=20261113-ui-approved2">
+<link rel="stylesheet" href="./typography-settings.css?v=20261113-ui-approved2">
+<script src="./theme-suites.js?v=20261113-ui-approved2"></script>
+<script src="./typography-settings.js?v=20261113-ui-approved2"></script>
 <script src="./offline_banner.js?v=20261030-r8-W5PWA1"></script>
 <script>
 'use strict';

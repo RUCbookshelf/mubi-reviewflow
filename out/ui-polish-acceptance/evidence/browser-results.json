@@ -1,0 +1,66 @@
+{
+  "E11_E16": {
+    "before": {
+      "page": "8 / 9",
+      "zoom": "116%",
+      "scroll": 8646,
+      "images": [
+        "blob:http://127.0.0.1:18931/ae64c913-997b-40d3-acfb-56fc8cd49dd3",
+        "blob:http://127.0.0.1:18931/a28e878e-5421-4b6a-8415-c68bd7e76568"
+      ]
+    },
+    "after": {
+      "page": "8 / 9",
+      "zoom": "116%",
+      "scroll": 8646,
+      "images": [
+        "blob:http://127.0.0.1:18931/ae64c913-997b-40d3-acfb-56fc8cd49dd3",
+        "blob:http://127.0.0.1:18931/a28e878e-5421-4b6a-8415-c68bd7e76568"
+      ],
+      "samePdf": true
+    },
+    "requests": [
+      {
+        "method": "POST",
+        "url": "http://127.0.0.1:18931/api/tasks/UIpolishappraisalGRADEsynthetic-080f/coding/values-batch?screener=polish-evidence-test"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:18931/api/tasks/UIpolishappraisalGRADEsynthetic-080f/work-queue/coding?order=import"
+      },
+      {
+        "method": "GET",
+        "url": "http://127.0.0.1:18931/api/tasks/UIpolishappraisalGRADEsynthetic-080f/undo/coding?screener=polish-evidence-test"
+      }
+    ],
+    "valid_png_uploads": 2,
+    "image_count": 2,
+    "api_failures": [],
+    "pdf_fixture": "Nine blank pages intentionally generated with pypdf; page/zoom/scroll are the tested reading state."
+  },
+  "E01_E02_E03": {
+    "items": 22,
+    "domains": 5,
+    "focus": "top-save",
+    "guard": true,
+    "reload": true
+  },
+  "E19_E20_E21": {
+    "note": "Human-only GRADE note",
+    "headers": [
+      "结局",
+      "参与者人数（研究数）",
+      "偏倚风险",
+      "不一致性",
+      "间接性",
+      "不精确性",
+      "发表偏倚",
+      "总体证据确定性",
+      "备注"
+    ],
+    "guard": true,
+    "reload": true
+  },
+  "errors": [],
+  "api_failures": []
+}

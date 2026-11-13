@@ -1,0 +1,196 @@
+{
+  "root": "E:\\rf215-authfe",
+  "branch": "feat/2.1.5-ui-polish",
+  "HEAD": "2230523caf296b01af0c465805ddf3ff49a1afd2",
+  "completed_utc": "2026-11-12T13:56:40.404247+00:00",
+  "node": {
+    "tests": 196,
+    "pass": 196,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "validators_passed": 6,
+  "source_digest": "a5ac11f4a5bc7d3b4e3c1c4a00e4dc0c2ced859d3abd10f2120404b58e253e32",
+  "ci_change": {
+    "file": "E:\\rf215-authfe\\.github\\workflows\\release.yml",
+    "change": "Append screen_reader_e10.test.cjs to existing Node CI invocation",
+    "HEAD": {
+      "crlf": 0,
+      "lf": 212,
+      "bom": false,
+      "sha256": "51c0f0f3741764d9f83a9c465cd0fa655467e8f7aa87b6cd0ac589ce4b50cbe4"
+    },
+    "before": {
+      "crlf": 0,
+      "lf": 221,
+      "bom": false,
+      "sha256": "c4f6de78cb8613c5577dac7be2ea43131e43ca028aef987a0330c1730008e7cb"
+    },
+    "after": {
+      "crlf": 0,
+      "lf": 222,
+      "bom": false,
+      "sha256": "58b8e68e212a6b3b4c5a5b27eabbd362ee2563dccf67881b4d2e77b71b174da8"
+    },
+    "only_expected_replace": true
+  },
+  "gates": [
+    {
+      "gate": "node_all",
+      "command": [
+        "node",
+        "--test",
+        "build/tests/ai_import_bulk.test.cjs",
+        "build/tests/ai_providers_wizard.test.cjs",
+        "build/tests/ai_settings_drafts.test.cjs",
+        "build/tests/aiux_locale.test.cjs",
+        "build/tests/analysis_grade_ui.test.cjs",
+        "build/tests/analysis_rob_editor_ui.test.cjs",
+        "build/tests/analysis_rob_locale.test.cjs",
+        "build/tests/app_module_loader.test.cjs",
+        "build/tests/auth_remember_reset.test.cjs",
+        "build/tests/import_ai_ui_polish.test.cjs",
+        "build/tests/import_review_model.test.cjs",
+        "build/tests/import_review_review67.test.cjs",
+        "build/tests/import_review_updates.test.cjs",
+        "build/tests/import_workspace_activation.test.cjs",
+        "build/tests/living_review.test.cjs",
+        "build/tests/ml_batch.test.cjs",
+        "build/tests/pdf_fetch_ui.test.cjs",
+        "build/tests/report_evidence_ui.test.cjs",
+        "build/tests/screen_reader_e10.test.cjs",
+        "build/tests/study_design_badge.test.cjs",
+        "build/tests/table_wizards_polish.test.cjs",
+        "build/tests/ui_polish_core.test.cjs",
+        "build/tests/ui_polish_recovery.test.cjs",
+        "build/tests/w5_pwa_sw.test.cjs",
+        "build/tests/workflow_evidence_save_ui.test.cjs",
+        "build/tests/workflow_ui_polish.test.cjs",
+        "build/tests/zotero_import.test.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 4.908,
+      "source_digest_before": "a5ac11f4a5bc7d3b4e3c1c4a00e4dc0c2ced859d3abd10f2120404b58e253e32",
+      "source_digest_after": "a5ac11f4a5bc7d3b4e3c1c4a00e4dc0c2ced859d3abd10f2120404b58e253e32",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\node_all.log",
+      "snapshot": "post-A20",
+      "log_sha256": "a09b33c117c0462327eeec19c6652a958eb01d6dd73583623ae1a787360291a5",
+      "completed_utc": "2026-11-12T13:55:49.839756+00:00"
+    },
+    {
+      "gate": "import_static",
+      "command": [
+        "node",
+        "build/validate_import_review_static.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 8.475,
+      "source_digest_before": "a5ac11f4a5bc7d3b4e3c1c4a00e4dc0c2ced859d3abd10f2120404b58e253e32",
+      "source_digest_after": "a5ac11f4a5bc7d3b4e3c1c4a00e4dc0c2ced859d3abd10f2120404b58e253e32",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\import_static.log",
+      "snapshot": "post-A20",
+      "log_sha256": "61789bb7f08eaf51a64144ab8190171a59c6dafe2057af49ad2135e4019b8209",
+      "completed_utc": "2026-11-12T13:55:52.670845+00:00"
+    },
+    {
+      "gate": "prisma_static",
+      "command": [
+        "node",
+        "build/validate_team_prisma_static.js"
+      ],
+      "exit_code": 0,
+      "seconds": 0.783,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\prisma_static.log",
+      "snapshot": "pre-A20 full run",
+      "log_sha256": "1264beb0f061e0aad10d0442b1788c2b5c60781da19e2e7df2e52fa715cbe7b0",
+      "completed_utc": "2026-11-12T13:39:38.797389+00:00"
+    },
+    {
+      "gate": "evidence_locale",
+      "command": [
+        "node",
+        "build/validate_evidence_locale_static.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 0.489,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\evidence_locale.log",
+      "snapshot": "pre-A20 full run",
+      "log_sha256": "1fcb0833cbca6fd5801adcbf9f719f802e87640bd3cc81676874d10c3b9fe8de",
+      "completed_utc": "2026-11-12T13:39:39.796730+00:00"
+    },
+    {
+      "gate": "import_api",
+      "command": [
+        "C:\\Users\\16073\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        "build/validate_import_review.py"
+      ],
+      "exit_code": 0,
+      "seconds": 12.335,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\import_api.log",
+      "snapshot": "pre-A20 full run",
+      "log_sha256": "e9cbcd3b6a6d987b657457d54b18dc23554a160436b1563e20f88d712cfacf9d",
+      "completed_utc": "2026-11-12T13:40:36.432605+00:00"
+    },
+    {
+      "gate": "screening_api",
+      "command": [
+        "C:\\Users\\16073\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        "build/validate_screening_rounds.py"
+      ],
+      "exit_code": 0,
+      "seconds": 7.175,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\screening_api.log",
+      "snapshot": "pre-A20 full run",
+      "log_sha256": "fe7a3b3d6d476569ad645fc8534b002320813241f298853c5a19f3ea5f500b71",
+      "completed_utc": "2026-11-12T13:40:29.566318+00:00"
+    },
+    {
+      "gate": "prisma_api",
+      "command": [
+        "C:\\Users\\16073\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        "build/validate_team_prisma.py"
+      ],
+      "exit_code": 0,
+      "seconds": 9.335,
+      "source_digest_before": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "source_digest_after": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+      "log": "C:\\Users\\16073\\.codex\\visualizations\\2026\\11\\11\\01a1ca4b-842d-7312-bc21-8a36bca01595\\polish-final-gates\\prisma_api.log",
+      "snapshot": "pre-A20 full run",
+      "log_sha256": "3c2d32b221b40c418d637c39e6947685203493af501343fc776783bec409b189",
+      "completed_utc": "2026-11-12T13:40:35.441511+00:00"
+    }
+  ],
+  "previous_full_gate_run": {
+    "completed_utc": "2026-11-12T13:41:41.545840+00:00",
+    "node": {
+      "tests": 195,
+      "pass": 195,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "validators_passed": 6,
+    "source_digest": "e1a9d90c246f2136e049826e206a20701533bcf1479d25c4521472d7cd503445",
+    "archive": "pre-a20/"
+  },
+  "final_delta": {
+    "change": "A-DYN-20 moves static authRememberNote after authRememberRow and adds one core regression test",
+    "rerun": [
+      "node_all",
+      "import_static"
+    ],
+    "python_rerun": false,
+    "reason": "Only static auth markup and its frontend regression changed; backend code and validator source unchanged."
+  }
+}

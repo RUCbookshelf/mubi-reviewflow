@@ -1,0 +1,18 @@
+{
+  "checks": [
+    "B01/B06/B09 decision direct defaults and hidden provider ID",
+    "B01 cancel and reopen retain selected provider",
+    "B02 edited gateway/model survive format change",
+    "B03 save preserves other key slot and task form",
+    "B04 test uses saved config and discloses source",
+    "F08 cross-panel return preserves draft",
+    "B12 language change preserves pending wizard",
+    "B03 native confirmation replaced; delete preserves sibling/task drafts",
+    "B03 import dialog save and reopen preserve other slot draft",
+    "B14 unknown shared metadata is disclosed; clearing empty LLM slot leaves decision slot enabled",
+    "mobile key settings fit 390px viewport"
+  ],
+  "uncaught_errors": [],
+  "own_backend": "real new-tree desktop backend",
+  "model": "synthetic loopback HTTP server"
+}
