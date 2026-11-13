@@ -300,11 +300,16 @@ def test_f11_register_hint_is_register_only():
     """
     html = read("index.html")
     start = html.index("$('#authForm').addEventListener('submit'")
-    body = html[start:start + 1600]
+    body = html[start:html.index("\n});", start)]
+    assert "const mode = authMode;" in body
+    assert "api('/api/auth/' + mode," in body
     assert "toast(T('欢迎，{0}', d.user.username), 'inc');" in body, "原有欢迎语必须保留（对照组）"
-    assert "if (authMode === 'register') toast(T('你已注册为独立用户：可新建任务，或等任务属主邀请加入。'), 'info', 9000);" in body, \
-        "角色/去向前提必须在 authMode==='register' 分支内"
-    assert body.index("await enterApp();") < body.index("if (authMode === 'register') toast("), \
+    register_hint = (
+        "if (mode === 'register') "
+        "toast(T('你已注册为独立用户：可新建任务，或等任务属主邀请加入。'), 'info', 9000);"
+    )
+    assert register_hint in body, "角色/去向提示仅用于本次提交的注册模式"
+    assert body.index("await enterApp();") < body.index(register_hint), \
         "提示必须在进入应用之后（用户先看到界面再看到解释）"
 
 

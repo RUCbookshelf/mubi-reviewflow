@@ -213,6 +213,12 @@ const log = { toasts: [], guardCalls: 0, dialogShown: 0 };
 let draftDirty = false;
 let apiPendingWrites = 0;
 let AUTH_TOKEN = 'probe-token';
+/* 2.1.5 后续波在 api() 401 分支/请求头引入的新引用（沙箱裸上下文无全局）：
+   F01 会话静默丢失修复的模块级去重令牌 authExpiryNoticeToken（index.html:5352）、
+   F53 写请求 X-Request-ID 的 crypto.randomUUID（index.html:5388）。缺桩即
+   ReferenceError→thrown=undefined→JSON 丢键（KeyError 'thrown' 的根因）。 */
+let authExpiryNoticeToken = null;
+const crypto = { randomUUID: () => 'probe-request-id' };
 const TOKEN_KEY = 'AUTH_TOKEN';
 const API_BASE = '';
 function toast(msg) { log.toasts.push(String(msg)); }
@@ -347,7 +353,7 @@ EXPECTED_WINNERS = {
 #   'Activate reviewed records'（import_export_locale）与 'Activate resolved records'
 #   （import_review_refined_locale）。F46 修复后该键只剩一条注册（并改名为
 #   「加入任务 / Add to task」），冲突消除 → 计数 136 → 135，白名单同步移除该条目。
-EXPECTED_WORDING_CONFLICT_COUNT = 135
+EXPECTED_WORDING_CONFLICT_COUNT = 121
 WORDING_ALLOWLIST = frozenset((
     "Begg 检验的常规渐近 p 值可能校准不佳。漏斗图不对称或失效安全数不能证明发表偏倚，也不能解释研究缺失原因。",
     "CER 是从输入效应值以外取得的假设；更换 CER 会改变换算后的 NNT。",
@@ -370,13 +376,10 @@ WORDING_ALLOWLIST = frozenset((
     "一个不一致配对格为零，Wald 方差依据的信息很少；Bonett–Price 和 Newcombe 区间更适合此类表格。",
     "一个不一致配对格为零，已对两个不一致格各加 0.5。校正结果仅供敏感性分析，不应作为主要结果。",
     "一个不一致配对格为零，配对优势比可用的信息很少；该区间可能不可靠。合并时优先考虑精确条件区间。",
-    "不明确",
-    "不是重复，全部保留",
     "两组均无事件或均为全事件；根据 Cochrane 方法，这类表格不能为相对效应提供信息。任何校正后数值仅供敏感性分析。",
     "亚组差异检验在各亚组内共用一个 DL τ²。亚组应在综述方案中预先定义，且每项研究只能归入一个亚组（Cochrane Handbook §10.11）。",
     "优势比不可折叠；即使 OR 不变，NNT 仍随 CER 改变。只应对目标人群适用的 CER 报告 NNT。",
     "估计值有限，但抽样方差为零，无法用于逆方差加权。",
-    "低",
     "使用固定效应临界值：z 选项采用双侧标准正态分位数（metafor 惯例）；t 选项采用 Rosenberg 的 Student t 分位数，并迭代求解自由度 k+N−1。",
     "修正 HKSJ 区间用于随机效应模型；主合并分析不接受固定效应 + HKSJ。此处仅供并列敏感性比较。",
     "修正 Hartung–Knapp–Sidik–Jonkman t 区间",
@@ -394,7 +397,6 @@ WORDING_ALLOWLIST = frozenset((
     "原始表中有零格，未应用连续性校正。",
     "参考标准",
     "双侧渐近 Kendall τ-b 检验，已调整并列秩。",
-    "可信",
     "可用",
     "合并分析",
     "合并效应 ML 轮廓似然区间",
@@ -410,10 +412,8 @@ WORDING_ALLOWLIST = frozenset((
     "对照组总人数",
     "导入来源",
     "小样本研究效应模式也可能来自异质性、偶然因素或研究设计差异。本拟合不能证明发表偏倚或结局报告偏倚，也不能给出因果解释。",
-    "已激活",
     "已知抽样方差的 WLS 正态 95% Wald 区间。",
     "当前计算无法得到有限的对数比值；估计值和标准误不可用。",
-    "待核验候选组",
     "待评价试验",
     "截距是外推至 SE=0 时的拟合效应；区间使用已知抽样方差计算。",
     "所有效应值和标准误须使用同一分析尺度（比值取对数，相关系数用 Fisher z）；上游零单元格或连续性校正也会改变失效安全数。",
@@ -429,12 +429,8 @@ WORDING_ALLOWLIST = frozenset((
     "数据保存在本机",
     "文献初筛",
     "方法学参考与引用提示（请查阅原书核对）",
-    "暂不确定",
     "最大似然随机效应",
-    "来源文件",
-    "来源记录",
     "来源：",
-    "查看轨迹",
     "标准误与所分析的效应值使用同一尺度，并用于计算抽样方差。",
     "标准误会检查为有限正数，但不参与 Orwin 公式计算。",
     "此区间仅描述单项研究的配对表；不提供标准误，也不能从区间端点反推标准误用于合并。Meta 分析仍应使用已有的 RD 与标准误。",
@@ -462,8 +458,6 @@ WORDING_ALLOWLIST = frozenset((
     "算术平均值未考虑研究精度、异质性或研究间依赖；每项独立研究只取一个效应值。",
     "结局为二分类，且两组采用相同的事件定义。",
     "结局测量",
-    "编码维度",
-    "缺乏支持",
     "置信区间",
     "置信区间端点超出风险差的可取范围 [−1, 1]，已截断到边界。",
     "自然尺度",
@@ -474,7 +468,6 @@ WORDING_ALLOWLIST = frozenset((
     "至少需要三项研究。",
     "计算 τ² 的 95% REML 轮廓区间",
     "请先选择任务",
-    "请先选择任务。",
     "请明确选择 Hozo、Wan 或 Luo；Luo 均值搭配 Wan SD。请比较纳入与排除估算研究的结果，并引用所用方法。",
     "请选择效应方向与比较组的对应关系。",
     "这里的稳健推断不同于 Knapp–Hartung：KH 按残差异质性调整模型协方差；本工具的三明治估计将每项研究作为独立簇，在方差设定错误时仍可保持一致性。簇稳健文献更推荐小样本使用 CR2 与 Satterthwaite 自由度（Pustejovsky 与 Tipton 2018；Imbens 与 Kolesar 2016）。",
@@ -483,7 +476,6 @@ WORDING_ALLOWLIST = frozenset((
     "风险差区间的一端恰为零，相应 NNT 边界为无穷大，按单侧无界区间报告。",
     "风险差区间跨越零，NNT 区间因此无界，包含获益和伤害两侧；按 Altman（1998）的双分支形式报告。",
     "首页 & 设置",
-    "高",
 ))
 
 

@@ -21,7 +21,7 @@ def main() -> None:
     data_dir = Path(args.data_dir).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     os.environ['COBOOKSHELF_DATA_DIR'] = str(data_dir)
-    sys.path.insert(0, r'E:/rf214-r10-ux')
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
     import uvicorn
     from build.launcher import build_app

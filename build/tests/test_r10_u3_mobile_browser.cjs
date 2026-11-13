@@ -17,9 +17,9 @@
  *  · F38 实体键盘 3（本轮修复）：折叠态下按 3，理由控件必须**变得可见**——
  *       否则「请先选择排除理由」的提示指向一个看不见的控件（死路）。
  *  · F39 轨迹入口命中区 ≥44×44 且仍可点进轨迹页。
- *  · F40 横向容器（页签条/PRISMA 预览/分析目录）滚动条可见且容器确实可横向滚动。
- *  · F41 页顶阶段切换条在三个工作流页可见，点「复筛」真的换页。
- *  · F42 复筛决策条与编码保存条粘底，滚到底时最后一行内容不被遮挡。
+ *  · F40 首页设置入口完整可用，PRISMA 预览和分析目录保留可见滚动条。
+ *  · F41 底部阶段导航在三个工作流页可用，点击后切页并同步当前项。
+ *  · F42 复筛决策条与编码保存条贴在底部导航上方，滚到底时内容不被遮挡。
  *  · F43 「停止」按钮有可见短标签，高度仍是 48px。
  *  · F44 DOI 出现在「文献信息」折叠区标题上；展开后类型/DOI 等字段齐全。
  *  · 对照组：1280px 桌面宽度下，折叠类、阶段切换条、短标签、整行规则全都不生效。
@@ -34,7 +34,7 @@ const WIDTHS = [360, 390, 492, 760];
 const HEIGHT = 751;
 const HIT = 44;
 
-const RIS = ['One', 'Two', 'Three'].map(i => [
+const RIS = ['One', 'Two', 'Three', 'Four', 'Five'].map(i => [
   'TY  - JOUR',
   'AU  - Alpha' + i + ', Ann',
   'TI  - Mobile Probe Study ' + i + ' About Hypertension Screening',
@@ -75,6 +75,29 @@ async function token() {
     url + '/api/tasks/' + (task.task_id || task.id) + '/import?screener=' + user,
     { method: 'POST', headers, body: form });
   assert.ok(imported.ok, '前置导入失败：' + imported.status);
+  const taskUrl = url + '/api/tasks/' + (task.task_id || task.id);
+  const records = await fetch(taskUrl + '/articles', { headers });
+  assert.ok(records.ok, '前置题录读取失败：' + records.status);
+  const { articles } = await records.json();
+  assert.equal(articles.length, 5, '前置导入应有五篇题录');
+  const reviewArticle = articles.find(article => article.title === 'Mobile Probe Study Four About Hypertension Screening');
+  const codingArticle = articles.find(article => article.title === 'Mobile Probe Study Five About Hypertension Screening');
+  assert.ok(reviewArticle && codingArticle, '前置复筛与编码需各有一篇题录');
+  const setup = [
+    ['/decisions', { zotero_key: reviewArticle.zotero_key, decision: 'include', reason: '' }],
+    ['/decisions', { zotero_key: codingArticle.zotero_key, decision: 'include', reason: '' }],
+    ['/stage2/decisions', { zotero_key: codingArticle.zotero_key, decision: 'include', reason: '' }],
+    ['/coding/scheme', { replace: true, scheme: { version: 1, dimensions: Array.from(
+      { length: 10 }, (_, index) => ({ name: '合成编码字段 ' + (index + 1), dtype: 'text' }),
+    ) } }],
+  ];
+  for (const [path, body] of setup) {
+    const seeded = await fetch(taskUrl + path, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.ok(seeded.ok, '前置测试数据写入失败 ' + path + '：' + seeded.status);
+  }
   return data.token;
 }
 
@@ -150,8 +173,9 @@ async function token() {
         if (!input || !bar) return null;
         bar.append(input);
         const box = input.getBoundingClientRect();
-        const barBox = bar.getBoundingClientRect();
-        return { width: Math.round(box.width), barWidth: Math.round(barBox.width),
+        const style = getComputedStyle(bar);
+        const contentWidth = bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        return { width: box.width, contentWidth,
                  display: getComputedStyle(input).display,
                  gridColumn: getComputedStyle(input).gridColumn,
                  wrapped: Boolean(input.parentElement.closest('.wf-custom-reason-row')) };
@@ -159,8 +183,8 @@ async function token() {
       assert.ok(measured, 'F37：自定义理由输入框必须存在（' + width + 'px）');
       assert.equal(measured.wrapped, false, 'F37：量测形状必须是无包裹的真实缺陷形状');
       assert.equal(measured.display, 'block', 'F37：输入框必须可见（' + width + 'px）');
-      assert.ok(measured.width >= measured.barWidth - 4,
-        'F37：' + width + 'px 下无包裹时输入框宽 ' + measured.width + '/' + measured.barWidth +
+      assert.ok(Math.abs(measured.width - measured.contentWidth) <= 4,
+        'F37：' + width + 'px 下无包裹时输入框宽 ' + measured.width + '，决策栏内容宽 ' + measured.contentWidth +
         '（grid-column=' + measured.gridColumn + '），未占满决策行——原缺陷约 1/3 列宽');
       await page.close();
     }
@@ -270,37 +294,35 @@ async function token() {
   await check('F39 轨迹入口命中区 ≥44×44 且仍能跳转', async () => {
     for (const width of WIDTHS) {
       const { page } = await findNav(width);
-      const box = await page.evaluate(() => {
-        const node = document.querySelector('.trace-shortcut-status');
-        if (!node) return null;
-        const rect = node.getBoundingClientRect();
-        return { width: Math.round(rect.width), height: Math.round(rect.height) };
-      });
+      await page.locator('.rfma-bottom-nav [data-rfma-page="more"]').click();
+      const entry = page.locator('.rfma-more[open]').getByRole('button', { name: '轨迹', exact: true });
+      const box = await entry.boundingBox();
       assert.ok(box, 'F39：轨迹入口必须存在（' + width + 'px）');
       assert.ok(box.width >= HIT, 'F39：' + width + 'px 命中区宽 ' + box.width + 'px < 44');
       assert.ok(box.height >= HIT, 'F39：' + width + 'px 命中区高 ' + box.height + 'px < 44');
-      await page.locator('.trace-shortcut-status').click();
-      await page.waitForTimeout(2200);
-      assert.equal(await page.evaluate(() => S.page), 'trace', 'F39：点轨迹入口必须真的进轨迹页');
+      await entry.click();
+      await page.waitForFunction(() => S.page === 'trace');
       await page.close();
     }
   });
 
   /* ---------------- F40 ---------------- */
-  await check('F40 横向容器滚动条可见（不再被隐藏）且确实可横向滚动', async () => {
+  await check('F40 首页设置入口完整可用，分析目录与 PRISMA 保留滚动条', async () => {
     for (const width of [360, 390]) {
       const { page } = await open(width);
-      /* 首页流程页签条：基线是被隐藏的那一类（scrollbar-width:none）。 */
-      const home = await page.evaluate(() => {
-        const node = document.querySelector('.wf-tabs');
-        if (!node) return null;
-        return { scrollable: node.scrollWidth - node.clientWidth,
-                 scrollbarWidth: getComputedStyle(node).scrollbarWidth };
-      });
-      assert.ok(home, 'F40：首页流程页签条必须存在');
-      assert.ok(home.scrollable > 0, 'F40：' + width + 'px 下页签条本应可横向滚动');
-      assert.notEqual(home.scrollbarWidth, 'none',
-        'F40：页签条仍隐藏滚动条（scrollbar-width:' + home.scrollbarWidth + '）');
+      await page.locator('.rfma-bottom-nav [data-rfma-page="home"]').click();
+      const tabs = page.locator('.wf-tabs');
+      await tabs.waitFor({ state: 'visible' });
+      const home = await tabs.evaluate(node => ({
+        overflow: node.scrollWidth - node.clientWidth,
+        visible: [...node.querySelectorAll('[role="tab"]')].filter(tab => tab.checkVisibility()).length,
+      }));
+      assert.equal(home.visible, 6, 'F40：首页六项设置入口必须可见');
+      assert.ok(home.overflow <= 1, 'F40：' + width + 'px 首页设置入口不得横向溢出');
+      await page.locator('#wf-tab-models').click();
+      await page.locator('#wf-panel-models').waitFor({ state: 'visible' });
+      await page.locator('#rfmaHomeBack').click();
+      await tabs.waitFor({ state: 'visible' });
       await gotoPage(page, 'analysis');
       const analysis = await page.evaluate(() => {
         const node = document.querySelector('.an-jump-categories');
@@ -340,65 +362,73 @@ async function token() {
   });
 
   /* ---------------- F41 ---------------- */
-  await check('F41 三个工作流页顶都有阶段切换条，点「复筛」真的换页', async () => {
+  await check('F41 底部阶段导航可点击且当前项随页面切换', async () => {
     for (const width of [360, 390]) {
       const { page } = await findNav(width);
-      const tabs = await page.evaluate(() => [...document.querySelectorAll(
-        '.page[data-p=screen]>.rf-mobile-stage-tabs .rf-mobile-stage-tab')]
-        .map(node => ({ text: node.textContent, current: node.getAttribute('aria-current') })));
-      assert.equal(tabs.length, 3, 'F41：' + width + 'px 阶段切换条应有 3 项');
-      assert.deepEqual(tabs.map(tab => tab.text), ['初筛', '复筛', '编码']);
-      assert.equal(tabs[0].current, 'page', 'F41：当前阶段必须标 aria-current');
-      await page.locator('.page[data-p=screen]>.rf-mobile-stage-tabs [data-rf-stage="fulltext"]').click();
-      await page.waitForTimeout(2600);
-      assert.equal(await page.evaluate(() => S.page), 'fulltext', 'F41：点「复筛」必须真的换页');
-      const current = await page.evaluate(() => document.querySelector(
-        '.page[data-p=fulltext]>.rf-mobile-stage-tabs .rf-mobile-stage-tab[aria-current=page]')?.textContent);
-      assert.equal(current, '复筛', 'F41：换页后当前阶段标记必须跟随');
+      const nav = page.locator('.rfma-bottom-nav');
+      for (const [stage, label] of [['fulltext', '复筛'], ['bench', '编码'], ['screen', '初筛']]) {
+        const button = nav.locator('[data-rfma-page="' + stage + '"]');
+        assert.equal(await button.innerText(), label);
+        await button.click();
+        await page.waitForFunction(id => S.page === id &&
+          document.querySelector('.rfma-bottom-nav [data-rfma-page="' + id + '"]')?.getAttribute('aria-current') === 'page',
+        stage);
+        assert.equal(await nav.locator('[aria-current="page"]').count(), 1, 'F41：只有当前阶段应标记为当前页');
+      }
       await page.close();
     }
   });
 
   /* ---------------- F42 ---------------- */
-  await check('F42 复筛决策条与编码保存条粘底，滚到底不被遮挡', async () => {
+  await check('F42 复筛决策条与编码保存条贴在底栏上方，滚到底不遮挡编码内容', async () => {
     for (const width of WIDTHS) {
       const { page } = await open(width);
-      await gotoPage(page, 'fulltext');
-      const fulltext = await page.evaluate(() => {
-        const bar = document.querySelector('.ft-decide');
-        if (!bar) return null;
-        return { position: getComputedStyle(bar).position,
-                 bottom: getComputedStyle(bar).bottom,
-                 height: Math.round(bar.getBoundingClientRect().height) };
-      });
-      assert.ok(fulltext, 'F42：复筛决策条必须存在');
-      assert.equal(fulltext.position, 'sticky', 'F42：' + width + 'px 复筛决策条必须粘底');
-      assert.equal(fulltext.bottom, '0px', 'F42：复筛决策条必须贴底');
-      await gotoPage(page, 'bench');
-      const coding = await page.evaluate(() => {
+      for (const [stage, selector, button] of [
+        ['fulltext', '.ft-decide', '#ftInc'],
+        ['bench', '.rf-mobile-coding-footer', '#cbSave'],
+      ]) {
+        await gotoPage(page, stage, selector);
+        const dock = page.locator(selector);
+        const nav = page.locator('.rfma-bottom-nav');
+        const before = await dock.boundingBox();
+        const bounds = await nav.boundingBox();
+        assert.ok(before && bounds && before.height > 0, 'F42：' + width + 'px 动作栏和底栏必须可见');
+        assert.ok(Math.abs(before.y + before.height - bounds.y) <= 1,
+          'F42：' + width + 'px ' + stage + ' 动作栏必须贴在底部导航上方');
+        await page.locator(button).scrollIntoViewIfNeeded();
+        const hit = await page.locator(button).evaluate(node => {
+          const box = node.getBoundingClientRect();
+          return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        });
+        assert.ok(hit, 'F42：' + width + 'px ' + stage + ' 动作按钮被遮挡');
+      }
+      await page.waitForFunction(() => S.codingFormReady);
+      const coding = await page.evaluate(async () => {
         const footer = document.querySelector('.rf-mobile-coding-footer');
-        if (!footer) return null;
         const view = document.querySelector('#appMain>.view');
         view.scrollTop = view.scrollHeight;
-        const page = document.querySelector('.page[data-p=bench]');
-        const barTop = footer.getBoundingClientRect().top;
-        const candidates = [...page.querySelectorAll('*')].filter(node => {
-          if (footer.contains(node)) return false;
-          const rect = node.getBoundingClientRect();
-          return rect.height > 0 && rect.bottom > 0 && rect.bottom < innerHeight + 400;
-        });
-        const last = candidates[candidates.length - 1];
-        return { position: getComputedStyle(footer).position,
-                 barTop: Math.round(barTop),
-                 lastBottom: last ? Math.round(last.getBoundingClientRect().bottom) : null };
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const units = document.querySelectorAll('#cbForms>.wf-coding-unit');
+        const last = units[units.length - 1];
+        const summary = last?.querySelector('summary');
+        const rect = summary?.getBoundingClientRect();
+        return {
+          barBottom: footer.getBoundingClientRect().bottom,
+          barTop: footer.getBoundingClientRect().top,
+          navTop: document.querySelector('.rfma-bottom-nav').getBoundingClientRect().top,
+          units: units.length,
+          scrolled: view.scrollTop,
+          lastBottom: last?.getBoundingClientRect().bottom,
+          lastHit: rect && summary.contains(document.elementFromPoint(
+            rect.x + rect.width / 2, rect.y + rect.height / 2,
+          )),
+        };
       });
-      assert.ok(coding, 'F42：编码保存条必须存在');
-      assert.equal(coding.position, 'sticky', 'F42：' + width + 'px 编码保存条必须粘底');
-      if (coding.lastBottom !== null) {
-        assert.ok(coding.lastBottom <= coding.barTop,
-          'F42：' + width + 'px 滚到底后最后一行内容（bottom=' + coding.lastBottom +
-          '）被粘底条（top=' + coding.barTop + '）遮挡');
-      }
+      assert.equal(coding.units, 10, 'F42：必须量测真实渲染的合成编码表');
+      assert.ok(coding.scrolled > 0, 'F42：编码页必须实际滚动');
+      assert.ok(Math.abs(coding.barBottom - coding.navTop) <= 1, 'F42：滚动后编码保存条仍贴在底栏上方');
+      assert.ok(coding.lastHit && coding.lastBottom <= coding.barTop + 1,
+        'F42：' + width + 'px 滚到底后最后一个编码字段 ' + coding.lastBottom + ' 被保存条遮挡（top=' + coding.barTop + '）');
       await page.close();
     }
   });
@@ -407,16 +437,9 @@ async function token() {
   await check('F43「停止」按钮有可见短标签且命中区仍是 48px', async () => {
     for (const width of WIDTHS) {
       const { page } = await findNav(width);
-      /* 冷实例上「停止」短标签由移动呈现层在卡片渲染后的下一帧创建，刚就绪就量
-         会读到还没布局的 0 宽（本轮在全新实例上踩过）。这里等到标签**已创建**
-         并且（已布局出宽度 或 被显式隐藏）为止——显式隐藏会立刻结束等待，随后
-         的断言照样变红，所以不会掩盖真回归；等不到则断言按失败处理。 */
-      await page.waitForFunction(() => {
-        const label = document.querySelector('.rf-mobile-stop-label');
-        if (!label) return false;
-        return getComputedStyle(label).display === 'none'
-          || label.getBoundingClientRect().width > 0;
-      }, null, { timeout: 20000 }).catch(() => {});
+      await page.locator('#rfmaAppTools').click();
+      await page.locator('.page[data-p="screen"]>.rf-mobile-sheet[open] .rfma-source-entry').click();
+      await page.locator('.rf-mobile-queue.rfma-source-open .rf-mobile-stop-label').waitFor({ state: 'visible' });
       const stop = await page.evaluate(() => {
         const button = document.querySelector('.rf-stop-summary');
         const label = document.querySelector('.rf-mobile-stop-label');
@@ -433,6 +456,8 @@ async function token() {
       assert.ok(stop.labelWidth > 0, 'F43：短标签必须有实际宽度');
       assert.ok(stop.height >= 48, 'F43：' + width + 'px 按钮高度 ' + stop.height + 'px < 48');
       assert.ok(stop.width >= 48, 'F43：' + width + 'px 按钮宽度 ' + stop.width + 'px < 48');
+      await page.locator('.rfma-source-open .rf-stop-summary').click();
+      await page.locator('#alStopPanel').waitFor({ state: 'visible' });
       await page.close();
     }
   });

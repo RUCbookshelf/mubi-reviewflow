@@ -93,12 +93,21 @@ const sandbox={console:{warn(){},log(){},error(){}}, RFLang,
   document:{querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){},removeEventListener(){},getElementById:()=>null,documentElement:{lang:''},body:{appendChild(){},addEventListener(){}}},
   navigator:{language:'zh-CN'}, localStorage:{getItem:()=>null,setItem(){}}};
 sandbox.window=sandbox; sandbox.globalThis=sandbox;
-for(const m of html.matchAll(/<script src="\.\/([^"?]+)\?v=/g)){
-  const full=path.join(fe,m[1]);
+/* The parser runs ordinary scripts before RFAppModules replays workspace
+   markers. Keep document order within each phase. */
+const eager=[], workspace=[];
+for(const [,attrs] of html.matchAll(/<script\b([^>]*)>/gi)){
+  const src=/(?:^|\s)src\s*=\s*["']\.\/([^"'?]+)\?v=[^"']*["']/i.exec(attrs);
+  if(!src) continue;
+  const queue=/(?:^|\s)data-rf-app(?:\s|=|$)/i.test(attrs) ? workspace : eager;
+  queue.push(src[1]);
+}
+for(const file of [...eager,...workspace]){
+  const full=path.join(fe,file);
   if(!fs.existsSync(full)) continue;
   const src=fs.readFileSync(full,'utf8');
   if(!/RFLang\s*\??\.register/.test(src)) continue;
-  try{ vm.runInNewContext(src,sandbox,{filename:m[1],timeout:20000}); }catch(e){}
+  try{ vm.runInNewContext(src,sandbox,{filename:file,timeout:20000}); }catch(e){}
 }
 const probes=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
 const out={};
@@ -561,18 +570,21 @@ class TestConfirmDialog:
     def test_dialog_contract(self):
         """焦点陷阱、ESC、危险色、初始焦点落「取消」、关闭后归还焦点。"""
         html = INDEX.read_text(encoding="utf-8")
-        assert "function RFConfirm(options)" in html
-        assert "dialog.showModal();" in html, "F52：必须用 showModal（原生焦点陷阱底座）"
-        assert "cancel.focus();" in html, "F52：初始焦点必须落在「取消」（安全默认）"
-        assert "event.key !== 'Tab'" in html and "event.preventDefault(); last.focus();" in html, \
+        confirm = re.search(r"(?ms)^function RFConfirm\(options\) \{.*?^\}", html)
+        assert confirm is not None, "F52：必须保留 RFConfirm"
+        body = confirm.group()
+        assert "dialog.showModal();" in body, "F52：必须用 showModal（原生焦点陷阱底座）"
+        assert "opts.input ? el('input'" in body, "F52：仅显式请求时显示输入框"
+        assert "(input || cancel).focus();" in body, "F52：无输入框时初始焦点必须落在「取消」"
+        assert "event.key !== 'Tab'" in body and "event.preventDefault(); last.focus();" in body, \
             "F52：Tab 必须在对话框内循环"
-        assert "addEventListener('cancel', event => { event.preventDefault(); finish(false); })" in html, \
+        assert "addEventListener('cancel', event => { event.preventDefault(); finish(false); })" in body, \
             "F52：Esc 必须取消并返回 false"
-        assert "opener.focus()" in html, "F52：关闭后焦点必须回到打开它的控件"
-        assert "'b-exc'" in html and "opts.danger === false ? 'b-inc' : 'b-exc'" in html, \
+        assert "opener.focus()" in body, "F52：关闭后焦点必须回到打开它的控件"
+        assert "'b-exc'" in body and "opts.danger === false ? 'b-inc' : 'b-exc'" in body, \
             "F52：危险动作必须是红色主按钮"
-        assert "aria-labelledby': 'rf-confirm-title'" in html and \
-               "aria-describedby': 'rf-confirm-message'" in html, "F52：对话框必须有可访问名与描述"
+        assert "aria-labelledby': 'rf-confirm-title'" in body and \
+               "aria-describedby': 'rf-confirm-message'" in body, "F52：对话框必须有可访问名与描述"
         assert "#rf-confirm-dialog::backdrop" in html, "F52：对话框必须有自己的 ::backdrop 样式"
 
     def test_dialog_labels_are_ten_language(self):
@@ -605,8 +617,8 @@ class TestConfirmDialog:
 class TestVisibleCopyBrowser:
     """F23/F47 的**渲染面**：静态钉只证明源串与词条，证明不了屏幕。
 
-    真浏览器装真实 index.html，断言中文界面不出现旧词「待定」、决策按钮与计数行
-    显示「2 暂不确定」，角色下拉在两种语言下分别是「译名（英文原词）」与原词。
+    真浏览器装真实 index.html，验证二元决策历史计数、旧记录的兼容标签，
+    以及角色下拉在两种语言下的译名。
     """
 
     def test_copy_render_browser_nail(self):

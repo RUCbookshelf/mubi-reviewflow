@@ -448,8 +448,8 @@ let TASK_ID = '';
     /* ===== 2. 裁决员初筛/复筛页引导 + 结构化 403 ===== */
     await check('2 裁决员初筛页显示引导说明（非裸 403/空白）', async () => {
       adjPage = await openAs(browser, SERVER, adj.token, 'workspace/screen');
-      await waitFor(adjPage, () => document.querySelector('#scrBody') && S.articles && S.articles.length >= 3,
-        '裁决员初筛队列就绪', { timeout: 25000 });
+      await waitFor(adjPage, expected => document.querySelector('#scrBody')?.textContent.includes(expected)
+        && S.articles?.length >= 3, '裁决员初筛队列与权限引导就绪', { timeout: 25000, arg: GUIDANCE_ZH });
       const body = (await adjPage.locator('#scrBody').innerText()).trim();
       assert.ok(body.length > 20, '初筛页不能是空白：' + JSON.stringify(body));
       assert.equal(await adjPage.evaluate(() => S.screeningEnabled), false);

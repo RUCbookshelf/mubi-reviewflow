@@ -313,28 +313,41 @@ const user='u4browser@r10.test',password='R10U4-browser-2026!',taskName='r10-u4-
  });
 
  // ---------------------------------------------------------------- F19
- await check('F19 初筛/编码/分析三页都有“查看帮助”入口且能跳到帮助页',async()=>{
+ await check('F19 初筛/编码/分析的帮助入口可见、文案随语言切换且能跳到帮助页',async()=>{
   const p=await page(token);
   await p.goto(url+'/#workspace/home',{waitUntil:'domcontentloaded'});
   await ready(p);
-  for(const target of ['screen','bench','analysis']){
-   await p.evaluate(page=>window.go(page,{guarded:true}),target);
-   await p.waitForFunction(page=>S.page===page,target,{timeout:15000});
-   const entry=p.locator(`.page[data-p="${target}"] [data-rf-help-entry]`).first();
-   await entry.waitFor({state:'visible',timeout:9000});
-   assert.equal((await entry.textContent()).trim(),'查看帮助',`${target} 页帮助入口文案不对`);
-   assert.equal(await entry.getAttribute('href'),'#workspace/help');
+  const targets=[
+   {page:'screen',menu:'details.rfl-reading',zh:'使用文档',en:'View documentation'},
+   {page:'bench',menu:'details[data-preview-evidence-menu="coding"]',zh:'查看帮助',en:'View help'},
+   {page:'analysis',menu:null,zh:'查看帮助',en:'View help'},
+  ];
+  for(const language of ['zh','en']){
+   if(language==='en'){
+    await p.evaluate(()=>window.RFLang.set('en'));
+    await p.waitForFunction(()=>document.documentElement.lang==='en',null,{timeout:9000});
+   }
+   for(const target of targets){
+    await p.evaluate(name=>window.go(name,{guarded:true}),target.page);
+    await p.waitForFunction(name=>S.page===name,target.page,{timeout:15000});
+    const section=p.locator('.page[data-p="'+target.page+'"]');
+    const scope=target.menu?section.locator(target.menu):section;
+    if(target.menu && !await scope.evaluate(n=>n.open)){
+     await scope.locator(':scope > summary').click();
+    }
+    const entry=scope.locator('[data-rf-help-entry="'+target.page+'"]');
+    await entry.waitFor({state:'visible',timeout:9000});
+    await p.waitForFunction(({name,label})=>{
+     const entry=document.querySelector('.page[data-p="'+name+'"] [data-rf-help-entry="'+name+'"]');
+     return entry?.textContent.trim()===label;
+    },{name:target.page,label:target[language]},{timeout:9000});
+    assert.equal((await entry.innerText()).trim(),target[language],target.page+' 页帮助入口文案不对');
+    assert.equal(await entry.getAttribute('href'),'#workspace/help');
+    await entry.click();
+    await p.waitForFunction(()=>S.page==='help',null,{timeout:9000});
+    assert.equal(await p.locator('.page[data-p="help"]').isVisible(),true);
+   }
   }
-  await p.evaluate(()=>window.go('analysis',{guarded:true}));
-  await p.waitForFunction(()=>S.page==='analysis',null,{timeout:15000});
-  await p.locator('.page[data-p="analysis"] [data-rf-help-entry]').click();
-  await p.waitForFunction(()=>S.page==='help',null,{timeout:9000});
-  assert.equal(await p.evaluate(()=>document.querySelector('.page[data-p="help"]').classList.contains('on')),true);
-  // 语言切换后入口文字仍是当前语言（词典有这条）。
-  await p.evaluate(()=>window.RFLang.set('en'));
-  await p.waitForTimeout(400);
-  const label=await p.locator('.page[data-p="bench"] [data-rf-help-entry]').first().textContent();
-  assert.equal(label.trim(),'View help','英文界面下帮助入口应显示译文');
   await close(p);
  });
 

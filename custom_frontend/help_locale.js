@@ -1,6 +1,7 @@
 /* Help page copy in the app's language order. Display text only. */
 (function(){'use strict';
  const rows = [
+  ["使用文档","View documentation","Voir la documentation","Открыть документацию","Ver documentación","ドキュメントを表示","Ver documentação","Dokumentation ansehen","Погледајте документацију","사용 문서 보기"],
   ["帮助","Help","Aide","Справка","Ayuda","ヘルプ","Ajuda","Hilfe","Помоћ","도움말"],
   ["服务器协作与离线合并","Server collaboration and offline merging","Collaboration via serveur et fusion hors ligne","Совместная работа на сервере и автономное объединение","Colaboración en servidor y combinación sin conexión","サーバー共同作業とオフライン統合","Colaboração no servidor e consolidação offline","Serverzusammenarbeit und Offline-Zusammenführung","Сарадња преко сервера и спајање ван мреже","서버 협업 및 오프라인 병합"],
   ["选择使用方式","Choose how to work","Choisir un mode d’utilisation","Выберите режим работы","Elija cómo trabajar","利用方法を選択","Escolha como trabalhar","Nutzungsart wählen","Изаберите начин рада","사용 방식 선택"],

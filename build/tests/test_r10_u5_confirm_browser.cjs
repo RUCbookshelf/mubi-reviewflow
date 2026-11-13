@@ -19,6 +19,7 @@
  *  6. 点主按钮：Promise 解析为 true；
  *  7. 原生 confirm 不再参与（页面内 confirm 被打桩，调用即失败）；
  *  8. 文案来自十语言词典：切 en 后标题/按钮为英文（不是浏览器本地化）。
+ *  9. Enter 保留安全默认与取消语义，显式输入框聚焦时可提交文字。
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -32,7 +33,7 @@ const index = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
 
 /* 锚点自检：被测组件必须在 index.html 里（改动/删除锚点即红）。 */
 for (const marker of ['const RF_CONFIRM_FOCUSABLE =', 'function RFConfirm(options)',
-                      "cancel.focus();", "opener.focus()", 'dialog.showModal();']) {
+                      "opener.focus()", 'dialog.showModal();']) {
   assert.ok(index.includes(marker), `index.html 缺少 F52 锚点：${marker}`);
 }
 
@@ -80,6 +81,41 @@ const ORIGIN = 'http://r10u5.test';
       window.__nativeConfirmCalls = 0;
       window.confirm = () => { window.__nativeConfirmCalls += 1; return true; };
     });
+
+    /* 真实 Enter：危险确认默认取消，只有显式输入框能直接提交文字。 */
+    const renameOptions = {message: 'Rename probe', input: true, value: '  replacement  ', danger: false};
+    const keyboardCases = [
+      {label: '危险确认', options: {message: 'Delete probe?'}, focus: '.rf-confirm-actions button:first-child', expected: false},
+      {label: '改名输入框', options: renameOptions, focus: 'input', expected: 'replacement'},
+      {label: '改名取消', options: renameOptions, tab: true, focus: '.rf-confirm-actions button:first-child', expected: false},
+    ];
+    for (const {label, options, tab, focus, expected} of keyboardCases) {
+      await page.evaluate(opts => {
+        const opener = document.createElement('button');
+        opener.id = 'r10u5-keyboard-opener';
+        document.body.append(opener);
+        opener.focus();
+        window.__r10u5KeyboardResult = window.RFConfirm(opts);
+      }, options);
+      const dialog = page.locator('#rf-confirm-dialog');
+      assert.equal(await dialog.locator('input').count(), options.input ? 1 : 0,
+        label + '：只有显式要求输入时才显示输入框');
+      if (tab) await page.keyboard.press('Tab');
+      assert.equal(await dialog.locator(focus).evaluate(node => document.activeElement === node), true,
+        label + '：Enter 前焦点应落在预期控件');
+      await page.keyboard.press('Enter');
+      await dialog.waitFor({state: 'detached', timeout: 5000});
+      const outcome = await page.evaluate(async () => {
+        const opener = document.getElementById('r10u5-keyboard-opener');
+        const result = await window.__r10u5KeyboardResult;
+        const focusBack = document.activeElement === opener;
+        opener.remove();
+        delete window.__r10u5KeyboardResult;
+        return {result, focusBack};
+      });
+      assert.deepEqual(outcome, {result: expected, focusBack: true},
+        label + '：Enter 应返回预期值并归还焦点');
+    }
 
     /* --- 1/2/6：安全默认焦点、危险色、确认返回 true（+ 焦点归还） --- */
     const confirmed = await page.evaluate(async () => {

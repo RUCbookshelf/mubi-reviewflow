@@ -11,12 +11,8 @@
  * 让源串正确但屏幕仍旧）。本钉子装真实 index.html（外链脚本全量），只桩网络。
  *
  * 断言（每条破坏即红）：
- *  F23-1 中文界面：初筛/复筛的决策按钮显示「2 暂不确定」，不含「待定」；
- *  F23-2 中文界面：决策历史计数行显示「暂不确定」，不含「待定」；
- *  F23-3 英文界面：同一按钮显示「2 Not Sure Now」；
- *  F47-1 中文界面：邀请下拉的两个 option 是「筛选与编码员（Coder）」「裁决员（Adjudicator）」；
- *  F47-2 英文界面：同样的 option 显示 Coder / Adjudicator（译名的英文槽）；
- *  F47-3 两语言下都不出现裸 Reconciler（内部授权标识不上屏）。
+ *  F23：二元决策历史的计数只显示纳入与排除，旧记录的状态仍显示规范译名。
+ *  F47：邀请下拉中英文显示对应角色名，内部授权标识不出现在界面。
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -28,14 +24,6 @@ const root = path.resolve(__dirname, '..', '..');
 const frontend = path.join(root, 'custom_frontend');
 const index = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
 const ORIGIN = 'http://r10u5copy.test';
-
-/* 页面里必须真有的锚点（改 DOM 结构即红，避免断言悄悄空转）。
-   #btnMay 是 renderScreen() 里按队列动态建的，未登录任务时不存在；
-   这里断言的是**静态**存在于 index.html 的 #ftMay 与角色下拉。 */
-for (const id of ['ftMay', 'teamInviteRole']) {
-  assert.ok(index.includes(`id="${id}"`), `index.html 缺少静态锚点 #${id}（F23/F47 断言会空转）`);
-}
-assert.ok(index.includes("id: 'btnMay'"), 'index.html 缺少 renderScreen 的动态 #btnMay 锚点');
 
 (async () => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'r10u5-copy-'));
@@ -67,68 +55,50 @@ assert.ok(index.includes("id: 'btnMay'"), 'index.html 缺少 renderScreen 的动
     await page.route('**/api/**', route => route.fulfill({status: 200, contentType: 'application/json', body: '{}'}));
 
     await page.goto(ORIGIN + '/index.html', {waitUntil: 'load'});
-    await page.waitForTimeout(700);
-    assert.deepEqual(errors, [], '整页装载不得抛未捕获脚本错误：' + JSON.stringify(errors));
+    await page.evaluate(() => window.RFAppModules.ready());
 
-    /* 语言切换后等 MutationObserver 走完一轮 */
-    async function setLanguage(code) {
-      await page.evaluate(lang => {
-        if (window.RFLang && typeof window.RFLang.set === 'function') window.RFLang.set(lang);
-      }, code);
-      await page.waitForTimeout(220);
+    // Read actual decision history DOM after rendering synthetic saved records.
+    async function snapshot(language) {
+      return page.evaluate(code => {
+        RFLang.set(code);
+        S.articles = [
+          {zotero_key:'included', title:'Fixture included'},
+          {zotero_key:'excluded', title:'Fixture excluded'},
+          {zotero_key:'legacy', title:'Fixture legacy'},
+        ];
+        S.decisions = {
+          included:{decision:'include'}, excluded:{decision:'exclude'}, legacy:{decision:'maybe'},
+        };
+        renderScreenHist();
+        return {
+          counts: document.getElementById('scrHistCounts').textContent.trim(),
+          labels: [...document.querySelectorAll('#scrHist button')]
+            .map(button => button.getAttribute('aria-label')),
+          roleOptions: [...document.querySelectorAll('#teamInviteRole option')]
+            .map(option => option.textContent.trim()),
+          pageText: document.body.innerText,
+        };
+      }, language);
     }
 
-    async function snapshot() {
-      return page.evaluate(() => ({
-        ftMay: document.getElementById('ftMay')?.textContent?.trim() ?? null,
-        /* renderScreen 的动态按钮：用产品自身的 T() 复算，证明词典+引擎对这两个
-           源串给出的就是屏幕文案（DOM 里没有任务时不渲染它）。 */
-        btnMayRendered: window.T ? window.T('2 待定') : null,
-        histCountsRendered: window.T
-          ? window.T('(纳入：{0} | 待定：{1} | 排除：{2})', 3, 2, 1) : null,
-        roleOptions: [...document.querySelectorAll('#teamInviteRole option')]
-          .map(option => option.textContent.trim()),
-        pageText: document.body.innerText,
-      }));
-    }
+    const zh = await snapshot('zh-CN');
+    assert.equal(zh.counts, '(纳入：1 · 排除：1)', 'F23：决策历史应显示二元计数');
+    assert.deepEqual(zh.labels, [
+      'Fixture included · 纳入', 'Fixture excluded · 排除', 'Fixture legacy · 暂不确定',
+    ]);
+    assert.deepEqual(zh.roleOptions, ['筛选与编码员（Coder）', '裁决员（Adjudicator）']);
+    assert.ok(!zh.pageText.includes('待定'), 'F23：中文界面仍有旧词「待定」');
+    assert.ok(!zh.pageText.includes('Reconciler'), 'F47：内部授权标识不得上屏');
 
-    /* ---- 中文界面 ---- */
-    await setLanguage('zh-CN');
-    const zh = await snapshot();
-    assert.equal(zh.ftMay, '2 暂不确定',
-      'F23：复筛决策按钮必须显示「2 暂不确定」，实际 ' + JSON.stringify(zh.ftMay));
-    assert.equal(zh.btnMayRendered, '2 暂不确定',
-      'F23：初筛决策按钮的源串经词典必须渲染为「2 暂不确定」，实际 ' + JSON.stringify(zh.btnMayRendered));
-    assert.equal(zh.histCountsRendered, '(纳入：3 | 暂不确定：2 | 排除：1)',
-      'F23：决策历史计数行必须显示「暂不确定」，实际 ' + JSON.stringify(zh.histCountsRendered));
-    assert.ok(!zh.pageText.includes('待定'),
-      'F23：中文界面不得再出现旧词「待定」（出现位置：' +
-      JSON.stringify(zh.pageText.split('\n').filter(line => line.includes('待定')).slice(0, 4)) + '）');
-    assert.deepEqual(zh.roleOptions, ['筛选与编码员（Coder）', '裁决员（Adjudicator）'],
-      'F47：中文界面的角色下拉必须是「译名（英文原词）」，实际 ' + JSON.stringify(zh.roleOptions));
-    assert.ok(!zh.pageText.includes('Reconciler'),
-      'F47：内部授权标识 Reconciler 不得上屏');
+    const en = await snapshot('en');
+    assert.equal(en.counts, '(Included: 1 · Excluded: 1)');
+    assert.deepEqual(en.labels, [
+      'Fixture included · Included', 'Fixture excluded · Excluded', 'Fixture legacy · Not Sure Now',
+    ]);
+    assert.deepEqual(en.roleOptions, ['Coder', 'Adjudicator']);
+    assert.ok(!en.pageText.includes('Reconciler'), 'F47：内部授权标识不得上屏');
 
-    /* ---- 英文界面 ---- */
-    await setLanguage('en');
-    const en = await snapshot();
-    assert.equal(en.ftMay, '2 Not Sure Now',
-      'F23：英文界面复筛按钮必须是「2 Not Sure Now」，实际 ' + JSON.stringify(en.ftMay));
-    assert.equal(en.btnMayRendered, '2 Not Sure Now',
-      'F23：英文界面初筛按钮源串必须是「2 Not Sure Now」，实际 ' + JSON.stringify(en.btnMayRendered));
-    assert.equal(en.histCountsRendered, '(Included: 3 | Not Sure Now: 2 | Excluded: 1)',
-      'F23：英文界面计数行必须用 Not Sure Now，实际 ' + JSON.stringify(en.histCountsRendered));
-    assert.deepEqual(en.roleOptions, ['Coder', 'Adjudicator'],
-      'F47：英文界面的角色下拉必须是原词，实际 ' + JSON.stringify(en.roleOptions));
-    assert.ok(!en.pageText.includes('Reconciler'),
-      'F47：内部授权标识 Reconciler 不得上屏');
-
-    /* 收尾：切回中文，确认往返不叠加翻译（translateTree 的 canonical 源串） */
-    await setLanguage('zh-CN');
-    const roundTrip = await snapshot();
-    assert.equal(roundTrip.ftMay, '2 暂不确定',
-      'F23：语言往返后按钮必须仍显示「2 暂不确定」，实际 ' + JSON.stringify(roundTrip.ftMay));
-
+    assert.deepEqual(await snapshot('zh-CN'), zh, 'F23/F47：语言往返应恢复中文文案');
     assert.deepEqual(errors, [], '整个流程不得抛未捕获脚本错误：' + JSON.stringify(errors));
   } finally {
     await context.close();

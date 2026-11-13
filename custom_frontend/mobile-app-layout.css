@@ -33,6 +33,7 @@
  body.rf-mobile-app-preview #appMain .rfma-source-open .rf-mobile-source{display:block!important;width:100%}
  body.rf-mobile-app-preview #appMain .rfma-source-open .wf-queue-tools{display:grid;gap:12px;width:100%}
  body.rf-mobile-app-preview #appMain .rfma-source-open .wf-queue-tools>button,body.rf-mobile-app-preview #appMain .rfma-source-open .wf-queue-tools>.hint{display:block}
+ body.rf-mobile-app-preview #appMain .rfma-source-open .rf-stop-summary{min-height:48px}
  body.rf-mobile-app-preview #appMain .rfma-source-open .rf-screen-order-label{display:none}
  body.rf-mobile-app-preview #appMain .rfma-source-open>.rfma-sheet-heading{width:100%;margin:0}
  body.rf-mobile-app-preview #appMain :is(.rf-mobile-document-status,.rf-mobile-document-actions,.rf-mobile-screen-actions){margin:0 0 6px;padding:0;min-height:44px;}
