@@ -31,7 +31,10 @@ jobs:
             command: windows
             artifact: ReviewFlow-Setup-x64.exe
           - platform: macos-x64
-            runner: macos-14
+            # macos-14 镜像 2026-11-02 被 GitHub 退役（runner-images #13518），
+            # 别名解析到停供配置 macos-14-arm64-us-default → "not supported"。
+            # macos-15=arm64 默认（与 macos-14 同构）。
+            runner: macos-15
             command: macos
             artifact: ReviewFlow.dmg
           - platform: linux-x64
