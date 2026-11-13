@@ -3096,6 +3096,46 @@
         "title": "HighlightEventIn",
         "type": "object"
       },
+      "HighlightNoteUpdateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_note": {
+            "maxLength": 4000,
+            "title": "Expected Note",
+            "type": "string"
+          },
+          "expected_policy_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Policy Version"
+          },
+          "note": {
+            "maxLength": 4000,
+            "title": "Note",
+            "type": "string"
+          },
+          "zotero_key": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Zotero Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zotero_key",
+          "note",
+          "expected_note"
+        ],
+        "title": "HighlightNoteUpdateIn",
+        "type": "object"
+      },
       "HighlightsIn": {
         "properties": {
           "events": {
@@ -25486,6 +25526,97 @@
           }
         },
         "summary": "Delete Highlight Ep"
+      },
+      "patch": {
+        "description": "Edit one actor-owned highlight without overwriting a newer comment.",
+        "operationId": "update_highlight_note_ep_api_tasks__task_id__highlights__highlight_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "highlight_id",
+            "required": true,
+            "schema": {
+              "title": "Highlight Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "screener",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Screener"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HighlightNoteUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Highlight Note Ep Api Tasks  Task Id  Highlights  Highlight Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Highlight Note Ep"
       }
     },
     "/api/tasks/{task_id}/highlights/{zotero_key}": {
