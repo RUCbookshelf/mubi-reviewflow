@@ -203,9 +203,11 @@ class UndoRepairTests(unittest.TestCase):
         """把 task 目录整体迁移到新位置并执行路径重写，返回新库路径。"""
         source = self.root / 'task'
         stage = self.root / 'stage'
-        destination = self.root / 'newtask'
+        # The database stores resolved paths. Compare with that same destination
+        # when tempfile returned a macOS symlink or a Windows 8.3 alias.
+        destination = (self.root / 'newtask').resolve()
         shutil.copytree(source, stage)
-        local_storage._rebase_db_paths(stage / 'user.db', source.resolve(), destination.resolve(), stage)
+        local_storage._rebase_db_paths(stage / 'user.db', source.resolve(), destination, stage)
         os.replace(stage, destination)
         return destination / 'user.db'
 

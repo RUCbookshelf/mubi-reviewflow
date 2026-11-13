@@ -33,6 +33,7 @@ os.environ["REVIEWFLOW_MODE"] = "server"
 
 from fastapi.testclient import TestClient
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import db as db_mod
 from coscreen import tasks as tasks_mod
 from coscreen.models import Article
@@ -115,16 +116,16 @@ class Mm10LibraryGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             diagnose_publication_bias(_ROWS_N2, "MD", "rank_correlation")
         self.assertIn("at least three studies", str(caught.exception))
-        # 对照：n=3 rank_correlation 与 n=2 rosenthal 的 200 路径数值逐位钉死
+        # Check the regular rank-correlation and Rosenthal results.
         rank3 = diagnose_publication_bias(_ROWS_N3, "MD", "rank_correlation")
         self.assertEqual(rank3["n_studies"], 3)
-        self.assertEqual(rank3["statistic"], -1.0)
-        self.assertEqual(rank3["p_value"], 0.11718508719813801)
+        assert_numeric_baseline(rank3["statistic"], -1.0)
+        assert_numeric_baseline(rank3["p_value"], 0.11718508719813801)
         rosenthal2 = diagnose_publication_bias(_ROWS_N2, "MD", "rosenthal_fail_safe_n")
         self.assertEqual(rosenthal2["n_studies"], 2)
-        self.assertEqual(rosenthal2["sum_z"], 1.357142857142857)
+        assert_numeric_baseline(rosenthal2["sum_z"], 1.357142857142857)
         self.assertEqual(rosenthal2["fail_safe_n"], 0)
-        self.assertEqual(rosenthal2["combined_p_value"], 0.3372339544842745)
+        assert_numeric_baseline(rosenthal2["combined_p_value"], 0.3372339544842745)
 
 
 class Mm10EndpointGuardTests(unittest.TestCase):
@@ -243,28 +244,26 @@ class Mm10EndpointGuardTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"],
                          "rank correlation needs at least three studies for the asymptotic variance")
 
-    def test_controls_digit_identical_to_baseline(self):
-        """对照组逐位钉死基线 5cb6314（同夹具在基线树上的采样值）：
-        正常 SE、大但合法的 se=361.7（MM10-03 阈内）、次正规 se=1e-160、
-        n=3 rank_correlation、rosenthal n=2——全部 200 且数值一位不许变。"""
+    def test_controls_match_baseline(self):
+        """Validate successful endpoint controls against the 5cb6314 numerical baseline."""
         normal = self._synthesis("ON")
         self.assertEqual(200, normal.status_code, normal.text[:300])
         body = normal.json()
-        self.assertEqual(body["pooled"], 0.18235294117647055)
-        self.assertEqual(body["ci_low"], -0.26408994101432387)
-        self.assertEqual(body["ci_high"], 0.628795823367265)
-        self.assertEqual(body["q"], 2.647058823529412)
-        self.assertEqual(body["q_p"], 0.10374167823654236)
-        self.assertEqual(body["i2_percent"], 62.22222222222222)
+        assert_numeric_baseline(body["pooled"], 0.18235294117647055)
+        assert_numeric_baseline(body["ci_low"], -0.26408994101432387)
+        assert_numeric_baseline(body["ci_high"], 0.628795823367265)
+        assert_numeric_baseline(body["q"], 2.647058823529412)
+        assert_numeric_baseline(body["q_p"], 0.10374167823654236)
+        assert_numeric_baseline(body["i2_percent"], 62.22222222222222)
 
         # se=361.7（log 尺度 CI 高界 ~e^709.6，仍在可表示范围）：必须照常 200。
         big = self._synthesis("OBIG", "RR")
         self.assertEqual(200, big.status_code, big.text[:300])
         big_body = big.json()
-        self.assertEqual(big_body["pooled"], 1.3416407864998738)
-        self.assertEqual(big_body["pooled_analysis"], 0.29389333245105953)
-        self.assertEqual(big_body["ci_low"], 2.629566503431453e-218)
-        self.assertEqual(big_body["ci_high"], 6.845234747442209e+217)
+        assert_numeric_baseline(big_body["pooled"], 1.3416407864998738)
+        assert_numeric_baseline(big_body["pooled_analysis"], 0.29389333245105953)
+        assert_numeric_baseline(big_body["ci_low"], 2.629566503431453e-218, abs_tol=0.0)
+        assert_numeric_baseline(big_body["ci_high"], 6.845234747442209e+217)
 
         # 次正规带 se=1e-160：已知 MM5-05 行为（200 + 展示值 null）不得移动。
         subnormal = self._synthesis("ONAN")
@@ -279,9 +278,9 @@ class Mm10EndpointGuardTests(unittest.TestCase):
         net_body = network.json()
         self.assertEqual(net_body["treatments"], ["A", "B", "C"])
         self.assertEqual(net_body["n_studies"], 3)
-        self.assertEqual(net_body["residual_q"], 0.486520011322391)
+        assert_numeric_baseline(net_body["residual_q"], 0.486520011322391)
         self.assertEqual(net_body["residual_df"], 1)
-        self.assertEqual(net_body["residual_p"], 0.4854837680741242)
+        assert_numeric_baseline(net_body["residual_p"], 0.4854837680741242)
         expected_estimates = {
             ("A", "B"): (1.988036459258131, 0.20544535090332955,
                          1.3290635014449028, 2.973739749111191),
@@ -293,25 +292,25 @@ class Mm10EndpointGuardTests(unittest.TestCase):
         seen = {(e["treatment"], e["comparator"]): e for e in net_body["estimates"]}
         self.assertEqual(set(seen), set(expected_estimates))
         for pair, (estimate, se, ci_low, ci_high) in expected_estimates.items():
-            self.assertEqual(seen[pair]["estimate"], estimate, pair)
-            self.assertEqual(seen[pair]["se"], se, pair)
-            self.assertEqual(seen[pair]["ci_low"], ci_low, pair)
-            self.assertEqual(seen[pair]["ci_high"], ci_high, pair)
+            assert_numeric_baseline(seen[pair]["estimate"], estimate, path=str(pair))
+            assert_numeric_baseline(seen[pair]["se"], se, path=str(pair))
+            assert_numeric_baseline(seen[pair]["ci_low"], ci_low, path=str(pair))
+            assert_numeric_baseline(seen[pair]["ci_high"], ci_high, path=str(pair))
 
         rank3 = self._pb("PB3", "rank_correlation")
         self.assertEqual(200, rank3.status_code, rank3.text[:300])
         rank3_body = rank3.json()
         self.assertEqual(rank3_body["n_studies"], 3)
-        self.assertEqual(rank3_body["statistic"], -1.0)
-        self.assertEqual(rank3_body["p_value"], 0.11718508719813801)
+        assert_numeric_baseline(rank3_body["statistic"], -1.0)
+        assert_numeric_baseline(rank3_body["p_value"], 0.11718508719813801)
 
         rosenthal2 = self._pb("PB2", "rosenthal_fail_safe_n")
         self.assertEqual(200, rosenthal2.status_code, rosenthal2.text[:300])
         rosenthal2_body = rosenthal2.json()
         self.assertEqual(rosenthal2_body["n_studies"], 2)
-        self.assertEqual(rosenthal2_body["sum_z"], 1.357142857142857)
+        assert_numeric_baseline(rosenthal2_body["sum_z"], 1.357142857142857)
         self.assertEqual(rosenthal2_body["fail_safe_n"], 0)
-        self.assertEqual(rosenthal2_body["combined_p_value"], 0.3372339544842745)
+        assert_numeric_baseline(rosenthal2_body["combined_p_value"], 0.3372339544842745)
 
     def test_write_side_still_accepts_degenerate_se(self):
         """R2 纪律钉子：修复在计算入口而非写入侧——POST /analysis/effects

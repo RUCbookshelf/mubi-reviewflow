@@ -171,9 +171,10 @@ def _fake_tree(tmp_path: Path, *, serve_stub_digest: bool = False) -> tuple[Path
 
 def _build_env(tree: Path, stubs: Path, tmp_path: Path, python_stub: Path) -> dict:
     env = dict(os.environ)
-    env["PATH"] = str(stubs) + os.pathsep + env["PATH"]
+    # Node can share a bin directory with a real python3 and curl on macOS.
     if NODE and Path(NODE).exists():
         env["PATH"] = str(Path(NODE).parent) + os.pathsep + env["PATH"]
+    env["PATH"] = str(stubs) + os.pathsep + env["PATH"]
     env["RF_PYTHON_STUB"] = _p(python_stub)
     env["RF_FAKE_PAYLOAD"] = _p(tmp_path / "fake-appimagetool")
     env["RF_CURL_LOG"] = _p(tmp_path / "curl.log")

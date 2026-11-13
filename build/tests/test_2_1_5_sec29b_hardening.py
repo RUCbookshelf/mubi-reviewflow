@@ -137,7 +137,9 @@ class AuthExistingDbPermsPins(unittest.TestCase):
                     mock.patch.object(auth_mod.os, "chmod") as mchmod:
                 auth_mod._tighten_existing_db_permissions(db)
                 auth_mod._tighten_existing_db_permissions(db)
-            mchmod.assert_called_once_with(str(db.resolve()), 0o600)
+            # The resolved path deduplicates calls; chmod receives the original
+            # path, which can be a /var symlink or a Windows 8.3 alias.
+            mchmod.assert_called_once_with(str(db), 0o600)
 
     def test_tightened_db_without_group_bits_no_chmod(self):
         with tempfile.TemporaryDirectory() as tmp:

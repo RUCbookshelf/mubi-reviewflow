@@ -11,11 +11,13 @@
 6. 存储往返 + 幂等迁移（个人库 {slug}.db 的新表可加、旧版忽略）。
 7. PUT 未在册 tool / item / option → 400；link_only 工具不可写。
 
-档案路径：E:/mubi-reviewflow/out/appraisal_tools/dossiers/（逐字抄录的
-唯一权威来源）。
+原始档案置于仓库的 out/appraisal_tools/dossiers/，也可通过
+RF_APPRAISAL_DOSSIERS 指定。公开 CI 使用经过档案逐字核验的摘录指纹。
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -25,7 +27,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 fixture = tempfile.TemporaryDirectory(prefix="rf_215b_appraisal_")
 os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
 os.environ["REVIEWFLOW_MODE"] = "server"
@@ -39,7 +42,9 @@ from coscreen.models import Article  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
 from custom_backend.main import app  # noqa: E402
 
-DOSSIERS = Path("E:/mubi-reviewflow/out/appraisal_tools/dossiers")
+DOSSIER_OVERRIDE = os.environ.get("RF_APPRAISAL_DOSSIERS")
+DOSSIERS = (Path(DOSSIER_OVERRIDE) if DOSSIER_OVERRIDE
+            else REPO_ROOT / "out" / "appraisal_tools" / "dossiers")
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +92,66 @@ DOSSIER_COUNTS = [
 ]
 
 
-@unittest.skipUnless(Path("E:/mubi-reviewflow/out/appraisal_tools/dossiers").is_dir(), "官方评价工具逐字档案在本机 out/（版权原因不入库），CI 无此目录")
+# 摘录逐字与原始档案比对后锁定指纹。新增或修改摘录须先核对原档案。
+VERIFIED_EXCERPT_SHA256 = {
+    "casp-qualitative":
+        "8b6c8c694f1fa65b962e559c400000fa3cc85c7c1e58f0aae486914963172a1e",
+    "casp-rct":
+        "8b34015c3da0f23ecc5bfe5dead1a84982a73f7a8f069baba436203c3d22a758",
+    "casp-systematic-review":
+        "9fb8b194c72454a7ea03f87ce67888b0aa37017e92fe97ff5148870a9a246867",
+    "casp-case-control":
+        "b7d849c9549ecba75ccc64ba95a255077db70709528ffb35d20f232ec2d89370",
+    "casp-clinical-prediction-rule":
+        "0de16ca08ed691be407af7ddda60d804798778fc102c288577bc12c1c5126946",
+    "casp-cohort":
+        "75eb9b8c43003c2c874f442616b7e76c3c39569f77013ded83dddb634cf6dfad",
+    "casp-cross-sectional":
+        "3678a6c6d96bd8b72361850b7afd8d5aedca2502a864cd02a77c8422cabb35ae",
+    "casp-diagnostic":
+        "5ff71a42bd1a896ea73b364d94c140b8e87d98ba0751a98990479ac76b1e4ac8",
+    "casp-economic-evaluation":
+        "c61e33ec12ac9ccedbdcc3d1198b8a63538aead312d3576e87289850d02dcead",
+    "casp-systematic-review-meta-rct":
+        "4d9e4e7f6ccbd8bb66b60f4bbc594d451daa11927ed6bc64df3a929ce7251fec",
+    "casp-systematic-review-meta-observational":
+        "4c34d8b618449d30d4795a5fd31c91f7e54648bc69442f2b9bf0ffb837dc1306",
+    "rob2":
+        "e3036136bcfbaf7fb16e49e68de3bfd2fc5496ee3ffd2f08cc2d243b98edfbb5",
+    "mmat":
+        "fb9f6f3b3a534ab96fbfb77d6b45d9aeda59e5f74472bffb2f49c2ba9d26c870",
+    "axis":
+        "f7c72c7cfe5efbad1d5f36e3e7035d6696010ab8b813ace872239a36d337d88b",
+    "amstar2":
+        "4516550689e0145b8a752604c4e8ec32348e5350247cbe2d2fa640c4a91309ed",
+    "cerqual":
+        "aa3423a6ad341afdc901cf2e8ffdca292dbd49d47c22df3c8835064b21c3156e",
+    "amstar2-boxes":
+        "d7842f7fbf06f62d4d183116a85629c0aa86d3a38bffcc4baaafd0dd5f67d456",
+    "casp-notes":
+        "af39a00e793fa7e6a027bb45f960454c456fa9da89958926cd1966ee95fe12c7",
+    "cerqual-guidance":
+        "637d4b06a226a6b65ae176727d4d6ab3867d9fc183173a6eabd0f79d6a3d8784",
+    "rob2-algorithm":
+        "bf372c3a6c20d8675ccd07923e81dd8b093efd867ed94f83c49422a9b517527a",
+}
+
+
+def _assert_verified_excerpts(key, filename, excerpts):
+    if DOSSIER_OVERRIDE or DOSSIERS.is_dir():
+        dossier = DOSSIERS / filename
+        assert dossier.is_file(), f"权威档案缺失：{dossier}"
+        text = dossier.read_text(encoding="utf-8")
+        for phrase in _strings(excerpts):
+            assert phrase in text, f"{filename} 未逐字收录：{phrase!r}"
+
+    serialized = json.dumps(excerpts, ensure_ascii=False, sort_keys=True,
+                            separators=(",", ":"))
+    assert hashlib.sha256(serialized.encode("utf-8")).hexdigest() == (
+        VERIFIED_EXCERPT_SHA256[key]
+    ), f"{key} 的摘录有变动，请先与 {filename} 逐字核验"
+
+
 class TestRegistry:
     """混入类：注册表完整性（不依赖 TestClient）。"""
 
@@ -113,57 +177,57 @@ class TestRegistry:
 
     @pytest.mark.parametrize("tool_id,filename,items,questions", DOSSIER_COUNTS)
     def test_item_text_is_verbatim_from_dossier(self, tool_id, filename, items, questions):
-        """逐字抄录钉：每条条目原文必须是档案原文的子串。"""
-        dossier = DOSSIERS / filename
-        assert dossier.is_file(), f"权威档案缺失：{dossier}"
-        text = dossier.read_text(encoding="utf-8")
+        excerpts = {}
         for item in core.iter_items(core.REGISTRY[tool_id]):
-            source = item.get("source_text") or item["text"]
-            assert source in text, (
-                f"{tool_id} 条目 {item['id']} 未逐字出现在 {filename}：{source!r}")
+            phrases = [item.get("source_text") or item["text"]]
             parent = item.get("parent_text")
             if parent:
-                assert parent in text, (
-                    f"{tool_id} 条目 {item['id']} 的父问题未逐字出现在 {filename}")
+                phrases.append(parent)
+            excerpts[item["id"]] = phrases
+        _assert_verified_excerpts(tool_id, filename, excerpts)
 
     def test_rob2_algorithm_text_is_verbatim(self):
         """RoB 2 为 CC BY-NC-ND：算法表必须逐字，禁改写。"""
-        text = (DOSSIERS / "RoB2.md").read_text(encoding="utf-8")
         tool = core.REGISTRY["rob2"]
-        for domain in tool["domains"]:
-            for value in domain.get("algorithm_text", {}).values():
-                for phrase in _strings(value):
-                    assert phrase in text, (domain["id"], phrase[:80])
-            for variant in domain.get("variants", {}).values():
-                for value in variant["algorithm_text"].values():
-                    for phrase in _strings(value):
-                        assert phrase in text, (domain["id"], phrase[:80])
-        for key in ("low", "some_concerns", "high", "source"):
-            assert tool["overall_algorithm_text"][key] in text, key
+        excerpts = {
+            "domains": {
+                domain["id"]: {
+                    "algorithm": domain.get("algorithm_text", {}),
+                    "variants": {
+                        key: variant["algorithm_text"]
+                        for key, variant in domain.get("variants", {}).items()
+                    },
+                }
+                for domain in tool["domains"]
+            },
+            "overall": {
+                key: tool["overall_algorithm_text"][key]
+                for key in ("low", "some_concerns", "high", "source")
+            },
+        }
+        _assert_verified_excerpts("rob2-algorithm", "RoB2.md", excerpts)
 
     def test_amstar2_box_text_is_verbatim(self):
-        text = (DOSSIERS / "AMSTAR2.md").read_text(encoding="utf-8")
         tool = core.REGISTRY["amstar2"]
-        for phrase in tool["box1_text"]:
-            assert phrase in text, phrase
-        for value in tool["box2_text"].values():
-            for phrase in _strings(value):
-                assert phrase in text, phrase[:80]
+        excerpts = {"box1": tool["box1_text"], "box2": tool["box2_text"]}
+        _assert_verified_excerpts("amstar2-boxes", "AMSTAR2.md", excerpts)
 
     def test_casp_notes_are_verbatim(self):
         """CASP 的「不打总分」FAQ 说明按原文展示，不改写。"""
-        text = (DOSSIERS / "casp-qualitative.md").read_text(encoding="utf-8")
-        for note in core.REGISTRY["casp-qualitative"]["aggregation_notes"]:
-            assert note in text, note
+        notes = core.REGISTRY["casp-qualitative"]["aggregation_notes"]
+        _assert_verified_excerpts("casp-notes", "casp-qualitative.md", notes)
 
     def test_cerqual_official_text_is_verbatim(self):
-        text = (DOSSIERS / "CERQual.md").read_text(encoding="utf-8")
         tool = core.REGISTRY["cerqual"]
-        assert tool["official_overall_text"] in text
-        assert tool["rating_down_guidance"] in text
-        for template in tool["response_option_templates"].values():
-            prefix = template.split("{component}")[0].strip()
-            assert prefix in text, prefix
+        excerpts = {
+            "overall": tool["official_overall_text"],
+            "guidance": tool["rating_down_guidance"],
+            "options": {
+                key: template.split("{component}")[0].strip()
+                for key, template in tool["response_option_templates"].items()
+            },
+        }
+        _assert_verified_excerpts("cerqual-guidance", "CERQual.md", excerpts)
 
     def test_licenses_are_embeddable(self):
         expected = {

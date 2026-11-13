@@ -428,7 +428,8 @@ class SimulateFixtureBehaviorNail(unittest.TestCase):
             imp = subprocess.run(
                 [sys.executable, "-m", "coscreen", "import",
                  "--db", db, "--file", str(fixtures / "corpus.csv")],
-                cwd=str(REPO), capture_output=True, text=True, timeout=300,
+                cwd=str(REPO), capture_output=True, encoding="utf-8", timeout=300,
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"),
             )
             self.assertEqual(
                 imp.returncode, 0, f"import 失败:\n{imp.stdout}\n{imp.stderr}"
@@ -437,7 +438,8 @@ class SimulateFixtureBehaviorNail(unittest.TestCase):
                 [sys.executable, "-m", "coscreen", "simulate",
                  "--db", db, "--gold", str(fixtures / "gold.csv"),
                  "--strategy", "mixed", "--seed", "42", "--out", out],
-                cwd=str(REPO), capture_output=True, text=True, timeout=600,
+                cwd=str(REPO), capture_output=True, encoding="utf-8", timeout=600,
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"),
             )
             self.assertEqual(
                 sim.returncode, 0, f"simulate 失败:\n{sim.stdout}\n{sim.stderr}"
@@ -633,7 +635,8 @@ class PublicCorpusReproductionNail(unittest.TestCase):
                  "--strategy", "max", "--seed", "1", "--out", out],
             ):
                 proc = subprocess.run(
-                    args, cwd=str(REPO), capture_output=True, text=True, timeout=900
+                    args, cwd=str(REPO), capture_output=True, encoding="utf-8", timeout=900,
+                    env=dict(os.environ, PYTHONIOENCODING="utf-8"),
                 )
                 self.assertEqual(
                     proc.returncode, 0, f"{args[3]} 失败:\n{proc.stdout}\n{proc.stderr}"
@@ -687,7 +690,8 @@ class DCheckRunnerNail(unittest.TestCase):
     def test_d4_passes_via_shipped_runner(self) -> None:
         proc = subprocess.run(
             [sys.executable, str(METH / "fixtures" / "run_d_check.py"), "d4"],
-            cwd=str(REPO), capture_output=True, text=True, timeout=900,
+            cwd=str(REPO), capture_output=True, encoding="utf-8", timeout=900,
+            env=dict(os.environ, PYTHONIOENCODING="utf-8"),
         )
         self.assertEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
         self.assertIn("RESULT: ALL PASS", proc.stdout)

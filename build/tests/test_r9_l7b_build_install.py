@@ -231,9 +231,8 @@ def test_f1_38_nsi_has_bom_and_the_build_passes_inputcharset():
 
 @pytest.mark.skipif(not (MAKENSIS and CMD), reason="makensis not available")
 def test_f1_38_makensis_rejects_the_bomless_nsi_on_an_ansi_acp(tmp_path):
-    """Behaviour on REAL makensis 3.10 under the machine's ACP: the BOM-less
-    content aborts with a text-encoding error while the shipped file compiles.
-    RED at baseline (the shipped file was the failing bytes)."""
+    """Replay the reported CP936 failure with a real compiler, independent of
+    the runner's codepage. A BOM identifies the shipped file as UTF-8."""
     (tmp_path / "Output").mkdir()
     shutil.copy2(REPO / "build" / "icon.ico", tmp_path / "icon.ico")
     (tmp_path / "VERSION").write_text("2.1.4\n", encoding="utf-8")
@@ -243,11 +242,12 @@ def test_f1_38_makensis_rejects_the_bomless_nsi_on_an_ansi_acp(tmp_path):
     body = NSI.read_bytes()[3:]
     (tmp_path / "bad.nsi").write_bytes(body)
     (tmp_path / "good.nsi").write_bytes(b"\xef\xbb\xbf" + body)
-    bad = subprocess.run([MAKENSIS, "/DAPP_VERSION=2.1.4", "bad.nsi"], cwd=str(tmp_path),
+    compiler = [MAKENSIS, "/INPUTCHARSET", "CP936", "/DAPP_VERSION=2.1.4"]
+    bad = subprocess.run([*compiler, "bad.nsi"], cwd=str(tmp_path),
                          capture_output=True, text=True, errors="replace", timeout=300)
     assert bad.returncode != 0, "the BOM-less script compiled - the probe is not biting"
     assert "encoding" in (bad.stdout + bad.stderr).lower()
-    good = subprocess.run([MAKENSIS, "/DAPP_VERSION=2.1.4", "good.nsi"], cwd=str(tmp_path),
+    good = subprocess.run([*compiler, "good.nsi"], cwd=str(tmp_path),
                           capture_output=True, text=True, errors="replace", timeout=300)
     assert good.returncode == 0, good.stdout[-2000:] + good.stderr[-2000:]
 

@@ -72,9 +72,12 @@ def _isolate_data_dir() -> Path:
 
 
 def check_runtime_dependencies() -> None:
-    from windows_start import check_dependencies
+    from windows_start import COMMON_MODULES, check_dependencies
 
-    failures = check_dependencies()
+    # CI also runs this probe against the source tree on macOS/Linux. Match
+    # svg_render's actual backend on each OS; the Windows payload gate is unchanged.
+    failures = (check_dependencies() if sys.platform == 'win32'
+                else check_dependencies((*COMMON_MODULES, 'cairosvg')))
     check(not failures, f"运行依赖缺失：{failures}")
 
 

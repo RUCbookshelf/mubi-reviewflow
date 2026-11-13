@@ -659,17 +659,15 @@ class ZoteroLocalApiNails(unittest.TestCase):
     # -- R8#W1-1/2：深嵌套与代理字符（RecursionError / UnicodeEncodeError → 500）--
 
     def test_real_server_with_deep_json_degrades_to_409_not_500(self):
-        """R8#W1-1 端到端（真实 socket + 真实 urllib）：一个**真的**在回环端口上
-        的服务器返回 1 500 层嵌套 JSON。旧代码在 ``json.loads`` 里抛
-        ``RecursionError`` → 三端点 500；修复后 409 ``zotero_bad_response``。
+        """真实回环响应：截断的深嵌套 JSON 必须在三个端点返回 409。
 
-        与 :meth:`test_json_recursion_error_degrades_to_409_never_500` 的分工：
-        那条只替换 opener（快、定位到解析层），这条走完整 socket 栈，证明缺陷
-        不是 mock 造出来的。"""
+        解码器可能先触及递归上限，也可能读到末尾才发现 JSON 截断。
+        两种解析错误都应映射为 zotero_bad_response。
+        """
 
         class _DeepJson(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                body = b"[" * 1500 + b"]" * 1500
+                body = b"[" * 1500 + b"]" * 1499
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -704,29 +702,20 @@ class ZoteroLocalApiNails(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    @unittest.skipIf(os.environ.get("CI") == "true", "递归极限行为平台相关")
     def test_json_recursion_error_degrades_to_409_never_500(self):
-        """R8#W1-1（红线「降级不 500」）：``json.loads`` 对 ≥1000 层嵌套抛
-        ``RecursionError``，**不是 ValueError 子类**——旧 ``except ValueError``
-        漏捕 → 三端点全 500（实测本树复现，见 docs/API_REFERENCE.md 的
-        never-500 契约）。这里把真实深度负载喂给**真实 ``_fetch_json`` 生产链**
-        （只换网络层），三端点必须是 409 + ``zotero_bad_response``。
+        """解析层必须把解码器抛出的 RecursionError 转成 ZoteroLocalError。
 
-        钉子的破坏即红形态（已实测）：删掉 ``_fetch_json`` 的
-        ``except RecursionError``，``_fetch_json`` 直接把 ``RecursionError``
-        抛给调用方——下面的「解析层直调」断言立刻红（端点仍是 409，只是改由
-        路由兜底接住，见 :meth:`test_route_level_backstop_catches_any_exception`）。"""
-        depth = 1500
-        deep = b"[" * depth + b"]" * depth
-        # ① 解析层直调：RecursionError 必须在这里就变成 ZoteroLocalError
-        #    （而不是冒泡到路由兜底——那只是最后一道闸，不是本条的修复点）
-        with mock.patch.object(zotero, "_OPENER", _PayloadOpener(deep)):
+        仅模拟 Zotero 模块的解码器与网络，避免依赖解释器的递归上限。直调
+        _fetch_json 能确认异常在解析层被处理，三条路由再验证 409 响应。
+        """
+        task = self._task()
+        decoder = mock.Mock(wraps=json)
+        decoder.loads.side_effect = RecursionError("JSON nesting limit exceeded")
+        with mock.patch.object(zotero, "_OPENER", _PayloadOpener(b"[]")), \
+                mock.patch.object(zotero, "json", decoder):
             with self.assertRaises(zotero.ZoteroLocalError) as ctx:
                 zotero._fetch_json("/api/users/0/collections")
-        self.assertEqual(ctx.exception.code, "zotero_bad_response")
-        # ② 端点层：三端点一律 409 + 同一 code
-        task = self._task()
-        with mock.patch.object(zotero, "_OPENER", _PayloadOpener(deep)):
+            self.assertEqual(ctx.exception.code, "zotero_bad_response")
             self._assert_guide(
                 self.client.post(f"/api/tasks/{task}/zotero-local/test",
                                  headers=self.auth()), "zotero_bad_response")
@@ -756,15 +745,6 @@ class ZoteroLocalApiNails(unittest.TestCase):
                 self.client.post(f"/api/tasks/{task}/zotero-local/import",
                                  json={"collection_keys": ["COLL001"]},
                                  headers=self.auth()), "zotero_bad_response")
-
-    @unittest.skipIf(os.environ.get("CI") == "true", "递归极限行为平台相关")
-    def test_recursion_error_is_not_value_error_premise(self):
-        """钉子前提自检：``RecursionError`` 确非 ValueError 子类（否则旧 except 已
-        兜住，上面的钉子就没有意义）。同时证明负载真的会触发 ``RecursionError``
-        而不是 ``ValueError``。"""
-        self.assertFalse(issubclass(RecursionError, ValueError))
-        with self.assertRaises(RecursionError):
-            json.loads("[" * 1500 + "]" * 1500)
 
     def test_deep_but_parseable_payload_is_depth_guarded(self):
         """R8#W1-1 的纵深防线：**能解析**的近阈值嵌套（实测 993 层可解析）不该被

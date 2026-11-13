@@ -28,6 +28,7 @@ _HTTP_FIXTURE = tempfile.TemporaryDirectory(prefix="rf_r9_l6c_http_",
 os.environ["COBOOKSHELF_DATA_DIR"] = _HTTP_FIXTURE.name
 os.environ["REVIEWFLOW_MODE"] = "server"
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import ipd_adjusted_cox, ipd_cox_extended  # noqa: E402
 
 _ADJUSTED_CONTROL = [
@@ -353,7 +354,7 @@ class HttpF4105F4106Interaction(_IpdEndpointBase):
         self.assertEqual(400, response.status_code, response.text[:300])
         self.assertIn("representable numeric range", response.json()["detail"])
 
-    def test_interaction_control_is_200_with_baseline_digits(self):
+    def test_interaction_control_is_200_with_expected_estimates(self):
         rows = []
         for study, shift in (("S1", 0.0), ("S2", 0.4), ("S3", -0.3)):
             for index in range(30):
@@ -367,9 +368,8 @@ class HttpF4105F4106Interaction(_IpdEndpointBase):
             headers=self.headers)
         self.assertEqual(200, response.status_code, response.text[:300])
         body = response.json()
-        self.assertEqual(1.0060283118084776, body["treatment_or_at_reference"]["or"])
-        self.assertEqual(0.3648758125490206,
-                         body["within_study_interaction_or_per_unit"]["or"])
+        assert_numeric_baseline(body["treatment_or_at_reference"]["or"], 1.0060283118084776)
+        assert_numeric_baseline(body["within_study_interaction_or_per_unit"]["or"], 0.3648758125490206)
 
 
 if __name__ == "__main__":

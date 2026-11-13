@@ -144,9 +144,8 @@ rm -f "$ICONSET/icon_64x64.png"
 iconutil -c icns "$ICONSET" -o "$BUILD/work-macos/ReviewFlow.icns"
 
 # F1-7: PyInstaller used to take whatever architecture the runner happened to
-# have. The release matrix labels this artifact macos-x64 while `macos-14`
-# runners are arm64, so the DMG's real architecture was a property of the
-# machine, not of the release - and nothing downstream looked at the Mach-O.
+# have. The release matrix previously labelled an arm64 runner macos-x64, so
+# the DMG's real architecture could disagree with its label without a check.
 # The target is now derived from the HOST explicitly and passed to PyInstaller
 # (PyInstaller refuses to cross-build, so a mismatch is caught, not shipped),
 # and the frozen executable's architecture is asserted after the build.
@@ -165,6 +164,20 @@ TARGET_ARCH="$(resolve_target_arch "${REVIEWFLOW_MACOS_ARCH:-$(uname -m)}")" || 
   exit 1
 }
 
+cairo_args=()
+if [ -n "${REVIEWFLOW_CAIRO_LIB_DIR:-}" ]; then
+  cairo_dylib="$REVIEWFLOW_CAIRO_LIB_DIR/libcairo.2.dylib"
+  if [ ! -f "$cairo_dylib" ]; then
+    echo "ERROR: Cairo library is missing: $cairo_dylib" >&2
+    exit 1
+  fi
+  # CairoSVG uses CFFI to load Cairo dynamically. Collect the native library
+  # explicitly so the DMG does not depend on the build machine's Homebrew.
+  export DYLD_LIBRARY_PATH="$REVIEWFLOW_CAIRO_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+  "$PY" -c 'import cairosvg; cairosvg.svg2png(bytestring=b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>")'
+  cairo_args+=(--add-binary "$cairo_dylib:." --runtime-hook "$BUILD/macos_cairo_runtime.py")
+fi
+
 "$PY" -m PyInstaller \
   --noconfirm --clean --onedir --windowed --name "$APP_NAME" \
   --target-architecture "$TARGET_ARCH" \
@@ -176,6 +189,7 @@ TARGET_ARCH="$(resolve_target_arch "${REVIEWFLOW_MACOS_ARCH:-$(uname -m)}")" || 
   --collect-all scipy --collect-all sklearn --collect-all statsmodels \
   --collect-all pandas --collect-data babel \
   --hidden-import custom_backend.auth_recovery \
+  ${cairo_args[@]+"${cairo_args[@]}"} \
   "$BUILD/launcher.py" --distpath "$DIST" --workpath "$BUILD/work-macos/pyinstaller"
 
 APP="$DIST/$APP_NAME.app"
@@ -196,6 +210,12 @@ case " $FROZEN_ARCHS " in
     ;;
 esac
 echo "built architecture: $TARGET_ARCH"
+if [ -n "${REVIEWFLOW_CAIRO_LIB_DIR:-}" ]; then
+  test -f "$APP/Contents/Frameworks/libcairo.2.dylib"
+  env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+    "$FROZEN_EXE" --check-rasterizer
+  echo "bundled Cairo PNG export: OK"
+fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier edu.ruc.bookshelf.reviewflow" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUNDLE_VERSION" "$APP/Contents/Info.plist" || \
   /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $BUNDLE_VERSION" "$APP/Contents/Info.plist"

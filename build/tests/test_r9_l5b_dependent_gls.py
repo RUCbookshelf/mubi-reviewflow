@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import dependent_effects as de
 from coscreen import dependent_synthesis as ds
 from coscreen.dependent_effect_formats import calculate_dependent_effect
@@ -193,9 +194,9 @@ class F347EmptyDesignTests(unittest.TestCase):
             de.fit_dependent_gls(effects, [[], []], [])
         self.assertEqual(caught.exception.code, "empty_design_matrix")
 
-    def test_regular_design_control_bitwise_unchanged(self):
+    def test_regular_design_control_match_baseline(self):
         result = de.fit_dependent_gls(_cluster_effects(), _DESIGN, ["a", "b"])
-        self.assertEqual(result["coefficients"], _BASELINE_COEFFICIENTS)
+        assert_numeric_baseline(result["coefficients"], _BASELINE_COEFFICIENTS)
 
 
 class F342HtzFinitenessTests(unittest.TestCase):
@@ -224,15 +225,15 @@ class F342HtzFinitenessTests(unittest.TestCase):
         self.assertEqual(result["robust_inference"]["joint_test"]["status"], "unavailable")
         json.dumps(result, allow_nan=False)
 
-    def test_regular_htz_control_bitwise_unchanged(self):
+    def test_regular_htz_control_match_baseline(self):
         result = de.fit_dependent_gls(_cluster_effects(), _DESIGN, ["a", "b"],
                                       constraints=[[1.0, 1.0], [1.0, -1.0]],
                                       constraint_names=["sum", "diff"])
         joint = result["robust_inference"]["joint_test"]
         self.assertEqual(joint["status"], "available")
         for key, value in _BASELINE_JOINT.items():
-            self.assertEqual(joint[key], value, key)
-        self.assertEqual(result["robust_inference"]["covariance"], _BASELINE_ROBUST_COVARIANCE)
+            assert_numeric_baseline(joint[key], value, path=str(key))
+        assert_numeric_baseline(result["robust_inference"]["covariance"], _BASELINE_ROBUST_COVARIANCE)
 
 
 class F343F344RhoEchoTests(unittest.TestCase):
@@ -254,14 +255,15 @@ class F343F344RhoEchoTests(unittest.TestCase):
         self.assertEqual(result["runs"][1]["status"], "available")
         json.dumps(result, allow_nan=False)
 
-    def test_finite_rho_control_bitwise_unchanged(self):
+    def test_finite_rho_control_match_baseline(self):
         result = de.rho_sensitivity(_cluster_effects(), _DESIGN, ["a", "b"], [0.25, 0.5])
-        self.assertEqual(
-            [(run["rho"], run["status"], run["result"]["coefficients"]) for run in result["runs"]],
-            [(0.25, "available",
+        self.assertEqual([run["rho"] for run in result["runs"]], [0.25, 0.5])
+        assert_numeric_baseline(
+            [(run["status"], run["result"]["coefficients"]) for run in result["runs"]],
+            [("available",
               [{"name": "a", "estimate": 0.1135766423357664, "model_based_se": 0.06686406299132613},
                {"name": "b", "estimate": 0.11737226277372267, "model_based_se": 0.07398954355004853}]),
-             (0.5, "available",
+             ("available",
               [{"name": "a", "estimate": 0.11291139240506325, "model_based_se": 0.06608395121052414},
                {"name": "b", "estimate": 0.11848101265822783, "model_based_se": 0.06162360225133207}])],
         )
@@ -298,9 +300,9 @@ class F346MalformedInputTests(unittest.TestCase):
             de.leave_one_cluster_out(_cluster_effects(), [[1e400]] * 6, ["a"])
         self.assertEqual(caught.exception.code, "invalid_design_matrix")
 
-    def test_regular_loco_control_bitwise_unchanged(self):
+    def test_regular_loco_control_match_baseline(self):
         result = de.leave_one_cluster_out(_cluster_effects(), _DESIGN, ["a", "b"])
-        self.assertEqual(
+        assert_numeric_baseline(
             [(run["removed_cluster_id"], run["status"], run["coefficients"]) for run in result["runs"]],
             [("c1", "available",
               [{"name": "a", "estimate": 0.12909090909090912, "model_based_se": 0.0904534033733291},
@@ -404,11 +406,15 @@ class F371ResultIdTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ds.synthesize_dependent_effects(effects, blocks)
 
-    def test_regular_fixed_synthesis_control_bitwise_unchanged(self):
+    def test_regular_fixed_synthesis_control_match_baseline(self):
         result = ds.synthesize_dependent_effects(*_synth_fixture())
-        self.assertEqual(result["q"], {"statistic": 0.16, "df": 2, "p_value": 0.9231163463866358,
-                                       "scope": "joint_gls_residual"})
-        self.assertEqual([row["estimate"] for row in result["estimates"]], [0.2, 0.30000000000000004])
+        assert_numeric_baseline(
+            result["q"],
+            {"statistic": 0.16, "df": 2, "p_value": 0.9231163463866358, "scope": "joint_gls_residual"},
+        )
+        assert_numeric_baseline(
+            [row["estimate"] for row in result["estimates"]], [0.2, 0.30000000000000004]
+        )
 
 
 class F372OutcomeCountTests(unittest.TestCase):

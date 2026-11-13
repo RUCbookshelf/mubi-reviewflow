@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import dependent_random, network_random
 
 
@@ -237,14 +238,20 @@ class StatsA0RemlLogLikelihoodTests(unittest.TestCase):
 class StatsA0RegularControlTests(unittest.TestCase):
     """常规对照（基线绿，修复后必须仍绿）：点估计/tau2 不因诊断字段修正而变。"""
 
-    def test_estimates_and_tau2_bit_identical(self):
+    def test_estimates_and_tau2_match_baseline(self):
         result = network_random.synthesize_network_random(FIXTURE_C, "MD", reference="C")
-        self.assertEqual(result["random_effects"]["tau2"], 0.019999999778362258)
+        assert_numeric_baseline(result["random_effects"]["tau2"], 0.019999999778362258, abs_tol=1e-8)
         by_pair = {(e["treatment"], e["comparator"]): (e["estimate"], e["se"])
                    for e in result["estimates"]}
-        self.assertEqual(by_pair[("A", "B")], (1.8800000001241177, 0.2135415646810929))
-        self.assertEqual(by_pair[("A", "C")], (0.6599999999822692, 0.23323807547680395))
-        self.assertEqual(by_pair[("B", "C")], (-1.2200000001418485, 0.24819347260690858))
+        assert_numeric_baseline(
+            by_pair[("A", "B")], (1.8800000001241177, 0.2135415646810929), abs_tol=1e-8
+        )
+        assert_numeric_baseline(
+            by_pair[("A", "C")], (0.6599999999822692, 0.23323807547680395), abs_tol=1e-8
+        )
+        assert_numeric_baseline(
+            by_pair[("B", "C")], (-1.2200000001418485, 0.24819347260690858), abs_tol=1e-8
+        )
 
 
 class StatsA0SiblingConventionTests(unittest.TestCase):

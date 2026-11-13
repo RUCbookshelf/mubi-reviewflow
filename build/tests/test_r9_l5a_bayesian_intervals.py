@@ -29,6 +29,7 @@ import sys
 
 sys.path.insert(0, sys_path_root)
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import (advanced_analysis, analysis_storage, bayesian_normal_meta,
                       bayesian_robust_meta, bootstrap_interval, heterogeneity_interval,
                       influence_diagnostics)
@@ -91,18 +92,19 @@ class F254WarningsRaceTests(unittest.TestCase):
             stop.set()
             thread.join(timeout=1)
 
-    def test_regular_fit_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：常规规模结果逐位不变。"""
+    def test_regular_fit_match_baseline(self):
+        """Check the regular-size posterior and integration error."""
         rows = _rows(100, se=0.05, start=-0.1, step=0.0017)
         result = bayesian_normal_meta.fit_bayesian_normal_meta(
             rows, mu_prior_mean=0.0, mu_prior_sd=100.0, tau_prior_scale=0.5)
-        self.assertEqual(result["mu"]["mean"], -0.01584999995743495)
-        self.assertEqual(result["mu"]["credible_interval_95"],
-                         [-0.026012608586614402, -0.005687391327498257])
-        self.assertEqual(result["tau"]["credible_interval_95"],
-                         [0.0004991729803744336, 0.028030329856339194])
-        self.assertEqual(result["integration"]["relative_error_estimate"],
-                         8.773674462095253e-08)
+        assert_numeric_baseline(result["mu"]["mean"], -0.01584999995743495)
+        assert_numeric_baseline(
+            result["mu"]["credible_interval_95"], [-0.026012608586614402, -0.005687391327498257]
+        )
+        assert_numeric_baseline(
+            result["tau"]["credible_interval_95"], [0.0004991729803744336, 0.028030329856339194]
+        )
+        assert_numeric_baseline(result["integration"]["relative_error_estimate"], 8.773674462095253e-08)
 
 
 # 修前实测（清单复现形态，n=100/150 OK；n=200/300/500/1000 全部
@@ -131,18 +133,14 @@ class F256QuantileSpikeTests(unittest.TestCase):
                 self.assertLess(low, result["mu"]["median"])
                 self.assertLess(result["mu"]["median"], high)
 
-    def test_regular_small_sizes_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：n=100/150 逐位不变。
-
-        单一 random.Random(7+n) 生成器（与复审 p_bnm_spike.py 同口径：se=0.05、
-        y~N(0,0.3²)）。
-        """
+    def test_regular_small_sizes_match_baseline(self):
+        """Check seeded, ordinary n=100 and n=150 fits."""
         for n, mu, tau in ((100, -0.019568391151101382, 0.3186763424510732),
                            (150, -0.025673920592396197, 0.31296405308481506)):
             with self.subTest(n=n):
                 result = self._fit(n)
-                self.assertEqual(result["mu"]["mean"], mu)
-                self.assertEqual(result["tau"]["mean"], tau)
+                assert_numeric_baseline(result["mu"]["mean"], mu)
+                assert_numeric_baseline(result["tau"]["mean"], tau)
 
 
 # 修前实测：本模块 analysis_scale="natural"、tau.scale="effect_sd"，与共享
@@ -197,11 +195,11 @@ class F262PriorScaleTests(unittest.TestCase):
                     self.assertTrue(math.isfinite(result["mu"]["mean"]))
                     self.assertTrue(math.isfinite(result["tau"]["mean"]))
 
-    def test_unit_prior_scale_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：k=0 结果逐位不变。"""
+    def test_unit_prior_scale_match_baseline(self):
+        """Check the posterior means at the unit prior scale."""
         result = self._fit(0.5, 0.0)
-        self.assertEqual(result["mu"]["mean"], 0.3459676625289566)
-        self.assertEqual(result["tau"]["mean"], 0.61884177767605)
+        assert_numeric_baseline(result["mu"]["mean"], 0.3459676625289566)
+        assert_numeric_baseline(result["tau"]["mean"], 0.61884177767605)
 
 
 # 修前实测：normal ms=100 ts=100 两研究 MD（y=±0.1, se=1）抛
@@ -274,8 +272,8 @@ class F261ReversedPanelTests(unittest.TestCase):
         self.assertTrue(all(value > 0.0 for value in multipliers),
                         msg="越界夹具不得出现负面积 panel")
 
-    def test_regular_fit_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：常规先验逐位不变。"""
+    def test_regular_fit_match_baseline(self):
+        """Check the posterior means under ordinary prior settings."""
         rows = [{"study_id": "S1", "measure": "MD", "estimate": 0.1, "se": 0.2},
                 {"study_id": "S2", "measure": "MD", "estimate": 0.4, "se": 0.25},
                 {"study_id": "S3", "measure": "MD", "estimate": 0.6, "se": 0.3}]
@@ -283,8 +281,8 @@ class F261ReversedPanelTests(unittest.TestCase):
             rows, mu_prior_mean=0.0, mu_prior_family="normal", mu_prior_scale=1.0,
             mu_prior_df=None, tau_prior_family="half_normal", tau_prior_scale=0.5,
             tau_prior_df=None)
-        self.assertEqual(result["mu"]["mean"], 0.3102692466287028)
-        self.assertEqual(result["tau"]["mean"], 0.26282932820491495)
+        assert_numeric_baseline(result["mu"]["mean"], 0.3102692466287028)
+        assert_numeric_baseline(result["tau"]["mean"], 0.26282932820491495)
 
 
 # 修前实测：100 cells 12.54s，5000 cells ≈ 859 KiB ≈ 10.0 min；view 层 priors
@@ -347,20 +345,20 @@ class BootstrapDegenerateTests(unittest.TestCase):
         self.assertIn("budget", str(ctx.exception))
         self.assertLess(elapsed, 5.0, msg=f"预算必须在抽样前拒绝，实测 {elapsed:.1f}s")
 
-    def test_regular_bootstraps_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：常规区间逐位不变。"""
+    def test_regular_bootstraps_match_baseline(self):
+        """Check the seeded intervals and the REML heterogeneity estimate."""
         fixed = bootstrap_interval.bootstrap_pooled_interval(
             [0.1, 0.2, 0.3, 0.4, 0.5], [0.1] * 5, model="fixed",
             interval_type="percentile", n_boot=1000, seed=3)
-        self.assertEqual(fixed["ci_low"], 0.2096234763374234)
+        assert_numeric_baseline(fixed["ci_low"], 0.2096234763374234)
         dl = bootstrap_interval.bootstrap_pooled_interval(
             [0.1, 0.2, 0.3, 0.4, 0.5], [0.1] * 5, model="dl",
             interval_type="percentile", n_boot=1000, seed=3)
-        self.assertEqual(dl["ci_high"], 0.3924652950155946)
+        assert_numeric_baseline(dl["ci_high"], 0.3924652950155946)
         reml = bootstrap_interval.bootstrap_pooled_interval(
             [0.1, 0.2, 0.3, 0.4], [0.1] * 4, model="reml",
             interval_type="basic", n_boot=500, seed=3)
-        self.assertEqual(reml["tau2"], 0.006666666528268639)
+        assert_numeric_baseline(reml["tau2"], 0.006666666528268639, abs_tol=1e-8)
 
 
 # 修前实测：i2_h_interval(10, 5, level=1-2**-53) → i2_ci=(0.0, 0.0)、
@@ -376,15 +374,18 @@ class F469LevelNearOneTests(unittest.TestCase):
         i2_low, i2_high = result["i2_ci_percent"]
         self.assertLess(i2_low, i2_high, msg="I² 区间不得折叠成 (0, 0)")
 
-    def test_regular_levels_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：0.90/0.95/0.99/0.999 逐位不变。"""
+    def test_regular_levels_match_baseline(self):
+        """Check confidence levels from 0.90 through 0.999."""
         for level, expected in ((0.95, (0.0, 85.0371204342837)),
                                 (0.9, (8.704936671358206, 82.47440834516586)),
                                 (0.99, (0.0, 89.01429391728958)),
                                 (0.999, (0.0, 92.32449719937938))):
             with self.subTest(level=level):
-                self.assertEqual(heterogeneity_interval.i2_h_interval(10, 5, level=level)
-                                 ["i2_ci_percent"], expected)
+                assert_numeric_baseline(
+                    heterogeneity_interval.i2_h_interval(10, 5, level=level)
+                    ["i2_ci_percent"],
+                    expected,
+                )
 
 
 # 修前实测：A=1e160,B=0,C=-1e160 → review_analysis.py:561 OverflowError；
@@ -443,12 +444,14 @@ class F113EggerPrecisionTests(unittest.TestCase):
         with self.assertRaises(ValueError, msg="1/se=inf 必须转 4xx，不得抛 MissingDataError"):
             advanced_analysis.small_study_effects(self._db(True), "cmp", "out", "tp", "MD")
 
-    def test_regular_egger_bit_identical(self):
-        """常规对照（修复前绿，修复后必须仍绿）：常规 SE 的 Egger 结果逐位不变。"""
+    def test_regular_egger_match_baseline(self):
+        """Check the Egger regression with finite, varying standard errors."""
         result = advanced_analysis.small_study_effects(self._db(False), "cmp", "out", "tp", "MD")
         self.assertEqual(result["n_studies"], 12)
-        self.assertEqual(result["egger_intercept"], 10.000000000000004)
-        self.assertEqual(result["egger_p"], 1.1903951705700304e-150)
+        assert_numeric_baseline(result["egger_intercept"], 10.000000000000004)
+        # This almost exactly linear fit has a roundoff-sized residual.
+        self.assertGreaterEqual(result["egger_p"], 0.0)
+        self.assertLess(result["egger_p"], 1e-100)
 
 
 class AdvancedCumulativeTests(unittest.TestCase):

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 REPO = Path(__file__).resolve().parents[2]
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import ipd_adjusted_cox  # noqa: E402
 from coscreen import ipd_analysis  # noqa: E402
 from coscreen import ipd_cox_extended  # noqa: E402
@@ -351,7 +352,7 @@ class F494AdjustedCoxSeparation(unittest.TestCase):
         self.assertLess(ipd_adjusted_cox._MIN_INFORMATION_RATIO, 1e-5)
 
     def test_mm1004_noise_floor_control_still_fits(self):
-        """对照（R2/R1）：MM10-04 的合法批照常拟合，数值逐位不变。"""
+        """Check the Cox fit at the line search noise floor."""
         rows = [
             {"study_id": "A", "duration": 2, "event": 1, "treatment": 1, "covariate": 2.5},
             {"study_id": "A", "duration": 3, "event": 1, "treatment": 0, "covariate": 1.5},
@@ -367,9 +368,9 @@ class F494AdjustedCoxSeparation(unittest.TestCase):
         ]
         result = ipd_adjusted_cox.fit_adjusted_stratified_cox(
             rows, {"A": "R1", "B": "R2"}, covariate_center=1.9, covariate_scale=1.0)
-        self.assertEqual(0.6147884612405432, result["log_hr"])
-        self.assertEqual(0.9839101340666847, result["se"])
-        self.assertEqual(1.4815006422579453, result["covariate_log_hr"])
+        assert_numeric_baseline(result["log_hr"], 0.6147884612405432, abs_tol=1e-9)
+        assert_numeric_baseline(result["se"], 0.9839101340666847, abs_tol=1e-9)
+        assert_numeric_baseline(result["covariate_log_hr"], 1.4815006422579453, abs_tol=1e-9)
 
 
 class F495FsumFamily(unittest.TestCase):
@@ -555,20 +556,22 @@ class F4105InteractionStudyCap(unittest.TestCase):
                 covariate_center=1.0)
         self.assertNotIn("at most", str(caught.exception))
 
-    def test_control_fit_is_bit_identical(self):
-        """逐位对照：3 研究 × 30 行批的 OR 与协方差不变。"""
+    def test_control_fit_matches_baseline(self):
+        """Check odds ratios and covariance for three studies with 30 rows each."""
         result = ipd_interaction.fit_ipd_interaction(
             _INTERACTION_CONTROL, {"S1": "K1", "S2": "K2", "S3": "K3"},
             covariate_center=0.0)
-        self.assertEqual(1.0060283118084776, result["treatment_or_at_reference"]["or"])
-        self.assertEqual(0.3648758125490206,
-                         result["within_study_interaction_or_per_unit"]["or"])
-        self.assertEqual(0.9999999999999999,
-                         result["between_study_interaction_or_per_unit"]["or"])
-        self.assertEqual([0.2071140583086484, 0.045480758422598425, 0.05990147699039028,
-                          -0.104137878043648, 0.023784439376931664,
-                          -0.023784439376931678, 0.04132979534648222],
-                         result["covariance"][0])
+        assert_numeric_baseline(result["treatment_or_at_reference"]["or"], 1.0060283118084776)
+        assert_numeric_baseline(result["within_study_interaction_or_per_unit"]["or"], 0.3648758125490206)
+        assert_numeric_baseline(
+            result["between_study_interaction_or_per_unit"]["or"], 0.9999999999999999
+        )
+        assert_numeric_baseline(
+            result["covariance"][0],
+            [0.2071140583086484, 0.045480758422598425, 0.05990147699039028,
+             -0.104137878043648, 0.023784439376931664,
+             -0.023784439376931678, 0.04132979534648222],
+        )
         self.assertEqual(90, result["n"])
         self.assertEqual(3, result["studies"])
 

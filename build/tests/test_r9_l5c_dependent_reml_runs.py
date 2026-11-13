@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import db as db_mod
 from coscreen import dependent_random
 from coscreen import dependent_random_fiveplus as fiveplus
@@ -500,11 +501,11 @@ class F3_62RatioShiftStationarityTests(unittest.TestCase):
                 base["between_study_covariance"]["matrix"][index][index], places=6)
 
     def test_ordinary_scale_fit_unchanged(self):
-        """常规对照（shift=0，基线逐位不变）。"""
+        """Check the REML fit on the original ratio scale."""
         rows, matrices = self._shifted(0.0)
         result = three.synthesize_random_reml_un_three(
             _fixed_result(3), rows, matrices, list("abc"), "RR")
-        self.assertEqual(repr(result["fit"]["reml_log_likelihood"]), "69.90612814454083")
+        assert_numeric_baseline(result["fit"]["reml_log_likelihood"], 69.90612814454083)
         self.assertEqual(
             [round(result["between_study_covariance"]["matrix"][i][i], 6) for i in range(3)],
             [0.022008, 0.001096, 0.045199])

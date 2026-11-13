@@ -14,15 +14,15 @@ import tempfile
 import traceback
 
 APP = Path(__file__).resolve().parent
-MODULES = ('fastapi', 'uvicorn', 'multipart', 'jwt', 'passlib', 'bcrypt',
-           'pandas', 'rispy', 'rapidfuzz', 'pypdf', 'numpy', 'scipy.stats',
-           'statsmodels.api', 'sklearn.svm', 'docx', 'pptx', 'PIL.Image',
-           'svglib.svglib', 'reportlab.graphics.renderPM', '_rl_renderPM')
+COMMON_MODULES = ('fastapi', 'uvicorn', 'multipart', 'jwt', 'passlib', 'bcrypt',
+                  'pandas', 'rispy', 'rapidfuzz', 'pypdf', 'numpy', 'scipy.stats',
+                  'statsmodels.api', 'sklearn.svm', 'docx', 'pptx', 'PIL.Image')
+MODULES = COMMON_MODULES + ('svglib.svglib', 'reportlab.graphics.renderPM', '_rl_renderPM')
 
 
-def check_dependencies() -> list[str]:
+def check_dependencies(modules=MODULES) -> list[str]:
     failures = []
-    for name in MODULES:
+    for name in modules:
         try:
             importlib.import_module(name)
         except Exception as exc:

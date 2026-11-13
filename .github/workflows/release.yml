@@ -30,10 +30,7 @@ jobs:
             runner: windows-2022
             command: windows
             artifact: ReviewFlow-Setup-x64.exe
-          - platform: macos-x64
-            # macos-14 镜像 2026-11-02 被 GitHub 退役（runner-images #13518），
-            # 别名解析到停供配置 macos-14-arm64-us-default → "not supported"。
-            # macos-15=arm64 默认（与 macos-14 同构）。
+          - platform: macos-arm64
             runner: macos-15
             command: macos
             artifact: ReviewFlow.dmg
@@ -57,6 +54,14 @@ jobs:
       - name: Install Linux build dependencies
         if: matrix.command == 'linux'
         run: sudo apt-get update && sudo apt-get install -y libcairo2-dev pkg-config libfuse2
+      - name: Install macOS Cairo rendering library
+        if: matrix.command == 'macos'
+        shell: bash
+        run: |
+          brew install cairo
+          cairo_lib="$(brew --prefix cairo)/lib"
+          test -f "$cairo_lib/libcairo.2.dylib"
+          echo "REVIEWFLOW_CAIRO_LIB_DIR=$cairo_lib" >> "$GITHUB_ENV"
       - name: Install Windows installer compiler
         if: matrix.command == 'windows'
         run: choco install innosetup --yes --no-progress
@@ -66,6 +71,8 @@ jobs:
         run: build\build_windows.bat __inner__
       - name: Build macOS disk image
         if: matrix.command == 'macos'
+        env:
+          REVIEWFLOW_MACOS_ARCH: arm64
         run: bash build/build_macos.sh
       - name: Build Linux AppImage
         if: matrix.command == 'linux'
@@ -106,6 +113,7 @@ jobs:
       - name: Run static validators
         shell: bash
         env:
+          PYTHONUTF8: "1"
           # r9 系测试的可写根：本地缺省 E:/rf214tmp（本波期 C: 盘满的历史
           # 原因），CI 无 E: 盘——模块级 mkdir 在收集期直接 FileNotFoundError
           # （2026-11-13 windows-x64 实红）。五个 r9 文件统一走此逃生门。
@@ -122,6 +130,9 @@ jobs:
           # validators and is not part of the runtime requirements file;
           # pyyaml is used by build/tests/test_r7_luna_release_static.py (L-03).
           python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest pyyaml
+          if [ "${{ matrix.command }}" = macos ]; then
+            export DYLD_LIBRARY_PATH="$REVIEWFLOW_CAIRO_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          fi
           # MM8-02: the test suite (1,222+ assertions) runs in CI before the
           # validators; any failure fails the job.
           # P2（发布前对抗审查 2026-11-11）：与本地门禁的分段口径对齐——
@@ -222,16 +233,21 @@ jobs:
             echo "::error::trigger tag ${GITHUB_REF} does not match VERSION ${APP_VERSION}; refusing to publish" >&2
             exit 1
           fi
-          existing="$(git ls-remote origin "refs/tags/v${APP_VERSION}")"
+          tag_ref="refs/tags/v${APP_VERSION}"
+          existing="$(git ls-remote origin "$tag_ref" "${tag_ref}^{}")"
           if [ -n "$existing" ]; then
-            current="${existing%%[[:space:]]*}"
+            # An annotated tag has a tag object and a peeled commit. A
+            # lightweight tag has only the commit row. Prefer the peeled row.
+            current="$(awk -v ref="$tag_ref" '$2 == ref { raw = $1 } $2 == (ref "^{}") { peeled = $1 } END { print (peeled == "" ? raw : peeled) }' <<< "$existing")"
             if [ "$current" != "$GITHUB_SHA" ]; then
               echo "::error::tag v${APP_VERSION} already exists at ${current}; refusing to move it to ${GITHUB_SHA}. Bump VERSION or delete the tag deliberately." >&2
               exit 1
             fi
+          else
+            # A non-forced push refuses a conflicting tag created concurrently.
+            git tag "v${APP_VERSION}" "$GITHUB_SHA"
+            git push origin "$tag_ref"
           fi
-          git tag -f "v${APP_VERSION}" "$GITHUB_SHA"
-          git push origin "refs/tags/v${APP_VERSION}" --force
       - name: Create versioned release and upload installers
         uses: softprops/action-gh-release@v2
         with:

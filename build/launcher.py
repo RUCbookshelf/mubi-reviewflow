@@ -649,4 +649,11 @@ def main(process_lock=None) -> int:
 
 
 if __name__ == "__main__":
+    if sys.platform == "darwin" and sys.argv[1:] == ["--check-rasterizer"]:
+        from coscreen.svg_render import svg_to_png
+
+        png = svg_to_png(
+            b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
+            b'<rect width="10" height="10" fill="red"/></svg>', 20)
+        sys.exit(0 if png.startswith(b"\x89PNG\r\n\x1a\n") else 1)
     sys.exit(main())

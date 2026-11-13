@@ -557,7 +557,8 @@ def _run_cli_subprocess(args: list[str]) -> subprocess.CompletedProcess:
     """真实子进程链路：``python -m coscreen``（端到端锚专用，冷启动 ~2s）。"""
     return subprocess.run(
         [sys.executable, "-m", "coscreen", *args],
-        capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+        capture_output=True, encoding="utf-8", cwd=str(Path(__file__).resolve().parents[2]),
+        env=dict(os.environ, PYTHONIOENCODING="utf-8"),
     )
 
 

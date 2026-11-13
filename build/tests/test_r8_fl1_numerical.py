@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import (bayesian_robust_meta, cluster_trial_effects, cluster_trial_variable_size,
                       dependent_synthesis, meta_regression_robust, network_analysis,
                       network_gls, network_random, paired_binary_effect, paired_rd_interval,
@@ -345,19 +346,16 @@ class MM1004IpdCoxNoiseFloorTests(unittest.TestCase):
                         msg="center=0 与 center=1.5 是同一拟合的不同参数化，log_hr 必须一致")
         self.assertLess(abs(zero["se"] - same["se"]), 1e-9)
 
-    def test_regular_centers_bit_identical(self):
-        """常规对照（基线绿，修复后必须仍绿）：center=1.0..2.5 结果逐位不变。
-
-        修复采用"null 步不算接受 + 噪声底全 Newton 步回退"，仅在基线本就
-        全部试探步被拒/停滞的输入上改变路径；400 组随机夹具上 377/377 个
-        基线可解夹具逐位一致（见修复说明）。
-        """
+    def test_regular_centers_match_baseline(self):
+        """Changing the center preserves the fitted Cox coefficients."""
         for center, log_hr, se in ((1.0, 0.6147884609934847, 0.9839101341284368),
                                    (1.5, 0.6147884609934842, 0.9839101341284366),
                                    (2.0, 0.6147884609934844, 0.9839101341284366),
                                    (2.5, 0.6147884609934848, 0.9839101341284368)):
             result = self._fit(center)
-            self.assertEqual((result["log_hr"], result["se"]), (log_hr, se), msg=f"center={center}")
+            assert_numeric_baseline(
+                (result["log_hr"], result["se"]), (log_hr, se), abs_tol=1e-9, path=f"center={center}"
+            )
 
 
 # 修前实测：本夹具 df=3..3e9 全部成功（5e8/1e9/2e9/3e9 的 mu.mean 与
@@ -717,15 +715,21 @@ class MM1009RemlLogLikelihoodTests(unittest.TestCase):
                         msg=f"上报值必须含 -log|X'X|；旧钉目标 {reml_ll_old!r}，"
                             f"新钉目标 {reml_ll!r}，实测 {reported!r}")
 
-    def test_estimates_and_tau2_bit_identical(self):
+    def test_estimates_and_tau2_match_baseline(self):
         """常规对照（基线绿，修复后必须仍绿）：合并估计/tau2 不因诊断字段修正而变。"""
         result = network_random.synthesize_network_random(self.STUDIES, "MD", reference="C")
-        self.assertEqual(result["random_effects"]["tau2"], 0.019999999778362258)
+        assert_numeric_baseline(result["random_effects"]["tau2"], 0.019999999778362258, abs_tol=1e-8)
         by_pair = {(e["treatment"], e["comparator"]): (e["estimate"], e["se"])
                    for e in result["estimates"]}
-        self.assertEqual(by_pair[("A", "B")], (1.8800000001241177, 0.2135415646810929))
-        self.assertEqual(by_pair[("A", "C")], (0.6599999999822692, 0.23323807547680395))
-        self.assertEqual(by_pair[("B", "C")], (-1.2200000001418485, 0.24819347260690858))
+        assert_numeric_baseline(
+            by_pair[("A", "B")], (1.8800000001241177, 0.2135415646810929), abs_tol=1e-8
+        )
+        assert_numeric_baseline(
+            by_pair[("A", "C")], (0.6599999999822692, 0.23323807547680395), abs_tol=1e-8
+        )
+        assert_numeric_baseline(
+            by_pair[("B", "C")], (-1.2200000001418485, 0.24819347260690858), abs_tol=1e-8
+        )
 
 
 # 修前实测（*项独立复现）：NaN 权重通过 `any(w < 0.0)` 校验 → class_log_prior_

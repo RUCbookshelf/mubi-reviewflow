@@ -157,12 +157,12 @@ def _run_build(tree: Path, stubs: Path, tmp_path: Path, python_stub: Path) -> tu
     curl_log = tmp_path / "curl.log"
     tool_log = tmp_path / "tool.log"
     env = dict(os.environ)
-    env["PATH"] = str(stubs) + os.pathsep + env["PATH"]
     # MM9-07: build_linux.sh now runs the JavaScript validators via `node`;
-    # make the discovered node visible on the stubbed PATH (no-op when node
-    # already is on PATH, e.g. on CI runners).
+    # add the discovered node, but keep stubs first: Homebrew's bin directory
+    # can also contain python3 and curl.
     if NODE and os.path.exists(NODE):
         env["PATH"] = str(Path(NODE).parent) + os.pathsep + env["PATH"]
+    env["PATH"] = str(stubs) + os.pathsep + env["PATH"]
     env["RF_PYTHON_STUB"] = _p(python_stub)
     env["RF_FAKE_PAYLOAD"] = _p(tmp_path / "fake-appimagetool")
     env["RF_CURL_LOG"] = _p(curl_log)

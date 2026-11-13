@@ -52,6 +52,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -293,14 +294,19 @@ class TestRepairHoldsInstanceLock:
 
 
 _LOCK_HOLDER = r"""
-import msvcrt, sys, time
+import sys, time
 path, seconds = sys.argv[1], float(sys.argv[2])
 handle = open(path, "a+b")
-handle.seek(0)
-if not handle.read(1):
-    handle.seek(0); handle.write(b"\0"); handle.flush()
-handle.seek(0)
-msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+if sys.platform == "win32":
+    import msvcrt
+    handle.seek(0)
+    if not handle.read(1):
+        handle.seek(0); handle.write(b"\0"); handle.flush()
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+else:
+    import fcntl
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 print("LOCKED", flush=True)
 time.sleep(seconds)
 """
@@ -355,7 +361,7 @@ class TestLocalAppDataRoot:
     """修前：``LOCALAPPDATA=''`` → ``Path('')/'ReviewFlow'`` 相对路径，
     日志/overlay 落进安装目录或裸崩（mkdir 在 try 之外）。"""
 
-    def test_empty_localappdata_is_absolute(self, monkeypatch):
+    def test_empty_localappdata_is_absolute(self, monkeypatch, tmp_path):
         ws = load("ws_root", BUILD / "windows_start.py")
         monkeypatch.setenv("LOCALAPPDATA", "")
         root = ws.user_root()
@@ -363,8 +369,9 @@ class TestLocalAppDataRoot:
         assert root.name == "ReviewFlow"
         assert root.parent.name == "Local", root
         # 对照组：正常值原样使用
-        monkeypatch.setenv("LOCALAPPDATA", str(Path("C:/Users/example/AppData/Local")))
-        assert ws.user_root() == Path("C:/Users/example/AppData/Local") / "ReviewFlow"
+        absolute = tmp_path / "AppData" / "Local"
+        monkeypatch.setenv("LOCALAPPDATA", str(absolute))
+        assert ws.user_root() == absolute / "ReviewFlow"
 
     def test_relative_localappdata_falls_back(self, monkeypatch):
         ws = load("ws_root2", BUILD / "windows_start.py")
@@ -375,10 +382,15 @@ class TestLocalAppDataRoot:
         """启动器的默认数据目录也要落回绝对路径（同一族口径）。"""
         launcher = importlib.reload(importlib.import_module("launcher"))
         monkeypatch.setattr(launcher, "APP_DIR", tmp_path / "payload")
+        # Exercise the Windows path rule on every runner without changing global
+        # sys.platform or allowing mkdir to touch the real user profile.
+        monkeypatch.setattr(launcher, "sys", SimpleNamespace(platform="win32"))
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setenv("LOCALAPPDATA", "")
         resolved = launcher.default_data_dir()
-        assert resolved.is_absolute(), resolved
-        assert resolved.name == "ReviewFlow"
+        assert resolved == home / "AppData" / "Local" / "ReviewFlow"
         absolute = tmp_path / "AppData" / "Local"
         absolute.mkdir(parents=True)
         monkeypatch.setenv("LOCALAPPDATA", str(absolute))
@@ -630,17 +642,13 @@ class TestPortSelectionAndIdentity:
         assert launcher._bind_host() == "127.0.0.1"
         assert launcher._client_host() == "127.0.0.1"
 
-        monkeypatch.setenv("REVIEWFLOW_HOST", "127.0.0.2")
-        assert launcher._bind_host() == "127.0.0.2"
-        port = free_port()
-        probe = launcher._bind_probe_socket(launcher._bind_host(), port)
-        try:
-            assert probe.getsockname()[0] == "127.0.0.2", probe.getsockname()
-        finally:
-            probe.close()
-
-        # 通配绑定：探测落到环回，而 URL 仍指向可访问的地址
+        # A wildcard is a portable non-default bind address; 127.0.0.2 is
+        # not assigned on the macOS runners. Use an OS-allocated port.
         monkeypatch.setenv("REVIEWFLOW_HOST", "0.0.0.0")
+        assert launcher._bind_host() == "0.0.0.0"
+        with launcher._bind_probe_socket(launcher._bind_host(), 0) as probe:
+            assert probe.getsockname()[0] == "0.0.0.0", probe.getsockname()
+        # 通配绑定：客户端 URL 仍指向可访问的环回地址
         assert launcher._client_host() == "127.0.0.1"
         # IPv6 字面量要加方括号，否则 URL 非法
         assert launcher._url_host("::1") == "[::1]"

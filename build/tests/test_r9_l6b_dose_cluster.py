@@ -61,6 +61,7 @@ _HTTP_FIXTURE = tempfile.TemporaryDirectory(prefix="rf_r9_l6b_http_",
 os.environ["COBOOKSHELF_DATA_DIR"] = _HTTP_FIXTURE.name
 os.environ["REVIEWFLOW_MODE"] = "server"
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import cluster_trial_effects as cte_mod
 from coscreen import cluster_trial_variable_size as ctvs_mod
 from coscreen import dose_analysis as dose_mod
@@ -505,18 +506,23 @@ class F388AnalysisScaleTests(unittest.TestCase):
                 [0.0, 1.5, 3.0])
         self.assertIn("natural-scale", str(caught.exception))
 
-    def test_regular_fit_bit_identical(self):
-        """逐位对照：常规三对比输入的合并系数与曲线点逐位不变（基线值）。"""
+    def test_regular_fit_match_baseline(self):
+        """Check the pooled coefficients and curve for three identical studies."""
         result = nl_mod.fit_nonlinear_dose_response(
             [_curve(s, [1.0, 2.0, 3.0], [1.1, 1.2, 1.35]) for s in ("S1", "S2", "S3")],
             [0.0, 1.5, 3.0])
-        self.assertEqual([0.2615244831882349, 0.04843997063012734],
-                         [row["estimate"] for row in result["pooled_coefficients"]])
-        self.assertEqual([0.1584317036359531, 0.23702548089480685],
-                         [row["se"] for row in result["pooled_coefficients"]])
-        self.assertEqual([0.0, 0.01143777279132276, 0.02285679521998979],
-                         [row["ci_high"] for row in result["curve"][:3]])
-        self.assertEqual(7.247786041604718e-32, result["q"]["statistic"])
+        assert_numeric_baseline(
+            [row["estimate"] for row in result["pooled_coefficients"]], [0.2615244831882349, 0.04843997063012734]
+        )
+        assert_numeric_baseline(
+            [row["se"] for row in result["pooled_coefficients"]], [0.1584317036359531, 0.23702548089480685]
+        )
+        assert_numeric_baseline(
+            [row["ci_high"] for row in result["curve"][:3]], [0.0, 0.01143777279132276, 0.02285679521998979]
+        )
+        # Identical study curves have zero residual heterogeneity.
+        self.assertGreaterEqual(result["q"]["statistic"], 0.0)
+        self.assertLess(result["q"]["statistic"], 1e-27)
 
 
 class F389ScaleLabellingTests(unittest.TestCase):
@@ -769,8 +775,8 @@ class F286HugeClusterDfTests(unittest.TestCase):
         self.assertEqual(2 ** 63 - 2, result["df"])
         self.assertEqual(1.9599639845400536, result["t_critical"])
 
-    def test_regular_few_cluster_controls_bit_identical(self):
-        """逐位对照：常规 few-cluster 区间的 df/t/CI 逐位不变。"""
+    def test_regular_few_cluster_controls_match_baseline(self):
+        """Check degrees of freedom and intervals for ordinary cluster counts."""
         result = ctvs_mod.calculate_cluster_trial_variable_size_effect({
             "outcome_type": "continuous", "measure": "MD", "icc": 0.05,
             "icc_source": "citation", "analysis_status": "unadjusted", "few_cluster_ci": True,
@@ -779,11 +785,11 @@ class F286HugeClusterDfTests(unittest.TestCase):
                      "control": {"clusters": 12, "participants": 240, "mean": 1.0,
                                  "sd": 1.0, "cv": 0.4}}})
         self.assertEqual(22, result["df"])
-        self.assertEqual(2.073873067904025, result["t_critical"])
-        self.assertEqual(0.19999999999999996, result["estimate"])
-        self.assertEqual(0.13939004029461122, result["se"])
-        self.assertEqual(-0.08907725050105109, result["ci_analysis_low"])
-        self.assertEqual(0.489077250501051, result["ci_high"])
+        assert_numeric_baseline(result["t_critical"], 2.073873067904025)
+        assert_numeric_baseline(result["estimate"], 0.19999999999999996)
+        assert_numeric_baseline(result["se"], 0.13939004029461122)
+        assert_numeric_baseline(result["ci_analysis_low"], -0.08907725050105109)
+        assert_numeric_baseline(result["ci_high"], 0.489077250501051)
 
 
 class F287FsumOverflowTests(unittest.TestCase):

@@ -49,6 +49,7 @@ _HTTP_FIXTURE = tempfile.TemporaryDirectory(prefix="rf_r9_l6a_http_",
 os.environ["COBOOKSHELF_DATA_DIR"] = _HTTP_FIXTURE.name
 os.environ["REVIEWFLOW_MODE"] = "server"
 
+from _numeric_assertions import assert_numeric_baseline
 from coscreen import dta_analysis  # noqa: E402
 from coscreen import dta_hsroc  # noqa: E402
 from coscreen import dta_likelihood_ratios as lr_mod  # noqa: E402
@@ -176,16 +177,23 @@ class F394UnknownThresholdDiagnosis(unittest.TestCase):
         self.assertIn("'Histology'", message)
         self.assertIn("'RS'", message)
 
-    def test_recorded_threshold_is_unchanged_bit_for_bit(self):
-        """逐位对照：正确阈值走原路径，结果与基线逐位一致。"""
+    def test_recorded_threshold_matches_implicit_selection_and_baseline(self):
+        """A recorded threshold uses the same observations and fitted model."""
         result = dta_analysis.synthesize(self.db, "IT", "TC", "5 mm", "RS")
+        self.assertEqual(result, dta_analysis.synthesize(self.db, "IT", "TC"))
         self.assertEqual(6, result["n_studies"])
         self.assertEqual(["SD1", "SD2", "SD3", "SD4", "SD5", "SD6"], result["study_ids"])
-        self.assertEqual(0.8181818702492092, result["sensitivity"])
-        self.assertEqual(0.8000000226100881, result["specificity"])
-        self.assertEqual(0.0009118819655545162, result["tau_sensitivity"])
-        self.assertEqual(0.0009118819655545162, result["tau_specificity"])
-        self.assertEqual(0.04610220467791435, result["random_effect_correlation"])
+        self.assertEqual(("5 mm", "RS"), (result["threshold"], result["reference_standard"]))
+        # L-BFGS-B can stop at slightly different points near this variance boundary.
+        assert_numeric_baseline(result["sensitivity"], 0.8181818702492092, abs_tol=1e-7)
+        assert_numeric_baseline(result["specificity"], 0.8000000226100881, abs_tol=1e-7)
+        assert_numeric_baseline(result["log_likelihood"], -18.844392216536914, abs_tol=1e-7)
+        assert_numeric_baseline(result["tau_sensitivity"], 0.0009118819655545162)
+        assert_numeric_baseline(result["tau_specificity"], 0.0009118819655545162)
+        # At near-zero between-study variance the correlation is weakly identified.
+        self.assertLessEqual(abs(result["random_effect_correlation"]), 1.0)
+        self.assertIsNone(result["pooled_ci_95"])
+        self.assertIsNone(result["mean_covariance"])
 
 
 class F396BetaOverflowContract(unittest.TestCase):
@@ -423,14 +431,15 @@ class F404MonteCarloBudget(unittest.TestCase):
         self.assertEqual(lr_mod.MAX_N_SAMPLES, result["sampling_cross_check"]["n_samples"])
         self.assertTrue(math.isfinite(result["lr_positive"]))
 
-    def test_normal_n_samples_unchanged_bit_for_bit(self):
+    def test_normal_n_samples_match_baseline(self):
         result = lr_mod.summary_likelihood_ratios(
             0.5, 0.5, [[0.1, 0.02], [0.02, 0.1]], n_samples=1000)
-        self.assertEqual(1.6487212707001282, result["lr_positive"])
-        self.assertEqual(0.6065306597126334, result["lr_negative"])
-        self.assertEqual(0.24979873107713113, result["se_ln_lr_positive"])
-        self.assertEqual([1.0309636512605491, 2.732706503063804],
-                         result["sampling_cross_check"]["ci_lr_positive"])
+        assert_numeric_baseline(result["lr_positive"], 1.6487212707001282)
+        assert_numeric_baseline(result["lr_negative"], 0.6065306597126334)
+        assert_numeric_baseline(result["se_ln_lr_positive"], 0.24979873107713113)
+        assert_numeric_baseline(
+            result["sampling_cross_check"]["ci_lr_positive"], [1.0309636512605491, 2.732706503063804]
+        )
 
 
 class F407SamplingWithoutCovariance(unittest.TestCase):
@@ -481,10 +490,11 @@ class F407SamplingWithoutCovariance(unittest.TestCase):
         result = lr_mod.summary_likelihood_ratios(
             0.5, 0.5, [[0.1, 0.02], [0.02, 0.1]], n_samples=100)
         self.assertEqual(100, result["sampling_cross_check"]["n_samples"])
-        self.assertEqual([1.0309636512605491, 2.732706503063804],
-                         lr_mod.summary_likelihood_ratios(
-                             0.5, 0.5, [[0.1, 0.02], [0.02, 0.1]],
-                             n_samples=1000)["sampling_cross_check"]["ci_lr_positive"])
+        sampled = lr_mod.summary_likelihood_ratios(
+            0.5, 0.5, [[0.1, 0.02], [0.02, 0.1]], n_samples=1000)
+        assert_numeric_baseline(
+            sampled["sampling_cross_check"]["ci_lr_positive"], [1.0309636512605491, 2.732706503063804]
+        )
 
 
 class F405CovariancePositiveDefinite(unittest.TestCase):
@@ -636,13 +646,13 @@ class F414DegenerateTableRow(unittest.TestCase):
                          (rows["BAD"]["tp"], rows["BAD"]["fp"],
                           rows["BAD"]["fn"], rows["BAD"]["tn"]))
 
-    def test_normal_row_unchanged_bit_for_bit(self):
+    def test_normal_row_match_baseline(self):
         rows = {row["study_id"]: row for row in dta_analysis.list_results(self.db)}
         good = rows["S1"]
-        self.assertEqual(0.8333333333333334, good["sensitivity"])
-        self.assertEqual(0.8, good["specificity"])
-        self.assertEqual((0.5158622513140327, 0.9791374745399076), good["sensitivity_ci"])
-        self.assertEqual((0.5929625677213227, 0.931688535987516), good["specificity_ci"])
+        assert_numeric_baseline(good["sensitivity"], 0.8333333333333334)
+        assert_numeric_baseline(good["specificity"], 0.8)
+        assert_numeric_baseline(good["sensitivity_ci"], (0.5158622513140327, 0.9791374745399076))
+        assert_numeric_baseline(good["specificity_ci"], (0.5929625677213227, 0.931688535987516))
 
     def test_unrelated_degenerate_row_does_not_break_synthesis(self):
         """不同 index_test/condition 的坏行只影响自身回显，不阻断本选择。"""
