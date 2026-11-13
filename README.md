@@ -3,10 +3,10 @@
   <p><img src="custom_frontend/assets/icon_writelab_budnib_20260824.svg" alt="木笔 WriteLab 标识" width="96"></p>
   <p><strong>系统综述与 Meta 分析工作台 · Systematic review and meta-analysis workspace</strong></p>
   <p><a href="#中文">中文</a> · <a href="#english">English</a> · <a href="#français">Français</a> · <a href="#русский">Русский</a> · <a href="#español">Español</a> · <a href="#日本語">日本語</a> · <a href="#português">Português</a> · <a href="#deutsch">Deutsch</a> · <a href="#српски">Српски</a> · <a href="#한국어">한국어</a></p>
-  <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
+  <p><a href="https://github.com/RUCbookshelf/mubi-reviewflow">GitHub</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/releases">Releases</a> · <a href="CHANGELOG.md">更新日志 / Changelog</a> · <a href="https://github.com/RUCbookshelf/mubi-reviewflow/issues">Issues</a></p>
 </div>
 
-**2.1.5:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.5) · [更新说明 / Release notes](RELEASE_NOTES.md)
+**2.1.5:** [下载 / Downloads](https://github.com/RUCbookshelf/mubi-reviewflow/releases/tag/v2.1.5) · [更新日志 / Changelog](CHANGELOG.md)
 
 2.1.5 使用引导：[导入文献](docs/IMPORT_LITERATURE_USER_GUIDE.zh-CN.md) · [报告关联与证据](docs/REPORT_LINKS_AND_EVIDENCE.zh-CN.md)。机器学习设置及排序更新间隔按成员保存。
 
@@ -16,6 +16,8 @@
 个人可以在本机离线使用；团队可以部署到服务器，共享任务文献和进度，同时独立保存各自的筛选决定。
 
 应用采用 FastAPI 后端、浏览器前端和 Python 计算模块。桌面安装包包含 Python 与运行依赖，通过浏览器打开界面；使用者无需自行配置 Python 或 WSL。您可以直接前往Releases下载Linux、Windows、macOS对应安装包进行体验。
+
+本页只介绍产品本身；各版本的更新内容见[更新日志](CHANGELOG.md)（中文与 English 双语）。
 
 ### 主要功能
 
@@ -37,28 +39,12 @@
 
 分析模块的实现不代表所有研究设计均已充分验证。方法前提、验证范围和限制见[分析能力评估](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#zh-cn)。发表时请核对方法来源并引用相应文献；软件结果仍需研究者检查。
 
-### 2.1.2 导入核验改进
-
-- 首批记录就绪后即可核验，其余记录分批在后台加载。
-- 紧凑圆环显示真实加载数量；中断后保留已加载记录并支持重试。
-- 后台加载保留当前记录、选项、展开内容和滚动位置。
-- 紧凑批次与加载状态、折叠来源文件和均分分类条；手机端可直接切换上一条或下一条。
-- 确认保存后直接更新受影响记录，下一项可继续操作；辅助统计在后台刷新。
-- 支持确认前预览的批量重复核验与批量保留已有信息，并可在启用前整批撤销。
-
-### 2.1.1 导入与导出工作区
-
-- 导入与报告、导入核验和导入历史统一组织；选中文件后明确确认导入。
-- 重复候选、信息差异、待启用、已完成和稍后处理使用同一核验区域；处理后保持页面位置，启用前支持受保护的上次核验撤销。
-- 悬浮待办可缩为显示当前事项的胶囊，全部完成后自动隐藏。
-- 筛选结果、编码数据和全文高亮笔记按用途分组，保留七种原有导出；文件卡片说明格式、内容和下载状态。
-
 ### 流程控制与研究依据
 
 - **首页与设置：** 六个标签页集中管理概览、任务与团队、筛选设置、机器学习、数据提取与编码、外观与存储。初筛顺序可选导入、机器学习或随机；随机顺序按用户、任务与来源范围保存。
 - **导入来源与去重：** 来源名称直接使用导入文件的完整文件名（例如 `01-Wiley.ris`），不再从 RIS 数据库元数据推断。精确匹配与待人工核验的标题/模糊候选分开处理。按来源筛选或编码时，多来源文献在总体队列中只出现一次。
 - **保护既有工作：** 已有保存决定或编码后，追加导入的新记录先暂存，负责人核验重复及元数据差异后激活；保留既有标识、决定与证据。
-- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。正式两阶段（初筛与复筛）全程二选一（纳入/排除）；「暂不确定」只保留在筛选训练中，正式筛选保存时会收到结构化拒绝（`maybe_disabled`）。初筛纳入的文献进入复筛；「再开一轮」机制已移除。升级时存量的「暂不确定」会一次性重置为未筛：各筛选员库先写 `.pre-binary-reset.bak` 备份，编码、提取与证据数据保留，待条目重新纳入后自动恢复资格。
+- **筛选决定与原因：** 初筛、全文筛选分别保存常用排除原因。正式两阶段（初筛与复筛）全程二选一（纳入/排除）；「暂不确定」只保留在筛选训练中，正式筛选保存时会收到结构化拒绝（`maybe_disabled`）。初筛纳入的文献进入复筛。
 - **数据提取与编码：** 每个维度可添加文字、页码和 PNG/JPEG/WebP 图片证据。负责人可要求指定维度提供证据；不完整内容可保存为草稿，不计为完成。
 - **撤销与轨迹回溯：** 初筛、全文筛选、编码支持受保护的撤销。可从轨迹打开文献修改当前结果；只有满足条件的最近保存可直接撤销，不能任意恢复旧快照。
 - **团队管理：** 在同一区域管理成员与进度、阶段来源权限、筛选选项及导入来源。任务负责人、筛选与编码员、裁决员有角色标识与成员操作菜单；负责人可为各阶段设置全部来源、指定来源或暂停，成员列表及任务变更自动刷新。
@@ -72,7 +58,7 @@
 
 统计内核与 R 社区（metafor / meta / metadat）公开发表值做过逐位数值对拍：10 个经典数据集、204 项检查，159 项直接通过，11 项差异经三方对拍全部归因于参考材料本身（内核算术无误），其余 31 项为设计内未运行、3 项只记录无判定参照。夹具、逐项明细、原始语料来源与复现命令见[统计方法验证材料](docs/benchmark/README.md)。
 
-**升级：** 从 [最新 Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) 获取安装包，升级前备份整个数据目录。2.0.5 客户端可能不自动提示 2.0.5.1，请直接下载该维护版本；新版本支持四段版本比较。
+**升级：** 从 [最新 Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) 获取安装包，升级前备份整个数据目录；各版本的变更与升级注意事项见[更新日志](CHANGELOG.md)。
 
 ### 快速开始
 
@@ -163,6 +149,8 @@ ReviewFlow is a workspace for systematic reviews and meta-analysis, covering ref
 
 The application uses FastAPI, a browser interface and Python calculation modules. Desktop packages bundle Python and runtime dependencies; users do not need to install Python or WSL. The [Releases](https://github.com/RUCbookshelf/mubi-reviewflow/releases) page lists the current version and available desktop installers.
 
+This page describes the product; per-version changes live in the [Changelog](CHANGELOG.md) (Chinese and English).
+
 ### Features
 
 - **Reference import:** RIS files, duplicate handling, import history and original import data.
@@ -181,25 +169,12 @@ The application uses FastAPI, a browser interface and Python calculation modules
 
 Implementation does not establish validation for every study design. Consult the [analysis assessment](REVIEW_DATA_ANALYSIS_ASSESSMENT.md#en) for assumptions and validation limits. Check results and cite the original methods when publishing.
 
-### Import review loading in 2.1.2
-
-- Review the first available records while remaining records load in small background batches.
-- A compact animated ring shows actual loading counts and supports retry after an interruption.
-- Background loading preserves the current record, choices, expanded details and scroll position.
-
-### Import and export workspace in 2.1.1
-
-- Upload and report, review, and history tabs; explicitly confirm selected files before importing.
-- One review area for duplicate candidates, information differences, ready, completed and deferred records. Preserve the page position and undo the last eligible review before activation.
-- A floating checklist collapses to the current item and hides when complete.
-- Screening results, coding data and full-text highlight notes use file cards that explain formats, contents and download status; all seven existing exports remain available.
-
 ### Workflow controls and research evidence
 
 - **Home & Settings:** six tabs organize Overview, Tasks & team, Screening settings, Machine Learning, Data extraction & coding, and Appearance & storage. Initial-screening order offers Import / Machine Learning / Random; random order persists per user, task and source scope.
 - **Sources and deduplication:** Source names use the complete imported filename (for example, `01-Wiley.ris`), without inferring names from RIS database metadata. Exact matches are separate from title/fuzzy candidates requiring human review. Multi-source articles appear once in the overall queue when screening or coding by source.
 - **Protect existing work:** once decisions or coding have been saved, additional new records are staged for owner review of duplicates and metadata differences before activation. Existing identities, decisions and evidence are retained.
-- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Both formal stages are strictly binary (include/exclude); Not Sure Now now lives only in pilot screening, and formal saves are rejected with a structured `maybe_disabled` error. Initial Include advances to full-text screening; the repeat-round mechanism has been removed. On upgrade, existing Not Sure Now decisions are reset to unscreened once per reviewer database, after writing a `.pre-binary-reset.bak` backup; coding, extraction and evidence data are retained and become available again if the record is re-included.
+- **Decisions and reasons:** save reusable exclusion reasons separately for initial and full-text screening. Both formal stages are strictly binary (include/exclude); Not Sure Now lives only in pilot screening, and formal saves are rejected with a structured `maybe_disabled` error. Initial Include advances to full-text screening.
 - **Data extraction & coding:** add text, page references and PNG/JPEG/WebP evidence per dimension. Owners may require evidence for selected dimensions; incomplete work can be saved as a draft and is not counted as complete.
 - **Undo and Trace:** guarded Undo is available in initial screening, full-text screening and coding. Open linked articles from Trace to correct current results; only an eligible latest save can be undone directly, rather than restoring arbitrary historical snapshots.
 - **Team management:** one panel contains members/progress, stage source permissions, screening options and imported sources. Task owner / Coder / Adjudicator badges and member action menus identify responsibilities. Owners choose All / Selected / Paused per stage; membership and task lists refresh automatically.
@@ -213,7 +188,7 @@ When is it safe to stop screening? ReviewFlow answers with an explicit statistic
 
 The statistical kernel was compared value by value against published results from the R ecosystem (metafor / meta / metadat): 10 classic datasets and 204 checks, 159 direct matches, 11 differences all traced to the reference material itself (no algorithmic error in the kernel), with the remaining 31 not run by design and 3 recorded as informational without a reference verdict. Fixtures, per-check details, source of the raw corpora and reproduction commands are in the [statistical validation dossier](docs/benchmark/README.md).
 
-**Upgrading:** download from the [latest Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) and back up the complete data directory first. Existing 2.0.5 clients may not automatically prompt for 2.0.5.1; download this hotfix directly. The corrected checker supports four-part versions.
+**Upgrading:** download from the [latest Release](https://github.com/RUCbookshelf/mubi-reviewflow/releases/latest) and back up the complete data directory first; per-version changes and upgrade notes live in the [Changelog](CHANGELOG.md).
 
 ### Getting started
 
@@ -724,79 +699,3 @@ Organisation : `custom_frontend/` pour l'interface, `custom_backend/` pour l'API
 Ce projet est distribué sous licence MIT ; voir le fichier [`LICENSE`](LICENSE) à la racine. Les composants tiers conservent leurs licences respectives. Voir les [mentions tierces](THIRD_PARTY_NOTICES.md) et la [préparation de publication](OPEN_SOURCE_RELEASE.md#fr).
 
 Auteur : **Kang Tairong** · [bookshelf@ruc.edu.cn](mailto:bookshelf@ruc.edu.cn)
-
-## Mobile interface · 2.1.0
-
-Mobile presentation now follows the approved concept: compact navigation, separate language and theme controls, animated search, sheets and disclosures. Original desktop controls, research logic, permissions and data remain shared. Trace search accepts a partial article title or identifier across matching history, with date/stage/action filters and reviewer isolation. Redundant headings were removed; disclosure indicators now use SVG.
-
-移动端按已确认概念重新实现：紧凑导航、独立语言与主题按钮、搜索框动画、底部面板和详情展开；复用电脑端控件、研究逻辑、权限和数据。 轨迹支持按文献标题片段或标识检索符合筛选条件的历史记录，保留日期、阶段、操作筛选和个人记录隔离。删除重复标题，展开图标统一使用 SVG。
-
-Responsive layouts are available at widths up to 760 CSS pixels. Desktop layouts remain unchanged. Language and theme controls stay separate; all ten interface languages and the desktop light/dark palettes are supported. Phone use requires access to a configured server; this update does not add remote pairing or tunneling. [Mobile interface details](docs/MOBILE_INTERFACE.md).
-
-移动端适配支持十种界面语言，语言与浅色/深色按钮独立，沿用电脑端配色，电脑布局保持不变。手机使用需连接已配置的服务器，本次不新增远程控制或内网穿透。
-
-### Español · 2.1.0
-
-La interfaz móvil sigue el concepto aprobado: navegación compacta, idioma y tema separados, búsqueda animada, paneles y detalles desplegables. Comparte controles, lógica de investigación, permisos y datos con el escritorio. Trace busca por parte del título o identificador, manteniendo filtros de fecha, etapa y acción y el aislamiento entre revisores. Se eliminaron títulos redundantes y los indicadores usan SVG.
-
-- Interfaz móvil en todas las páginas; diseño de escritorio conservado, diez idiomas y controles separados de idioma y tema.
-- Lectura, formularios, paneles y controles táctiles mejorados. Corrección de la carga de colas vacías.
-- Los CSV de ambas fases de cribado añaden DOI, Journal y Author(s). Sin nueva migración ni acceso remoto automático. Haga una copia de seguridad antes de actualizar.
-
-### 日本語 · 2.1.0
-
-承認済みのモバイル案に合わせ、コンパクトなナビゲーション、独立した言語・テーマ操作、検索アニメーション、パネルと詳細展開を実装。デスクトップと同じ操作、研究処理、権限、データを使用します。 Trace は文献タイトルの一部または識別子で履歴を検索し、日付・段階・操作の条件とレビュアー間の記録分離を維持します。重複見出しを削除し、展開アイコンを SVG に統一しました。
-
-- 全ページのモバイル表示を改善。デスクトップ表示、10言語、独立した言語・テーマ操作を維持。
-- 文献閲覧、フォーム、タッチ操作を改善し、空のキューでの読み込みエラーを修正。
-- 両スクリーニング段階のCSVにDOI、Journal、Author(s)を追加。新しいデータ移行や自動リモートアクセスはありません。更新前にバックアップしてください。
-
-### Français · 2.1.0
-
-La présentation mobile suit le concept approuvé : navigation compacte, langue et thème séparés, recherche animée, panneaux et détails dépliables. Les commandes, la logique de recherche, les permissions et les données restent communes au bureau. La recherche dans Trace accepte une partie du titre ou de l’identifiant, avec les filtres de date, d’étape et d’action et l’isolation des évaluateurs. Les titres redondants sont supprimés et les indicateurs utilisent SVG.
-
-- Présentation mobile sur toutes les pages, avec le bureau préservé, dix langues et des commandes distinctes pour la langue et le thème.
-- Lecture, formulaires et commandes tactiles améliorés; correction du chargement des files vides.
-- Ajout de DOI, Journal et Author(s) aux deux exports CSV de sélection. Aucune nouvelle migration ni connexion distante automatique. Sauvegardez avant la mise à jour.
-
-### Русский · 2.1.0
-
-Мобильный интерфейс следует утверждённому макету: компактная навигация, отдельные кнопки языка и темы, анимированный поиск, панели и раскрытие деталей. Элементы управления, исследовательская логика, права и данные общие с настольной версией. Поиск в Trace поддерживает часть названия или идентификатора статьи с фильтрами даты, этапа и действия и изоляцией записей рецензентов. Удалены повторяющиеся заголовки; индикаторы раскрытия используют SVG.
-
-- Мобильный интерфейс для всех страниц; сохранены настольный интерфейс, десять языков и отдельные кнопки языка и темы.
-- Улучшены чтение, формы и сенсорные элементы; исправлена загрузка пустой очереди.
-- В CSV обоих этапов отбора добавлены DOI, Journal и Author(s). Новых миграций и автоматического удалённого доступа нет. Перед обновлением создайте резервную копию.
-
-### Português · 2.1.0
-
-A interface móvel segue o conceito aprovado: navegação compacta, idioma e tema separados, busca animada, painéis e detalhes expansíveis. Compartilha controles, lógica de pesquisa, permissões e dados com o computador. A busca no Trace aceita parte do título ou identificador, mantendo filtros de data, etapa e ação e o isolamento entre revisores. Títulos redundantes foram removidos e indicadores usam SVG.
-
-- Interface móvel em todas as páginas, mantendo o layout de computador, dez idiomas e controles separados de idioma e tema.
-- Melhorias na leitura, nos formulários e nos controles de toque; correção do carregamento de filas vazias.
-- Os CSV das duas etapas de triagem incluem DOI, Journal e Author(s). Sem nova migração ou acesso remoto automático. Faça backup antes de atualizar.
-
-### Deutsch · 2.1.0
-
-Die mobile Oberfläche folgt dem freigegebenen Entwurf: kompakte Navigation, getrennte Sprach- und Themensteuerung, animierte Suche, Panels und aufklappbare Details. Bedienelemente, Forschungslogik, Rechte und Daten werden mit dem Desktop geteilt. Die Trace-Suche unterstützt Teile des Artikeltitels oder der Kennung mit Datums-, Phasen- und Aktionsfiltern sowie getrennten Gutachterdaten. Doppelte Überschriften wurden entfernt; Aufklappindikatoren verwenden SVG.
-
-- Mobile Darstellung für alle Seiten; Desktoplayout, zehn Sprachen und getrennte Sprach- und Themensteuerung bleiben erhalten.
-- Verbesserte Leseflächen, Formulare und Touchbedienung; Fehler beim Laden leerer Warteschlangen behoben.
-- Beide Screening-CSV-Exporte enthalten zusätzlich DOI, Journal und Author(s). Keine neue Migration und kein automatischer Fernzugriff. Vor dem Update eine Sicherung erstellen.
-
-### Српски · 2.1.0
-
-Мобилни интерфејс прати одобрени концепт: компактна навигација, одвојене контроле језика и теме, анимирана претрага, панели и прошириви детаљи. Контроле, истраживачка логика, дозволе и подаци заједнички су са приказом на рачунару. Trace претрага прихвата део наслова или идентификатора, уз филтере датума, фазе и операције и изолацију записа рецензената. Уклоњени су поновљени наслови; индикатори користе SVG.
-
-- Мобилни приказ свих страница; задржани су приказ на рачунару, десет језика и одвојене контроле језика и теме.
-- Побољшани су читање, обрасци и додирне контроле; исправљено је учитавање празног реда.
-- CSV извози обе фазе селекције додају DOI, Journal и Author(s). Нема нове миграције ни аутоматског удаљеног приступа. Направите резервну копију пре ажурирања.
-
-### 한국어 · 2.1.0
-
-승인된 모바일 콘셉트에 맞춰 간결한 탐색, 별도 언어 및 테마 버튼, 검색 애니메이션, 패널과 상세 펼치기를 구현했습니다. 데스크톱과 같은 조작, 연구 로직, 권한 및 데이터를 사용합니다. Trace는 문헌 제목 일부나 식별자로 이력을 검색하며 날짜·단계·작업 필터와 검토자별 기록 분리를 유지합니다. 중복 제목을 제거하고 펼치기 아이콘을 SVG로 통일했습니다.
-
-- 모든 페이지의 모바일 화면을 개선했습니다. 데스크톱 레이아웃, 10개 언어, 별도의 언어 및 테마 버튼을 유지합니다.
-- 문헌 읽기, 입력 양식, 터치 조작을 개선하고 빈 대기열의 로딩 오류를 수정했습니다.
-- 두 선별 단계의 CSV에 DOI, Journal, Author(s) 열을 추가했습니다. 새로운 데이터베이스 마이그레이션이나 자동 원격 접속은 없습니다. 업데이트 전에 전체 데이터를 백업하세요.
-
-Screening CSV exports also include DOI, Journal, Author(s), and **Imported source file(s)**. Multiple activated source filenames are retained in one cell; unknown legacy provenance is left blank.
