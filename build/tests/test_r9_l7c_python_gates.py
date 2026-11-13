@@ -27,7 +27,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 PYTHON = sys.executable
-TEMP_ROOT = Path("E:/rf214tmp/r9/l7c/temp")
+TEMP_ROOT = Path(os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/l7c/temp")
 
 
 def _env(**extra):
@@ -35,6 +35,11 @@ def _env(**extra):
     TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, TEMP=str(TEMP_ROOT), TMP=str(TEMP_ROOT),
                PYTHONPATH=str(REPO), REVIEWFLOW_MODE="server")
+    # 2026-11-13：剥掉环境变量 CI——夹具仓没有 build/staging 载荷树，
+    # 泄漏进去会触发 verify_release_payload 的严格分支（"CI must not
+    # degrade"），真 CI 与 CI 模拟下五钉皆假红。本组测试自注 GITHUB_SHA
+    # 构造受控环境；验证器的真实 CI 行为由发布流水线自身把关。
+    env.pop("CI", None)
     env.update(extra)
     return env
 
@@ -176,7 +181,7 @@ def test_f1_72_disposable_tree_is_removed_when_the_gate_exits(tmp_path):
     stay free, and the deep per-task backup filenames overflow the short
     pytest tmp prefix), so the assertion sees exactly the trees this one gate
     created and nothing else."""
-    temp_dir = Path("E:/rf214tmp/r9/l7c/temp") / f"f1_72_{os.getpid()}_{next(tempfile._get_candidate_names())}"
+    temp_dir = Path(os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/l7c/temp") / f"f1_72_{os.getpid()}_{next(tempfile._get_candidate_names())}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
         env = _env(TEMP=str(temp_dir), TMP=str(temp_dir))

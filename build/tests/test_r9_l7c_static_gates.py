@@ -92,7 +92,7 @@ def _run(tree: Path, gate: str, *, timeout_ms: int | None = None, wall: int = 18
     env = dict(os.environ)
     if timeout_ms is not None:
         env["REVIEWFLOW_VALIDATOR_TIMEOUT_MS"] = str(timeout_ms)
-    env.setdefault("TEMP", "E:/rf214tmp/r9/l7c/temp")
+    env.setdefault("TEMP", os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/l7c/temp")
     env.setdefault("TMP", env["TEMP"])
     return subprocess.run(
         [NODE, str(tree / "build" / gate)], cwd=tree, capture_output=True,

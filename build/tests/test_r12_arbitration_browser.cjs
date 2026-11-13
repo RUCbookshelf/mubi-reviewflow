@@ -38,7 +38,7 @@ const { chromium } = require(process.env.REVIEWFLOW_PLAYWRIGHT || 'playwright');
 
 const SERVER = (process.env.REVIEWFLOW_R12_URL || '').replace(/\/$/, '');
 const DESKTOP = (process.env.REVIEWFLOW_R12_DESKTOP_URL || '').replace(/\/$/, '');
-const ARTIFACTS = process.env.REVIEWFLOW_R12_ARTIFACTS || 'E:/rf214tmp/r14/arbit/artifacts';
+const ARTIFACTS = process.env.REVIEWFLOW_R12_ARTIFACTS || (process.env.RF_R9_TMP_ROOT||"E:/rf214tmp")+"/r14/arbit/artifacts";
 const TMP = process.env.REVIEWFLOW_R12_TMP || path.join(process.env.TEMP || '.', 'rf_r12_browser');
 /* 每个进程随机生成本次运行的临时账号口令；不落任何可用凭据字面量。 */
 const PASSWORD = process.env.REVIEWFLOW_R12_PASSWORD || crypto.randomBytes(18).toString('base64url');

@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 #: 临时目录落 E: 盘（环境警示：C 盘曾满，临时输出一律不用 %TEMP%）；
 #: E: 不可写时回退系统临时目录，测试不因环境差异而不可运行。
-_TMP_ROOT = Path(os.environ.get("RF_R9_L6D1_TMP", r"E:/rf214tmp/r9/l6d1"))
+_TMP_ROOT = Path(os.environ.get("RF_R9_L6D1_TMP", os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/l6d1"))
 try:
     _TMP_ROOT.mkdir(parents=True, exist_ok=True)
 except OSError:  # pragma: no cover - 无 E: 盘的机器

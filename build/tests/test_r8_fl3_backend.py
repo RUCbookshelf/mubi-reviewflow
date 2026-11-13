@@ -83,7 +83,7 @@ def _tmp_db(prefix: str) -> Path:
 
 #: 本机环境警示：C 盘曾满，探针/临时产物一律落 E: 盘。新钉子统一走此根；
 #: 该盘不可用时才退回系统临时目录（老用例沿用 ``tempfile`` 不动）。
-_TMP_ROOT = Path("E:/rf214tmp/fl3")
+_TMP_ROOT = Path(os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/fl3")
 
 
 @contextlib.contextmanager

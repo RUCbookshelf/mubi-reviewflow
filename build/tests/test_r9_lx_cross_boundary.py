@@ -40,7 +40,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-_TMP_ROOT = Path(os.environ.get("RF_R9_TMP", r"E:/rf214tmp/r9/lx"))
+_TMP_ROOT = Path(os.environ.get("RF_R9_TMP", os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/lx"))
 _TMP_ROOT.mkdir(parents=True, exist_ok=True)
 FIXTURE = tempfile.mkdtemp(prefix="rf_r9lx_nail_", dir=str(_TMP_ROOT))
 # 只占住数据目录（未设时才设，避免覆盖先导入模块的隔离目录）。

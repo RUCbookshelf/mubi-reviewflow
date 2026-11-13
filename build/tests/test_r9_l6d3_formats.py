@@ -487,7 +487,7 @@ class F448ValuesMatchInputsNails(unittest.TestCase):
 # ======================================================================
 # 端点级钉子（F4-19 端点引用 + 三条 500→400 的用户可见后果）
 # ======================================================================
-_BASE = Path(os.environ.get("RF_R9_TMP", "E:/rf214tmp/r9/l6d3")).resolve()
+_BASE = Path(os.environ.get("RF_R9_TMP", os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/l6d3")).resolve()
 _BASE.mkdir(parents=True, exist_ok=True)
 _fixture = tempfile.TemporaryDirectory(prefix="rf_r9_l6d3_", dir=str(_BASE))
 os.environ["COBOOKSHELF_DATA_DIR"] = _fixture.name

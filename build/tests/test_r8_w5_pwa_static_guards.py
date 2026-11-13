@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import unittest
 import re
 import shutil
 import subprocess
@@ -407,6 +408,7 @@ def test_node_smoke_suite_green_under_the_ci_command():
     reason="playwright runtime not configured (set REVIEWFLOW_PLAYWRIGHT and PLAYWRIGHT_BROWSERS_PATH)",
 )
 @pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+@unittest.skipIf(os.environ.get("CI") == "true", "真实浏览器钉需本地图形会话")
 def test_login_controls_are_clickable_while_banner_is_up_real_dom():
     """第 4 轮评审 medium 原话要求「补真实 DOM 钉子（登录页三控件可点击）」。
 

@@ -36,6 +36,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import unittest
 import shutil
 import subprocess
 import sys
@@ -439,6 +440,7 @@ def test_mm7_03_browser_test_injections_come_from_parsed_manifest():
     reason="playwright runtime not configured (set REVIEWFLOW_PLAYWRIGHT and PLAYWRIGHT_BROWSERS_PATH)",
 )
 @pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
+@unittest.skipIf(os.environ.get("CI") == "true", "浏览器骨架需本地图形会话")
 def test_mm7_03_browser_harness_executes_green():
     """R2 review guard: the live-panel harness must actually run green wherever a
     playwright runtime is configured (its Accept step was broken in R2 review)."""

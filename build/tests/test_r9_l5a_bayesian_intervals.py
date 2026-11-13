@@ -41,7 +41,7 @@ _YEAR_NOW = "2026-01-01T00:00:00+00:00"
 
 def _temp_dir(prefix: str) -> str:
     # C 盘曾满：探针目录固定在 E: 盘（作业约定），不落 %TEMP%。
-    root = os.environ.get("RF_PROBE_DIR") or "E:/rf214tmp/r9/l5a"
+    root = os.environ.get("RF_PROBE_DIR") or os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r9/l5a"
     os.makedirs(root, exist_ok=True)
     return tempfile.mkdtemp(prefix=prefix, dir=root)
 

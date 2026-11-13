@@ -613,6 +613,7 @@ class UploadAndMergeFrontendTests(unittest.TestCase):
         self.assertIn("UI.maxUploadBytes=IMPORT_MAX_BYTES;UI.oversize=oversize;", self.ui,
                       "F61：超限预检必须导出给 index.html 的二次守卫")
 
+    @unittest.skipIf(os.environ.get("CI") == "true", "真实浏览器钉需本地图形会话")
     def test_page_load_browser_nail(self):
         """F61 接线端：整页装载零 pageerror（TDZ/初始化顺序类崩溃立即暴露）。"""
         if not (os.environ.get("REVIEWFLOW_PLAYWRIGHT") and os.environ.get("PLAYWRIGHT_BROWSERS_PATH")):
@@ -634,6 +635,7 @@ class UploadAndMergeFrontendTests(unittest.TestCase):
         self.assertIn("} finally {\n    setMergeBusy(false);", self.html, "F57：成功/失败都必须恢复")
 
 
+@unittest.skipIf(os.environ.get("CI") == "true", "真实浏览器钉需本地图形会话")
 class BrowserNailTests(unittest.TestCase):
     """真浏览器钉子（未配置 playwright 时如实 skip，不冒充通过）。"""
 

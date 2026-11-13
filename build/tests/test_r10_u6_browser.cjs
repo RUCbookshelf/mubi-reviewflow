@@ -19,9 +19,9 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.REVIEWFLOW_PLAYWRIGHT || 'playwright');
 const url = process.env.REVIEWFLOW_U6_URL || 'http://127.0.0.1:18778';
-const sessionPath = process.env.REVIEWFLOW_U6_SESSION || 'E:/rf214tmp/r10/u6/session.json';
+const sessionPath = process.env.REVIEWFLOW_U6_SESSION || (process.env.RF_R9_TMP_ROOT||"E:/rf214tmp")+"/r10/u6/session.json";
 const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
-const artifacts = process.env.REVIEWFLOW_U6_ARTIFACTS || 'E:/rf214tmp/r10/u6/artifacts';
+const artifacts = process.env.REVIEWFLOW_U6_ARTIFACTS || (process.env.RF_R9_TMP_ROOT||"E:/rf214tmp")+"/r10/u6/artifacts";
 fs.mkdirSync(artifacts, { recursive: true });
 
 (async () => {

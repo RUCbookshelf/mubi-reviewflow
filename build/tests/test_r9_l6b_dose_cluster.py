@@ -82,7 +82,11 @@ def _nested(depth, leaf="leaf"):
 
 def _make_db(prefix: str, studies=(("S1", "R1"), ("S2", "R2"), ("S3", "R3"))) -> str:
     """建任务库：三篇文章 + 每篇一个研究并回链（save_curve/synthesize 的入口契约）。"""
-    path = Path(tempfile.mkdtemp(prefix=prefix, dir=r"E:/rf214tmp/r9/l6b")) / "task.db"
+    # 2026-11-13：mkdtemp 不建父目录——旧径 E:/rf214tmp/r9/l6b 依赖开发者
+    # 机器上已存在的目录树；env 覆写（CI）后父目录不存在即 WinError 3。
+    base = Path(os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp") + "/r9/l6b")
+    base.mkdir(parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(base))) / "task.db"
     init_db(path)
     conn = sqlite3.connect(path)
     try:

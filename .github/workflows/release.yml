@@ -109,7 +109,13 @@ jobs:
           # r9 系测试的可写根：本地缺省 E:/rf214tmp（本波期 C: 盘满的历史
           # 原因），CI 无 E: 盘——模块级 mkdir 在收集期直接 FileNotFoundError
           # （2026-11-13 windows-x64 实红）。五个 r9 文件统一走此逃生门。
-          RF_R9_TMP: ${{ runner.temp }}/rf9tmp
+          RF_R9_TMP: ${{ runner.temp }}
+          # 2026-11-13 全域扫除：另有 10 个 py+3 个 cjs 在运行期硬编码
+          # E:/rf214tmp（本地有 E: 盘从未暴露）——已全部改写为可覆写。
+          # 注意：不加子目录后缀——r9-l6b/l7c 的深链任务备份文件名极长
+          # （research-trace pre-migration bak ≈107 字符），Windows MAX_PATH
+          # 260 贴边，根每多一级即爆（f1_72 教训：开发者当年挪 E: 盘即此因）。
+          RF_R9_TMP_ROOT: ${{ runner.temp }}
         run: |
           # MM7-02: the four static validators run in CI after the payload check;
           # any non-zero exit fails the job. httpx is used by the two Python

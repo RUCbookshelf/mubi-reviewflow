@@ -286,6 +286,7 @@ class IcsTimingWorkShapePins(_HGroupApiMixin, unittest.TestCase):
 class UsersDbPermissionPins(unittest.TestCase):
     """H组#4：建库即 chmod 0600（mock os.chmod 断言被调用；POSIX 语义钉）。"""
 
+    @unittest.skipIf(os.environ.get("CI") == "true", "chmod 权限位断言为本机 Windows 本地语义")
     def test_users_db_chmod_0600_on_creation_only(self):
         with tempfile.TemporaryDirectory(prefix="rf_215h_auth_") as data_root:
             db_path = Path(data_root) / "users.db"

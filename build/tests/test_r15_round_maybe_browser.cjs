@@ -23,7 +23,7 @@ const url = (process.env.REVIEWFLOW_R15_URL || '').replace(/\/$/, '');
 const sessionPath = process.env.REVIEWFLOW_R15_SESSION || '';
 if (!url || !sessionPath) throw new Error('REVIEWFLOW_R15_URL / REVIEWFLOW_R15_SESSION 未设置：必须由 pytest 门控运行');
 const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
-const artifacts = process.env.REVIEWFLOW_R15_ARTIFACTS || 'E:/rf214tmp/r15/artifacts';
+const artifacts = process.env.REVIEWFLOW_R15_ARTIFACTS || (process.env.RF_R9_TMP_ROOT||"E:/rf214tmp")+"/r15/artifacts";
 fs.mkdirSync(artifacts, { recursive: true });
 
 (async () => {

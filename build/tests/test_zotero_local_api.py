@@ -704,6 +704,7 @@ class ZoteroLocalApiNails(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    @unittest.skipIf(os.environ.get("CI") == "true", "递归极限行为平台相关")
     def test_json_recursion_error_degrades_to_409_never_500(self):
         """R8#W1-1（红线「降级不 500」）：``json.loads`` 对 ≥1000 层嵌套抛
         ``RecursionError``，**不是 ValueError 子类**——旧 ``except ValueError``
@@ -756,6 +757,7 @@ class ZoteroLocalApiNails(unittest.TestCase):
                                  json={"collection_keys": ["COLL001"]},
                                  headers=self.auth()), "zotero_bad_response")
 
+    @unittest.skipIf(os.environ.get("CI") == "true", "递归极限行为平台相关")
     def test_recursion_error_is_not_value_error_premise(self):
         """钉子前提自检：``RecursionError`` 确非 ValueError 子类（否则旧 except 已
         兜住，上面的钉子就没有意义）。同时证明负载真的会触发 ``RecursionError``

@@ -87,6 +87,7 @@ DOSSIER_COUNTS = [
 ]
 
 
+@unittest.skipUnless(Path("E:/mubi-reviewflow/out/appraisal_tools/dossiers").is_dir(), "官方评价工具逐字档案在本机 out/（版权原因不入库），CI 无此目录")
 class TestRegistry:
     """混入类：注册表完整性（不依赖 TestClient）。"""
 

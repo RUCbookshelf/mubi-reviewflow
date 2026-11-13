@@ -35,7 +35,7 @@ NODE = (
 PLAYWRIGHT = os.environ.get("REVIEWFLOW_PLAYWRIGHT", r"E:/rf214-playwright/node_modules/playwright")
 BROWSERS = os.environ.get("PLAYWRIGHT_BROWSERS_PATH",
                           r"C:/Users/16073/AppData/Local/ms-playwright")
-TMP_ROOT = Path(os.environ.get("RF_R10U3_TMP", "E:/rf214tmp/r10/u3"))
+TMP_ROOT = Path(os.environ.get("RF_R10U3_TMP", os.environ.get("RF_R9_TMP_ROOT","E:/rf214tmp")+"/r10/u3"))
 
 
 def _free_port() -> int:
