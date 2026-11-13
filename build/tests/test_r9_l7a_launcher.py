@@ -55,7 +55,7 @@ from pathlib import Path
 
 import pytest
 
-TMP_ROOT = Path("E:/rf214tmp/r9/l7a/pytest-tmp")
+TMP_ROOT = Path(os.environ.get("RF_R9_TMP", "E:/rf214tmp/r9/l7a/pytest-tmp"))
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
