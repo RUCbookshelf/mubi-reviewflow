@@ -104,7 +104,10 @@ class UndoLaneCoreTests(unittest.TestCase):
             r2_summary = conn.execute(
                 'SELECT 1 FROM workflow_form_requests WHERE request_id=?', (r2,)).fetchone()
         self.assertEqual(journals, 1)          # no-op 不建 journal（r6 既有行为）
-        self.assertIsNone(r2_summary, 'no-op 保存不得落幂等摘要（#21）')
+        # 2026-11-13 按 r67 波 F3 裁定（16c5b17）反转：回执无条件落——
+        # 旧口径「no-op 不留回执」会让旧请求的迟到重试覆盖后改（F3 根因）。
+        self.assertIsNotNone(
+            r2_summary, 'no-op 保存也须落幂等回执（F3：防旧请求重试覆盖后改）')
         # 撤销 entry1 后重放 r2：必须重新执行保存（值写回），不得命中旧摘要假成功。
         entry = self.latest_entry('coding')
         workspace_undo.undo(self.db, self.ctx(source='undo'), 'coding', entry)

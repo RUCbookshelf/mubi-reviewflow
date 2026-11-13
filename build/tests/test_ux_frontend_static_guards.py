@@ -115,15 +115,25 @@ class SessionExpiryTests(unittest.TestCase):
         self.assertTrue(row[1].startswith("Your session expired"))
 
     def test_401_branch_toasts_before_logout(self):
-        m = re.search(r"if \(resp\.status === 401 && !path\.startsWith\('/api/auth/'\)\) \{", self.html)
+        # 2026-11-13 随正名：认证波（b3b0569 M1）给 401 分支加 /api/auth/me
+        # 例外（会话探测端点 401 不触发统一登出）——受保护可观察面不变：
+        # 业务路径 401 → 先 toast 后 logout 并抛 ApiError。
+        m = re.search(r"if \(resp\.status === 401 && \(!path\.startsWith\('/api/auth/'\) \|\| path === '/api/auth/me'\)\) \{", self.html)
         assert m, "401 统一登出分支不存在"
-        snippet = self.html[m.end():m.end() + 1200]
-        cut = snippet.find("throw new ApiError(401")
+        snippet = self.html[m.end():m.end() + 1600]
+        # 2026-11-13 随正名：F01 会话静默丢失修复在分支头部加了过期令牌守卫
+        # （requestToken!==AUTH_TOKEN 时提前 throw）——「首个 throw」锚定失效。
+        # 改锚分支**终端** throw（logout 之后那次）：受保护可观察面不变=
+        # toast 与统一 logout 都在终端 throw 之前、且 toast 先于 logout。
+        cut = snippet.rfind("throw new ApiError(401")
         assert cut >= 0, "401 分支未抛出 ApiError"
         branch = snippet[:cut]
         toast_at = branch.find("toast('登录已过期。当前页面地址已保留")
-        # r7-frontsec MM5-02：logout 第二参数 {force:…}（写 401 强制登出），锚点按前缀匹配
-        logout_at = branch.find("logout('登录已过期，请重新登录。'")
+        # r7-frontsec MM5-02：logout 第二参数 {force:…}（写 401 强制登出），锚点按前缀匹配。
+        # 2026-11-13 随正名：ui-polish 修 401 双 toast（双路验证 A-DYN-19）后，
+        # 401 分支显式 toast 一次、logout 传 null 不再自播消息——统一登出
+        # 唯一入口架构不变，锚点改 logout(null, 前缀。
+        logout_at = branch.find("logout(null,")
         self.assertGreaterEqual(toast_at, 0, "401 分支缺少跳登录前的显式 toast")
         self.assertGreaterEqual(logout_at, 0, "401 分支缺少统一 logout 调用（统一登出架构不变）")
         self.assertLess(toast_at, logout_at, "toast 必须先于 logout 调用（跳登录前可见）")

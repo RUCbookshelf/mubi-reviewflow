@@ -146,8 +146,13 @@ EXPECTED_WHITELIST_KEYS = frozenset({
     ("custom_backend/research_trace_api.py", 324),
     ("custom_backend/research_trace_api.py", 360),
     ("custom_backend/research_trace_api.py", 382),
-    ("coscreen/db.py", 749),
-    ("coscreen/db.py", 1344),
+    # 2026-11-13 随正名（r67 波 + 四线汇合）：M-04 注册表 DDL 平移 749→751、
+    # 1344→1345 并新增 db.py:557；M-03 独立性守卫新增 analysis_storage.py:517
+    # ——白名单文件已同批登记（9 条），本钉集随正。
+    ("coscreen/db.py", 557),
+    ("coscreen/db.py", 751),
+    ("coscreen/analysis_storage.py", 517),
+    ("coscreen/db.py", 1345),
     ("coscreen/review_workflow.py", 158),
 })
 

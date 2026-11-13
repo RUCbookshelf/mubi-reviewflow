@@ -17,6 +17,7 @@
 """
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -467,10 +468,15 @@ class ReconcilerScreeningToggleTests(unittest.TestCase):
         self.assertIn("team.screening_not_enabled", index)
         self.assertIn("ftScreeningNotice", index)
         self.assertIn("syncScreeningNoticeElement('ftScreeningNotice')", index)
-        # 被改动的 workflow_controls.js 缓存令牌必须已上调（24h 旧 JS 不得残留）。
-        self.assertNotRegex(
-            index, r'workflow_controls\.js\?v=20261101-r10u1')
-        self.assertRegex(index, r'workflow_controls\.js\?v=20261107-r15')
+        # 必须加载 R15 或之后的版本，防止浏览器继续使用未包含筛选开关的旧脚本。
+        tokens = re.findall(
+            r"""<script\b[^>]*\s+src=["']\./workflow_controls\.js\?v=(\d{8}-[^"']+)["']""",
+            index,
+        )
+        self.assertEqual(len(tokens), 1, "必须有且仅有一个带版本的 workflow_controls.js 入口")
+        token = tokens[0]
+        self.assertTrue(token == "20261107-r15" or token[:8] > "20261107",
+                        f"workflow_controls.js 必须使用 R15 或之后的缓存版本，实际为 {token}")
         # 十语言词条：四类新文案每行必须 10 个非空槽位。
         sources = (
             "允许参与筛选",

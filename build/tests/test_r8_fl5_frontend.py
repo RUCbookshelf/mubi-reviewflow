@@ -191,23 +191,39 @@ def _run_node_js(driver_body, module_dir):
 # R3-04：analysis_grade.js 票据按行隔离（跨行动作互不丢响应；同行同动作仍后发抑制先发）
 # ---------------------------------------------------------------------------
 
-GRADE_DRIVER_FULL = r"""
+GRADE_SETUP = r"""
 globalThis.anEffects = [
   { comparison: 'A vs B', outcome: 'Outcome A', timepoint: 'tp', measure: 'MD', study_id: 's1' },
   { comparison: 'A vs B', outcome: 'Outcome B', timepoint: 'tp', measure: 'MD', study_id: 's2' },
 ];
 __byId['anJumpEffects'] = new El('div');
 __docQ['.page[data-p="analysis"]'] = new El('div');
+globalThis.window = globalThis;
+globalThis.taskApi = () => '/api/tasks/' + S.task.task_id;
+const assert = require('node:assert/strict');
 loadModule('analysis_grade.js');
-const panel = __byId['anJumpEffects']._afterNodes[0];
+const panel = __byId['anJumpEffects']._afterNodes?.[0];
+assert.ok(panel, 'GRADE panel must mount beside the synthesis card');
 function rowsNow() { return panel.querySelector('#rfGradeRows').children; }
 function rowUi(row) {
   const buttons = row.querySelectorAll('button');
-  return { row, auto: buttons[0], save: buttons[1], status: row.children[2], rationale: row.children[3] };
+  const auto = buttons.find(button => button.textContent === '自动建议');
+  const save = buttons.find(button => button.textContent === '保存评估');
+  const status = row.querySelectorAll('p').find(node => node.getAttribute('role') === 'status');
+  const rationale = row.querySelector('.rf-grade-rationale');
+  assert.ok(auto && save && status && rationale, 'GRADE row must expose its actions and result');
+  return { auto, save, status, rationale };
 }
-await pump();  // 模块初始 renderRows（控件禁用）
 __docDispatch('reviewflow:analysis-loaded');
 await pump();  // restoreAssessments 完成 → 控件可用
+assert.equal(rowsNow().length, 2);
+for (const row of rowsNow().map(rowUi)) {
+  assert.equal(row.auto.disabled, false);
+  assert.equal(row.save.disabled, false);
+}
+"""
+
+GRADE_DRIVER_FULL = GRADE_SETUP + r"""
 const out = {};
 {
   const [ra, rb] = rowsNow().map(rowUi);
@@ -218,7 +234,8 @@ const out = {};
   const saves = pending('/analysis/grade/save'); const autos = pending('/analysis/grade/auto-suggest');
   finish(saves[0], { final_quality: 'moderate' });
   await drain();
-  finish(autos[0], { downgrades: { rob: 'serious' }, initial_quality: 'high', final_quality: 'moderate', signal_sources: {} });
+  finish(autos[0], { downgrades: { rob: 'serious' }, initial_quality: 'high', final_quality: 'moderate',
+    signal_sources: { rob: { available: true, rule: 'majority_high_risk', affected_studies: 2 } } });
   await drain();
   out.aStatusAfter = ra.status.textContent;
   out.aRationaleHidden = ra.rationale.hidden;
@@ -250,7 +267,8 @@ const out = {};
   const autos = pending('/analysis/grade/auto-suggest');
   finish(autos[0], { downgrades: { rob: 'serious' }, initial_quality: 'high', final_quality: 'moderate', signal_sources: {} });
   await drain();
-  out.sameRowSuppressedStatus = ra2.status.textContent;   // 先发响应必须被抑制
+  out.sameRowSuppressedStatus = ra2.status.textContent;
+  out.firstRowSuppressedStatus = ra.status.textContent;  // 先发响应不得更新它原来那行的 UI
   finish(autos[1], { downgrades: { rob: 'serious' }, initial_quality: 'high', final_quality: 'moderate', signal_sources: {} });
   await drain();
   out.sameRowLatestStatus = rowsNow().map(rowUi)[0].status.textContent;
@@ -279,6 +297,7 @@ class TestR304GradeRowTicketIsolation(unittest.TestCase):
         out = _run_node_js(GRADE_DRIVER_FULL, FRONTEND)
         self.assertIn("正在推导", out["sameRowSuppressedStatus"],
                       "R3-04 修复不得移除同域过期抑制（后发请求应抑制先发响应）")
+        self.assertNotIn("已按自动建议预填", out["firstRowSuppressedStatus"])
         self.assertIn("已按自动建议预填", out["sameRowLatestStatus"])
 
 
@@ -286,27 +305,15 @@ class TestR304GradeRowTicketIsolation(unittest.TestCase):
 # R3-04 补钉（评审 r2 阻断）：失败路径不得 ReferenceError；任务切换仍作废在途响应
 # ---------------------------------------------------------------------------
 
-GRADE_REJECT_DRIVER = r"""
-globalThis.anEffects = [
-  { comparison: 'A vs B', outcome: 'Outcome A', timepoint: 'tp', measure: 'MD', study_id: 's1' },
-  { comparison: 'A vs B', outcome: 'Outcome B', timepoint: 'tp', measure: 'MD', study_id: 's2' },
-];
-__byId['anJumpEffects'] = new El('div');
-__docQ['.page[data-p="analysis"]'] = new El('div');
-globalThis.__unhandled = [];
-process.on('unhandledRejection', er => { globalThis.__unhandled.push(String(er && er.stack || er)); });
-loadModule('analysis_grade.js');
-await pump();
-__docDispatch('reviewflow:analysis-loaded');
-await pump();
-const rows = () => __byId['anJumpEffects']._afterNodes[0].querySelector('#rfGradeRows').children;
-const ui = row => { const b = row.querySelectorAll('button'); return { row, auto: b[0], save: b[1], status: row.children[2] }; };
+GRADE_REJECT_DRIVER = GRADE_SETUP + r"""
+const unhandled = [];
+process.on('unhandledRejection', error => { unhandled.push(String(error && error.stack || error)); });
 const out = {};
 /* (1) 保存 + 导出 reject：状态必须落到失败文案，toast 必须出现，不得有未处理 rejection */
 {
-  const [ra] = rows().map(ui);
+  const [ra] = rowsNow().map(rowUi);
   ra.save.click(); await drain();
-  const sof = __byId['anJumpEffects']._afterNodes[0].querySelectorAll('button').find(b => b.textContent === '导出 SoF 表');
+  const sof = panel.querySelectorAll('button').find(b => b.textContent === '导出 SoF 表');
   sof.click(); await drain();
   const saves = pending('/analysis/grade/save');
   const exps = pending('/analysis/grade/export');
@@ -315,31 +322,36 @@ const out = {};
   await drain();
   out.saveStatus = ra.status.textContent;
   out.toasts = __toasts.map(t => t.text);
-  out.unhandled = globalThis.__unhandled.slice();
+  out.unhandled = unhandled.slice();
 }
 /* (2) 自动建议 reject */
 {
   __toasts.length = 0;
-  const [ra] = rows().map(ui);
+  const [ra] = rowsNow().map(rowUi);
   ra.auto.click(); await drain();
   const reqs = pending('/analysis/grade/auto-suggest');
   reqs[0]._done = true; reqs[0].reject(new Error('auto 500'));
   await drain();
   out.autoStatus = ra.status.textContent;
-  out.unhandled2 = globalThis.__unhandled.slice();
+  out.unhandled2 = unhandled.slice();
 }
 /* (3) 任务切换后迟到的保存响应必须被作废（epoch 守卫；修复前 6 处 epoch 被删则复活） */
 {
   __toasts.length = 0;
-  const [ra] = rows().map(ui);
+  const [ra] = rowsNow().map(rowUi);
   ra.save.click(); await drain();
   const saves = pending('/analysis/grade/save');
-  __docDispatch('reviewflow:analysis-task-changed');       // version++ → 该响应当前已失效
-  await drain();
-  saves[0]._done = true; saves[0].resolve({ final_quality: 'moderate' });
+  S.task = { task_id: 't2', name: 'T2' };
+  S.taskVersion++;
+  __docDispatch('reviewflow:analysis-task-changed');
+  __docDispatch('reviewflow:analysis-loaded');
+  await pump();
+  assert.ok(__requests.some(req => req.url.startsWith('/api/tasks/t2/analysis/grade/export?')));
+  finish(saves[0], { final_quality: 'moderate' });
   await drain();
   out.toastsAfterTaskSwitch = __toasts.map(t => t.text);
   out.statusAfterTaskSwitch = ra.status.textContent;
+  out.newTaskStatus = rowsNow().map(rowUi)[0].status.textContent;
 }
 process.stdout.write('\n' + JSON.stringify(out));
 """
@@ -366,6 +378,7 @@ class TestR304FailurePathsAndEpoch(unittest.TestCase):
                          "R3-04：任务切换后迟到保存响应仍写成功 toast（epoch 守卫失效）：%r" % out["toastsAfterTaskSwitch"])
         self.assertNotIn("✓ 已保存", out["statusAfterTaskSwitch"],
                          "R3-04：任务切换后迟到响应仍写成功状态：%r" % out["statusAfterTaskSwitch"])
+        self.assertNotIn("✓ 已保存", out["newTaskStatus"], "R3-04：旧任务响应不得污染新任务")
 
 
 # ---------------------------------------------------------------------------
@@ -861,9 +874,12 @@ class TestVersionTokenBump(unittest.TestCase):
     # r10-U2（导入 12 项 #6-A）按同批行为改动重写了 import_export_workspace.js，
     # 内容变更后令牌已 bump 到 20261101-r10u2（U2 登记，该泳道 170 passed 佐证），
     # 故这条令牌钉随行为同批更新；其余 FL5 资产仍钉 r8fl5，不受影响。
+    # 2026-11-13（CI 静态钉收口）：ui-polish 波改写 analysis_grade.js 与
+    # protocol_designer.js 并按 MM5-01 纪律 bump 到 20261112-ui-polish——
+    # 钉随正名（受保护可观察面=改动资产的令牌必须已 bump，非具体字符串）。
     ASSETS = {
-        "analysis_grade.js": "20261030-r8fl5",
-        "protocol_designer.js": "20261030-r8fl5",
+        "analysis_grade.js": "20261112-ui-polish",
+        "protocol_designer.js": "20261112-ui-polish",
         "evidence_mapper.js": "20261030-r8fl5",
         "import_export_workspace.js": "20261101-r10u2",
         "analysis_network_pscores.js": "20261030-r8fl5",

@@ -607,7 +607,11 @@ class WiringStaticGuardNails(unittest.TestCase):
         self.assertLess(prefill, clean, "预填必须在 markDecisionClean 之前（预填值进入干净基线）")
 
     def test_index_script_token_and_w5_tail_untouched(self):
-        tag = f'<script src="./{BADGE_JS}?v={TOKEN}"></script>'
+        # 2026-11-13 随正名：preview19 把徽章脚本改为 workspace 模块加载器形态
+        # （type="application/x-reviewflow-workspace" data-rf-app）——受保护
+        # 可观察面不变=令牌引用恰一次且位于 SW 注册行之前；锚点改形态无关
+        # 的 src 引用串。
+        tag = f'./{BADGE_JS}?v={TOKEN}'
         self.assertEqual(self.html.count(tag), 1, "script 令牌必须恰一次")
         sw = self.html.index("navigator.serviceWorker.register")
         self.assertLess(self.html.index(tag), sw, "W5 的 SW 注册行必须保持在文档最末")

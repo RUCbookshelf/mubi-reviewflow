@@ -150,15 +150,15 @@ const repo = process.argv[1];
 const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const frontend = path.join(repo, 'custom_frontend');
 const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
-function bracketMatch(s, i) {
+function bracketMatch(s, i, open = '[', close = ']') {
   let depth = 0, j = i, instr = null;
   while (j < s.length) {
     const c = s[j];
     if (instr) { if (c === '\\') { j += 2; continue; } if (c === instr) instr = null; }
     else {
       if (c === '"' || c === "'" || c === '`') instr = c;
-      else if (c === '[') depth += 1;
-      else if (c === ']') { depth -= 1; if (depth === 0) return j; }
+      else if (c === open) depth += 1;
+      else if (c === close) { depth -= 1; if (depth === 0) return j; }
     }
     j += 1;
   }
@@ -214,7 +214,16 @@ for (const name of ['rows', 'APP_ROWS', 'PRISMA_ROWS']) {
 const seedMap = new Map();
 for (const row0 of seedRows) { seedMap.set(row0[0], row0); mark(row0[0], row0); }
 for (const [k, v] of seedMap) dictionary.set(k, v);
-const scripts = [...html.matchAll(/<script src="\.\/([^"?]+)\?v=/g)].map(m => m[1]);
+/* Ordinary scripts load during parsing. Workspace markers load after parsing,
+   in document order, when RFAppModules.ready() is called. */
+const eager = [], workspace = [];
+for (const [, attrs] of html.matchAll(/<script\b((?:[^"'<>]|"[^"]*"|'[^']*')*)>/gi)) {
+  const src = /(?:^|\s)src\s*=\s*["']\.\/([^"'?]+)\?v=[^"']*["']/i.exec(attrs);
+  if (!src) continue;
+  const queue = /(?:^|\s)data-rf-app(?:\s|=|$)/i.test(attrs) ? workspace : eager;
+  queue.push(src[1]);
+}
+const scripts = [...eager, ...workspace];
 for (const fname of scripts) {
   const p = path.join(frontend, fname);
   if (!fs.existsSync(p)) continue;
@@ -228,10 +237,12 @@ for (const fname of scripts) {
       try { register(Function('return ' + js.slice(k, bracketMatch(js, k) + 1))(), fname); }
       catch (e) { errors.push(fname + ': ' + String(e)); }
     } else {
-      const end = js.indexOf(')', k);
       globalThis.window = globalThis;
       globalThis.RFLang = { register: pairs => register(pairs, fname) };
-      try { Function(js.slice(0, end + 1) + '\n})();')(); }
+      try {
+        const end = bracketMatch(js, m.index + m[0].length - 1, '(', ')');
+        Function(js.slice(0, end + 1) + '\n})();')();
+      }
       catch (e) { errors.push(fname + ' prefix: ' + String(e)); }
     }
   }

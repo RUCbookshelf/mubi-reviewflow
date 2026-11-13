@@ -122,11 +122,20 @@ jobs:
           # test_w4_study_design 与 test_r6_undo_collab_fixes 存在存量跨文件
           # 状态泄漏（w4 模块级 fixture 对 main 单例的污染，stash 验证非新引入），
           # 同进程联跑 5 败、分进程 35+24 全绿；根因修复另立工单，CI 先分段。
+          # 2026-11-13（CI 静态钉收口）：再添三件同病受害者——ai_formats/
+          # auth_remember_reset/upload_security 独立跑全绿、整目录必红
+          # （模块级 env 串扰，本地 30 分钟复现实证 34F+16E）；分段名单扩至五件。
           python -m pytest build/tests -q \
             --ignore=build/tests/test_w4_study_design.py \
-            --ignore=build/tests/test_r6_undo_collab_fixes.py
+            --ignore=build/tests/test_r6_undo_collab_fixes.py \
+            --ignore=build/tests/test_2_1_5_ai_formats.py \
+            --ignore=build/tests/test_2_1_5_auth_remember_reset.py \
+            --ignore=build/tests/test_upload_security_regression.py
           python -m pytest build/tests/test_w4_study_design.py -q
           python -m pytest build/tests/test_r6_undo_collab_fixes.py -q
+          python -m pytest build/tests/test_2_1_5_ai_formats.py -q
+          python -m pytest build/tests/test_2_1_5_auth_remember_reset.py -q
+          python -m pytest build/tests/test_upload_security_regression.py -q
           python build/validate_import_review.py
           python build/validate_screening_rounds.py
           node build/validate_import_review_static.cjs

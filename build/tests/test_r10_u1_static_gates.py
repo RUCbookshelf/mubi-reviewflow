@@ -195,11 +195,19 @@ class TestHomeEmptyStateAndGuidance:
 
     def test_first_step_card_points_at_task_creation(self):
         source = _read("workflow_controls.js")
-        assert "wf-first-step" in source, "F14：概览需要一步引导卡"
-        assert "First step: create a task" in source
-        card = re.search(r"const firstStep = n\('div', null, \{(.*?)\);", source, re.S)
-        assert card, "F14：引导卡结构缺失"
-        assert "activate('tasks')" in source, "F14：按钮必须直达「任务与团队」标签"
+        render = re.search(r"function renderCurrentTask\(\)\{(.*?)\n  \}", source, re.S)
+        assert render, "F14：概览需渲染零任务引导"
+        empty = re.search(r"if\(noTasks\)\{(.*?)\n    \}", render.group(1), re.S)
+        assert empty, "F14：引导动作仅在零任务分支渲染"
+        assert "host.replaceChildren" in empty.group(1)
+        assert "Create a task to import records and start screening." in empty.group(1)
+        action = re.search(r"button\('Create a task',\s*\(\)\s*=>\s*\{([^}]*)\}", empty.group(1))
+        assert action, "F14：零任务卡必须包含创建任务按钮"
+        target = "homeTab?.('tasks')"
+        focus = "document.getElementById('newTaskName')?.focus()"
+        assert target in action.group(1), "F14：按钮必须直达「任务与团队」标签"
+        assert focus in action.group(1), "F14：按钮必须聚焦新建任务输入框"
+        assert action.group(1).index(target) < action.group(1).index(focus)
 
     def test_settings_tabs_no_longer_collide_with_sidebar_pages(self):
         source = _read("workflow_controls.js")
@@ -326,7 +334,7 @@ class TestLocaleAndTokenGates:
         "＋ 将此理由存为常用", "已存为常用理由：{0}", "查看全部已决文献",
         "全部已决文献", "排序更新中…", "当前：{0}", "预测纳入概率 {0}%",
         "基于 {0} 条已标注", "已选择机器学习排序，当前标签不足，暂按导入顺序",
-        "No task yet", "Create a task", "First step: create a task",
+        "还没有任务", "创建任务以导入文献并开始筛选。", "创建任务",
         "（沿用上次）", "试试机器学习排序", "关闭提示",
         "可以切换为机器学习排序：按模型预测的纳入概率排列待筛文献",
         "决定下一篇读哪条：相关度优先＝先看模型最可能纳入的；混合探索＝在已排序的基础上留出随机抽样；不确定性优先＝先看模型最没把握的",

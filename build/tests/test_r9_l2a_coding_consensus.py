@@ -105,7 +105,13 @@ class VersionFileBomTests(_Base):
         out = self._probe(b"2.1.4\n")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.strip(), "2.1.4")
-        self.assertEqual((REPO / "VERSION").read_text(encoding="ascii").strip(), "2.1.4")
+        # 2026-11-13 随正名：仓库 VERSION 随发布推进（2.1.4→2.1.5→…），
+        # 钉硬编码版本号必随每次发版红——改为钉「纯 ASCII 语义版本」本身
+        #（受保护可观察面=无 BOM、纯 ASCII、可被 ascii 读出，非具体数字）。
+        import re as _re
+        self.assertRegex(
+            (REPO / "VERSION").read_text(encoding="ascii").strip(),
+            _re.compile(r"^\d+(\.\d+)+$"))
 
     def test_non_utf8_bytes_fall_back_to_default(self):
         """非 UTF-8 残留字节不再致命：退回 '0.0.0'（与"无 VERSION"同口径）。"""

@@ -455,12 +455,22 @@ need(landing);
 const landConflict = new Function('reason', 'draft', 'settingsDirty', 'result', landing);
 const order = [];
 let fail = true;
+const assert = require('node:assert/strict');
+const saveButton = {disabled: false};
+const unavailableButton = {disabled: true};
+const notice = {textContent: ''};
+let finishConflict;
+const conflictFinished = new Promise(resolve => { finishConflict = resolve; });
+let finishSaveRefresh;
+let startSaveRefresh;
+const saveRefresh = new Promise(resolve => { finishSaveRefresh = resolve; });
+const saveRefreshStarted = new Promise(resolve => { startSaveRefresh = resolve; });
 const context = {
   console, setTimeout, Promise, structuredClone,
   W: {},
   stages: ['screen', 'fulltext', 'coding'],
   T: value => value,
-  toast: () => {},
+  toast: message => order.push(message),
   scope: () => 't1|1|s',
   taskApi: () => '/api/tasks/t1',
   draftSignature: value => JSON.stringify(value),
@@ -472,8 +482,20 @@ const context = {
            evidence_required_field_ids: [] },
   settings: { can_manage: true, version: 1 },
   settingsDirty: false,
+  savingSettings: false,
+  document: {
+    querySelectorAll: selector => {
+      assert.equal(selector, '.wf-settings-save button');
+      return [saveButton, unavailableButton];
+    },
+  },
+  $: selector => {
+    assert.equal(selector, '#wf-settings-notice');
+    return notice;
+  },
   draftBaseline: null,
   api: async (path, opts) => {
+    assert.equal(saveButton.disabled, true, 'save must be disabled during PUT');
     order.push('api:' + opts.method + ':' + path.slice(path.lastIndexOf('/')) + ':' + opts.body.expected_version);
     if (fail) {
       const error = new Error('stale');
@@ -486,31 +508,51 @@ const context = {
   },
   __exports: {},
 };
-context.W.errorText = error => { order.push('error:' + (error.code || error.status)); return 'conflict!'; };
+context.W.errorText = error => 'error:' + (error.code || error.status);
 context.W.refresh = async reason => {
   order.push('refresh:' + reason);
-  await new Promise(resolve => setTimeout(resolve, 5));
+  if (reason === 'saved') {
+    startSaveRefresh();
+    await saveRefresh;
+    return;
+  }
+  assert.equal(reason, 'conflict');
   const result = { can_manage: true, version: 2 };  /* GET /workflow-settings 拿回的最新设置 */
   landConflict(reason, context.draft, context.settingsDirty, result);
   context.settings = result;
+  finishConflict();
 };
 vm.createContext(context);
 vm.runInContext([runCode, errorBlock, saveBlock, ';__exports.run = run;'].join('\n'), context);
 const save = context.W.saveSettings;
 (async () => {
   await context.__exports.run(save);
-  /* W.error 用 run(...) 发起刷新、不回传 promise（真实语义：刷新在后台链上落地）；
-     等它落定后再读版本，对应用户看到刷新完成后再次点保存。 */
-  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(order.includes('refresh:conflict'), '409 must schedule a refresh');
+  await conflictFinished;
+  assert.equal(saveButton.disabled, false, 'conflict must restore the save control');
+  assert.equal(notice.textContent, 'error:workflow_version_conflict');
   const afterFail = { order: order.slice(), version: context.draft.version };
   fail = false;
   order.length = 0;
-  await context.__exports.run(save);
+  const retry = context.__exports.run(save);
+  await Promise.race([
+    saveRefreshStarted,
+    retry.then(() => { throw Error('save finished before refresh'); }),
+  ]);
+  assert.equal(saveButton.disabled, true, 'save must stay disabled until refresh completes');
+  assert.equal(await save(), false, 'a second save must not submit during refresh');
+  finishSaveRefresh();
+  assert.equal(await retry, true);
+  assert.equal(saveButton.disabled, false);
+  assert.equal(unavailableButton.disabled, true, 'restore original disabled state');
   process.stdout.write(JSON.stringify({
     afterFail,
     afterRetry: { order: order.slice(), version: context.draft.version },
   }));
-})();
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
 """
 
 

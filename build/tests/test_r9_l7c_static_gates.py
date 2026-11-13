@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
-from pathlib import Path
+from html.parser import HTMLParser
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -103,7 +106,42 @@ def _edit(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
 
 
-MODEL_TAG = '<script src="./import_review_model.js?v=20261028-r7-frontsec1"></script>'
+class _ScriptSources(HTMLParser):
+    """Read actual src attributes independently of the validator under test."""
+
+    def __init__(self, html: str):
+        super().__init__()
+        self.tags: list[tuple[str, str]] = []
+        self.feed(html)
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            src = dict(attrs).get("src")
+            if src:
+                self.tags.append((src, self.get_starttag_text()))
+
+
+def _script_loader_tag(index: Path, module: str) -> str:
+    html = index.read_text(encoding="utf-8")
+    matches = [tag for src, tag in _ScriptSources(html).tags
+               if urlsplit(src).path in (module, "./" + module)]
+    assert len(matches) == 1, f"expected one script loader for {module}"
+    block = re.search(re.escape(matches[0]) + r"\s*</script\s*>", html, re.I)
+    assert block is not None, f"expected an empty external script block for {module}"
+    return block.group()
+
+
+def _expected_manifest(index: Path) -> set[str]:
+    sources = set()
+    for src, _ in _ScriptSources(index.read_text(encoding="utf-8")).tags:
+        url = urlsplit(src)
+        path = PurePosixPath(url.path)
+        if not url.scheme and not url.netloc and not path.is_absolute() \
+                and ".." not in path.parts and path.suffix in (".js", ".mjs"):
+            sources.add(path.as_posix())
+    # The viewer imports two PDF.js modules and loads one worker at runtime.
+    return sources | {"pdfjs/pdf.min.mjs", "pdfjs/pdf_viewer.mjs", "pdfjs/pdf.worker.min.mjs"}
 
 
 # --------------------------------------------------------------------------- #
@@ -132,7 +170,8 @@ def test_f1_65_indexof_sentinel_can_no_longer_hide_a_missing_loader_tag(tmp_path
     names the module."""
     tree = _tree(tmp_path, (IMPORT_GATE,))
     model = tree / "custom_frontend" / "import_review_model.js"
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG, "")
+    index = tree / "custom_frontend/index.html"
+    _edit(index, _script_loader_tag(index, "import_review_model.js"), "")
     # The file still exists, so only the loader-tag removal is under test.
     assert model.is_file()
     proc = _run(tree, IMPORT_GATE)
@@ -157,10 +196,12 @@ def test_f1_65_model_tag_before_guide_tag_order_is_still_enforced(tmp_path):
     """The real ordering constraint must still bite once both tags exist."""
     tree = _tree(tmp_path, (IMPORT_GATE,))
     html = tree / "custom_frontend/index.html"
-    guide = '<script src="./import_guide.js?v=2.1.2.2"></script>'
+    model = _script_loader_tag(html, "import_review_model.js")
+    guide = _script_loader_tag(html, "import_guide.js")
     text = html.read_text(encoding="utf-8")
-    html.write_text(text.replace(MODEL_TAG, "").replace(guide, guide + "\n" + MODEL_TAG, 1),
-                    encoding="utf-8", newline="\n")
+    assert text.index(model) < text.index(guide), "fixture must start in the correct order"
+    _edit(html, model, "")
+    _edit(html, guide, guide + "\n" + model)
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode != 0
     assert "must load before" in proc.stderr
@@ -174,8 +215,10 @@ def test_f1_62_attribute_containing_gt_is_not_truncated(tmp_path):
     data-note="a>b", so the body's first characters were re-parsed as attributes
     and the rest of the script was syntax-checked as a fragment."""
     tree = _tree(tmp_path, (IMPORT_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
-          '<script data-note="a>b">var attributeGtSurvived = 1;</script>\n' + MODEL_TAG)
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
+          '<script data-note="a>b">var attributeGtSurvived = 1;</script>\n' + model)
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["inline_scripts"] == 4
@@ -188,8 +231,10 @@ def test_f1_62_data_src_is_not_a_loader_and_its_body_is_checked(tmp_path):
     loader manifest stays valid and only the inline-skip decision is under test.
     (script_manifest.cjs's own `\\bsrc` boundary is an out-of-lane follow-up.)"""
     tree = _tree(tmp_path, (IMPORT_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
-          '<script data-src="./import_review_model.js">var broken = ;</script>\n' + MODEL_TAG)
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
+          '<script data-src="./import_review_model.js">var broken = ;</script>\n' + model)
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode != 0, "an inline block with a syntax error must fail"
     assert "SyntaxError" in proc.stderr, proc.stderr
@@ -200,10 +245,12 @@ def test_f1_62_non_javascript_script_types_are_data_not_code(tmp_path):
     case-sensitive `application/json` test crashed on all three; they must be
     skipped, and genuine JS inline scripts must still be checked."""
     tree = _tree(tmp_path, (IMPORT_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
           '<script type="application/ld+json">{"@context":"https://schema.org"}</script>\n'
           '<script type="importmap">{"imports":{"x":"./import_review_model.js"}}</script>\n'
-          '<script type="application/JSON">{"a":1}</script>\n' + MODEL_TAG)
+          '<script type="application/JSON">{"a":1}</script>\n' + model)
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["inline_scripts"] == 3
@@ -322,8 +369,10 @@ def test_f1_67_containment_checks_run_before_the_body_not_in_finally():
 
 def test_f1_67_syntax_error_is_reported_as_a_syntax_error(tmp_path):
     tree = _tree(tmp_path, (IMPORT_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
-          "<script>var inlineBroken = ;</script>\n" + MODEL_TAG)
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
+          "<script>var inlineBroken = ;</script>\n" + model)
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode != 0
     assert "SyntaxError" in proc.stderr, proc.stderr
@@ -361,17 +410,15 @@ def test_f1_82_register_of_an_empty_list_fails_the_gate(tmp_path):
 
 def test_f1_82_clean_tree_still_reports_every_row(tmp_path):
     """Control: the fail-closed rule must not shrink the validated set. The live
-    locale pack registers 101 rows and the gate must still count all of them,
-    across every language pack file (25 since 2.1.5 added six packs:
-    pilot_screening / search_strategy / screening_tools / import_review_quality
-    / assessment_tables / batch6)."""
+    locale pack registers 101 rows and the gate must still count all of them.
+    Compare its pack count with the files in the test fixture."""
     tree = _tree(tmp_path, (TEAM_GATE,))
     proc = _run(tree, TEAM_GATE)
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout)
     assert report["status"] == "passed"
     assert report["ten_language_rows"] == 101
-    assert report["language_pack_files"] == 25
+    assert report["language_pack_files"] == len(list((tree / "custom_frontend").glob("*_locale.js")))
 
 
 # --------------------------------------------------------------------------- #
@@ -384,19 +431,17 @@ def test_manifest_data_src_is_not_a_loader(tmp_path):
     （探针：`manifest module is missing on disk: ghost_module.js`）。修后只有
     精确的 `src` 属性算载入，data-src 整块被忽略。"""
     tree = _tree(tmp_path, (IMPORT_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
-          '<script data-src="./ghost_module.js"></script>\n' + MODEL_TAG)
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    expected = _expected_manifest(index)
+    _edit(index, model,
+          '<script data-src="./ghost_module.js"></script>\n' + model)
     assert not (tree / "custom_frontend" / "ghost_module.js").exists()
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout)
-    # ghost_module.js 未混进载入列表；2.1.5 各波前端契约净增 19 个载入模块
-    # （+20：W2 pilot/W3 strategy/W6 topic-cluster/W7 tables/W8 criteria-panel/
-    #  W9 retraction-watch/highlight/task-delete/arbitration-reader/appraisal/
-    #  import-ai-assist/daily-nudge 等；-1：screening_rounds.js 随 W1 轮次路由
-    #  契约化退役），清单基准 116 -> 135。本文件三处 135 同源（皆取自
-    #  script_manifest.cjs 的 loadScriptManifest 清单长度）。
-    assert report["syntax_files"] == 135
+    assert report["syntax_files"] == len(expected)
+
 
 
 def test_manifest_data_src_cannot_mask_a_dead_file(tmp_path):
@@ -404,8 +449,10 @@ def test_manifest_data_src_cannot_mask_a_dead_file(tmp_path):
     被一个假载入欺骗（探针：同一死文件，加 data-src 前 fail、加之后 pass）。"""
     tree = _tree(tmp_path, (IMPORT_GATE,))
     (tree / "custom_frontend" / "zz_dead_probe.js").write_text("window.ZZ=1;\n", encoding="utf-8")
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
-          '<script data-src="./zz_dead_probe.js"></script>\n' + MODEL_TAG)
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
+          '<script data-src="./zz_dead_probe.js"></script>\n' + model)
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode != 0, "假载入不得让死文件蒙混过关"
     assert "dead file" in proc.stderr, proc.stderr
@@ -416,11 +463,13 @@ def test_manifest_quoted_gt_does_not_hide_a_real_loader(tmp_path):
     看不到——import_review_model.js 从载入列表消失，MM9-09 反手把它判成死文件
     （探针：model present: False）。修后属性扫描读到真正的标签结尾。"""
     tree = _tree(tmp_path, (IMPORT_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
-          MODEL_TAG.replace('<script src=', '<script data-note="a>b" src='))
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    expected = _expected_manifest(index)
+    _edit(index, model, model.replace("<script", '<script data-note="a>b"', 1))
     proc = _run(tree, IMPORT_GATE)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout)["syntax_files"] == 135  # 2.1.5 载入清单基准（见 test_manifest_data_src_is_not_a_loader）
+    assert json.loads(proc.stdout)["syntax_files"] == len(expected)
 
 
 def test_manifest_helper_only_accepts_the_exact_src_attribute(tmp_path):
@@ -428,29 +477,25 @@ def test_manifest_helper_only_accepts_the_exact_src_attribute(tmp_path):
     正常带 src 的标签照旧全部解析（不把真 loader 一起丢掉）。"""
     tree = _tree(tmp_path, (IMPORT_GATE,))
     html = tree / "custom_frontend" / "index.html"
-    text = html.read_text(encoding="utf-8")
-    html.write_text(
-        text.replace(MODEL_TAG,
-                     '<script data-src="./ghost_one.js" lazy-src="./ghost_two.js"></script>\n'
-                     + MODEL_TAG),
-        encoding="utf-8", newline="\n")
+    model = _script_loader_tag(html, "import_review_model.js")
+    expected = _expected_manifest(html)
+    _edit(html, model, '<script data-src="./ghost_one.js" lazy-src="./ghost_two.js"></script>\n' + model)
     driver = tmp_path / "probe.cjs"
     driver.write_text(
         "const {loadScriptManifest}=require(%r);\n"
         "const list=loadScriptManifest(%r);\n"
-        "console.log(JSON.stringify({count:list.length,"
-        "model:list.includes('import_review_model.js'),"
-        "ghost:list.filter(f=>f.startsWith('ghost_'))}));\n"
+        "console.log(JSON.stringify(list));\n"
         % (str(tree / "build" / "script_manifest.cjs").replace("\\", "/"),
            str(tree).replace("\\", "/")),
         encoding="utf-8")
     proc = subprocess.run([NODE, str(driver)], capture_output=True, text=True,
                           timeout=120, cwd=str(tree))
     assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert out["ghost"] == [], f"data-src/lazy-src 混进了载入列表：{out['ghost']}"
-    assert out["model"] is True, "真 loader 不得因同标签的其他属性被漏掉"
-    assert out["count"] == 135  # 2.1.5 载入清单基准（见 test_manifest_data_src_is_not_a_loader）
+    manifest = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert not [file for file in manifest if file.startswith("ghost_")]
+    assert "import_review_model.js" in manifest
+    assert len(manifest) == len(expected)
+    assert set(manifest) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -499,10 +544,12 @@ def test_f1_78_ld_json_and_importmap_blocks_are_skipped(tmp_path):
     """RED at baseline: the team gate skipped only \\bsrc=/type='application/json',
     so an ld+json or importmap block crashed with `Unexpected token ':'`."""
     tree = _tree(tmp_path, (TEAM_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
           '<script type="application/ld+json">{"@context":"https://schema.org"}</script>\n'
           '<script type="importmap">{"imports":{"x":"./import_review_model.js"}}</script>\n'
-          + MODEL_TAG)
+          + model)
     proc = _run(tree, TEAM_GATE)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["inline_scripts"] == 3
@@ -512,9 +559,11 @@ def test_f1_78_and_f1_81_uppercase_json_type_and_attribute_gt(tmp_path):
     """F1-81: the type test was case-sensitive and a '>' inside a quoted
     attribute truncated the tag; both broke the skip decision."""
     tree = _tree(tmp_path, (TEAM_GATE,))
-    _edit(tree / "custom_frontend/index.html", MODEL_TAG,
+    index = tree / "custom_frontend/index.html"
+    model = _script_loader_tag(index, "import_review_model.js")
+    _edit(index, model,
           '<script type="application/JSON">{"a":1}</script>\n'
-          '<script data-note="a>b">var okAttribute = 1;</script>\n' + MODEL_TAG)
+          '<script data-note="a>b">var okAttribute = 1;</script>\n' + model)
     proc = _run(tree, TEAM_GATE)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["inline_scripts"] == 4
