@@ -450,7 +450,8 @@ class F448ValuesMatchInputsNails(unittest.TestCase):
             "confidence_level": stored["confidence_level"],
             "ci_method": "wald_normal"})
         self.assertEqual(recomputed["se"], effect["se"])
-        self.assertEqual(effect["se"], 0.13566164651852822)
+        # The frozen SciPy result can differ by one ULP across platforms.
+        self.assertAlmostEqual(effect["se"], 0.13566164651852822, delta=1e-15)
 
     def test_default_confidence_level_is_recorded(self):
         effect = self._survival()

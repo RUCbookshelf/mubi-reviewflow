@@ -698,19 +698,27 @@ def fit_dependent_gls(
         if inference_error is not None:
             inference = _unavailable(inference_error.code, str(inference_error), **inference_error.details)
         else:
-            contributions = [mapping @ y_white for mapping in robust_maps]
+            contributions = np.asarray([mapping @ y_white for mapping in robust_maps])
             robust_covariance = sum((np.outer(value, value) for value in contributions),
                                     start=np.zeros_like(model_covariance))
             if not np.isfinite(robust_covariance).all():
                 inference = _unavailable("invalid_robust_covariance",
                                          "robust covariance contains non-finite values")
             else:
+                # A score is a dot product and can leave roundoff after cancellation.
+                # Bound it by n * eps * sum(abs(terms)) for each cluster/coefficient
+                # so the zero-variance decision does not depend on outcome units.
+                roundoff_scale = np.abs(y_white) * (len(y_white) * np.finfo(float).eps)
+                score_roundoff = np.asarray([np.abs(mapping) @ roundoff_scale
+                                             for mapping in robust_maps])
                 tests = []
                 for index, name in enumerate(design_names):
                     robust_variance = float(robust_covariance[index, index])
-                    if robust_variance <= 0:
+                    if robust_variance <= 0 or np.all(
+                            np.abs(contributions[:, index]) <= score_roundoff[:, index]):
                         inference_error = KernelError(
-                            "zero_robust_variance", f"robust variance for {name} is not positive",
+                            "zero_robust_variance",
+                            f"robust variance for {name} is indistinguishable from zero",
                             coefficient=name,
                         )
                         break

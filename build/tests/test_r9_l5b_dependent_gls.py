@@ -314,6 +314,30 @@ class F346MalformedInputTests(unittest.TestCase):
               [{"name": "a", "estimate": 0.125, "model_based_se": 0.07071067811865475},
                {"name": "b", "estimate": 0.1, "model_based_se": 0.1}])],
         )
+        self.assertEqual(result["runs"][2]["robust_inference"]["reason_code"], "zero_robust_variance")
+
+    def test_loco_does_not_report_inference_from_roundoff(self):
+        # Deleting c3 leaves two clusters with equal slopes. Scaling their
+        # outcomes, or rounding a single input by one ULP, cannot establish
+        # meaningful slope variation. A real small difference still can.
+        for scale in (1.0, 1e8):
+            for last, status in ((0.25, "inference_unavailable"),
+                                 (math.nextafter(0.25, math.inf), "inference_unavailable"),
+                                 (0.2500000001, "available")):
+                with self.subTest(scale=scale, last=last):
+                    effects = _cluster_effects(
+                        estimates=tuple(scale * y for y in (0.1, 0.2, 0.15, last, 0.12, 0.32))
+                    )
+                    run = de.leave_one_cluster_out(effects, _DESIGN, ["a", "b"])["runs"][2]
+                    self.assertEqual(run["removed_cluster_id"], "c3")
+                    self.assertEqual(run["status"], status)
+                    inference = run["robust_inference"]
+                    if status == "available":
+                        self.assertGreater(inference["coefficient_tests"][1]["robust_se"], 0.0)
+                    else:
+                        self.assertEqual(inference["reason_code"], "zero_robust_variance")
+                        self.assertEqual(inference["details"]["coefficient"], "b")
+                        self.assertIsNone(inference["covariance"])
 
 
 class F345AdditiveOrderTests(unittest.TestCase):

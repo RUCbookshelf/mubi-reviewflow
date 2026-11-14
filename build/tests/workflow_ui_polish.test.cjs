@@ -67,7 +67,7 @@ test('workflow and training prose has genuine Chinese and translated note/maybe 
   assert.equal(rows.some(row=>row[0]===row[1]&&row[0].length>=4),false);
   assert.equal(rows.find(row=>row.aliases?.includes('pilot.note'))[1],'Notes');
   assert.equal(rows.find(row=>row.aliases?.includes('pilot.decision_maybe'))[1],'Not Sure Now');
-  assert.equal(rows.find(row=>row[0]==='页码')[1],'Page');
+  assert.equal(rows.find(row=>row[0]==='页码')[1],'Page number');
 });
 
 test('curated wizard pages 1500 records and uses selected count at final step',async()=>{

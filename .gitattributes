@@ -11,6 +11,9 @@
 # The navigation-map generator preserves this document's line endings.
 /custom_frontend/NAVIGATION_MAP.md text eol=lf
 
+# The locale cache token is pinned to the SHA-256 of this asset.
+/custom_frontend/interface_locale.js text eol=lf
+
 # The benchmark manifest hashes exact bytes. Preserve the stored LF/CRLF
 # of each fixture instead of normalizing the mixed set on Windows checkout.
 /docs/benchmark/fixtures/** -text
