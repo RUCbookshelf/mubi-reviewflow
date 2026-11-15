@@ -1,5 +1,8 @@
 # ReviewFlow Server Deployment Guide (Ubuntu)
 
+> **2.1.5 + Python 3.12：**若测试外部 AI 时出现通用服务错误，请参阅 [HTTPS 兼容补丁与应用步骤](2.1.5-HTTPS-HOTFIX.md)。
+> **2.1.5 + Python 3.12:** For generic errors when testing external AI, see the [HTTPS compatibility hotfix and application guide](2.1.5-HTTPS-HOTFIX.md).
+
 [中文](#zh-cn) · [English](#en) · [Français](#fr) · [Русский](#ru) · [Español](#es) · [日本語](#ja) · [Português](#pt) · [Deutsch](#de) · [Српски](#sr) · [한국어](#ko)
 
 <a id="zh-cn"></a>

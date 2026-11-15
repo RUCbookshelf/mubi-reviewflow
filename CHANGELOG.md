@@ -6,6 +6,22 @@ Detailed, categorized release notes live here; see the [README](README.md) for t
 
 ---
 
+## [2.1.6] — 未发布 / Unreleased
+
+### 中文
+
+#### 修复
+
+- 修复在 Python 3.12 等新版运行环境中，测试外部 AI 的 API Key 或生成 AI 建议时因 HTTPS 兼容问题出现通用服务错误的问题；保留证书验证与目标地址防护。提供[基于 2.1.5 的补丁和应用说明](docs/deployment/2.1.5-HTTPS-HOTFIX.md)。平台的认证、模型权限及专用接入要求仍需满足。
+
+### English
+
+#### Fixed
+
+- Fixed a shared HTTPS compatibility error on Python 3.12 and similar newer runtimes that could cause external AI key tests and suggestion requests to fail with a generic server error. TLS verification and address protections are preserved. A [2.1.5 backport and application guide](docs/deployment/2.1.5-HTTPS-HOTFIX.md) are available; provider authentication, model permissions and provider-specific requirements still apply.
+
+---
+
 ## [2.1.5] — 2026-11-13
 
 ### 中文
