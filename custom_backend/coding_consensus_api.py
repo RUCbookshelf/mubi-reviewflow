@@ -153,13 +153,14 @@ def _team_writer_result(envelope: Any, response=None) -> Any:
 
 
 def _team_drift_http(task_id: str, exc: Exception) -> HTTPException:
-    """S4：模式漂移/窗口竞争的裸异常 → 结构化可重试 409（对齐 P15 形状）。
+    """S4：模式漂移字面信号 → 结构化可重试 409（对齐 P15 形状）。
 
-    team 判定与写窗之间的竞态（协作库正被重配/属主变更/读失败）会以裸
-    ``ValueError``/存储异常冲出 mutate 边界——零写 fail-closed 但形状裸
-    （500）。参照 ``_team_write_blocked_http`` 的载荷模式映射为
-    ``task_mode_changed``（与 P15 预飘移同码）+ 重试提示；幂等 receipt 使
-    重试安全。unknown 结果不经此路径（S2 单独显式上抛）。
+    team 判定与写窗之间的竞态（协作库正被重配/属主变更/读失败）会以
+    ``ValueError`` 冲出 mutate 边界——零写 fail-closed 但形状裸（500）。
+    参照 ``_team_write_blocked_http`` 的载荷模式映射为 ``task_mode_changed``
+    （与 P15 预飘移同码）+ 重试提示；幂等 receipt 使重试安全。unknown
+    结果不经此路径（S2 单独显式上抛），确定性 typed 错误也不经此路径
+    （见 :func:`_team_typed_unavailable_http`）。
     """
     return HTTPException(409, {
         "code": "task_mode_changed",
@@ -169,6 +170,64 @@ def _team_drift_http(task_id: str, exc: Exception) -> HTTPException:
         "message": "任务协作模式已变化，请重试本次操作。",
         "retryable": True,
     })
+
+
+def _is_team_drift_signal(exc: Exception) -> bool:
+    """P15-D1 口径：只有开窗处两条稳定字面信号才算可重试漂移。
+
+    ``team_screening_write.retained_team_write_inputs`` 在 yield 前抛出
+    的「不是 team 任务」系 ValueError（writer 从未运行、零业务写）＝
+    is_team 判定与开窗之间的任务模式漂移，重试会按当前可信状态重新
+    路由；其余 ValueError（键形状/域外键等请求自身错误）同请求重试
+    永不成功，不在此列。
+    """
+    if not isinstance(exc, ValueError):
+        return False
+    message = str(exc)
+    return ("requires a team task" in message
+            or "canonical task lookup returned no task_id" in message)
+
+
+def _team_typed_unavailable_http(exc: Exception) -> HTTPException | None:
+    """typed 团队错误 → 结构化响应（P15-D1/P17 同族）。
+
+    包 M（承包 J 复审观察②）：``TeamFlowReceiptUnavailable("not_prepared")``
+    是确定性存储未准备错误，旧兜底把它标成 409 ``task_mode_changed`` +
+    ``retryable: true``，客户端重试永不成功。这里如实映射：
+    - ``TeamFlowReceiptUnavailable`` → 非可重试 409（``error_code``/
+      ``message_key`` 同族，``retryable: false``，params 带 reason）。
+      与 appraisal 路由族同口径：未准备属于预期前置条件未满足，同请求
+      重试永不成功（只有宿主先跑准备生命周期才可能恢复）。
+    - ``TeamFlowUnavailableError`` → P15 ``_mutate_team`` 同款 typed 503
+      载荷（status/error_code/message_key/params/details/message 取自
+      异常；该类语义是「暂时不可读，稍后重试」，与 P15/P17 一致不投
+      ``retryable`` 键）。
+    返回 None＝非本层可判定的异常，调用方按既有全局处理（绝不伪造 409）。
+    """
+    from coscreen.team_flow_receipts import TeamFlowReceiptUnavailable
+    from custom_backend.team_screening_runtime import TeamFlowUnavailableError
+
+    if isinstance(exc, TeamFlowReceiptUnavailable):
+        if getattr(exc, "reason", None) == "connection_contract":
+            return None  # 借用合同违约＝编程错误，如实上抛不伪装业务态
+        return HTTPException(409, {
+            "error_code": "team_flow_receipt_unavailable",
+            "message_key": "team.flow.receipt_unavailable",
+            "params": {"reason": getattr(exc, "reason", "unreadable")},
+            "details": str(exc),
+            "message": "团队回执存储未就绪或不可用，重试同一请求不会成功。",
+            "retryable": False,
+        })
+    if isinstance(exc, TeamFlowUnavailableError):
+        return HTTPException(getattr(exc, "status", 503), {
+            "error_code": getattr(exc, "code", "team.flow.unavailable"),
+            "message_key": getattr(exc, "message_key",
+                                   "team.flow.unavailable"),
+            "params": getattr(exc, "params", {}),
+            "details": str(exc),
+            "message": str(exc),
+        })
+    return None
 
 
 def _freeze_item_keys_prewindow(path, consensus_ids) -> tuple[str, ...]:
@@ -348,10 +407,20 @@ def register_coding_consensus_routes(
                      "rationale": body.rationale,
                      "expected_policy_version": body.expected_policy_version}),
                 writer=writer)
-        except (HTTPException, ValueError):
-            raise  # P12/P15 结构化拒绝原样透传；业务 ValueError 由路由层映射 400
-        except Exception as exc:  # noqa: BLE001 —— S4：漂移竞态绝不裸 500
-            raise _team_drift_http(task_id, exc) from exc
+        except HTTPException:
+            raise  # P12/P15 结构化拒绝原样透传
+        except ValueError as exc:
+            # P15-D1 收窄（包 M）：只有开窗处两条漂移字面信号映射 409；
+            # 其余 ValueError 是请求自身确定性错误，由路由层映射 400
+            # （同请求重试永不成功，绝不标可重试 409 诱使徒劳重试）。
+            if _is_team_drift_signal(exc):
+                raise _team_drift_http(task_id, exc) from exc
+            raise
+        except Exception as exc:  # noqa: BLE001 —— typed 确定性 503；其余不兜底
+            mapped = _team_typed_unavailable_http(exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         return _team_writer_result(envelope, response)
 
     @app.get("/api/tasks/{task_id}/coding/records")
@@ -433,9 +502,16 @@ def register_coding_consensus_routes(
             except HTTPException:
                 raise  # P12/P15/S2 结构化拒绝原样透传
             except ValueError as exc:
-                raise bad(str(exc)) from exc  # writer/存储业务拒绝保持 400
-            except Exception as exc:  # noqa: BLE001 —— S4：漂移竞态绝不裸 500
-                raise _team_drift_http(task_id, exc) from exc
+                # P15-D1 收窄（包 M）：漂移字面信号 → 409 可重试；
+                # writer/存储业务拒绝保持 400（同请求重试永不成功）。
+                if _is_team_drift_signal(exc):
+                    raise _team_drift_http(task_id, exc) from exc
+                raise bad(str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001 —— typed 确定性 503；其余不兜底
+                mapped = _team_typed_unavailable_http(exc)
+                if mapped is None:
+                    raise
+                raise mapped from exc
         try:
             # U4-P5：写前在任务锁内复查授权，撤销后落地被拒。
             return guarded_consensus_write(
@@ -508,9 +584,16 @@ def register_coding_consensus_routes(
             except HTTPException:
                 raise  # P12/P15/S2 结构化拒绝原样透传
             except ValueError as exc:
-                raise bad(str(exc)) from exc  # ID 不可解析等业务拒绝保持 400
-            except Exception as exc:  # noqa: BLE001 —— S4：漂移竞态绝不裸 500
-                raise _team_drift_http(task_id, exc) from exc
+                # P15-D1 收窄（包 M）：漂移字面信号 → 409 可重试；
+                # ID 不可解析等业务拒绝保持 400（同请求重试永不成功）。
+                if _is_team_drift_signal(exc):
+                    raise _team_drift_http(task_id, exc) from exc
+                raise bad(str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001 —— typed 确定性 503；其余不兜底
+                mapped = _team_typed_unavailable_http(exc)
+                if mapped is None:
+                    raise
+                raise mapped from exc
         try:
             # U4-P5：写前在任务锁内复查授权，撤销后冻结被拒。
             return guarded_consensus_write(

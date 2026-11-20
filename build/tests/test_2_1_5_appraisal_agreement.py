@@ -25,7 +25,6 @@ import json
 import os
 import sqlite3
 import sys
-import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -34,44 +33,63 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # 与既有 2.1.5 服务端测试同法：先设环境再导入 main。
-# r3 测试卫生（修订 r2 的还原式 tearDownModule）：**不得把环境还原成本模块
-# 导入前的值**——pytest 的模块级 env 赋值发生在收集期、tearDownModule 发生
-# 在测试期，"还原 unset"会抹掉后续套件（w5/w7 等）收集期设的 server 状态，
-# 实测 `pytest 本文件 w7` → 44 errors（评审 r3 阻断项）。模块边界的正确语义
-# 是**保证而非抹除**：结束时环境必须仍是 server + 本模块 fixture（用例内
-# 谁弄丢了就重申），fixture 目录也挪到这里才删（r2 前第一个类的 tearDownClass
-# 就删目录，后续类/后续套件看到的是"env 指向已删目录"的中间态）。
-_ENV_KEYS = ("REVIEWFLOW_MODE", "COBOOKSHELF_DATA_DIR")
-fixture = tempfile.TemporaryDirectory(prefix="rf_215c_agreement_")
-os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
-os.environ["REVIEWFLOW_MODE"] = "server"
+#
+# 包 J（F 线移交族）根修正：本模块原先在导入期自建私有临时目录并把它写进
+# ``COBOOKSHELF_DATA_DIR``。pytest 下 main 在 ``pytest_configure`` 已导入并
+# 把 ``DATA_DIR`` **冻结**在会话根上；模块级改写只影响运行期 ``auth.data_dir()``
+# 而不改冻结值——团队写窗按 ``runtime.data_dir``（=会话根）找 ``users.db``，
+# 账号却建在私有根 → 全部邀请/写入 503 ``[accounts_unreadable] accounts DB
+# missing``（本包 26F 实测签名）。正确做法与 2.1.5 其余套件一致：**借用**
+# test-only 所有者根（pytest 会话代 / 裸跑进程 owner），绝不自建分叉根。
+# r3 的模块边界语义保留：结束时保证 server + 同一根，**不还原成导入前的值**；
+# 目录生命周期交给所有者模型（``_bare_env``），本模块不再持有私有目录。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _bare_env  # noqa: E402
+
+_BARE = _bare_env.acquire(mode="server")
+#: 本模块使用的数据根（所有者根）。main.DATA_DIR 导入期冻结到同一根。
+MODULE_ROOT = os.environ["COBOOKSHELF_DATA_DIR"]
+
+
+def setUpModule():
+    _bare_env.ensure_safe_for_execution()
 
 
 def _guarantee_module_env() -> None:
-    """模块边界的环境保证（r3）：server + 本模块 fixture，**不还原成导入前
-    的值**。pytest 的模块级 env 赋值发生在收集期、tearDownModule 在测试期，
-    "还原 unset"会抹掉后续套件（w5/w7 等不重钉 env 的）收集期设的 server
-    状态（实测 `pytest 本文件 w7` → 44 errors，评审 r3 阻断项）。"""
+    """模块边界的环境保证（r3 语义，包 J 根修正）：server + **所有者根**，
+    **不还原成导入前的值**。pytest 的模块级 env 赋值发生在收集期、
+    tearDownModule 在测试期，"还原 unset"会抹掉后续套件（w5/w7 等不重钉
+    env 的）收集期设的 server 状态（实测 `pytest 本文件 w7` → 44 errors，
+    评审 r3 阻断项）。"""
     os.environ["REVIEWFLOW_MODE"] = "server"
-    os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+    os.environ["COBOOKSHELF_DATA_DIR"] = MODULE_ROOT
 
 
 def tearDownModule():
-    """模块结束：先保证环境（见 :func:`_guarantee_module_env`），再清理
-    fixture 目录（r2 前第一个类的 tearDownClass 就删目录，后续类/后续套件
-    看到的是"env 指向已删目录"的中间态；挪到模块末统一清）。"""
+    """模块结束：先保证环境（见 :func:`_guarantee_module_env`），再归还借用。
+
+    根目录的删除/两键恢复只属于所有者收尾（``_bare_env`` 会话/进程合同）；
+    模块只归还自己的 borrow token，绝不自删共享根（F 线同法）。"""
     _guarantee_module_env()
-    fixture.cleanup()
+    _bare_env.release(_BARE)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from coscreen import appraisal as core  # noqa: E402
 from coscreen import db as db_mod  # noqa: E402
+from coscreen import review_workflow as store  # noqa: E402
+from coscreen import task_collaboration as collaboration_mod  # noqa: E402
 from coscreen import tasks as tasks_mod  # noqa: E402
+from coscreen import team_terminal_registry as terminal_registry  # noqa: E402
+from coscreen import team_vote_ledger as vote_ledger  # noqa: E402
 from coscreen.models import Article  # noqa: E402
 from custom_backend import appraisal_agreement_api as agreement_api  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
-from custom_backend.main import app, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE  # noqa: E402
+from custom_backend import team_source_lifecycle as team_source_lifecycle  # noqa: E402
+from custom_backend.appraisal_api import prepare_appraisal_storage_for  # noqa: E402
+from custom_backend.main import (  # noqa: E402
+    DATA_DIR, app, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE,
+)
 
 TOOL = "casp-qualitative"
 
@@ -100,6 +118,114 @@ def _slug(username: str) -> str:
     return tasks_mod.slugify_screener(username)
 
 
+def _auth_headers(user: dict) -> dict:
+    token = auth_mod.create_access_token(user["id"], user["username"])
+    return {"Authorization": "Bearer " + token}
+
+
+def _configure_team_write_fixture(client, task_id: str, owner: dict,
+                                  members: list[tuple[dict, str]], *,
+                                  articles: list[Article],
+                                  vote_keys: list[str]) -> None:
+    """把已受邀任务补齐到「团队评价写可用」的真实态（F 线同法配方，零 mock）。
+
+    2.1.6 起受邀任务即 team：评价 PUT 走 P15 ``runtime.mutate`` 真实写窗
+    （``member_appraisal``，actor 目标）。写窗要求且本函数逐一补齐：
+
+    1. **业务角色单选**（先于任何团队写）：邀请只授访问角色；未配置即
+       409 ``team.role.unconfigured``。评价是编码者业务（``coding:submit``），
+       故属主与被测成员均须 coder；reconciler 成员按其角色单选（读门用）。
+    2. **存储显式准备**：P17 ``prepare_appraisal_storage_for``（
+       appraisal_records）+ P14 ``prepare_team_protocol_storage``（F1
+       facts/receipts）——写窗只做纯读检查、绝不建表；缺表即
+       409 ``TeamFlowReceiptUnavailable``。
+    3. **P06 真实 source 登记**：``make_source_identity`` 真 token +
+       ``register_source_on`` 真登记（成员库真实 P04 账本身份，非占位）。
+    4. **上游链完成**：``member_appraisal`` 链目标=appraisal，需 stage1+
+       stage2 全员终局 include；coder 恒为必需筛选员（owner 无旁路）。
+       阶段顺序固定（全员 stage1 终局才写 stage2）。
+
+    本函数只补夹具，不改任何断言：隔离/权限/κ 数值语义由原钉原样承担。
+    """
+    info = tasks_mod.find_task(task_id, DATA_DIR)
+    assert info is not None
+    task_dir = info.dir
+    owner_db = task_dir / f"{_slug(owner['username'])}.db"
+    member_dbs = {
+        user["id"]: task_dir / f"{_slug(user['username'])}.db"
+        for user, _role in members
+    }
+    collab_path = collaboration_mod.shared_store_path(task_dir)
+    # 1. 业务角色单选（属主=coder；成员按传入角色）
+    collaboration_mod.set_business_role(
+        collab_path, actor_user_id=owner["id"], user_id=owner["id"],
+        business_role="coder", task_id=task_id)
+    for user, role in members:
+        collaboration_mod.set_business_role(
+            collab_path, actor_user_id=owner["id"], user_id=user["id"],
+            business_role=role, task_id=task_id)
+    # 2. 存储显式准备（写窗只纯读检查）。宿主注入的产品解析器
+    #    ``_screener_db(ensure=True)``：缺库时按标准原语建库（含 P04 账本），
+    #    appraisal ensure 幂等；随后补 workflow 迁移（stage 表/team_latched）。
+    for user in (owner, *(user for user, _role in members)):
+        prepare_appraisal_storage_for(
+            info, user["username"], app.state.review_workflow.screener_db)
+    for path in (owner_db, *member_dbs.values()):
+        store.migrate(path)
+    team_source_lifecycle.prepare_team_protocol_storage(
+        collab_path=Path(collab_path),
+        source_paths=[owner_db, *member_dbs.values()])
+    with closing(sqlite3.connect(str(owner_db))) as conn, conn:
+        conn.execute("UPDATE workflow_state SET team_latched=1 WHERE singleton=1")
+    # 3. P06 真实 source 登记（成员真实账本身份）
+    with closing(sqlite3.connect(str(collab_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT task_instance_id FROM main.team_task_protocol"
+            " LIMIT 1").fetchone()
+    assert row is not None, (
+        "create_task must have registered the team protocol row (P18)")
+    instance = row["task_instance_id"]
+    for user, _role in members:
+        member_db = member_dbs[user["id"]]
+        with closing(sqlite3.connect(str(member_db))) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN")
+            library = vote_ledger.library_identity_header_on(conn).library_id
+            conn.rollback()
+        token = team_source_lifecycle.make_source_identity(
+            task_dir=task_dir, source_path=member_db,
+            source_user_id=user["id"], source_library_id=library)
+        writer = sqlite3.connect(str(collab_path), timeout=15)
+        writer.row_factory = sqlite3.Row
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            terminal_registry.register_source_on(
+                writer, task_instance_id=instance,
+                source_user_id=user["id"], source_library_id=library,
+                source_path_identity=token,
+                registration_id=f"reg-agreement-{task_id}-{user['id']}")
+            writer.commit()
+        finally:
+            writer.close()
+    # 成员库题录（各库自读；评价隔离语义不变）
+    for path in (owner_db, *member_dbs.values()):
+        db_mod.upsert_articles(path, articles, [])
+    # 4. 上游链完成：必须筛选员=属主 + coder 成员（reconciler 默认不参与）
+    required_headers = [_auth_headers(owner)]
+    required_headers.extend(_auth_headers(user) for user, role in members
+                           if role == "coder")
+    for path in ("/decisions", "/stage2/decisions"):
+        for headers in required_headers:
+            for key in vote_keys:
+                voted = client.post(
+                    f"/api/tasks/{task_id}{path}",
+                    json={"zotero_key": key, "decision": "include",
+                          "reason": "", "notes": "", "tags": None},
+                    headers=headers)
+                assert voted.status_code == 200, (path, key, voted.text)
+
+
 class AppraisalAgreementTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -107,8 +233,7 @@ class AppraisalAgreementTests(unittest.TestCase):
         cls.client.__enter__()
         # C2 顺序泄漏修复：类装配（建用户）也在请求期读 os.environ，先跑模块
         # 的 tearDownModule 可能已把收集期的模块级赋值抹掉——装配前重申。
-        os.environ["REVIEWFLOW_MODE"] = "server"
-        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+        _guarantee_module_env()
         cls.owner = auth_mod.create_user("r215c-owner@example.test",
                                          "R215C-Owner-2026!")
         cls.peer = auth_mod.create_user("r215c-peer@example.test",
@@ -127,8 +252,7 @@ class AppraisalAgreementTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
-        # r3：fixture 目录改由 tearDownModule 在**模块结束**时清理——第一个类
-        # 结束就删会把"env 指向已删目录"的中间态留给本模块后续类与后续套件。
+        # r3：数据根由模块统一保证（tearDownModule）；类收尾只关自己的 Client。
 
     # ---- 夹具 ---------------------------------------------------------
     def setUp(self):
@@ -139,7 +263,7 @@ class AppraisalAgreementTests(unittest.TestCase):
         # auth 用户库都在请求期读 os.environ，故每个用例装配时重申一次
         # （见本类末尾 test_order_leak_step1/step2 复现钉）。
         os.environ["REVIEWFLOW_MODE"] = "server"
-        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+        os.environ["COBOOKSHELF_DATA_DIR"] = MODULE_ROOT
         response = self.client.post(
             "/api/tasks", json={"name": f"agreement-{self._testMethodName}"},
             headers=self.owner_auth)
@@ -156,6 +280,15 @@ class AppraisalAgreementTests(unittest.TestCase):
             self.task, {"user_id": self.owner["id"],
                         "username": self.owner["username"]})
         db_mod.upsert_articles(Path(self.ctx.owner_db), ARTICLES, [])
+        # F 线移交族（2.1.6 语义，用户裁定照升级补夹具）：受邀后任务即 team，
+        # 评价 PUT 经 P15 团队写窗（member_appraisal）——业务角色单选 + 存储
+        # 显式准备 + P06 source 登记 + 上游链完成，缺一即 409。补齐后本套件
+        # 每条断言原样承担：κ 数值/分歧自由文本负钉/权限 403/锁忙 503/导出
+        # 列形状/GRADE 只读语义均未改。
+        _configure_team_write_fixture(
+            self.client, self.task, self.owner,
+            [(self.peer, "coder"), (self.reconciler, "reconciler")],
+            articles=ARTICLES, vote_keys=["K1", "K2"])
 
     def _put(self, auth: dict, article: str, responses: dict,
              *, comments: dict | None = None, note: str = "") -> None:
@@ -165,6 +298,15 @@ class AppraisalAgreementTests(unittest.TestCase):
         response = self.client.put(f"{self.base}/{article}", json=body,
                                    headers=auth)
         assert response.status_code == 200, response.text
+        # 夹具自检（F 线同法）：P15 写窗只在 team 分支 committed 后透传
+        # X-Receipt-Id/X-Request-Id；solo/legacy 恒空。头缺失即夹具退化为
+        # 非团队路径（此时 κ/权限钉测的就不是团队语义），立即红。
+        names = {name.lower() for name in response.headers}
+        assert "x-receipt-id" in names, (
+            "appraisal PUT 未走 P15 团队写窗（缺 X-Receipt-Id）",
+            article, response.status_code, response.text[:300])
+        assert "x-request-id" in names, (
+            "appraisal PUT 未带 P15 请求编号头", article)
 
     def _seed_two_raters(self, *, comments: bool = False) -> None:
         owner_comments = {"4": "owner private reason"} if comments else {}
@@ -470,39 +612,46 @@ class AppraisalAgreementTests(unittest.TestCase):
         assert exported.status_code == 200, exported.text
 
     def test_module_teardown_restores_env_hygiene(self):
-        """r3 卫生钉（修订 r2 语义）：模块边界**保证 server + 本模块 fixture**，
-        绝不还原成导入前的值（unset 抹除）。
+        """r3 卫生钉（包 J 根修正后的语义）：模块边界**保证 server + 所有者
+        根**，绝不还原成导入前的值（unset 抹除），也绝不自删共享根。
 
         r2 版把 tearDownModule 做成"还原 _ORIGINAL_ENV"——pytest 模块级 env
         赋值在收集期、tearDownModule 在测试期，两文件直跑时后续套件（w5/w7
         这类不重钉 env 的）收集期赋的 server 被抹掉，实测 `pytest 本文件
-        w7` → 44 errors（评审 r3 阻断项）。正确语义是保证而非抹除。本钉
-        直接测 :func:`_guarantee_module_env`（先 pop 模拟用例残留 → 保证
-        成立），再以桩验证 tearDownModule 的接线（保证 + fixture 清理都在、
-        顺序正确）——用桩是为了不在套件中途真删 fixture（r3 中间版实测：
-        真删会让本模块后续用例 5 failed）。
+        w7` → 44 errors（评审 r3 阻断项）。正确语义是保证而非抹除。
+
+        包 J（F 线移交族）：本模块原先自建私有临时根并在模块末 cleanup——
+        pytest 下 main.DATA_DIR 已冻结在会话根，私有根令团队写窗找不到
+        accounts（26F 签名）。现改为**借用** ``_bare_env`` 所有者根，模块末
+        只归还 borrow token；根的删除/两键恢复属于所有者收尾。本钉按新
+        语义验证接线（保证 + 归还，顺序固定；以桩验证不真改环境）。
         """
         os.environ.pop("REVIEWFLOW_MODE", None)
         os.environ.pop("COBOOKSHELF_DATA_DIR", None)
         _guarantee_module_env()
         assert os.environ.get("REVIEWFLOW_MODE") == "server", \
             "模块边界必须保证 server 模式（不抹除）"
-        assert os.environ.get("COBOOKSHELF_DATA_DIR") == fixture.name, \
-            "模块边界必须保证本模块 fixture 路径（不抹除）"
-        # 接线：tearDownModule = 环境保证 + fixture 清理（均以桩验证，
-        # 不真删目录、不真改环境）。
+        assert os.environ.get("COBOOKSHELF_DATA_DIR") == MODULE_ROOT, \
+            "模块边界必须保证所有者数据根（不抹除）"
+        # 接线：tearDownModule = 环境保证 + 归还所有者 borrow（不删根）。
         calls: list[str] = []
         module = sys.modules[__name__]
         real_guarantee = module._guarantee_module_env
+        real_release = module._bare_env.release
+
+        def _release(token):
+            calls.append("release")
+            real_release(token)
+
         with mock.patch.object(
                 module, "_guarantee_module_env",
                 side_effect=lambda: (calls.append("guarantee"),
                                      real_guarantee())), \
-                mock.patch.object(fixture, "cleanup",
-                                  side_effect=lambda: calls.append("cleanup")):
+                mock.patch.object(module._bare_env, "release",
+                                  side_effect=_release):
             tearDownModule()
-        assert calls == ["guarantee", "cleanup"], \
-            f"tearDownModule 接线=先保证环境后清理：实际 {calls}"
+        assert calls == ["guarantee", "release"], \
+            f"tearDownModule 接线=先保证环境后归还借用：实际 {calls}"
 
 
 class GradeMappingPureTests(unittest.TestCase):
@@ -551,8 +700,7 @@ class ExportFormulaInjectionPins(unittest.TestCase):
 
         # C2 顺序泄漏修复：与 AppraisalAgreementTests 同因——类装配建用户
         # 前重申收集期环境（先跑模块的 tearDownModule 可能已抹掉）。
-        os.environ["REVIEWFLOW_MODE"] = "server"
-        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+        _guarantee_module_env()
         suffix = _uuid.uuid4().hex[:6]
         cls.owner = auth_mod.create_user(
             f"r215c-csv-owner-{suffix}@example.test", "R215C-CSV-2026!")
@@ -570,9 +718,15 @@ class ExportFormulaInjectionPins(unittest.TestCase):
     def setUp(self):
         # C2 顺序泄漏修复（用例内还原）：与 AppraisalAgreementTests.setUp 同因。
         os.environ["REVIEWFLOW_MODE"] = "server"
-        os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+        os.environ["COBOOKSHELF_DATA_DIR"] = MODULE_ROOT
         response = self.client.post(
-            "/api/tasks", json={"name": f"csv-formula-{self._testMethodName}"},
+            "/api/tasks",
+            # 包 J：任务名按方法名截短（原 `csv-formula-{全名}` 令任务目录 +
+            # 成员库名 + trace 首次迁移备份边车名超过 Windows MAX_PATH 260，
+            # 团队初筛写触发 member_prepare_trace 建 trace schema 时
+            # `backup` 打不开临时文件 → 500；纯环境路径长度伪影，非产品缺陷。
+            # 截短后仍按方法名唯一，测试语义不变。
+            json={"name": f"csv-{self._testMethodName[5:][:20]}"},
             headers=self.owner_auth)
         assert response.status_code in (200, 201), response.text
         self.task = response.json()["task_id"]
@@ -586,6 +740,17 @@ class ExportFormulaInjectionPins(unittest.TestCase):
             self.task, {"user_id": self.owner["id"],
                         "username": self.owner["username"]})
         db_mod.upsert_articles(Path(ctx.owner_db), ARTICLES, [])
+        # F 线移交族：同 AppraisalAgreementTests——受邀后即 team，公式形状
+        # 键须先过团队链与存储准备才能落 appraisal_records（否则 409 上游
+        # 未清/收据未准备）。导出防护断言（_csv_cell ' 前缀）原样不变。
+        # 题录须含公式形状键本身（canonical 写域 = 属主库 articles 行）。
+        formula_articles = [*ARTICLES, *(
+            Article(zotero_key=key, title="Formula-shaped article")
+            for key in self.FORMULA_KEYS)]
+        _configure_team_write_fixture(
+            self.client, self.task, self.owner, [(self.peer, "coder")],
+            articles=formula_articles,
+            vote_keys=["K1", *self.FORMULA_KEYS])
 
     def _export_rows(self):
         response = self.client.get(f"{self.base}/export", params={"tool": TOOL},

@@ -409,8 +409,16 @@ class WorkflowRuntime:
 
     @staticmethod
     def latch_team_db(db: Path) -> None:
-        with closing(store.connect(db)) as conn, conn:
-            conn.execute("UPDATE workflow_state SET team_latched=1 WHERE singleton=1 AND team_latched=0")
+        # 包 I（坏库 503 全域加固）：捕获面收口 sqlite3.DatabaseError（含
+        # OperationalError 子类）——坏库字节/锁忙/读失败一律 503（G 线同款
+        # fail-closed），不再逃逸成全局 500。
+        try:
+            with closing(store.connect(db)) as conn, conn:
+                conn.execute("UPDATE workflow_state SET team_latched=1 WHERE singleton=1 AND team_latched=0")
+        except OSError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
 
     def latch_team(self, task_id: str, user: dict) -> None:
         task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
@@ -509,22 +517,38 @@ class WorkflowRuntime:
             ctx = self.context(task_id, user)
             if ctx.actor_db.resolve() != db.resolve():
                 raise HTTPException(403, 'Coding schemes are limited to your own workspace.')
-            before = coding_evidence.field_rows(db)
+            # 包 I：方案读/自愈 DDL/版本推进的坏库或锁忙一律 503（G 线同款）。
+            try:
+                before = coding_evidence.field_rows(db)
+            except OSError as exc:
+                raise self._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise self._screener_library_503() from exc
             yield ctx
-            coding_evidence.ensure_fields(db)
-            if before != coding_evidence.field_rows(db):
-                if not ctx.can_manage and ctx.owner is not None:
-                    # U4-P3：**团队**成员编辑的是自己的私有 coding scheme，其他
-                    # 参与者既不可见也不依赖它——不 bump owner 库 workflow_state
-                    # .version（那是 owner 的全局乐观锁），也不向全员广播
-                    # coding-scheme，避免一名成员反复让全员的后续写请求 409。
-                    # owner 版本只由 owner 级写操作推进。
-                    # legacy（owner=None）单机任务不属该口径（#33）：actor 即
-                    # 唯一用户，方案编辑恢复 bump（修复前行为），版本随方案
-                    # 变化推进、依赖版本号的写互斥保持有效。
-                    return
-                with closing(store.connect(ctx.owner_db)) as conn, conn:
-                    self.bump_version(conn)
+            try:
+                coding_evidence.ensure_fields(db)
+                changed = before != coding_evidence.field_rows(db)
+                if changed:
+                    if not ctx.can_manage and ctx.owner is not None:
+                        # U4-P3：**团队**成员编辑的是自己的私有 coding scheme，其他
+                        # 参与者既不可见也不依赖它——不 bump owner 库 workflow_state
+                        # .version（那是 owner 的全局乐观锁），也不向全员广播
+                        # coding-scheme，避免一名成员反复让全员的后续写请求 409。
+                        # owner 版本只由 owner 级写操作推进。
+                        # legacy（owner=None）单机任务不属该口径（#33）：actor 即
+                        # 唯一用户，方案编辑恢复 bump（修复前行为），版本随方案
+                        # 变化推进、依赖版本号的写互斥保持有效。
+                        return
+                    with closing(store.connect(ctx.owner_db)) as conn, conn:
+                        self.bump_version(conn)
+            except OSError as exc:
+                raise self._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise self._screener_library_503() from exc
+            # F1（复审）：notify 归位到 if changed: 内、try 外——方案未变更的
+            # 保存不得广播 SSE（修前 before L525 即此形；I 重构搬运时误移出
+            # 了条件，本行为唯一变化，503 捕获面只是包住 DDL/版本推进）。
+            if changed:
                 self.notify(ctx, 'coding-scheme')
 
     def evidence_state(self, ctx: WorkflowContext, key: str) -> dict:
@@ -576,89 +600,97 @@ class WorkflowRuntime:
             mapped = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[0]
             mapped_dimensions = set(mapped)
             actor_fields = {dim['id']: dim for dim in coding_evidence.field_rows(ctx.actor_db)}
-            with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
-                linked = store.has_table(conn, 'workspace_undo') and 'request_id' in {
-                    r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
-                for event in events:
-                    stage, key = event.get('stage'), event.get('subject_id')
-                    imported = bool(event.get('origin_store_id') or event.get('source') == 'import')
-                    document_action = event.get('action') in {'baseline_value', 'baseline_rater_revision'} or any(
-                        word in event.get('action', '') for word in
-                        ('decision', 'coding_value', 'coding_note', 'coding_evidence', 'rater_record'))
-                    operation = None
-                    local_event = not imported and event.get('partition') == 'personal'
-                    if linked and local_event and event.get('source') == 'manual' and event.get('request_id'):
-                        operation = conn.execute(
-                            'SELECT id,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? '
-                            'AND stage=? AND zotero_key=? AND request_id=? ORDER BY id DESC LIMIT 1',
-                            (task_id, str(user['user_id']), stage, key, event['request_id'])).fetchone()
-                    # Restorations have an explicit server-assigned link to their original operation.
-                    restore_link = str(event.get('source_record_id') or '')
-                    if linked and local_event and event.get('source') == 'undo' and restore_link.startswith('workspace_undo:'):
-                        identity = restore_link.removeprefix('workspace_undo:')
-                        if identity.isdecimal():
+            # 包 I：actor 库坏库字节/锁忙（undo journal / trace lifecycle 读）
+            # → 503；块内 HTTPException（403/404 等业务拒绝）原样透传。
+            try:
+                with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
+                    linked = store.has_table(conn, 'workspace_undo') and 'request_id' in {
+                        r[1] for r in conn.execute('PRAGMA table_info(workspace_undo)')}
+                    for event in events:
+                        stage, key = event.get('stage'), event.get('subject_id')
+                        imported = bool(event.get('origin_store_id') or event.get('source') == 'import')
+                        document_action = event.get('action') in {'baseline_value', 'baseline_rater_revision'} or any(
+                            word in event.get('action', '') for word in
+                            ('decision', 'coding_value', 'coding_note', 'coding_evidence', 'rater_record'))
+                        operation = None
+                        local_event = not imported and event.get('partition') == 'personal'
+                        if linked and local_event and event.get('source') == 'manual' and event.get('request_id'):
                             operation = conn.execute(
-                                'SELECT id,before_json,after_json FROM workspace_undo WHERE id=? AND task_id=? '
-                                'AND actor_id=? AND stage=? AND zotero_key=?',
-                                (int(identity), task_id, str(user['user_id']), stage, key)).fetchone()
-                    before = json.loads(operation[1]) if operation else {}
-                    after = json.loads(operation[2]) if operation else {}
-                    canonical_access = stage == 'coding' and workspace_undo.is_submission_evidence(before, after)
-                    own = self.article_row(ctx.actor_db, key) if key else None
-                    canonical = self.article_row(ctx.owner_db, key) if key else None
-                    canonical_exists = bool(canonical and canonical.get('is_duplicate_of') is None)
-                    can_open = bool(not imported and document_action and stage in store.STAGES and (own or canonical_exists))
-                    if canonical_access:
-                        can_open = can_open and can_submit and canonical_exists
-                    if canonical_access and not can_submit:
-                        reason = 'coding_submission_access_denied'
-                    else:
-                        reason = self.writable_reason(ctx, stage, key, canonical_only=canonical_access) if can_open else 'unlinked_subject'
-                    if canonical_access and reason is None and not {int(d) for d in after.get('values', {})} <= mapped_dimensions:
-                        reason = 'requirement_mapping_gap'
-                    access_context = workspace_undo.SUBMISSION_EVIDENCE if canonical_access else 'personal'
-                    item_path = ('coding/submission-evidence/' if canonical_access else f'work-items/{stage}/')
-                    item_url = f'/api/tasks/{quote(task_id, safe="")}/{item_path}{quote(str(key), safe="")}'
-                    actions = {'can_open': can_open, 'can_undo': False, 'undo_entry_id': None,
-                               'writable': can_open and reason is None, 'reason': reason or 'no_linked_latest_save',
-                               'access_context': access_context, 'work_item_url': item_url if can_open else None}
-                    if can_open and operation and event.get('source') == 'manual':
-                        last = workspace_undo._latest(conn, context, stage)
-                        if last and last['entry_id'] == operation[0]:
-                            same = workspace_undo.snapshot_matches(conn, stage, key, before, after)
-                            # r6 #26：can_undo 与 undo() 的 MISSING_EVIDENCE_FILE
-                            # 拒绝同口径地检查待恢复图片文件存在性——修复前只比
-                            # DB 状态，文件被删后轨迹抽屉的 Undo this save 仍可点、
-                            # 点击后 409。
-                            files_ok = (stage != 'coding' or 'evidence' not in before
-                                        or workspace_undo._evidence_files_available(
-                                            ctx.actor_db, before['evidence']))
-                            actions.update(undo_entry_id=last['entry_id'],
-                                           can_undo=reason is None and same and files_ok,
-                                           reason=reason or (None if (same and files_ok) else
-                                                             ('missing_evidence_file' if same else 'saved_state_changed')))
-                    # Trace lifecycle UUIDs and workflow field UUIDs are separate namespaces.
-                    # Resolve only this authenticated actor's current, unretired lifecycle.
-                    actions['current_field'] = None
-                    field = event.get('field') or {}
-                    if (can_open and local_event and stage == 'coding' and field.get('field_id')
-                            and str(event.get('actor_id')) == str(user['user_id'])
-                            and store.has_table(conn, 'trace_field_lifecycles')):
-                        lifecycle = conn.execute(
-                            'SELECT legacy_field_id FROM trace_field_lifecycles WHERE task_id=? AND actor_id=? '
-                            'AND field_uuid=? AND deleted_at IS NULL',
-                            (task_id, str(user['user_id']), field['field_id'])).fetchone()
-                        local_id = int(lifecycle[0]) if lifecycle and str(lifecycle[0]).isdecimal() else None
-                        dimension = actor_fields.get(local_id)
-                        historical = {**field, 'dtype': field.get('type')}
-                        definition_keys = ('name', 'dtype', 'options', 'multi_select', 'unit', 'description')
-                        same_definition = dimension and all(k in historical for k in definition_keys) and (
-                            coding_evidence.definition(historical) == coding_evidence.definition(dimension))
-                        if same_definition and (not canonical_access or local_id in mapped):
-                            actions['current_field'] = {'dimension_id': local_id,
-                                'field_id': mapped.get(local_id) if canonical_access else dimension.get('field_id'),
-                                'definition': [dimension[k] for k in definition_keys]}
-                    event['actions'] = actions
+                                'SELECT id,before_json,after_json FROM workspace_undo WHERE task_id=? AND actor_id=? '
+                                'AND stage=? AND zotero_key=? AND request_id=? ORDER BY id DESC LIMIT 1',
+                                (task_id, str(user['user_id']), stage, key, event['request_id'])).fetchone()
+                        # Restorations have an explicit server-assigned link to their original operation.
+                        restore_link = str(event.get('source_record_id') or '')
+                        if linked and local_event and event.get('source') == 'undo' and restore_link.startswith('workspace_undo:'):
+                            identity = restore_link.removeprefix('workspace_undo:')
+                            if identity.isdecimal():
+                                operation = conn.execute(
+                                    'SELECT id,before_json,after_json FROM workspace_undo WHERE id=? AND task_id=? '
+                                    'AND actor_id=? AND stage=? AND zotero_key=?',
+                                    (int(identity), task_id, str(user['user_id']), stage, key)).fetchone()
+                        before = json.loads(operation[1]) if operation else {}
+                        after = json.loads(operation[2]) if operation else {}
+                        canonical_access = stage == 'coding' and workspace_undo.is_submission_evidence(before, after)
+                        own = self.article_row(ctx.actor_db, key) if key else None
+                        canonical = self.article_row(ctx.owner_db, key) if key else None
+                        canonical_exists = bool(canonical and canonical.get('is_duplicate_of') is None)
+                        can_open = bool(not imported and document_action and stage in store.STAGES and (own or canonical_exists))
+                        if canonical_access:
+                            can_open = can_open and can_submit and canonical_exists
+                        if canonical_access and not can_submit:
+                            reason = 'coding_submission_access_denied'
+                        else:
+                            reason = self.writable_reason(ctx, stage, key, canonical_only=canonical_access) if can_open else 'unlinked_subject'
+                        if canonical_access and reason is None and not {int(d) for d in after.get('values', {})} <= mapped_dimensions:
+                            reason = 'requirement_mapping_gap'
+                        access_context = workspace_undo.SUBMISSION_EVIDENCE if canonical_access else 'personal'
+                        item_path = ('coding/submission-evidence/' if canonical_access else f'work-items/{stage}/')
+                        item_url = f'/api/tasks/{quote(task_id, safe="")}/{item_path}{quote(str(key), safe="")}'
+                        actions = {'can_open': can_open, 'can_undo': False, 'undo_entry_id': None,
+                                   'writable': can_open and reason is None, 'reason': reason or 'no_linked_latest_save',
+                                   'access_context': access_context, 'work_item_url': item_url if can_open else None}
+                        if can_open and operation and event.get('source') == 'manual':
+                            last = workspace_undo._latest(conn, context, stage)
+                            if last and last['entry_id'] == operation[0]:
+                                same = workspace_undo.snapshot_matches(conn, stage, key, before, after)
+                                # r6 #26：can_undo 与 undo() 的 MISSING_EVIDENCE_FILE
+                                # 拒绝同口径地检查待恢复图片文件存在性——修复前只比
+                                # DB 状态，文件被删后轨迹抽屉的 Undo this save 仍可点、
+                                # 点击后 409。
+                                files_ok = (stage != 'coding' or 'evidence' not in before
+                                            or workspace_undo._evidence_files_available(
+                                                ctx.actor_db, before['evidence']))
+                                actions.update(undo_entry_id=last['entry_id'],
+                                               can_undo=reason is None and same and files_ok,
+                                               reason=reason or (None if (same and files_ok) else
+                                                                 ('missing_evidence_file' if same else 'saved_state_changed')))
+                        # Trace lifecycle UUIDs and workflow field UUIDs are separate namespaces.
+                        # Resolve only this authenticated actor's current, unretired lifecycle.
+                        actions['current_field'] = None
+                        field = event.get('field') or {}
+                        if (can_open and local_event and stage == 'coding' and field.get('field_id')
+                                and str(event.get('actor_id')) == str(user['user_id'])
+                                and store.has_table(conn, 'trace_field_lifecycles')):
+                            lifecycle = conn.execute(
+                                'SELECT legacy_field_id FROM trace_field_lifecycles WHERE task_id=? AND actor_id=? '
+                                'AND field_uuid=? AND deleted_at IS NULL',
+                                (task_id, str(user['user_id']), field['field_id'])).fetchone()
+                            local_id = int(lifecycle[0]) if lifecycle and str(lifecycle[0]).isdecimal() else None
+                            dimension = actor_fields.get(local_id)
+                            historical = {**field, 'dtype': field.get('type')}
+                            definition_keys = ('name', 'dtype', 'options', 'multi_select', 'unit', 'description')
+                            same_definition = dimension and all(k in historical for k in definition_keys) and (
+                                coding_evidence.definition(historical) == coding_evidence.definition(dimension))
+                            if same_definition and (not canonical_access or local_id in mapped):
+                                actions['current_field'] = {'dimension_id': local_id,
+                                    'field_id': mapped.get(local_id) if canonical_access else dimension.get('field_id'),
+                                    'definition': [dimension[k] for k in definition_keys]}
+                        event['actions'] = actions
+
+            except OSError as exc:
+                raise self._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise self._screener_library_503() from exc
 
     def notify(self, ctx: WorkflowContext, reason: str) -> None:
         if ctx.owner is None:
@@ -707,8 +739,14 @@ class WorkflowRuntime:
             return _article_rows_on_conn(conn, compact=compact)
         if not db.is_file():
             return []
-        with closing(store.connect(db, read_only=True)) as path_conn:
-            return _article_rows_on_conn(path_conn, compact=compact)
+        # 包 I：坏库字节/锁忙 → 503（不再 500）。
+        try:
+            with closing(store.connect(db, read_only=True)) as path_conn:
+                return _article_rows_on_conn(path_conn, compact=compact)
+        except OSError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
 
     @staticmethod
     def article_row(db: Path, key: str,
@@ -718,8 +756,14 @@ class WorkflowRuntime:
             return _article_row_on_conn(conn, key)
         if not db.is_file():
             return None
-        with closing(store.connect(db, read_only=True)) as path_conn:
-            return _article_row_on_conn(path_conn, key)
+        # 包 I：坏库字节/锁忙 → 503（不再 500）。
+        try:
+            with closing(store.connect(db, read_only=True)) as path_conn:
+                return _article_row_on_conn(path_conn, key)
+        except OSError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
 
     @staticmethod
     def saved_rows(db: Path, stage: str,
@@ -729,8 +773,14 @@ class WorkflowRuntime:
             return _saved_rows_on_conn(conn, stage)
         if not db.is_file():
             return {}
-        with closing(store.connect(db, read_only=True)) as path_conn:
-            return _saved_rows_on_conn(path_conn, stage)
+        # 包 I：坏库字节/锁忙 → 503（不再 500）。
+        try:
+            with closing(store.connect(db, read_only=True)) as path_conn:
+                return _saved_rows_on_conn(path_conn, stage)
+        except OSError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
 
     @staticmethod
     def saved_item(db: Path, stage: str, key: str,
@@ -740,17 +790,29 @@ class WorkflowRuntime:
             return _saved_item_on_conn(conn, stage, key)
         if not db.is_file():
             return None
-        with closing(store.connect(db, read_only=True)) as path_conn:
-            return _saved_item_on_conn(path_conn, stage, key)
+        # 包 I：坏库字节/锁忙 → 503（不再 500）。
+        try:
+            with closing(store.connect(db, read_only=True)) as path_conn:
+                return _saved_item_on_conn(path_conn, stage, key)
+        except OSError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
 
     def eligible(self, ctx: WorkflowContext, stage: str) -> tuple[list[dict], dict]:
         rows = [row for row in self.article_rows(ctx.owner_db, compact=True) if row.get("is_duplicate_of") is None]
         # Owner's per-key title review status is authoritative for every reviewer.
         if ctx.owner_db.is_file():
-            with closing(store.connect(ctx.owner_db, read_only=True)) as conn:
-                blocked = set()
-                if store.has_table(conn, "title_duplicate_members"):
-                    blocked = {row[0] for row in conn.execute("SELECT m.zotero_key FROM title_duplicate_members m JOIN title_duplicate_reviews r ON r.review_id=m.review_id WHERE m.imported_in_batch=1 AND r.status IN ('pending','undecided')")}
+            # 包 I：owner 库坏库/锁忙 → 503（不再 500）。
+            try:
+                with closing(store.connect(ctx.owner_db, read_only=True)) as conn:
+                    blocked = set()
+                    if store.has_table(conn, "title_duplicate_members"):
+                        blocked = {row[0] for row in conn.execute("SELECT m.zotero_key FROM title_duplicate_members m JOIN title_duplicate_reviews r ON r.review_id=m.review_id WHERE m.imported_in_batch=1 AND r.status IN ('pending','undecided')")}
+            except OSError as exc:
+                raise self._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise self._screener_library_503() from exc
             rows = [row for row in rows if row["zotero_key"] not in blocked]
         saved = self.saved_rows(ctx.actor_db, stage)
         if stage == "fulltext":
@@ -816,12 +878,19 @@ class WorkflowRuntime:
         row = self.article_row(ctx.owner_db, key)
         if row is None or row.get("is_duplicate_of") is not None:
             return "article_not_eligible"
-        with closing(store.connect(ctx.owner_db, read_only=True)) as conn:
-            if store.has_table(conn, "title_duplicate_members") and conn.execute(
-                    "SELECT 1 FROM title_duplicate_members m JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
-                    "WHERE m.zotero_key=? AND m.imported_in_batch=1 AND r.status IN ('pending','undecided') LIMIT 1", (key,)).fetchone():
-                return "article_not_eligible"
-            links = {entry[0] for entry in conn.execute("SELECT source_id FROM workflow_article_sources WHERE zotero_key=?", (key,))} if store.has_table(conn, "workflow_article_sources") else set()
+        # 包 I：资格读（owner 库链路/来源域）坏库或锁忙 → 503（不再 500）；
+        # 业务拒绝仍走 409 code 载荷（write_guard 内 reason 分支零变化）。
+        try:
+            with closing(store.connect(ctx.owner_db, read_only=True)) as conn:
+                if store.has_table(conn, "title_duplicate_members") and conn.execute(
+                        "SELECT 1 FROM title_duplicate_members m JOIN title_duplicate_reviews r ON r.review_id=m.review_id "
+                        "WHERE m.zotero_key=? AND m.imported_in_batch=1 AND r.status IN ('pending','undecided') LIMIT 1", (key,)).fetchone():
+                    return "article_not_eligible"
+                links = {entry[0] for entry in conn.execute("SELECT source_id FROM workflow_article_sources WHERE zotero_key=?", (key,))} if store.has_table(conn, "workflow_article_sources") else set()
+        except OSError as exc:
+            raise self._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise self._screener_library_503() from exc
         if not canonical_only and stage != "screen":
             initial = self.saved_item(ctx.actor_db, "screen", key) or {}
             if stage == "fulltext" and initial.get("decision") != "include":
@@ -830,9 +899,14 @@ class WorkflowRuntime:
                 second = self.saved_item(ctx.actor_db, "fulltext", key) or {}
                 any_second_include = False
                 if ctx.actor_db.is_file():
-                    with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
-                        if store.has_table(conn, "stage2_decisions"):
-                            any_second_include = bool(conn.execute("SELECT 1 FROM stage2_decisions WHERE decision='include' LIMIT 1").fetchone())
+                    try:
+                        with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
+                            if store.has_table(conn, "stage2_decisions"):
+                                any_second_include = bool(conn.execute("SELECT 1 FROM stage2_decisions WHERE decision='include' LIMIT 1").fetchone())
+                    except OSError as exc:
+                        raise self._screener_library_503() from exc
+                    except sqlite3.DatabaseError as exc:
+                        raise self._screener_library_503() from exc
                 if (any_second_include and second.get("decision") != "include") or (
                         not any_second_include and (initial.get("decision") != "include" or second.get("decision") == "maybe")):
                     return "article_not_eligible"
@@ -961,6 +1035,11 @@ class WorkflowRuntime:
     def queue(self, task_id: str, user: dict, stage: str, source_id: str | None = None,
               order: str = "import", *, shuffle: bool = False) -> dict:
         task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
+        # 包 L：team 任务走按键 keyed 口径（与 P23 keyed_work_items/coding_result
+        # 同一通道）；solo/legacy 分支保持既有 path 口径字节不变。
+        if self.is_team(task_id):
+            return self._team_queue(task_id, user, stage, source_id, order,
+                                    shuffle=shuffle)
         with self.lock(task_id):
             ctx = self.context(task_id, user)
             self.sync_catalog(ctx)
@@ -1018,6 +1097,199 @@ class WorkflowRuntime:
                     "policy_version": state["version"], "allowed_sources": self.allowed_sources(ctx, stage),
                     "paused": state["stages"][stage]["mode"] == "paused"}
 
+    def _team_queue(self, task_id: str, user: dict, stage: str,
+                    source_id: str | None, order: str, *,
+                    shuffle: bool = False) -> dict:
+        """包 L：旧 GET /work-queue team 分支换接 keyed 口径（P23 同一通道）。
+
+        修复对象：``queue()`` 的 team 路径此前走 path 口径 ``eligible()``——按
+        当前名册**全域数票**定队列域（votes-only），pre-join-sealed/归档键在
+        后加入成员视图里被误移出队（与 C12 包 C ``coding_result`` 修掉的
+        ``progress.total`` 虚低同源缺陷）。本方法改用与
+        ``keyed_work_items``/``coding_result`` 完全相同的按键通道：
+
+        1. owner canonical 域（去 duplicate）先经 503 收口的 ``article_rows``
+           取得——队列本身是全域名单，键域必须完整；
+        2. ``protected_keyed_read_scope`` + P08 ``KeyedReadPlan`` 在该域上
+           一次发现 F1/F2 完成见证（collab 屏障快照；``work_items_read``
+           读形操作）；
+        3. 逐键完成/资格经同一 scope 的 keyed ``team_chain_view``/
+           ``team_stage_view``：完成看 seal（FINAL_*），未完成看当前名册票；
+           issue 键按逐键 issue 令牌呈现，不连坐其他键；
+        4. 队列键集＝链 cleared（上游终局 include）的键——screen 无链（全部
+           canonical），fulltext=stage1、coding=stage2 终局 include。与
+           solo ``eligible()`` 的 included 域语义对齐，但完成事实来自 seal
+           而非当前名册票（pre-join-sealed/归档键不再漏出队）。
+
+        载荷与 solo 分支同形（queue/total/pending/skipped_pending/
+        scope_progress/overall_progress/policy_version/allowed_sources/
+        paused），逐 entry 保留 ``key``/``zotero_key`` 与文章摘要字段（前端
+        零破坏），并附带 ``writable``/``reason``（保存门同码）/``completed``。
+        ``order``/``shuffle`` 仍只换键序；跳过覆盖层沿用 ``skip_order``。
+
+        solo/legacy 不经过本方法（``queue()`` 前置 ``is_team`` 判定），其
+        path 分支字节不变。
+        """
+        from coscreen.team_flow_types import TeamOperation
+        from custom_backend.team_keyed_reads import protected_keyed_read_scope
+        from custom_backend.team_screening_runtime import (
+            TeamFlowUnavailableError,
+            team_chain_view,
+            team_stage_view,
+        )
+        info = self.task_lookup(task_id)
+        # 读前置与 solo 分支同口径（零回归面）：
+        #  - context()：保持既有读请求的派生语义（成员库 W1 自愈重置只在
+        #    context 的成员分支发生；队列冷读须与其它读端点一致，
+        #    test_member_first_open_runs_w1_reset_on_own_library 锚）；
+        #  - sync_catalog()：撞名成员 409 改名指引（r6 #29；队列不得 200）。
+        ctx = self.context(task_id, user)
+        self.sync_catalog(ctx)
+        # 队列是全域名单：canonical 域先行（坏库/锁忙 → 503，包 I 收口）。
+        domain = tuple(
+            row["zotero_key"] for row in self.article_rows(
+                ctx.owner_db, compact=True)
+            if row.get("is_duplicate_of") is None)
+        if not domain:
+            state = store.settings(ctx.owner_db)
+            empty = {"total": 0, "completed": 0, "pending": 0}
+            return {"queue": [], "total": 0, "pending": 0,
+                    "skipped_pending": 0, "scope_progress": dict(empty),
+                    "overall_progress": dict(empty),
+                    "policy_version": state["version"],
+                    "allowed_sources": self.allowed_sources(ctx, stage),
+                    "paused": state["stages"][stage]["mode"] == "paused"}
+        operation = TeamOperation(name="work_items_read", stage=stage)
+        try:
+            with protected_keyed_read_scope(
+                    self, info, dict(user), operation=operation,
+                    item_keys=domain) as scope:
+                # C08：本请求受保护 scope 绑定到 ctx（与 keyed_work_items 同法；
+                # 依赖读经 _effective_read_scope 走保留连接）。
+                ctx.team_read_scope = scope
+                try:
+                    return self._team_queue_from_scope(
+                        ctx, scope, stage, source_id, order, domain,
+                        shuffle=shuffle,
+                        team_chain_view=team_chain_view,
+                        team_stage_view=team_stage_view)
+                finally:
+                    ctx.team_read_scope = None
+        except TeamFlowUnavailableError as exc:
+            raise HTTPException(getattr(exc, "status", 503), {
+                "error_code": getattr(exc, "code", "team.flow.unavailable"),
+                "message_key": getattr(exc, "message_key",
+                                       "team.flow.unavailable"),
+                "params": exc.params,
+                "details": str(exc),
+                "message": "任务团队读取暂时不可用，请稍后重试。",
+            }) from exc
+
+    def _team_queue_from_scope(self, ctx: WorkflowContext, scope, stage: str,
+                               source_id: str | None, order: str, domain,
+                               *, shuffle: bool,
+                               team_chain_view, team_stage_view) -> dict:
+        """scope 内构造 keyed 队列（``_team_queue`` 的读取体）。
+
+        链/阶段视图的键域＝canonical 域（P08 plan 已覆盖全域）；完成事实
+        （seal）与当前名册票来自同一 scope 快照，两阶段不分裂。
+        """
+        target = _STAGE_CHAIN_TARGET[stage]
+        open_stage = _STAGE_OPEN_VIEW[stage]
+        chain_view = (team_chain_view(scope, target, item_keys=domain)
+                      if target is not None else None)
+        open_view = (team_stage_view(scope, open_stage, item_keys=domain)
+                     if open_stage is not None else None)
+        completed: dict[str, bool] = {}
+        reasons: dict[str, str | None] = {}
+        issues: dict[str, object] = {}
+        for key in domain:
+            issue = None
+            if open_view is not None and key in open_view.issues:
+                issue = open_view.issues[key]
+            elif chain_view is not None and key in chain_view.issues:
+                issue = chain_view.issues[key]
+            if issue is not None:
+                issues[key] = issue
+                reasons[key] = issue.reason
+                completed[key] = False
+                continue
+            # 保存门同构 reason（与 keyed_work_items / 真实 POST 409 同码）。
+            reason = self._team_gate_reason(ctx, scope, stage, key)
+            reasons[key] = reason
+            completed[key] = reason == "stage_completed_read_only"
+        # 队列键集：screen 无链（全部 canonical）；其余阶段要求上游终局 include
+        # （cleared），与 solo eligible() 的 included 域同义。
+        if target is None:
+            keys = [key for key in domain]
+        else:
+            keys = [key for key in domain
+                    if key not in issues
+                    and chain_view.chain.get(key) is not None
+                    and chain_view.chain[key].cleared is True]
+        # 排序（只换序，不换集）：随机 journal / 聚类钩子。
+        if order == "random" and ctx.owner is not None:
+            jscope = json.dumps({"stage": stage, "source_id": source_id},
+                                sort_keys=True)
+            keys = store.random_order(
+                ctx.actor_db, str(ctx.user["user_id"]), ctx.info.task_id,
+                jscope, keys,
+                {key for key in keys if not completed.get(key)},
+                shuffle=shuffle)
+        elif order == "import" and self.queue_order is not None:
+            reordered = self.queue_order(ctx, stage, keys)
+            if reordered is not None:
+                candidate = list(reordered)
+                if (len(candidate) == len(keys)
+                        and sorted(candidate) == sorted(keys)):
+                    keys = candidate
+        # 「暂时跳过」沉底分区（裁定 #3/#4/#5；team 同口径）。
+        skips = (self.skip_order(ctx, ctx.info.task_id, ctx.user, stage)
+                 if stage in ("screen", "fulltext") else {})
+        if skips:
+            in_queue = set(keys)
+            keys = ([key for key in keys if key not in skips]
+                    + [key for _, key in sorted(
+                        (seq, key) for key, seq in skips.items()
+                        if key in in_queue)])
+        # 来源域过滤（与 solo scoped 同语义）+ 摘要窄读（scope 保留 reader）。
+        links = store.source_links(ctx.owner_db)
+        allowed = set(self.allowed_sources(ctx, stage))
+        articles = self._compact_articles_on_scope(scope, tuple(keys))
+        scoped = [key for key in keys
+                  if set(links.get(key) or {store.UNASSIGNED}) & allowed]
+        queue = []
+        for key in scoped:
+            article = articles.get(key) or {}
+            queue.append({
+                "key": key, "zotero_key": key,
+                **{name: article.get(name) for name in (
+                    "title", "authors", "journal", "year", "doi",
+                    "item_type")},
+                "writable": reasons.get(key) is None,
+                "reason": reasons.get(key),
+                "completed": bool(completed.get(key)),
+            })
+
+        def progress(items) -> dict:
+            done = sum(1 for key in items if completed.get(key))
+            return {"total": len(items), "completed": done,
+                    "pending": len(items) - done}
+        # 口径与 solo 分支对齐：scope_progress=来源过滤后；overall=过滤前。
+        overall = progress(keys)
+        scope_progress = progress(scoped)
+        state = store.settings(ctx.owner_db)
+        return {"queue": queue, "total": len(queue),
+                "pending": scope_progress["pending"],
+                "skipped_pending": sum(
+                    1 for key in scoped
+                    if key in skips and not completed.get(key)),
+                "scope_progress": scope_progress,
+                "overall_progress": overall,
+                "policy_version": state["version"],
+                "allowed_sources": self.allowed_sources(ctx, stage),
+                "paused": state["stages"][stage]["mode"] == "paused"}
+
     def skip_order(self, ctx: WorkflowContext, task_id: str, user: dict, stage: str) -> dict[str, int]:
         """读取「暂时跳过」覆盖层：{zotero_key: skip_seq}（2026-11-18 裁定 #3/#4）。
 
@@ -1028,12 +1300,18 @@ class WorkflowRuntime:
         """
         if not ctx.actor_db.is_file():
             return {}
-        with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
-            if not store.has_table(conn, "workflow_skip_order"):
-                return {}
-            return {row[0]: int(row[1]) for row in conn.execute(
-                "SELECT zotero_key,skip_seq FROM workflow_skip_order WHERE actor_id=? AND task_id=? AND stage=?",
-                (str(user["user_id"]), task_id, stage))}
+        # 包 I：actor 库坏库字节/锁忙 → 503（不再 500）。
+        try:
+            with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
+                if not store.has_table(conn, "workflow_skip_order"):
+                    return {}
+                return {row[0]: int(row[1]) for row in conn.execute(
+                    "SELECT zotero_key,skip_seq FROM workflow_skip_order WHERE actor_id=? AND task_id=? AND stage=?",
+                    (str(user["user_id"]), task_id, stage))}
+        except OSError as exc:
+            raise self._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise self._screener_library_503() from exc
 
     def submission_evidence_queue(self, task_id: str, user: dict, source_id: str | None = None) -> dict:
         task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
@@ -1787,18 +2065,31 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                 # 2.1.5 W1：show_maybe 退役——旧前端携带该键时静默忽略
                 # （不 422、不落盘），不再参与任何读写语义。
             field_ids = body.evidence_required_field_ids
-            dimensions = {dim['field_id']: dim for dim in coding_evidence.field_rows(ctx.owner_db)}
+            # 包 I：方案读（owner 库）坏库/锁忙 → 503（不再 500）。
+            try:
+                dimensions = {dim['field_id']: dim for dim in coding_evidence.field_rows(ctx.owner_db)}
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise runtime._screener_library_503() from exc
             if any(fid not in dimensions for fid in field_ids):
                 raise HTTPException(400, "Required evidence fields must exist in the task coding scheme.")
-            with closing(store.connect(ctx.owner_db)) as conn, conn:
-                conn.execute("UPDATE workflow_state SET stages_json=?,evidence_json=? WHERE singleton=1",
-                             (json.dumps(stages), json.dumps(sorted(set(field_ids)))))
-                conn.execute('DELETE FROM workflow_evidence_requirements')
-                conn.executemany('INSERT INTO workflow_evidence_requirements VALUES(?,?)',
-                                 [(fid, coding_evidence.definition(dimensions[fid])) for fid in set(field_ids)])
-                # sec29：条件推进——跨进程并发写在提交时原子检出（409 回滚
-                # 本事务的全部写入），不再依赖前置读版本的 TOCTOU 窗口。
-                runtime.bump_version(conn, expected_version=body.expected_version, ctx=ctx)
+            # 包 I：写连接打开/锁忙/坏库 → 503；bump_version 的 409 冲突载荷
+            # （HTTPException）原样透传，零行为变化。
+            try:
+                with closing(store.connect(ctx.owner_db)) as conn, conn:
+                    conn.execute("UPDATE workflow_state SET stages_json=?,evidence_json=? WHERE singleton=1",
+                                 (json.dumps(stages), json.dumps(sorted(set(field_ids)))))
+                    conn.execute('DELETE FROM workflow_evidence_requirements')
+                    conn.executemany('INSERT INTO workflow_evidence_requirements VALUES(?,?)',
+                                     [(fid, coding_evidence.definition(dimensions[fid])) for fid in set(field_ids)])
+                    # sec29：条件推进——跨进程并发写在提交时原子检出（409 回滚
+                    # 本事务的全部写入），不再依赖前置读版本的 TOCTOU 窗口。
+                    runtime.bump_version(conn, expected_version=body.expected_version, ctx=ctx)
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise runtime._screener_library_503() from exc
             runtime.notify(ctx, "settings")
             return runtime.settings(ctx)
 
@@ -1838,17 +2129,29 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                     runtime.bump_version(conn, expected_version=body.expected_version, ctx=ctx)
             except sqlite3.IntegrityError as exc:
                 raise HTTPException(409, "A source with this name already exists.") from exc
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                # 包 I：写连接打开/锁忙/坏库 → 503（IntegrityError 先于本支，
+                # 409 语义不变；HTTPException 400/404 原样透传）。
+                raise runtime._screener_library_503() from exc
             runtime.notify(ctx, "source")
             # sec29b（复审#5，存量）：孤儿来源被 import_sources.decorate 过滤
             # 后 next() 无默认值 → StopIteration 兜成 500；改 404（写入已提交，
             # 仅取回展示失败——与列表不可见口径一致）。
-            found_source = next(
-                (source for source in store.sources(ctx.owner_db)
-                 if source["id"] == sid), None)
+            # 包 I：回读展示的坏库/锁忙 → 503（写入已提交，提示稍后重试）。
+            try:
+                found_source = next(
+                    (source for source in store.sources(ctx.owner_db)
+                     if source["id"] == sid), None)
+                version = store.settings(ctx.owner_db)["version"]
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise runtime._screener_library_503() from exc
             if found_source is None:
                 raise HTTPException(404, "Source not found.")
-            return {"source": found_source,
-                    "version": store.settings(ctx.owner_db)["version"]}
+            return {"source": found_source, "version": version}
 
     @app.post("/api/tasks/{task_id}/sources", status_code=201)
     def create_source(task_id: str, body: SourceIn, user: dict = Depends(require_user)) -> dict:
@@ -1865,15 +2168,27 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
         path = runtime.reason_db(ctx)
         entries = []
         if path.is_file():
-            with closing(store.connect(path, read_only=True)) as conn:
-                if store.has_table(conn, "workflow_reasons"):
-                    entries = [dict(row) for row in conn.execute("SELECT id,text,stage FROM workflow_reasons WHERE stage=? ORDER BY rowid", (stage,))]
+            # 包 I：原因库坏库字节/锁忙 → 503（不再 500）。
+            try:
+                with closing(store.connect(path, read_only=True)) as conn:
+                    if store.has_table(conn, "workflow_reasons"):
+                        entries = [dict(row) for row in conn.execute("SELECT id,text,stage FROM workflow_reasons WHERE stage=? ORDER BY rowid", (stage,))]
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise runtime._screener_library_503() from exc
         return {"entries": entries, "can_manage": ctx.can_manage, "task_kind": ctx.task_kind}
 
     def edit_reason(task_id: str, user: dict, body: ReasonIn | None, reason_id: str | None, stage: str | None) -> dict:
         with runtime.write_guard(task_id, user, "screen") as ctx:
             path = runtime.reason_db(ctx)
-            store.migrate(path)
+            # 包 I：原因库迁移（含坏库升级备份）/写连接打开/锁忙 → 503。
+            try:
+                store.migrate(path)
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise runtime._screener_library_503() from exc
             sid = reason_id or str(uuid.uuid4())
             try:
                 with closing(store.connect(path)) as conn, conn:
@@ -1893,6 +2208,12 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                                      (sid, selected_stage, text, norm))
             except sqlite3.IntegrityError as exc:
                 raise HTTPException(409, "This reason already exists in the stage library.") from exc
+            except OSError as exc:
+                raise runtime._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                # 包 I：写连接打开/锁忙/坏库 → 503（IntegrityError 先于本支，
+                # 409 语义不变；HTTPException 400/404 原样透传）。
+                raise runtime._screener_library_503() from exc
             if ctx.task_kind == "team":
                 runtime.notify(ctx, "reason-library")
             return {"id": sid, "deleted": body is None}

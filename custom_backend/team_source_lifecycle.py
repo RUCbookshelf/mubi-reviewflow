@@ -1114,7 +1114,8 @@ def _candidate_keys(inputs, old_required: list, usernames: Mapping) -> tuple:
 
 def prepare_team_protocol_storage(*, collab_path: Path,
                                   source_paths: Sequence) -> None:
-    """C05 显式准备：collab 装 F2 registry + receipts + F1 facts，各成员库装 F1 + receipts。
+    """C05 显式准备：collab 装 F2 registry + receipts + F1 facts + 业务角色两表，
+    各成员库装 F1 + receipts。
 
     collab 侧 F1 facts 是管理协调器的观察/归档目标
     （``read_seal_on``/``append_seal_on``/``archive_seals_on`` 都以
@@ -1122,6 +1123,16 @@ def prepare_team_protocol_storage(*, collab_path: Path,
     参数形状误用 → TypeError/ValueError；任何 prepare 失败原样上抛（不吞、
     不降级）；已准备 schema 幂等保留（不重复迁移、不夸大为跨库原子——
     C05 条款 4 的独立元数据阶段）。
+
+    包 K（基线前移，A 线遗留项 2026-11-20）：collab 侧同时幂等安装业务角色
+    两表（``collaboration_business_role`` / ``collaboration_business_role_
+    events``，含 append-only 两守卫）。``initialize_task_store`` 的 ``_SCHEMA``
+    不含该两表，而 team 协调器的借用写者（``_management_conn``
+    ``require_business=True``）只预检**不建表**——基线不备齐时全新任务的
+    首个 PUT business-role 即 503 且不随重试收敛。安装经 task_collaboration
+    自身 ensure 路径（``_write`` BEGIN IMMEDIATE 事务内逐条
+    ``CREATE ... IF NOT EXISTS``，与非借用 ``set_business_role`` 同一安装器），
+    零手写 DDL；A 线属主首次团队操作的 hook 层保留为双保险（本函数幂等）。
     """
     if not isinstance(collab_path, Path):
         raise TypeError("collab_path 必须为 pathlib.Path")
@@ -1137,6 +1148,8 @@ def prepare_team_protocol_storage(*, collab_path: Path,
     prepare_team_terminal_registry(collab_path)
     prepare_team_flow_receipts(collab_path)
     prepare_team_terminal_facts(collab_path)
+    with task_collaboration._write(collab_path) as _role_conn:
+        task_collaboration._ensure_business_role_schema(_role_conn)
     for path in source_paths:
         prepare_team_terminal_facts(path)
         prepare_team_flow_receipts(path)

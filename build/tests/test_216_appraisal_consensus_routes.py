@@ -419,11 +419,12 @@ class AppraisalConsensusRouteTests(unittest.TestCase):
         self.assertEqual(caught.exception.detail["params"]["request_id"],
                          "req-unknown")
 
-        # S4: a mode-drift race at the mutate boundary surfaces a structured
-        # retryable 409 (P15 task_mode_changed shape), never a bare 500
-        with mock.patch.object(
-                self.runtime, "mutate",
-                side_effect=RuntimeError("collab store flipped mid-race")):
+        # S4: only the two stable pre-yield drift literals still map to a
+        # structured retryable 409 (P15-D1 narrow surface, package M); the
+        # generic RuntimeError "collab store flipped" no longer qualifies.
+        drift = ValueError(
+            "retained_team_write_inputs requires a team task; got 'personal'")
+        with mock.patch.object(self.runtime, "mutate", side_effect=drift):
             for call in (lambda: self._appraisal_put(alice, "K1"),
                          lambda: self._rater_post(alice, "K1", _FIELD_A),
                          lambda: self._consensus_post(owner, "K1", _FIELD_B),
@@ -434,6 +435,8 @@ class AppraisalConsensusRouteTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 409)
                 self.assertEqual(caught.exception.detail["code"],
                                  "task_mode_changed")
+                self.assertEqual(caught.exception.detail["message_key"],
+                                 "team.flow.task_mode_changed")
                 self.assertTrue(caught.exception.detail["retryable"])
 
         # both collab-target operations landed in the shared collaboration DB
@@ -442,6 +445,100 @@ class AppraisalConsensusRouteTests(unittest.TestCase):
         self.assertGreaterEqual(
             self._table_count(self.collab_path, "coding_consensus_records"), 1)
         self.assertGreaterEqual(self._table_count(self.collab_path, "coding_freezes"), 1)
+
+    # ------------------------------------------------------------------
+    # 2b. package M: deterministic typed failures stay non-retryable; a
+    #     generic internal error is not disguised as a retryable mode drift
+    # ------------------------------------------------------------------
+    def test_deterministic_not_prepared_is_not_retryable(self):
+        alice = self._user(ALICE)
+        # appraisal storage itself is prepared, so the single deterministic
+        # cause left is the receipts layout -> TeamFlowReceiptUnavailable
+        # ("not_prepared") raised by the real store on the retained actor conn.
+        self.appraisal_api.prepare_appraisal_storage_for(
+            self.info, "alice", self._screener_db)
+        with closing(sqlite3.connect(self.user_paths[ALICE])) as conn, conn:
+            conn.execute("DROP TABLE IF EXISTS team_flow_receipts_meta")
+            conn.execute("DROP TABLE IF EXISTS team_flow_receipts")
+
+        with self.assertRaises(self.rwa.HTTPException) as caught:
+            self._appraisal_put(alice, "K1")
+        detail = caught.exception.detail
+        # P17 storage-unprepared convention in this route family is a 409
+        # (same family as appraisal_storage_unavailable), never a 503 that
+        # gateways/clients read as "retry later".
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(detail["error_code"], "team_flow_receipt_unavailable")
+        self.assertEqual(detail["message_key"], "team.flow.receipt_unavailable")
+        self.assertIs(detail["retryable"], False,
+                      "not_prepared is deterministic: retrying the same "
+                      "request can never succeed")
+        self.assertEqual(detail["params"]["reason"], "not_prepared")
+        self.assertNotEqual(detail.get("code"), "task_mode_changed")
+        # zero business write on the rejected path
+        with closing(sqlite3.connect(self.user_paths[ALICE])) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='appraisal_records'").fetchone()
+        self.assertIsNotNone(row, "the prepare lifecycle keeps its table")
+
+        # same deterministic mapping for the coding-consensus team routes
+        with closing(sqlite3.connect(self.collab_path)) as conn, conn:
+            conn.execute("DROP TABLE IF EXISTS team_flow_receipts_meta")
+            conn.execute("DROP TABLE IF EXISTS team_flow_receipts")
+        with self.assertRaises(self.rwa.HTTPException) as caught:
+            self._rater_post(alice, "K1", _FIELD_A)
+        detail = caught.exception.detail
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(detail["error_code"], "team_flow_receipt_unavailable")
+        self.assertIs(detail["retryable"], False)
+        self.assertEqual(detail["params"]["reason"], "not_prepared")
+
+        # typed transient unavailability keeps the P15/P17 503 payload
+        transient = self.tsr.TeamFlowUnavailableError(
+            "collab_unreadable", detail="probe")
+        with mock.patch.object(self.runtime, "mutate", side_effect=transient):
+            with self.assertRaises(self.rwa.HTTPException) as caught:
+                self._consensus_post(self._user(OWNER), "K1", _FIELD_A)
+        detail = caught.exception.detail
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(detail["error_code"], "team.flow.unavailable")
+        self.assertEqual(detail["message_key"], "team.flow.unavailable")
+        self.assertNotEqual(detail.get("code"), "task_mode_changed")
+        self.assertNotIn("retryable", detail)
+
+        # a borrowed-connection contract breach is a programming error: it is
+        # never re-shaped into a business 409/503 payload
+        contract = self.receipts.TeamFlowReceiptUnavailable(
+            "connection_contract", "probe: caller must own a transaction")
+        with mock.patch.object(self.runtime, "mutate", side_effect=contract):
+            with self.assertRaises(self.receipts.TeamFlowReceiptUnavailable):
+                self._rater_post(alice, "K1", _FIELD_A)
+
+    def test_generic_exception_is_not_disguised_as_retryable_drift(self):
+        alice = self._user(ALICE)
+        self.appraisal_api.prepare_appraisal_storage_for(
+            self.info, "alice", self._screener_db)
+        with mock.patch.object(
+                self.runtime, "mutate",
+                side_effect=RuntimeError("collab store flipped mid-race")):
+            with self.assertRaises(self.rwa.HTTPException) as caught:
+                self._appraisal_put(alice, "K1")
+        detail = caught.exception.detail
+        # the appraisal route keeps its pre-existing outer degradation, but
+        # the payload must not claim a retryable task-mode change
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(detail["error_code"], "appraisal_unavailable")
+        self.assertNotEqual(detail.get("code"), "task_mode_changed")
+        self.assertNotIn("retryable", detail)
+
+        # the coding-consensus routes no longer fire a blanket 409 at all:
+        # the real exception surfaces unchanged to the global handler
+        with mock.patch.object(
+                self.runtime, "mutate",
+                side_effect=RuntimeError("collab store flipped mid-race")):
+            with self.assertRaises(RuntimeError):
+                self._rater_post(alice, "K1", _FIELD_A)
 
     # ------------------------------------------------------------------
     # 3. freeze resolves every ID on the collab connection; a mixed batch is

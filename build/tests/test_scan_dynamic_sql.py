@@ -141,19 +141,103 @@ SCANNER = _load_scanner()
 #: 生产白名单当前登记的全部条目（文件:行号，posix 相对仓库根）。终审 #59：
 #: 任何新增/漂移都必须显式更新这里并走评审——「exit 0 + 白名单不新增」自此
 #: 成为仓库级永久闸门（条目内容见 build/scripts/scan_dynamic_sql.whitelist）。
+#:
+#: 2.1.6 夜间各波 re-key/新增史（2026-11-20 SQLGATE 对齐包逐条随正）：
+#: * `coscreen/db.py` 三度漂移：557→563（M-04 整表重建 DDL 拼注册表常量）、
+#:   751→832（PRAGMA table_info 随团队库准备波次下移）、1345→1427→**删除**
+#:   （原 1427 登记的是 conn.execute 续行，AST 行号归属 1426，自 568d6b9 起
+#:   即为死条目；I+L 包在 stale=0 硬约束下删除。1426 的命中同一语句，按
+#:   本包 triage 重新登记，见下方 SQLGATE 段）。
+#: * `custom_backend/review_workflow_api.py` P23 三度漂移：1232→1251→1529
+#:   （团队写通道波次插行、I+L 再插 321 行整体下移 278 行；表达式逐字未变）。
+#: * P21 新增 `custom_backend/team_completion_clear.py:162`（固定表/列常量化）。
+#: * `coscreen/review_workflow.py` 158→160（skip 波次 _SCHEMA 纯插入）。
+#: * 2026-11-20 SQLGATE：2.1.6 夜间各波产生 52 处未白名单命中，逐条 triage
+#:   （拼入部分全为固定表名/固定列名/模块字面量常量/本库 sqlite_master 内部
+#:   元数据/纯 '?' 占位符序列）后同批登记，白名单 10→62 条。条目定性依据见
+#:   build/scripts/scan_dynamic_sql.whitelist 的「SQLGATE 对齐包」段。
+#: * M 包在途前提：`custom_backend/appraisal_api.py` / `coding_consensus_api.py`
+#:   的行号可能随后续落地漂移；本钉集按**当前工作树**登记，漂移后照既有
+#:   re-key 流程随正（这两文件当前无白名单条目，若落地后新增命中需另行 triage）。
 EXPECTED_WHITELIST_KEYS = frozenset({
+    # ---- 2.1.5 waveA（research_trace_api: ATTACH 别名 / IN 占位符 / 跨库 UNION）----
     ("custom_backend/import_review_actions.py", 163),
     ("custom_backend/research_trace_api.py", 324),
     ("custom_backend/research_trace_api.py", 360),
     ("custom_backend/research_trace_api.py", 382),
-    # 2026-11-13 随正名（r67 波 + 四线汇合）：M-04 注册表 DDL 平移 749→751、
-    # 1344→1345 并新增 db.py:557；M-03 独立性守卫新增 analysis_storage.py:517
-    # ——白名单文件已同批登记（9 条），本钉集随正。
-    ("coscreen/db.py", 557),
-    ("coscreen/db.py", 751),
+    # ---- 2.1.5 + review67 + 2.1.6 波次（coscreen/db.py：563 / 832 / 1426）----
+    ("coscreen/db.py", 563),
+    ("coscreen/db.py", 832),
+    ("coscreen/db.py", 1426),
+    # ---- review67 M-03 独立性守卫 IN 占位符 ----
     ("coscreen/analysis_storage.py", 517),
-    ("coscreen/db.py", 1345),
-    ("coscreen/review_workflow.py", 158),
+    # ---- 2.1.5 skip 波次：executescript + 固定 _SCHEMA（158→160）----
+    ("coscreen/review_workflow.py", 160),
+    # ---- P23 keyed read（1232→1251→1529 三度 re-key）----
+    ("custom_backend/review_workflow_api.py", 1529),
+    # ---- P21 clear：固定表/列名映射 ----
+    ("custom_backend/team_completion_clear.py", 162),
+    # ---- 2026-11-20 SQLGATE：2.1.6 夜间波次 52 处逐条 triage 后登记 ----
+    # coscreen/coding_consensus.py（固定 _SCHEMA 常量）
+    ("coscreen/coding_consensus.py", 162),
+    # coscreen/research_trace.py（固定 _PREPARED_REQUIRED_COLUMNS 表名）
+    ("coscreen/research_trace.py", 366),
+    # coscreen/screening_arbitration.py（固定列名/子句片段，值参数化）
+    ("coscreen/screening_arbitration.py", 1092),
+    # coscreen/task_collaboration.py（固定表/列名 + 'main.' 字面量二选一 + IN 占位符）
+    ("coscreen/task_collaboration.py", 420),
+    ("coscreen/task_collaboration.py", 435),
+    ("coscreen/task_collaboration.py", 487),
+    ("coscreen/task_collaboration.py", 504),
+    ("coscreen/task_collaboration.py", 731),
+    ("coscreen/task_collaboration.py", 819),
+    ("coscreen/task_collaboration.py", 825),
+    ("coscreen/task_collaboration.py", 1025),
+    ("coscreen/task_collaboration.py", 1032),
+    ("coscreen/task_collaboration.py", 1038),
+    ("coscreen/task_collaboration.py", 1273),
+    ("coscreen/task_collaboration.py", 1278),
+    ("coscreen/task_collaboration.py", 1310),
+    ("coscreen/task_collaboration.py", 1317),
+    ("coscreen/task_collaboration.py", 1322),
+    ("coscreen/task_collaboration.py", 1371),
+    ("coscreen/task_collaboration.py", 1389),
+    ("coscreen/task_collaboration.py", 1396),
+    ("coscreen/task_collaboration.py", 1424),
+    ("coscreen/task_collaboration.py", 1655),
+    ("coscreen/task_collaboration.py", 1658),
+    ("coscreen/task_collaboration.py", 1695),
+    ("coscreen/task_collaboration.py", 1696),
+    ("coscreen/task_collaboration.py", 1739),
+    ("coscreen/task_collaboration.py", 2201),
+    ("coscreen/task_collaboration.py", 2216),
+    # coscreen/team_flow_receipts.py（模块常量 TABLE/META_TABLE + 索引元数据）
+    ("coscreen/team_flow_receipts.py", 701),
+    ("coscreen/team_flow_receipts.py", 710),
+    ("coscreen/team_flow_receipts.py", 728),
+    ("coscreen/team_flow_receipts.py", 736),
+    ("coscreen/team_flow_receipts.py", 911),
+    # coscreen/team_terminal_facts.py（同上）
+    ("coscreen/team_terminal_facts.py", 1083),
+    ("coscreen/team_terminal_facts.py", 1091),
+    ("coscreen/team_terminal_facts.py", 1105),
+    ("coscreen/team_terminal_facts.py", 1112),
+    ("coscreen/team_terminal_facts.py", 1341),
+    # coscreen/team_vote_ledger.py（固定 _STAGE_TABLES 映射 + _ALL_OBJECTS 占位符）
+    ("coscreen/team_vote_ledger.py", 211),
+    ("coscreen/team_vote_ledger.py", 227),
+    ("coscreen/team_vote_ledger.py", 417),
+    ("coscreen/team_vote_ledger.py", 502),
+    ("coscreen/team_vote_ledger.py", 724),
+    # custom_backend/main.py（IN 分块占位符）
+    ("custom_backend/main.py", 2421),  # 六站包插行使 2409→2421（2026-11-21）
+    # custom_backend/team_keyed_domain.py（固定 required_schema + IN 占位符）
+    ("custom_backend/team_keyed_domain.py", 60),
+    ("custom_backend/team_keyed_domain.py", 77),
+    ("custom_backend/team_keyed_domain.py", 116),
+    ("custom_backend/team_keyed_domain.py", 190),
+    ("custom_backend/team_keyed_domain.py", 207),
+    ("custom_backend/team_keyed_domain.py", 261),
 })
 
 #: 会话级缓存：真实树全量扫描只跑一次（闸门运行被多个用例复用）。
@@ -481,7 +565,8 @@ class ScannerRealTreeTest(unittest.TestCase):
     修复前唯一真实树用例不带 ``--whitelist`` 且显式接受 ``EXIT_FINDINGS``，
     「scanner exit 0」的封版结论只存在于人工运行中；任何未登记的动态拼装
     SQL 或白名单行号漂移都不会让测试变红。本类把闸门钉死：以**生产白名单**
-    运行必须 exit 0、未白名单 0、失效条目 0；白名单条目集（7 条）被钉在
+    运行必须 exit 0、未白名单 0、失效条目 0；白名单条目集（62 条，2026-11-20
+    SQLGATE 对齐包起）被钉在
     ``EXPECTED_WHITELIST_KEYS``，新增/漂移必须显式更新本文件并走评审；
     工作区中白名单文件不得有未提交改动。全树扫描经会话级缓存只跑一次。
     """
@@ -523,7 +608,7 @@ class ScannerRealTreeTest(unittest.TestCase):
                          "更新 EXPECTED_WHITELIST_KEYS）")
 
     def test_mutation_whitelist_ignored_pin_goes_red(self) -> None:
-        """破坏性变异：白名单被清空（等效绕过登记）→ 真实树 7 处已登记命中
+        """破坏性变异：白名单被清空（等效绕过登记）→ 真实树 62 处已登记命中
         全部变成未白名单、exit 1——闸门钉必红。"""
         with mock.patch.object(SCANNER, "load_whitelist",
                                lambda path, root: ({}, [])):

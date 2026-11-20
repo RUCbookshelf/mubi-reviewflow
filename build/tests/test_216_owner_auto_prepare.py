@@ -33,6 +33,7 @@ import importlib
 import sqlite3
 import unittest
 import uuid
+from contextlib import closing
 from unittest import mock
 
 OWNER = "pkgaowner"
@@ -267,9 +268,20 @@ class OwnerAutoPrepareTests(unittest.TestCase):
     def test_business_role_borrowed_path_prepared_by_owner_hook(self):
         task_id, info, owner_db = self._new_task()
         collab = self.main_mod._collaboration_store(info)
+        # 包 K（2026-11-20 基线前移）：全新任务经 create 的
+        # _register_fresh_team_protocol → prepare_team_protocol_storage 已备齐
+        # 业务角色两表（前移版正向断言见 test_216_pkgk_role_baseline.py）。
+        # 本用例继续覆盖 A 线 hook：显式删除两表重建升级前旧部署缺口，hook
+        # 不生效则后续借用写者预检 503。
+        tables = self.main_mod._sqlite_tables_present(collab)
+        self.assertIn("collaboration_business_role", tables)
+        self.assertIn("collaboration_business_role_events", tables)
+        with closing(sqlite3.connect(str(collab))) as conn, conn:
+            conn.execute("DROP TABLE collaboration_business_role")
+            conn.execute("DROP TABLE collaboration_business_role_events")
         tables = self.main_mod._sqlite_tables_present(collab)
         self.assertNotIn("collaboration_business_role", tables,
-                         "前置失败：全新 collab 已含业务角色表")
+                         "前置失败：缺口模拟后仍含业务角色表")
         self.assertNotIn("collaboration_business_role_events", tables)
         # 首邀请走 legacy 维护路径 latch team（真实演化；legacy 路径不建
         # 业务角色表——盲区即在此之后暴露）。

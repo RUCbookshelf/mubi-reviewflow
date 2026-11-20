@@ -2237,7 +2237,14 @@ def _read_task_roster_snapshot(info: tasks_mod.TaskInfo) -> tuple[str, list[dict
 
     # A disappearance after stat reaches connect(mode=ro) and is unavailable;
     # it must not be reinterpreted as a legacy task or create a new main DB.
-    conn = sqlite3.connect(collab_uri, uri=True, timeout=0.25)
+    # 包 main503-r2：站内收口 sqlite3.DatabaseError（坏库字节等连接级失败）
+    # ——与 _task_roster_projection 外层既有降级同口径（status=unavailable、
+    # 省略 active_screeners），不新增 503、不改可见性/授权/返回数据语义。
+    try:
+        conn = sqlite3.connect(collab_uri, uri=True, timeout=0.25)
+    except sqlite3.DatabaseError as exc:
+        logger.warning("roster snapshot storage failure (unavailable): %r", exc)
+        return "unavailable", []
     try:
         cursor = conn.cursor()
         try:
@@ -2333,7 +2340,12 @@ def _read_task_roster_snapshot(info: tasks_mod.TaskInfo) -> tuple[str, list[dict
                 return "compatibility", []
             if not stat.S_ISREG(owner_stat.st_mode):
                 return "unknown", []
-            owner_conn = sqlite3.connect(owner_uri, uri=True, timeout=0.25)
+            # 包 main503-r2：同款站内收口（外层降级口径不变）。
+            try:
+                owner_conn = sqlite3.connect(owner_uri, uri=True, timeout=0.25)
+            except sqlite3.DatabaseError as exc:
+                logger.warning("roster snapshot storage failure (unavailable): %r", exc)
+                return "unavailable", []
             try:
                 owner_cursor = owner_conn.cursor()
                 try:
@@ -3195,7 +3207,14 @@ _OWNER_COLLAB_TEAM_TABLES = (
 
 
 def _sqlite_tables_present(path) -> set:
-    """只读列出库中表名（sqlite_master 纯读；文件缺失返回空集）。"""
+    """只读列出库中表名（sqlite_master 纯读；文件缺失返回空集）。
+
+    包 main503-r2（词条口径统一，结构不改）：本函数不设站内 try——唯一调用方
+    ``_owner_team_storage_missing`` 向上经 ``_ensure_owner_team_storage`` 的
+    ``except (sqlite3.Error, OSError)``（DatabaseError ⊂ Error）映射为既有
+    typed 503（``team_owner_storage_unprepared``），details 如实携带异常族；
+    站内再加捕获只会改变错误对象/诊断链，不改变用户可见词条，故保持原状。
+    """
     import sqlite3 as _sqlite3
     if not path.is_file():
         return set()
@@ -3335,44 +3354,53 @@ def _register_fresh_team_protocol(info, user) -> dict:
     # 库未建时以产品标准原语 init_db 幂等建库（与成员库准备同款），再读真实
     # 身份登记——绝不登记猜想的占位值（旧 uid-hex 回退会与真实身份永久背离，
     # 且账本已装库不覆写）。读取失败如实上抛（登记失败交调用方记日志不回滚）。
-    if not owner_db.is_file():
-        from coscreen import db as _cdb
-        _cdb.init_db(owner_db)
-    conn = _sqlite3.connect(str(owner_db), timeout=15)
+    # 包 main503-r2：两段存储访问整体收口 sqlite3.DatabaseError -> typed 503
+    # 标准词条（连接级与语句级坏库/锁忙同族；坏库 connect 常成功、首条语句
+    # 才抛「file is not a database」）。两调用点均 ``except Exception`` 记日志
+    # 继续——「登记失败不阻塞创建/rebind」语义不变；ValueError（身份缺失）
+    # 不属本捕获面，原样上抛。
     try:
-        conn.row_factory = sqlite3.Row  # C02 借用合同：Row 工厂＋活动事务
-        conn.execute("BEGIN")
-        header = library_identity_header_on(conn)
-    finally:
-        conn.close()
-    owner_library = (header.library_id if header is not None else None)
-    if not owner_library:
-        raise ValueError(
-            "owner ledger identity unavailable after init_db: "
-            f"{owner_db.name}")
-    instance = f"{info.task_id}-inst-{uuid.uuid4().hex[:12]}"
-    conn = _sqlite3.connect(str(collab_path), timeout=15)
-    try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("BEGIN IMMEDIATE")
-        existing = conn.execute(
-            "SELECT task_instance_id FROM main.team_task_protocol"
-            " WHERE task_id = ?", (info.task_id,)).fetchone()
-        if existing is not None:
+        if not owner_db.is_file():
+            from coscreen import db as _cdb
+            _cdb.init_db(owner_db)
+        conn = _sqlite3.connect(str(owner_db), timeout=15)
+        try:
+            conn.row_factory = sqlite3.Row  # C02 借用合同：Row 工厂＋活动事务
+            conn.execute("BEGIN")
+            header = library_identity_header_on(conn)
+        finally:
+            conn.close()
+        owner_library = (header.library_id if header is not None else None)
+        if not owner_library:
+            raise ValueError(
+                "owner ledger identity unavailable after init_db: "
+                f"{owner_db.name}")
+        instance = f"{info.task_id}-inst-{uuid.uuid4().hex[:12]}"
+        conn = _sqlite3.connect(str(collab_path), timeout=15)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT task_instance_id FROM main.team_task_protocol"
+                " WHERE task_id = ?", (info.task_id,)).fetchone()
+            if existing is not None:
+                conn.commit()
+                return {"registered": False,
+                        "task_instance_id": existing["task_instance_id"],
+                        "reason": "protocol_already_registered"}
+            record = _registry.register_protocol_on(
+                conn, task_id=info.task_id, task_instance_id=instance,
+                owner_user_id=owner_uid, owner_library_id=owner_library,
+                creation_path="trusted_new_task")
             conn.commit()
-            return {"registered": False, "task_instance_id": existing["task_instance_id"],
-                    "reason": "protocol_already_registered"}
-        record = _registry.register_protocol_on(
-            conn, task_id=info.task_id, task_instance_id=instance,
-            owner_user_id=owner_uid, owner_library_id=owner_library,
-            creation_path="trusted_new_task")
-        conn.commit()
-        return {"registered": True,
-                "task_instance_id": record["task_instance_id"],
-                "creation_path": "trusted_new_task",
-                "owner_library_id": owner_library}
-    finally:
-        conn.close()
+            return {"registered": True,
+                    "task_instance_id": record["task_instance_id"],
+                    "creation_path": "trusted_new_task",
+                    "owner_library_id": owner_library}
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
 
 
 def _member_still_engaged(info, path, user, target_user_id: int) -> bool:
@@ -10319,135 +10347,143 @@ def _collect_manuscript_data(info: tasks_mod.TaskInfo, user: dict,
 
     raw_task = tasks_mod._read_task_json(info.dir) or {}  # noqa: SLF001  与 update_task 同一条读路径
     protocol = raw_task.get("protocol")
-    db = _screener_db(info, user["username"])
+    try:
+        db = _screener_db(info, user["username"])
 
-    # --- 文献与 PRISMA 流程计数（当前筛选员库口径；含重复条目=检索识别数）---
-    all_articles = db_mod.list_articles(db, include_duplicates=True)
-    unique_articles = db_mod.list_articles(db, include_duplicates=False)
-    stage1 = db_mod.get_progress(db)
-    stage2 = get_stage2_progress(db)
-    # r8 #4：duplicates_removed 只计**实际打标移除**的行（is_duplicate_of 非
-    # 空——机器精确证据或人工确认的重复）。list_articles(include_duplicates
-    # =False) 还会过滤 pending/undecided 标题审阅组成员（其 is_duplicate_of
-    # 仍 NULL，待人工确认），len(all)-len(unique) 把这些待确认候选计成
-    # 「已去除重复」，与 living_review/prisma_task_metrics 的 is_duplicate_of
-    # 口径分叉（同库 IncrementalResult duplicates_removed=0/pending=1 而
-    # 稿件公式报 1）。
-    with closing(sqlite3.connect(db)) as _conn:
-        marked_removed = _conn.execute(
-            "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NOT NULL"
-        ).fetchone()[0]
-    prisma = {
-        "identified": len(all_articles),
-        "duplicates_removed": marked_removed,
-        "records_screened": stage1["screened"],
-        "records_excluded": stage1["exclude"],
-        "records_included": (stage2["include"] if stage2["screened"] else stage1["include"]),
-        "stage2_assessed": stage2["screened"],
-        "stage2_included": stage2["include"],
-    }
+        # --- 文献与 PRISMA 流程计数（当前筛选员库口径；含重复条目=检索识别数）---
+        all_articles = db_mod.list_articles(db, include_duplicates=True)
+        unique_articles = db_mod.list_articles(db, include_duplicates=False)
+        stage1 = db_mod.get_progress(db)
+        stage2 = get_stage2_progress(db)
+        # r8 #4：duplicates_removed 只计**实际打标移除**的行（is_duplicate_of 非
+        # 空——机器精确证据或人工确认的重复）。list_articles(include_duplicates
+        # =False) 还会过滤 pending/undecided 标题审阅组成员（其 is_duplicate_of
+        # 仍 NULL，待人工确认），len(all)-len(unique) 把这些待确认候选计成
+        # 「已去除重复」，与 living_review/prisma_task_metrics 的 is_duplicate_of
+        # 口径分叉（同库 IncrementalResult duplicates_removed=0/pending=1 而
+        # 稿件公式报 1）。
+        with closing(sqlite3.connect(db)) as _conn:
+            marked_removed = _conn.execute(
+                "SELECT COUNT(*) FROM articles WHERE is_duplicate_of IS NOT NULL"
+            ).fetchone()[0]
+        prisma = {
+            "identified": len(all_articles),
+            "duplicates_removed": marked_removed,
+            "records_screened": stage1["screened"],
+            "records_excluded": stage1["exclude"],
+            "records_included": (stage2["include"] if stage2["screened"] else stage1["include"]),
+            "stage2_assessed": stage2["screened"],
+            "stage2_included": stage2["include"],
+        }
 
-    # --- 提取与合成（已选定效应量按比较/结局/时间点分组，逐层重新合成）---
-    effects = analysis_mod.list_effects(db)
-    selected = [row for row in effects if row["selected"]]
-    strata: dict[tuple[str, str, str], list[dict]] = {}
-    for row in selected:
-        strata.setdefault((row["comparison"], row["outcome"], row["timepoint"]), []).append(row)
-    study_labels = {study["id"]: study["label"] for study in analysis_mod.list_studies(db)}
-    syntheses = []
-    for (comparison, outcome, timepoint), rows in sorted(strata.items()):
-        measure = rows[0]["measure"]
-        entry = {"comparison": comparison, "outcome": outcome, "timepoint": timepoint,
-                 "measure": measure, "model": model, "ci_method": ci_method,
-                 "result": None, "error": None, "egger": None, "egger_note": None}
-        try:
-            result = analysis_mod.synthesize(db, comparison, outcome, timepoint,
-                                             measure, model, ci_method)
-            for effect in result["effects"]:  # 森林图用研究标签而非裸 id
-                effect["study_label"] = study_labels.get(effect["study_id"],
-                                                         effect["study_id"])
-            entry["result"] = result
-        except ValueError as exc:  # 层内不可合成（<2 项研究/混池等）→ 如实记为 error
-            entry["error"] = str(exc)
-        try:  # Egger：<10 项研究或单组指标不可用 → note 说明，发表偏倚节如实呈现
-            entry["egger"] = advanced_mod.small_study_effects(
-                db, comparison, outcome, timepoint, measure)
-        except ValueError as exc:
-            entry["egger_note"] = str(exc)
-        syntheses.append(entry)
-    extraction = {
-        "n_studies": len({row["study_id"] for row in selected}),
-        "n_effects": len(effects),
-        "measures": sorted({row["measure"] for row in selected}),
-        "entry_methods": sorted({row["entry_method"] for row in selected
-                                 if row.get("entry_method")}),
-    }
-
-    # --- RoB（每研究取最新一条 overall，与 GRADE auto-suggest 同一聚合口径）---
-    rob_rows = analysis_mod.list_rob(db)
-    latest_rob: dict[str, dict] = {}
-    for row in sorted(rob_rows, key=lambda item: item["updated_at"]):
-        latest_rob[row["study_id"]] = row
-    overall_counts: dict[str, int] = {}
-    for row in latest_rob.values():
-        overall_counts[row["overall"]] = overall_counts.get(row["overall"], 0) + 1
-    frameworks: dict[str, int] = {}
-    for row in rob_rows:
-        frameworks[row["framework"]] = frameworks.get(row["framework"], 0) + 1
-    rob = ({"n_assessments": len(rob_rows), "frameworks": frameworks,
-            "overall_counts": overall_counts} if rob_rows else None)
-
-    # --- GRADE（读 W7 的 grade_assessments 表，复用 build_sof_table 组表）---
-    from coscreen import grade_assessor
-    grade = None
-    with closing(db_mod._connect(db)) as conn:  # noqa: SLF001  与 W7 段同一连接工厂
-        stored = conn.execute(
-            "SELECT comparison,outcome,timepoint,rob_downgrade,inconsistency_downgrade,"
-            "indirectness_downgrade,imprecision_downgrade,publication_bias_downgrade,"
-            "large_effect_upgrade,dose_response_upgrade,plausible_confounding_upgrade,"
-            "signal_sources,override_notes FROM grade_assessments WHERE task_id=? "
-            "ORDER BY outcome,timepoint,comparison,assessor", (info.task_id,)).fetchall()
-    if stored:
-        assessments = []
-        for row in stored:
-            record = dict(zip(("comparison", "outcome", "timepoint",
-                               "rob_downgrade", "inconsistency_downgrade",
-                               "indirectness_downgrade", "imprecision_downgrade",
-                               "publication_bias_downgrade", "large_effect_upgrade",
-                               "dose_response_upgrade", "plausible_confounding_upgrade",
-                               "signal_sources", "override_notes"), row))
+        # --- 提取与合成（已选定效应量按比较/结局/时间点分组，逐层重新合成）---
+        effects = analysis_mod.list_effects(db)
+        selected = [row for row in effects if row["selected"]]
+        strata: dict[tuple[str, str, str], list[dict]] = {}
+        for row in selected:
+            strata.setdefault((row["comparison"], row["outcome"], row["timepoint"]), []).append(row)
+        study_labels = {study["id"]: study["label"] for study in analysis_mod.list_studies(db)}
+        syntheses = []
+        for (comparison, outcome, timepoint), rows in sorted(strata.items()):
+            measure = rows[0]["measure"]
+            entry = {"comparison": comparison, "outcome": outcome, "timepoint": timepoint,
+                     "measure": measure, "model": model, "ci_method": ci_method,
+                     "result": None, "error": None, "egger": None, "egger_note": None}
             try:
-                signals = json.loads(record.get("signal_sources") or "{}")
-            except ValueError:
-                signals = {}
-            if not isinstance(signals, dict):
-                signals = {}
+                result = analysis_mod.synthesize(db, comparison, outcome, timepoint,
+                                                 measure, model, ci_method)
+                for effect in result["effects"]:  # 森林图用研究标签而非裸 id
+                    effect["study_label"] = study_labels.get(effect["study_id"],
+                                                             effect["study_id"])
+                entry["result"] = result
+            except ValueError as exc:  # 层内不可合成（<2 项研究/混池等）→ 如实记为 error
+                entry["error"] = str(exc)
+            try:  # Egger：<10 项研究或单组指标不可用 → note 说明，发表偏倚节如实呈现
+                entry["egger"] = advanced_mod.small_study_effects(
+                    db, comparison, outcome, timepoint, measure)
+            except ValueError as exc:
+                entry["egger_note"] = str(exc)
+            syntheses.append(entry)
+        extraction = {
+            "n_studies": len({row["study_id"] for row in selected}),
+            "n_effects": len(effects),
+            "measures": sorted({row["measure"] for row in selected}),
+            "entry_methods": sorted({row["entry_method"] for row in selected
+                                     if row.get("entry_method")}),
+        }
+
+        # --- RoB（每研究取最新一条 overall，与 GRADE auto-suggest 同一聚合口径）---
+        rob_rows = analysis_mod.list_rob(db)
+        latest_rob: dict[str, dict] = {}
+        for row in sorted(rob_rows, key=lambda item: item["updated_at"]):
+            latest_rob[row["study_id"]] = row
+        overall_counts: dict[str, int] = {}
+        for row in latest_rob.values():
+            overall_counts[row["overall"]] = overall_counts.get(row["overall"], 0) + 1
+        frameworks: dict[str, int] = {}
+        for row in rob_rows:
+            frameworks[row["framework"]] = frameworks.get(row["framework"], 0) + 1
+        rob = ({"n_assessments": len(rob_rows), "frameworks": frameworks,
+                "overall_counts": overall_counts} if rob_rows else None)
+
+        # --- GRADE（读 W7 的 grade_assessments 表，复用 build_sof_table 组表）---
+        from coscreen import grade_assessor
+        grade = None
+        with closing(db_mod._connect(db)) as conn:  # noqa: SLF001  与 W7 段同一连接工厂
+            stored = conn.execute(
+                "SELECT comparison,outcome,timepoint,rob_downgrade,inconsistency_downgrade,"
+                "indirectness_downgrade,imprecision_downgrade,publication_bias_downgrade,"
+                "large_effect_upgrade,dose_response_upgrade,plausible_confounding_upgrade,"
+                "signal_sources,override_notes FROM grade_assessments WHERE task_id=? "
+                "ORDER BY outcome,timepoint,comparison,assessor", (info.task_id,)).fetchall()
+        if stored:
+            assessments = []
+            for row in stored:
+                record = dict(zip(("comparison", "outcome", "timepoint",
+                                   "rob_downgrade", "inconsistency_downgrade",
+                                   "indirectness_downgrade", "imprecision_downgrade",
+                                   "publication_bias_downgrade", "large_effect_upgrade",
+                                   "dose_response_upgrade", "plausible_confounding_upgrade",
+                                   "signal_sources", "override_notes"), row))
+                try:
+                    signals = json.loads(record.get("signal_sources") or "{}")
+                except ValueError:
+                    signals = {}
+                if not isinstance(signals, dict):
+                    signals = {}
+                try:
+                    n_studies = len(analysis_mod.selected_effects(
+                        db, record["comparison"], record["outcome"], record["timepoint"]))
+                except ValueError:
+                    n_studies = None
+                assessments.append({
+                    "comparison": record["comparison"], "outcome": record["outcome"],
+                    "timepoint": record["timepoint"],
+                    "initial_design": signals.get("initial_design", "rct"),
+                    "downgrades": {"rob": record["rob_downgrade"],
+                                   "inconsistency": record["inconsistency_downgrade"],
+                                   "indirectness": record["indirectness_downgrade"],
+                                   "imprecision": record["imprecision_downgrade"],
+                                   "publication_bias": record["publication_bias_downgrade"]},
+                    "upgrades": {"large_effect": record["large_effect_upgrade"],
+                                 "dose_response": record["dose_response_upgrade"],
+                                 "plausible_confounding": record["plausible_confounding_upgrade"]},
+                    "final_quality": signals.get("final_quality"),
+                    "n_studies": n_studies,
+                    "override_notes": record["override_notes"],
+                })
             try:
-                n_studies = len(analysis_mod.selected_effects(
-                    db, record["comparison"], record["outcome"], record["timepoint"]))
+                sof = grade_assessor.build_sof_table(assessments)
             except ValueError:
-                n_studies = None
-            assessments.append({
-                "comparison": record["comparison"], "outcome": record["outcome"],
-                "timepoint": record["timepoint"],
-                "initial_design": signals.get("initial_design", "rct"),
-                "downgrades": {"rob": record["rob_downgrade"],
-                               "inconsistency": record["inconsistency_downgrade"],
-                               "indirectness": record["indirectness_downgrade"],
-                               "imprecision": record["imprecision_downgrade"],
-                               "publication_bias": record["publication_bias_downgrade"]},
-                "upgrades": {"large_effect": record["large_effect_upgrade"],
-                             "dose_response": record["dose_response_upgrade"],
-                             "plausible_confounding": record["plausible_confounding_upgrade"]},
-                "final_quality": signals.get("final_quality"),
-                "n_studies": n_studies,
-                "override_notes": record["override_notes"],
-            })
-        try:
-            sof = grade_assessor.build_sof_table(assessments)
-        except ValueError:
-            sof = None
-        grade = {"n_assessments": len(assessments), "sof": sof}
+                sof = None
+            grade = {"n_assessments": len(assessments), "sof": sof}
+    except OSError as exc:
+        logger.warning("稿件数据汇总读库 I/O 失败（降级 503）：%r", exc)
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+    except sqlite3.DatabaseError as exc:
+        # 包 main503-r2：坏库字节/锁忙/读失败与 W7/导出同口径 503（G 线同款）。
+        logger.warning("稿件数据汇总读库失败（降级 503）：%r", exc)
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
 
     return {
         "task": {"task_id": info.task_id, "display_name": info.display_name},

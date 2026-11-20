@@ -4,14 +4,26 @@
 
 - collab F1 按键先查；未命中才逐 F2 holder（ro 连接/Row 工厂/活动 DEFERRED
   事务）发现；holder 临时 reader 逐个打开、逐个 rollback/close（异常路径
-  同样释放），任何读锁都不越出本函数。
+  同样释放），任何读锁都不越出本函数。collab 已见证的键同样逐 holder
+  复扫其 F1（见下条冲突判定）。
 - 找到可信 A 后坏 D 不遮蔽 A：已获见证的键不受后续来源失败影响；失败只
   记入仍无见证键的临时失败表。
-- 可见冲突 seal 拒绝（冲突即拒、幂等兼容）：每个 holder 对全部待决键
-  重扫（代价＝holder 数×pending 键数的逐键 F1 点查，键控 SELECT、无
-  全域读，团队规模下可接受）；不同 holder 对同一 (stage, key) 给出互斥
-  seal 时，该键改为 issue（conflicting_seals），不任选其一；四字段同
-  seal＝幂等重复，保留确定序首个的归属。
+- 可见冲突 seal 拒绝（冲突即拒、幂等兼容）：每个 holder 对扫描目标集
+  ＝pending ∪ collab 已见证目标重扫（H/2③ 窄缝隙修复，2026-11-20：
+  collab 见证键上的异四元组 holder seal 原先不进扫描、按 collab 权威域
+  直接 FINAL 放行；扩展目标集后同键互斥 seal 按键 fail-closed；代价＝
+  holder 数×目标键数的逐键 F1 点查，键控 SELECT、无全域读，团队规模下
+  可接受）；不同 holder 对同一 (stage, key) 给出互斥 seal、或 holder 对
+  collab 权威域给出异四元组 seal 时，该键改为 issue（conflicting_seals），
+  不任选其一；四字段同 seal＝幂等重复（归档副本/同 seal 双持有），保留
+  确定序首个的归属（collab 见证保留其权威域归属）。
+- 冲突判定只认阳性证据：holder F1 不可读/来源身份不可解析/枚举行损坏只
+  影响**仍无见证**的键（既有语义），绝不撤销 collab 见证、绝不臆造冲突。
+  完全见证（collab 覆盖全部未剪枝目标、pending 空）的计划保持 P08 冻结
+  的零来源枚举、零 holder 打开不变式——该形态下不存在任何可按键推进的
+  未完成目标（全部键已 collab 终局），冲突无写/读放行后果；写窗与链式
+  计划恒含未见证腿，Phase 2 必然发生，扩面后的冲突核验随之覆盖（本包
+  最小修按 C 复审建议只扩扫描目标集，不动零触碰不变式）。
 - 负发现需完整覆盖（F2 coverage 为 new_covered/legacy_forward_only）且全部
   必要 holder 可核；未知≠None：覆盖未核（pending_verification/unknown）、
   枚举行损坏、来源身份不可解析、holder F1 不可读，一律按 KeyIssue 呈现，
@@ -312,7 +324,11 @@ def _scan_holder_seals(conn: sqlite3.Connection, *,
                                   str | None, bool]:
     """Phase 2 单 holder 扫描：对给定目标逐键读该 holder 的 F1。
 
-    调用方传**全 pending**（含已见证键），供跨 holder 互斥 seal 冲突检测；
+    调用方传**pending ∪ collab 已见证目标**（H/2③ 窄缝隙修复）：
+    - pending 键用于跨 holder 互斥 seal 冲突检测（既有语义）；
+    - collab 已见证键用于核该 holder 是否有异四元组 seal（原先不扫，
+      会按 collab 权威域直接 FINAL 放行）——四字段同 seal＝归档副本/
+      幂等重复，异四元组＝conflicting_seals 按键 fail-closed。
     已见证键在本 holder 的命中由调用方做幂等/冲突裁决。
 
     返回 (found, failure, not_prepared)。not_prepared＝该库无 F1 表（明确
@@ -347,6 +363,11 @@ def _finalize_unresolved_keys(*, pending, holder_found, blocked,
     live_dependencies（(source_user_id, stage) → 键元组，键按请求序）；
     带失败/覆盖 issue 的键同样保留已核 active 源的 live 读依赖（issue 只
     阻塞完成主张，不阻塞当前票读取）。
+
+    H/2③ 扩面：collab 已见证键上的异四元组 holder seal 会撤销 collab
+    见证并进 blocked，而该目标键**从不在 pending 里**——末段对 blocked
+    补扫一次，保证每枚被撤销见证的键恰有一枚 issue（不静默降级为
+    负发现/裸 key）。
     """
     issues: dict[tuple[str, str], KeyIssue] = {}
     live: dict[tuple[int, str], list[str]] = {}
@@ -368,6 +389,10 @@ def _finalize_unresolved_keys(*, pending, holder_found, blocked,
         for source in verified_active_sources:
             live.setdefault(
                 (source["source_user_id"], target[0]), []).append(target[1])
+    # H/2③：collab 已见证键被异四元组 holder seal 撤销见证后不在 pending
+    # 内，单独补进 issues（blocked 恒为终局，不与存活见证/负发现并现）。
+    for target, blocked_issue in blocked.items():
+        issues.setdefault(target, blocked_issue)
     live_dependencies = {
         pair: tuple(dict.fromkeys(keys)) for pair, keys in live.items()}
     return issues, live_dependencies
@@ -490,10 +515,18 @@ def build_keyed_read_plan(ctx, *, collab_conn: sqlite3.Connection,
                     verified_active_sources.append(strong)
                 continue
 
-            # 扫描快照＝全 pending：每个 holder 对全部待决键重扫（含已见
-            # 证键），使两 holder 互斥 seal 可见（冲突即拒、幂等兼容）；
-            # 代价＝holder 数×pending 键数的逐键点查，团队规模下可接受。
-            targets_snapshot = pending
+            # 扫描快照＝pending ∪ collab 已见证目标（H/2③ 窄缝隙修复）：
+            # - pending：每个 holder 对全部待决键重扫，使两 holder 互斥
+            #   seal 可见（既有"冲突即拒、幂等兼容"语义）；
+            # - collab 已见证：核该 holder 是否持有异四元组 seal——归档
+            #   副本/同 seal 双持有＝四字段同 seal（幂等豁免），异四元组
+            #   ＝conflicting_seals 按键 fail-closed，不再按权威域静默
+            #   FINAL 放行。
+            # 代价＝holder 数×目标键数的逐键点查，团队规模下可接受。
+            # 完全见证（pending 空）的计划不进入 Phase 2：P08 冻结的
+            # 零枚举/零 holder 触碰不变式原样保持（写门/链式计划恒有
+            # 未见证腿，冲突核验随之发生）。
+            targets_snapshot = tuple(pending) + tuple(records)
             try:
                 reader = _open_provisional_reader(path)
             except sqlite3.DatabaseError:
@@ -531,6 +564,18 @@ def build_keyed_read_plan(ctx, *, collab_conn: sqlite3.Connection,
                 if target in blocked:
                     # 冲突/别名一经判定即终局：后续 holder 的 seal（含第
                     # 三方再证）不使 blocked 键复活为见证。
+                    continue
+                collab_record = records.get(target)
+                if collab_record is not None:
+                    # H/2③ 扩面：collab 权威域已有见证的键在本 holder 的
+                    # 命中——四字段同 seal＝归档副本/幂等双持有，保留
+                    # collab 归属（不改为 holder 见证）；异四元组＝数据
+                    # 完整性信号，撤销 collab 见证并按键 fail-closed。
+                    if not _same_seal_record(collab_record, record):
+                        del records[target]
+                        blocked[target] = _key_issue(
+                            target[0], target[1], "conflicting_seals",
+                            "actor", False)
                     continue
                 prior = holder_found.get(target)
                 if prior is None:

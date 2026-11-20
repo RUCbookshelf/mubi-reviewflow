@@ -136,33 +136,122 @@
     session.dialog.querySelector('#rf-arbitration-include')?.focus();
   }
 
+  /* ---- 常用理由库（与初筛/复筛 F24 同款；stage1→screen、stage2→fulltext 共用同一库） ---- */
+  const SAVE_REASON_VALUE = '__save_reason__';
+  const libraryStage = stage => stage === 'stage2' ? 'fulltext' : 'screen';
+
+  async function loadReasons(session) {
+    try {
+      const data = await api(session.taskPath + '/reason-library?stage=' + libraryStage(session.stage),
+        {signal:session.controller.signal});
+      if (!isCurrent(session)) return;
+      session.reasons = data.entries || [];
+      session.canManage = data.can_manage === true;
+      if (session.excluding) render(session); /* 纯文本退回形态升级为下拉形态 */
+    } catch (error) { /* 理由库暂不可用：保持纯文本退回，不阻断裁决。 */ }
+  }
+
+  function saveReasonToLibrary(session, text) {
+    const reason = String(text || '').trim();
+    if (!reason) { toast(T('请先选择或输入要保存的理由'), 'warn'); return; }
+    const stage = libraryStage(session.stage), task = session.taskId;
+    api(session.taskPath + '/reason-library?stage=' + stage, {method:'POST', body:{text:reason, stage}})
+      .then(async created => {
+        await loadReasons(session);
+        const undoId = created?.id;
+        if (!undoId) { toast(T('已存为常用理由，可在「筛选设置 · 可复用排除理由」中管理'), 'inc'); return; }
+        undoToast(T('已存为常用理由：{0}', reason), () => run(session, async () => {
+          if (task !== S.task?.task_id) throw Error(T('The task changed. Reload the queue.'));
+          await api(session.taskPath + '/reason-library/' + encodeURIComponent(undoId) + '?stage=' + stage, {method:'DELETE'});
+          await loadReasons(session);
+          toast(T('已撤销保存该常用理由'), 'info');
+        }));
+      })
+      .catch(error => toast(T('保存失败：') + errorText(error), 'warn'));
+  }
+
+  /* toast 的可撤销版本：与主应用 #toasts 同款样式（workflow_controls.js 同源精简版）。 */
+  function undoToast(message, undo) {
+    const host = document.getElementById('toasts');
+    if (!host) { toast(message, 'inc'); return; }
+    const box = el('div', {class:'toast t-inc', role:'status'}, el('span', {text:message}));
+    const action = el('button', {type:'button', class:'rf-link', text:T('撤销'), onclick:() => {
+      action.disabled = true; box.remove();
+      try { Promise.resolve(undo()).catch(error => toast(error.message, 'warn')); }
+      catch (error) { toast(error.message, 'warn'); }
+    }});
+    box.append(action); host.append(box);
+    setTimeout(() => box.classList.add('hide'), 6000);
+    setTimeout(() => box.remove(), 6360);
+  }
+
   function renderDecisions(session, card) {
     if (session.excluding) {
-      const input = node('textarea', null, {id:'rf-arbitration-reason', class:'input',
-        rows:'3', required:'', disabled:session.busy ? '' : null});
-      input.value = session.reason;
       const submit = button('3 排除', () => decide(session, 'exclude'), session.busy || !session.reason.trim(), true);
       const hint = node('p', null, {class:'hint', role:'status'});
       const update = () => {
         submit.disabled = session.busy || !session.reason.trim();
         hint.textContent = submit.disabled && !session.busy ? RFServerMessage('team.arbitration_reason_required') : '';
       };
-      input.addEventListener('input', () => { session.reason = input.value; update(); });
-      input.addEventListener('keydown', event => {
+      const label = node('label', '仲裁理由（排除必填）', {for:'rf-arbitration-reason'});
+      const row = el('div', {class:'row'}, submit, button('取消', () => closeReason(session), session.busy));
+      const submitByKey = event => {
         if (event.isComposing) return;
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
           if (!submit.disabled) decide(session, 'exclude');
         }
-      });
+      };
+      const library = Array.isArray(session.reasons) ? session.reasons : null;
+      if (library) {
+        /* 与初筛/复筛同款（F24）：常用理由下拉 + 自定义输入 +「＋存为常用」动作项。 */
+        const select = el('select', {id:'rf-arbitration-reason', class:'input',
+          'aria-label':T('排除理由（必选）'), disabled:session.busy ? '' : null},
+          el('option', {value:'', text:T('— 排除理由（必选）—')}));
+        for (const entry of library)
+          select.append(el('option', {value:entry.text, text:entry.text, translate:'no'}));
+        select.append(el('option', {value:'__custom__', text:T('其他（自定义）')}));
+        if (session.canManage)
+          select.append(el('option', {value:SAVE_REASON_VALUE, text:T('＋ 将此理由存为常用')}));
+        const custom = node('textarea', null, {id:'rf-arbitration-custom', class:'input',
+          rows:'2', maxlength:'2000', placeholder:T('请输入自定义排除理由'), hidden:''});
+        const known = () => library.some(entry => entry.text === session.reason);
+        select.value = session.reason ? (known() ? session.reason : '__custom__') : '';
+        if (select.value === '__custom__') { custom.value = session.reason; custom.hidden = false; }
+        select.addEventListener('change', () => {
+          const picked = select.value;
+          if (picked === SAVE_REASON_VALUE) {
+            /* 动作项不是理由取值：还原先前选择，把当前理由写入常用库。 */
+            select.value = session.reason ? (known() ? session.reason : '__custom__') : '';
+            if (select.value === '__custom__') custom.hidden = false;
+            saveReasonToLibrary(session, session.reason);
+            return;
+          }
+          custom.hidden = picked !== '__custom__';
+          if (picked === '__custom__') custom.focus();
+          session.reason = picked === '__custom__' ? custom.value : picked;
+          update();
+        });
+        select.addEventListener('keydown', submitByKey);
+        custom.addEventListener('input', () => { session.reason = custom.value; update(); });
+        custom.addEventListener('keydown', submitByKey);
+        card.append(label, select, custom, hint, row);
+      } else {
+        /* 理由库尚未载入或不可用：退回纯文本输入，不阻断裁决。 */
+        const input = node('textarea', null, {id:'rf-arbitration-reason', class:'input',
+          rows:'3', required:'', disabled:session.busy ? '' : null});
+        input.value = session.reason;
+        input.addEventListener('input', () => { session.reason = input.value; update(); });
+        input.addEventListener('keydown', submitByKey);
+        card.append(label, input, hint, row);
+      }
       update();
-      card.append(node('label', '仲裁理由（排除必填）', {for:input.id}), input, hint,
-        el('div', {class:'row'}, submit, button('取消', () => closeReason(session), session.busy)));
     } else {
       const include = button('1 纳入', () => decide(session, 'include'), session.busy, true);
       include.id = 'rf-arbitration-include';
       card.append(el('div', {class:'row'}, include, button('3 排除', () => showReason(session), session.busy),
-        session.editing ? button('取消', () => {session.editing = false; render(session);}, session.busy) : null));
+        session.editing ? button('取消', () => {session.editing = false; render(session);}, session.busy) : null),
+        node('p', '← / → 切换文献，1 纳入，3 排除', {class:'hint'}));
     }
   }
 
@@ -266,8 +355,11 @@
     stage.addEventListener('change', () => {
       session.stage = stage.value;
       session.data = null;
+      session.reasons = null;
+      session.canManage = false;
       session.expanded = false;
       run(session, () => load(session));
+      loadReasons(session);
     });
     session.body.append(stage);
     if (session.error) {
@@ -284,16 +376,19 @@
       'aria-label':T('裁决进度 {0} / {1} · 剩余 {2}', decided, total, remaining)}),
       el('p', {class:'hint', role:'status', text:T('裁决进度 {0} / {1} · 剩余 {2}', decided, total, remaining)}));
     const item = currentItem(session);
+    session.navigate = null;
     if (item) {
       const index = data.items.indexOf(item);
-      const navigate = offset => {
+      session.navigate = offset => {
+        const target = data.items[index + offset];
+        if (!target) return;
         session.expanded = false;
-        selectItem(session, data.items[index + offset].zotero_key);
+        selectItem(session, target.zotero_key);
       };
       session.body.append(el('div', {class:'row'},
-        button('上一页', () => navigate(-1), session.busy || index === 0),
+        button('上一页', () => session.navigate(-1), session.busy || index === 0),
         literal('span', (index + 1) + ' / ' + total),
-        button('下一页', () => navigate(1), session.busy || index + 1 === total)),
+        button('下一页', () => session.navigate(1), session.busy || index + 1 === total)),
         renderItem(session, item));
     }
     if (data.status === 'completed')
@@ -313,7 +408,8 @@
       el('header', {}, heading, closeButton), body);
     const session = view = {dialog, body, heading, closeButton, controller, taskPath,
       path:taskPath + '/screening-arbitrations/session', taskId:S.task.task_id,
-      stage:document.getElementById('mergeStage').value, userId:S.user?.user_id, busy:false};
+      stage:document.getElementById('mergeStage').value, userId:S.user?.user_id, busy:false,
+      reasons:null, canManage:false, navigate:null};
     dialog.addEventListener('close', () => {
       controller.abort();
       clearPdf(session);
@@ -330,7 +426,14 @@
       if (event.defaultPrevented || event.isComposing || event.repeat ||
           event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
           event.target.closest('input,textarea,select,[contenteditable]') ||
-          session.excluding || session.expanded || session.busy || session.data?.status !== 'open') return;
+          session.excluding || session.busy) return;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        /* 摘要展开（expanded）不再禁用键盘：翻页与决策照常（与初筛卡对齐）。 */
+        event.preventDefault();
+        session.navigate?.(event.key === 'ArrowRight' ? 1 : -1);
+        return;
+      }
+      if (session.data?.status !== 'open') return;
       const item = currentItem(session);
       if (!item || (item.status !== 'pending' && !session.editing)) return;
       if (event.key === '1') { event.preventDefault(); decide(session, 'include'); }
@@ -338,6 +441,7 @@
     });
     document.body.append(dialog);
     dialog.showModal();
+    loadReasons(session);
     await run(session, () => load(session));
   });
   document.addEventListener('reviewflow:task-context-changed', () => {

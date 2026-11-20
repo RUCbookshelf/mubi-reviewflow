@@ -55,9 +55,16 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from coscreen import appraisal as core  # noqa: E402
 from coscreen import db as db_mod  # noqa: E402
+from coscreen import review_workflow as store  # noqa: E402
+from coscreen import task_collaboration as collaboration_mod  # noqa: E402
+from coscreen import tasks as tasks_mod  # noqa: E402
+from coscreen import team_terminal_registry as terminal_registry  # noqa: E402
+from coscreen import team_vote_ledger as vote_ledger  # noqa: E402
 from coscreen.models import Article  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
-from custom_backend.main import app  # noqa: E402
+from custom_backend import team_source_lifecycle as team_source_lifecycle  # noqa: E402
+from custom_backend.appraisal_api import prepare_appraisal_storage_for  # noqa: E402
+from custom_backend.main import DATA_DIR, app  # noqa: E402
 
 DOSSIER_OVERRIDE = os.environ.get("RF_APPRAISAL_DOSSIERS")
 DOSSIERS = (Path(DOSSIER_OVERRIDE) if DOSSIER_OVERRIDE
@@ -818,6 +825,121 @@ class TestAppraisalEndpoints(unittest.TestCase):
             Article(zotero_key="K-QUAL", title="A qualitative interview study"),
         ], [])
 
+    # ---- 2.1.6 团队写夹具（F 线移交族；w2/P16 同法真实建队，零 mock） ----
+    def _configure_team_write_fixture(self, keys, peer_articles=None):
+        """把已受邀任务补齐到「团队评价写可用」的真实态（F 线同法配方）。
+
+        受邀后任务即 team（协作库非属主 grant / team_latched）：评价 PUT 走
+        P15 ``runtime.mutate`` 真实写窗（``member_appraisal``，actor 目标），
+        写窗要求（缺任一步的既有失败签名）：
+
+        1. **业务角色单选**：2.1.6 邀请只授访问角色，业务角色须属主显式单选
+           （未配置 409 team.role.unconfigured；双方 coder——评价是编码者
+           业务，属主同规则）；
+        2. **成员存储显式准备**：P17 ``prepare_appraisal_storage_for``（
+           appraisal_records 表）+ P14 ``prepare_team_protocol_storage``
+           （F1 facts/receipts）——写窗只做纯读检查、绝不建表；未准备即
+           409 TeamFlowReceiptUnavailable（本文件移交原始证据的签名）；
+        3. **P06 真实 source 登记**：写窗按登记借成员连接（make_source_identity
+           真 token + register_source_on 真登记，非 mock 短路）；
+        4. **上游链完成**：``member_appraisal`` 链目标=appraisal，须 stage1 +
+           stage2 全员终局 include（coder 恒为必需筛选员）；链未清即 409
+           team_item_upstream_*。
+
+        只在需要的用例内调用（其余 112 例保持 solo/legacy 语义）。
+        """
+        slug = tasks_mod.slugify_screener
+        info = tasks_mod.find_task(self.task, DATA_DIR)
+        assert info is not None
+        task_dir = info.dir
+        owner_db = task_dir / f"{slug(self.user['username'])}.db"
+        peer_db = task_dir / f"{slug(self.peer['username'])}.db"
+        collab_path = collaboration_mod.shared_store_path(task_dir)
+        # 1. 业务角色单选（属主=coder、成员=coder；评价=编码者业务）
+        for user, business in ((self.user, "coder"), (self.peer, "coder")):
+            collaboration_mod.set_business_role(
+                collab_path, actor_user_id=self.user["user_id"],
+                user_id=user["user_id"], business_role=business,
+                task_id=self.task)
+        # 2. 成员存储显式准备（写窗只纯读检查，绝不由业务请求顺手建表）。
+        #    宿主注入的产品解析器 ``_screener_db(ensure=True)``：缺库时按标准
+        #    原语建库，appraisal ensure 幂等。
+        for username in (self.user["username"], self.peer["username"]):
+            prepare_appraisal_storage_for(
+                info, username, app.state.review_workflow.screener_db)
+        store.migrate(peer_db)
+        store.migrate(owner_db)
+        team_source_lifecycle.prepare_team_protocol_storage(
+            collab_path=Path(collab_path),
+            source_paths=[owner_db, peer_db])
+        with closing(sqlite3.connect(str(owner_db))) as conn, conn:
+            conn.execute(
+                "UPDATE workflow_state SET team_latched=1 WHERE singleton=1")
+        # 3. P06 真实 source 登记（成员库真实 P04 账本身份，非猜值）
+        with closing(sqlite3.connect(str(collab_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT task_instance_id FROM main.team_task_protocol"
+                " LIMIT 1").fetchone()
+        assert row is not None, (
+            "create_task must have registered the team protocol row (P18)")
+        instance = row["task_instance_id"]
+        with closing(sqlite3.connect(str(peer_db))) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN")
+            library = vote_ledger.library_identity_header_on(conn).library_id
+            conn.rollback()
+        token = team_source_lifecycle.make_source_identity(
+            task_dir=task_dir, source_path=peer_db,
+            source_user_id=self.peer["user_id"],
+            source_library_id=library)
+        writer = sqlite3.connect(str(collab_path), timeout=15)
+        writer.row_factory = sqlite3.Row
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            terminal_registry.register_source_on(
+                writer, task_instance_id=instance,
+                source_user_id=self.peer["user_id"],
+                source_library_id=library, source_path_identity=token,
+                registration_id=f"reg-appraisal-{self.task}-peer")
+            writer.commit()
+        finally:
+            writer.close()
+        # 成员库题录（筛选写外键；评价 GET 各读各库的隔离语义不变）
+        db_mod.upsert_articles(peer_db, peer_articles or [
+            Article(zotero_key="K-RCT", title="A randomised controlled trial"),
+            Article(zotero_key="K-QUAL", title="A qualitative interview study"),
+        ], [])
+        # 4. 上游链完成：双方（皆 coder=必需筛选员）在 stage1+stage2 全员
+        #    include，appraisal 链才 cleared（owner 无旁路，产品既有语义）。
+        #    阶段序固定：全员 stage1 终局后才可写 stage2（链闸按阶段判定）。
+        for path in ("/decisions", "/stage2/decisions"):
+            for headers in (self.auth, self.peer_auth):
+                for key in keys:
+                    voted = self.client.post(
+                        f"/api/tasks/{self.task}{path}",
+                        json={"zotero_key": key, "decision": "include",
+                              "reason": "", "notes": "", "tags": None},
+                        headers=headers)
+                    assert voted.status_code == 200, (path, key, voted.text)
+
+    # ---- 夹具自检（F 线同法：证明走的是真实团队写窗，非 legacy 短路） ----
+    def _assert_team_write_window_used(self, response) -> None:
+        """P15 team 信封头存在 = 该写确实经 ``runtime.mutate`` 写窗。
+
+        ``X-Receipt-Id``/``X-Request-Id`` 只由 team 分支写窗在 committed 后
+        透传（appraisal_api ``_save_via_team_window`` → ``headers_out``），
+        solo/legacy 分支恒空。夹具自检用：把「任务已是 team 且走团队写窗」
+        钉成可观察事实，夹具退化成 legacy 时立即红，而不是靠 409 签名间接
+        推断。
+        """
+        names = {name.lower() for name in response.headers}
+        assert "x-receipt-id" in names, (
+            "appraisal PUT 未走 P15 团队写窗（缺 X-Receipt-Id 信封头）",
+            response.status_code, response.text[:400])
+        assert "x-request-id" in names, (
+            "appraisal PUT 未带 P15 请求编号头", response.status_code)
+
     def test_tools_summary_includes_citation_and_license(self):
         response = self.client.get(f"{self.base}/tools", headers=self.auth)
         assert response.status_code == 200, response.text
@@ -994,17 +1116,24 @@ class TestAppraisalEndpoints(unittest.TestCase):
             json={"username": self.peer["username"], "role": "coder"},
             headers=self.auth)
         assert invite.status_code == 201, invite.text
+        # F 线移交族（2.1.6 语义，用户裁定照升级补夹具）：受邀后即 team 任务，
+        # 评价 PUT 经 P15 团队写窗（member_appraisal）——业务角色单选 + 成员
+        # 存储显式准备 + P06 source 登记 + 上游链完成缺一即 409。补齐后本钉
+        # 仍只钉「逐人隔离」：两库物理分离、跨人 GET saved=false（断言未改）。
+        self._configure_team_write_fixture(["K-RCT", "K-QUAL"])
         owner_put = self.client.put(
             f"{self.base}/K-RCT", headers=self.auth,
             json={"tool": "rob2", "responses": ROB2_LOW,
                   "note": "owner private note"})
         assert owner_put.status_code == 200, owner_put.text
+        self._assert_team_write_window_used(owner_put)
         peer_put = self.client.put(
             f"{self.base}/K-QUAL", headers=self.peer_auth,
             json={"tool": "casp-qualitative",
                   "responses": _all_answered("casp-qualitative"),
                   "note": "peer private note"})
         assert peer_put.status_code == 200, peer_put.text
+        self._assert_team_write_window_used(peer_put)
 
         # 属主读成员的 K-QUAL：无记录、无 note、无应答。
         owner_reads_peer = self.client.get(

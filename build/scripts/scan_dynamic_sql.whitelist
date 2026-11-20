@@ -2,7 +2,9 @@
 #
 # 仅登记 SQLite 语法确实无法参数绑定的位置：标识符（表名/别名）与 IN (...) 的
 # 占位符列表。这些位置拼入的内容不是外部输入，具体数据值仍全部通过参数绑定。
-# 每条对应源码处均已有注释说明。
+# 2026-11-20 SQLGATE 对齐包起：白名单内登记即视为「定性依据在册」——历史条目
+# 对应源码处另有注释；本包新增的 52 条按「不触产品 .py」约束只在此处逐条写
+# 定性依据（源码注释随下次触碰该文件时补记）。
 custom_backend/import_review_actions.py:163#IN(?) 占位符个数由 record_ids 数量决定，SQLite 不支持绑定占位符列表；拼入内容仅为 '?'，id 值经参数绑定
 custom_backend/research_trace_api.py:324#IN(?) 占位符个数由 subject_ids 数量决定，SQLite 不支持绑定占位符列表；拼入内容仅为 '?'，id 值经参数绑定
 custom_backend/research_trace_api.py:360#ATTACH 的 schema 别名是 SQLite 标识符无法绑定；值由内部整数序号生成 trace_store_<index>
@@ -12,11 +14,90 @@ custom_backend/research_trace_api.py:382#跨库 UNION ALL 分支数随 store 数
 # 【行号复原（四线汇合实钉）：M-04 重建 DDL 改拼注册表后 749→751、1344→1345
 #   平移；sec29 init_db 缓存 661fa4e 平移→c53c779 revert 弹回净零——合并树
 #   已逐行核对（PRAGMA table_info f-string=751、迁移 UPDATE execute=1345）】
-coscreen/db.py:751#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）
-coscreen/db.py:1345#迁移目标表/列名取自 sqlite_master 发现的实际库结构（内部元数据，非外部输入），标识符不能参数绑定；数据值全部 ? 绑定
+# 【2.1.6 夜间波次 re-key 史：751→832（PRAGMA table_info 站点随团队库准备
+#   波次下移）；1345→1427→删除（原登记 1427 是 conn.execute 的续行，AST 行号
+#   归属 1426，自 568d6b9 起即为死条目，I+L 包在 stale=0 的硬约束下删除；
+#   1426 的命中本身按同口径于 2026-11-20 重新登记，见下方 SQLGATE 段）；
+#   557→563（M-04 整表重建 DDL 平移）。】
+coscreen/db.py:832#PRAGMA 表名是 SQLite 标识符不能参数绑定；值取自本库 sqlite_master（内部元数据，非外部输入）
 coscreen/review_workflow.py:160#executescript 不支持参数绑定；脚本由模块内固定 _SCHEMA 常量与会话前缀 BEGIN IMMEDIATE 拼接，无外部输入
 # ---- review67（2026-11-12）：两处新命中皆非外部输入 ——
-coscreen/db.py:557#整表重建 DDL 的 measure CHECK 改拼模块级注册表常量 _MEASURE_CHECK_SQL（review67 M-04：消灭硬编码清单；拼入内容为固定代码常量，无任何外部输入）
+coscreen/db.py:563#整表重建 DDL 的 measure CHECK 改拼模块级注册表常量 _MEASURE_CHECK_SQL（review67 M-04：消灭硬编码清单；拼入内容为固定代码常量，无任何外部输入）
 coscreen/analysis_storage.py:517#IN(?) 占位符个数由选中效应 result_id 数量决定（review67 M-03 独立性守卫前置）；拼入内容仅为 '?'，id 值经参数绑定
-custom_backend/review_workflow_api.py:1235#P23 keyed read: IN-list placeholders only (one ? per key), values bound as parameters
+# ---- P21/P23（2026-11-19 夜间波次）新增登记 ——
+# P23：1232→1251→1529 三度 re-key（2.1.6 团队写通道波次插行下移、I+L 包
+#   头部/中部插入 321 行再下移 278 行）；表达式文本逐字未变。
+custom_backend/review_workflow_api.py:1529#P23 keyed read: IN-list placeholders only (one ? per key), values bound as parameters
 custom_backend/team_completion_clear.py:162#P21 clear: 表/列名为模块内固定常量（data_tables 族内部映射，同 research_trace.py:743；SQLite 标识符不能参数绑定），拼入内容非外部输入，语句本身无数据值参数
+# ============================================================================
+# SQLGATE 对齐包（2026-11-20）：2.1.6 夜间各波新增的 52 处动态拼装点逐条
+# triage。定性口径：拼入 SQL 文本的部分若全部是「固定表名/固定列名/模块字面量
+# 常量/本库 sqlite_master 等内部元数据/纯 '?' 占位符序列」，即非外部输入，按
+# SQLite 标识符不能参数绑定登记；数据值一律 ? 绑定。本轮 52 条全部属此类，
+# 无「真变量拼入」项，故无「需重构清单」。
+# 行号为当前工作树（HEAD 568d6b9 + 在途改动）实测；后续波次漂移照既有流程
+# re-key。appraisal_api.py / coding_consensus_api.py 无白名单条目（M 包在途，
+# 若其后续落地产生新命中，按届时时点另行 triage）。
+# ============================================================================
+# ---- coscreen/coding_consensus.py：固定 schema 常量 ----
+coscreen/coding_consensus.py:162#executescript 不支持参数绑定；脚本为模块级固定 _SCHEMA 字面量常量与会话前缀 BEGIN IMMEDIATE 拼接，无外部输入
+# ---- coscreen/db.py：超长键迁移（表/列来自本库 sqlite_master 内部元数据）----
+coscreen/db.py:1426#迁移 UPDATE 的表/列/追加条件全部来自本库 sqlite_master 发现的实际结构（内部元数据）与固定列名单、字面量条件 ref_type='active'，标识符不能参数绑定；数据值全部 ? 绑定
+# ---- coscreen/research_trace.py：固定必备列映射 ----
+coscreen/research_trace.py:366#PRAGMA 表名取自模块级固定 _PREPARED_REQUIRED_COLUMNS 映射（SQLite 标识符不能绑定），非外部输入
+# ---- coscreen/screening_arbitration.py：固定子句片段 ----
+coscreen/screening_arbitration.py:1092#SELECT 列名全为字面量；WHERE 子句仅由固定字面量片段（stage=?/task_id=?/record_id=?）按过滤器有无拼接，值全部参数绑定
+# ---- coscreen/task_collaboration.py：固定表名/列名 + 借还前缀二选一 + IN 占位符 ----
+coscreen/task_collaboration.py:420#IN(?) 占位符个数由固定 required_tables ∪ expected_trigger_sql 表名数量决定；拼入内容仅为 '?'，表名经参数绑定
+coscreen/task_collaboration.py:435#IN(?) 占位符个数由固定 mutation_tables 数量决定；拼入内容仅为 '?'，表名经参数绑定
+coscreen/task_collaboration.py:487#IN(?) 占位符个数由固定 required_tables 数量决定；拼入内容仅为 '?'，表名经参数绑定
+coscreen/task_collaboration.py:504#间接命中（sql@502）：SELECT 列名/表名来自同函数固定 required_tables 映射的字面量表名与列名，无数据值拼入
+coscreen/task_collaboration.py:731#间接命中（扫描器归因 sql@502）：EXPLAIN 探针语句全为固定字面量（main. 固定表名/列名），值参数绑定；循环变量 sql 另行绑定自 explain_probes 字面量表
+coscreen/task_collaboration.py:819#前置存在性探测；main. 前缀由 main_only 布尔在两个字面量间固定选择，表名为字面量
+coscreen/task_collaboration.py:825#owner 读取；main. 前缀为字面量二选一，表名写字面量，task_id 等值参数绑定
+coscreen/task_collaboration.py:1025#settings_sql 写入；table_prefix 由 borrowed 在 'main.'/'' 两个字面量间固定选择，表名/列名固定，值参数绑定
+coscreen/task_collaboration.py:1032#grant_select_sql 借路回读；同上（固定前缀+固定表名），user_id/role 参数绑定
+coscreen/task_collaboration.py:1038#grant_select_sql 自有连接回读；同上（固定前缀+固定表名），user_id/role 参数绑定
+coscreen/task_collaboration.py:1273#grant_sql 借路执行；固定前缀+固定表名，user_id/role 参数绑定
+coscreen/task_collaboration.py:1278#grant_sql 自有连接执行；固定前缀+固定表名，user_id/role 参数绑定
+coscreen/task_collaboration.py:1310#settings_sql 写入；固定前缀+固定表名，值参数绑定
+coscreen/task_collaboration.py:1317#settings_select_sql 借路回读；固定前缀+固定表名，user_id 参数绑定
+coscreen/task_collaboration.py:1322#settings_select_sql 自有连接回读；固定前缀+固定表名，user_id 参数绑定
+coscreen/task_collaboration.py:1371#业务角色读取；table 由 main_only 在两个字面量表名间固定选择，user_id 参数绑定
+coscreen/task_collaboration.py:1389#筛选开关读取；prefix 字面量二选一，表名固定，user_id 参数绑定
+coscreen/task_collaboration.py:1396#回填标记读取；prefix 字面量二选一，表名固定，key 参数绑定
+coscreen/task_collaboration.py:1424#角色 grants 读取；prefix 字面量二选一，表名固定，user_id 参数绑定
+coscreen/task_collaboration.py:1655#grants_sql 借路执行；固定前缀+固定表名，user_id 参数绑定
+coscreen/task_collaboration.py:1658#grants_sql 自有连接执行；固定前缀+固定表名，user_id 参数绑定
+coscreen/task_collaboration.py:1695#choice_sql 写入；固定前缀+固定表名，值参数绑定
+coscreen/task_collaboration.py:1696#event_sql 写入；固定前缀+固定表名，值参数绑定
+coscreen/task_collaboration.py:1739#settings_sql（reconciler 新授权默认关）写入；固定前缀+固定表名，值参数绑定
+coscreen/task_collaboration.py:2201#delete_grant_sql 执行；固定前缀+固定表名，user_id/role 参数绑定
+coscreen/task_collaboration.py:2216#delete_settings_sql 执行；固定前缀+固定表名，user_id 参数绑定
+# ---- coscreen/team_flow_receipts.py：模块字面量 TABLE/META_TABLE + 表内索引元数据 ----
+coscreen/team_flow_receipts.py:701#PRAGMA 表名 TABLE 为模块字面量常量；SQLite 标识符不能绑定，非外部输入
+coscreen/team_flow_receipts.py:710#PRAGMA 表名 TABLE 为模块字面量常量；SQLite 标识符不能绑定，非外部输入
+coscreen/team_flow_receipts.py:728#PRAGMA index_info 的索引名取自 index_list 元数据，且该集合已先与模块固定 _EXPECTED_AUTOINDEXES 全等校验（sqlite 自动索引名，内部元数据）
+coscreen/team_flow_receipts.py:736#PRAGMA index_info 的索引名同上，已先与模块固定 _EXPECTED_AUTOINDEXES 全等校验（sqlite 自动索引名，内部元数据）
+coscreen/team_flow_receipts.py:911#META_TABLE 为模块字面量常量，拼入为固定标识符；schema_version 值参数绑定
+# ---- coscreen/team_terminal_facts.py：同上（TABLE/META_TABLE + 索引元数据）----
+coscreen/team_terminal_facts.py:1083#PRAGMA 表名 TABLE 为模块字面量常量；SQLite 标识符不能绑定，非外部输入
+coscreen/team_terminal_facts.py:1091#PRAGMA 表名 TABLE 为模块字面量常量；SQLite 标识符不能绑定，非外部输入
+coscreen/team_terminal_facts.py:1105#PRAGMA index_info 的索引名取自 index_list 元数据，且该集合已先与模块固定 _EXPECTED_SEAL_AUTOINDEXES 全等校验（sqlite 自动索引名，内部元数据）
+coscreen/team_terminal_facts.py:1112#PRAGMA index_info 的索引名同上，已先与模块固定 _EXPECTED_SEAL_AUTOINDEXES 全等校验（sqlite 自动索引名，内部元数据）
+coscreen/team_terminal_facts.py:1341#META_TABLE 为模块字面量常量，拼入为固定标识符；schema_version 值参数绑定
+# ---- coscreen/team_vote_ledger.py：固定 _STAGE_TABLES 映射 + IN 占位符 ----
+coscreen/team_vote_ledger.py:211#PRAGMA 表名取自模块固定 _STAGE_TABLES 映射（decisions/stage2_decisions 两个字面量），非外部输入
+coscreen/team_vote_ledger.py:227#IN(?) 占位符个数由固定 _ALL_OBJECTS 名称元组决定；拼入内容仅为 '?'，名称经参数绑定
+coscreen/team_vote_ledger.py:417#表名取自固定 _STAGE_TABLES 映射的字面量表名；stage 值参数绑定
+coscreen/team_vote_ledger.py:502#表名由 _stage_table 在固定 _STAGE_TABLES 映射内解析（未知 stage 直接 ValueError），其余全为字面量，stage 参数绑定
+coscreen/team_vote_ledger.py:724#表名同上取自固定 _STAGE_TABLES 映射；stage/key 参数绑定
+# ---- custom_backend/main.py：IN(?) 分块占位符 ----
+custom_backend/main.py:2421#IN(?) 占位符个数由 user_ids 分块大小决定；拼入内容仅为 '?'，id 值经参数绑定
+# ---- custom_backend/team_keyed_domain.py：固定 required_schema 表名 + IN 占位符 + 固定续页分支 ----
+custom_backend/team_keyed_domain.py:60#IN(?) 占位符个数由固定 required_schema 表名数量决定；拼入内容仅为 '?'，表名经参数绑定
+custom_backend/team_keyed_domain.py:77#PRAGMA 表名取自固定 required_schema 的字面量表名，非外部输入
+custom_backend/team_keyed_domain.py:116#间接命中（sql@104）：SELECT ... IN(...) 仅拼 '?' 占位符，键值参数绑定
+custom_backend/team_keyed_domain.py:190#IN(?) 占位符个数由固定 required_schema 表名数量决定；拼入内容仅为 '?'，表名经参数绑定
+custom_backend/team_keyed_domain.py:207#PRAGMA 表名取自固定 required_schema 的字面量表名，非外部输入
+custom_backend/team_keyed_domain.py:261#间接命中（sql@247）：仅拼接固定字面量分支的续页条件（after/order 两形态），值全部参数绑定

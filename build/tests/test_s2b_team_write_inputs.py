@@ -27,6 +27,14 @@
 诚实边界：
 - 本文件作者只做 AST/compile 静态冻结；不运行模块/SQL/pytest/unittest
   （主控统一箱验证）。运行需外部 launcher 提供 sys.path。
+- 执行面（裁定 F4）：pytest 下经 build/tests/conftest.py 运行
+  （``python -m pytest build/tests/test_s2b_team_write_inputs.py``，解释器
+  需 -I -B + 临时 TEMP/TMP 与 COBOOKSHELF_DATA_DIR）；或 bare unittest
+  launcher（sys.path.insert(0,'.') + importlib 载入 + TextTestRunner）。
+  注意：conftest.py 的 pytest_configure 有意先 ``import custom_backend.main``
+  （冻结 DATA_DIR 到会话根的防护合同），故 pytest 会话内
+  custom_backend.auth/main 必然在 sys.modules——module_import 测试因此
+  只做增量快照断言，这是执行面事实，不是产品回归信号。
 - 顶层零产品导入、零环境改写、零 sys.path 改写；产品导入仅在 setUpClass
   执行；首次导入前六项绝对隔离环境由外部 launcher 保证，setUp 才创建
   每例 TemporaryDirectory 并注册 cleanup。缓存依赖下二次 import 的观察
@@ -419,6 +427,10 @@ class TeamWriteInputsWindowTests(unittest.TestCase):
         owner_db = self._screening_db(
             task_dir / (tasks_mod.slugify_screener(owner_username) + ".db"),
             articles=owner_articles, votes=owner_votes, latch=latch)
+        # 裁定 F1：owner 库就位后补产品同款两步（prepare+register）。
+        self._prepare_team_protocol(collab_path, task_id=task_id,
+                                    owner_user_id=self.uids[owner_username],
+                                    owner_db=owner_db)
         for username in member_dbs:
             self._screening_db(
                 task_dir / (tasks_mod.slugify_screener(username) + ".db"),
@@ -438,6 +450,44 @@ class TeamWriteInputsWindowTests(unittest.TestCase):
             owner_user_id=self.uids[owner_username],
             owner_username=owner_username)
         return task_dir / "collaboration.db"
+
+    def _prepare_team_protocol(self, collab_path, *, task_id, owner_user_id,
+                               owner_db):
+        """P14 产品同款建队两步（裁定 F1；字段口径照 main.py:3313
+        _register_fresh_team_protocol 的调用方式，借用产品函数，零手写 DDL）：
+
+        ① team_source_lifecycle.prepare_team_protocol_storage：collab 装
+        F2 registry+receipts+F1 facts+业务角色两表（幂等）；
+        ② coscreen.team_terminal_registry.register_protocol_on：以 owner
+        个人库的真实 P04 ledger 身份登记 protocol 行
+        （creation_path="trusted_new_task" → coverage_state=new_covered）。
+        真实流程建队必经此两步，写窗计划入口强依赖该布局；缺②计划报
+        task_not_registered，缺①报 registry_unavailable（均先降级为
+        completion_source_unresolved，测不到窗口本体）。
+        """
+        from custom_backend import team_source_lifecycle as team_lifecycle
+        from coscreen import team_terminal_registry as registry_mod
+        from coscreen.team_vote_ledger import library_identity_header_on
+        collab_path = Path(collab_path)
+        team_lifecycle.prepare_team_protocol_storage(
+            collab_path=collab_path, source_paths=())
+        with closing(sqlite3.connect(str(owner_db), timeout=15)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN")
+            header = library_identity_header_on(conn)
+        owner_library = header.library_id if header is not None else None
+        self.assertTrue(owner_library,
+                        "夹具 owner 库必须已装真实 P04 ledger 身份")
+        with closing(sqlite3.connect(str(collab_path), timeout=15)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            registry_mod.register_protocol_on(
+                conn, task_id=task_id,
+                task_instance_id=f"{task_id}-inst-fixture",
+                owner_user_id=int(owner_user_id),
+                owner_library_id=owner_library,
+                creation_path="trusted_new_task")
+            conn.commit()
 
     def _grant(self, collab_path, task_id, username, role):
         collab_mod.grant_role(collab_path, actor_user_id=self.uids["alice"],
@@ -703,21 +753,28 @@ class TeamWriteInputsWindowTests(unittest.TestCase):
         self.assertIsNone(tws.TeamWriteInputs.cleanup_errors.fset)
 
     def test_module_import_is_side_effect_free(self):
-        """已缓存依赖下二次导入输入窗零连接；不声称完整冷启动覆盖。"""
+        """已缓存依赖下二次导入输入窗零连接；不声称完整冷启动覆盖。
+
+        断言为**增量**口径（裁定 F3）：对比导入前 sys.modules 快照，仅断言
+        本次重导入不新增 auth/main——pytest 会话内 conftest.py:170 有意在
+        pytest_configure 先 import custom_backend.main（冻结 DATA_DIR 的
+        会话级防护），全量在场断言在 pytest 下结构性不可满足；bare launcher
+        与 pytest 双环境均按增量口径可满足。"""
         control = _ConnectControl()
         cwd_before = sorted(p.name for p in Path.cwd().iterdir())
         data_before = (Path.cwd() / "data").exists()
         with control.installed(b1):
+            snapshot = frozenset(sys.modules)
             sys.modules.pop(MODULE_NAME, None)
             importlib.import_module(MODULE_NAME)
             self.assertEqual(control.opens, [],
                              "产品模块导入期不得打开任何 SQLite 连接")
-            imported = {name for name in sys.modules
-                        if name.startswith("custom_backend.")}
-            self.assertNotIn("custom_backend.auth", imported,
-                             "输入窗口模块导入期不得导入 auth 全局")
-            self.assertNotIn("custom_backend.main", imported,
-                             "输入窗口模块导入期不得导入 main 全局")
+            fresh = {name for name in set(sys.modules) - snapshot
+                     if name.startswith("custom_backend.")}
+            self.assertNotIn("custom_backend.auth", fresh,
+                             "输入窗口模块导入期不得新增导入 auth 全局")
+            self.assertNotIn("custom_backend.main", fresh,
+                             "输入窗口模块导入期不得新增导入 main 全局")
         cwd_after = sorted(p.name for p in Path.cwd().iterdir())
         self.assertEqual(cwd_before, cwd_after, "导入期不得改写 cwd 顶层条目")
         self.assertEqual(data_before, (Path.cwd() / "data").exists(),
@@ -1122,6 +1179,12 @@ class TeamWriteInputsWindowTests(unittest.TestCase):
                 collab_path = self._init_collab(task_dir, task_id, "alice")
                 self._grant(collab_path, task_id, "bob", "coder")
                 alice_db = self._screening_db(task_dir / "alice.db", latch=True)
+                # 裁定 F2：p6 走正常队形，经同一辅助补产品同款两步；其被测
+                # 拒绝（identity_unconfirmed/输入错误）在 preflight/身份层、
+                # 先于计划，补备不影响其断言。
+                self._prepare_team_protocol(
+                    collab_path, task_id=task_id,
+                    owner_user_id=self.uids["alice"], owner_db=alice_db)
                 # Keep the real owner uid; mutate only the stored snapshot name.
                 with closing(sqlite3.connect(collab_path)) as conn:
                     conn.execute("PRAGMA foreign_keys=ON")

@@ -230,7 +230,7 @@ def register_appraisal_routes(
         })
 
     def _team_drift_http(task_id: str, exc: Exception) -> HTTPException:
-        """S4：模式漂移/窗口竞争的裸异常 → 结构化可重试 409（P15 同码）。"""
+        """S4：模式漂移字面信号 → 结构化可重试 409（P15 同码）。"""
         return HTTPException(409, {
             "code": "task_mode_changed",
             "message_key": "team.flow.task_mode_changed",
@@ -239,6 +239,75 @@ def register_appraisal_routes(
             "message": "任务协作模式已变化，请重试本次操作。",
             "retryable": True,
         })
+
+    def _is_team_drift_signal(exc: Exception) -> bool:
+        """P15-D1 口径：只有开窗处两条稳定字面信号才算可重试漂移。
+
+        ``team_screening_write.retained_team_write_inputs`` 在 yield 前抛出
+        的「不是 team 任务」系 ValueError（writer 从未运行、零业务写）＝
+        is_team 判定与开窗之间的任务模式漂移，重试会按当前可信状态重新
+        路由；其余 ValueError（键形状/域外键等请求自身错误）同请求重试
+        永不成功，不在此列。
+        """
+        if not isinstance(exc, ValueError):
+            return False
+        message = str(exc)
+        return ("requires a team task" in message
+                or "canonical task lookup returned no task_id" in message)
+
+    def _team_typed_unavailable_http(exc: Exception) -> HTTPException | None:
+        """typed 确定性/暂时性团队错误 → 结构化响应（P15-D1/P17 同族）。
+
+        包 J 复审观察②：``TeamFlowReceiptUnavailable("not_prepared")`` 是
+        确定性存储未准备错误，旧兜底把它标成 409 ``task_mode_changed`` +
+        ``retryable: true``，客户端重试永不成功。这里如实映射：
+        - ``TeamFlowReceiptUnavailable`` → 非可重试 409（``error_code``/
+          ``message_key`` 同族，``retryable: false``，params 带 reason）。
+          选 409 而非 503 的依据是本路由族已立惯例：同一 PUT 的未准备成员
+          存储（``appraisal_storage_unavailable``）与「预期业务前置条件未
+          满足」一律 409，503 会被网关/客户端当作「稍后重试」；同请求重试
+          不会成功，只有宿主先跑准备生命周期才可能恢复。
+        - ``TeamFlowUnavailableError`` → P15 ``_mutate_team`` 同款 typed 503
+          载荷（status/error_code/message_key/params/details/message 取自
+          异常；该类语义是「暂时不可读，稍后重试」，与 P15/P17 一致不投
+          ``retryable`` 键）。
+        返回 None＝非本层可判定的异常，调用方按既有全局处理（绝不伪造 409）。
+        """
+        from coscreen.team_flow_receipts import TeamFlowReceiptUnavailable
+        from custom_backend.team_screening_runtime import TeamFlowUnavailableError
+
+        if isinstance(exc, TeamFlowReceiptUnavailable):
+            if getattr(exc, "reason", None) == "connection_contract":
+                return None  # 借用合同违约＝编程错误，如实上抛不伪装业务态
+            # P17 惯例：成员库团队存储未由准备生命周期就绪 → 非可重试
+            # 409 前置条件错误（同 ``appraisal_storage_unavailable`` 409
+            # 族），绝不 503——503 会被网关/客户端按「稍后重试」处理，
+            # 而同请求重试永不成功（只有宿主先跑 prepare 才可能恢复）。
+            return HTTPException(409, {
+                "error_code": "team_flow_receipt_unavailable",
+                "message_key": "team.flow.receipt_unavailable",
+                "params": {"reason": getattr(exc, "reason", "unreadable")},
+                "details": str(exc),
+                "message": "团队回执存储未就绪或不可用，重试同一请求不会成功。",
+                "retryable": False,
+            })
+        if isinstance(exc, TeamFlowUnavailableError):
+            return HTTPException(getattr(exc, "status", 503), {
+                "error_code": getattr(exc, "code", "team.flow.unavailable"),
+                "message_key": getattr(exc, "message_key",
+                                       "team.flow.unavailable"),
+                "params": getattr(exc, "params", {}),
+                "details": str(exc),
+                "message": str(exc),
+            })
+        return None
+
+    def _team_failure_http(task_id: str,
+                           exc: Exception) -> HTTPException | None:
+        """三层判定：漂移字面信号 → 409；typed 错误 → 409/503；其余 None。"""
+        if _is_team_drift_signal(exc):
+            return _team_drift_http(task_id, exc)
+        return _team_typed_unavailable_http(exc)
 
     def _save_via_team_window(
         runtime, task_id: str, user: dict, key: str, tool_id: str, *,
@@ -252,7 +321,8 @@ def register_appraisal_routes(
         ``actor_conn``（与检查/提交目标同一对象），业务返回保持旧形状。
         ``member_appraisal`` 的 op spec 是 policy=False（只加两阶段链），
         本路径不追加 paused/source/expected 任何额外门（C08 addendum）。
-        unknown outcome（S2）与漂移竞态（S4）显式结构化上抛，绝不吞。
+        unknown outcome（S2）与漂移/typed 团队错误（S4，P15-D1 收窄后）
+        显式结构化上抛，绝不吞；无法如实归类的异常原样上抛。
         """
         from coscreen.team_flow_types import TeamOperation
 
@@ -290,8 +360,15 @@ def register_appraisal_routes(
             raise  # P12/P15 结构化拒绝原样透传
         except (sqlite3.Error, OSError):
             raise  # 存储错误交由外层映射 appraisal_storage_unavailable（同 legacy）
-        except Exception as exc:  # noqa: BLE001 —— S4：漂移竞态绝不裸 500
-            raise _team_drift_http(task_id, exc) from exc
+        except Exception as exc:  # noqa: BLE001
+            # P15-D1 收窄（包 M）：只有漂移字面信号映射 409 task_mode_changed；
+            # typed 错误如实映射（not_prepared → 非可重试 409；暂时不可用 →
+            # P15 同款 503）；其余异常原样上抛，交既有全局处理——绝不再
+            # 兜底成可重试 409 诱使徒劳重试。
+            mapped = _team_failure_http(task_id, exc)
+            if mapped is None:
+                raise
+            raise mapped from exc
         if not isinstance(envelope, dict) or envelope.get("outcome") != "committed":
             raise _team_unknown_outcome_http(envelope)
         # P24/S3：P15 信封头（X-Request-Id/X-Receipt-Id/X-Idempotent-Replay）
