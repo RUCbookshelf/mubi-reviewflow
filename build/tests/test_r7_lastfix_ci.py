@@ -2,8 +2,10 @@
 
 MM11-01: 三个 node --test 单元文件（import_review_model / import_review_updates /
         ml_batch 的 .test.cjs，17 用例）此前只有文档引用、零自动执行。
-        钉两件事：release.yml 校验步骤确有 node --test 接线（整段或任一
-        文件被撤即红）；以与 CI 完全相同的命令本机实跑必须 17/17 全绿。
+        钉两件事（TST-03 2.1.6 起双读）：release.yml 校验步骤经唯一入口
+        build/run_validation.py 执行门禁、入口真实导出的计划含整目录
+        pytest 与全量 node --test（入口调用被撤或计划缩水即红）；以与
+        CI 完全相同的命令本机实跑必须 17/17 全绿。
 MM11-02: test_collaboration_hardening 的别名读守护旧形态在 POSIX 上为
         "精确序列 :371 FAIL / :372 PASS"（复审实测，非"永远绿"）。本文件
         在 POSIX 语义仿真下回放旧精确序列（红侧：旧 :371 的断言对象不
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import shutil
 import subprocess
 import sys
@@ -40,27 +43,85 @@ NODE_TEST_FILES = (
     "build/tests/ml_batch.test.cjs",
 )
 
+# R26-I (Terra argv ruling): fixed child bootstrap, byte-equal to the product
+# PY_CHILD_BOOTSTRAP constant; drift is red by design.
+PY_CHILD_BOOTSTRAP_RULING = (
+    'import runpy,sys;'
+    'root=sys.argv.pop(1);kind=sys.argv.pop(1);entry=sys.argv.pop(1);'
+    'sys.path.insert(0,root);sys.argv[0]=entry;'
+    "runpy.run_module(entry,run_name='__main__') if kind=='module' "
+    "else runpy.run_path(entry,run_name='__main__')"
+)
+
 
 # --------------------------------------------------------------------------- MM11-01
 
-def test_mm11_01_release_yml_wires_node_test_into_the_release_gate():
-    """MM11-01 静态钉：release.yml 校验步骤必须接线 node --test 三文件。
+def _validation_plan_json():
+    """只读导出唯一入口的真实执行计划（TST-03 2.1.6 Task 8）。
 
-    撤掉接线（整段 node --test 行，或漏掉任一 .test.cjs）本断言必红。"""
+    以子进程跑 build/run_validation.py --list --json（不 import 该模块）：
+    静态钉断言的是对 CLI 的真实输出，注释里复制旧命令骗不过本钉。"""
+    proc = subprocess.run(
+        [sys.executable, "build/run_validation.py", "--list", "--json"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_mm11_01_release_yml_wires_node_test_into_the_release_gate():
+    """MM11-01 静态钉（TST-03 2.1.6 双读）：release.yml 校验步骤调用唯一入口
+    build/run_validation.py；入口真实导出的计划必须含整目录 pytest、
+    node --test 与三份 .test.cjs（计划实列 24 份 .test.cjs，断言 3⊆24）。
+
+    撤掉入口调用、把整目录 pytest 偷换回 --ignore 分段、或从计划里删掉
+    任一 .test.cjs，本断言必红。"""
     text = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     start = text.index("Run static validators")
     end = text.index("actions/upload-artifact", start)
     step = text[start:end]
-    # 锚点自检：仍是那条跑 pytest 的发布门禁步骤
-    assert "python -m pytest build/tests -q" in step, (
-        "锚点漂移：校验步骤不再包含 pytest 门禁"
+    # 锚点自检：仍是那条发布门禁校验步骤，且经唯一入口执行（行级判定：
+    # 注释里提到 run_validation.py 不算接线——mutation 实证子串断言可被
+    # 注释假绿满足）
+    call_lines = [ln for ln in step.splitlines()
+                  if ln.lstrip().startswith("python build/run_validation.py")]
+    assert call_lines, (
+        "锚点漂移：校验步骤不再经唯一入口 run_validation.py 跑 pytest 门禁"
     )
-    assert "node --test" in step, (
-        "MM11-01: release.yml 校验步骤必须运行 node --test——三个 .test.cjs "
-        "（17 用例）此前零自动执行，只靠文档引用"
+    plan = _validation_plan_json()
+    pytest_steps = [s for s in plan["steps"] if s["kind"] == "pytest"]
+    assert len(pytest_steps) == 1, "入口必须且只能有一条 pytest 步（整目录单进程）"
+    argv = pytest_steps[0]["argv"]
+    # R26-I（Terra 裁定）：pytest 步必须经隔离 child——python -I -B
+    # -X utf8=<entry 父进程实际模式> -c <固定 bootstrap> 后接 module
+    # pytest 整目录。父模式不硬编码：_validation_plan_json 以无 -I 同
+    # env 生成 entry，预期值取同 flags/env 探针实测（本地 0；CI
+    # PYTHONUTF8=1 时为 1），解释器默认/locale 不得假设。
+    utf8_probe = subprocess.run(
+        [sys.executable, "-c", "import sys; print(sys.flags.utf8_mode)"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=120,
+    )
+    assert utf8_probe.returncode == 0, utf8_probe.stderr
+    assert argv == [
+        sys.executable, "-I", "-B", "-X", f"utf8={utf8_probe.stdout.strip()}",
+        "-c", PY_CHILD_BOOTSTRAP_RULING, str(REPO),
+        "module", "pytest", "build/tests", "-q",
+    ], (
+        f"MM11-01/R26-I: pytest 步必须是隔离 child 的整目录 build/tests -q"
+        f"（实际 {argv}）"
+    )
+    assert "--ignore" not in argv and "-k" not in argv, (
+        "TST-03: 整目录 pytest 不得藏 --ignore 分段或 -k 挑选"
+    )
+    node_steps = [s for s in plan["steps"] if "--test" in s["argv"]]
+    assert len(node_steps) == 1, "入口必须有一条 node --test 步"
+    argv = node_steps[0]["argv"]
+    assert "build/tests/import_review_model.test.cjs" in argv and len(
+        [a for a in argv if a.endswith(".test.cjs")]) >= 24, (
+        "MM11-01: node --test 计划必须仍是全量 24 份 .test.cjs，不得缩水"
     )
     for rel in NODE_TEST_FILES:
-        assert rel in step, f"MM11-01: {rel} 必须出现在 node --test 接线中"
+        assert rel in argv, f"MM11-01: {rel} 必须出现在 node --test 计划中"
 
 
 @pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")

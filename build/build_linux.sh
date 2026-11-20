@@ -52,23 +52,26 @@ PY="$WORK/venv/bin/python"
 "$PY" -m pip install --upgrade "pip>=25,<27" "wheel>=0.45,<1"
 "$PY" -m pip install -r "$BUILD/requirements-app.txt" "pyinstaller>=6.10,<7"
 
-# MM9-07: a local build runs exactly the same four static validators CI runs
-# (release.yml) - previously they ran only in CI, so a locally built AppImage
-# shipped without any of these gates. Node.js is required for the two
-# JavaScript validators, the same hard requirement build_windows.bat already
-# enforces. httpx (used by the two Python validators) goes to a throwaway
-# --target dir, mirroring build_windows.bat's validator_deps handling, so it
-# is never frozen into the application by PyInstaller below.
+# MM9-07: a local build runs exactly the same six static validators CI runs
+# (build/run_validation.py, TST-03 2.1.6) - previously they ran only in CI, so
+# a locally built AppImage shipped without any of these gates. Node.js is
+# required for the three JavaScript validators, the same hard requirement
+# build_windows.bat already enforces. httpx (used by the three Python
+# validators) goes to a throwaway --target dir, mirroring build_windows.bat's
+# validator_deps handling, so it is never frozen into the application by
+# PyInstaller below.
 "$PY" -m pip install --no-build-isolation --prefer-binary --no-warn-script-location \
   --disable-pip-version-check --target "$WORK/validator_deps" httpx >/dev/null
 REVIEWFLOW_VALIDATION_DEPENDENCIES="$WORK/validator_deps" "$PY" "$BUILD/validate_import_review.py"
 REVIEWFLOW_VALIDATION_DEPENDENCIES="$WORK/validator_deps" "$PY" "$BUILD/validate_screening_rounds.py"
+REVIEWFLOW_VALIDATION_DEPENDENCIES="$WORK/validator_deps" "$PY" "$BUILD/validate_team_prisma.py"
 command -v node >/dev/null 2>&1 || {
   echo "ERROR: node is required to run the JavaScript static validators (install Node.js or add it to PATH)" >&2
   exit 1
 }
 node "$BUILD/validate_import_review_static.cjs"
 node "$BUILD/validate_team_prisma_static.js"
+node "$BUILD/validate_evidence_locale_static.cjs"
 
 "$PY" -m PyInstaller \
   --noconfirm --clean --onedir --name ReviewFlow \
@@ -104,6 +107,37 @@ Categories=Office;Science;
 Terminal=false
 EOF
 cp "$APPDIR/reviewflow.desktop" "$APPDIR/usr/share/applications/reviewflow.desktop"
+
+# PKG-01 (2.1.6): AppStream metainfo - software centers (GNOME Software, KDE
+# Discover) read usr/share/metainfo/<id>.metainfo.xml for an installed
+# application's license, project link and summary. The template
+# build/reviewflow.metainfo.xml is a REQUIRED build input (ruling 2026-11-14):
+# a checkout that lost it fails the build here instead of shipping a payload
+# without AppStream metadata. build/tests/test_2_1_6_appstream.py keeps the
+# template in step with the reviewflow.desktop entry generated above (id,
+# name, summary) and with the real repo facts (LICENSE, README link).
+# KNOWN SEQUENCING DEPENDENCY (Task8, resolved): the F1-1/MM9-07 behaviour
+# nails (test_r7_dayfix_build_scripts.py, test_r8_fl8_build.py) run this
+# script in minimal synthetic checkouts - since Task 8 their fixtures copy
+# the template too, so the end-to-end nails pass through this guard.
+mkdir -p "$APPDIR/usr/share/metainfo"
+if [ ! -f "$BUILD/reviewflow.metainfo.xml" ]; then
+  echo "ERROR: build/reviewflow.metainfo.xml is missing - refusing to build a payload without AppStream metadata (restore the template; the end-to-end packaging nail fixtures must copy it - Task8)" >&2
+  exit 1
+fi
+cp "$BUILD/reviewflow.metainfo.xml" "$APPDIR/usr/share/metainfo/reviewflow.metainfo.xml"
+# PKG-01: validate the metainfo when appstreamcli exists on the build host.
+# It is deliberately NOT a hard build prerequisite (the base runner images and
+# minimal local environments do not ship it; release.yml is owned elsewhere).
+# Best-effort evidence, never a silent pass: an installed tool whose
+# validation FAILS aborts the build via set -e; an absent tool prints the
+# limitation loudly. Non-strict validate: style warnings (e.g. a non
+# reverse-DNS id hint) do not abort, real errors do.
+if command -v appstreamcli >/dev/null 2>&1; then
+  appstreamcli validate "$APPDIR/usr/share/metainfo/reviewflow.metainfo.xml"
+else
+  echo "NOTE: appstreamcli is not installed - AppStream validation is delegated to build/tests/test_2_1_6_appstream.py (structural checks only; no product-level AppStream validation on this host)" >&2
+fi
 
 # F1-1: fetch appimagetool from an immutable tagged release - the AppImageKit
 # "continuous" channel previously used here is marked obsolete upstream ("DO NOT

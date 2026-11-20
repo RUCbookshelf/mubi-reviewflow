@@ -360,8 +360,9 @@ if errorlevel 1 goto :fail_pip
 if errorlevel 1 goto :fail_depcheck
 
 rem ============================================================
-rem  MM7-02: run the four static validators against the sources.
-rem  httpx (used by the two Python validators) is installed into a
+rem  MM7-02: run the six static validators against the sources
+rem  (the same gate build/run_validation.py runs in CI - TST-03).
+rem  httpx (used by the Python validators) is installed into a
 rem  throwaway --target dir so the shipped runtime lock stays clean;
 rem  the embedded runtime ignores PYTHONPATH, hence the env var that
 rem  the validators append to sys.path themselves.
@@ -375,7 +376,9 @@ set "REVIEWFLOW_VALIDATION_DEPENDENCIES=%SRCDIR%\validator_deps"
 if errorlevel 1 goto :fail_validators
 "%STAGING%\runtime\python.exe" "%SRCDIR%\validate_screening_rounds.py" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
-rem MM7-02 (R1): the same four validators CI runs are a hard requirement of a
+"%STAGING%\runtime\python.exe" "%SRCDIR%\validate_team_prisma.py" >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+rem MM7-02 (R1): the same six validators CI runs are a hard requirement of a
 rem local build too - node.exe must be present. validate_team_prisma_static.js
 rem degrades its git-diff augmentation by itself when the build tree is not a
 rem git checkout, so it runs unconditionally here.
@@ -386,6 +389,8 @@ if not defined NODE_EXE goto :fail_no_node
 "%NODE_EXE%" "%SRCDIR%\validate_import_review_static.cjs" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
 "%NODE_EXE%" "%SRCDIR%\validate_team_prisma_static.js" >>"%LOG%" 2>&1
+if errorlevel 1 goto :fail_validators
+"%NODE_EXE%" "%SRCDIR%\validate_evidence_locale_static.cjs" >>"%LOG%" 2>&1
 if errorlevel 1 goto :fail_validators
 rem MM9-07: verify the staged payload tree against the checked-out sources
 rem with the same gate CI runs on the built artifact - previously every local

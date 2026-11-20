@@ -1542,22 +1542,72 @@ _COLLABORATION_REWRITE_TABLES = ("collaboration_task",
 _COLLABORATION_LAZY_CREATE_TABLE = "collaboration_member_settings"
 _COLLABORATION_TASK_COLUMNS = frozenset({
     "singleton", "task_id", "owner_user_id", "owner_username"})
-#: 产品自身协作库中**唯一**合法的触发器形状（sec29b-W1 全库盘点实测）：
-#: 仲裁快照的 append-only 守卫（screening_arbitration._ARBITRATION_SCHEMA，
-#: 存进协作库）。键 = (trigger 名, 目标表)，值 = sqlite_master 中应逐字
-#: 一致的 CREATE 文本（空白归一比较）——同名异表/同名异体（改写触发器体
-#: 注入 grants 等）一律按敌意拒绝；能逐字复刻的触发器语义与产品自有的
-#: 等价（RAISE(ABORT) 守卫），无注入面。产品协作库从不创建任何视图。
+#: 产品自身协作库中**唯一**合法的触发器形状（sec29b-W1 全库盘点实测；
+#: P18 D-1 修轮扩精确复刻）。两组：
+#:
+#: 1. 仲裁快照的 append-only 守卫（screening_arbitration._ARBITRATION_SCHEMA，
+#:    存进协作库）；
+#: 2. P14 团队流三件（F2 registry/F1 facts/P07 receipts）在 collab 上的 9 个
+#:    产品触发器（P18 create/rebind/管理 hook 经 ``prepare_team_protocol_storage``
+#:    安装）+ task_collaboration 自身的 business_role_events append-only 两守卫
+#:    （set_business_role 安装；修轮实测共 11 个非仲裁触发器）。修轮前白名单
+#:    只有第 1 组 → 自家导出的任务包导入即 400 package_invalid、带历史分支
+#:    结构性不可达——run1 复审 D-1。
+#:
+#: 键 = (trigger 名, 目标表)，值 = sqlite_master 中应逐字一致的 CREATE 文本
+#: （空白归一比较；registry 族的 ``main.`` 限定符按 sqlite_master 实存形态
+#: 剥离后比对）——同名异表/同名异体（改写触发器体注入 grants 等）一律按
+#: 敌意拒绝；能逐字复刻的触发器语义与产品自有的等价（RAISE(ABORT) 守卫），
+#: 无注入面。产品协作库从不创建任何视图。9 条团队流文本由真实
+#: ``prepare_team_protocol_storage`` 产物逐字导出钉死（records/
+#: gen_trigger_whitelist.txt）——产品 DDL 变更时本表需随版本同步。
+_TEAM_FLOW_TRIGGER_REPLICAS = {
+    ('collaboration_business_role_events_no_delete',
+     'collaboration_business_role_events'):
+        "CREATE TRIGGER collaboration_business_role_events_no_delete BEFORE DELETE ON collaboration_business_role_events BEGIN SELECT RAISE(ABORT, 'business role events are append-only'); END",
+    ('collaboration_business_role_events_no_update',
+     'collaboration_business_role_events'):
+        "CREATE TRIGGER collaboration_business_role_events_no_update BEFORE UPDATE ON collaboration_business_role_events BEGIN SELECT RAISE(ABORT, 'business role events are append-only'); END",
+    ('team_flow_receipts_guard_insert', 'team_flow_receipts'):
+        "CREATE TRIGGER team_flow_receipts_guard_insert BEFORE INSERT ON team_flow_receipts WHEN EXISTS(SELECT 1 FROM team_flow_receipts WHERE receipt_id = NEW.receipt_id OR (task_instance_id = NEW.task_instance_id AND actor_user_id = NEW.actor_user_id AND operation = NEW.operation AND request_id = NEW.request_id)) BEGIN SELECT RAISE(ABORT, 'team_flow_receipts is append-only: reject re-insert/replace'); END",
+    ('team_flow_receipts_no_delete', 'team_flow_receipts'):
+        "CREATE TRIGGER team_flow_receipts_no_delete BEFORE DELETE ON team_flow_receipts BEGIN SELECT RAISE(ABORT, 'team flow receipts are append-only'); END",
+    ('team_flow_receipts_no_update', 'team_flow_receipts'):
+        "CREATE TRIGGER team_flow_receipts_no_update BEFORE UPDATE ON team_flow_receipts BEGIN SELECT RAISE(ABORT, 'team flow receipts are append-only'); END",
+    ('team_source_registry_guard_update', 'team_source_registry'):
+        "CREATE TRIGGER team_source_registry_guard_update BEFORE UPDATE ON team_source_registry WHEN OLD.registration_id IS NOT NEW.registration_id OR OLD.task_instance_id IS NOT NEW.task_instance_id OR OLD.source_user_id IS NOT NEW.source_user_id OR OLD.source_library_id IS NOT NEW.source_library_id OR OLD.source_path_identity IS NOT NEW.source_path_identity OR OLD.generation IS NOT NEW.generation OR OLD.registered_at IS NOT NEW.registered_at OR (OLD.status = 'retired' AND NEW.status IS NOT 'retired') OR ( OLD.status = 'retired' AND ( NEW.retired_at IS NOT OLD.retired_at OR NEW.retired_reason IS NOT OLD.retired_reason OR NEW.archive_watermark IS NOT OLD.archive_watermark ) ) OR ( OLD.status = 'active' AND NEW.status = 'active' AND ( NEW.retired_at IS NOT NULL OR NEW.retired_reason IS NOT NULL OR NEW.archive_watermark IS NOT NULL ) ) BEGIN SELECT RAISE(ABORT, 'team_source_registry identity/retirement guard'); END",
+    ('team_source_registry_no_delete', 'team_source_registry'):
+        "CREATE TRIGGER team_source_registry_no_delete BEFORE DELETE ON team_source_registry BEGIN SELECT RAISE(ABORT, 'team_source_registry delete forbidden'); END",
+    ('team_task_protocol_guard_update', 'team_task_protocol'):
+        "CREATE TRIGGER team_task_protocol_guard_update BEFORE UPDATE ON team_task_protocol WHEN OLD.task_instance_id IS NOT NEW.task_instance_id OR OLD.task_id IS NOT NEW.task_id OR OLD.owner_user_id IS NOT NEW.owner_user_id OR OLD.owner_library_id IS NOT NEW.owner_library_id OR OLD.protocol_version IS NOT NEW.protocol_version OR OLD.created_at IS NOT NEW.created_at OR NEW.updated_at < OLD.updated_at OR NEW.roster_revision < OLD.roster_revision OR NEW.roster_revision > OLD.roster_revision + 1 OR (OLD.coverage_state = 'new_covered' AND NEW.coverage_state IS NOT 'new_covered') OR (OLD.coverage_state = 'legacy_verified' AND NEW.coverage_state IS NOT 'legacy_verified') OR ( OLD.coverage_state = 'legacy_pending_verification' AND NEW.coverage_state NOT IN ('legacy_pending_verification','legacy_verified') ) OR (OLD.adopted_at IS NOT NULL AND NEW.adopted_at IS NOT OLD.adopted_at) OR ( OLD.adoption_evidence_ref IS NOT NULL AND NEW.adoption_evidence_ref IS NOT OLD.adoption_evidence_ref ) OR ( OLD.adoption_evidence_json IS NOT NULL AND NEW.adoption_evidence_json IS NOT OLD.adoption_evidence_json ) OR ( OLD.adoption_evidence_sha256 IS NOT NULL AND NEW.adoption_evidence_sha256 IS NOT OLD.adoption_evidence_sha256 ) BEGIN SELECT RAISE(ABORT, 'team_task_protocol identity/state regression'); END",
+    ('team_task_protocol_no_delete', 'team_task_protocol'):
+        "CREATE TRIGGER team_task_protocol_no_delete BEFORE DELETE ON team_task_protocol BEGIN SELECT RAISE(ABORT, 'team_task_protocol delete forbidden'); END",
+    ('team_terminal_seals_no_delete', 'team_terminal_seals'):
+        "CREATE TRIGGER team_terminal_seals_no_delete BEFORE DELETE ON team_terminal_seals BEGIN SELECT RAISE(ABORT, 'team terminal seals are append-only'); END",
+    ('team_terminal_seals_no_update', 'team_terminal_seals'):
+        "CREATE TRIGGER team_terminal_seals_no_update BEFORE UPDATE ON team_terminal_seals BEGIN SELECT RAISE(ABORT, 'team terminal seals are append-only'); END",
+}
+
 _COLLABORATION_OWN_TRIGGERS = {
-    ("screening_arbitrations_no_update", "screening_arbitrations"):
+    "screening_arbitrations_no_update": (
         "CREATE TRIGGER screening_arbitrations_no_update "
         "BEFORE UPDATE ON screening_arbitrations "
-        "BEGIN SELECT RAISE(ABORT, 'screening arbitrations are append-only'); END",
-    ("screening_arbitrations_no_delete", "screening_arbitrations"):
+        "BEGIN SELECT RAISE(ABORT, 'screening arbitrations are append-only'); END"),
+    "screening_arbitrations_no_delete": (
         "CREATE TRIGGER screening_arbitrations_no_delete "
         "BEFORE DELETE ON screening_arbitrations "
-        "BEGIN SELECT RAISE(ABORT, 'screening arbitrations are append-only'); END",
+        "BEGIN SELECT RAISE(ABORT, 'screening arbitrations are append-only'); END"),
 }
+
+
+def _collaboration_expected_trigger(name: str, tbl_name: str) -> str | None:
+    """产品自有触发器形状查表（两组白名单合一；None=不在白名单）。"""
+    key = (name.lower(), tbl_name.lower())
+    if key in _TEAM_FLOW_TRIGGER_REPLICAS:
+        return _TEAM_FLOW_TRIGGER_REPLICAS[key]
+    if name.lower() in _COLLABORATION_OWN_TRIGGERS:
+        return _COLLABORATION_OWN_TRIGGERS[name.lower()]
+    return None
 
 
 def _collaboration_rewrite_error(member: str = "collaboration.db"
@@ -1578,9 +1628,10 @@ def _collaboration_schema_hostile(conn: sqlite3.Connection) -> bool:
     （``_migrate_member_settings`` 写 settings、grant_role 写 grants、仲裁
     追加写 screening_arbitrations……），任何表上的恶意触发器都是注入面，
     因此对**全库**触发器逐一判定：仅放行
-    :data:`_COLLABORATION_OWN_TRIGGERS` 白名单里产品自有的两个 append-only
-    守卫（同名同表且 CREATE 文本一致），其余任何触发器/视图（无论挂在哪
-    张表）一律敌意——BEFORE ``RAISE(IGNORE)`` 让 UPDATE rowcount=0、
+    :func:`_collaboration_expected_trigger` 两组白名单——仲裁 append-only
+    两守卫 + P18 D-1 扩的团队流 9 个产品触发器精确复刻（同名同表且 CREATE
+    文本逐字一致），其余任何触发器/视图（无论挂在哪张表）一律敌意——
+    BEFORE ``RAISE(IGNORE)`` 让 UPDATE rowcount=0、
     AFTER 把属主改回旧值、AFTER INSERT 自授角色等任何形态都在 schema 层
     直接拒绝，不逐一猜触发器写法。
     """
@@ -1590,8 +1641,8 @@ def _collaboration_schema_hostile(conn: sqlite3.Connection) -> bool:
         return True
     for name, tbl_name, sql in conn.execute(
             "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger'"):
-        expected = _COLLABORATION_OWN_TRIGGERS.get(
-            (str(name).lower(), str(tbl_name).lower()))
+        expected = _collaboration_expected_trigger(
+            str(name), str(tbl_name))
         if expected is None or " ".join((sql or "").split()) != expected:
             return True
     return False
@@ -1772,6 +1823,85 @@ def _extract_member(archive: zipfile.ZipFile, member_name: str, base: Path,
     return target
 
 
+def _import_team_provenance(task_dir: Path, task_id: str, owner_id: int,
+                            owner_name: str) -> dict[str, Any]:
+    """P18 需求 2：整包导入/恢复的协议绑定 hook（恢复不悄换 instance/library）。
+
+    - 协作库内已有 ``team_task_protocol`` 行（带历史 task-package）：原样保留
+      其 ``task_instance_id`` / ``owner_library_id``（恢复绝不静默改换
+      instance/library）；本 hook 只补装缺失的 F2/F1/receipts schema（P14
+      ``prepare_team_protocol_storage``，幂等）。缺失/冲突的成员源**不自动
+      隔离**——留给 owner 显式 repair/adoption 处置。
+    - 无 protocol 行（fresh 语义，含包内无协作库时新建的空库）：登记
+      ``creation_path="trusted_new_task"`` protocol 行，与带历史包区分。
+      owner_library_id 取导入者个人库的**真实** P04 账本身份（S-3：init_db
+      安装账本生成新 UUID，不登记猜想占位值；registry 身份守卫不可后改）。
+
+    任何登记失败如实上抛（import 失败清场，不留半登记状态）；fresh 登记
+    属于导入原子边界的一部分（temp_dir 整体改名）。
+    """
+    import uuid as _uuid
+    from contextlib import closing as _closing
+
+    from custom_backend import team_source_lifecycle as team_lifecycle
+    from coscreen import team_terminal_registry as _registry
+    from coscreen.team_vote_ledger import library_identity_header_on
+
+    collab = task_dir / "collaboration.db"
+    if not collab.is_file():
+        return {"has_history": False, "registered": False,
+                "reason": "no_collaboration_store"}
+    team_lifecycle.prepare_team_protocol_storage(
+        collab_path=collab, source_paths=())
+    conn = sqlite3.connect(str(collab), timeout=15)
+    try:
+        conn.row_factory = sqlite3.Row
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "team_task_protocol" in tables:
+            row = conn.execute(
+                "SELECT task_instance_id, task_id, owner_library_id,"
+                " coverage_state FROM main.team_task_protocol"
+                " ORDER BY created_at LIMIT 1").fetchone()
+            if row is not None:
+                # 带历史包：instance/library 原样保留（不悄换、不隔离）。
+                return {"has_history": True, "registered": False,
+                        "preserved_task_instance_id": row["task_instance_id"],
+                        "preserved_task_id": row["task_id"],
+                        "preserved_owner_library_id": row["owner_library_id"],
+                        "coverage_state": row["coverage_state"]}
+        # S-3：fresh 登记的 owner_library=导入者个人库真实账本身份。
+        from coscreen import db as _cdb
+        slug = tasks_mod.slugify_screener(owner_name)
+        owner_db = task_dir / f"{slug}.db"
+        if not owner_db.is_file():
+            _cdb.init_db(owner_db)
+        own = sqlite3.connect(str(owner_db), timeout=15)
+        try:
+            own.row_factory = sqlite3.Row  # C02 借用合同
+            own.execute("BEGIN")
+            header = library_identity_header_on(own)
+        finally:
+            own.close()
+        owner_library = (header.library_id if header is not None else None)
+        if not owner_library:
+            raise TaskPackageError("import_failed", params={
+                "reason": "owner_ledger_identity_unavailable"})
+        conn.execute("BEGIN IMMEDIATE")
+        record = _registry.register_protocol_on(
+            conn, task_id=task_id,
+            task_instance_id=f"{task_id}-inst-import-{_uuid.uuid4().hex[:12]}",
+            owner_user_id=owner_id,
+            owner_library_id=owner_library,
+            creation_path="trusted_new_task")
+        conn.commit()
+        return {"has_history": False, "registered": True,
+                "task_instance_id": record["task_instance_id"],
+                "creation_path": "trusted_new_task"}
+    finally:
+        conn.close()
+
+
 def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                   user: Mapping[str, Any], data_dir: str | Path) -> dict[str, Any]:
     """在临时目录完整落盘后整体改名（失败清理，不留半成品任务）。"""
@@ -1846,6 +1976,11 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                     temp_dir, task_id=new_id, owner_user_id=owner_id,
                     owner_username=owner_name,
                 )
+            # P18 需求 2 导入/恢复绑定 hook：带历史包（协议行随包保留原
+            # instance/library，绝不悄换；缺失/冲突源不自动隔离）与 fresh
+            # 导入（登记 trusted_new_task）在此区分并上报 provenance。
+            team_provenance = _import_team_provenance(
+                temp_dir, new_id, owner_id, owner_name)
 
             restored = 0
             covered_paths: dict[str, str] = {}
@@ -2009,6 +2144,7 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
         "fulltexts_neutralized": neutralized,
         "fulltexts_skipped": len(parsed.get("skipped_fulltexts") or []),
         "package_sha256": parsed["package_sha256"],
+        "team_provenance": team_provenance,
     }
 
 

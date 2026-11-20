@@ -41,7 +41,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -50,12 +49,30 @@ from urllib.parse import urlsplit
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-fixture = tempfile.TemporaryDirectory(prefix="rf_215_ai_formats_")
-os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
+# 数据根 + 模式生命周期（SafetyR4 A–D，test-only 所有者 helper _bare_env）：
+# pytest 下 conftest 每会话登记会话代并握手——模块导入只落模式、release 惰
+# 性，绝不删除 pytest 共享根；裸 unittest 无显式 scope 时由进程 owner 持根
+# 到进程退出/显式结束（嵌入式宿主请用 _bare_env.bare_scope() 包住导入与执
+# 行——无 scope 的 TextTestRunner 返回不承诺两键已恢复，SafetyR4 公开合
+# 同）。模块 import 只是借用：acquire 独立 token、release 幂等、绝不删根
+# （导入计数不驱动删除——SafetyR3 C 病根）。setUpModule 守卫（并入下方
+# 既有 setUpModule 首行）：上一届所有者已结束/环境键被挪走/与缓存后端冻
+# 结根分叉时，在任何测试业务/API 写之前硬拒。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _bare_env  # noqa: E402
+
+_BARE = _bare_env.acquire(mode="server")
+
+
+def tearDownModule():
+    """归还借用（幂等；删根/两键恢复只属于所有者收尾）。"""
+    _bare_env.release(_BARE)
+
+
 # 服务器模式（同 test_ai_suggest / test_2_1_5_import_ai_assist 先例）：协作邀请
 # 端点只在 server 模式开放（成员 403 用例需要）；SSRF 回环闸走
 # ai_keys._server_mode，setUp 以函数级 mock 钉成桌面口径放行回环探针。
-os.environ["REVIEWFLOW_MODE"] = "server"
+# ——模式落位已并入上方 _bare_env.acquire(mode="server")（SafetyR3）。
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -119,29 +136,39 @@ class _ProbeHandler(BaseHTTPRequestHandler):
         return
 
 
+#: 双用户（owner/member）模块级一次创建（2.1.6 TST-01）：此前每类 setUpClass
+#: 同名重建、靠 tearDownClass 删共享数据目录「重置」——共享目录中途删除会让
+#: 同进程其它模块直接 401/500。改为模块级建一次、各类共享，类间污染由 setUp
+#: 清钥匙挡住；目录交 conftest 进程收尾统一清理。
+_MODULE_USERS: list[dict] = []
+
+
+def setUpModule():
+    _bare_env.ensure_safe_for_execution()  # SafetyR4 C：先于任何建用户/API 写
+    for index, name in enumerate(("owner", "member")):
+        # 不走 HTTP /api/auth/register：全套 pytest 里多模块注册共享同一
+        # 限流桶会撞 429（先例 test_ai_suggest 注）；直接建用户签发令牌。
+        user = auth_mod.create_user(f"ai-formats-{name}{index}@example.test",
+                                    "AI-Formats-2026")
+        _MODULE_USERS.append({
+            "user_id": user["id"], "username": user["username"],
+            "token": auth_mod.create_access_token(user["id"], user["username"]),
+        })
+
+
 class _AiFormatsTestBase(unittest.TestCase):
-    """公共夹具：TestClient + 双用户（owner/member）+ 每用例清钥匙/环境覆盖
-    + 桌面模式钉（回环探针 base_url 可过 SSRF 闸）。"""
+    """公共夹具：TestClient + 双用户（owner/member，模块级共享）+ 每用例清
+    钥匙/环境覆盖 + 桌面模式钉（回环探针 base_url 可过 SSRF 闸）。"""
 
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
         cls.client.__enter__()
-        cls.users = []
-        for index, name in enumerate(("owner", "member")):
-            # 不走 HTTP /api/auth/register：全套 pytest 里多模块注册共享同一
-            # 限流桶会撞 429（先例 test_ai_suggest 注）；直接建用户签发令牌。
-            user = auth_mod.create_user(f"ai-formats-{name}{index}@example.test",
-                                        "AI-Formats-2026")
-            cls.users.append({
-                "user_id": user["id"], "username": user["username"],
-                "token": auth_mod.create_access_token(user["id"], user["username"]),
-            })
+        cls.users = _MODULE_USERS
 
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
-        fixture.cleanup()
 
     def setUp(self):
         os.environ.pop("REVIEWFLOW_AI_KEY", None)

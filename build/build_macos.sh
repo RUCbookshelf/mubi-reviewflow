@@ -108,21 +108,24 @@ PY="$BUILD/work-macos/venv/bin/python"
 "$PY" -m pip install --upgrade "pip>=25,<27" "wheel>=0.45,<1"
 "$PY" -m pip install -r "$BUILD/requirements-app.txt" "pyinstaller>=6.10,<7"
 
-# MM9-07: a local build runs exactly the same four static validators CI runs
-# (release.yml) - previously they ran only in CI, so a locally built DMG shipped
-# without any of these gates. Node.js is required for the two JavaScript
-# validators, the same hard requirement build_windows.bat already enforces.
-# httpx goes to a throwaway --target dir so PyInstaller never freezes it.
+# MM9-07: a local build runs exactly the same six static validators CI runs
+# (build/run_validation.py, TST-03 2.1.6) - previously they ran only in CI, so
+# a locally built DMG shipped without any of these gates. Node.js is required
+# for the three JavaScript validators, the same hard requirement
+# build_windows.bat already enforces. httpx goes to a throwaway --target dir
+# so PyInstaller never freezes it.
 "$PY" -m pip install --no-build-isolation --prefer-binary --no-warn-script-location \
   --disable-pip-version-check --target "$BUILD/work-macos/validator_deps" httpx >/dev/null
 REVIEWFLOW_VALIDATION_DEPENDENCIES="$BUILD/work-macos/validator_deps" "$PY" "$BUILD/validate_import_review.py"
 REVIEWFLOW_VALIDATION_DEPENDENCIES="$BUILD/work-macos/validator_deps" "$PY" "$BUILD/validate_screening_rounds.py"
+REVIEWFLOW_VALIDATION_DEPENDENCIES="$BUILD/work-macos/validator_deps" "$PY" "$BUILD/validate_team_prisma.py"
 command -v node >/dev/null 2>&1 || {
   echo "ERROR: node is required to run the JavaScript static validators (install Node.js or add it to PATH)" >&2
   exit 1
 }
 node "$BUILD/validate_import_review_static.cjs"
 node "$BUILD/validate_team_prisma_static.js"
+node "$BUILD/validate_evidence_locale_static.cjs"
 
 # F1-8/F1-11: every iconset slot now carries its true pixel size. Previously
 # icon_512x512.png and icon_256x256@2x.png were both overwritten with the

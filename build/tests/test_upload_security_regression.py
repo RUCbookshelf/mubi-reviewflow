@@ -14,15 +14,33 @@ import io
 import os
 import re
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-fixture = tempfile.TemporaryDirectory(prefix="rf_upload_sec_")
-os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
-os.environ["REVIEWFLOW_MODE"] = "server"
+# 数据根 + 模式生命周期（SafetyR4 A–D，test-only 所有者 helper _bare_env）：
+# pytest 下 conftest 每会话登记会话代并握手——模块导入只落模式、release 惰
+# 性，绝不删除 pytest 共享根；裸 unittest 无显式 scope 时由进程 owner 持根
+# 到进程退出/显式结束（嵌入式宿主请用 _bare_env.bare_scope() 包住导入与执
+# 行——无 scope 的 TextTestRunner 返回不承诺两键已恢复，SafetyR4 公开合
+# 同）。模块 import 只是借用：acquire 独立 token、release 幂等、绝不删根
+# （导入计数不驱动删除——SafetyR3 C 病根）。setUpModule 守卫：上一届所有
+# 者已结束/环境键被挪走/与缓存后端冻结根分叉时，在任何测试业务/API 写之
+# 前硬拒。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _bare_env  # noqa: E402
+
+_BARE = _bare_env.acquire(mode="server")
+
+
+def setUpModule():
+    _bare_env.ensure_safe_for_execution()
+
+
+def tearDownModule():
+    """归还借用（幂等；删根/两键恢复只属于所有者收尾）。"""
+    _bare_env.release(_BARE)
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -69,8 +87,8 @@ class UploadSecurityTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        # 共享数据目录不再中途删除（2.1.6 TST-01）：交 conftest 进程收尾清理。
         cls.client.__exit__(None, None, None)
-        fixture.cleanup()
 
     def auth(self):
         return {"Authorization": "Bearer " + self.user["token"]}

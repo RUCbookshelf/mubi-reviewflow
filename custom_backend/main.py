@@ -56,7 +56,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictStr
 from starlette.concurrency import run_in_threadpool
 
 from coscreen import coding as coding_mod
@@ -1223,6 +1223,15 @@ class CollaborationRoleIn(BaseModel):
     role: Literal["coder", "reconciler"]
 
 
+class BusinessRoleIn(BaseModel):
+    """单一有效业务角色配置（2.1.6 FLOW II-A；属主管理门下 PUT）。
+
+    fix-r1 R11：非法字符串（空串/空白/超长/未知值）一律由端点返回 400
+    ``team.role.invalid``，不设 Literal/min/max 让 pydantic 提前 422；非字符串/
+    缺失＝畸形载荷仍 422（StrictStr）。"""
+    business_role: StrictStr
+
+
 class CollaborationMemberScreeningIn(BaseModel):
     screening_enabled: StrictBool
 
@@ -1590,6 +1599,49 @@ def _rob_contract_error(exc) -> HTTPException:
     status = 409 if exc.code == "revision_conflict" else 403 if exc.code == "reviewer_forbidden" else 400
     return HTTPException(status, {"error_code": exc.code, "message_key": "analysis.rob." + exc.code,
                                   "params": exc.details, "details": str(exc), "message": str(exc)})
+
+
+#: 旧 RoB 保存（PUT /analysis/risk-of-bias）的机器码表。键是
+#: ``coscreen.review_analysis.save_rob`` 的**消息原文**；第三项为带参域名
+#: 前缀（None=整串精确匹配）。message_key 用独立命名空间
+#: ``analysis.rob.legacy_save.<code>``：v2 的 ``analysis.rob.<code>`` 已注册
+#: 十语言，复用会让 errOf 命中词典、把 ``message`` 换成 v2 文案，从而令旧
+#: 编辑器 serverError() 的英文匹配失效。新键未注册时 RFServerMessage 返回
+#: null，errOf 回退原文——旧客户端行为逐字不变。
+_LEGACY_ROB_SAVE_ERRORS = (
+    ("unsupported risk-of-bias framework", "unsupported_framework", None),
+    ("all result, reviewer, judgement and source fields are required", "fields_required", None),
+    ("invalid overall judgement", "invalid_overall", None),
+    ("overall rationale is required", "overall_rationale_required", None),
+    ("all framework domains are required for a completed assessment", "domains_incomplete", None),
+    ("source report must be linked to this study", "source_unlinked", None),
+    ("invalid domain judgement: ", "invalid_judgement", "domain"),
+    ("domain rationale is required: ", "domain_rationale_required", "domain"),
+)
+
+
+def _legacy_rob_save_error(exc: ValueError) -> HTTPException:
+    """旧 RoB 保存的 ValueError -> 五键结构（status 仍 400）。
+
+    ``message``/``details`` 逐字保留 ``save_rob`` 原文（含 ``": {域名}"`` 后缀），
+    只增量补 error_code/message_key/params；未知异常原样交 ``_bad`` 维持旧行为。
+    域名只按**首个** ``": "`` 切分——QUADAS-2 的 applicability 域名自身含
+    ``": "``（``applicability: patient selection``），rsplit 会截断。
+    """
+    text = str(exc)
+    for literal, code, param in _LEGACY_ROB_SAVE_ERRORS:
+        if param is None:
+            if text != literal:
+                continue
+            params: dict = {}
+        elif text.startswith(literal):
+            params = {param: text[len(literal):]}
+        else:
+            continue
+        return HTTPException(400, {"error_code": code,
+                                   "message_key": "analysis.rob.legacy_save." + code,
+                                   "params": params, "details": text, "message": text})
+    return _bad(exc)
 
 
 def _dim_error(exc: ValueError) -> HTTPException:
@@ -2097,11 +2149,333 @@ async def task_events(request: Request,
 # 任务 CRUD
 # ---------------------------------------------------------------------------
 
+def _team_active_screeners(info: tasks_mod.TaskInfo) -> list[dict] | None:
+    """team 任务的当前筛选职责/角色配置投影（2.1.6 FLOW II-A，窄范围新增键）。
+
+    personal/legacy 不强行套成员表（返回 None=键不出现）。读取失败按
+    「暂不可读不归零」原则**省略键**（列表端点绝不因单任务投影失败 500），
+    不返回误导性空名单。fix-r1 R9：已确认 team 后协作库不可读（数据层返回
+    None）同样省略键——真实空名册在数据层不可能（属主恒在名册），绝不伪装
+    ``active_screeners: []``；账户库查询/映射的已知存储异常按条目降级为
+    ``username: null``（成员保留，user_id 为稳定身份），不以缺账号/查询失败
+    判定成员无效。字段合同见 TEAM_FLOW_ROLE_FRONTEND_HANDOFF。
+    """
+    try:
+        if not _task_is_team(info):
+            return None
+        roster = collaboration_mod.active_screening_roster(
+            _collaboration_store(info), task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        logger.warning("active_screeners 投影跳过（协作库损坏）：%s", info.task_id)
+        return None
+    except collaboration_mod.OwnerUnavailableError:
+        logger.warning("active_screeners 投影跳过（暂不可读）：%s", info.task_id)
+        return None
+    except HTTPException as exc:
+        # _task_is_team/roster 对暂不可读已映射 503——列表端点不因单任务
+        # 投影失败整体失败（省略键，绝不伪装成空名单）。
+        logger.warning("active_screeners 投影跳过（%s）：%s", exc.status_code, info.task_id)
+        return None
+    if roster is None:
+        # R9：库不存在/属主绑定不匹配＝名册不可读（可读名册恒含属主），
+        # 省略键——与"真实空名册"（数据层不可能出现）明确区分。
+        logger.warning("active_screeners 投影省略（协作库不可读/绑定异常）：%s", info.task_id)
+        return None
+    projected = []
+    for entry in roster:
+        username = None
+        try:
+            account = auth.get_user_by_id(entry["user_id"])
+            username = account["username"] if account else None
+        except (sqlite3.Error, OSError) as exc:
+            # R9：账户库锁忙/暂时不可读等已知存储异常→该条目 username 降级
+            # 为 null（成员保留）；不是成员无效，也不拖垮任务列表。
+            logger.warning("active_screeners 用户名解析降级（user_id=%s）：%s",
+                           entry["user_id"], exc)
+        projected.append({
+            "user_id": entry["user_id"],
+            "username": username,
+            "slug": tasks_mod.slugify_screener(username) if username else None,
+            "is_owner": entry["is_owner"],
+            "role": entry["role"],
+            "source": entry["source"],
+            "required": entry["required_screener"],
+            "config": entry["config"],
+        })
+    return projected
+
+
+def _read_task_roster_snapshot(info: tasks_mod.TaskInfo) -> tuple[str, list[dict]]:
+    """Materialize collaboration facts in one read transaction; never authorize.
+
+    The first sqlite_master SELECT establishes the collaboration snapshot, not
+    BEGIN or response time. Owner workflow, accounts and task.json are separate
+    stores: this deliberately makes no cross-store atomicity claim.
+    """
+    import stat
+
+    if (not isinstance(info.task_id, str) or info.task_id != info.task_id.strip()
+            or not 1 <= len(info.task_id) <= 200
+            or any(ch in info.task_id for ch in "/\\\x00")):
+        return "unknown", []
+    try:
+        task_dir = Path(info.dir).resolve()
+        collab_path = (task_dir / collaboration_mod.DB_FILENAME).resolve()
+        if not is_within(collab_path, task_dir):
+            return "unknown", []
+        collab_uri = collab_path.as_uri() + "?mode=ro"
+    except (ValueError, TypeError):
+        # Only path construction/encoding of supplied data is downgraded here.
+        return "unknown", []
+    try:
+        file_stat = collab_path.stat()
+    except FileNotFoundError:
+        # Compatibility with uninitialized legacy tasks, not historical proof.
+        return "compatibility", []
+    if not stat.S_ISREG(file_stat.st_mode):
+        return "unknown", []
+
+    # A disappearance after stat reaches connect(mode=ro) and is unavailable;
+    # it must not be reinterpreted as a legacy task or create a new main DB.
+    conn = sqlite3.connect(collab_uri, uri=True, timeout=0.25)
+    try:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN DEFERRED")
+            cursor.execute("SELECT name, type FROM sqlite_master "
+                           "WHERE name LIKE 'collaboration_%'")
+            structures = dict(cursor.fetchall())
+            if structures.get("collaboration_task") != "table":
+                return ("unknown" if structures else "compatibility"), []
+            cursor.execute("SELECT singleton, task_id, owner_user_id, "
+                           "owner_username, created_at FROM collaboration_task")
+            owners = cursor.fetchall()
+            if len(owners) != 1:
+                return "unknown", []
+            singleton, bound_task, owner_id, owner_name, created_at = owners[0]
+            if (type(singleton) is not int or singleton != 1
+                    or bound_task != info.task_id
+                    or type(owner_id) is not int or owner_id <= 0
+                    or not isinstance(owner_name, str)
+                    or not 1 <= len(owner_name) <= 64
+                    or owner_name != owner_name.strip()
+                    or any(ch in owner_name for ch in "/\\\x00")
+                    or not isinstance(created_at, str) or not created_at):
+                return "unknown", []
+            if structures.get("collaboration_role_grants") != "table":
+                return "unknown", []
+            cursor.execute("SELECT user_id, role FROM collaboration_role_grants")
+            grants = cursor.fetchall()
+            if any(type(uid) is not int or uid <= 0
+                   or role not in ("coder", "reconciler") for uid, role in grants):
+                return "unknown", []
+            # Optional old-version tables remain optional. Present but broken
+            # structures/data are not silently interpreted as default settings.
+            if "collaboration_business_role" in structures:
+                if structures["collaboration_business_role"] != "table":
+                    return "unknown", []
+                cursor.execute("SELECT user_id, business_role "
+                               "FROM collaboration_business_role")
+                choices = cursor.fetchall()
+                if (len({row[0] for row in choices}) != len(choices)
+                        or any(type(uid) is not int or uid <= 0
+                               or role not in ("coder", "reconciler")
+                               for uid, role in choices)):
+                    return "unknown", []
+            if "collaboration_settings" in structures:
+                if structures["collaboration_settings"] != "table":
+                    return "unknown", []
+                cursor.execute("SELECT key, value FROM collaboration_settings")
+                settings = cursor.fetchall()
+                if (len({row[0] for row in settings}) != len(settings)
+                        or any(not isinstance(key, str) or not isinstance(value, str)
+                               for key, value in settings)):
+                    return "unknown", []
+            if "collaboration_member_settings" in structures:
+                if structures["collaboration_member_settings"] != "table":
+                    return "unknown", []
+                cursor.execute("SELECT user_id, screening_enabled "
+                               "FROM collaboration_member_settings")
+                member_settings = cursor.fetchall()
+                if (len({row[0] for row in member_settings}) != len(member_settings)
+                        or any(type(uid) is not int or uid <= 0
+                               or type(enabled) is not int or enabled not in (0, 1)
+                               for uid, enabled in member_settings)):
+                    return "unknown", []
+            # Validate SQLite data shapes above instead of catching arbitrary
+            # TypeError/ValueError from role-resolution code (which can be bugs).
+            state = collaboration_mod.read_team_role_state_on(
+                conn, task_id=info.task_id)
+            if state["classification"] != "owner_match":
+                return "unknown", []
+            participants = state["participants"]
+            expected_ids = {owner_id} | {row[0] for row in grants}
+            if ({entry["user_id"] for entry in participants} != expected_ids
+                    or len(participants) != len(expected_ids)
+                    or state["owner"]["owner_user_id"] != owner_id):
+                return "unknown", []
+            if any(uid != owner_id for uid, role in grants):
+                # Grants prove team even before latch commit or owner DB creation.
+                return "available", participants
+
+            try:
+                owner_path = (task_dir / (
+                    tasks_mod.slugify_screener(owner_name) + ".db")).resolve()
+                if (owner_path == collab_path
+                        or not is_within(owner_path, task_dir)):
+                    return "unknown", []
+                owner_uri = owner_path.as_uri() + "?mode=ro"
+            except (ValueError, TypeError):
+                return "unknown", []
+            try:
+                owner_stat = owner_path.stat()
+            except FileNotFoundError:
+                return "compatibility", []
+            if not stat.S_ISREG(owner_stat.st_mode):
+                return "unknown", []
+            owner_conn = sqlite3.connect(owner_uri, uri=True, timeout=0.25)
+            try:
+                owner_cursor = owner_conn.cursor()
+                try:
+                    owner_cursor.execute("BEGIN DEFERRED")
+                    owner_cursor.execute("SELECT type FROM sqlite_master "
+                                         "WHERE name='workflow_state'")
+                    workflow = owner_cursor.fetchone()
+                    if workflow is None:
+                        return "compatibility", []
+                    if workflow[0] != "table":
+                        return "unknown", []
+                    owner_cursor.execute("SELECT singleton, team_latched "
+                                         "FROM workflow_state")
+                    rows = owner_cursor.fetchall()
+                    if (len(rows) != 1 or type(rows[0][0]) is not int
+                            or rows[0][0] != 1):
+                        return "unknown", []
+                    latch = rows[0][1]
+                    if latch is None:
+                        return "compatibility", []
+                    if type(latch) is not int or latch not in (0, 1):
+                        return "unknown", []
+                    return ("available", participants) if latch == 1 else (
+                        "not_applicable", [])
+                finally:
+                    owner_cursor.close()
+            finally:
+                try:
+                    owner_conn.close()
+                except sqlite3.Error:
+                    logger.warning("roster owner connection cleanup failed")
+                    raise
+        finally:
+            cursor.close()
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            logger.warning("roster collaboration connection cleanup failed")
+            raise
+
+
+def _readonly_roster_usernames(user_ids: list[int]) -> dict[int, str]:
+    """Best-effort names, one short read-only connection; IDs remain authoritative.
+
+    No auth connector/migrations/permission changes. SQLite may create normal
+    WAL sidecars on Windows; mode=ro does not promise zero filesystem writes.
+    """
+    import stat
+
+    try:
+        try:
+            users_path = (auth.data_dir() / "users.db").resolve()
+            users_uri = users_path.as_uri() + "?mode=ro"
+        except (ValueError, TypeError):
+            logger.warning("roster account path is unconfirmed")
+            return {}
+        try:
+            users_stat = users_path.stat()
+        except FileNotFoundError:
+            return {}
+        if not stat.S_ISREG(users_stat.st_mode):
+            return {}
+        conn = sqlite3.connect(users_uri, uri=True, timeout=0.25)
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("BEGIN DEFERRED")
+                usernames = {}
+                # 900 stays below SQLite's traditional 999 parameter limit.
+                for start in range(0, len(user_ids), 900):
+                    chunk = user_ids[start:start + 900]
+                    cursor.execute("SELECT id, username FROM users WHERE id IN ("
+                                   + ",".join("?" for uid in chunk) + ")", chunk)
+                    for uid, username in cursor.fetchall():
+                        if (type(uid) is int and uid in chunk
+                                and isinstance(username, str) and username
+                                and "\x00" not in username):
+                            usernames[uid] = username
+                return usernames
+            finally:
+                cursor.close()
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                logger.warning("roster account connection cleanup failed")
+                raise
+    except sqlite3.ProgrammingError:
+        raise
+    except (sqlite3.Error, OSError):
+        logger.warning("roster account names unavailable; preserving member IDs")
+        return {}
+
+
+def _task_roster_projection(info: tasks_mod.TaskInfo) -> dict:
+    """Display-only roster/status; never feed these five states into access gates."""
+    try:
+        status, participants = _read_task_roster_snapshot(info)
+    except sqlite3.ProgrammingError:
+        raise
+    except sqlite3.Error as exc:
+        # Only missing schema is unknown; busy, I/O and corrupt DBs unavailable.
+        message = str(exc).lower()
+        status = ("unknown" if "no such column" in message
+                  or "no such table" in message else "unavailable")
+        logger.warning("roster snapshot storage failure (%s)", status)
+        return {"active_screeners_status": status}
+    except OSError:
+        logger.warning("roster snapshot filesystem unavailable")
+        return {"active_screeners_status": "unavailable"}
+    if status != "available":
+        if status in ("unknown", "unavailable"):
+            logger.warning("roster snapshot is %s", status)
+        return {"active_screeners_status": status}
+    usernames = _readonly_roster_usernames([
+        entry["user_id"] for entry in participants])
+    projected = []
+    for entry in participants:
+        username = usernames.get(entry["user_id"])
+        projected.append({
+            "user_id": entry["user_id"],
+            "username": username,
+            "slug": tasks_mod.slugify_screener(username) if username else None,
+            "is_owner": entry["is_owner"],
+            "role": entry["role"],
+            "source": entry["source"],
+            "required": entry["required_screener"],
+            "config": entry["config"],
+        })
+    return {"active_screeners_status": "available", "active_screeners": projected}
+
+
 def _task_payload(info: tasks_mod.TaskInfo, *, degraded: bool | None = None) -> dict:
     """任务列表行。``degraded`` 缺省取 task.json 损坏标记；协作库永久损坏的
     任务由列表调用方显式置 True（r6 #30：修复前 payload degraded=false，用户
-    看不到任何"待修复"提示）。"""
-    return {
+    看不到任何"待修复"提示）。
+
+    展示投影新增 ``active_screeners_status``；仅 available 附当前团队全员
+    ``active_screeners``。``screeners``（三源登记兼容名单）合同不变。
+    """
+    payload = {
         "task_id": info.task_id,
         "name": info.display_name,
         "description": info.description,
@@ -2111,6 +2485,8 @@ def _task_payload(info: tasks_mod.TaskInfo, *, degraded: bool | None = None) -> 
         "archived": info.archived,
         "degraded": info.degraded if degraded is None else degraded,
     }
+    payload.update(_task_roster_projection(info))
+    return payload
 
 
 @app.get("/api/tasks")
@@ -2203,6 +2579,17 @@ def create_task(body: TaskCreateIn, user: dict = Depends(require_user)) -> dict:
             # 的任务目录后以可操作 500 失败，不留半初始化状态。
             shutil.rmtree(info.dir, ignore_errors=True)
             raise HTTPException(500, f"任务初始化失败已回滚，请重试：{exc}") from exc
+        # P18 需求 2：新建可信 fresh 的显式准备与登记——collab 装 F2/F1/
+        # receipts schema 并登记 creation_path="trusted_new_task" protocol 行
+        # （coverage=new_covered），与带历史 task-package 导入（协议行随包
+        # 保留原 instance/library）区分。准备/登记失败不回滚任务创建（任务
+        # 本体已成立；后续可经 legacy adoption 显式补登记），仅如实记日志。
+        try:
+            _register_fresh_team_protocol(info, user)
+        except Exception as exc:  # noqa: BLE001 - 登记失败不造幽灵回滚
+            logger.warning("fresh team protocol registration deferred: "
+                           "task=%s actor=%s: %s", info.task_id,
+                           user["user_id"], exc)
         info = tasks_mod.find_task(info.task_id, DATA_DIR) or info
     except ValueError as exc:
         raise _bad(str(exc), 409) from exc
@@ -2220,20 +2607,89 @@ def _collaboration_store(info: tasks_mod.TaskInfo) -> Path:
     return path
 
 
+def _team_role_http(exc: collaboration_mod.TeamRoleGateError) -> HTTPException:
+    """team 业务角色门的结构化映射（RoB/筛选开关同形：error_code+message_key+params）。"""
+    return HTTPException(exc.status, {
+        "error_code": exc.code, "message_key": exc.message_key,
+        "params": exc.params, "details": str(exc), "message": str(exc)})
+
+
+def _task_is_team(info: tasks_mod.TaskInfo) -> bool:
+    """task_kind==team 的只读判定（角色门/投影用；不进 context 热路径）。
+
+    team_latched 为 append-only——撤销全员的已 latch 团队仍是 team，不能用
+    "当前还有 grant" 替代。永久损坏交全局处理器，锁超时/读失败 503。"""
+    try:
+        return app.state.review_workflow.is_team(info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "任务协作状态暂时无法确认，请稍后重试。") from exc
+
+
 def _screening_allowed(info: tasks_mod.TaskInfo, user: dict) -> bool:
     """该成员当前是否可写初筛/复筛（裁决员「参与筛选」开关）。
 
-    属主、coder、legacy（无协作库）恒为 True；异常口径对齐协作模块契约：
-    永久损坏交全局处理器（desktop 409 修复指引 / server 503）、锁超时/读失败
-    映射 503——绝不折叠成 403 或静默放行。
+    personal/legacy：属主、coder、legacy（无协作库）恒为 True（旧语义零变化）；
+    team（2.1.6 FLOW II-A）：按单一有效业务角色——coder True、reconciler
+    （含属主）按参与开关、未配置/双角色冲突 False（fail-closed）。
+    异常口径对齐协作模块契约：永久损坏交全局处理器（desktop 409 修复指引 /
+    server 503）、锁超时/读失败映射 503——绝不折叠成 403 或静默放行。
     """
     try:
         return collaboration_mod.screening_allowed(
-            _collaboration_store(info), user["user_id"], task_id=info.task_id)
+            _collaboration_store(info), user["user_id"], task_id=info.task_id,
+            team=_task_is_team(info))
     except collaboration_mod.CollaborationStoreCorruptError:
         raise
     except collaboration_mod.OwnerUnavailableError as exc:
         raise HTTPException(503, "筛选参与权状态暂时无法确认，请稍后重试。") from exc
+
+
+def _appraisal_team_role_gate(info: tasks_mod.TaskInfo, user: dict) -> None:
+    """评价写（PUT appraisal）的团队角色门（2.1.6 FLOW II-A，注入 appraisal_api）。
+
+    评价是编码者业务写：team 任务须当前有效 coder（属主同规则——owner
+    reconciler 不得凭管理身份写评价；未配置/冲突给 team.role.* 结构化
+    409/403）。personal/legacy/未关联筛选的手工分析路径零变化（gate 直接
+    返回）。非参与者 403 与既有任务可见性口径衔接。
+    """
+    if not _task_is_team(info):
+        return
+    try:
+        if not collaboration_mod.authorize_team_action(
+                _collaboration_store(info), user["user_id"], "coding:submit",
+                task_id=info.task_id):
+            raise HTTPException(403, "仅当前任务的编码者可以保存评价。")
+    except collaboration_mod.TeamRoleGateError as exc:
+        raise _team_role_http(exc) from exc
+
+
+def _screening_gate(info: tasks_mod.TaskInfo, user: dict) -> None:
+    """筛选写端点的资格门：team 缺角色/冲突给结构化 409，其余沿用布尔 403。"""
+    if not _task_is_team(info):
+        if not _screening_allowed(info, user):
+            raise _screening_disabled_error()
+        return
+    try:
+        permission = collaboration_mod.team_screening_permission(
+            _collaboration_store(info), user_id=user["user_id"], task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "筛选参与权状态暂时无法确认，请稍后重试。") from exc
+    if permission["allowed"]:
+        return
+    if permission["reason"] in ("unconfigured", "conflict"):
+        detail = ("该成员的业务角色尚未配置，请先在成员管理中选择编码者或仲裁者。"
+                  if permission["reason"] == "unconfigured" else
+                  "该成员同时持有编码者与仲裁者授权，请先选择单一有效业务角色。")
+        exc_class = (collaboration_mod.TeamRoleUnconfigured
+                     if permission["reason"] == "unconfigured"
+                     else collaboration_mod.TeamRoleConflict)
+        raise _team_role_http(exc_class(
+            detail, params={"participant": user["user_id"]}))
+    raise _screening_disabled_error()
 
 
 def _screening_allowed_for_read(info: tasks_mod.TaskInfo, user: dict) -> bool:
@@ -2246,17 +2702,39 @@ def _screening_allowed_for_read(info: tasks_mod.TaskInfo, user: dict) -> bool:
         return True
 
 
-def _collaboration_owner_store(task_id: str, user: dict) -> tuple[tasks_mod.TaskInfo, Path]:
+def _collaboration_owner_store(
+    task_id: str, user: dict, *, desktop_team_ok: bool = False,
+) -> tuple[tasks_mod.TaskInfo, Path]:
     """协作管理入口的属主闸门；返回 (规范任务信息, 协作库路径)。
 
     U4-P4：协作管理（邀请/授权/撤销/列表）整体仅服务器模式开放——门禁
     收口在本助手内，覆盖按用户名与按 user_id 的全部入口。
+    fix-r1 R7：``desktop_team_ok=True`` 的调用方（业务角色 GET/PUT、reconciler
+    参与开关）在 desktop 模式对**已确认 team** 的任务放行进入属主校验——
+    desktop 存量 team 必须可达角色配置；属主/身份检查（非属主 403、legacy
+    409）全部保留，其余协作管理端点维持 server-only 404（不笼统放开），
+    desktop 逐条 session 另属后续批次。
     R6-C3/#35：调用方一律以返回的 info.task_id 作为 grant/revoke/list 的
     task_id（尾点别名与规范 id 同任务同键，修复前别名路径 500/折叠 legacy）。
     """
     if not _server_mode():
-        raise HTTPException(404, "团队协作仅在服务器模式下开放。")
+        if not desktop_team_ok:
+            raise HTTPException(404, "团队协作仅在服务器模式下开放。")
+        info = _task_or_404(task_id)
+        if not _task_is_team(info):
+            # 仅放开已确认 team 的角色/参与配置管理；personal/legacy/非 team
+            # 的 desktop 任务维持 404（与协作管理整体口径一致）。
+            raise HTTPException(404, "团队协作仅在服务器模式下开放。")
+        return _collaboration_owner_store_checked(info, user)
     info = _task_or_404(task_id)
+    return _collaboration_owner_store_checked(info, user)
+
+
+def _collaboration_owner_store_checked(
+    info: tasks_mod.TaskInfo, user: dict,
+) -> tuple[tasks_mod.TaskInfo, Path]:
+    """_collaboration_owner_store 的属主校验段（任务已解析；fix-r1 拆分，
+    行为与原内联段逐行一致）。"""
     path = _collaboration_store(info)
     try:
         owner = collaboration_mod.get_owner(path, task_id=info.task_id)
@@ -2339,7 +2817,16 @@ def _run_coding_freeze(info: tasks_mod.TaskInfo, user: dict,
     if type(freeze_id) is not int or freeze_id <= 0:
         raise _bad("Invalid coding freeze ID.")
     store = _collaboration_store(info)
-    if not collaboration_mod.authorize_action(
+    # 2.1.6 FLOW II-A：team 按有效角色（consensus:read→reconciler）；冻结
+    # 引用是共识定稿提交路径的组成部分（写路径），不套 R-1 管理读例外。
+    if _task_is_team(info):
+        try:
+            if not collaboration_mod.authorize_team_action(
+                    store, user["user_id"], "consensus:read", task_id=info.task_id):
+                raise HTTPException(403, "Task coding access denied.")
+        except collaboration_mod.TeamRoleGateError as exc:
+            raise _team_role_http(exc) from exc
+    elif not collaboration_mod.authorize_action(
             store, user["user_id"], "consensus:read", task_id=info.task_id):
         raise HTTPException(403, "Task coding access denied.")
     freeze = get_freeze(store, freeze_id)
@@ -2444,6 +2931,16 @@ def collaboration_rebind_owner(task_id: str, body: CollaborationRebindIn,
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         tasks_mod.register_screener(info.task_id, user["username"], DATA_DIR)
+        # P18：repair/rebind 链的显式准备与登记——rebind 重建的协作库是全新
+        # 库，登记 creation_path="trusted_new_task"（与 create_task 同款）；
+        # 此时 owner 尚未选业务角色也能用（登记不依赖业务角色）。失败不回滚
+        # 已完成的属主登记（rebind 语义已成立），仅如实记日志。
+        try:
+            _register_fresh_team_protocol(info, user)
+        except Exception as exc:  # noqa: BLE001 - 登记失败不撤销已成立 rebind
+            logger.warning("rebind team protocol registration deferred: "
+                           "task=%s actor=%s: %s", info.task_id,
+                           user["user_id"], exc)
     logger.warning("Legacy task ownership rebound: task=%s actor=%s username=%s",
                    info.task_id, user["user_id"], user["username"])
     # r6 第二轮复查（属主转移可见性）：认领闸门只能区分"历史参与者"，无法区分
@@ -2501,8 +2998,294 @@ def _reject_reserved_screener_collision(target: dict) -> None:
                                   "message": COLLABORATION_RESERVED_NAME_MESSAGE})
 
 
+# ---------------------------------------------------------------------------
+# P18（C12 作者侧）：五管理端点统一管理协调器接线
+# ---------------------------------------------------------------------------
+
+#: 五入口词 → P14 ``run_team_management`` action 参数的归并映射表（P14 遗留 b
+#: 的 P18 落地）：invite/grant 均归并到 add（授权即进名册）；screening-toggle
+#: 归并到 toggle；revoke 归并到 remove；business-role 归并到 business_role。
+#: 本表是入口词归并的唯一权威——五端点不得各自硬编码 action 字符串。
+TEAM_MANAGEMENT_ACTION_ALIASES = {
+    "invite": "add",
+    "grant": "add",
+    "screening-toggle": "toggle",
+    "toggle": "toggle",
+    "revoke": "remove",
+    "business-role": "business_role",
+    "business_role": "business_role",
+}
+
+
+def _team_management_action(entry_word: str) -> str:
+    """五入口词归并查表（P14 遗留 b）；未知入口词显式拒绝（不静默猜测）。"""
+    action = TEAM_MANAGEMENT_ACTION_ALIASES.get(entry_word)
+    if action is None:
+        raise ValueError(f"unknown team management entry word: {entry_word!r}")
+    return action
+
+
+def _team_management_http_error(exc: Exception) -> HTTPException:
+    """P14 协调器/窗口 typed 异常 → 结构化 HTTP（口径对齐既有管理端点）。"""
+    from custom_backend.team_source_lifecycle import TeamManagementError
+    if isinstance(exc, TeamManagementError):
+        detail = str(exc)
+        if exc.code == "not_owner":
+            return HTTPException(403, "Only the task owner can manage collaborators.")
+        if exc.code in ("invalid_action", "invalid_target", "invalid_user"):
+            return _bad(detail, 400)
+        if exc.code == "invalid_payload":
+            return _bad(detail, 400)
+        return HTTPException(503, detail)
+    from coscreen.team_flow_receipts import TeamFlowReceiptConflict
+    if isinstance(exc, TeamFlowReceiptConflict):
+        # 同 request_id 异内容：与成员写回执冲突同语义（C09）409。
+        return HTTPException(409, f"管理请求回执冲突：{exc}")
+    from custom_backend.team_screening_write import TeamFlowUnavailableError
+    if isinstance(exc, TeamFlowUnavailableError):
+        return HTTPException(503, f"团队协作状态暂时无法确认，请稍后重试：{exc}")
+    return HTTPException(503, f"团队管理操作暂时不可用：{exc}")
+
+
+def _run_team_management_entry(entry_word: str, info, user, *, target_user_id: int,
+                               payload: dict | None,
+                               x_request_id: str | None = None) -> dict:
+    """五管理端点的统一协调器入口（P18 需求 1）。
+
+    - 入口词经 :data:`TEAM_MANAGEMENT_ACTION_ALIASES` 归并（遗留 b）；
+    - ``workflow_runtime`` 显式注入（``app.state.review_workflow``，P17 遗留 c
+      的协调器侧）：不依赖被调方惰性解析；
+    - 请求指纹（X-Request-Id 或服务端 uuid4 + canonical JSON sha256）与成员
+      写同约定（C09 回执幂等/冲突）；
+    - 返回信封 ``membership_committed`` 只反映 collab 单目标事务的提交事实
+      （角色与 F1/F2/revision/receipt 同一 collab commit）；外部副作用（账号/
+      源准备）不进入该承诺——角色失败时 ``membership_committed is False``，
+      绝不声称先前账号创建也被回滚（不伪跨库原子）。
+    """
+    from custom_backend import team_source_lifecycle as team_lifecycle
+    action = _team_management_action(entry_word)
+    payload_id, payload_sha = member_request_fingerprint(
+        x_request_id, {"task_id": info.task_id, "route": "team-management",
+                       "entry": entry_word, "target_user_id": target_user_id,
+                       "payload": dict(payload or {})})
+    try:
+        outcome = team_lifecycle.run_team_management(
+            app.state.review_workflow,  # workflow_runtime 显式注入（遗留 c）
+            info, user, action=action, target_user_id=target_user_id,
+            payload=payload, request_id=payload_id, request_sha256=payload_sha)
+    except Exception as exc:  # noqa: BLE001 - typed 映射；未知类型如实 503
+        if isinstance(exc, collaboration_mod.CollaborationStoreCorruptError):
+            raise
+        if isinstance(exc, HTTPException):
+            # S-1（修轮）：P10 窗口自身的结构化 409（write_plan_drift/
+            # catalog_sync_stale 等）与 403/400 原样透传——绝不改铸 503。
+            # drift 家族统一按 P15/P17 惯例回 409 task_mode_changed 信封
+            # （保留原 code 供诊断）。
+            if exc.status_code == 409 and isinstance(exc.detail, dict) \
+                    and exc.detail.get("code") in (
+                        "write_plan_drift", "catalog_sync_stale"):
+                raise HTTPException(409, {
+                    "code": "task_mode_changed",
+                    "message_key": "team.flow.task_mode_changed",
+                    "params": {},
+                    "details": str(exc.detail.get("code")),
+                }) from exc
+            raise
+        http_error = _team_management_http_error(exc)
+        if http_error.status_code >= 500:
+            # 角色提交失败（拒绝/不可用）：503 家族一律携带部分真相信封——
+            # ``membership_committed is False``，且绝不声称先前账号创建被回滚
+            # （外部副作用不进入角色原子性承诺）。
+            base = (http_error.detail
+                    if isinstance(http_error.detail, dict) else {})
+            raise HTTPException(503, {
+                "error_code": "team_management_uncommitted",
+                "message_key": "team.management_uncommitted",
+                "params": {},
+                "details": str(exc),
+                "message": "角色提交未完成；已完成的准备不会被回滚。",
+                **base,
+                **_management_partial_truth_body(
+                    {"request_id": payload_id, "entry": entry_word,
+                     "action": action}, None),
+            }) from exc
+        raise http_error from exc
+    return {
+        "entry": entry_word,
+        "action": action,
+        "request_id": payload_id,
+        "membership_committed": outcome.get("outcome") == "committed",
+        "idempotent": bool(outcome.get("idempotent", False)),
+        "outcome": outcome,
+    }
+
+
+def _management_partial_truth_body(envelope: dict, prepare: dict | None) -> dict:
+    """角色提交失败时的部分真相信封（P18 断言锚）：外部副作用不进入角色
+    原子性承诺——``membership_committed is False``，且账号/库准备事实按实际
+    观察上报（先前已创建的账号/库不会被声称「已回滚」）。"""
+    body = {
+        "membership_committed": False,
+        "role_committed": False,
+        "request_id": envelope.get("request_id"),
+        "entry": envelope.get("entry"),
+        "action": envelope.get("action"),
+    }
+    if prepare is not None:
+        body["account_created"] = prepare.get("account_created", False)
+        body["library_prepared"] = prepare.get("library_prepared", False)
+    return body
+
+
+def _prepare_invited_member_storage(info, target: dict) -> dict:
+    """P18 成员准备期（invite/grant 角色提交后、锁外；P17 遗留 c）。
+
+    显式注入宿主解析器并调用 appraisal 的 prepare 入口
+    （``prepare_appraisal_storage_for``，appraisal_api=688140ba），再经 P14
+    ``prepare_team_protocol_storage`` 在成员个人库准备 F1/receipts schema。
+    全部准备为幂等显式步骤：任何失败只如实置 ``library_prepared=False`` 并
+    记录 ``prepare_error``——不回滚已提交的角色（collab commit 独立完成），
+    也不假装跨库原子。业务请求（成员写）不经此处、不顺手 prepare。
+    """
+    from custom_backend import team_source_lifecycle as team_lifecycle
+    from custom_backend.appraisal_api import prepare_appraisal_storage_for
+    slug = tasks_mod.slugify_screener(target["username"])
+    member_db = info.dir / f"{slug}.db"
+    existed_before = member_db.exists()
+    library_prepared = False
+    prepare_error = None
+    try:
+        # P17 遗留 c：appraisal prepare 入口显式调用（宿主 screener_db 注入）。
+        prepare_appraisal_storage_for(info, target["username"], _screener_db)
+        team_lifecycle.prepare_team_protocol_storage(
+            collab_path=_collaboration_store(info), source_paths=(member_db,))
+        library_prepared = True
+    except Exception as exc:  # noqa: BLE001 - 准备失败不回滚角色、不阻断响应
+        logger.warning("member storage prepare failed: task=%s member=%s: %s",
+                       info.task_id, target["username"], exc)
+        prepare_error = f"{type(exc).__name__}: {exc}"
+    return {
+        "account_created": (not existed_before) and member_db.exists(),
+        "library_prepared": library_prepared,
+        "prepare_error": prepare_error,
+    }
+
+
+def _register_fresh_team_protocol(info, user) -> dict:
+    """创建/rebind 的显式准备与登记（P18 需求 2：fresh 可信来源标记）。
+
+    在 collab 上装 F2 registry+receipts+F1 facts（P14 显式 prepare），随后以
+    借用写连接登记 protocol 行（``creation_path="trusted_new_task"`` →
+    coverage_state=new_covered）。owner_library_id 取 owner 个人库的真实
+    ledger 身份（库已存在时），缺省回退确定性 uid 十六进制（与成员库登记
+    约定一致）。幂等：已有同绑定 protocol 行原样保留（不换 instance）。
+    """
+    import sqlite3 as _sqlite3
+    from contextlib import closing as _closing
+    from custom_backend import team_source_lifecycle as team_lifecycle
+    from coscreen import team_terminal_registry as _registry
+    from coscreen.team_vote_ledger import library_identity_header_on
+    collab_path = _collaboration_store(info)
+    team_lifecycle.prepare_team_protocol_storage(
+        collab_path=collab_path, source_paths=())
+    owner_uid = int(user["user_id"])
+    slug = tasks_mod.slugify_screener(user["username"])
+    owner_db = info.dir / f"{slug}.db"
+    # S-3（修轮）：owner_library_id 必须是 owner 个人库的**真实** P04 账本身份
+    # （init_db 安装账本时生成新 UUID；registry 身份守卫使登记后不可改）。
+    # 库未建时以产品标准原语 init_db 幂等建库（与成员库准备同款），再读真实
+    # 身份登记——绝不登记猜想的占位值（旧 uid-hex 回退会与真实身份永久背离，
+    # 且账本已装库不覆写）。读取失败如实上抛（登记失败交调用方记日志不回滚）。
+    if not owner_db.is_file():
+        from coscreen import db as _cdb
+        _cdb.init_db(owner_db)
+    conn = _sqlite3.connect(str(owner_db), timeout=15)
+    try:
+        conn.row_factory = sqlite3.Row  # C02 借用合同：Row 工厂＋活动事务
+        conn.execute("BEGIN")
+        header = library_identity_header_on(conn)
+    finally:
+        conn.close()
+    owner_library = (header.library_id if header is not None else None)
+    if not owner_library:
+        raise ValueError(
+            "owner ledger identity unavailable after init_db: "
+            f"{owner_db.name}")
+    instance = f"{info.task_id}-inst-{uuid.uuid4().hex[:12]}"
+    conn = _sqlite3.connect(str(collab_path), timeout=15)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT task_instance_id FROM main.team_task_protocol"
+            " WHERE task_id = ?", (info.task_id,)).fetchone()
+        if existing is not None:
+            conn.commit()
+            return {"registered": False, "task_instance_id": existing["task_instance_id"],
+                    "reason": "protocol_already_registered"}
+        record = _registry.register_protocol_on(
+            conn, task_id=info.task_id, task_instance_id=instance,
+            owner_user_id=owner_uid, owner_library_id=owner_library,
+            creation_path="trusted_new_task")
+        conn.commit()
+        return {"registered": True,
+                "task_instance_id": record["task_instance_id"],
+                "creation_path": "trusted_new_task",
+                "owner_library_id": owner_library}
+    finally:
+        conn.close()
+
+
+def _member_still_engaged(info, path, user, target_user_id: int) -> bool:
+    """撤销后目标是否仍在名册（属主或有剩余 grant）；读取失败保守 True。"""
+    target = auth.get_user_by_id(target_user_id)
+    if not target:
+        return True
+    try:
+        owner = collaboration_mod.get_owner(path, task_id=info.task_id)
+        remaining = collaboration_mod.list_role_grants(
+            path, actor_user_id=user["user_id"], task_id=info.task_id)
+        return (owner is not None and owner["owner_user_id"] == target_user_id) \
+            or any(g["user_id"] == target_user_id for g in remaining)
+    except (collaboration_mod.OwnerUnavailableError, PermissionError, ValueError):
+        return True  # 读取失败时保守不回收（保持登记，可重试收敛）
+
+
+def _post_revoke_file_cleanup(info, path, user, target_user_id: int,
+                              revoked_truthy: bool) -> dict:
+    """撤销后的旧文件收尾（P18 需求 2/3）：commit 后可选，不影响名册语义。
+
+    - ``revoked_truthy`` 为假（revoke:false——目标本无该 grant）时**零新增文件
+      动作**：不回收 screener 登记、不改名隔离个人库；
+    - 收尾（unregister/quarantine rename）只在协调器 commit 之后执行，失败
+      仅记日志——活动名单语义以 collab 提交事实为准，rename 成功与否不改变
+      响应中的名册/撤销事实。
+    """
+    cleanup = {"screener_unregistered": False, "member_db_renamed": False,
+               "cleanup_error": None}
+    if not revoked_truthy:
+        return cleanup
+    if _member_still_engaged(info, path, user, target_user_id):
+        return cleanup
+    target = auth.get_user_by_id(target_user_id)
+    if target is None:
+        return cleanup
+    try:
+        tasks_mod.unregister_screener(info.task_id, target["username"], DATA_DIR)
+        cleanup["screener_unregistered"] = True
+    except (ValueError, OSError) as exc:
+        cleanup["cleanup_error"] = f"unregister: {exc}"
+    try:
+        cleanup["member_db_renamed"] = _quarantine_member_db(
+            info, target["username"])
+    except OSError as exc:
+        cleanup["cleanup_error"] = f"quarantine: {exc}"
+    return cleanup
+
+
 @app.post("/api/tasks/{task_id}/collaboration/invite", status_code=201)
 def collaboration_invite(task_id: str, body: CollaborationInviteIn,
+                         x_request_id: str | None = Header(default=None, max_length=128),
                          user: dict = Depends(require_user)) -> dict:
     if not _server_mode():
         raise HTTPException(404, "团队协作仅在服务器模式下开放。")
@@ -2511,6 +3294,31 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
     if target is None:
         raise HTTPException(404, "该账号不存在。请对方先在此服务器注册。")
     _reject_reserved_screener_collision(target)
+    if _task_is_team(info):
+        # P18：team 任务五管理入口统一走 P14 协调器——owner 先授权（collab
+        # 单目标事务：角色+F1/F2/revision/receipt 同 commit），后账号/源准备
+        # （锁外显式 prepare）；返回区分三段事实，不伪跨库原子。
+        envelope = _run_team_management_entry(
+            "invite", info, user, target_user_id=target["id"],
+            payload={"role": body.role, "username": target["username"]},
+            x_request_id=x_request_id)
+        if not envelope["membership_committed"]:
+            raise HTTPException(503, {"error_code": "team_management_uncommitted",
+                                      "message_key": "team.management_uncommitted",
+                                      "params": {}, "details": "role commit failed",
+                                      "message": "角色提交未完成；已完成的准备不会被回滚。",
+                                      **_management_partial_truth_body(envelope, None)})
+        prepare = _prepare_invited_member_storage(info, target)
+        tasks_mod.register_screener(info.task_id, target["username"], DATA_DIR)
+        notify_tasks_changed(target["id"], "invited", info.display_name)
+        grant = envelope["outcome"]["result"]["writer"]
+        return {"grant": {**grant, "username": target["username"]},
+                "membership_committed": True,
+                "role_committed": True,
+                "account_created": prepare["account_created"],
+                "library_prepared": prepare["library_prepared"],
+                "prepare_error": prepare["prepare_error"]}
+    # 旧维护路径保留（personal/首邀请未 latch 任务；字节不变）。
     with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=target["id"],
@@ -2519,6 +3327,117 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
     tasks_mod.register_screener(info.task_id, target["username"], DATA_DIR)
     notify_tasks_changed(target["id"], "invited", info.display_name)
     return {"grant": {**grant, "username": target["username"]}}
+
+
+# ---------------------------------------------------------------------------
+# P24（C12 作者侧）：postcommit SSE 事件、任务卡活动投影接缝与 unknown 收口
+# ---------------------------------------------------------------------------
+
+#: C11 契约：写后通知复用 ``task-workflow-changed``，``change_kind`` 只允许
+#: 这四种语义（事件不含个人票；任务卡活动投影按窄 change_kind 消费）。
+TEAM_WORKFLOW_CHANGE_KINDS = frozenset({"vote", "completion", "roster", "arbitration"})
+
+
+def _team_unknown_outcome_http(envelope) -> HTTPException:
+    """P24 前置 d（P16 复审裁定）：``outcome != 'committed'`` 的 mutate 信封
+    → 显式结构化 409（P17 已立惯例，appraisal/coding_consensus 同码同形）。
+
+    修复前 P16 路由把 unknown 信封吞成 ``saved: True`` + null 业务载荷——
+    客户端误信已保存或误判失败重放。幂等 receipt 保证同 request_id 重试安全。
+    """
+    request_id = envelope.get("request_id") if isinstance(envelope, dict) else None
+    details = (envelope.get("error") if isinstance(envelope, dict) else None
+               ) or "commit outcome could not be determined"
+    return HTTPException(409, {
+        "code": "team_flow_unknown_outcome",
+        "message_key": "team.flow.unknown_outcome",
+        "params": {"request_id": request_id},
+        "details": details,
+        "message": "提交结果暂不可判定（可能已提交）；请使用相同请求编号重试以确认结果。",
+        "retryable": True,
+    })
+
+
+def _notify_team_workflow_changed(info: tasks_mod.TaskInfo, user: dict, *, stage: str,
+                                  item_keys, change_kind: str, reason: str) -> None:
+    """P24 需求 3：成功实际 commit 且写窗（锁）已释后的 ``task-workflow-changed``。
+
+    - 只在 mutate 信封 ``outcome == 'committed'`` 返回**之后**调用（P13 窗口
+      已退出、锁已释放）；失败/rollback 路径从不经过本函数；
+    - 通知失败只记日志，绝不重放 writer（BUS.publish 线程安全、满队丢旧）；
+    - 名单=窄投影：参与者快照读取失败时只发操作者本人（不回滚已提交业务写）；
+    - 事件不含个人票（无 decision/value/votes 字段）。
+    """
+    if change_kind not in TEAM_WORKFLOW_CHANGE_KINDS:
+        raise ValueError(
+            f"change_kind must be one of {sorted(TEAM_WORKFLOW_CHANGE_KINDS)}")
+    event = {"type": "task-workflow-changed", "task_id": info.task_id,
+             "stage": stage, "item_keys": [str(k) for k in item_keys],
+             "change_kind": change_kind, "reason": reason}
+    try:
+        participant_ids = collaboration_mod.list_participant_ids(
+            _collaboration_store(info), actor_user_id=user["user_id"],
+            task_id=info.task_id)
+    except (collaboration_mod.OwnerUnavailableError,
+            collaboration_mod.CollaborationStoreCorruptError,
+            PermissionError, ValueError) as exc:
+        logger.warning("task %s workflow-changed 名单窄投影降级（只发操作者）：%s",
+                       info.task_id, exc)
+        participant_ids = [user["user_id"]]
+    for uid in participant_ids:
+        try:
+            BUS.publish(uid, event)
+        except Exception as exc:  # noqa: BLE001 —— 通知失败不重放 writer
+            logger.warning("task %s workflow-changed 通知失败（不重放）：%s",
+                           info.task_id, exc)
+
+
+def _member_mutate_notified(runtime, info, user, *, op_name: str, stage: str,
+                            key: str, expected_version, request_id: str,
+                            request_sha256: str, writer, change_kind: str,
+                            reason: str | None = None):
+    """P24 接线（main.py 路由侧）：P16 ``member_mutate`` 的信封感知后继。
+
+    与 ``member_mutate`` 同参构造服务端 ``TeamOperation``（客户端载荷绝不充当
+    路由键），差异三点：
+    1. unknown 信封 → 409 ``team_flow_unknown_outcome``（前置 d，P17 惯例）；
+    2. 成功 commit 且锁释后发 ``task-workflow-changed`` SSE（需求 3）；
+    3. 返回 ``(业务载荷, envelope_headers)``——路由层把 P15 信封头
+       （X-Request-Id/X-Receipt-Id/X-Idempotent-Replay）透传到真实 HTTP 响应
+       （前置 c/S3）。writer 结果进 receipt 前递归字符串键化（P07 契约，
+       与 member_mutate 的 canonical_writer 同实现口径）。
+    """
+    from coscreen.team_flow_types import TeamOperation
+
+    def _string_keys(value):
+        if isinstance(value, dict):
+            return {k if isinstance(k, str) else str(k): _string_keys(v)
+                    for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_string_keys(item) for item in value]
+        return value
+
+    envelope = runtime.mutate(
+        info.task_id, user,
+        operation=TeamOperation(name=op_name, stage=stage,
+                                expected_version=expected_version),
+        item_keys=(key,), request_id=request_id, request_sha256=request_sha256,
+        writer=lambda ctx: _string_keys(writer(ctx)))
+    if not isinstance(envelope, dict) or envelope.get("outcome") != "committed":
+        raise _team_unknown_outcome_http(envelope)
+    result = envelope.get("result")
+    payload = (result["writer"]
+               if isinstance(result, dict) and "writer" in result else result)
+    headers = envelope.get("headers") if isinstance(envelope, dict) else None
+    # 锁外通知：mutate 返回即 P13 写窗已退出（成功 commit）；失败/unknown
+    # 从不走到这里。通知失败在 _notify_team_workflow_changed 内部消化。
+    # 幂等重放（同 request_id 命中既有回执）不重复广播——重放只回放业务
+    # 结果，不重放事件（消费端按事件刷新，重放会造成伪活动脉冲）。
+    if not envelope.get("idempotent"):
+        _notify_team_workflow_changed(info, user, stage=stage, item_keys=(key,),
+                                      change_kind=change_kind,
+                                      reason=reason or op_name)
+    return payload, dict(headers) if isinstance(headers, dict) else {}
 
 
 @app.get("/api/tasks/{task_id}/team-progress")
@@ -2547,7 +3466,12 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
-    members = list_team_progress(info.task_id, list(user_ids), DATA_DIR, owner_db=_coding_owner_db(info))
+    # 冻结裁定（问题①）：只读仲裁会话汇总随行输出（member.arbitration.*；
+    # 缺会话/缺映射 = 两阶段零值；绝不带队列条目/votes/筛选员姓名）。
+    members = list_team_progress(info.task_id, list(user_ids), DATA_DIR,
+                                 owner_db=_coding_owner_db(info),
+                                 collaboration_store=store,
+                                 arbitration_user_ids=user_ids)
     grants = collaboration_mod.list_role_grants(store, actor_user_id=owner['owner_user_id'], task_id=info.task_id)
     # R2：属主读取前完成一次性回填（升级前 reconciler -> 开），再批量取开关；
     # 非 reconciler（含属主）恒为 True，不受该开关约束。回填只在属主请求时
@@ -2562,16 +3486,23 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
             # team-progress 读变成 503（标记写入可在下次属主请求重试）。
             logger.warning("Screening backfill deferred for task %s (store busy)", info.task_id)
     screening_flags = collaboration_mod.list_screening_flags(store, task_id=info.task_id)
+    # P24 需求 3（team-progress 当前补充）：窄活动名单投影与历史口径并存——
+    # ``members``/``grants`` 等历史身份视图字节不变（历史身份/raw 导出不全局
+    # 删），新增键只给"当前在册"窄投影（与任务卡 active_screeners 同源同形；
+    # 读取失败按 _task_roster_projection 的省略键口径，绝不伪装空名单）。
+    roster_projection = _task_roster_projection(info)
     return {"members": [{**member, "user_id": user_ids[member["username"]],
                          "roles": sorted({g['role'] for g in grants if g['user_id'] == user_ids[member["username"]]}),
                          "screening_enabled": screening_flags.get(user_ids[member["username"]], True)}
                         for member in members],
             "can_manage": can_manage, "owner_user_id": owner["owner_user_id"],
-            "grants": grants if can_manage else []}
+            "grants": grants if can_manage else [],
+            **roster_projection}
 
 
 @app.post("/api/tasks/{task_id}/collaboration/roles", status_code=201)
 def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
+                             x_request_id: str | None = Header(default=None, max_length=128),
                              user: dict = Depends(require_user)) -> dict:
     info, path = _collaboration_owner_store(task_id, user)
     target = auth.get_user_by_id(body.user_id)
@@ -2582,6 +3513,29 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
     # U4-P2 复审 #29/#34：按 user_id 授权口对目标用户名做保留名校验（存量
     # 撞名账号同口径拒绝），否则绕过用户名邀请口把撞名账号拉入协作。
     _reject_reserved_screener_collision(target)
+    if _task_is_team(info):
+        # P18：统一协调器（invite 同款信封；grant→add 归并见映射表）。
+        envelope = _run_team_management_entry(
+            "grant", info, user, target_user_id=body.user_id,
+            payload={"role": body.role, "username": target["username"]},
+            x_request_id=x_request_id)
+        if not envelope["membership_committed"]:
+            raise HTTPException(503, {"error_code": "team_management_uncommitted",
+                                      "message_key": "team.management_uncommitted",
+                                      "params": {}, "details": "role commit failed",
+                                      "message": "角色提交未完成；已完成的准备不会被回滚。",
+                                      **_management_partial_truth_body(envelope, None)})
+        prepare = _prepare_invited_member_storage(info, target)
+        tasks_mod.register_screener(info.task_id, target["username"], DATA_DIR)
+        notify_tasks_changed(body.user_id, "invited", info.display_name)
+        grant = envelope["outcome"]["result"]["writer"]
+        return {"grant": {**grant, "username": target["username"]},
+                "membership_committed": True,
+                "role_committed": True,
+                "account_created": prepare["account_created"],
+                "library_prepared": prepare["library_prepared"],
+                "prepare_error": prepare["prepare_error"]}
+    # 旧维护路径保留（字节不变）。
     with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=body.user_id,
@@ -2594,25 +3548,47 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
 @app.put("/api/tasks/{task_id}/collaboration/members/{target_user_id}/screening")
 def collaboration_set_member_screening(
     task_id: str, target_user_id: int, body: CollaborationMemberScreeningIn,
+    x_request_id: str | None = Header(default=None, max_length=128),
     user: dict = Depends(require_user),
 ) -> dict:
     """负责人按成员开关裁决员的初筛/复筛参与权（R2）。
 
-    仅属主可写（`_collaboration_owner_store`：非属主 403、desktop 404、
-    legacy 409）；目标无 reconciler 授权 -> 400。写操作留痕（updated_by/
-    updated_at）。异常口径对齐协作模块：锁/读失败 503、永久损坏交全局处理器。
+    仅属主可写（`_collaboration_owner_store`：非属主 403、legacy 409；
+    fix-r1 R7：desktop 已确认 team 可达；desktop 非 team 404）；目标无
+    reconciler 授权 -> 400。写操作留痕（updated_by/updated_at）。fix-r1 R5：
+    写入与筛选业务写共享 canonical task 锁（write_guard 同锁），消灭
+    "检查后关参与、在途筛选写仍落盘"窗口。异常口径对齐协作模块：锁/读失败
+    503、永久损坏交全局处理器。
+
+    P18：team 任务统一经 P14 协调器（screening-toggle→toggle 归并）；旧维护
+    路径对非 team 任务原样保留。
     """
-    info, path = _collaboration_owner_store(task_id, user)
+    info, path = _collaboration_owner_store(task_id, user, desktop_team_ok=True)
     target = auth.get_user_by_id(target_user_id)
     if target is None:
         raise HTTPException(400, {"error_code": "collaborator_not_found",
                                   "message_key": "coding.collaborator_not_found", "params": {},
                                   "details": "Account ID does not exist",
                                   "message": "Account ID does not exist"})
+    if _task_is_team(info):
+        envelope = _run_team_management_entry(
+            "screening-toggle", info, user, target_user_id=target_user_id,
+            payload={"enabled": body.screening_enabled},
+            x_request_id=x_request_id)
+        if not envelope["membership_committed"]:
+            raise HTTPException(503, {"error_code": "team_management_uncommitted",
+                                      "message_key": "team.management_uncommitted",
+                                      "params": {}, "details": "toggle commit failed",
+                                      "message": "开关提交未完成；已完成的准备不会被回滚。",
+                                      **_management_partial_truth_body(envelope, None)})
+        settings = envelope["outcome"]["result"]["writer"]
+        return {"member": {**settings, "username": target["username"]},
+                "membership_committed": True}
     try:
-        settings = collaboration_mod.set_member_screening(
-            path, actor_user_id=user["user_id"], user_id=target_user_id,
-            enabled=body.screening_enabled, task_id=info.task_id)
+        with app.state.review_workflow.lock(info.task_id):
+            settings = collaboration_mod.set_member_screening(
+                path, actor_user_id=user["user_id"], user_id=target_user_id,
+                enabled=body.screening_enabled, task_id=info.task_id)
     except PermissionError as exc:
         raise HTTPException(403, "Only the task owner can manage collaborators.") from exc
     except ValueError as exc:
@@ -2621,19 +3597,20 @@ def collaboration_set_member_screening(
 
 
 
-def _quarantine_member_db(info: tasks_mod.TaskInfo, username: str) -> None:
+def _quarantine_member_db(info: tasks_mod.TaskInfo, username: str) -> bool:
     """把被撤销成员的个人库改名隔离（r6 #37，尽力而为、不删数据）。
 
     改名后文件不再匹配 screener_options 的 ``{slug}.db`` 兜底 glob，被撤成员
     不再以乱理 slug 形态出现在筛选员名单；数据保留（``{slug}.db.revoked-{ts}``，
     可手工改回），再次邀请时按原名新建个人库。文件被占用（Windows 上连接未
-    释放）等失败静默跳过——名单残留可由重复撤销/重试收敛。"""
+    释放）等失败不删数据、返回 False（P18：调用方据此如实上报 rename 成败，
+    名单语义不受影响）。"""
     slug = tasks_mod.slugify_screener(username)
     db = info.dir / f"{slug}.db"
     if not db.is_file() or db.is_symlink() or not is_within(db, info.dir):
-        return
+        return False
     if f"{slug}.db".casefold() == collaboration_mod.DB_FILENAME.casefold():
-        return  # 保留名（协作库本身）不适用本路径
+        return False  # 保留名（协作库本身）不适用本路径
     stamp = time.strftime("%Y%m%d-%H%M%S")
     target = db.with_name(f"{db.name}.revoked-{stamp}")
     suffix = 1
@@ -2647,14 +3624,40 @@ def _quarantine_member_db(info: tasks_mod.TaskInfo, username: str) -> None:
             if side.is_file():
                 side.rename(target.with_name(target.name + sidecar))
     except OSError:
-        pass
+        return False
+    return True
 
 
 @app.delete("/api/tasks/{task_id}/collaboration/roles/{target_user_id}/{role}")
 def collaboration_revoke_role(task_id: str, target_user_id: int,
                               role: Literal["coder", "reconciler"],
+                              x_request_id: str | None = Header(default=None, max_length=128),
                               user: dict = Depends(require_user)) -> dict:
     info, path = _collaboration_owner_store(task_id, user)
+    if _task_is_team(info):
+        # P18：team 任务撤销统一经协调器（revoke→remove）。旧文件收尾只在
+        # commit 后可选执行（_post_revoke_file_cleanup）；revoke:false（目标
+        # 本无该 grant）不新增任何文件动作；rename 成败不影响名册语义。
+        envelope = _run_team_management_entry(
+            "revoke", info, user, target_user_id=target_user_id,
+            payload={"role": role}, x_request_id=x_request_id)
+        if not envelope["membership_committed"]:
+            raise HTTPException(503, {"error_code": "team_management_uncommitted",
+                                      "message_key": "team.management_uncommitted",
+                                      "params": {}, "details": "revoke commit failed",
+                                      "message": "撤销提交未完成；已完成的准备不会被回滚。",
+                                      **_management_partial_truth_body(envelope, None)})
+        writer = envelope["outcome"]["result"]["writer"]
+        revoked = bool(writer.get("revoked"))
+        cleanup = _post_revoke_file_cleanup(info, path, user, target_user_id,
+                                            revoked_truthy=revoked)
+        if revoked:
+            notify_tasks_changed(target_user_id, "revoked", info.display_name)
+        return {"revoked": revoked,
+                "membership_committed": True,
+                "roster_revision": envelope["outcome"].get("roster_revision"),
+                "file_cleanup": cleanup}
+    # 旧维护路径保留（字节不变）。
     with app.state.review_workflow.lock(info.task_id):
         app.state.review_workflow.latch_team(info.task_id, user)
         revoked = collaboration_mod.revoke_role(
@@ -2690,6 +3693,113 @@ def collaboration_revoke_role(task_id: str, target_user_id: int,
                 _quarantine_member_db(info, target["username"])
         notify_tasks_changed(target_user_id, "revoked", info.display_name)
     return {"revoked": revoked}
+
+
+@app.get("/api/tasks/{task_id}/collaboration/business-role")
+def collaboration_business_roles(task_id: str,
+                                 user: dict = Depends(require_user)) -> dict:
+    """单一有效业务角色清单（2.1.6 FLOW II-A；属主管理门，纯读不建表）。
+
+    属主与全部当前 grant 持有者逐人给出有效角色派生（choice/grant/未配置/
+    冲突）与 grants 来源；已移除者的残留 choice 不出现（choice 不授成员权）。
+    """
+    info, path = _collaboration_owner_store(task_id, user, desktop_team_ok=True)
+    try:
+        rows = collaboration_mod.list_business_roles(
+            path, actor_user_id=user["user_id"], task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except collaboration_mod.OwnerUnavailableError as exc:
+        raise HTTPException(503, "业务角色状态暂时无法确认，请稍后重试。") from exc
+    for row in rows:
+        account = auth.get_user_by_id(row["user_id"])
+        row["username"] = account["username"] if account else None
+    return {"roles": rows}
+
+
+@app.put("/api/tasks/{task_id}/collaboration/business-role/{target_user_id}")
+def collaboration_set_business_role(task_id: str, target_user_id: int,
+                                    body: BusinessRoleIn,
+                                    x_request_id: str | None = Header(default=None, max_length=128),
+                                    user: dict = Depends(require_user)) -> dict:
+    """配置单一有效业务角色（属主管理门；单事务原子互斥 + append-only 审计）。
+
+    - 目标须为属主本人或当前 grant 持有者——choice 不授予已移除/未知账号
+      成员权（400 team.role.invalid，params.participant 区分）；
+    - 成员切换到尚无 grant 的角色=本次显式授权：同一事务补齐 grant+choice+
+      审计，旧 grant 保留为历史但不再绕过有效单选；
+    - 属主选择 reconciler 后可经成员参与开关端点配置自己的开关（同角色同权）；
+    - SSE 向全部参与者广播 team-role-changed（canonical task_id）；
+    - fix-r1 R7：desktop 已确认 team 可达（desktop_team_ok）；fix-r1 R11：
+      非法 business_role 字符串（空串/空白/超长/未知值）端点 400
+      ``team.role.invalid``（回显截断至 64 字符），非字符串/缺失 422。
+    - P18：team 任务统一经 P14 协调器（business-role→business_role 归并）；
+      owner 未选业务角色时配置仍可用（协调器不要求既有 choice）；旧路径对
+      非 team 任务原样保留。
+    """
+    info, path = _collaboration_owner_store(task_id, user, desktop_team_ok=True)
+    if body.business_role not in ("coder", "reconciler"):
+        # R11：不在 pydantic 层拦非法值——统一约定 400 结构化（Literal 曾把
+        # 非法值拦成 422）。回显截断，不回显无限长输入。
+        raise HTTPException(400, {
+            "error_code": "team.role.invalid", "message_key": "team.role.invalid",
+            "params": {"participant": target_user_id,
+                       "role": body.business_role[:64]},
+            "details": "business_role must be 'coder' or 'reconciler'",
+            "message": "业务角色必须是编码者（coder）或仲裁者（reconciler）。"})
+    if _task_is_team(info):
+        envelope = _run_team_management_entry(
+            "business-role", info, user, target_user_id=target_user_id,
+            payload={"business_role": body.business_role},
+            x_request_id=x_request_id)
+        if not envelope["membership_committed"]:
+            raise HTTPException(503, {"error_code": "team_management_uncommitted",
+                                      "message_key": "team.management_uncommitted",
+                                      "params": {}, "details": "business role commit failed",
+                                      "message": "业务角色提交未完成；已完成的准备不会被回滚。",
+                                      **_management_partial_truth_body(envelope, None)})
+        result = envelope["outcome"]["result"]["writer"]
+        event = {"type": "team-role-changed", "reason": "role.changed",
+                 "task_id": info.task_id, "task_name": info.display_name}
+        try:
+            participant_ids = collaboration_mod.list_participant_ids(
+                path, actor_user_id=user["user_id"], task_id=info.task_id)
+        except (collaboration_mod.OwnerUnavailableError,
+                collaboration_mod.CollaborationStoreCorruptError, PermissionError, ValueError):
+            participant_ids = [user["user_id"]]  # 广播失败不回滚已落库的配置
+        for uid in participant_ids:
+            BUS.publish(uid, event)
+        target = auth.get_user_by_id(target_user_id)
+        return {"role": {**result,
+                         "username": target["username"] if target else None},
+                "membership_committed": True}
+    with app.state.review_workflow.lock(info.task_id):
+        try:
+            result = collaboration_mod.set_business_role(
+                path, actor_user_id=user["user_id"], user_id=target_user_id,
+                business_role=body.business_role, task_id=info.task_id)
+        except collaboration_mod.CollaborationStoreCorruptError:
+            raise
+        except collaboration_mod.OwnerUnavailableError as exc:
+            raise HTTPException(503, "业务角色状态暂时无法确认，请稍后重试。") from exc
+        except ValueError as exc:
+            raise HTTPException(400, {
+                "error_code": "team.role.invalid", "message_key": "team.role.invalid",
+                "params": {"participant": target_user_id}, "details": str(exc),
+                "message": str(exc)})
+    event = {"type": "team-role-changed", "reason": "role.changed",
+             "task_id": info.task_id, "task_name": info.display_name}
+    try:
+        participant_ids = collaboration_mod.list_participant_ids(
+            path, actor_user_id=user["user_id"], task_id=info.task_id)
+    except (collaboration_mod.OwnerUnavailableError,
+            collaboration_mod.CollaborationStoreCorruptError, PermissionError, ValueError):
+        participant_ids = [user["user_id"]]  # 广播失败不回滚已落库的配置
+    for uid in participant_ids:
+        BUS.publish(uid, event)
+    target = auth.get_user_by_id(target_user_id)
+    return {"role": {**result,
+                     "username": target["username"] if target else None}}
 
 
 @app.put("/api/tasks/{task_id}")
@@ -3397,12 +4507,17 @@ def _trace_context(info, user, source="manual"):
     return TraceContext(task_id=info.task_id, actor_id=user["user_id"], source=source, request_id=user.get("_trace_request_id") or str(uuid.uuid4()))
 
 
-def _save_decision_checked(db: Path, body: DecisionIn, saver, *, trace_context=None) -> None:
+def _save_decision_checked(db: Path, body: DecisionIn, saver, *, trace_context=None,
+                           conn: sqlite3.Connection | None = None) -> None:
     if db_mod.has_pending_title_duplicate_review(db, body.zotero_key):
         raise _bad("请先完成该条目的标题重复核验，再进行文献初筛。", 409)
     try:
+        # P16（C12 作者侧）：conn 为 team 窗口的 borrowed target 连接（A1 契约
+        # ——校验/replay/undo 快照/journal/trace/业务 upsert 全落该连接，提交
+        # 权归窗口）；缺省 None 保持旧 standalone saver 调用形状（零回归）。
         saver(db, body.zotero_key, body.decision, body.reason, body.notes, body.tags,
-              **({"trace_context": trace_context} if trace_context is not None else {}))
+              **({"trace_context": trace_context} if trace_context is not None else {}),
+              **({"conn": conn} if conn is not None else {}))
     except ValueError as exc:
         raise _bad(str(exc)) from exc
     except sqlite3.IntegrityError as exc:
@@ -3424,23 +4539,65 @@ def list_decisions(task_id: str, screener: str | None = None, user: dict = Depen
 
 @app.post("/api/tasks/{task_id}/decisions")
 def save_decision(task_id: str, body: DecisionIn, screener: str | None = None,
+                  x_request_id: str | None = Header(default=None, max_length=128),
                   user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
-    if not _screening_allowed(info, user):
-        raise _screening_disabled_error()
+    _screening_gate(info, user)
     db = _screener_db(info, screener or user["username"])
-    with app.state.review_workflow.write_guard(task_id, user, "screen", body.zotero_key,
+    runtime = app.state.review_workflow
+    if runtime.is_team(info.task_id):
+        # P16（C12 作者侧）：真实 team 初筛保存经 P15 mutate——stage/key 由
+        # 服务端路由代码导出（member_vote/screen + body.zotero_key），writer
+        # 使用同一 ctx.write_inputs target（borrowed actor 连接）落真实
+        # db_mod.save_decision；maybe/训练闸在窗口内以保留连接读取。
+        # screener 伪装在此显式 403（solo 分支沿用既有口径）。
+        payload_id, payload_sha = member_request_fingerprint(
+            x_request_id, {"task_id": info.task_id, "stage": "screen",
+                           "route": "decisions", "body": body.model_dump()})
+        from custom_backend.workspace_undo_api import member_prepare_trace
+        member_prepare_trace(_screener_db(info, user["username"]),
+                             info.task_id, user["user_id"])
+
+        def writer(ctx):
+            conn = borrowed_target_conn(ctx)
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Screening is limited to your own workspace.")
+            runtime.check_maybe(ctx, "screen", body.decision, body.zotero_key)
+            # 2.1.5 W2 筛选训练 enforce_pass 闸（设计 §六）：与 W1 的 maybe 409 闸
+            # 同入口共存（maybe 先拒、文案指训练；include/exclude 再判达标）。
+            # 默认 false 零行为差异；负责人豁免；任何存储故障降级放行。
+            blocked_set = pilot_screening_api.enforce_gate(ctx.info, user)
+            if blocked_set is not None:
+                raise pilot_screening_api.enforce_error(blocked_set)
+            _save_decision_checked(ctx.actor_db, body, db_mod.save_decision,
+                                   trace_context=_trace_context(ctx.info, user),
+                                   conn=conn)
+            return {"saved": True}
+        # P24：信封感知接线（unknown→409 惯例、锁外 postcommit SSE、S3 头）。
+        _, member_headers = _member_mutate_notified(
+            runtime, info, user, op_name="member_vote", stage="screen",
+            key=body.zotero_key,
+            expected_version=body.expected_policy_version,
+            request_id=payload_id, request_sha256=payload_sha,
+            writer=writer, change_kind="vote")
+    else:
+        member_headers = {}
+        with runtime.write_guard(task_id, user, "screen", body.zotero_key,
                                                body.expected_policy_version) as workflow:
-        app.state.review_workflow.check_maybe(workflow, "screen", body.decision,
+            runtime.check_maybe(workflow, "screen", body.decision,
                                               body.zotero_key, db=db)
-        # 2.1.5 W2 筛选训练 enforce_pass 闸（设计 §六）：与 W1 的 maybe 409 闸
-        # 同入口共存（maybe 先拒、文案指训练；include/exclude 再判达标）。默认
-        # false 零行为差异；负责人豁免；任何存储故障降级放行（可选模块不阻断）。
-        blocked_set = pilot_screening_api.enforce_gate(info, user)
-        if blocked_set is not None:
-            raise pilot_screening_api.enforce_error(blocked_set)
-        _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
+            # 2.1.5 W2 筛选训练 enforce_pass 闸（设计 §六）：与 W1 的 maybe 409 闸
+            # 同入口共存（maybe 先拒、文案指训练）；默认
+            # false 零行为差异；负责人豁免；任何存储故障降级放行（可选模块不阻断）。
+            blocked_set = pilot_screening_api.enforce_gate(info, user)
+            if blocked_set is not None:
+                raise pilot_screening_api.enforce_error(blocked_set)
+            _save_decision_checked(db, body, db_mod.save_decision, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
+    if member_headers:
+        # S3（P15 信封头透传）：真实 HTTP 响应携带回执/幂等头。
+        return JSONResponse({"saved": True, "progress": db_mod.get_progress(db)},
+                            headers=member_headers)
     return {"saved": True, "progress": db_mod.get_progress(db)}
 
 
@@ -3458,16 +4615,49 @@ def list_stage2(task_id: str, screener: str | None = None, user: dict = Depends(
 
 @app.post("/api/tasks/{task_id}/stage2/decisions")
 def save_stage2_decision(task_id: str, body: DecisionIn, screener: str | None = None,
+                         x_request_id: str | None = Header(default=None, max_length=128),
                          user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
-    if not _screening_allowed(info, user):
-        raise _screening_disabled_error()
+    _screening_gate(info, user)
     db = _screener_db(info, screener or user["username"])
-    with app.state.review_workflow.write_guard(task_id, user, "fulltext", body.zotero_key,
+    runtime = app.state.review_workflow
+    if runtime.is_team(info.task_id):
+        # P16（C12 作者侧）：真实 team 复筛保存经 P15 mutate（member_vote/
+        # fulltext）；writer 使用同一 ctx.write_inputs target 落真实
+        # save_stage2。screener 伪装显式 403；solo 分支字节不变。
+        payload_id, payload_sha = member_request_fingerprint(
+            x_request_id, {"task_id": info.task_id, "stage": "fulltext",
+                           "route": "stage2-decisions", "body": body.model_dump()})
+        from custom_backend.workspace_undo_api import member_prepare_trace
+        member_prepare_trace(_screener_db(info, user["username"]),
+                             info.task_id, user["user_id"])
+
+        def writer(ctx):
+            conn = borrowed_target_conn(ctx)
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Screening is limited to your own workspace.")
+            runtime.check_maybe(ctx, "fulltext", body.decision)
+            _save_decision_checked(ctx.actor_db, body, save_stage2,
+                                   trace_context=_trace_context(ctx.info, user),
+                                   conn=conn)
+            return {"saved": True}
+        # P24：同 screen 路由——信封感知接线（unknown→409、锁外 SSE、S3 头）。
+        _, member_headers = _member_mutate_notified(
+            runtime, info, user, op_name="member_vote", stage="fulltext",
+            key=body.zotero_key,
+            expected_version=body.expected_policy_version,
+            request_id=payload_id, request_sha256=payload_sha,
+            writer=writer, change_kind="vote")
+    else:
+        member_headers = {}
+        with runtime.write_guard(task_id, user, "fulltext", body.zotero_key,
                                                body.expected_policy_version) as workflow:
-        app.state.review_workflow.check_maybe(workflow, "fulltext", body.decision)
-        _save_decision_checked(db, body, save_stage2, trace_context=_trace_context(info, user))
+            runtime.check_maybe(workflow, "fulltext", body.decision)
+            _save_decision_checked(db, body, save_stage2, trace_context=_trace_context(info, user))
     tasks_mod.touch_task(info.task_id, DATA_DIR)
+    if member_headers:
+        return JSONResponse({"saved": True, "progress": get_stage2_progress(db)},
+                            headers=member_headers)
     return {"saved": True, "progress": get_stage2_progress(db)}
 
 
@@ -4002,6 +5192,14 @@ def _arbitration_resolution_error(exc: ValueError) -> HTTPException:
 
 
 def _arbitration_store(task_id: str, user: dict) -> Path:
+    """仲裁**业务写**的协作库授权（保存/会话/判定写回；2.1.6 FLOW II-A）。
+
+    team 任务按单一有效业务角色收口：属主不凭管理身份直通——须已配置
+    reconciler（未配置/冲突给 team.role.* 结构化 409、角色不符 403）；
+    成员同规则（choice→单一 grant→冲突/未配置）。personal/legacy 保持旧
+    语义字节不变（属主直通、成员 consensus:write）。管理/历史/汇总**读取**
+    一律走 :func:`_arbitration_read_store`（R-1 读例外不得穿到写路径）。
+    """
     info = _task_or_404(task_id)
     store = _collaboration_store(info)
     # R6-C3/#35：属主/授权查询统一 info.task_id（尾点别名同键）。
@@ -4009,9 +5207,44 @@ def _arbitration_store(task_id: str, user: dict) -> Path:
     if owner is None:
         if _server_mode():
             raise _legacy_owner_migration_error()
+    elif _task_is_team(info):
+        try:
+            if not collaboration_mod.authorize_team_action(
+                    store, user["user_id"], "consensus:write", task_id=info.task_id):
+                raise HTTPException(403, "仅任务属主或仲裁员可以保存仲裁结果。")
+        except collaboration_mod.TeamRoleGateError as exc:
+            raise _team_role_http(exc) from exc
     elif owner["owner_user_id"] != user["user_id"] and not collaboration_mod.authorize_action(
             store, user["user_id"], "consensus:write", task_id=info.task_id):
         raise HTTPException(403, "仅任务属主或仲裁员可以保存仲裁结果。")
+    return store
+
+
+def _arbitration_read_store(task_id: str, user: dict) -> Path:
+    """仲裁/共识级**读取**的协作库授权（R-1：管理读取与业务写显式分离）。
+
+    消费者=纯读端点：latest/记录详情/server-merge 现取视图、SoF rob_tool
+    汇总/预览/导出、评价一致性/grade-input 等跨人聚合读。team 任务：属主
+    保留既有查看（无论角色配置状态）；成员须当前有效 reconciler（读拒绝沿
+    各端点既有 403 形状，不抛 team.role.*）。personal/legacy 与
+    _arbitration_store 旧判定同形（属主直通、成员 consensus 级角色）。
+    legacy 409 / 暂不可读 503 / task 绑定口径与写门一致，不退化。
+    """
+    info = _task_or_404(task_id)
+    store = _collaboration_store(info)
+    owner = collaboration_mod.get_owner(store, task_id=info.task_id)
+    if owner is None:
+        if _server_mode():
+            raise _legacy_owner_migration_error()
+        return store
+    if _task_is_team(info):
+        if not collaboration_mod.authorize_team_read(
+                store, user["user_id"], "consensus:read", task_id=info.task_id):
+            raise HTTPException(403, "仅任务属主或仲裁员可以读取仲裁与共识汇总。")
+        return store
+    if owner["owner_user_id"] != user["user_id"] and not collaboration_mod.authorize_action(
+            store, user["user_id"], "consensus:read", task_id=info.task_id):
+        raise HTTPException(403, "仅任务属主或仲裁员可以读取仲裁与共识汇总。")
     return store
 
 
@@ -4159,7 +5392,8 @@ def latest_screening_arbitration(
     task_id: str, stage: Literal["stage1", "stage2"] = "stage1",
     user: dict = Depends(require_user),
 ) -> dict:
-    store = _arbitration_store(task_id, user)
+    # 2.1.6 FLOW II-A：generic latest 是纯历史读——R-1 属主保留查看，走读门。
+    store = _arbitration_read_store(task_id, user)
     from coscreen.screening_arbitration import latest_decision_arbitration
     record = latest_decision_arbitration(store, stage)
     if record is None:
@@ -4175,15 +5409,16 @@ def server_merge_screening_arbitration(
 ) -> dict:
     """联网团队模式：一键读取任务目录内全部筛选员的决策，直接进入 κ+冲突仲裁。
 
-    - 权限与保存端点同口径（属主或 consensus:write 裁决员；legacy 409）。
-    - 双盲守卫：team 任务且任一阶段未暂停 -> 409；响应只有引导文案，绝不含
-      任何成员判定内容。
+    - 权限：现取合并**视图**是纯读——R-1 属主保留查看（读门），team 成员须
+      当前有效 reconciler；legacy 409。保存仍走 _arbitration_store 写门。
+    - 双盲守卫：team 任务且任一阶段未暂停 -> 409（不因读能力放松）；响应只有
+      引导文案，绝不含任何成员判定内容。
     - 返回体与 POST /api/merge/decisions 完全同形（前端复用同一渲染）。
     - 仅服务器模式开放（desktop/离线团队协作入口 404，CSV 上传流程保留）。
     """
     if not _server_mode():
         raise _bad("团队协作仅在服务器模式下开放。", 404)
-    _arbitration_store(task_id, user)  # 权限闸门（403/409 与保存端点一致）
+    _arbitration_read_store(task_id, user)  # 视图读取闸门（R-1：owner 保留）
     _arbitration_double_blind_guard(task_id, user)
     info = _task_or_404(task_id)
     from coscreen.screening_arbitration import (
@@ -4204,7 +5439,8 @@ def server_merge_screening_arbitration(
 @app.get("/api/tasks/{task_id}/screening-arbitrations/{record_id}")
 def screening_arbitration(task_id: str, record_id: int,
                           user: dict = Depends(require_user)) -> dict:
-    store = _arbitration_store(task_id, user)
+    # 纯历史读（按 id 取已存快照）——R-1 属主保留查看，走读门。
+    store = _arbitration_read_store(task_id, user)
     from coscreen.screening_arbitration import get_decision_arbitration
     record = get_decision_arbitration(store, record_id)
     if record is None:
@@ -4390,25 +5626,63 @@ def delete_dimension_ep(task_id: str, dim_id: int, screener: str | None = None,
 
 @app.post("/api/tasks/{task_id}/coding/values")
 def save_coding_value(task_id: str, body: CodingValueIn, screener: str | None = None,
+                      x_request_id: str | None = Header(default=None, max_length=128),
                       user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
     db = _screener_db(info, screener or user["username"])
     try:
-        with app.state.review_workflow.write_guard(task_id, user, "coding", body.zotero_key,
+        runtime = app.state.review_workflow
+        if runtime.is_team(info.task_id):
+            # P16（C12 作者侧）：真实 team 编码保存经 P15 mutate（member_coding/
+            # coding）；writer 使用同一 ctx.write_inputs target 落真实
+            # coding_evidence.save_form（borrowed 连接，提交权归窗口）。
+            payload_id, payload_sha = member_request_fingerprint(
+                x_request_id, {"task_id": info.task_id, "route": "coding-value",
+                               "body": body.model_dump()})
+
+            from custom_backend.workspace_undo_api import member_prepare_trace
+            member_prepare_trace(_screener_db(info, user["username"]),
+                                 info.task_id, user["user_id"])
+
+            def writer(ctx):
+                conn = borrowed_target_conn(ctx)
+                if ctx.actor_db.resolve() != db.resolve():
+                    raise HTTPException(403, "Coding is limited to your own workspace.")
+                from coscreen import coding_evidence
+                context = _trace_context(ctx.info, user)
+                if context is None:
+                    raise HTTPException(503, "Undo is unavailable. Please try again.")
+                coding_evidence.save_form(ctx.actor_db, body.zotero_key,
+                    {body.dim_id: body.value}, notes=None, evidence=None,
+                    trace_context=context, conn=conn)
+                return runtime.coding_result(ctx, body.zotero_key, body.draft)
+            # P24：信封感知接线（unknown→409、锁外 SSE、S3 头）。
+            result, member_headers = _member_mutate_notified(
+                runtime, info, user, op_name="member_coding",
+                stage="coding", key=body.zotero_key,
+                expected_version=body.expected_policy_version,
+                request_id=payload_id,
+                request_sha256=payload_sha,
+                writer=writer, change_kind="vote")
+        else:
+            member_headers = {}
+            with runtime.write_guard(task_id, user, "coding", body.zotero_key,
                                                    body.expected_policy_version) as ctx:
-            if ctx.actor_db.resolve() != db.resolve():
-                raise HTTPException(403, "Coding is limited to your own workspace.")
-            from coscreen import coding_evidence
-            context = _trace_context(info, user)
-            if context is None:
-                raise HTTPException(503, "Undo is unavailable. Please try again.")
-            coding_evidence.save_form(db, body.zotero_key, {body.dim_id: body.value}, notes=None, evidence=None, trace_context=context)
-            result = app.state.review_workflow.coding_result(ctx, body.zotero_key, body.draft)
+                if ctx.actor_db.resolve() != db.resolve():
+                    raise HTTPException(403, "Coding is limited to your own workspace.")
+                from coscreen import coding_evidence
+                context = _trace_context(info, user)
+                if context is None:
+                    raise HTTPException(503, "Undo is unavailable. Please try again.")
+                coding_evidence.save_form(db, body.zotero_key, {body.dim_id: body.value}, notes=None, evidence=None, trace_context=context)
+                result = runtime.coding_result(ctx, body.zotero_key, body.draft)
     except ValueError as exc:
         raise _bad(str(exc)) from exc
     except sqlite3.IntegrityError as exc:
         raise _bad("维度或文献不存在（请确认后重试）。", 400) from exc
     tasks_mod.touch_task(info.task_id, DATA_DIR)
+    if member_headers:
+        return JSONResponse(result, headers=member_headers)
     return result
 
 
@@ -6172,7 +7446,7 @@ def analysis_save_rob(task_id: str, body: RobIn, user: dict = Depends(require_us
                                   "message_key": "analysis.rob_ambiguous_scope", "params": exc.details,
                                   "details": str(exc), "message": str(exc)}) from exc
     except ValueError as exc:
-        raise _bad(exc) from exc
+        raise _legacy_rob_save_error(exc) from exc
     return {"assessments": analysis_mod.list_rob(db, body.study_id, body.outcome)}
 
 
@@ -6449,8 +7723,55 @@ def highlights_for(task_id: str, zotero_key: str, screener: str | None = None,
     return {"highlights": get_highlights_with_rects(db, zotero_key)}
 
 
+def _team_annotation_stored_key(db_path, highlight_id: int) -> str | None:
+    """P20：写窗前解析 highlight 行的真实归属键（读本人成员库，零建库）。
+
+    行缺/表未建/库未建 → None（按高亮不存在 404 处理，拒绝路径不建库、
+    零 DDL、零写入）。保护键永远来自存储行——P20 断言锚：受保护阶段由
+    highlight 归属决定，不来自客户端 zotero_key。
+    """
+    from contextlib import closing
+
+    if not Path(db_path).is_file():
+        return None
+    try:
+        with closing(db_mod._connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT zotero_key FROM highlights WHERE id=?",
+                (highlight_id,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    key = row[0]
+    return key if isinstance(key, str) and key else None
+
+
+def _team_highlight_window_key(conn, *, op_name: str, highlight_id: int,
+                               stored_key: str) -> None:
+    """P20 写窗内权威复核：P11 同窗读取 ID 对应 key（artifact 解析）。
+
+    在保留写窗口的 target 连接（与资格检查/业务写/提交同连接同事务）上以
+    ``mutation_footprint_on`` 解析 highlight 行的真实单元格 ``(fulltext,
+    zotero_key)``；不能确认完整 footprint、或与写窗前解析键不一致（含行
+    被并发删除后同 id 复用改挂他键）→ 404 拒绝，绝不改按客户端键放行。
+    通过即锚定：本次受保护单元格的 item_key == stored_key（存储行键）。
+    """
+    from coscreen.team_flow_types import TeamOperation
+    from custom_backend.team_write_footprints import mutation_footprint_on
+
+    footprint = mutation_footprint_on(
+        conn, operation=TeamOperation(name=op_name, stage="fulltext"),
+        artifact_id=highlight_id, request_keys=(stored_key,))
+    if (not footprint.complete or len(footprint.cells) != 1
+            or footprint.cells[0].item_key != stored_key):
+        raise _bad("高亮不存在或已删除。", 404)
+
+
 @app.post("/api/tasks/{task_id}/highlights")
 def add_highlights(task_id: str, body: HighlightsIn, screener: str | None = None,
+                   x_request_id: str | None = Header(default=None, max_length=128),
                    user: dict = Depends(require_user)) -> dict:
     # MM5-13：读取端（fulltext.get_highlights_with_rects）只保留 len==4 的 rect
     # （[x0,y0,x1,y1] 两角点），写入端必须在请求层显式 400 拒绝其它长度——修前
@@ -6461,22 +7782,75 @@ def add_highlights(task_id: str, body: HighlightsIn, screener: str | None = None
             if len(rect) != 4:
                 raise _bad("每个高亮坐标必须恰有 4 个浮点分量（x0, y0, x1, y1）。")
     info = _task_or_404(task_id)
-    db = _screener_db(info, screener or user["username"])
     events = [ev.model_dump() for ev in body.events]
-    try:
-        from coscreen.fulltext import add_highlight_rects
+    runtime = app.state.review_workflow
+    if runtime.is_team(info.task_id):
+        # P20（C12 作者侧）：team 批注新增经 P15 mutate（member_annotation/
+        # fulltext）——P12 addendum：角色+资格+链+同阶段历史门（已完成
+        # fulltext 的键整批拒绝）；不继承 note 编辑的额外 policy 门，
+        # expected_version 恒 None。写窗内经借用 target 连接落库（检查/
+        # 写/提交同连接同事务）；screener 伪装显式 403。solo/legacy 分支
+        # 保持既有锁内保存路径字节不变（P24 负责最终接线复核）。
+        # ensure=False：拒绝路径不建库不迁移（保持 fix-r2 B1 口径）；成员
+        # 库的真实 ensure/迁移由 P10 写窗在确认资格后完成。
+        db = _screener_db(info, screener or user["username"], ensure=False)
+        payload_id, payload_sha = member_request_fingerprint(
+            x_request_id, {"task_id": info.task_id, "stage": "fulltext",
+                           "route": "highlights-add", "body": body.model_dump()})
 
-        count = add_highlight_rects(db, body.zotero_key, events)
-    except ValueError as exc:
-        raise _bad(exc) from exc
-    except sqlite3.IntegrityError as exc:
-        raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
-    return {"saved": count, "highlights": get_highlights_with_rects(db, body.zotero_key)}
+        def writer(ctx):
+            conn = borrowed_target_conn(ctx)
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Screening is limited to your own workspace.")
+            from coscreen.fulltext import add_highlight_rects
+
+            try:
+                count = add_highlight_rects(ctx.actor_db, body.zotero_key,
+                                            events, conn=conn)
+            except ValueError as exc:
+                raise _bad(exc) from exc
+            except sqlite3.IntegrityError as exc:
+                raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
+            return {"saved": count}
+
+        # P24：信封感知接线（unknown→409、锁外 SSE、S3 头）。
+        result, member_headers = _member_mutate_notified(
+            runtime, info, user, op_name="member_annotation",
+            stage="fulltext", key=body.zotero_key,
+            expected_version=None,
+            request_id=payload_id, request_sha256=payload_sha,
+            writer=writer, change_kind="vote")
+        highlights = get_highlights_with_rects(db, body.zotero_key)
+        return JSONResponse({"saved": result["saved"], "highlights": highlights},
+                            headers=member_headers)
+    # fix-r1 R5：批注是筛选业务写——职责检查入 canonical task 锁内保存窗口
+    # （与角色切换/参与开关/撤销同锁串行；此前本端点无任何筛选职责门）。
+    # 不引入 write_guard（不新增 paused 等其它行为变化）。
+    # fix-r2 B1：撤销窗口闭合——锁内先取 fresh 只读上下文（重验当前任务
+    # 存在性与 owner/participant 身份；被撤成员 403，不依赖锁外 require_user
+    # 已通过），再过筛选职责门，**之后**才解析/懒建成员库并保存。原锁外
+    # _screener_db(ensure=True) 移除：拒绝路径不再创建/迁移成员库或重开
+    # quarantine 后的旧路径。属主/personal/legacy 合法路径零变化。
+    with app.state.review_workflow.lock(info.task_id):
+        ctx = app.state.review_workflow.readonly_context(task_id, user)
+        _screening_gate(ctx.info, user)
+        db = _screener_db(ctx.info, screener or user["username"])
+        try:
+            from coscreen.fulltext import add_highlight_rects
+
+            count = add_highlight_rects(db, body.zotero_key, events)
+        except ValueError as exc:
+            raise _bad(exc) from exc
+        except sqlite3.IntegrityError as exc:
+            raise _bad("文献键不存在（请确认已导入该文献）。", 400) from exc
+        highlights = get_highlights_with_rects(db, body.zotero_key)
+    return {"saved": count, "highlights": highlights}
 
 
 @app.patch("/api/tasks/{task_id}/highlights/{highlight_id}")
 def update_highlight_note_ep(task_id: str, highlight_id: int, body: HighlightNoteUpdateIn,
                              screener: str | None = None,
+                             x_request_id: str | None = Header(default=None, max_length=128),
                              user: dict = Depends(require_user)) -> dict:
     """Edit one actor-owned highlight without overwriting a newer comment."""
     from contextlib import closing
@@ -6484,9 +7858,60 @@ def update_highlight_note_ep(task_id: str, highlight_id: int, body: HighlightNot
     if not _KEY_RE.match(body.zotero_key):
         raise _bad("非法文献键。", 400)
     info = _task_or_404(task_id)
-    if not _screening_allowed(info, user):
-        raise _screening_disabled_error()
+    _screening_gate(info, user)
     note = body.note.strip()
+    runtime = app.state.review_workflow
+    if runtime.is_team(info.task_id):
+        # P20（C12 作者侧）：team 批注编辑经 P15 mutate（member_annotation_note/
+        # fulltext）——保原额外 policy 门（expected_policy_version 续传，
+        # 版本冲突/paused/source 语义同旧 write_guard）。保护键来自存储行：
+        # 写窗前读 + 写窗内 P11 artifact 权威复核（同连接同事务）；客户端
+        # zotero_key 不参与资格判定，且与存储行不一致时维持原 404 语义。
+        # 已完成 fulltext 的键在写窗前即被 stage_completed_read_only 整批
+        # 拒绝（409，item_keys=存储行键）。solo/legacy 分支保持既有
+        # write_guard 路径字节不变。
+        db = _screener_db(info, screener or user["username"], ensure=False)
+        stored_key = _team_annotation_stored_key(db, highlight_id)
+        if stored_key is None:
+            raise _bad("高亮不存在或已删除。", 404)
+        payload_id, payload_sha = member_request_fingerprint(
+            x_request_id, {"task_id": info.task_id, "stage": "fulltext",
+                           "route": "highlight-note-update",
+                           "highlight_id": highlight_id,
+                           "body": body.model_dump()})
+
+        def writer(ctx):
+            conn = borrowed_target_conn(ctx)
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Screening is limited to your own workspace.")
+            _team_highlight_window_key(conn, op_name="member_annotation_note",
+                                       highlight_id=highlight_id,
+                                       stored_key=stored_key)
+            previous = conn.execute(
+                "SELECT note FROM highlights WHERE id=? AND zotero_key=?",
+                (highlight_id, body.zotero_key),
+            ).fetchone()
+            if previous is None:
+                raise _bad("高亮不存在或已删除。", 404)
+            if (previous[0] or "") != body.expected_note:
+                raise _bad("此批注已在其他窗口更新。请查看最新内容后再保存；当前草稿已保留。", 409)
+            changed = conn.execute(
+                "UPDATE highlights SET note=? WHERE id=? AND zotero_key=? AND COALESCE(note,'')=?",
+                (note, highlight_id, body.zotero_key, body.expected_note),
+            )
+            if changed.rowcount != 1:
+                raise _bad("批注已发生变化，请重新读取。", 409)
+            return {"highlight": {"id": highlight_id,
+                                  "zotero_key": body.zotero_key, "note": note}}
+
+        # P24：信封感知接线（unknown→409、锁外 SSE、S3 头）。
+        result, member_headers = _member_mutate_notified(
+            runtime, info, user, op_name="member_annotation_note",
+            stage="fulltext", key=stored_key,
+            expected_version=body.expected_policy_version,
+            request_id=payload_id, request_sha256=payload_sha,
+            writer=writer, change_kind="vote")
+        return JSONResponse(result, headers=member_headers)
     # require_user rejects foreign screener parameters, including repeated ones.
     # The workflow context derives actor_db from the verified token identity.
     with app.state.review_workflow.write_guard(
@@ -6514,14 +7939,62 @@ def update_highlight_note_ep(task_id: str, highlight_id: int, body: HighlightNot
 
 @app.delete("/api/tasks/{task_id}/highlights/{highlight_id}")
 def delete_highlight_ep(task_id: str, highlight_id: int, screener: str | None = None,
+                        x_request_id: str | None = Header(default=None, max_length=128),
                         user: dict = Depends(require_user)) -> dict:
     info = _task_or_404(task_id)
-    db = _screener_db(info, screener or user["username"])
     from coscreen.fulltext import delete_highlight
 
-    deleted = delete_highlight(db, highlight_id)
-    if not deleted:
-        raise _bad("高亮不存在或已删除。", 404)
+    runtime = app.state.review_workflow
+    if runtime.is_team(info.task_id):
+        # P20（C12 作者侧）：team 批注删除经 P15 mutate（member_annotation/
+        # fulltext 的 artifact 删除路径）——P12 addendum：角色+资格+链+同
+        # 阶段历史门（已完成 fulltext 的键整批拒绝，杜绝「vote 受保护而
+        # 注释历史可删」的缺口），无 policy 门（expected_version 恒 None，
+        # 不继承 note 编辑的额外 policy）。保护键来自存储行：写窗前读 +
+        # 写窗内 P11 artifact 权威复核。screener 伪装显式 403；ID 不存在
+        # /跨任务/属他人 → 原 404/403 权限语义不变。solo/legacy 分支保持
+        # 既有锁内删除路径字节不变。
+        db = _screener_db(info, screener or user["username"], ensure=False)
+        stored_key = _team_annotation_stored_key(db, highlight_id)
+        if stored_key is None:
+            raise _bad("高亮不存在或已删除。", 404)
+        payload_id, payload_sha = member_request_fingerprint(
+            x_request_id, {"task_id": info.task_id, "stage": "fulltext",
+                           "route": "highlight-delete",
+                           "highlight_id": highlight_id})
+
+        def writer(ctx):
+            conn = borrowed_target_conn(ctx)
+            if ctx.actor_db.resolve() != db.resolve():
+                raise HTTPException(403, "Screening is limited to your own workspace.")
+            _team_highlight_window_key(conn, op_name="member_annotation",
+                                       highlight_id=highlight_id,
+                                       stored_key=stored_key)
+            deleted = delete_highlight(ctx.actor_db, highlight_id, conn=conn)
+            if not deleted:
+                raise _bad("高亮不存在或已删除。", 404)
+            return {"deleted": True}
+
+        # P24：信封感知接线（unknown→409、锁外 SSE、S3 头）。
+        result, member_headers = _member_mutate_notified(
+            runtime, info, user, op_name="member_annotation",
+            stage="fulltext", key=stored_key,
+            expected_version=None,
+            request_id=payload_id, request_sha256=payload_sha,
+            writer=writer, change_kind="vote")
+        return JSONResponse(result, headers=member_headers)
+    # fix-r1 R5：同 add/update 批注——筛选职责检查入 canonical task 锁内
+    # 保存窗口（此前本端点无任何筛选职责门）。
+    # fix-r2 B1：同 add_highlights——锁内 fresh 只读上下文重验当前身份后
+    # 再职责门，之后才解析/懒建成员库执行删除；锁外 _screener_db(ensure=True)
+    # 移除，拒绝路径不建库。
+    with app.state.review_workflow.lock(info.task_id):
+        ctx = app.state.review_workflow.readonly_context(task_id, user)
+        _screening_gate(ctx.info, user)
+        db = _screener_db(ctx.info, screener or user["username"])
+        deleted = delete_highlight(db, highlight_id)
+        if not deleted:
+            raise _bad("高亮不存在或已删除。", 404)
     return {"deleted": True}
 
 
@@ -6685,8 +8158,31 @@ def _coding_value(info: tasks_mod.TaskInfo, field_key: str, value: object) -> di
 
 
 def _coding_authorize(info: tasks_mod.TaskInfo, user: dict, action: str) -> bool:
+    """按 action 注入的业务授权通道（coding_consensus / rob_shared）。
+
+    2.1.6 FLOW II-A：team 任务按单一有效业务角色逐 action 判定（consensus
+    write/freeze/read 属 reconciler、coding:submit 属 coder——不按所在模块
+    统归 coder）。fix-r1 R8：**读 action**（coding:read_all / consensus:read）
+    改走 :func:`task_collaboration.authorize_team_read`——R-1 属主合法管理/
+    历史读恢复（未配/coder 属主 GET coding/freezes、共享 RoB 历史汇总不再
+    403）；普通成员仍须当前有效单一 reconciler，普通 coder 隐私不放松。
+    **写 action**（consensus:write/freeze、coding:submit）维持
+    ``has_team_action_role`` 严格判定——读例外不得穿到业务写/resolve/freeze/
+    submit。**纯布尔口径**不变：注入消费者存在 ``is not True`` 回退探测
+    （rob_shared 先试 consensus:read 再试 coding:submit），抛角色门异常会
+    打断回退造成回归——结构化 team.role.* 409/403 由直连调用点（写闸/
+    仲裁门/appraisal/fresh_permission）给出，本通道保留消费者既有 403 形状。
+    personal/legacy 保持 authorize_action 旧语义（属主直通，solo 零回归）。
+    """
+    store = _collaboration_store(info)
+    if _task_is_team(info):
+        if action in ("coding:read_all", "consensus:read"):
+            return collaboration_mod.authorize_team_read(
+                store, user_id=user["user_id"], action=action, task_id=info.task_id)
+        return collaboration_mod.has_team_action_role(
+            store, user_id=user["user_id"], action=action, task_id=info.task_id)
     return collaboration_mod.authorize_action(
-        _collaboration_store(info), user["user_id"], action, task_id=info.task_id)
+        store, user["user_id"], action, task_id=info.task_id)
 
 def _trace_authorize(info, user, action):
     # Trace is personal; membership grants no access to another actor's history.
@@ -6695,6 +8191,33 @@ def _trace_authorize(info, user, action):
 
 def _trace_personal_store(info, user):
     return _screener_db(info, user["username"])
+
+
+def _team_trace_clear_entry(info, user, request):
+    """P21（C11/C12）：团队多分区 trace 历史清空 seam（research_trace_api 注入）。
+
+    在既有有副作用 context（personal/shared resolver ensure）之前接管 team
+    分支；非 team 任务返回 None 交回 personal/legacy 原路。协调器内部经
+    runtime.readonly_context（零建库）解析身份/两分区，复用同一 canonical
+    task 锁与 collab BEGIN IMMEDIATE 屏障（见 team_completion_clear 模块头）。
+    """
+    from custom_backend.team_completion_clear import run_team_history_clear_http
+
+    return run_team_history_clear_http(
+        app.state.review_workflow, info, user, request=request)
+
+
+def _team_trace_write_guard_entry(info, user, guard_request):
+    """P21/D1：team 任务 trace 写入口（settings edit/imports restore）只读保护 seam。
+
+    ``guard_request`` 单载荷双通道（{"settings_transition": (status, stages)}
+    或 {"stage_keys": {...}}），域派生按真实转写足迹——见
+    team_completion_clear.guard_team_trace_writes 文档。
+    """
+    from custom_backend.team_completion_clear import guard_team_trace_writes_http
+
+    return guard_team_trace_writes_http(
+        app.state.review_workflow, info, user, guard_request=guard_request)
 
 
 def _trace_validate_subject(info, stage, subject_id):
@@ -6710,7 +8233,15 @@ def _trace_validate_subject(info, stage, subject_id):
     return db_mod.get_article(owner_db, subject_id) is not None
 
 
-from custom_backend.workspace_undo_api import register_workspace_undo_routes
+# P16（C12 作者侧）：成员写 mutate 适配助手（stage/key 服务端导出、请求
+# 指纹、borrowed target 连接锚）。save_decision/save_stage2_decision/
+# save_coding_value 在 team 任务上经这些助手走 P15 WorkflowRuntime.mutate。
+from custom_backend.workspace_undo_api import (
+    borrowed_target_conn,
+    member_mutate,
+    member_request_fingerprint,
+    register_workspace_undo_routes,
+)
 from custom_backend.review_workflow_api import register_review_workflow_routes
 
 register_review_workflow_routes(app, require_user, _task_or_404, _screener_db, DATA_DIR, _task_visible_to,
@@ -6775,6 +8306,33 @@ from custom_backend.arbitration_session_api import register_arbitration_session_
 
 register_arbitration_session_routes(app, require_user, _task_or_404, _arbitration_store, _arbitration_double_blind_guard, _coding_owner_db, _server_mode, _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
 
+# P19（C12 作者侧）：team 逐条仲裁会话——独立守卫（不进 _arbitration_store
+# 的全 stage loader/2–9 包门/legacy paused 规则；desktop team 同样可达），
+# 协调器经 P10 写窗做单目标 collab commit（五工件同事务）。
+from custom_backend.arbitration_session_api import register_team_arbitration_routes
+
+def _team_account_username(user_id: int) -> str:
+    """accounts 只读解析 username（uid → users.db 行；team 仲裁路径解析用）。"""
+    import sqlite3 as _sqlite3
+    from contextlib import closing as _closing
+    from custom_backend import auth as _auth
+    try:
+        with _closing(_sqlite3.connect(
+                f"file:{_auth._users_db()}?mode=ro", uri=True,  # noqa: SLF001 - 宿主账号存储
+                timeout=15)) as conn:
+            row = conn.execute(
+                "SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+            return str(row[0]) if row is not None else ""
+    except Exception:  # noqa: BLE001 - 不可读＝缺席（fail-closed）
+        return ""
+
+
+register_team_arbitration_routes(
+    app, require_user, _task_or_404, _collaboration_store, _task_is_team,
+    _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE,
+    runtime_getter=lambda _info: app.state.review_workflow,
+    username_of=_team_account_username)
+
 # W2 PDF 自动获取（DOI→Unpaywall（email 参数）→开放 PDF→check_pdf_bytes→save_pdf
 # 落盘+轨迹）：联网默认关（任务级 pdf_fetch_settings.json 缺省 enabled=false，
 # 未启用一律 403 且零出站）；出站仅 stdlib urllib（_NoRedirectHandler 先例、
@@ -6799,13 +8357,17 @@ register_report_evidence_routes(app, require_user)
 # /agreement、/export、/grade-input 会被当作 article_key 吞掉。权限复用
 # _arbitration_store（属主/裁决员），读全员库 503 口径复用筛选员库守则。
 from custom_backend.appraisal_agreement_api import register_appraisal_agreement_routes
-register_appraisal_agreement_routes(app, require_user, _task_or_404, _arbitration_store, _server_mode, _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
+# 2.1.6 FLOW II-A（读写分离裁定）：agreement/export/grade-input 三端点均为
+# 跨人评价**纯读**（SELECT 聚合，无持久化）——R-1 属主保留既有查看，注入
+# 读门；未来若新增写端点必须换回 _arbitration_store 严格业务写门。
+register_appraisal_agreement_routes(app, require_user, _task_or_404, _arbitration_read_store, _server_mode, _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
 
 # B2 文献评价（2.1.5 Wave B）：工具注册表 + 按设计推荐 + 个人库
 # {slug}.db 的 appraisal_records（新表、幂等、旧版忽略）；只读注册表，
 # 失败降级为 available=false / 4xx，绝不 500。
 from custom_backend.appraisal_api import register_appraisal_routes
-register_appraisal_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db)
+register_appraisal_routes(app, require_user, _task_or_404, _task_visible_to,
+                           _screener_db, team_role_gate=_appraisal_team_role_gate)
 
 # C2 每日打卡与提醒（2.1.5 Wave C）：目标/连击纯计算（decisions 时间戳现算）、
 # ICS 只读订阅（认证外、令牌即能力、摘要只含数字）、通知通道抽象（默认关、
@@ -6855,7 +8417,8 @@ register_task_package_routes(app, require_user, _task_or_404, _task_visible_to,
 # 勾选/排序与 docx 排版在本模块，编码值单一事实源 = coscreen.export.coding_matrix_table。
 from custom_backend.tables_api import register_tables_routes
 register_tables_routes(app, require_user, _task_or_404, _task_visible_to, _screener_db,
-                       SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, _arbitration_store)
+                       SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, _arbitration_store,
+                       _arbitration_read_store)
 
 # 2.1.5 W9：撤稿/更正关注（Crossref works 的 update-to/updated-by；显式手动
 # 触发、分批游标、两表落协作库可加幂等、出站仅配置的 Crossref base）。
@@ -6868,7 +8431,8 @@ app.state.unavailable_analysis_extensions = []
 for module_name, register_name, dependencies in [
     ("research_trace_api", "register_research_trace_routes",
      (app, require_user, _task_or_404, _trace_personal_store, _coding_owner_db,
-      _trace_authorize, _trace_validate_subject)),
+      _trace_authorize, _trace_validate_subject,
+      _team_trace_clear_entry, _team_trace_write_guard_entry)),
     ("study_intervals", "register_study_interval_routes", (app, require_user, _task_or_404)),
     ("nnt_view", "register_nnt_routes", (app, require_user, _task_or_404)),
     ("rosenberg_view", "register_rosenberg_routes", (app, require_user, _task_or_404, _screener_db, _bad)),
@@ -7677,7 +9241,15 @@ def get_shared_ranking(
 
     info = _task_or_404(task_id)
     ctx = app.state.review_workflow.context(task_id, user)
-    if not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=info.task_id):
+    if ctx.task_kind == "team":
+        # 2.1.6 FLOW II-A：共享标签写按有效角色（reconciler）收口。
+        try:
+            if not collaboration_mod.authorize_team_action(
+                    ctx.collaboration_db, user["user_id"], "consensus:write", task_id=info.task_id):
+                raise HTTPException(403, "Shared ranking requires an adjudicator.")
+        except collaboration_mod.TeamRoleGateError as exc:
+            raise _team_role_http(exc) from exc
+    elif not collaboration_mod.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=info.task_id):
         raise HTTPException(403, "Shared ranking requires an adjudicator.")
     if ctx.task_kind == "team" and any(v["mode"] != "paused" for v in app.state.review_workflow.settings(ctx)["stages"].values()):
         raise HTTPException(409, "Shared labels cannot be used during independent screening.")

@@ -1,0 +1,20 @@
+# 木笔ReviewFlow 完整验证依赖（测试/校验器专用，不进安装包）。
+# 用法：python -m pip install -r build/requirements-test.txt
+# 运行库约束全部复用同目录 requirements-app.txt（相对路径相对本文件解析，
+# 保证两处依赖只有一个事实源、不会漂移）。
+-r requirements-app.txt
+
+# TestClient 后端：starlette 1.8.0 起 testclient 首选 httpx2；回退 httpx 会发
+# StarletteDeprecationWarning，官方计划移除回退路径（starlette.dev/testclient）。
+# 2.13.1 = 本仓 venv 实测版本；httpx2 与 httpx 是独立分发、可共存。
+httpx2>=2.13,<3
+
+# 两个直接导入 httpx 的校验器（build/validate_team_prisma.py、
+# build/validate_screening_rounds.py）使用 AsyncClient + ASGITransport。
+# 0.28.1 = 本仓 venv 实测版本；钉在 0.28 系列，挡住 0.29/2.x 的 API 漂移。
+httpx>=0.27,<0.29
+
+# 测试运行与 YAML 夹具：pytest 9.1.1 实测于 Python 3.11.15（本仓验证 venv），
+# CI 使用 Python 3.12。取实测主版本范围，避免无边界升级。
+pytest>=9,<10
+PyYAML>=6,<7

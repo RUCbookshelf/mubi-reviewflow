@@ -44,6 +44,16 @@ NODE = (
 )
 LANGS = 10
 
+# R26-I (Terra argv ruling): fixed child bootstrap, byte-equal to the product
+# PY_CHILD_BOOTSTRAP constant; drift is red by design.
+PY_CHILD_BOOTSTRAP_RULING = (
+    'import runpy,sys;'
+    'root=sys.argv.pop(1);kind=sys.argv.pop(1);entry=sys.argv.pop(1);'
+    'sys.path.insert(0,root);sys.argv[0]=entry;'
+    "runpy.run_module(entry,run_name='__main__') if kind=='module' "
+    "else runpy.run_path(entry,run_name='__main__')"
+)
+
 pytestmark = pytest.mark.skipif(not os.path.exists(NODE), reason="node runtime not found")
 
 
@@ -297,19 +307,47 @@ class TestEvidenceLocaleGate:
             "F48：扫描量过低说明扫描器空转（防门假绿）"
 
     def test_validator_run_is_part_of_the_ci_gate(self):
-        """构建期强制：本文件把校验器当子进程跑，而 CI 跑的就是 ``pytest build/tests``。
+        """构建期强制：本文件把校验器当子进程跑，而 CI 门禁真的会执行它。
 
-        批准单 F48 要的是「构建期检查防复发」。实现路径选择：**不**去改
-        ``build/build_*.sh`` / ``release.yml`` 的校验器清单——那三处各有一份写死的
-        文件列表（``test_r8_fl8_build.py`` 的 FOUR_VALIDATORS 与
-        ``test_r7_dayfix_build_scripts.py`` 的 fixture 拷贝表），加第四/五个校验器
-        属于打包泳道的改动，且会让那两个文件的隔离树因缺文件而红（本轮实测：
-        改动前 38 项全绿，改动后 6 项红）。CI 的 pytest 步已覆盖本目录，本测试
-        文件跑校验器即等于 CI 门的一部分。
+        批准单 F48 要的是「构建期检查防复发」。原实现路径选择「不改三处
+        清单」已被 TST-03（2.1.6 Task 8）推翻：release.yml 现在只调用唯一
+        入口 ``build/run_validation.py``，打包脚本与假树 fixture 均已扩到
+        六校验器。本钉双读两层事实：release.yml 在载荷校验之后调用唯一
+        入口；入口真实导出的计划（--list --json）覆盖整目录 pytest——
+        即本测试文件（连同它跑的校验器）确实是 CI 门的组成部分。
         """
         ci = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        assert "python -m pytest build/tests -q" in ci, \
-            "F48：CI 必须在 build/tests 上跑 pytest（本文件跑校验器即构建期强制）"
+        # 行级判定：必须是以入口为命令的可执行行——注释里提到入口不算接线
+        # （mutation 实证：子串断言会被注释假绿满足）。
+        entry_lines = [ln for ln in ci.splitlines()
+                       if ln.lstrip().startswith("python build/run_validation.py")]
+        assert entry_lines, \
+            "F48/TST-03：CI 门禁必须经唯一入口 run_validation.py 执行"
+        assert ci.find(entry_lines[0].strip()) > ci.index("verify_release_payload.py"), \
+            "F48/TST-03：入口必须在载荷校验之后运行"
+        plan = json.loads(subprocess.run(
+            [sys.executable, "build/run_validation.py", "--list", "--json"],
+            cwd=str(REPO), capture_output=True, text=True, timeout=120,
+            check=True,
+        ).stdout)
+        # R26-I（Terra 裁定）：pytest 步经隔离 child（-I -B -X utf8=<父实际
+        # 模式> -c 固定 bootstrap）整目录跑。父模式不硬编码：本 helper 以
+        # 无 -I 同 env 生成 entry，预期取同 flags/env 探针实测值。
+        utf8_probe = subprocess.run(
+            [sys.executable, "-c", "import sys; print(sys.flags.utf8_mode)"],
+            cwd=str(REPO), capture_output=True, text=True, timeout=120,
+        )
+        assert utf8_probe.returncode == 0, utf8_probe.stderr
+        expected_argv = [
+            sys.executable, "-I", "-B", "-X", f"utf8={utf8_probe.stdout.strip()}",
+            "-c", PY_CHILD_BOOTSTRAP_RULING, str(REPO),
+            "module", "pytest", "build/tests", "-q",
+        ]
+        pytest_steps = [s for s in plan["steps"] if s["kind"] == "pytest"]
+        assert len(pytest_steps) == 1 and pytest_steps[0]["argv"] == expected_argv, (
+            "F48/R26-I：CI 必须经隔离 child 在 build/tests 上整目录跑 pytest"
+            "（本文件跑校验器即构建期强制）"
+        )
         # 别把「本文件自己存在」当断言：pytest 已经在跑它，那是恒真式。
         assert self.VALIDATOR.is_file()
 

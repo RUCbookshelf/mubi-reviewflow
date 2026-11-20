@@ -642,8 +642,18 @@ def register_report_evidence_routes(app, require_user):
         actor = str(user["user_id"])
         # R6-C3（复审扫尾）：authorize_action 用规范 task_id——尾点别名路径
         # 的 can_write 曾与规范 id 路径不一致（别名误 403，UI 能力漂移）。
-        allowed = ctx.can_manage or task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "coding:submit", task_id=ctx.info.task_id)
-        adjudicator = task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=ctx.info.task_id)
+        if ctx.task_kind == "team":
+            # 2.1.6 FLOW II-A：按单一有效业务角色（属主不凭管理身份得业务写）；
+            # 能力读取用布尔口径，结构化角色错误在保存时的 fresh_permission 给出。
+            allowed = task_collaboration.has_team_action_role(
+                ctx.collaboration_db, user_id=user["user_id"],
+                action="coding:submit", task_id=ctx.info.task_id)
+            adjudicator = task_collaboration.has_team_action_role(
+                ctx.collaboration_db, user_id=user["user_id"],
+                action="consensus:write", task_id=ctx.info.task_id)
+        else:
+            allowed = ctx.can_manage or task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "coding:submit", task_id=ctx.info.task_id)
+            adjudicator = task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], "consensus:write", task_id=ctx.info.task_id)
         policy = review_workflow.settings(ctx.owner_db)
         independent = ctx.task_kind == "team" and any(policy["stages"][s]["mode"] != "paused" for s in ("screen", "fulltext", "coding"))
         ctx.report_evidence_shared_visible = not independent
@@ -675,7 +685,24 @@ def register_report_evidence_routes(app, require_user):
 
     def fresh_permission(c, ctx, user, *, shared=False):
         action = "consensus:write" if shared else "coding:submit"
-        if not task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], action, task_id=ctx.info.task_id):
+        if ctx.task_kind == "team":
+            # 2.1.6 FLOW II-A：team 按有效角色复核；未配置/冲突/角色不符给
+            # team.role.* 结构化 409/403（与主仓角色门同形）。fix-r1 R4：
+            # 不再提前 return——team 的**共享**写与 personal/legacy 同样执行
+            # 下方"独立阶段未全 paused → 409"事务内复查（此前被跳过，恢复
+            # 阶段后在途共享确认仍 200 落盘/返回他人提案）；team 的个人写
+            # （shared=False）不受 paused 约束，保持仅角色复查。
+            try:
+                if not task_collaboration.authorize_team_action(
+                        ctx.collaboration_db, user["user_id"], action, task_id=ctx.info.task_id):
+                    raise HTTPException(403, "Task role changed; reload before saving.")
+            except task_collaboration.TeamRoleGateError as exc:
+                raise HTTPException(exc.status, {
+                    "error_code": exc.code, "message_key": exc.message_key,
+                    "params": exc.params, "details": str(exc), "message": str(exc)}) from exc
+            if not shared:
+                return
+        elif not task_collaboration.authorize_action(ctx.collaboration_db, user["user_id"], action, task_id=ctx.info.task_id):
             raise HTTPException(403, "Task role changed; reload before saving.")
         policy = c.execute("SELECT team_latched,stages_json FROM workflow_state WHERE singleton=1").fetchone()
         if shared and policy[0] and any(v["mode"] != "paused" for v in json.loads(policy[1]).values()):
@@ -745,148 +772,164 @@ def register_report_evidence_routes(app, require_user):
 
     @app.get("/api/tasks/{task_id}/report-evidence")
     def get_state(task_id: str, catalogue: bool = Query(False), user: dict = Depends(require_user)):
-        ctx, actor, write, adjudicate = context(task_id, user)
-        with closing(connect(ctx.owner_db)) as c:
-            data = response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
-            if catalogue: data["reports"] = reports(c)
-            return data
+        # fix-r1 R4：与他人提案的可见性（adjudicate）随独立阶段暂停状态派生，
+        # 与 settings PUT / 角色切换 API 同持 canonical task 锁取一致快照——
+        # 阶段恢复后不再向在途/后续 GET 返回他人提案。
+        with app.state.review_workflow.task_lock(task_id):
+            ctx, actor, write, adjudicate = context(task_id, user)
+            with closing(connect(ctx.owner_db)) as c:
+                data = response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
+                if catalogue: data["reports"] = reports(c)
+                return data
 
     @app.put("/api/tasks/{task_id}/report-evidence", dependencies=[Depends(size_guard)])
     def save_state(task_id: str, body: WriteIn, user: dict = Depends(require_user)):
-        ctx, actor, write, adjudicate = context(task_id, user)
-        if not write: raise HTTPException(403, "A coding role is required to save personal evidence.")
-        with closing(connect(ctx.owner_db)) as c, c:
-            c.execute("BEGIN IMMEDIATE")
-            fresh_permission(c, ctx, user, shared=False)
-            state = validate(body.state, {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")})
-            encoded = json.dumps(state, ensure_ascii=False, sort_keys=True)
-            digest = hashlib.sha256(encoded.encode()).hexdigest()
-            old_request = c.execute("SELECT digest FROM report_evidence_requests WHERE actor=? AND operation=?", (actor, str(body.operation_id))).fetchone()
-            if old_request:
-                if old_request[0] != digest: raise HTTPException(409, "Operation ID reused with different content.")
+        # fix-r1 R4：context→资格判定→事务→fresh_permission→写入全程持
+        # canonical task 锁（与 settings PUT/角色 API 串行，复查在保存窗口内）。
+        with app.state.review_workflow.task_lock(task_id):
+            ctx, actor, write, adjudicate = context(task_id, user)
+            if not write: raise HTTPException(403, "A coding role is required to save personal evidence.")
+            with closing(connect(ctx.owner_db)) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                fresh_permission(c, ctx, user, shared=False)
+                state = validate(body.state, {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")})
+                encoded = json.dumps(state, ensure_ascii=False, sort_keys=True)
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                old_request = c.execute("SELECT digest FROM report_evidence_requests WHERE actor=? AND operation=?", (actor, str(body.operation_id))).fetchone()
+                if old_request:
+                    if old_request[0] != digest: raise HTTPException(409, "Operation ID reused with different content.")
+                    return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
+                revision, before, _ = read(c, actor)
+                if revision != body.expected_revision: raise HTTPException(409, "Evidence changed in another window. Reload before saving.")
+                trace(c, ctx, actor, body.label, before, state, body.stage)
+                c.execute("INSERT INTO report_evidence_state VALUES(?,?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (actor, revision + 1, encoded, json.dumps(before), body.stage))
+                c.execute("INSERT INTO report_evidence_requests VALUES(?,?,?)", (actor, str(body.operation_id), digest))
+                # 幂等日志按成员限留最近 REQUEST_JOURNAL_LIMIT 条；被清理的旧 operation 不能再重放，
+                # 但其重试窗口早已过期，且内容校验（digest 不一致 409）依然兜底。
+                c.execute("DELETE FROM report_evidence_requests WHERE actor=? AND rowid NOT IN "
+                          "(SELECT rowid FROM report_evidence_requests WHERE actor=? ORDER BY rowid DESC LIMIT ?)",
+                          (actor, actor, REQUEST_JOURNAL_LIMIT))
                 return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
-            revision, before, _ = read(c, actor)
-            if revision != body.expected_revision: raise HTTPException(409, "Evidence changed in another window. Reload before saving.")
-            trace(c, ctx, actor, body.label, before, state, body.stage)
-            c.execute("INSERT INTO report_evidence_state VALUES(?,?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (actor, revision + 1, encoded, json.dumps(before), body.stage))
-            c.execute("INSERT INTO report_evidence_requests VALUES(?,?,?)", (actor, str(body.operation_id), digest))
-            # 幂等日志按成员限留最近 REQUEST_JOURNAL_LIMIT 条；被清理的旧 operation 不能再重放，
-            # 但其重试窗口早已过期，且内容校验（digest 不一致 409）依然兜底。
-            c.execute("DELETE FROM report_evidence_requests WHERE actor=? AND rowid NOT IN "
-                      "(SELECT rowid FROM report_evidence_requests WHERE actor=? ORDER BY rowid DESC LIMIT ?)",
-                      (actor, actor, REQUEST_JOURNAL_LIMIT))
-            return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.post("/api/tasks/{task_id}/report-evidence/undo")
     def undo_state(task_id: str, body: UndoIn, user: dict = Depends(require_user)):
-        ctx, actor, write, adjudicate = context(task_id, user)
-        if not write: raise HTTPException(403, "Evidence is read only.")
-        with closing(connect(ctx.owner_db)) as c, c:
-            c.execute("BEGIN IMMEDIATE")
-            fresh_permission(c, ctx, user, shared=False)
-            revision, before, _ = read(c, actor)
-            row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
-            if revision != body.expected_revision: raise HTTPException(409, "Evidence changed. Reload before undo.")
-            if not row or not row[0]: raise HTTPException(409, "No personal change is available to undo.")
-            # review67 L-48（对齐 undo_shared 的专用 409）：previous 快照引用的
-            # 报告此后被并入重复组/下线时，此前直接走 validate() 抛通用 422
-            # 「Choose two different active reports...」——真因被掩盖、文案误导，
-            # 且此后撤销永久不可用。与共享撤销同场景改给专用 409；快照在保存时
-            # 已过 validate，报告键失效的唯一来源是现役键集缩小，形状缺陷仍由
-            # validate 兜底 422。
-            snapshot = json.loads(row[0])
-            keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
-            stale = (any(link.get("a") not in keys or link.get("b") not in keys
+        with app.state.review_workflow.task_lock(task_id):
+            ctx, actor, write, adjudicate = context(task_id, user)
+            if not write: raise HTTPException(403, "Evidence is read only.")
+            with closing(connect(ctx.owner_db)) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                fresh_permission(c, ctx, user, shared=False)
+                revision, before, _ = read(c, actor)
+                row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
+                if revision != body.expected_revision: raise HTTPException(409, "Evidence changed. Reload before undo.")
+                if not row or not row[0]: raise HTTPException(409, "No personal change is available to undo.")
+                # review67 L-48（对齐 undo_shared 的专用 409）：previous 快照引用的
+                # 报告此后被并入重复组/下线时，此前直接走 validate() 抛通用 422
+                # 「Choose two different active reports...」——真因被掩盖、文案误导，
+                # 且此后撤销永久不可用。与共享撤销同场景改给专用 409；快照在保存时
+                # 已过 validate，报告键失效的唯一来源是现役键集缩小，形状缺陷仍由
+                # validate 兜底 422。
+                snapshot = json.loads(row[0])
+                keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
+                stale = (any(link.get("a") not in keys or link.get("b") not in keys
                          for link in snapshot.get("links", []))
-                     or any(draft.get("key") not in keys
-                            for draft in snapshot.get("drafts", []))
-                     or any(parts[1] not in keys for key in snapshot.get("appraisals", {})
-                            if len(parts := str(key).split("|", 1)) == 2))
-            if stale:
-                raise HTTPException(409, "A report is no longer active; old changes cannot be restored.")
-            restored = validate(snapshot, keys)
-            # 撤销与对应保存使用同一轨迹阶段，避免阶段收窄后撤销事件被静默过滤。
-            undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
-            trace(c, ctx, actor, "撤销报告关联与证据变更", before, restored, stage=undo_stage)
-            c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL,previous_stage=NULL WHERE actor=?", (revision + 1, json.dumps(restored), actor))
-            return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
+                         or any(draft.get("key") not in keys
+                                for draft in snapshot.get("drafts", []))
+                         or any(parts[1] not in keys for key in snapshot.get("appraisals", {})
+                                if len(parts := str(key).split("|", 1)) == 2))
+                if stale:
+                    raise HTTPException(409, "A report is no longer active; old changes cannot be restored.")
+                restored = validate(snapshot, keys)
+                # 撤销与对应保存使用同一轨迹阶段，避免阶段收窄后撤销事件被静默过滤。
+                undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
+                trace(c, ctx, actor, "撤销报告关联与证据变更", before, restored, stage=undo_stage)
+                c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL,previous_stage=NULL WHERE actor=?", (revision + 1, json.dumps(restored), actor))
+                return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.post("/api/tasks/{task_id}/report-evidence/relations")
     def relation(task_id: str, body: RelationIn, user: dict = Depends(require_user)):
-        ctx, actor, write, adjudicate = context(task_id, user)
-        if not adjudicate: raise HTTPException(403, "Relationship adjudication requires an owner/reconciler and paused independent stages in team tasks.")
-        with closing(connect(ctx.owner_db)) as c, c:
-            c.execute("BEGIN IMMEDIATE")
-            fresh_permission(c, ctx, user, shared=True)
-            revision, shared, _ = read(c, "*")
-            if revision != body.expected_revision: raise HTTPException(409, "Confirmed relationships changed. Reload first.")
-            before = json.loads(json.dumps(shared))
-            if body.action == "confirm":
-                # 确认前复核提案人当前仍是具有编码提交权的成员：fresh_permission 只校验调用者，
-                # 已被撤销角色的成员遗留提案不得经确认进入共享库（其内容仍保留在个人工作区）。
-                if not task_collaboration.authorize_action(ctx.collaboration_db, int(body.actor_id),
-                                                           "coding:submit", task_id=ctx.info.task_id):
-                    raise HTTPException(409, "Proposal author is no longer an active coding member; confirm an active member's proposal.")
-                _, personal, _ = read(c, body.actor_id)
-                proposal = next((x for x in personal["links"] if x["id"] == body.link_id), None)
-                if not proposal: raise HTTPException(404, "Proposal no longer exists.")
-                if proposal["type"] == "uncertain" or not proposal.get("evidence", "").strip(): raise HTTPException(422, "Confirm the relationship and supply supporting evidence first.")
-                if body.expected_pair_digest is not None:
-                    # review67 增补 F1（GitNexus P2）：与提案**当前**关系对比对——
-                    # 提案人改对不碰共享版本，旧页面的确认必须 409（杜绝确认
-                    # 负责人没看过的关系）。摘要口径=sha256(sorted((a,b)) 以
-                    # \x1f 连接，UTF-8，hexdigest——与前端交接书逐字一致。
-                    current = hashlib.sha256("\x1f".join(sorted(
-                        (str(proposal["a"]), str(proposal["b"])))).encode()).hexdigest()
-                    if current != body.expected_pair_digest:
-                        raise HTTPException(409, "Proposal changed since you viewed it. Reload and re-confirm.")
-                keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
-                if proposal["a"] not in keys or proposal["b"] not in keys: raise HTTPException(409, "A report is no longer active.")
-                pair = {proposal["a"], proposal["b"]}
-                shared["links"] = [l for l in shared["links"] if {l["a"], l["b"]} != pair]
-                # 共享 id 与提案保持一致（不改写、不注入提案人 user id），前端按 id+字段比对
-                # 已确认关系的逻辑不受影响；跨成员同 id 的已确认关系可以并存，由 unlink 唯一定位。
-                shared["links"].append({**proposal, "status": "agreed", "actor_id": body.actor_id})
-            else:
-                # validate 只保证单个成员工作区内 id 唯一，共享库可能存在（含 2.1.3 已落库的）
-                # 同 id 已确认关系；仅按 id 匹配会一次解除所有同 id 关系。至少按 (id, actor_id)
-                # 定位，请求同时携带 a/b 时再按关系对精确匹配；仍歧义时明确 409 而非批量删除。
-                def unlink_match(link):
-                    if link["id"] != body.link_id or str(link.get("actor_id", "")) != str(body.actor_id): return False
-                    return body.a is None or body.b is None or {link.get("a"), link.get("b")} == {body.a, body.b}
-                if not any(unlink_match(l) for l in shared["links"]): raise HTTPException(404, "Confirmed relationship no longer exists.")
-                if sum(1 for l in shared["links"] if unlink_match(l)) > 1:
-                    raise HTTPException(409, "Ambiguous confirmed relationship; resend with its report pair (a, b) to unlink exactly one.")
-                shared["links"] = [l for l in shared["links"] if not unlink_match(l)]
-            if shared == before: return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
-            trace(c, ctx, actor, "确认报告关系" if body.action == "confirm" else "解除报告关系", before, shared, stage=body.stage)
-            c.execute("INSERT INTO report_evidence_state VALUES('*',?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (revision + 1, json.dumps(shared), json.dumps(before), body.stage))
-            return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
+        with app.state.review_workflow.task_lock(task_id):
+            ctx, actor, write, adjudicate = context(task_id, user)
+            if not adjudicate: raise HTTPException(403, "Relationship adjudication requires an owner/reconciler and paused independent stages in team tasks.")
+            with closing(connect(ctx.owner_db)) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                fresh_permission(c, ctx, user, shared=True)
+                revision, shared, _ = read(c, "*")
+                if revision != body.expected_revision: raise HTTPException(409, "Confirmed relationships changed. Reload first.")
+                before = json.loads(json.dumps(shared))
+                if body.action == "confirm":
+                    # 确认前复核提案人当前仍是具有编码提交权的成员：fresh_permission 只校验调用者，
+                    # 已被撤销角色的成员遗留提案不得经确认进入共享库（其内容仍保留在个人工作区）。
+                    author_active = (
+                        task_collaboration.has_team_action_role(
+                            ctx.collaboration_db, user_id=int(body.actor_id),
+                            action="coding:submit", task_id=ctx.info.task_id)
+                        if ctx.task_kind == "team" else
+                        task_collaboration.authorize_action(ctx.collaboration_db, int(body.actor_id),
+                                                            "coding:submit", task_id=ctx.info.task_id))
+                    if not author_active:
+                        raise HTTPException(409, "Proposal author is no longer an active coding member; confirm an active member's proposal.")
+                    _, personal, _ = read(c, body.actor_id)
+                    proposal = next((x for x in personal["links"] if x["id"] == body.link_id), None)
+                    if not proposal: raise HTTPException(404, "Proposal no longer exists.")
+                    if proposal["type"] == "uncertain" or not proposal.get("evidence", "").strip(): raise HTTPException(422, "Confirm the relationship and supply supporting evidence first.")
+                    if body.expected_pair_digest is not None:
+                        # review67 增补 F1（GitNexus P2）：与提案**当前**关系对比对——
+                        # 提案人改对不碰共享版本，旧页面的确认必须 409（杜绝确认
+                        # 负责人没看过的关系）。摘要口径=sha256(sorted((a,b)) 以
+                        # \x1f 连接，UTF-8，hexdigest——与前端交接书逐字一致。
+                        current = hashlib.sha256("\x1f".join(sorted(
+                            (str(proposal["a"]), str(proposal["b"])))).encode()).hexdigest()
+                        if current != body.expected_pair_digest:
+                            raise HTTPException(409, "Proposal changed since you viewed it. Reload and re-confirm.")
+                    keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
+                    if proposal["a"] not in keys or proposal["b"] not in keys: raise HTTPException(409, "A report is no longer active.")
+                    pair = {proposal["a"], proposal["b"]}
+                    shared["links"] = [l for l in shared["links"] if {l["a"], l["b"]} != pair]
+                    # 共享 id 与提案保持一致（不改写、不注入提案人 user id），前端按 id+字段比对
+                    # 已确认关系的逻辑不受影响；跨成员同 id 的已确认关系可以并存，由 unlink 唯一定位。
+                    shared["links"].append({**proposal, "status": "agreed", "actor_id": body.actor_id})
+                else:
+                    # validate 只保证单个成员工作区内 id 唯一，共享库可能存在（含 2.1.3 已落库的）
+                    # 同 id 已确认关系；仅按 id 匹配会一次解除所有同 id 关系。至少按 (id, actor_id)
+                    # 定位，请求同时携带 a/b 时再按关系对精确匹配；仍歧义时明确 409 而非批量删除。
+                    def unlink_match(link):
+                        if link["id"] != body.link_id or str(link.get("actor_id", "")) != str(body.actor_id): return False
+                        return body.a is None or body.b is None or {link.get("a"), link.get("b")} == {body.a, body.b}
+                    if not any(unlink_match(l) for l in shared["links"]): raise HTTPException(404, "Confirmed relationship no longer exists.")
+                    if sum(1 for l in shared["links"] if unlink_match(l)) > 1:
+                        raise HTTPException(409, "Ambiguous confirmed relationship; resend with its report pair (a, b) to unlink exactly one.")
+                    shared["links"] = [l for l in shared["links"] if not unlink_match(l)]
+                if shared == before: return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
+                trace(c, ctx, actor, "确认报告关系" if body.action == "confirm" else "解除报告关系", before, shared, stage=body.stage)
+                c.execute("INSERT INTO report_evidence_state VALUES('*',?,?,?,?) ON CONFLICT(actor) DO UPDATE SET revision=excluded.revision,state=excluded.state,previous=excluded.previous,previous_stage=excluded.previous_stage", (revision + 1, json.dumps(shared), json.dumps(before), body.stage))
+                return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.post("/api/tasks/{task_id}/report-evidence/relations/undo")
     def undo_shared(task_id: str, body: UndoIn, user: dict = Depends(require_user)):
-        ctx, actor, write, adjudicate = context(task_id, user)
-        if not adjudicate: raise HTTPException(403, "Relationship adjudication is unavailable.")
-        with closing(connect(ctx.owner_db)) as c, c:
-            c.execute("BEGIN IMMEDIATE")
-            fresh_permission(c, ctx, user, shared=True)
-            revision, before, _ = read(c, "*")
-            row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor='*'").fetchone()
-            # 版本过期与「无可撤销变更」拆分返回：前者的 409 文案必须命中前端
-            # report_evidence.js 的 STALE 正则以触发冲突自动刷新（409 契约，钉子见
-            # build/tests/test_trace_static_guards.py）；后者与版本无关，保持原文案
-            # 且不得命中 STALE，避免误触发自动刷新。
-            if revision != body.expected_revision: raise HTTPException(409, "Confirmed relationships changed. Reload before undo.")
-            if not row or not row[0]: raise HTTPException(409, "No current relationship change is available to undo.")
-            restored = json.loads(row[0])
-            keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
-            if any(l["a"] not in keys or l["b"] not in keys for l in restored["links"]):
-                raise HTTPException(409, "A report is no longer active; old relationships cannot be restored.")
-            # 撤销与对应裁决动作使用同一轨迹阶段（随共享撤销栈记录）。
-            undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
-            trace(c, ctx, actor, "撤销报告关系裁决", before, restored, stage=undo_stage)
-            c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL,previous_stage=NULL WHERE actor='*'", (revision + 1, json.dumps(restored)))
-            return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
+        with app.state.review_workflow.task_lock(task_id):
+            ctx, actor, write, adjudicate = context(task_id, user)
+            if not adjudicate: raise HTTPException(403, "Relationship adjudication is unavailable.")
+            with closing(connect(ctx.owner_db)) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                fresh_permission(c, ctx, user, shared=True)
+                revision, before, _ = read(c, "*")
+                row = c.execute("SELECT previous,previous_stage FROM report_evidence_state WHERE actor='*'").fetchone()
+                # 版本过期与「无可撤销变更」拆分返回：前者的 409 文案必须命中前端
+                # report_evidence.js 的 STALE 正则以触发冲突自动刷新（409 契约，钉子见
+                # build/tests/test_trace_static_guards.py）；后者与版本无关，保持原文案
+                # 且不得命中 STALE，避免误触发自动刷新。
+                if revision != body.expected_revision: raise HTTPException(409, "Confirmed relationships changed. Reload before undo.")
+                if not row or not row[0]: raise HTTPException(409, "No current relationship change is available to undo.")
+                restored = json.loads(row[0])
+                keys = {r[0] for r in c.execute("SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL")}
+                if any(l["a"] not in keys or l["b"] not in keys for l in restored["links"]):
+                    raise HTTPException(409, "A report is no longer active; old relationships cannot be restored.")
+                # 撤销与对应裁决动作使用同一轨迹阶段（随共享撤销栈记录）。
+                undo_stage = row[1] if row[1] in TRACE_STAGES else "coding"
+                trace(c, ctx, actor, "撤销报告关系裁决", before, restored, stage=undo_stage)
+                c.execute("UPDATE report_evidence_state SET revision=?,state=?,previous=NULL,previous_stage=NULL WHERE actor='*'", (revision + 1, json.dumps(restored)))
+                return response(c, actor, write, adjudicate, shared_visible=ctx.report_evidence_shared_visible)
 
     @app.get("/api/tasks/{task_id}/report-evidence/export")
     def export(task_id: str, format: Literal["csv", "json"] = "csv", user: dict = Depends(require_user)):

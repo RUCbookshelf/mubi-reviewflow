@@ -8,7 +8,7 @@ import uuid
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
 from fastapi import Depends, HTTPException
@@ -18,7 +18,39 @@ from coscreen import binary_reset, coding, coding_evidence, review_workflow as s
 from coscreen.models import Article
 from custom_backend.events import BUS
 
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids runtime coupling
+    from collections.abc import Callable, Mapping  # P15 mutate 注解专用
+
+    from custom_backend.team_screening_runtime import TeamReadScope  # P23 注解专用
+    from custom_backend.team_screening_write import TeamWriteInputs
+
 Stage = Literal["screen", "fulltext", "coding"]
+
+#: P23 keyed 读服务：内部 SQL 每块至多 200 键（C02——owner 分页域枚举，
+#: 不全域读取后过滤）。
+_KEYED_READ_PAGE = 200
+#: 界面阶段 → 链目标（与 team_write_checks._OPERATIONS 的 member_vote/
+#: member_coding 规则同源：screen 无链；fulltext→stage2；coding→coding）。
+_STAGE_CHAIN_TARGET = {"screen": None, "fulltext": "stage2", "coding": "coding"}
+#: 界面阶段 → 同阶段完成/当前一致检查所用的 ledger 视图阶段（coding 无
+#: 筛选完成投影，不外推成 coding 历史锁）。
+_STAGE_OPEN_VIEW = {"screen": "stage1", "fulltext": "stage2", "coding": None}
+#: 界面阶段 → 成员票 ledger 阶段（coding 值不是票，无 own_vote 投影）。
+_STAGE_VOTE_LEDGER = {"screen": "stage1", "fulltext": "stage2"}
+
+#: fix-r1 R5：筛选职责拒绝的结构化 403 载荷——与 custom_backend/main.py 的
+#: ``_screening_disabled_error()`` / ``SCREENING_NOT_ENABLED_MESSAGE`` 逐字节同形
+#: （常量锚定 main.py；十语言词条已按 message_key=team.screening_not_enabled 注册，
+#: 不重复注册）。两处必须同步修改。
+_SCREENING_NOT_ENABLED_MESSAGE = (
+    "你尚未获得参与本任务筛选的权限，请联系任务负责人开启「允许参与筛选」后再试。")
+_SCREENING_NOT_ENABLED_PAYLOAD = {
+    "error_code": "screening_not_enabled",
+    "message_key": "team.screening_not_enabled",
+    "params": {},
+    "details": "Screening participation is not enabled for this member",
+    "message": _SCREENING_NOT_ENABLED_MESSAGE,
+}
 
 
 @dataclass
@@ -31,6 +63,128 @@ class WorkflowContext:
     can_manage: bool
     task_kind: str
     collaboration_db: Path
+    #: Only set inside a confirmed team write window.  None keeps every
+    #: personal/legacy caller on the original path-based reads.
+    write_inputs: "TeamWriteInputs | None" = None
+    #: P23（C08）：本请求受保护只读 scope（protected_keyed_read_scope 的
+    #: yield 值）。仅在该请求存活期内非 None（服务侧 try/finally 恢复），
+    #: 离开请求必为 None——读取通道不串请求。solo/legacy 恒 None。
+    team_read_scope: "TeamReadScope | None" = None
+
+
+def _require_read_conn(conn: sqlite3.Connection, *, api: str) -> None:
+    """Borrowed-read contract: native, active caller txn, caller Row factory."""
+    if not isinstance(conn, sqlite3.Connection):
+        raise RuntimeError(
+            f"{api} requires an existing sqlite3.Connection (borrowed read; never opened here).")
+    if not conn.in_transaction:
+        raise RuntimeError(
+            f"{api} requires an active caller transaction; this function never starts one.")
+    if conn.row_factory is not sqlite3.Row:
+        raise RuntimeError(
+            f"{api} requires the caller connection to use sqlite3.Row; "
+            "this function never changes row_factory.")
+
+
+def _team_inputs(ctx: WorkflowContext) -> "TeamWriteInputs | None":
+    """Return the live team window inputs or None; never fall back to path.
+
+    Once ``ctx.write_inputs`` is present it must be the same context's confirmed
+    team window with all retained connections native/active/Row.  A stale or
+    malformed window raises instead of silently reconnecting by path.
+    """
+    inputs = getattr(ctx, "write_inputs", None)
+    if inputs is None:
+        return None
+    if getattr(ctx, "task_kind", None) != "team":
+        raise RuntimeError("write_inputs is only valid for confirmed team tasks")
+    if getattr(inputs, "ctx", None) is not ctx:
+        raise RuntimeError("write_inputs.ctx must be the same WorkflowContext")
+    connections = tuple(getattr(inputs, "connections", ()))
+    if not connections:
+        raise RuntimeError("write_inputs has no retained connections")
+    for conn in connections:
+        _require_read_conn(conn, api="write_inputs.connections")
+    for name in ("owner_conn", "actor_conn"):
+        conn = getattr(inputs, name, None)
+        if not any(conn is candidate for candidate in connections):
+            raise RuntimeError(f"write_inputs.{name} is not in retained connections")
+    return inputs
+
+
+def _effective_read_scope(ctx: WorkflowContext) -> "TeamReadScope | None":
+    """P23（C08）：读取通道解析——``write_inputs.scope`` 优先，否则本请求
+    ``team_read_scope``；二者皆无（solo/legacy/未绑 scope 的 team 读）为 None。
+
+    ``team_read_scope`` 校同 task（scope.task_id == ctx.info.task_id）、同
+    team 任务、且 scope 自持 collab 屏障连接为 native/活动事务/Row（借读
+    合同门）。违约 fail-closed（RuntimeError），绝不静默降级回 path-only
+    自连读 owner/evidence。绑定生命周期由服务侧 try/finally 恢复，本函数
+    只读不写。"""
+    inputs = _team_inputs(ctx)
+    if inputs is not None:
+        return inputs.scope
+    scope = getattr(ctx, "team_read_scope", None)
+    if scope is None:
+        return None
+    if getattr(ctx, "task_kind", None) != "team":
+        raise RuntimeError("team_read_scope is only valid for confirmed team tasks")
+    if getattr(scope, "task_id", None) != getattr(ctx.info, "task_id", None):
+        raise RuntimeError("team_read_scope task differs from this context's task")
+    _require_read_conn(scope.collab_connection(), api="team_read_scope.collab_connection")
+    return scope
+
+
+def _article_rows_on_conn(conn: sqlite3.Connection, *, compact: bool) -> list[dict]:
+    if not store.has_table(conn, "articles"):
+        return []
+    # compact 的两种取值都是固定枚举：各写一条字面量 SQL。
+    if compact:
+        rows = conn.execute(
+            "SELECT zotero_key,title,authors,journal,year,doi,item_type,is_duplicate_of,import_order "
+            "FROM articles ORDER BY import_order,zotero_key")
+    else:
+        rows = conn.execute("SELECT * FROM articles ORDER BY import_order,zotero_key")
+    return [dict(row) for row in rows]
+
+
+def _article_row_on_conn(conn: sqlite3.Connection, key: str) -> dict | None:
+    if not store.has_table(conn, "articles"):
+        return None
+    row = conn.execute("SELECT * FROM articles WHERE zotero_key=?", (key,)).fetchone()
+    return dict(row) if row else None
+
+
+def _saved_rows_on_conn(conn: sqlite3.Connection, stage: str) -> dict:
+    table = {"screen": "decisions", "fulltext": "stage2_decisions", "coding": "coding_values"}[stage]
+    if not store.has_table(conn, table):
+        return {}
+    if stage == "coding":
+        result: dict = {}
+        for row in conn.execute("SELECT zotero_key,dimension_id,value FROM coding_values"):
+            result.setdefault(row[0], {})[row[1]] = row[2]
+        return result
+    # table 只来自上方固定枚举（coding 已提前返回）：两条字面量 SQL。
+    if table == "stage2_decisions":
+        rows = conn.execute("SELECT * FROM stage2_decisions")
+    else:
+        rows = conn.execute("SELECT * FROM decisions")
+    return {row["zotero_key"]: dict(row) for row in rows}
+
+
+def _saved_item_on_conn(conn: sqlite3.Connection, stage: str, key: str) -> dict | None:
+    table = {"screen": "decisions", "fulltext": "stage2_decisions", "coding": "coding_values"}[stage]
+    if not store.has_table(conn, table):
+        return None
+    if stage == "coding":
+        return {row[0]: row[1] for row in conn.execute(
+            "SELECT dimension_id,value FROM coding_values WHERE zotero_key=?", (key,))}
+    # table 只来自上方固定枚举（coding 已提前返回）：两条字面量 SQL。
+    if table == "stage2_decisions":
+        row = conn.execute("SELECT * FROM stage2_decisions WHERE zotero_key=?", (key,)).fetchone()
+    else:
+        row = conn.execute("SELECT * FROM decisions WHERE zotero_key=?", (key,)).fetchone()
+    return dict(row) if row else None
 
 
 class WorkflowRuntime:
@@ -48,6 +202,16 @@ class WorkflowRuntime:
     def lock(self, task_id: str) -> threading.RLock:
         with self._locks_guard:
             return self._locks.setdefault(task_id, threading.RLock())
+
+    @contextmanager
+    def task_lock(self, task_id: str):
+        """canonical task 锁的规范 id 入口（fix-r1 R4）：先解析尾点别名为规范
+        task_id 再取 ``lock``，供 report-evidence 等需要与 write_guard/settings
+        PUT/角色切换 API 同锁串行、但不走 write_guard 的端点复用。新符号
+        （fix-r1 新增，无既有上游调用者）。"""
+        task_id = self.task_lookup(task_id).task_id
+        with self.lock(task_id):
+            yield
 
     def readonly_context(self, task_id: str, user: dict) -> WorkflowContext:
         """只读上下文（R6-U4/#24）：与 context() 同一访问判定，但**不建库、
@@ -74,7 +238,69 @@ class WorkflowRuntime:
             return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
         owner_db = info.dir / (tasks.slugify_screener(owner["owner_username"]) + ".db")
         return WorkflowContext(info, user, owner, owner_db, actor_db,
-                               owner["owner_user_id"] == user["user_id"], "personal", collab)
+                               owner["owner_user_id"] == user["user_id"],
+                               self._readonly_task_kind(info, owner), collab)
+
+    def _readonly_task_kind(self, info, owner) -> str:
+        """只读派生 task_kind（2.1.6 FLOW II-A；fix-r1 R6 与 context 事实一致）。
+
+        与 :meth:`context` 同一判定**事实**——``team_latched==1`` 或协作库存在
+        当前非属主 grant（邀请 grant 与 latch 两步提交的现实窗口不再判
+        personal）——但**零写**：不建库、不迁移、不 latch。属主库确无文件/
+        无表 = personal（兼容口径：从未开过工作流的属主任务）；锁忙/读失败/
+        协作库中途不可读抛 503——读失败不得伪装成 personal（fail-closed，
+        fix-r1 §9.2：PermissionError 不笼统折叠为无 grants）。"""
+        owner_db = info.dir / (tasks.slugify_screener(owner["owner_username"]) + ".db")
+        latched = False
+        if owner_db.is_file():
+            try:
+                with closing(store.connect(owner_db, read_only=True)) as conn:
+                    if store.has_table(conn, "workflow_state"):
+                        row = conn.execute(
+                            "SELECT team_latched FROM workflow_state WHERE singleton=1"
+                        ).fetchone()
+                        latched = row is not None and int(row[0] or 0) == 1
+            except sqlite3.OperationalError as exc:
+                raise HTTPException(
+                    503, "任务协作状态暂时无法读取，请稍后重试。") from exc
+            except OSError as exc:
+                raise HTTPException(
+                    503, "任务协作状态暂时无法读取，请稍后重试。") from exc
+        if latched:
+            return "team"
+        try:
+            if task_collaboration.has_non_owner_grants(
+                    task_collaboration.shared_store_path(info.dir),
+                    task_id=info.task_id,
+                    owner_user_id=int(owner["owner_user_id"])):
+                return "team"
+        except task_collaboration.CollaborationStoreCorruptError:
+            # fix-r2 B2：Corrupt 是 OwnerUnavailableError 的子类——必须先于
+            # 父类 catch 按原类型上抛（desktop 409 修库指引 / server 503
+            # fail-closed，交全局处理器）；否则被父类折成"暂不可用"503，
+            # 下方"原样上抛"注释不可达（B2 回归）。
+            raise
+        except task_collaboration.OwnerUnavailableError as exc:
+            raise HTTPException(
+                503, "任务协作状态暂时无法读取，请稍后重试。") from exc
+        # CollaborationStoreCorruptError 原样上抛（desktop 409 修库 / server 503）。
+        return "personal"
+
+    def is_team(self, task_id: str) -> bool:
+        """task_kind 是否 team（只读派生；供角色门/投影调用，不进 context 热路径）。
+
+        规范 task_id + 属主绑定照 context() 口径；legacy（无属主）恒 False。
+        判定事实＝``team_latched==1`` 或协作库存在当前非属主 grant（fix-r1 R6：
+        与 context() 的 latch 写入前事实一致，grant/latch 两步窗口不再误判
+        personal）；撤销全员的已 latch 团队仍为 team（team_latched append-only，
+        不能用"当前还有 grant" 替代）。读失败按 503 契约上抛，不折叠成 False。"""
+        info = self.task_lookup(task_id)
+        task_id = info.task_id
+        collab = task_collaboration.shared_store_path(info.dir)
+        owner = task_collaboration.get_owner(collab, task_id=task_id)
+        if owner is None:
+            return False
+        return self._readonly_task_kind(info, owner) == "team"
 
     def context(self, task_id: str, user: dict) -> WorkflowContext:
         info = self.task_lookup(task_id)
@@ -178,7 +404,20 @@ class WorkflowRuntime:
             self.context(task_id, user)
 
     def settings(self, ctx: WorkflowContext) -> dict:
-        data = store.settings(ctx.owner_db)
+        inputs = _team_inputs(ctx)
+        if inputs is None:
+            data = store.settings(ctx.owner_db)
+            sources = store.sources(ctx.owner_db)
+            evidence_fields = coding_evidence.field_rows(ctx.owner_db)
+            mapping_issues = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1]
+        else:
+            data = store.settings(ctx.owner_db, conn=inputs.owner_conn)
+            sources = store.sources(ctx.owner_db, conn=inputs.owner_conn)
+            evidence_fields = coding_evidence.field_rows(
+                ctx.owner_db, conn=inputs.owner_conn)
+            mapping_issues = coding_evidence.mapping(
+                ctx.actor_db, ctx.owner_db,
+                actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)[1]
         # 2.1.5 W1：show_maybe 与轮次标记退役——读取时剥离历史存储值，
         # 载荷不再下发（PUT 端也忽略该键，见 set_settings）。
         stages = {stage: {key: value for key, value in policy.items()
@@ -186,16 +425,42 @@ class WorkflowRuntime:
                   for stage, policy in data["stages"].items()}
         return {key: data[key] for key in ("version", "evidence_required_field_ids")} | {
             "stages": stages,
-            "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": store.sources(ctx.owner_db),
+            "task_kind": ctx.task_kind, "can_manage": ctx.can_manage, "sources": sources,
             "evidence_fields": [{**d, "dimension_id": d['id']}
-                                for d in coding_evidence.field_rows(ctx.owner_db)],
-            "mapping_issues": coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1],
+                                for d in evidence_fields],
+            "mapping_issues": mapping_issues,
             'submission_evidence': self.submission_evidence_capability(ctx)}
 
     @staticmethod
     def can_submit_coding(ctx: WorkflowContext) -> bool:
-        return bool(ctx.owner is not None and task_collaboration.authorize_action(
+        # 2.1.6 FLOW II-A：team 按单一有效业务角色判定（属主不凭管理身份
+        # 直通编码提交）；personal/legacy 保持 authorize_action 旧语义——
+        # 属主（owner 分支）照旧 True，solo/手工路径零回归。
+        if ctx.owner is None:
+            return False
+        inputs = _team_inputs(ctx)
+        if inputs is not None:
+            user_id = ctx.user.get("user_id") if isinstance(ctx.user, dict) else None
+            role_state = inputs.scope.role_state()
+            for entry in role_state.get("participants") or ():
+                if entry.get("user_id") != user_id:
+                    continue
+                return bool(entry.get("role") == "coder"
+                            and entry.get("conflict") is not True)
+            return False
+        if ctx.task_kind == 'team':
+            return task_collaboration.has_team_action_role(
+                ctx.collaboration_db, user_id=ctx.user['user_id'],
+                action='coding:submit', task_id=ctx.info.task_id)
+        return bool(task_collaboration.authorize_action(
             ctx.collaboration_db, ctx.user['user_id'], 'coding:submit', task_id=ctx.info.task_id))
+
+    @staticmethod
+    def _team_role_http(exc: Exception) -> HTTPException:
+        """task_collaboration.TeamRoleGateError -> 结构化 409/403（RoB 同形）。"""
+        return HTTPException(exc.status, {
+            "error_code": exc.code, "message_key": exc.message_key,
+            "params": exc.params, "details": str(exc), "message": str(exc)})
 
     def submission_evidence_capability(self, ctx: WorkflowContext) -> dict:
         from coscreen.workspace_undo import SUBMISSION_EVIDENCE
@@ -209,7 +474,13 @@ class WorkflowRuntime:
 
     @staticmethod
     def validate_evidence_dimensions(ctx: WorkflowContext, dimensions: set[int]) -> None:
-        mapped, issues, _ = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)
+        inputs = _team_inputs(ctx)
+        if inputs is None:
+            mapped, issues, _ = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)
+        else:
+            mapped, issues, _ = coding_evidence.mapping(
+                ctx.actor_db, ctx.owner_db,
+                actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
         if not dimensions <= set(mapped):
             raise HTTPException(409, {'code': 'requirement_mapping_gap',
                 'message': 'Evidence fields must map exactly to the current task coding scheme.',
@@ -241,12 +512,38 @@ class WorkflowRuntime:
                 self.notify(ctx, 'coding-scheme')
 
     def evidence_state(self, ctx: WorkflowContext, key: str) -> dict:
-        return coding_evidence.evidence_state(ctx.actor_db, key, ctx.owner_db, ctx.info.task_id)
+        inputs = _team_inputs(ctx)
+        if inputs is None:
+            return coding_evidence.evidence_state(
+                ctx.actor_db, key, ctx.owner_db, ctx.info.task_id)
+        return coding_evidence.evidence_state(
+            ctx.actor_db, key, ctx.owner_db, ctx.info.task_id,
+            actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
 
     def coding_result(self, ctx: WorkflowContext, key: str, draft: bool = False) -> dict:
+        inputs = _team_inputs(ctx)
         state = self.evidence_state(ctx, key)
-        complete = key in coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db, [key])
-        return {'saved': True, 'progress': coding.coding_progress(ctx.actor_db, owner_db=ctx.owner_db),
+        if inputs is None:
+            complete = key in coding_evidence.complete_keys(
+                ctx.actor_db, ctx.owner_db, [key])
+            progress = coding.coding_progress(ctx.actor_db, owner_db=ctx.owner_db)
+        else:
+            complete = key in coding_evidence.complete_keys(
+                ctx.actor_db, ctx.owner_db, [key],
+                actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
+            from custom_backend.team_screening_runtime import (
+                chain_cleared_keys,
+                team_chain_view,
+            )
+            queue = chain_cleared_keys(team_chain_view(inputs.scope, "coding"))
+            progress = coding.coding_progress_on(
+                inputs.actor_conn,
+                owner_conn=inputs.owner_conn,
+                actor_db=ctx.actor_db,
+                owner_db=ctx.owner_db,
+                queue=queue,
+            )
+        return {'saved': True, 'progress': progress,
                 **state, 'complete': complete, 'draft': bool(draft or not complete)}
 
     def trace_actions(self, task_id: str, user: dict, events: list[dict]) -> None:
@@ -384,68 +681,48 @@ class WorkflowRuntime:
                                           "message": COLLABORATION_RESERVED_NAME_MESSAGE})
 
     @staticmethod
-    def article_rows(db: Path, *, compact: bool = False) -> list[dict]:
+    def article_rows(db: Path, *, compact: bool = False,
+                     conn: sqlite3.Connection | None = None) -> list[dict]:
+        if conn is not None:
+            _require_read_conn(conn, api="article_rows")
+            return _article_rows_on_conn(conn, compact=compact)
         if not db.is_file():
             return []
-        with closing(store.connect(db, read_only=True)) as conn:
-            if not store.has_table(conn, "articles"):
-                return []
-            # compact 的两种取值都是固定枚举：各写一条字面量 SQL。
-            if compact:
-                rows = conn.execute(
-                    "SELECT zotero_key,title,authors,journal,year,doi,item_type,is_duplicate_of,import_order "
-                    "FROM articles ORDER BY import_order,zotero_key")
-            else:
-                rows = conn.execute("SELECT * FROM articles ORDER BY import_order,zotero_key")
-            return [dict(row) for row in rows]
+        with closing(store.connect(db, read_only=True)) as path_conn:
+            return _article_rows_on_conn(path_conn, compact=compact)
 
     @staticmethod
-    def article_row(db: Path, key: str) -> dict | None:
+    def article_row(db: Path, key: str,
+                    *, conn: sqlite3.Connection | None = None) -> dict | None:
+        if conn is not None:
+            _require_read_conn(conn, api="article_row")
+            return _article_row_on_conn(conn, key)
         if not db.is_file():
             return None
-        with closing(store.connect(db, read_only=True)) as conn:
-            if not store.has_table(conn, "articles"):
-                return None
-            row = conn.execute("SELECT * FROM articles WHERE zotero_key=?", (key,)).fetchone()
-            return dict(row) if row else None
+        with closing(store.connect(db, read_only=True)) as path_conn:
+            return _article_row_on_conn(path_conn, key)
 
     @staticmethod
-    def saved_rows(db: Path, stage: str) -> dict:
-        table = {"screen": "decisions", "fulltext": "stage2_decisions", "coding": "coding_values"}[stage]
+    def saved_rows(db: Path, stage: str,
+                   *, conn: sqlite3.Connection | None = None) -> dict:
+        if conn is not None:
+            _require_read_conn(conn, api="saved_rows")
+            return _saved_rows_on_conn(conn, stage)
         if not db.is_file():
             return {}
-        with closing(store.connect(db, read_only=True)) as conn:
-            if not store.has_table(conn, table):
-                return {}
-            if stage == "coding":
-                result: dict = {}
-                for row in conn.execute("SELECT zotero_key,dimension_id,value FROM coding_values"):
-                    result.setdefault(row[0], {})[row[1]] = row[2]
-                return result
-            # table 只来自上方固定枚举（coding 已提前返回）：两条字面量 SQL。
-            if table == "stage2_decisions":
-                rows = conn.execute("SELECT * FROM stage2_decisions")
-            else:
-                rows = conn.execute("SELECT * FROM decisions")
-            return {row["zotero_key"]: dict(row) for row in rows}
+        with closing(store.connect(db, read_only=True)) as path_conn:
+            return _saved_rows_on_conn(path_conn, stage)
 
     @staticmethod
-    def saved_item(db: Path, stage: str, key: str) -> dict | None:
-        table = {"screen": "decisions", "fulltext": "stage2_decisions", "coding": "coding_values"}[stage]
+    def saved_item(db: Path, stage: str, key: str,
+                   *, conn: sqlite3.Connection | None = None) -> dict | None:
+        if conn is not None:
+            _require_read_conn(conn, api="saved_item")
+            return _saved_item_on_conn(conn, stage, key)
         if not db.is_file():
             return None
-        with closing(store.connect(db, read_only=True)) as conn:
-            if not store.has_table(conn, table):
-                return None
-            if stage == "coding":
-                return {row[0]: row[1] for row in conn.execute(
-                    "SELECT dimension_id,value FROM coding_values WHERE zotero_key=?", (key,))}
-            # table 只来自上方固定枚举（coding 已提前返回）：两条字面量 SQL。
-            if table == "stage2_decisions":
-                row = conn.execute("SELECT * FROM stage2_decisions WHERE zotero_key=?", (key,)).fetchone()
-            else:
-                row = conn.execute("SELECT * FROM decisions WHERE zotero_key=?", (key,)).fetchone()
-            return dict(row) if row else None
+        with closing(store.connect(db, read_only=True)) as path_conn:
+            return _saved_item_on_conn(path_conn, stage, key)
 
     def eligible(self, ctx: WorkflowContext, stage: str) -> tuple[list[dict], dict]:
         rows = [row for row in self.article_rows(ctx.owner_db, compact=True) if row.get("is_duplicate_of") is None]
@@ -473,22 +750,48 @@ class WorkflowRuntime:
         return rows, saved
 
     def allowed_sources(self, ctx: WorkflowContext, stage: str) -> list[str]:
-        policy = store.settings(ctx.owner_db)["stages"][stage]
-        active = {source["id"] for source in store.sources(ctx.owner_db) if source["active"]}
+        inputs = _team_inputs(ctx)
+        if inputs is None:
+            policy = store.settings(ctx.owner_db)["stages"][stage]
+            active = {source["id"] for source in store.sources(ctx.owner_db) if source["active"]}
+        else:
+            policy = store.settings(
+                ctx.owner_db, conn=inputs.owner_conn)["stages"][stage]
+            active = {source["id"] for source in store.sources(
+                ctx.owner_db, conn=inputs.owner_conn) if source["active"]}
         return sorted(active & set(policy["source_ids"]) if policy["mode"] == "selected" else active)
 
     def scoped(self, ctx: WorkflowContext, stage: str, rows: list[dict], source_id: str | None = None) -> list[dict]:
+        inputs = _team_inputs(ctx)
         allowed = set(self.allowed_sources(ctx, stage))
         if source_id is not None:
-            if source_id not in {source["id"] for source in store.sources(ctx.owner_db)}:
+            sources = store.sources(
+                ctx.owner_db, conn=inputs.owner_conn) if inputs is not None else store.sources(ctx.owner_db)
+            if source_id not in {source["id"] for source in sources}:
                 raise HTTPException(400, "Unknown source ID.")
             allowed &= {source_id}
-        links = store.source_links(ctx.owner_db)
+        links = (store.source_links(ctx.owner_db, conn=inputs.owner_conn)
+                 if inputs is not None else store.source_links(ctx.owner_db))
         return [row for row in rows if links.get(row["zotero_key"], {store.UNASSIGNED}) & allowed]
 
     def writable_reason(self, ctx: WorkflowContext, stage: str, key: str, *, canonical_only: bool = False) -> str | None:
         if ctx.info.degraded:
             return "task_read_only"
+        # P23（同保存门）：team 任务且有可用读取 scope（写窗 write_inputs 或
+        # 本请求受保护 team_read_scope）时，资格判定与团队保存门
+        # （team_write_checks.require_team_write 的逐键检查）同序同令牌——
+        # canonical 域 → paused → source 域 → 链（issue/gate）→ 同阶段完成/
+        # raw 历史锁。队列/详情读到的 reason 即随后真实保存 POST 被 409 拒
+        # 绝的 code（test_queue_detail_save_reason_agree 锚）。solo/legacy
+        # （scope=None）保持既有字节路径，零回归。
+        scope = None
+        if not canonical_only:
+            try:
+                scope = _effective_read_scope(ctx)
+            except RuntimeError:
+                raise
+        if scope is not None and ctx.task_kind == "team":
+            return self._team_gate_reason(ctx, scope, stage, key)
         if store.settings(ctx.owner_db)["stages"][stage]["mode"] == "paused":
             return "stage_paused"
         row = self.article_row(ctx.owner_db, key)
@@ -538,14 +841,77 @@ class WorkflowRuntime:
                 if not ctx.can_manage:
                     raise HTTPException(403, "Only a verified task owner can manage workflow settings.")
             else:
-                if canonical_only and (stage != 'coding' or not self.can_submit_coding(ctx)):
+                if stage == 'coding' and ctx.task_kind == 'team':
+                    # fix-r1 R2：team 的**全部** coding 业务写（direct 个人库
+                    # 保存、values-batch、canonical 提交证据、coding undo 恢复、
+                    # 非 canonical 证据上传）都须当前有效单一 coder——reconciler
+                    # （含属主 reconciler）不能借个人库写绕过；拒绝带 team.role.*
+                    # 结构化码（409/403）；能力显示仍走 can_submit_coding 布尔口径。
+                    try:
+                        if not task_collaboration.authorize_team_action(
+                                ctx.collaboration_db, ctx.user['user_id'],
+                                'coding:submit', task_id=ctx.info.task_id):
+                            raise HTTPException(403, "Task coding submission access denied.")
+                    except task_collaboration.TeamRoleGateError as exc:
+                        raise self._team_role_http(exc) from exc
+                elif canonical_only and (stage != 'coding' or not self.can_submit_coding(ctx)):
                     raise HTTPException(403, "Task coding submission access denied.")
+                if stage in ('screen', 'fulltext') and ctx.owner is not None:
+                    # fix-r1 R5：筛选职责检查移入**实际保存保护窗口**（本
+                    # canonical task 锁内）——与角色切换/参与开关/撤销（同持
+                    # 此锁的协作管理 API）串行，检查后切角色/关参与不能让在途
+                    # 写在切换完成后落盘。外层 _screening_gate（main）保留为
+                    # 快失败前置，错误形状与此一致；legacy（owner=None）跳过。
+                    self._screening_responsibility_gate(ctx)
                 self.sync_catalog(ctx)
                 reason = self.writable_reason(ctx, stage, key, canonical_only=canonical_only)
                 if reason:
                     raise HTTPException(409, {"code": reason, "version": state["version"],
                                               "workflow_settings": self.settings(ctx)})
             yield ctx
+
+    def _screening_responsibility_gate(self, ctx: WorkflowContext) -> None:
+        """fix-r1 R5：锁内筛选职责复查（仅 write_guard key≠None 且
+        stage∈{screen,fulltext} 且 ctx.owner 非 None 时调用）。
+
+        - team：单一有效业务角色口径（coder 放行；reconciler 按参与开关；
+          未配置/冲突→ team.role.unconfigured/conflict 结构化 409；关参与→
+          screening_not_enabled 结构化 403）——与 main._screening_gate 完全
+          同形同文案；
+        - personal（非 team 有属主）：旧开关口径（纯 reconciler 关闭→同一
+          结构化 403），与外层 _screening_gate(personal 分支) 判定一致，零
+          新增拒绝面；
+        - 基础设施异常：OwnerUnavailableError→503（同 main 文案）；
+          CollaborationStoreCorruptError 原样上抛交全局处理器。"""
+        user_id = ctx.user['user_id']
+        try:
+            if ctx.task_kind == 'team':
+                permission = task_collaboration.team_screening_permission(
+                    ctx.collaboration_db, user_id=user_id, task_id=ctx.info.task_id)
+                if permission['allowed']:
+                    return
+                if permission['reason'] in ('unconfigured', 'conflict'):
+                    detail = ("该成员的业务角色尚未配置，请先在成员管理中选择编码者或仲裁者。"
+                              if permission['reason'] == 'unconfigured' else
+                              "该成员同时持有编码者与仲裁者授权，请先选择单一有效业务角色。")
+                    exc_class = (task_collaboration.TeamRoleUnconfigured
+                                 if permission['reason'] == 'unconfigured'
+                                 else task_collaboration.TeamRoleConflict)
+                    raise self._team_role_http(exc_class(
+                        detail, params={"participant": user_id}))
+                raise HTTPException(403, _SCREENING_NOT_ENABLED_PAYLOAD)
+            if not task_collaboration.screening_allowed(
+                    ctx.collaboration_db, user_id, task_id=ctx.info.task_id,
+                    team=False):
+                raise HTTPException(403, _SCREENING_NOT_ENABLED_PAYLOAD)
+        except task_collaboration.CollaborationStoreCorruptError:
+            # fix-r2 B3：同 _readonly_task_kind（B2）——Corrupt 子类先于父类
+            # 按原类型上抛交全局处理器（desktop 409 修库指引 / server 503
+            # fail-closed），与 docstring 承诺一致；父类仍映射暂时不可用 503。
+            raise
+        except task_collaboration.OwnerUnavailableError as exc:
+            raise HTTPException(
+                503, "筛选参与权状态暂时无法确认，请稍后重试。") from exc
 
     def check_maybe(self, ctx: WorkflowContext, stage: str, decision: str,
                     key: str | None = None, *, db: Path | None = None) -> None:
@@ -566,7 +932,12 @@ class WorkflowRuntime:
 
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
         """Current owner requirements apply to every actor's current saved evidence."""
-        return key in coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db, [key])
+        inputs = _team_inputs(ctx)
+        if inputs is None:
+            return key in coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db, [key])
+        return key in coding_evidence.complete_keys(
+            ctx.actor_db, ctx.owner_db, [key],
+            actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
 
     def queue(self, task_id: str, user: dict, stage: str, source_id: str | None = None,
               order: str = "import", *, shuffle: bool = False) -> dict:
@@ -601,6 +972,21 @@ class WorkflowRuntime:
                     candidate = list(reordered)
                     if len(candidate) == len(keys) and sorted(candidate) == sorted(keys):
                         keys = candidate
+            # 「暂时跳过」沉底分区（2026-11-18 裁定 #3/#4/#5）：主序（导入
+            # 序/聚类钩子/随机序）产出最终 keys 之后、构造队列载荷之前做
+            # 稳定分区——未跳过文献保持主序在前，跳过文献按 skip_seq 沉
+            # 底。不改 random_order()/queue_order 钩子/shuffle 的任何代码
+            # 与语义（排序隔离，裁定 #4）；刷新/重排只重排主序，分区在读
+            # 取时重新施加，跳过状态是文献级属性、不随队列重置清除
+            # （裁定 #5）。无跳过记录=原序（零行为差异）。coding 阶段无
+            # 跳过写入，skips 恒为空。
+            skips = self.skip_order(ctx, task_id, user, stage) if stage in ("screen", "fulltext") else {}
+            if skips:
+                in_queue = set(keys)
+                keys = ([key for key in keys if key not in skips]
+                        + [key for _, key in sorted((seq, key) for key, seq in skips.items()
+                                                    if key in in_queue)])
+            skipped_pending = sum(1 for key in keys if key in skips and not complete(key))
             by_key = {row["zotero_key"]: row for row in scoped}
             queue = [{"key": key, "zotero_key": key, **{name: by_key[key].get(name) for name in
                       ("title", "authors", "journal", "year", "doi", "item_type")}} for key in keys]
@@ -608,9 +994,27 @@ class WorkflowRuntime:
             # 2.1.5 W1：轮次机制移除——不再下发 remaining_uncertain /
             # screening_round（表与历史快照保留，供回滚读取）。
             return {"queue": queue, "total": len(queue), "pending": progress(scoped)["pending"],
+                    "skipped_pending": skipped_pending,
                     "scope_progress": progress(scoped), "overall_progress": overall if stage == "screen" else progress(rows),
                     "policy_version": state["version"], "allowed_sources": self.allowed_sources(ctx, stage),
                     "paused": state["stages"][stage]["mode"] == "paused"}
+
+    def skip_order(self, ctx: WorkflowContext, task_id: str, user: dict, stage: str) -> dict[str, int]:
+        """读取「暂时跳过」覆盖层：{zotero_key: skip_seq}（2026-11-18 裁定 #3/#4）。
+
+        纯读取合成——跳过表与 workflow_random_order/queue_order 钩子互不
+        引用；表不存在（存量 v1 库首次跳过写入前）或库文件不存在 → 空
+        dict，沉底分区自然退化为原序（零行为差异）。coding 阶段无跳过
+        写入，读到的恒为空。
+        """
+        if not ctx.actor_db.is_file():
+            return {}
+        with closing(store.connect(ctx.actor_db, read_only=True)) as conn:
+            if not store.has_table(conn, "workflow_skip_order"):
+                return {}
+            return {row[0]: int(row[1]) for row in conn.execute(
+                "SELECT zotero_key,skip_seq FROM workflow_skip_order WHERE actor_id=? AND task_id=? AND stage=?",
+                (str(user["user_id"]), task_id, stage))}
 
     def submission_evidence_queue(self, task_id: str, user: dict, source_id: str | None = None) -> dict:
         task_id = self.task_lookup(task_id).task_id  # R6-C3：锁键用规范 id
@@ -679,6 +1083,346 @@ class WorkflowRuntime:
                     "maybe_allowed": maybe_allowed,
                     "policy_version": store.settings(ctx.owner_db)["version"]}
 
+    # ------------------------------------------------------------------
+    # P23（C12 作者侧；2.1.6 team contracts P23 节）：统一 keyed 读服务。
+    #
+    # 实际 HTTP 队列/详情/计数的同一后端：按键请求 → items_by_key +
+    # item_errors + counts（断言锚：两键集并集 == 请求键集）。team 路径走
+    # P09 ``protected_keyed_read_scope``（canonical 锁＋collab IMMEDIATE 屏障
+    # ＋holder 见证 reader；零持久化），owner 键域/成员票按键窄读、每块
+    # ≤200 键（C02），不再全 stage 载入后过滤；逐键资格与团队保存门
+    # （require_team_write）同序同令牌。completion/issue 字段只含结论/诊断，
+    # 双盲票面与私有 source（路径/登记/世代）永不进入载荷。
+    # ------------------------------------------------------------------
+
+    def _team_gate_reason(self, ctx: WorkflowContext, scope, stage: str,
+                          key: str) -> str | None:
+        """团队逐键保存门同构判定（P23；序/令牌 == require_team_write）。
+
+        canonical 域（article_not_eligible）→ paused（stage_paused）→
+        source 域（article_outside_scope）→ 链（issue.reason /
+        team_item_gate_reason 令牌）→ 同阶段完成/当前一致/raw 历史锁
+        （stage_completed_read_only）。通过返回 None。
+        policy 事实（settings/sources/links）与 solo 分支同一只读通道；
+        链/完成/issue 事实经受保护 scope 派生（同一锁内屏障快照）。
+        """
+        from coscreen.team_history_guard import adjudicated_history_keys_on
+        from custom_backend.team_screening_runtime import (
+            team_chain_view,
+            team_item_gate_reason,
+            team_stage_view,
+        )
+        # D-1（复审快修）：degraded→task_read_only 与保存门同位（
+        # require_team_write 在 canonical/policy/链之前检查 degraded，409
+        # code=task_read_only）——降级团队任务的队列/详情 reason 与真实
+        # 保存拒绝同令牌；keyed 服务直调本方法，故检查必须在此处而非仅
+        # writable_reason 顶层。
+        if getattr(ctx.info, "degraded", False) is True:
+            return "task_read_only"
+        if key not in scope.canonical_keys():
+            return "article_not_eligible"
+        state = store.settings(ctx.owner_db)
+        if state["stages"][stage]["mode"] == "paused":
+            return "stage_paused"
+        links = store.source_links(ctx.owner_db).get(key) or {store.UNASSIGNED}
+        if not set(links) & set(self.allowed_sources(ctx, stage)):
+            return "article_outside_scope"
+        target = _STAGE_CHAIN_TARGET[stage]
+        if target is not None:
+            view = team_chain_view(scope, target, item_keys=(key,))
+            issue = view.issues.get(key)
+            if issue is not None:
+                return issue.reason
+            item = view.chain.get(key)
+            if item is None:
+                return "team_item_upstream_stage1_not_evaluated"
+            if item.cleared is not True:
+                return team_item_gate_reason(item) or "team_item_unknown"
+        open_stage = _STAGE_OPEN_VIEW[stage]
+        if open_stage is not None:
+            view = team_stage_view(scope, open_stage, item_keys=(key,))
+            issue = view.issues.get(key)
+            if issue is not None:
+                return issue.reason
+            if key in view.completion:
+                return "stage_completed_read_only"
+            protected = adjudicated_history_keys_on(
+                scope.collab_connection(), task_id=scope.task_id, stage=stage)
+            if key in protected:
+                return "stage_completed_read_only"
+        return None
+
+    @staticmethod
+    def _completion_dto(projection) -> dict | None:
+        """CompletionProjection → 载荷投影（无票面、无 source 绑定字段）。"""
+        import dataclasses
+        if projection is None:
+            return None
+        return dict(dataclasses.asdict(projection))
+
+    @staticmethod
+    def _stage_status_dto(status) -> dict | None:
+        """ItemStatus → 状态摘要（P22 同形：名单/完成度诊断，非意见票面）。"""
+        if status is None:
+            return None
+        return {
+            "status": status.status,
+            "decided_by": status.decided_by,
+            "applied_arbitration": status.applied_arbitration,
+            "pending_members": list(status.pending_members),
+            "pending_reasons": [
+                {"member": member, "reason": reason}
+                for member, reason in status.pending_reasons],
+            "stale_arbitrations": [
+                {"record_id": record_id, "reason": reason}
+                for record_id, reason in status.stale_arbitrations],
+        }
+
+    def _own_vote_rows(self, ctx: WorkflowContext, scope, stage: str,
+                       keys) -> dict[str, dict]:
+        """当前 actor 自己的按键票摘要（仅本人 decision；peer 票永不进）。"""
+        ledger_stage = _STAGE_VOTE_LEDGER.get(stage)
+        if ledger_stage is None:
+            return {}
+        # D-2（复审快修）：本人票账本的 P04 typed 错误在此折叠为
+        # TeamFlowUnavailableError（member_db_unreadable）——由
+        # _keyed_work_items_team 统一映射 typed 503，与 scope 其余来源错误
+        # 同族；VoteLedgerUnavailable 不再以裸 RuntimeError 逃逸成 500。
+        from coscreen.team_vote_ledger import VoteLedgerUnavailable
+        from custom_backend.team_screening_runtime import (
+            TeamFlowUnavailableError,
+        )
+        user = ctx.user
+        slug = tasks.slugify_screener(user["username"])
+        rows: dict[str, dict] = {}
+        for i in range(0, len(keys), _KEYED_READ_PAGE):
+            block = tuple(keys[i:i + _KEYED_READ_PAGE])
+            try:
+                snap = scope.member_vote_snapshot_keys(
+                    int(user["user_id"]), user["username"], slug,
+                    ledger_stage, block)
+            except VoteLedgerUnavailable as exc:
+                raise TeamFlowUnavailableError(
+                    "member_db_unreadable", member=user["username"],
+                    detail=f"本人票账本按键读取失败: {exc}") from exc
+            if snap.absent:
+                return {}
+            for key, row in snap.rows.items():
+                decision = row.get("decision") if isinstance(row, dict) else None
+                rows[key] = {"present": True, "decision": decision}
+        return rows
+
+    def _compact_articles_on_scope(self, scope, keys) -> dict[str, dict]:
+        """owner 分页域文章摘要：经 plan 保留的 holder 见证 reader 按键窄读
+        （≤200/块）；无可用保留 reader 的键摘要缺省（gate 事实仍完整）。"""
+        plan = scope.keyed_plan()
+        if plan is None:
+            return {}
+        for path in plan.selected_paths:
+            conn = scope.witness_connection(path)
+            if conn is None:
+                continue
+            try:
+                if not store.has_table(conn, "articles"):
+                    continue
+                rows: dict[str, dict] = {}
+                for i in range(0, len(keys), _KEYED_READ_PAGE):
+                    block = list(keys[i:i + _KEYED_READ_PAGE])
+                    marks = ",".join("?" for _ in block)
+                    found = conn.execute(
+                        "SELECT zotero_key,title,authors,journal,year,doi,"
+                        f"item_type FROM articles WHERE zotero_key IN ({marks})",
+                        block).fetchall()
+                    rows.update({row[0]: dict(row) for row in found})
+                if rows:
+                    return rows
+            except sqlite3.Error:
+                continue
+        return {}
+
+    @staticmethod
+    def _keyed_counts(keys, items_by_key, item_errors) -> dict:
+        """keyed 计数（P22 锚移植）：completed+writable+blocked_rest 不变式在
+        键域全部可判定时成立（known_total=具体整数）；存在不可判定键时
+        known_total=None——**不把未知当零**（unknown 键不折进任何计数）。"""
+        completed = writable = 0
+        for item in items_by_key.values():
+            if item.get("completed"):
+                completed += 1
+            if item.get("writable"):
+                writable += 1
+        unknown = len(item_errors)
+        return {
+            "requested": len(keys),
+            "known_total": len(keys) if unknown == 0 else None,
+            "completed": completed,
+            "writable": writable,
+            "blocked": len(items_by_key) - writable,
+            "unknown": unknown,
+        }
+
+    def keyed_work_items(self, task_id: str, user: dict, stage: str,
+                         keys) -> dict:
+        """P23 统一 keyed 读服务入口（HTTP 路由的唯一后端）。
+
+        team → ``_keyed_work_items_team``（protected read scope；owner 分页
+        域；保存门同构 reason）；solo/legacy → ``_keyed_work_items_solo``
+        （既有 path 口径按键化，write_inputs/team_read_scope 恒 None——
+        solo 手工路径零变化）。返回载荷恒含 ``items_by_key`` /
+        ``item_errors`` / ``counts``，两键集互斥且并集 == 规范请求键集。
+        """
+        from coscreen.team_flow_types import normalize_item_keys
+        task_id = self.task_lookup(task_id).task_id  # R6-C3 canonical id
+        if stage not in store.STAGES:
+            raise HTTPException(400, "Unknown workflow stage.")
+        try:
+            keys = normalize_item_keys(keys)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if self.is_team(task_id):
+            return self._keyed_work_items_team(task_id, user, stage, keys)
+        return self._keyed_work_items_solo(task_id, user, stage, keys)
+
+    def _keyed_work_items_team(self, task_id: str, user: dict, stage: str,
+                               keys) -> dict:
+        """team 路径：受保护按键只读 scope 内一次派生（零持久化）。"""
+        from coscreen.team_flow_types import TeamOperation
+        from custom_backend.team_keyed_reads import protected_keyed_read_scope
+        from custom_backend.team_screening_runtime import (
+            TeamFlowUnavailableError,
+            team_chain_view,
+            team_stage_view,
+        )
+        info = self.task_lookup(task_id)
+        operation = TeamOperation(name="work_items_read", stage=stage)
+        try:
+            with protected_keyed_read_scope(
+                    self, info, dict(user), operation=operation,
+                    item_keys=keys) as scope:
+                ctx = self.readonly_context(task_id, user)
+                # C08：本请求受保护 scope 绑定到 ctx.team_read_scope；离开
+                # 请求（成功/异常）finally 恢复 None——读取 scope 生命周期
+                # 不串请求。
+                ctx.team_read_scope = scope
+                try:
+                    return self._keyed_items_from_scope(
+                        ctx, scope, stage, keys, team_chain_view,
+                        team_stage_view)
+                finally:
+                    ctx.team_read_scope = None
+        except TeamFlowUnavailableError as exc:
+            raise HTTPException(getattr(exc, "status", 503), {
+                "error_code": getattr(exc, "code", "team.flow.unavailable"),
+                "message_key": getattr(exc, "message_key",
+                                       "team.flow.unavailable"),
+                "params": exc.params,
+                "details": str(exc),
+                "message": "任务团队读取暂时不可用，请稍后重试。",
+            }) from exc
+
+    def _keyed_items_from_scope(self, ctx: WorkflowContext, scope, stage: str,
+                                keys, team_chain_view, team_stage_view) -> dict:
+        """scope 内逐键分类：域外/issue → item_errors（不连坐其他键）；
+        其余 → items_by_key（保存门同构 reason + 完成投影 + 本人票摘要）。"""
+        canonical: set[str] = set()
+        for i in range(0, len(keys), _KEYED_READ_PAGE):
+            canonical.update(scope.keyed_canonical_keys(
+                tuple(keys[i:i + _KEYED_READ_PAGE])))
+        target = _STAGE_CHAIN_TARGET[stage]
+        chain_view = (team_chain_view(scope, target, item_keys=keys)
+                      if target is not None else None)
+        open_stage = _STAGE_OPEN_VIEW[stage]
+        open_view = (team_stage_view(scope, open_stage, item_keys=keys)
+                     if open_stage is not None else None)
+        own_votes = self._own_vote_rows(ctx, scope, stage, keys)
+        articles = self._compact_articles_on_scope(scope, keys)
+        items_by_key: dict[str, dict] = {}
+        item_errors: dict[str, dict] = {}
+        for key in keys:
+            if key not in canonical:
+                item_errors[key] = {"reason": "key_not_in_domain",
+                                    "stage": stage, "source_role": "owner",
+                                    "retryable": False}
+                continue
+            issue = None
+            if open_view is not None and key in open_view.issues:
+                issue = open_view.issues[key]
+            elif chain_view is not None and key in chain_view.issues:
+                issue = chain_view.issues[key]
+            if issue is not None:
+                item_errors[key] = {"reason": issue.reason, "stage": stage,
+                                    "source_role": issue.source_role,
+                                    "retryable": bool(issue.retryable)}
+                continue
+            reason = self._team_gate_reason(ctx, scope, stage, key)
+            completion = None
+            if open_view is not None:
+                completion = self._completion_dto(
+                    open_view.completion.get(key))
+            elif chain_view is not None:
+                completion = self._completion_dto(
+                    chain_view.completion.get(key))
+            items_by_key[key] = {
+                "key": key,
+                "article": articles.get(key),
+                "writable": reason is None,
+                "reason": reason,
+                "completed": reason == "stage_completed_read_only",
+                "saved": own_votes.get(key),
+                "completion": completion,
+                "stage_status": self._stage_status_dto(
+                    open_view.statuses.get(key) if open_view is not None
+                    else (chain_view.stage1.statuses.get(key)
+                          if chain_view is not None else None)),
+            }
+        counts = self._keyed_counts(keys, items_by_key, item_errors)
+        state = store.settings(ctx.owner_db)
+        return {"stage": stage, "task_kind": ctx.task_kind,
+                "keys": list(keys), "items_by_key": items_by_key,
+                "item_errors": item_errors, "counts": counts,
+                "policy_version": state["version"],
+                "allowed_sources": self.allowed_sources(ctx, stage),
+                "paused": state["stages"][stage]["mode"] == "paused"}
+
+    def _keyed_work_items_solo(self, task_id: str, user: dict, stage: str,
+                               keys) -> dict:
+        """solo/legacy 路径：既有 path 口径按键化（write_inputs/
+        team_read_scope 恒 None；solo 手工上下文零变化）。"""
+        with self.lock(task_id):
+            ctx = self.context(task_id, user)
+            self.sync_catalog(ctx)
+            items_by_key: dict[str, dict] = {}
+            item_errors: dict[str, dict] = {}
+            for key in keys:
+                row = self.article_row(ctx.owner_db, key)
+                if row is None:
+                    # 本人历史活跃行仍可读（与 work_item 同口径）。
+                    row = self.article_row(ctx.actor_db, key)
+                if row is None:
+                    item_errors[key] = {"reason": "article_not_found",
+                                        "stage": stage, "source_role": "owner",
+                                        "retryable": False}
+                    continue
+                reason = self.writable_reason(ctx, stage, key)
+                saved = self.saved_item(ctx.actor_db, stage, key)
+                items_by_key[key] = {
+                    "key": key,
+                    "article": {name: row.get(name) for name in (
+                        "zotero_key", "title", "authors", "journal", "year",
+                        "doi", "item_type")},
+                    "writable": reason is None, "reason": reason,
+                    "completed": bool(saved), "saved": saved,
+                    "completion": None, "stage_status": None,
+                }
+            counts = self._keyed_counts(keys, items_by_key, item_errors)
+            state = store.settings(ctx.owner_db)
+            return {"stage": stage, "task_kind": ctx.task_kind,
+                    "keys": list(keys), "items_by_key": items_by_key,
+                    "item_errors": item_errors, "counts": counts,
+                    "policy_version": state["version"],
+                    "allowed_sources": self.allowed_sources(ctx, stage),
+                    "paused": state["stages"][stage]["mode"] == "paused"}
+
     def bump_version(self, conn: sqlite3.Connection,
                      expected_version: int | None = None,
                      ctx: WorkflowContext | None = None) -> None:
@@ -712,6 +1456,256 @@ class WorkflowRuntime:
             return self.data_dir / "workflow_accounts" / f"{int(ctx.owner['owner_user_id'])}.sqlite3"
         return ctx.owner_db
 
+    # ------------------------------------------------------------------
+    # P15 workflow mutation 适配器（C12 作者侧；2.1.6 team contracts P15 节）
+    #
+    # 宿主写路由的统一入口：按**可信服务端状态**把一次业务写路由到
+    # P13 team 提交协议（``run_team_mutation``）或旧 solo write_guard
+    # 路径；team 路径在窗口 yield 内把 ``TeamWriteInputs`` 临时绑到
+    # ``ctx.write_inputs``，让既有 ``_team_inputs`` 感知的依赖读取
+    # （settings/can_submit_coding/evidence_*）全部走保留连接。
+    # 本包不改路由注册（P24 负责最终接线与无漏网检查）。
+    # ------------------------------------------------------------------
+    #: ``TeamMutationError.code`` 中属请求形状问题的子集（客户端可修正，
+    #: 映射 400）；其余为编程级违约，映射 500。
+    _REQUEST_SHAPE_ERROR_CODES = frozenset({
+        "invalid_request_id", "invalid_request_sha256"})
+
+    def mutate(
+        self,
+        task_id: str,
+        user: dict,
+        *,
+        operation,
+        item_keys,
+        request_id: str,
+        request_sha256: str,
+        writer: "Callable[[WorkflowContext], Mapping[str, object]]",
+    ) -> "Mapping[str, object]":
+        """P15 写适配入口（typed 结果映射；通知仍由调用方锁外处理）。
+
+        需求对照（P15 节）：
+
+        1. **模式判定只认可信状态**：team 与否由 :meth:`is_team`（锁外
+           只读派生的同一 latch/非属主 grant 事实）判定；``operation``
+           必须是服务端路由代码选定的 ``TeamOperation`` DTO——客户端
+           载荷绝不能充当路由键，缺失/伪造型在此 fail-closed
+           （TypeError/ValueError），不可能借伪 mode 进入 team 协议。
+           本方法只应被**显式传 operation** 的新路由调用；旧 solo 路由
+           继续直接走 write_guard（P24 负责最终无漏网检查）。
+        2. **保留连接读取**：team 路径的宿主 writer 收到绑定了
+           ``write_inputs`` 的原生 ``WorkflowContext``，yield 内全部依赖
+           读取（settings/can_submit_coding/证据合同）经 ``_team_inputs``
+           走 retained owner/actor/collab 连接；适配器自身在 yield 内
+           不做任何 path-only ensure 或 settings 自连。
+        3. **绑定不泄漏**：``ctx.write_inputs`` 只在 writer 存活期内非
+           None——成功、拒绝还是异常，离开 writer（乃至整个请求）后必为
+           None（finally 恢复 + 窗口关闭后连接已归还，二次绑定显式报错）。
+        4. **solo 零回归**：personal/legacy 任务保持原 write_guard 语义
+           （``write_inputs`` 恒 None、path-based 读取、既有门与版本
+           冲突载荷零变化）。
+
+        返回映射（两路径同形）：``outcome``（'committed' | 'unknown'）、
+        ``idempotent``、``request_id``、``result``、``receipt``（team 才
+        有，solo 恒 None）、``seals``、``cleanup_errors``，另附
+        ``headers``（路由层可直接落响应头：``X-Request-Id`` /
+        ``X-Receipt-Id`` / ``X-Idempotent-Replay``）。
+        """
+        from coscreen.team_flow_types import TeamOperation, normalize_item_keys
+        from custom_backend.team_write_checks import team_operation_target
+
+        if not isinstance(operation, TeamOperation):
+            # 需求 1：operation 只能由服务端路由代码构造；任何客户端输入
+            # （字符串、dict、伪造对象）在此即被拒，不进入任何模式分支。
+            raise TypeError(
+                "operation must be coscreen.team_flow_types.TeamOperation")
+        if not callable(writer):
+            raise TypeError("writer must be callable")
+        # 未知 name/stage 组合在窗口前拒绝（编程错误，保持 ValueError）。
+        team_operation_target(operation)
+        keys = normalize_item_keys(item_keys)
+        task_id = self.task_lookup(task_id).task_id  # R6-C3 canonical id
+        if self.is_team(task_id):
+            return self._mutate_team(
+                task_id, user, operation=operation, keys=keys,
+                request_id=request_id, request_sha256=request_sha256,
+                writer=writer)
+        return self._mutate_solo(
+            task_id, user, operation=operation, keys=keys,
+            request_id=request_id, writer=writer)
+
+    def _mutate_team(
+        self, task_id: str, user: dict, *, operation, keys,
+        request_id: str, request_sha256: str, writer,
+    ) -> "Mapping[str, object]":
+        """team 路径：P13 提交协议 + 窗口内 ``ctx.write_inputs`` 绑定/恢复。"""
+        from collections.abc import Mapping
+
+        from coscreen import task_collaboration
+        from coscreen.team_flow_receipts import TeamFlowReceiptConflict
+        from custom_backend.team_flow_commit import (
+            TeamMutationError,
+            run_team_mutation,
+        )
+        from custom_backend.team_screening_runtime import TeamFlowUnavailableError
+        from custom_backend.team_write_checks import TeamWriteBlocked
+
+        info = self.task_lookup(task_id)
+        entered = {"writer": False}
+
+        def bound_writer(inputs):
+            # 需求 2/3：窗口 yield 内把 retained inputs 绑到 ``inputs.ctx``
+            # （P10 窗口构建的同一 WorkflowContext），宿主 writer 收到的
+            # 就是原生 ctx；读取经 ``_team_inputs`` 自动走保留连接。
+            ctx = inputs.ctx
+            if getattr(ctx, "write_inputs", None) is not None:
+                raise RuntimeError(
+                    "write_inputs already bound for this context")
+            ctx.write_inputs = inputs
+            entered["writer"] = True
+            try:
+                return writer(ctx)
+            finally:
+                # 需求 3 锚：无论 writer 成功、拒绝（异常）还是协议后续
+                # 步骤失败，绑定都先于窗口退出恢复；ctx 离开本次请求时
+                # ``write_inputs`` 必为 None，不泄漏到下一次请求。
+                ctx.write_inputs = None
+
+        try:
+            result = run_team_mutation(
+                self, info, dict(user),
+                operation=operation, item_keys=keys,
+                request_id=request_id, request_sha256=request_sha256,
+                writer=bound_writer,
+                # 主控裁定（P13 复审集成期 checklist）：trace 必须显式传入，
+                # 不依赖 P13 的默认值。本适配器上下文没有宿主
+                # research_trace 步骤对象——P15 只做模式路由与绑定/恢复，
+                # trace 钩子由 P24 最终路由接线时提供，故显式传 None。
+                trace=None,
+            )
+        except TeamWriteBlocked as exc:
+            raise self._team_write_blocked_http(task_id, user, exc) from exc
+        except task_collaboration.TeamRoleGateError as exc:
+            raise self._team_role_http(exc) from exc
+        except TeamFlowUnavailableError as exc:
+            raise HTTPException(getattr(exc, "status", 503), {
+                "error_code": getattr(exc, "code", "team.flow.unavailable"),
+                "message_key": getattr(exc, "message_key", "team.flow.unavailable"),
+                "params": getattr(exc, "params", {}),
+                "details": str(exc), "message": str(exc)}) from exc
+        except TeamFlowReceiptConflict as exc:
+            raise HTTPException(409, {
+                "code": "request_receipt_conflict",
+                "message_key": "team.flow.request_receipt_conflict",
+                "params": {"request_id": request_id},
+                "details": str(exc),
+                "message": "该请求编号已有内容不同的成功回执，请更换请求编号重试。",
+            }) from exc
+        except TeamMutationError as exc:
+            status = (400 if exc.code in self._REQUEST_SHAPE_ERROR_CODES
+                      else 500)
+            raise HTTPException(status, {
+                "code": exc.code, "request_id": request_id,
+                "details": exc.detail or str(exc),
+                "message": "请求参数不合法。" if status == 400 else str(exc),
+            }) from exc
+        except ValueError as exc:
+            if entered["writer"]:
+                raise  # writer 自身异常原样上抛（同目标已回滚），不吞不改
+            message = str(exc)
+            # 窗口在 yield 前抛出的「不是 team 任务」信号（writer 从未运
+            # 行、零业务写）：is_team 判定与开窗之间任务模式漂移。按 409
+            # 让客户端重试——重试将按当前可信状态重新路由，无双写风险。
+            # P15-D1（P24 一并落地）：捕获面收窄——只有这两条开窗处的
+            # 模式漂移字面信号（team_screening_write.py 的
+            # retained_team_write_inputs 稳定契约文本）才映射 409；其余
+            # pre-yield ValueError（_verify_owner_domain 的客户端坏键/域
+            # 外键、normalize_item_keys 的键形状拒绝）是请求自身的确定性
+            # 错误，同请求重试永不成功——修复前误标 409 task_mode_changed
+            # 造成「409 徒劳重试」；现如实 400 结构化客户端错误。
+            if ("requires a team task" in message
+                    or "canonical task lookup returned no task_id" in message):
+                raise HTTPException(409, {
+                    "code": "task_mode_changed",
+                    "message_key": "team.flow.task_mode_changed",
+                    "params": {"task_id": task_id},
+                    "details": message,
+                    "message": "任务协作模式已变化，请重试本次操作。",
+                }) from exc
+            raise HTTPException(400, {
+                "code": "team_flow_invalid_item_keys",
+                "message_key": "team.flow.invalid_item_keys",
+                "params": {"task_id": task_id},
+                "details": message,
+                "message": "请求键域不在本任务的可写域内（未知/重复/待题录键）。",
+            }) from exc
+        # receipt 头（P09/C09）：路由层（P24 接线）可直接使用的回执头。
+        headers = {
+            "X-Request-Id": request_id,
+            "X-Idempotent-Replay": "true" if result.get("idempotent") else "false",
+        }
+        receipt = result.get("receipt")
+        receipt_id = (receipt.get("receipt_id")
+                      if isinstance(receipt, Mapping) else None)
+        if receipt_id:
+            headers["X-Receipt-Id"] = str(receipt_id)
+        return {**result, "headers": headers}
+
+    def _mutate_solo(
+        self, task_id: str, user: dict, *, operation, keys, request_id: str,
+        writer,
+    ) -> "Mapping[str, object]":
+        """solo/legacy 路径（需求 4）：原 write_guard，默认语义零变化。
+
+        ``ctx.write_inputs`` 恒 None（write_guard 从不绑定）——依赖读取
+        保持 path-based 旧口径；既有角色门/筛选职责门/版本冲突载荷与
+        拒绝形状完全不变。solo 业务写历来单键（决策/编码/证据保存），
+        多键请求在此显式 400，绝不静默换语义。
+        """
+        from collections.abc import Mapping
+
+        if len(keys) != 1:
+            raise HTTPException(400, "Solo mutations accept exactly one item key.")
+        with self.write_guard(task_id, user, operation.stage, keys[0],
+                              operation.expected_version) as ctx:
+            result = writer(ctx)
+        if not isinstance(result, Mapping):
+            raise HTTPException(500, "writer must return a Mapping.")
+        return {"outcome": "committed", "idempotent": False,
+                "request_id": request_id, "result": dict(result),
+                "receipt": None, "seals": (), "cleanup_errors": (),
+                "headers": {"X-Request-Id": request_id,
+                            "X-Idempotent-Replay": "false"}}
+
+    def _team_write_blocked_http(
+        self, task_id: str, user: dict, exc: Exception,
+    ) -> HTTPException:
+        """``TeamWriteBlocked``（P12）→ 结构化 409/403，保持既有拒绝载荷形状。
+
+        旧 write_guard 拒绝载荷为 ``{"code", "version", "workflow_settings"}``；
+        P12 携带 ``code/message_key/params/stage/item_keys/version``。此处
+        合成两者（``code`` 键名与旧形状一致；i18n 键与触发键整批给出）。
+        ``workflow_settings`` 仅在 P12 读到版本时回填：窗口已关闭、目标
+        已回滚，只能按当前事实 fresh 重读（``readonly_context``+settings，
+        零建库零迁移的 path 口径）；回读自身失败不吞原始业务拒绝（保持
+        无 settings 的载荷）。
+        """
+        detail: dict = {"code": exc.code, "stage": exc.stage,
+                        "item_keys": list(exc.item_keys),
+                        "details": str(exc), "message": str(exc)}
+        if exc.message_key is not None:
+            detail["message_key"] = exc.message_key
+            detail["params"] = dict(exc.params)
+        if exc.version is not None:
+            detail["version"] = exc.version
+            try:
+                with self.lock(task_id):
+                    detail["workflow_settings"] = self.settings(
+                        self.readonly_context(task_id, user))
+            except (HTTPException, sqlite3.Error, OSError):
+                pass  # 回显失败不吞业务拒绝
+        return HTTPException(exc.status, detail)
+
 
 class SettingsIn(BaseModel):
     expected_version: int = Field(ge=1)
@@ -729,6 +1723,19 @@ class SourceIn(BaseModel):
 class ReasonIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     stage: Literal["screen", "fulltext"] | None = None
+
+
+class SkipIn(BaseModel):
+    """「暂时跳过」端点请求体（正式筛选；zotero_key 约束与 DecisionIn 一致）。"""
+    zotero_key: str = Field(min_length=1, max_length=300)
+
+
+class KeyedItemsIn(BaseModel):
+    """P23 统一 keyed 读服务请求体（队列/详情/计数同一入口）。
+
+    不新增任意接受域上限（C02）：服务端按 200 键/块分页派生。
+    """
+    zotero_keys: list[str] = Field(min_length=1)
 
 
 def register_review_workflow_routes(app, require_user, task_lookup, screener_db, data_dir, visible,
@@ -891,8 +1898,56 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
     def shuffle(task_id: str, source_id: str | None = None, user: dict = Depends(require_user)) -> dict:
         return runtime.queue(task_id, user, "screen", source_id, "random", shuffle=True)
 
+    @app.post("/api/tasks/{task_id}/work-queue/{stage}/skip")
+    def skip_queue_item(task_id: str, stage: Literal["screen", "fulltext"], body: SkipIn,
+                        user: dict = Depends(require_user)) -> dict:
+        """「暂时跳过」（2026-11-18 裁定 #1-#8，正式筛选侧）。
+
+        权限/锁/上下文与决策保存同路径：write_guard（canonical task 锁 +
+        context + 筛选职责门 + sync_catalog + writable_reason——与
+        main.save_decision/save_stage2_decision 的保存保护窗口同一方
+        法）。不写决策表，只写跳过覆盖层（裁定 #2/#7）；返回当前阶段
+        （全部允许来源，与 work-queue 默认口径一致）的
+        {pending, skipped_pending} 供前端推进与完成门引导（裁定 #6）。
+        已决策文献 → 结构化 409（带 pending/skipped_pending 计数）。
+        """
+        with runtime.write_guard(task_id, user, stage, body.zotero_key) as ctx:
+            rows, saved = runtime.eligible(ctx, stage)
+            scoped = runtime.scoped(ctx, stage, rows)
+
+            def counts(skips: dict[str, int]) -> tuple[int, int]:
+                pending = sum(1 for row in scoped if not saved.get(row["zotero_key"]))
+                skipped = sum(1 for row in scoped if row["zotero_key"] in skips
+                              and not saved.get(row["zotero_key"]))
+                return pending, skipped
+            try:
+                store.skip_queue_item(ctx.actor_db, str(user["user_id"]),
+                                      ctx.info.task_id, stage, body.zotero_key)
+            except store.SkipDecisionExistsError as exc:
+                pending, skipped_pending = counts(
+                    runtime.skip_order(ctx, ctx.info.task_id, user, stage))
+                raise HTTPException(409, {
+                    "code": "skip_decision_exists",
+                    "message_key": "workflow.skip_decision_exists",
+                    "params": {"zotero_key": body.zotero_key},
+                    "pending": pending, "skipped_pending": skipped_pending,
+                    "zotero_key": body.zotero_key, "stage": stage,
+                    "details": str(exc),
+                    "message": "该文献已有纳入/排除决策，无需跳过；如需重看请先撤销该决策。",
+                }) from exc
+            pending, skipped_pending = counts(
+                runtime.skip_order(ctx, ctx.info.task_id, user, stage))
+        return {"pending": pending, "skipped_pending": skipped_pending}
+
     @app.get("/api/tasks/{task_id}/work-items/{stage}/{key}")
     def work_item(task_id: str, stage: Stage, key: str, user: dict = Depends(require_user)) -> dict:
         return runtime.work_item(task_id, user, stage, key)
+
+    @app.post("/api/tasks/{task_id}/work-items/{stage}/keyed")
+    def work_items_keyed(task_id: str, stage: Stage, body: KeyedItemsIn,
+                         user: dict = Depends(require_user)) -> dict:
+        """P23 统一 keyed 读服务（队列/详情/计数同一后端；只读可部分成功：
+        A 可用/B 域外或来源坏 → 200 + items_by_key{A} + item_errors{B}）。"""
+        return runtime.keyed_work_items(task_id, user, stage, body.zotero_keys)
 
     return runtime

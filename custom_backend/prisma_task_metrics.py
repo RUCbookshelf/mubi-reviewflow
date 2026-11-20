@@ -1,4 +1,13 @@
-"""Optional task metrics adapter; the manual PRISMA generator stays independent."""
+"""Optional task metrics adapter; the manual PRISMA generator stays independent.
+
+P22（C11）：team 模式的 metrics/records 追加「当前团队投影」分支——经
+``custom_backend.team_current_results.current_team_projection``（受保护按键
+只读 scope + 统一 keyed views：每键 F1/可信当前意见/按键 attestation；
+2026-11-15 裁定锚——完成条目保留完成时结论与名单，新名单只作用于未完成）。
+旧路径零改动：reviewer 模式、personal/legacy 任务、按人 raw 导出、独立 CSV、
+generic latest（``latest_decision_arbitration``）与 ``outcomes()`` 本体均按
+基线保留，不全局过滤任何 loader。
+"""
 from __future__ import annotations
 
 import json
@@ -59,7 +68,13 @@ def outcomes(ctx, stage: str, mode: str) -> tuple[dict, int]:
     table = 'decisions' if stage == 'stage1' else 'stage2_decisions'
     if mode == 'reviewer' or ctx.task_kind != 'team':
         return decisions(ctx.actor_db, table), 0
-    if not ctx.can_manage and not task_collaboration.authorize_action(ctx.collaboration_db, ctx.user['user_id'], 'coding:read_all', task_id=ctx.info.task_id):
+    # fix-r1 R3：team PRISMA 读按**当前有效单一角色**验证（coding:read_all→
+    # reconciler；choice 生效后另一旧 grant 不再放行），不再消费 raw grant；
+    # ctx.can_manage 的属主管理读例外保留。拒绝沿用既有 403 形状（读路径不抛
+    # team.role.*）；下方 coder 名单/仲裁快照的终局派生不属本批（留后续）。
+    if not ctx.can_manage and not task_collaboration.has_team_action_role(
+            ctx.collaboration_db, user_id=ctx.user['user_id'],
+            action='coding:read_all', task_id=ctx.info.task_id):
         raise HTTPException(403, 'Team PRISMA metrics require the task owner or Adjudicator.')
     from custom_backend import auth
     grants = task_collaboration.list_role_grants(ctx.collaboration_db, actor_user_id=ctx.owner['owner_user_id'], task_id=ctx.info.task_id)
@@ -107,7 +122,43 @@ def outcomes(ctx, stage: str, mode: str) -> tuple[dict, int]:
     return result, unresolved
 
 
-def summary(ctx, mode: str) -> dict:
+def _owner_active_keys(ctx) -> set | None:
+    """P22：owner 域 canonical 活跃键（articles 表缺＝域无法确定 → None，
+    不把未知当零——known_total 侧用 null 呈现）。"""
+    with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
+        if not workflow.has_table(conn, 'articles'):
+            return None
+        return {r['zotero_key'] for r in conn.execute(
+            'SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL')}
+
+
+def _team_current_projection_or_403(runtime, ctx, item_keys):
+    """P22：team 模式当前团队投影（owner/Adjudicator 门与旧 outcomes 同形状
+    403；受保护按键只读 scope，零持久化）。"""
+    if not ctx.can_manage and not task_collaboration.has_team_action_role(
+            ctx.collaboration_db, user_id=ctx.user['user_id'],
+            action='coding:read_all', task_id=ctx.info.task_id):
+        raise HTTPException(403, 'Team PRISMA metrics require the task owner or Adjudicator.')
+    from custom_backend.team_current_results import current_team_projection
+    return current_team_projection(
+        runtime, ctx.info, ctx.user, item_keys=item_keys)
+
+
+def _team_flow_http(exc):
+    """N4（P22 复审）：TeamFlowUnavailableError → typed 503 HTTPException。
+
+    负载形状照 review_workflow_api 既有映射（error_code/message_key/params/
+    details/message）；未捕获时该 typed 错误会逃逸全局兜底成通用 500（legacy
+    F2 未登记的团队任务 mode=team 即触发 completion_source_unresolved）。
+    """
+    return HTTPException(getattr(exc, "status", 503), {
+        "error_code": getattr(exc, "code", "team.flow.unavailable"),
+        "message_key": getattr(exc, "message_key", "team.flow.unavailable"),
+        "params": getattr(exc, "params", {}),
+        "details": str(exc), "message": str(exc)})
+
+
+def summary(ctx, mode: str, runtime=None) -> dict:
     with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
         articles = {r['zotero_key']: dict(r) for r in conn.execute('SELECT zotero_key,is_duplicate_of FROM articles')}
         def root(key):
@@ -138,8 +189,27 @@ def summary(ctx, mode: str) -> dict:
         database_records = [r for r in active if catalog.get(r['source_id'],{}).get('source_type') in {'database','register'}]
         duplicate_count = len(database_records) - len({root(r['canonical_key']) for r in database_records}) if complete_provenance and not unidentified else None
         group_links = {r[0]: r[1] for r in conn.execute('SELECT zotero_key,study_id FROM review_reports')} if workflow.has_table(conn,'review_reports') else {}
-    first, first_unresolved = outcomes(ctx, 'stage1', mode)
-    second, second_unresolved = outcomes(ctx, 'stage2', mode)
+    # P22（C11）：team 模式改走当前团队投影（每键 F1/可信当前意见/按键
+    # attestation；完成条目保留完成时结论，新名单只作用于未完成——
+    # 2026-11-15 裁定锚）。runtime 缺席（旧直调方）回落原 outcomes 路径。
+    team_projection = None
+    if mode == 'team' and ctx.task_kind == 'team' and runtime is not None:
+        from custom_backend.team_current_results import (
+            outcomes_from_current_team)
+        from custom_backend.team_screening_runtime import (
+            TeamFlowUnavailableError)
+        try:
+            team_projection = _team_current_projection_or_403(
+                runtime, ctx, tuple(sorted(active_keys)))
+        except TeamFlowUnavailableError as exc:
+            # N4：typed 503（如 legacy F2 未登记 → completion_source_
+            # unresolved），不逃逸成通用 500。
+            raise _team_flow_http(exc) from exc
+        first, first_unresolved, second, second_unresolved = \
+            outcomes_from_current_team(team_projection, domain=active_keys)
+    else:
+        first, first_unresolved = outcomes(ctx, 'stage1', mode)
+        second, second_unresolved = outcomes(ctx, 'stage2', mode)
     first = {k:v for k,v in first.items() if k in active_keys}
     sought = {k for k,v in first.items() if v['decision'] in {'include','maybe'}}
     second = {k:v for k,v in second.items() if k in sought}
@@ -151,6 +221,12 @@ def summary(ctx, mode: str) -> dict:
     if unidentified: warnings.append('Confirm source types before applying identification counts.')
     if not ready: warnings.append('Screening is incomplete. Task metrics are a draft, not a final flow.')
     warnings.append('Retrieval failures cannot be inferred from reports awaiting assessment.')
+    if team_projection is not None:
+        # P22：投影侧诊断如实上抛（来源坏/意见不全不伪空、不排除）。
+        if team_projection['counts']['unavailable']:
+            warnings.append('Some team completion sources are unreadable; affected records are reported, not excluded.')
+        if team_projection['counts']['partial']:
+            warnings.append('Some records are awaiting member votes (partial team completion, not a team conclusion).')
     fields = {'identified_rows_db': db_rows, 'identified_rows_other': other_rows,
               'sources_scope': 'db_reg_other' if other_rows else 'db_reg',
               'duplicates_removed': duplicate_count,
@@ -173,11 +249,21 @@ def summary(ctx, mode: str) -> dict:
         fields[field] = [{'reason':reason,'n':n} for reason,n in tally.items() if reason]
         if tally.get(''): warnings.append('Some exclusion reasons need confirmation.')
     if fields['studies_included'] is None: warnings.append('Enter a study count or confirm study grouping.')
-    return {'fields': fields, 'warnings': list(dict.fromkeys(warnings)), 'task_kind':ctx.task_kind,
+    payload = {'fields': fields, 'warnings': list(dict.fromkeys(warnings)), 'task_kind':ctx.task_kind,
             'mode':mode, 'version':workflow.settings(ctx.owner_db)['version'], 'complete':ready,
             'pending':{'unscreened':len(active_keys-set(first)), 'team_unresolved':first_unresolved+second_unresolved,
                        'fulltext_unresolved':full_pending, 'staged_records':sum(r['state']=='staged' for r in originals)},
             'sources':list(catalog.values()), 'coverage_complete':complete_provenance and not unidentified}
+    if team_projection is not None:
+        # P22：当前团队投影计数（eligible/blocked 含 partial/unavailable/
+        # known_total 锚；owner 域无法确定总数用 null——_owner_active_keys
+        # 侧 None 时这里不会到达（summary 的 active_keys 恒可定））。
+        payload['current_team'] = {
+            'counts': team_projection['counts'],
+            'roster_required': list(team_projection['roster']['required']),
+            'completion_required_uids': list(
+                team_projection['roster']['completion_required_uids'])}
+    return payload
 
 
 def register_prisma_task_metrics(app, require_user):
@@ -188,8 +274,26 @@ def register_prisma_task_metrics(app, require_user):
         task_id=runtime.task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx=runtime.context(task_id,user)
-            first,_=outcomes(ctx,'stage1',mode)
-            second,_=outcomes(ctx,'stage2',mode)
+            if mode == 'team' and ctx.task_kind == 'team':
+                # P22：records 的 team 投影（初始/全文两列=当前团队结论；
+                # 来源坏键空结论＋unavailable 计数，不伪空排除）。N4：
+                # typed 错误（含 F2 未登记）→503，不逃逸通用 500。
+                from custom_backend.team_screening_runtime import (
+                    TeamFlowUnavailableError)
+                try:
+                    domain = _owner_active_keys(ctx)
+                    projection = _team_current_projection_or_403(
+                        runtime, ctx,
+                        tuple(sorted(domain)) if domain is not None else ())
+                except TeamFlowUnavailableError as exc:
+                    raise _team_flow_http(exc) from exc
+                from custom_backend.team_current_results import (
+                    outcomes_from_current_team)
+                first, _, second, _ = outcomes_from_current_team(
+                    projection, domain=domain)
+            else:
+                first,_=outcomes(ctx,'stage1',mode)
+                second,_=outcomes(ctx,'stage2',mode)
             catalog={s['id']:s for s in workflow.sources(ctx.owner_db)}
             output=io.StringIO(newline='');writer=csv.writer(output)
             writer.writerow(['source_record_id','source_id','source_name','source_type','filename','row_index','state',
@@ -215,4 +319,4 @@ def register_prisma_task_metrics(app, require_user):
         task_id=runtime.task_lookup(task_id).task_id
         with runtime.lock(task_id):
             ctx=runtime.context(task_id,user)
-            return summary(ctx,mode)
+            return summary(ctx,mode,runtime=runtime)

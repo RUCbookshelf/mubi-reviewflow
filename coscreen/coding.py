@@ -34,7 +34,7 @@ import json
 import math
 import sqlite3
 import unicodedata
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
@@ -65,6 +65,7 @@ __all__ = [
     "add_note_image",
     "coding_assets_dir",
     "coding_progress",
+    "coding_progress_on",
     "coding_queue",
     "delete_dimension",
     "export_scheme",
@@ -1089,6 +1090,18 @@ def _normalize_value(dim: dict, value: str) -> str:
     return VALUE_SEPARATOR.join(o for o in dim["options"] if o in picked)
 
 
+@contextmanager
+def _coding_write_connection(db: StrPath, conn: sqlite3.Connection | None):
+    """Borrow an active native connection; only the default path owns its lifetime."""
+    if conn is not None:
+        from coscreen.db import _require_borrowed_write_conn
+        _require_borrowed_write_conn(conn)
+        yield conn
+    else:
+        with closing(_connect(db)) as own, own:
+            yield own
+
+
 def save_coding_value(
     db: StrPath,
     dim_id: int,
@@ -1096,6 +1109,7 @@ def save_coding_value(
     value: str,
     *,
     trace_context: TraceContext | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> None:
     """保存一条（维度 × 文献）编码值（upsert，updated_at 刷新）。
 
@@ -1106,13 +1120,14 @@ def save_coding_value(
     - ``text``：任意文本（含换行）原样保存，仅去首尾空白；
     - ``key`` 不在 articles 表时因外键约束抛 ``sqlite3.IntegrityError``。
     """
-    with closing(_connect(db)) as conn, conn:
+    borrowed = conn is not None
+    with _coding_write_connection(db, conn) as conn:
         if trace_context is not None:
             from coscreen.workspace_undo import begin_save, snapshot, record_save
-            begin_save(conn)
+            begin_save(conn, prepared=borrowed)
             from coscreen.research_trace import begin_capture_transaction, begin_write_request
 
-            begin_capture_transaction(conn, trace_context, "coding")
+            begin_capture_transaction(conn, trace_context, "coding", prepared=borrowed)
             replay, _ = begin_write_request(
                 conn, trace_context, stage="coding", operation="coding_value_save",
                 subject_id=key, payload={"dimension_id": int(dim_id), "value": value},
@@ -1155,6 +1170,7 @@ def save_coding_value(
 
 def save_coding_values_batch(
     db: StrPath, key: str, values: dict[int, str], *, trace_context: TraceContext,
+    conn: sqlite3.Connection | None = None,
 ) -> None:
     """Save a whole form atomically, with one Undo entry and existing field traces."""
     from coscreen.workspace_undo import begin_save, snapshot, record_save
@@ -1162,9 +1178,10 @@ def save_coding_values_batch(
         begin_capture_transaction, begin_write_request, capture_event,
         finish_write_request, is_recording,
     )
-    with closing(_connect(db)) as conn, conn:
-        begin_save(conn)
-        begin_capture_transaction(conn, trace_context, "coding")
+    borrowed = conn is not None
+    with _coding_write_connection(db, conn) as conn:
+        begin_save(conn, prepared=borrowed)
+        begin_capture_transaction(conn, trace_context, "coding", prepared=borrowed)
         replay, _ = begin_write_request(
             conn, trace_context, stage="coding", operation="coding_form_save", subject_id=key,
             payload={"values": {str(dim): value for dim, value in sorted(values.items())}},
@@ -1552,6 +1569,47 @@ def coding_queue(db: StrPath, mode: str | None = None) -> list[str]:
     return [key for key in _include_keys(list_decisions(db)) if key not in stage2_decided]
 
 
+#: 已编码值口径（旧 ``coding_progress`` 与借用连接版共用同一 SQL 文本）。
+_FILLED_VALUES_SQL = (
+    "SELECT dimension_id, zotero_key FROM coding_values "
+    "WHERE TRIM(COALESCE(value, '')) <> ''"
+)
+
+
+def _filled_counts(
+    queue: Iterable[str],
+    dim_ids: list[int],
+    rows: Iterable[Sequence[Any]],
+) -> dict[int, int]:
+    """队列内每个维度的「已填非空值」篇数（纯聚合，两路编码进度共用）。
+
+    ``queue`` 中不在本次队列的键忽略；维度顺序与 ``dim_ids`` 一致（含 0 值），
+    与旧实现逐字同义。函数不做 I/O、不依赖连接。
+    """
+    queue_set = set(queue)
+    filled: dict[int, set[str]] = {}
+    for dim_id, key in rows:
+        key = str(key)
+        if key in queue_set:
+            filled.setdefault(int(dim_id), set()).add(key)
+    return {dim_id: len(filled.get(dim_id, set())) for dim_id in dim_ids}
+
+
+def _require_borrowed_read_conn(conn: sqlite3.Connection, *, api: str) -> None:
+    """借用只读契约：原生连接、调用方活动事务、``sqlite3.Row`` 行工厂。
+
+    不降级、不暗开事务；已关闭连接由 ``in_transaction`` 抛原生
+    ``sqlite3.ProgrammingError``（保持原类型）。
+    """
+    if not isinstance(conn, sqlite3.Connection):
+        raise RuntimeError(
+            f"{api} 需要既有 sqlite3.Connection（借用连接，不自行打开）。")
+    if not conn.in_transaction:
+        raise RuntimeError(f"{api} 需要调用方已开启事务；本函数不自行开启。")
+    if conn.row_factory is not sqlite3.Row:
+        raise RuntimeError(f"{api} 需要调用方连接使用 sqlite3.Row。")
+
+
 def coding_progress(db: StrPath, *, owner_db: StrPath | None = None) -> dict:
     """编码进度（相对当前队列与当前方案）：
 
@@ -1564,25 +1622,68 @@ def coding_progress(db: StrPath, *, owner_db: StrPath | None = None) -> dict:
     queue = coding_queue(db)
     dimensions = list_dimensions(db)
     dim_ids = [int(d["id"]) for d in dimensions]
-    queue_set = set(queue)
 
-    filled: dict[int, set[str]] = {}
     with closing(_connect(db)) as conn:
-        rows = conn.execute(
-            "SELECT dimension_id, zotero_key FROM coding_values "
-            "WHERE TRIM(COALESCE(value, '')) <> ''"
-        ).fetchall()
-    for dim_id, key in rows:
-        key = str(key)
-        if key in queue_set:
-            filled.setdefault(int(dim_id), set()).add(key)
+        rows = conn.execute(_FILLED_VALUES_SQL).fetchall()
+    per_dimension = _filled_counts(queue, dim_ids, rows)
 
-    per_dimension = {dim_id: len(filled.get(dim_id, set())) for dim_id in dim_ids}
     from coscreen.coding_evidence import complete_keys, current_owner_db
     coded = len(complete_keys(db, owner_db or current_owner_db(db), queue))
     return {
         "total": len(queue),
         "coded": coded,
         "remaining": len(queue) - coded,
+        "per_dimension": per_dimension,
+    }
+
+
+def coding_progress_on(
+    conn: sqlite3.Connection,
+    *,
+    owner_conn: sqlite3.Connection,
+    actor_db: StrPath,
+    owner_db: StrPath,
+    queue: Iterable[str],
+) -> dict:
+    """借用连接版编码进度：与 :func:`coding_progress` 同四键，但零路径 I/O。
+
+    用于团队写窗口：``queue`` 是调用方（B2/C）在同一保留窗口内由 TSR coding
+    链明确 ``cleared`` 的 canonical 键集合，本函数只物化一次，不再走
+    :func:`coding_queue`、不读个人票、不 fallback ``current_owner_db``
+    （owner_db 必须是调用方已确认的属主库）。维度与完成键分别经已验收的
+    ``coding_evidence.field_rows(actor_db, conn=conn)`` 与
+    ``complete_keys(actor_db, owner_db, queue, actor_conn=conn,
+    owner_conn=owner_conn)`` 在同一连接上读取。
+
+    契约：``conn``/``owner_conn`` 必须是原生 ``sqlite3.Connection``、调用方
+    已有活动事务且 ``row_factory`` 为 ``sqlite3.Row``（owner=actor 时允许同一
+    连接）。本函数不 connect/close/迁移/DDL/PRAGMA/事务控制，不改
+    row_factory，不拥有任何连接。
+    """
+    _require_borrowed_read_conn(conn, api="coding_progress_on actor_conn")
+    if owner_conn is not conn:
+        _require_borrowed_read_conn(owner_conn, api="coding_progress_on owner_conn")
+    if isinstance(queue, (str, bytes, bytearray)):
+        raise ValueError("queue 必须为键的可迭代集合，不能传单个字符串")
+    try:
+        materialized = tuple(queue)
+    except TypeError as exc:
+        raise ValueError("queue 必须为可迭代的键集合") from exc
+    for key in materialized:
+        if not isinstance(key, str) or not key:
+            raise ValueError("queue 的每一项必须为非空文本")
+
+    from coscreen.coding_evidence import complete_keys, field_rows
+    dimensions = field_rows(actor_db, conn=conn)
+    dim_ids = [int(d["id"]) for d in dimensions]
+    rows = conn.execute(_FILLED_VALUES_SQL).fetchall()
+    per_dimension = _filled_counts(materialized, dim_ids, rows)
+    coded = len(complete_keys(
+        actor_db, owner_db, list(materialized),
+        actor_conn=conn, owner_conn=owner_conn))
+    return {
+        "total": len(materialized),
+        "coded": coded,
+        "remaining": len(materialized) - coded,
         "per_dimension": per_dimension,
     }

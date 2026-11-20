@@ -52,8 +52,18 @@ def _ensure_journal_columns(conn: sqlite3.Connection) -> None:
         conn.execute('ALTER TABLE workspace_undo ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0')
 
 
-def begin_save(conn: sqlite3.Connection) -> None:
-    """Acquire the write lock before reading snapshots; join the caller's transaction."""
+def begin_save(conn: sqlite3.Connection, *, prepared: bool = False) -> None:
+    """Acquire the write lock before reading snapshots; join the caller's transaction.
+
+    S2-A1 borrowed mode (``prepared=True``)：窗口已持 BEGIN IMMEDIATE 事务且
+    prepare 阶段（旧签名）已建 journal 表/补列。本分支仅核验事务已在
+    （编程违约 RuntimeError），不执行任何语句——无 BEGIN/CREATE/ALTER/
+    ``_ensure_journal_columns``（写锁与 schema 均由窗口/prepare 负责，§2.2）。
+    """
+    if prepared:
+        if not conn.in_transaction:
+            raise RuntimeError("prepared=True requires an open transaction")
+        return
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
     conn.execute(
@@ -527,116 +537,148 @@ def release_detached_uploads(conn: sqlite3.Connection, context: TraceContext, ke
         conn.execute("UPDATE workflow_evidence_uploads SET attached=0 WHERE id=?", (uid,))
 
 
-def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int) -> dict:
-    """Restore exactly one identified operation; retries never pop the next entry."""
-    from coscreen.db import _connect
+def undo(db: str | Path, context: TraceContext, stage: str, entry_id: int,
+         *, conn: sqlite3.Connection | None = None) -> dict:
+    """Restore exactly one identified operation; retries never pop the next entry.
+
+    S2-A1 借用写（``conn`` 给定）：任何 SQL 前先核类型与活动事务
+    （非法 TypeError／无事务 RuntimeError／关闭连接 ProgrammingError 原样）；
+    仅业务语句落 caller conn——不 _connect/close/连接上下文/独立
+    ``BEGIN IMMEDIATE``/``_ensure_journal_columns``（prepare 已保证 schema，
+    缺列按 fail-closed 由业务 SELECT 自然暴露）；journal/请求摘要/trace 同
+    连接；异常原样上抛交窗口回滚，return 不代表提交。缺省（conn=None）
+    保留字节级旧 standalone 语义（自建连接＋连接上下文＋独立 BEGIN）。
+    """
+    # FIX-R1：两 import 恢复在原点位（docstring 后、stage/context 校验与
+    # 任何连接**之前**）——research_trace 首导入时序与旧版一致；同一 db
+    # import 语句补 `_require_borrowed_write_conn`（borrowed 入口校验，模
+    # 块加载时序不变）。共用体顶部的同名 import 为 sys.modules 缓存命中。
+    from coscreen.db import _connect, _require_borrowed_write_conn
     from coscreen.research_trace import begin_capture_transaction, capture_event
 
     if stage not in STAGES:
         raise ValueError("Unknown Undo stage.")
     context = context.normalized()
-    with closing(_connect(db)) as conn, conn:
-        conn.execute("BEGIN IMMEDIATE")
-        if not _exists(conn):
-            raise ValueError("There is no saved operation to undo.")
+    if conn is not None:
+        _require_borrowed_write_conn(conn)
+        return _undo_in_conn(db, conn, context, stage, entry_id, prepared=True)
+    with closing(_connect(db)) as own, own:
+        own.execute("BEGIN IMMEDIATE")
+        return _undo_in_conn(db, own, context, stage, entry_id, prepared=False)
+
+
+def _undo_in_conn(db: str | Path, conn: sqlite3.Connection, context: TraceContext,
+                  stage: str, entry_id: int, *, prepared: bool) -> dict:
+    """undo 的共用算法体（standalone/借用同一份，禁止复制两份逻辑，§2.1）。
+
+    standalone 由 ``undo`` 自建连接并 ``BEGIN IMMEDIATE`` 后以
+    ``prepared=False`` 调用（含 ``_ensure_journal_columns`` 旧自愈序）；
+    借用由窗口事务内以 ``prepared=True`` 调用（跳过 ALTER 自愈）。本函数
+    不管理连接/事务/迁移；恢复、journal、请求摘要与 trace 全部落 ``conn``。
+    """
+    from coscreen.research_trace import begin_capture_transaction, capture_event
+
+    if not _exists(conn):
+        raise ValueError("There is no saved operation to undo.")
+    if not prepared:
         _ensure_journal_columns(conn)
-        row = conn.execute(
-            "SELECT zotero_key,before_json,after_json,undone,request_id,superseded FROM workspace_undo "
-            "WHERE id=? AND task_id=? AND actor_id=? AND stage=?",
-            (entry_id, context.task_id, str(context.actor_id), stage),
-        ).fetchone()
-        if not row:
-            raise ValueError("There is no saved operation to undo.")
-        key, before_json, after_json, undone, request_id, superseded = row
-        before, after = json.loads(before_json), json.loads(after_json)
-        # 每个撤销事件都显式链接回其原始保存条目（与 trace_actions 的
-        # "Restorations have an explicit server-assigned link" 契约一致，U3-P6）。
-        context = replace(context, source_record_id=f'workspace_undo:{entry_id}')
-        if not undone:
-            if superseded:
-                raise ValueError("Undo history changed. Reload and try again.")
-            last = _latest(conn, context, stage)
-            if not last or last["entry_id"] != entry_id:
-                raise ValueError("Undo history changed. Reload and try again.")
-            if not conn.execute("SELECT 1 FROM articles WHERE zotero_key=?", (key,)).fetchone():
-                raise ValueError("This article is no longer available for Undo.")
-            if not snapshot_matches(conn, stage, key, before, after):
-                # U3-P3 仲裁案 B：差异仅限字段说明时给出区分文案（仍阻断撤销）。
-                if _description_only_mismatch(stage, conn, key, before, after):
-                    raise ValueError(DESCRIPTION_CHANGED)
-                raise ValueError("The saved result or downstream work has changed. Undo cannot overwrite newer changes.")
-            if stage == 'coding' and 'evidence' in before:
-                _require_restorable_evidence(db, before['evidence'])
-            begin_capture_transaction(conn, context, stage)
-            if stage in _TABLES:
-                # 表名来自模块内固定枚举 _TABLES → 逐条字面量选择。
-                if stage == 'screen':
-                    conn.execute("DELETE FROM decisions WHERE zotero_key=?", (key,))
-                    if before["record"] is not None:
-                        conn.execute(
-                            "INSERT INTO decisions(zotero_key,decision,exclusion_reason,notes,tags,"
-                            "screened_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                            (key, *before["record"]))
-                else:
-                    conn.execute("DELETE FROM stage2_decisions WHERE zotero_key=?", (key,))
-                    if before["record"] is not None:
-                        conn.execute(
-                            "INSERT INTO stage2_decisions(zotero_key,decision,exclusion_reason,notes,"
-                            "tags,screened_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                            (key, *before["record"]))
-                names = _DECISION_COLUMNS.split(",")
-                capture_event(conn, context, stage=stage, action="decision_undone", subject_id=key,
-                              before=dict(zip(names, after["record"])) if after["record"] else None,
-                              after=dict(zip(names, before["record"])) if before["record"] else None)
+    row = conn.execute(
+        "SELECT zotero_key,before_json,after_json,undone,request_id,superseded FROM workspace_undo "
+        "WHERE id=? AND task_id=? AND actor_id=? AND stage=?",
+        (entry_id, context.task_id, str(context.actor_id), stage),
+    ).fetchone()
+    if not row:
+        raise ValueError("There is no saved operation to undo.")
+    key, before_json, after_json, undone, request_id, superseded = row
+    before, after = json.loads(before_json), json.loads(after_json)
+    # 每个撤销事件都显式链接回其原始保存条目（与 trace_actions 的
+    # "Restorations have an explicit server-assigned link" 契约一致，U3-P6）。
+    context = replace(context, source_record_id=f'workspace_undo:{entry_id}')
+    if not undone:
+        if superseded:
+            raise ValueError("Undo history changed. Reload and try again.")
+        last = _latest(conn, context, stage)
+        if not last or last["entry_id"] != entry_id:
+            raise ValueError("Undo history changed. Reload and try again.")
+        if not conn.execute("SELECT 1 FROM articles WHERE zotero_key=?", (key,)).fetchone():
+            raise ValueError("This article is no longer available for Undo.")
+        if not snapshot_matches(conn, stage, key, before, after):
+            # U3-P3 仲裁案 B：差异仅限字段说明时给出区分文案（仍阻断撤销）。
+            if _description_only_mismatch(stage, conn, key, before, after):
+                raise ValueError(DESCRIPTION_CHANGED)
+            raise ValueError("The saved result or downstream work has changed. Undo cannot overwrite newer changes.")
+        if stage == 'coding' and 'evidence' in before:
+            _require_restorable_evidence(db, before['evidence'])
+        begin_capture_transaction(conn, context, stage, prepared=prepared)
+        if stage in _TABLES:
+            # 表名来自模块内固定枚举 _TABLES → 逐条字面量选择。
+            if stage == 'screen':
+                conn.execute("DELETE FROM decisions WHERE zotero_key=?", (key,))
+                if before["record"] is not None:
+                    conn.execute(
+                        "INSERT INTO decisions(zotero_key,decision,exclusion_reason,notes,tags,"
+                        "screened_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                        (key, *before["record"]))
             else:
-                from coscreen.coding import _require_dimension, _trace_dimension
-                from coscreen.research_trace import is_recording
-                recording = is_recording(conn, context, stage)
-                for dim, value in before["values"].items():
-                    conn.execute("DELETE FROM coding_values WHERE zotero_key=? AND dimension_id=?", (key, int(dim)))
-                    if value is not None:
-                        conn.execute("INSERT INTO coding_values(dimension_id,zotero_key,value,updated_at) VALUES(?,?,?,?)",
-                                     (int(dim), key, *value))
-                    if recording:
-                        saved_value = after["values"][dim]
-                        capture_event(conn, context, stage=stage, action="coding_values_undone", subject_id=key,
-                                      before={"value": saved_value[0] if saved_value else ""},
-                                      after={"value": value[0] if value else ""},
-                                      field=_trace_dimension(conn, context, _require_dimension(conn, int(dim))))
-                if 'evidence' in before:
-                    for dim, state in before['evidence'].items():
-                        note = conn.execute('SELECT id FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (int(dim), key)).fetchone()
-                        if note:
-                            conn.execute('DELETE FROM coding_note_images WHERE note_id=?', (note[0],))
-                            conn.execute('DELETE FROM coding_notes WHERE id=?', (note[0],))
-                        if state['note']:
+                conn.execute("DELETE FROM stage2_decisions WHERE zotero_key=?", (key,))
+                if before["record"] is not None:
+                    conn.execute(
+                        "INSERT INTO stage2_decisions(zotero_key,decision,exclusion_reason,notes,"
+                        "tags,screened_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                        (key, *before["record"]))
+            names = _DECISION_COLUMNS.split(",")
+            capture_event(conn, context, stage=stage, action="decision_undone", subject_id=key,
+                          before=dict(zip(names, after["record"])) if after["record"] else None,
+                          after=dict(zip(names, before["record"])) if before["record"] else None)
+        else:
+            from coscreen.coding import _require_dimension, _trace_dimension
+            from coscreen.research_trace import is_recording
+            recording = is_recording(conn, context, stage)
+            for dim, value in before["values"].items():
+                conn.execute("DELETE FROM coding_values WHERE zotero_key=? AND dimension_id=?", (key, int(dim)))
+                if value is not None:
+                    conn.execute("INSERT INTO coding_values(dimension_id,zotero_key,value,updated_at) VALUES(?,?,?,?)",
+                                 (int(dim), key, *value))
+                if recording:
+                    saved_value = after["values"][dim]
+                    capture_event(conn, context, stage=stage, action="coding_values_undone", subject_id=key,
+                                  before={"value": saved_value[0] if saved_value else ""},
+                                  after={"value": value[0] if value else ""},
+                                  field=_trace_dimension(conn, context, _require_dimension(conn, int(dim))))
+            if 'evidence' in before:
+                for dim, state in before['evidence'].items():
+                    note = conn.execute('SELECT id FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (int(dim), key)).fetchone()
+                    if note:
+                        conn.execute('DELETE FROM coding_note_images WHERE note_id=?', (note[0],))
+                        conn.execute('DELETE FROM coding_notes WHERE id=?', (note[0],))
+                    if state['note']:
+                        conn.execute(
+                            "INSERT INTO coding_notes(id,dimension_id,zotero_key,text,created_at,"
+                            "updated_at) VALUES(?,?,?,?,?,?)", state['note'])
+                        for image in state['images']:
                             conn.execute(
-                                "INSERT INTO coding_notes(id,dimension_id,zotero_key,text,created_at,"
-                                "updated_at) VALUES(?,?,?,?,?,?)", state['note'])
-                            for image in state['images']:
-                                conn.execute(
-                                    "INSERT INTO coding_note_images(id,note_id,path,sha256,ocr_text,"
-                                    "ocr_status,created_at) VALUES(?,?,?,?,?,?,?)", image)
-                        # Trace evidence has content hashes, never filesystem paths.
-                        def public(value):
-                            return {'text': value['note'][3] if value['note'] else '',
-                                    'images': [{'id': r[0], 'sha256': r[3]} for r in value['images']]}
-                        capture_event(conn, context, stage='coding', action='coding_evidence_undone', subject_id=key,
-                                      before=public(after['evidence'][dim]), after=public(state),
-                                      field=_trace_dimension(conn, context, _require_dimension(conn, int(dim))) if recording else None)
-            conn.execute("UPDATE workspace_undo SET undone=1 WHERE id=?", (entry_id,))
-            # 同请求重试必须重新执行保存，而不是命中幂等摘要返回撤销前的旧结果（U3-P4）。
-            if request_id:
-                _release_request_summaries(conn, context, request_id)
-            if stage == 'coding':
-                # r6 #21：回收没有任何 journal 关联的 no-op 请求摘要（修复前
-                # save_form 先落摘要后判 no-op，撤销后重放会假成功）。
-                _sweep_orphan_request_summaries(conn, context)
-                # r6 #25：撤销恢复/删除了证据引用后按当前引用状态补偿复位
-                # attached——undo 自身此前从不复位，撤销后不再被引用的上传
-                # 永远 attached=1，7 天 staging GC 收不到（文件与行双双滞留）。
-                release_detached_uploads(conn, context, key)
-        restored = (_row(conn, _TABLES[stage], key) if stage in _TABLES else None)
-        return {"undone": True, "zotero_key": key, "latest": _latest(conn, context, stage),
-                'access_context': SUBMISSION_EVIDENCE if stage == 'coding' and is_submission_evidence(before, after) else 'personal',
-                "decision": (dict(zip(_DECISION_COLUMNS.split(","), restored)) if restored else None)}
+                                "INSERT INTO coding_note_images(id,note_id,path,sha256,ocr_text,"
+                                "ocr_status,created_at) VALUES(?,?,?,?,?,?,?)", image)
+                    # Trace evidence has content hashes, never filesystem paths.
+                    def public(value):
+                        return {'text': value['note'][3] if value['note'] else '',
+                                'images': [{'id': r[0], 'sha256': r[3]} for r in value['images']]}
+                    capture_event(conn, context, stage='coding', action='coding_evidence_undone', subject_id=key,
+                                  before=public(after['evidence'][dim]), after=public(state),
+                                  field=_trace_dimension(conn, context, _require_dimension(conn, int(dim))) if recording else None)
+        conn.execute("UPDATE workspace_undo SET undone=1 WHERE id=?", (entry_id,))
+        # 同请求重试必须重新执行保存，而不是命中幂等摘要返回撤销前的旧结果（U3-P4）。
+        if request_id:
+            _release_request_summaries(conn, context, request_id)
+        if stage == 'coding':
+            # r6 #21：回收没有任何 journal 关联的 no-op 请求摘要（修复前
+            # save_form 先落摘要后判 no-op，撤销后重放会假成功）。
+            _sweep_orphan_request_summaries(conn, context)
+            # r6 #25：撤销恢复/删除了证据引用后按当前引用状态补偿复位
+            # attached——undo 自身此前从不复位，撤销后不再被引用的上传
+            # 永远 attached=1，7 天 staging GC 收不到（文件与行双双滞留）。
+            release_detached_uploads(conn, context, key)
+    restored = (_row(conn, _TABLES[stage], key) if stage in _TABLES else None)
+    return {"undone": True, "zotero_key": key, "latest": _latest(conn, context, stage),
+            'access_context': SUBMISSION_EVIDENCE if stage == 'coding' and is_submission_evidence(before, after) else 'personal',
+            "decision": (dict(zip(_DECISION_COLUMNS.split(","), restored)) if restored else None)}

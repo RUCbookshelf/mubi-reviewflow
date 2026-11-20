@@ -4,9 +4,11 @@ MM7-01: the release-payload verifier must compare the WHOLE payload tree against
         source tree, not an 11-file whitelist. The fake payload below tampers with a
         file that was never whitelisted (custom_backend/hidden.py) and deletes another
         (coscreen/x.py); pre-fix the verifier exits 0 on exactly this state.
-MM7-02: release.yml and build_windows.bat must invoke the four static validators; the
-        wiring greps fail while the calls are absent, and the mutation nails prove the
-        wired validators exit non-zero once an asserted object is broken.
+MM7-02: the release gate must run the six static validators after the payload check -
+        since 2.1.6 (TST-03) via the single entry build/run_validation.py in release.yml
+        and per-script wiring in the packaging scripts; the wiring greps fail while the
+        calls are absent, and the mutation nails prove the wired validators exit
+        non-zero once an asserted object is broken.
 MM7-03: the string source of validate_import_review_static.cjs and the injection list of
         import_review_browser.cjs must be resolved from the <script src> manifest parsed
         out of custom_frontend/index.html (live load list), never from hardcoded names.
@@ -53,12 +55,43 @@ NODE = (
 BASH = shutil.which("bash")
 GIT = shutil.which("git")
 
-FOUR_VALIDATORS = (
+# TST-03 (2.1.6 Task 8): six validators = the pre-2.1.6 four plus the two that
+# were green but wired nowhere (validate_team_prisma.py,
+# validate_evidence_locale_static.cjs). The full gate lives in
+# build/run_validation.py - CI calls that entry, so release.yml no longer
+# spells the validator paths itself.
+SIX_VALIDATORS = (
     "build/validate_import_review.py",
     "build/validate_screening_rounds.py",
+    "build/validate_team_prisma.py",
     "build/validate_import_review_static.cjs",
     "build/validate_team_prisma_static.js",
+    "build/validate_evidence_locale_static.cjs",
 )
+
+# R26-I (Terra argv ruling): fixed child bootstrap, byte-equal to the product
+# PY_CHILD_BOOTSTRAP constant; drift is red by design.
+PY_CHILD_BOOTSTRAP_RULING = (
+    'import runpy,sys;'
+    'root=sys.argv.pop(1);kind=sys.argv.pop(1);entry=sys.argv.pop(1);'
+    'sys.path.insert(0,root);sys.argv[0]=entry;'
+    "runpy.run_module(entry,run_name='__main__') if kind=='module' "
+    "else runpy.run_path(entry,run_name='__main__')"
+)
+
+
+def _validation_plan_json():
+    """Read-only export of the REAL execution plan from the CI entry.
+
+    Runs build/run_validation.py --list --json as a subprocess (never imports
+    the module): what the static nails assert on is the actual CLI contract,
+    so a plan that only exists in comments cannot pass (TST-03 dual-read)."""
+    proc = subprocess.run(
+        [sys.executable, "build/run_validation.py", "--list", "--json"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
 
 
 # --------------------------------------------------------------------------- MM7-01
@@ -295,19 +328,67 @@ def test_mm7_01_macos_cli_end_to_end_on_fake_tree(tmp_path):
 
 # --------------------------------------------------------------------------- MM7-02
 
-def test_mm7_02_release_yml_runs_all_four_validators_after_payload_verify():
+def test_mm7_02_release_yml_runs_all_six_validators_after_payload_verify():
+    """Dual-read (TST-03 2.1.6): (1) release.yml invokes the single entry
+    build/run_validation.py after the payload check - the workflow no longer
+    hand-copies the command list; (2) the entry's real exported plan covers
+    all six validators, so the coverage claim lives in executable argv, not
+    in a comment that could drift from what runs.
+
+    The yml read is line-based (a command line starting with
+    ``python build/run_validation.py``): a comment merely mentioning the
+    entry must not satisfy it (mutation-probed 2026-11-14 - a substring
+    assert stayed green against a comment, which is exactly the fake-green
+    the TST-03 brief bans)."""
     text = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     anchor = text.index("verify_release_payload.py")
-    for rel in FOUR_VALIDATORS:
-        pos = text.find(rel)
-        assert pos > anchor, f"{rel} must run after verify_release_payload.py in release.yml"
+    step = text[text.index("Run static validators"):text.index("actions/upload-artifact")]
+    call_lines = [ln for ln in step.splitlines()
+                  if ln.lstrip().startswith("python build/run_validation.py")]
+    assert call_lines, (
+        "release.yml must invoke the single entry build/run_validation.py as a command"
+    )
+    call_pos = text.find(call_lines[0].strip())
+    assert call_pos > anchor, (
+        "the run_validation.py call must come after verify_release_payload.py"
+    )
+    plan = _validation_plan_json()
+    # R26-I（Terra 裁定）：三个 Python validator 以绝对路径经隔离 child
+    # 计划（-I -B -X utf8=<父实际模式> -c 固定 bootstrap + "script" +
+    # str(REPO/rel)）；三个 Node validator 保持相对 argv。父模式不硬编码，
+    # 预期取同 flags/env 探针实测值（_validation_plan_json 无 -I 同 env）。
+    utf8_probe = subprocess.run(
+        [sys.executable, "-c", "import sys; print(sys.flags.utf8_mode)"],
+        cwd=str(REPO), capture_output=True, text=True, timeout=120,
+    )
+    assert utf8_probe.returncode == 0, utf8_probe.stderr
+    expected_head = [
+        sys.executable, "-I", "-B", "-X", f"utf8={utf8_probe.stdout.strip()}",
+        "-c", PY_CHILD_BOOTSTRAP_RULING, str(REPO),
+    ]
+    plan_files = {arg for step in plan["steps"] for arg in step["argv"]}
+    for rel in SIX_VALIDATORS[:3]:
+        expected_entry = str(REPO / rel)
+        assert expected_entry in plan_files, (
+            f"{rel} must be in the run_validation.py plan (absolute entry)"
+        )
+        py_steps = [s for s in plan["steps"] if s["argv"][9:10] == [expected_entry]]
+        assert len(py_steps) == 1, (
+            f"{rel} must be planned exactly once as an absolute script entry"
+        )
+        argv = py_steps[0]["argv"]
+        assert argv[:8] == expected_head and argv[8] == "script", (
+            f"{rel} must run through the R26-I isolated child: {argv}"
+        )
+    for rel in SIX_VALIDATORS[3:]:
+        assert rel in plan_files, f"{rel} must be in the run_validation.py plan"
 
 
-def test_mm7_02_build_windows_bat_runs_all_four_validators_after_step_4():
+def test_mm7_02_build_windows_bat_runs_all_six_validators_after_step_4():
     text = (REPO / "build" / "build_windows.bat").read_text(encoding="utf-8")
     step4 = text.index("[4/6]")
     step5 = text.index("[5/6]")
-    for rel in FOUR_VALIDATORS:
+    for rel in SIX_VALIDATORS:
         name = rel.split("/")[-1]  # the bat invokes them as %SRCDIR%\<name>
         pos = text.find(name)
         assert step4 < pos < step5, f"{rel} must run between [4/6] and [5/6] in build_windows.bat"

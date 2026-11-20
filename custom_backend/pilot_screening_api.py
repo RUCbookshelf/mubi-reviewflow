@@ -48,6 +48,7 @@ _STATUS = {
     "enforce_blocked": 403,
     "set_not_found": 404,
     "item_not_in_set": 404,
+    "item_already_answered": 409,
     "set_not_draft": 409,
     "set_archived": 409,
     "gold_locked": 409,
@@ -149,6 +150,12 @@ class ItemIn(BaseModel):
     zotero_key: str
     decision: str
     reason: str = ""
+    attempt_id: int | None = None
+
+
+class SkipIn(BaseModel):
+    """训练「暂时跳过」请求体（裁定 #2/#3）：条目键 + 可选前值校验。"""
+    zotero_key: str
     attempt_id: int | None = None
 
 
@@ -467,6 +474,14 @@ def register_pilot_screening_routes(
             return _run(core.save_item, conn, set_id, user_id=user["user_id"],
                         zotero_key=body.zotero_key, decision=body.decision,
                         reason=body.reason, attempt_id=body.attempt_id)
+
+    @app.post("/api/tasks/{task_id}/pilot/sets/{set_id}/my-attempt/skip")
+    def pilot_my_attempt_skip(task_id: str, set_id: int, body: SkipIn,
+                              user: dict = Depends(require_user)) -> dict:
+        info = _read_info(task_id, user)
+        with closing(_open(info, write=True)) as conn:
+            return _run(core.skip_item, conn, set_id, user_id=user["user_id"],
+                        zotero_key=body.zotero_key, attempt_id=body.attempt_id)
 
     @app.post("/api/tasks/{task_id}/pilot/sets/{set_id}/my-attempt/submit")
     def pilot_my_attempt_submit(task_id: str, set_id: int,

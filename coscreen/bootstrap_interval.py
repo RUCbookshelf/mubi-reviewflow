@@ -115,6 +115,70 @@ def _finite_floats(values: Sequence[float], label: str) -> list[float]:
     return result
 
 
+def _finite_mean(values) -> float:
+    """Mean of finite float data, stable when the plain reduction overflows.
+
+    ``ndarray.mean`` is returned unchanged whenever it is finite, so ordinary
+    samples keep their historical values bit for bit; the scaled fallback
+    (divide by the largest magnitude, average, multiply back) runs only when
+    that reduction overflowed. The mean of finite data is bounded by its
+    extreme values, so the fallback result is finite again for every
+    representable input; a payload that is still not finite is rejected by
+    ``_ensure_finite_payload`` at the return site.
+    """
+    array = np.asarray(values, dtype=float)
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = float(array.mean())
+    if math.isfinite(mean):
+        return mean
+    scale = float(np.max(np.abs(array)))
+    return scale * float(np.mean(array / scale))
+
+
+def _finite_std(values, ddof: int = 0) -> float:
+    """Standard deviation of finite float data, stable under overflow.
+
+    Identical to ``np.std`` whenever that reduction is finite (the normal
+    path keeps its historical bits); when the sum of squared deviations
+    overflows, the computation is redone on data scaled by the largest
+    magnitude, whose squared deviations are bounded by 4 and cannot
+    overflow. A result still beyond the float64 range (data at the
+    representation edge) is returned non-finite and rejected by
+    ``_ensure_finite_payload`` at the return site.
+    """
+    array = np.asarray(values, dtype=float)
+    with np.errstate(over="ignore", invalid="ignore"):
+        std = float(array.std(ddof=ddof))
+    if math.isfinite(std):
+        return std
+    scale = float(np.max(np.abs(array)))
+    with np.errstate(over="ignore", invalid="ignore"):
+        return float(np.std(array / scale, ddof=ddof)) * scale
+
+
+def _ensure_finite_payload(result: dict) -> None:
+    """NUM-01 backstop: a success payload must carry only finite floats.
+
+    Walks the returned structure and raises the module's range ``ValueError``
+    (the same 4xx contract as the compute-point guards) if any float --
+    ``np.float64`` included, it subclasses ``float`` -- is still not finite.
+    The existing legal ``None`` slots (``tau2``/``tau2_boundary_fraction``
+    for the fixed model, ``mc_se`` below the batch-means budget) are not
+    floats and pass untouched. Without this, an extreme-but-accepted sample
+    could hand the API layer a payload that strict JSON serialization
+    (``json.dumps(..., allow_nan=False)``) refuses.
+    """
+    stack = [result]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+        elif isinstance(node, float) and not math.isfinite(node):
+            raise ValueError(_RANGE_MESSAGE)
+
+
 def _reml_objective_rows(y: np.ndarray, v: np.ndarray, tau2: np.ndarray) -> np.ndarray:
     """-2 profile restricted log likelihood (constants omitted), intercept only.
 
@@ -207,25 +271,33 @@ def _fit_pooled(y: np.ndarray, v: np.ndarray, model: str) -> dict:
     REML tau-squared for ``model="reml"``; pooled weights ``1/(v + tau2)``
     for both random-effects models.
     """
-    w = 1.0 / v
-    total_w = float(w.sum())
-    pooled = float(w @ y / total_w)
-    q = float(w @ (y - pooled) ** 2)
-    df = y.size - 1
-    c = total_w - float((w**2).sum()) / total_w
-    tau2 = 0.0
-    if model == "dl":
-        if not math.isfinite(c) or c <= 0:
-            raise ValueError("sampling variances give a non-positive DerSimonian-Laird constant C")
-        tau2 = max(0.0, (q - df) / c)
-    elif model == "reml":
-        tau2_rows, valid_rows = _reml_tau2_rows(y[None, :], v)
-        if not bool(valid_rows[0]):
-            raise ValueError("REML profile optimization failed on the input data")
-        tau2 = float(tau2_rows[0])
-    weights = w if model == "fixed" else 1.0 / (v + tau2)
-    total = float(weights.sum())
-    pooled = float(weights @ y / total)
+    # NUM-01 (2.1.6 Task 4): the pooling intermediates legitimately overflow
+    # on inputs this module already accepts or rejects through its own
+    # guards -- w=1/v for subnormal SEs, the Q sum for +-1e160 effects, the
+    # nested profile-REML rows (np.mean/np.var) for either. The local
+    # errstate is the same dynamic-scope pattern as ``_reml_objective_rows``
+    # above; it only keeps the transient warning from leaking while the
+    # guards below keep deciding acceptance exactly as before.
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        w = 1.0 / v
+        total_w = float(w.sum())
+        pooled = float(w @ y / total_w)
+        q = float(w @ (y - pooled) ** 2)
+        df = y.size - 1
+        c = total_w - float((w**2).sum()) / total_w
+        tau2 = 0.0
+        if model == "dl":
+            if not math.isfinite(c) or c <= 0:
+                raise ValueError("sampling variances give a non-positive DerSimonian-Laird constant C")
+            tau2 = max(0.0, (q - df) / c)
+        elif model == "reml":
+            tau2_rows, valid_rows = _reml_tau2_rows(y[None, :], v)
+            if not bool(valid_rows[0]):
+                raise ValueError("REML profile optimization failed on the input data")
+            tau2 = float(tau2_rows[0])
+        weights = w if model == "fixed" else 1.0 / (v + tau2)
+        total = float(weights.sum())
+        pooled = float(weights @ y / total)
     # Degenerate-SE family (shared form with influence_diagnostics F4-92):
     # F2-69 -- effect estimates of +-1e160 make Q overflow to inf, tau2=inf and
     # the weights sum to 0, so ``1/total`` raised ZeroDivisionError; F2-71 --
@@ -265,30 +337,38 @@ def _bootstrap_pooled(
     keep = np.ones(n_boot, dtype=bool)
     pooled_boot = np.empty(n_boot)
     tau2_boot = np.empty(n_boot) if model != "fixed" else None
-    w = 1.0 / v
-    total_w = float(w.sum())
-    for start in range(0, n_boot, chunk):
-        rows = min(chunk, n_boot - start)
-        stop = start + rows
-        y_star = y + rng.standard_normal((rows, y.size)) * se
-        if model == "fixed":
-            pooled = y_star @ w / total_w
-            ok = np.isfinite(pooled)
-            pooled_boot[start:stop] = pooled
-        else:
-            if model == "dl":
-                fixed_star = y_star @ w / total_w
-                q_star = ((y_star - fixed_star[:, None]) ** 2 * w).sum(axis=1)
-                tau2_star = np.maximum(0.0, (q_star - fit["df"]) / fit["c"])
-                ok = np.isfinite(tau2_star)
+    # NUM-01 (2.1.6 Task 4): inside the accepted domain the replicate
+    # intermediates can overflow (squared deviations in q_star, v + tau2_star
+    # near the float64 ceiling, the nested REML rows) while the replicate as
+    # a whole stays representable; failed replicates keep being counted and
+    # dropped through the ok mask below. The local errstate (same pattern as
+    # ``_reml_objective_rows``) only stops the transient warnings; the RNG
+    # draws, their order, and every mask decision are untouched.
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        w = 1.0 / v
+        total_w = float(w.sum())
+        for start in range(0, n_boot, chunk):
+            rows = min(chunk, n_boot - start)
+            stop = start + rows
+            y_star = y + rng.standard_normal((rows, y.size)) * se
+            if model == "fixed":
+                pooled = y_star @ w / total_w
+                ok = np.isfinite(pooled)
+                pooled_boot[start:stop] = pooled
             else:
-                tau2_star, ok = _reml_tau2_rows(y_star, v)
-            weights = 1.0 / (v + tau2_star[:, None])
-            pooled = (weights * y_star).sum(axis=1) / weights.sum(axis=1)
-            ok &= np.isfinite(pooled)
-            pooled_boot[start:stop] = pooled
-            tau2_boot[start:stop] = tau2_star
-        keep[start:stop] = ok
+                if model == "dl":
+                    fixed_star = y_star @ w / total_w
+                    q_star = ((y_star - fixed_star[:, None]) ** 2 * w).sum(axis=1)
+                    tau2_star = np.maximum(0.0, (q_star - fit["df"]) / fit["c"])
+                    ok = np.isfinite(tau2_star)
+                else:
+                    tau2_star, ok = _reml_tau2_rows(y_star, v)
+                weights = 1.0 / (v + tau2_star[:, None])
+                pooled = (weights * y_star).sum(axis=1) / weights.sum(axis=1)
+                ok &= np.isfinite(pooled)
+                pooled_boot[start:stop] = pooled
+                tau2_boot[start:stop] = tau2_star
+            keep[start:stop] = ok
     invalid = int(keep.size - np.count_nonzero(keep))
     if invalid:
         pooled_boot = pooled_boot[keep]
@@ -319,8 +399,11 @@ def _batch_mc_se(pooled_boot: np.ndarray, theta_hat: float, alpha: float,
         else:
             lows.append(2.0 * theta_hat - q_high)
             highs.append(2.0 * theta_hat - q_low)
-    se_low = float(np.std(lows, ddof=1) / math.sqrt(n_batches))
-    se_high = float(np.std(highs, ddof=1) / math.sqrt(n_batches))
+    # NUM-01: batch endpoints of an accepted huge-SE sample are ~1e154 and
+    # overflow the squared-deviation reduction exactly like boot_summary.sd;
+    # ``_finite_std`` is identical to np.std whenever that is finite.
+    se_low = float(_finite_std(lows, ddof=1) / math.sqrt(n_batches))
+    se_high = float(_finite_std(highs, ddof=1) / math.sqrt(n_batches))
     return {"low": se_low, "high": se_high}
 
 
@@ -415,25 +498,34 @@ def bootstrap_pooled_interval(
         raise RuntimeError("every bootstrap replicate failed numerically")
 
     alpha = 1.0 - level
-    q_low, q_high = (float(value) for value in np.quantile(
-        pooled_boot, [alpha / 2, 1 - alpha / 2], method="linear"))
-    if interval_type == "percentile":
-        low, high = q_low, q_high
-    else:
-        low, high = 2 * fit["pooled"] - q_high, 2 * fit["pooled"] - q_low
+    # NUM-01 (2.1.6 Task 4): for accepted huge-SE samples the summary
+    # reductions are the last overflow site -- the replicate spread ~1e154
+    # squares past float64 inside the np.std reduction, and the raw result
+    # used to be returned as boot_summary.sd=inf, a success payload that
+    # strict JSON serialization refuses. ``_finite_mean``/``_finite_std``
+    # return the plain reduction bit for bit whenever it is finite and
+    # rescale only an overflowed one; the errstate window covers the
+    # quantile arithmetic for the same input family.
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        q_low, q_high = (float(value) for value in np.quantile(
+            pooled_boot, [alpha / 2, 1 - alpha / 2], method="linear"))
+        if interval_type == "percentile":
+            low, high = q_low, q_high
+        else:
+            low, high = 2 * fit["pooled"] - q_high, 2 * fit["pooled"] - q_low
 
-    mc_se = _batch_mc_se(pooled_boot, fit["pooled"], alpha, interval_type)
-    quantile_grid = [alpha / 2, 0.25, 0.5, 0.75, 1 - alpha / 2]
-    boot_summary = {
-        "n_valid": int(pooled_boot.size),
-        "mean": float(pooled_boot.mean()),
-        "sd": float(pooled_boot.std(ddof=1)) if pooled_boot.size > 1 else 0.0,
-        "minimum": float(pooled_boot.min()),
-        "maximum": float(pooled_boot.max()),
-        "median": float(np.quantile(pooled_boot, 0.5)),
-        "quantiles": {f"{p:g}": float(value) for p, value in zip(quantile_grid, np.quantile(pooled_boot, quantile_grid))},
-        "quantile_method": "linear",
-    }
+        mc_se = _batch_mc_se(pooled_boot, fit["pooled"], alpha, interval_type)
+        quantile_grid = [alpha / 2, 0.25, 0.5, 0.75, 1 - alpha / 2]
+        boot_summary = {
+            "n_valid": int(pooled_boot.size),
+            "mean": _finite_mean(pooled_boot),
+            "sd": _finite_std(pooled_boot, ddof=1) if pooled_boot.size > 1 else 0.0,
+            "minimum": float(pooled_boot.min()),
+            "maximum": float(pooled_boot.max()),
+            "median": float(np.quantile(pooled_boot, 0.5)),
+            "quantiles": {f"{p:g}": float(value) for p, value in zip(quantile_grid, np.quantile(pooled_boot, quantile_grid))},
+            "quantile_method": "linear",
+        }
 
     warnings: list[str] = []
     if k < 5:
@@ -487,7 +579,7 @@ def bootstrap_pooled_interval(
         )
 
     elapsed = time.perf_counter() - started
-    return {
+    result = {
         "n_studies": k,
         "model": model,
         "model_label": MODEL_LABELS[model],
@@ -521,3 +613,10 @@ def bootstrap_pooled_interval(
         }),
         "warnings": warnings,
     }
+    # NUM-01 backstop: with the stable reductions above, every float in a
+    # success payload is finite; anything left non-finite means the input
+    # scales are not representable even after rescaling, and the caller gets
+    # the module's range ValueError (4xx contract) instead of a payload that
+    # breaks strict JSON serialization. Existing legal None slots pass.
+    _ensure_finite_payload(result)
+    return result

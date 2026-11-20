@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PKG-01 (2.1.6): AppStream metainfo shipped inside the Linux AppImage
+     (build/build_linux.sh installs it to usr/share/metainfo/ in the AppDir).
+     Every value is a real repo fact, kept in step with the generated
+     reviewflow.desktop by build/tests/test_2_1_6_appstream.py:
+     - name/summary mirror the desktop entry generated in build_linux.sh;
+     - project_license mirrors the root LICENSE (MIT);
+     - homepage mirrors the GitHub link published in README.md;
+     - metadata_license is the license OF THIS FILE only (CC0-1.0, the
+       AppStream convention for metadata).
+     Deliberately ABSENT: <screenshots> and <releases> - the file must not
+     carry screenshots or release history that upstream has not actually
+     published (no fabricated metadata). If real screenshots or release
+     entries are ever added, update the policy nail in
+     test_2_1_6_appstream.py deliberately. -->
+<component type="desktop-application">
+  <id>reviewflow</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>ReviewFlow</name>
+  <summary>Systematic review and meta-analysis workspace</summary>
+  <description>
+    <p>
+      ReviewFlow keeps literature import, screening, data extraction, analysis
+      and the research-process record in one workspace, so nothing has to move
+      between separate tools.
+    </p>
+    <p>
+      It can be used fully offline on a single machine; a team may deploy it on
+      a server to share tasks, documents and progress while every member keeps
+      an independent screening record. Analyses cover effect sizes, fixed- and
+      random-effects pooling, heterogeneity, subgroup and meta-regression,
+      sensitivity and small-study-effect analyses. Research-trace charts and
+      manuscript figures are rendered locally via Cairo.
+    </p>
+  </description>
+  <launchable type="desktop-id">reviewflow.desktop</launchable>
+  <url type="homepage">https://github.com/RUCbookshelf/mubi-reviewflow</url>
+  <content_rating type="oars-1.1" />
+</component>

@@ -35,6 +35,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from fractions import Fraction
 from pathlib import Path
 
@@ -362,7 +363,6 @@ class MM1004IpdCoxNoiseFloorTests(unittest.TestCase):
 # normal 家族极限 0.35928725061352246 相差 ≤3e-9），df=5e9 起 "grid
 # refinement did not converge"；df=1e12+1 触发 "too large" 入口拒绝。
 # 即：失败点是数据相关的（证据夹具 1e12 才败），上界不该用来假装精确边界。
-@unittest.skipIf(os.environ.get("CI") == "true", "数值容差按本机科学栈校准，平台浮点实现差异")
 class MM1107BayesianDfCapTests(unittest.TestCase):
     """MM11-07：df 接近上界时的失败必须可行动，且不得做错误归因。
 
@@ -380,10 +380,36 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
     成本；df 达阈值时才在同一批 rows 上实测候选（更小 df、normal 家族），
     只有实测收敛的候选才会写进文案。因此「建议」必然是「在同一数据上
     成立的设置」，而不只是「看起来相关的旋钮」。
+
+    2.1.6 可移植性收尾：原类级 ``skipIf(CI=='true')`` 去除，按断言性质逐
+    测试处置——mu.mean 值钉改用 house ``assert_numeric_baseline``（张量积
+    网格求值是确定性算术而非迭代优化器，默认 rel_tol=1e-11）；失败模式钉
+    （df=1e12 必败，距 3e9 收敛悬崖 333 倍；k=2 退化数据整族必败）距
+    agrees() 的 1e-8 相对裁决阈值余量充足，保持精确。
+
+    2.1.6 P1（portability_p1_decision.md 裁定）：两条历史「数值巧合」测
+    试的 CI skipIf 删除，改为接缝驱动的确定性场景钉——仅在测量接缝
+    （``_probe_settles`` 的重拟合入口）把 ``fit_bayesian_robust_meta`` 换
+    成带调用记录的脚本替身，驱动**真实**决策函数 ``_grid_failure_message``；
+    历史岛形态（1e7 败/1e8 成/1e9 败、1e10 梯子孤立成功）标注为本机科学
+    栈观察背景，不要求所有平台复现。真实数值拟合/收敛覆盖由其余测试
+    （1e12 必败、常规 df 中性文案、normal 收敛参考值、点名值实测收敛、
+    探针掩蔽、df 上界）与 _probe_settles 直测中的真实重拟合保持。
     """
 
     ROWS = [{"study_id": f"S{i+1}", "measure": "MD", "estimate": 0.3 + 0.02 * i,
              "se": 0.2 + 0.01 * i} for i in range(8)]
+    # 历史岛夹具（原两条 CI 跳过测试的数值形态；接缝场景只借用「败/成/败」
+    # 形态，具体成败点属本机科学栈观察，不要求平台复现——见
+    # out/maintenance216/portability_p1_decision.md 的裁定）。
+    _K2_ISLAND_ROWS = [{"study_id": "S1", "measure": "MD", "estimate": -0.57, "se": 0.24},
+                       {"study_id": "S2", "measure": "MD", "estimate": -0.54, "se": 0.14}]
+    _K3_ISLAND_ROWS = [{"study_id": "S0", "measure": "MD",
+                        "estimate": -0.500826731375809, "se": 0.17232803715009687},
+                       {"study_id": "S1", "measure": "MD",
+                        "estimate": -0.5437122878609378, "se": 0.20759857813849897},
+                       {"study_id": "S2", "measure": "MD",
+                        "estimate": -0.506466670394568, "se": 0.18155852458647231}]
 
     def _fit(self, df, rows=None):
         return bayesian_robust_meta.fit_bayesian_robust_meta(
@@ -486,51 +512,202 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
         self.assertLess(float(named.group(1)), 1e12)
         self._fit(float(named.group(1)))  # 点名值必须真的收敛，否则抛错即红
 
-    def test_lucky_df_between_failures_is_not_recommended(self):
-        """第三轮的核心钉子：孤立收敛点不得成为建议。
-
-        k=2 反例上 df=1e8 成功，但 df=1e7 与 df=1e9 都失败——该夹具没有
-        「df 越大越难算」的阈值结构，因此即使 1e8 能算，也不许建议。文案
-        必须中性，且不得点名 1e8。
+    def _scripted_probes(self, script):
+        """构造带调用记录的 fit 替身：按脚本表（{mu_prior_df: True|False|异常实例}）
+        决定 settle/fail，供测量接缝注入。脚本未列出的 df 抛 KeyError——
+        _probe_settles 会把它吞成 False，但调用记录会暴露「梯子跑出脚本」的
+        场景失真，配合各场景的探测 df 序列断言兜底。
         """
-        rows = [{"study_id": "S1", "measure": "MD", "estimate": -0.57, "se": 0.24},
-                {"study_id": "S2", "measure": "MD", "estimate": -0.54, "se": 0.14}]
-        # 前提复核：1e7 失败、1e8 成功、1e9 失败（非阈值结构）
-        for df, should_settle in ((1e7, False), (1e8, True), (1e9, False)):
-            with self.subTest(df=df):
-                if should_settle:
-                    self._fit(df, rows=rows)
-                else:
-                    with self.assertRaises(ValueError):
-                        self._fit(df, rows=rows)
-        with self.assertRaises(ValueError) as ctx:
-            self._fit(1e9, rows=rows)
-        message = str(ctx.exception)
-        self.assertNotIn("df=1e+08", message,
-                         msg="1e8 是夹在两次失败之间的孤立成功，不得被推荐")
-        self.assertNotIn("smaller df", message)
+        calls = []
+
+        def fake_fit(rows, *, mu_prior_mean, mu_prior_family, mu_prior_scale,
+                     mu_prior_df, tau_prior_family, tau_prior_scale, tau_prior_df,
+                     _diagnostic_probe=True):
+            calls.append({"rows": rows, "mu_prior_mean": mu_prior_mean,
+                          "mu_prior_family": mu_prior_family, "mu_prior_df": mu_prior_df,
+                          "mu_prior_scale": mu_prior_scale, "tau_prior_family": tau_prior_family,
+                          "tau_prior_scale": tau_prior_scale, "tau_prior_df": tau_prior_df,
+                          "_diagnostic_probe": _diagnostic_probe})
+            outcome = script[mu_prior_df]
+            if outcome is True:
+                return {"converged": True}
+            if outcome is False:
+                raise ValueError("scripted probe failure")
+            raise outcome
+
+        return fake_fit, calls
+
+    def _decision_message(self, df_mu, rows, script):
+        """只在测量接缝（``_probe_settles`` 的重拟合入口）把
+        ``fit_bayesian_robust_meta`` 换成脚本替身，驱动**真实**
+        ``_grid_failure_message`` 输出诊断文案；决策函数本身不替换。
+        替身经 mock.patch.object 局部生效并自动恢复。返回 (message, calls)。
+        """
+        fake, calls = self._scripted_probes(script)
+        with mock.patch.object(bayesian_robust_meta, "fit_bayesian_robust_meta", fake):
+            message = bayesian_robust_meta._grid_failure_message(
+                rows, df_mu=df_mu, mu_prior_mean=0.0, mu_prior_scale=1.0,
+                tau_prior_family="half_normal", tau_prior_scale=0.5,
+                tau_prior_df=None, probe=True)
+        return message, calls
+
+    def _assert_probe_call_params(self, call, rows):
+        """测量接缝的参数契约：探测重拟合必须以诊断拟合的同款先验发起，
+        且 ``_diagnostic_probe=False``（探针不再触发探针）。"""
+        self.assertEqual(call["rows"], rows)
+        self.assertEqual(call["mu_prior_family"], "student_t")
+        self.assertEqual(call["mu_prior_mean"], 0.0)
+        self.assertEqual(call["mu_prior_scale"], 1.0)
+        self.assertEqual(call["tau_prior_family"], "half_normal")
+        self.assertEqual(call["tau_prior_scale"], 0.5)
+        self.assertIsNone(call["tau_prior_df"])
+        self.assertIs(call["_diagnostic_probe"], False)
+
+    def test_lucky_df_between_failures_is_not_recommended(self):
+        """孤立/高位成功 df 不得被推荐（接缝驱动，正向控制见类内阈值场景）。
+
+        历史背景（本机科学栈观察，不要求平台复现）：k=2 反例实测 df=1e7 败/
+        1e8 成/1e9 败。产品契约与具体数值无关——探测呈「成功夹在失败之间」
+        或「成功出现在失败之上」都没有「df 太大」的阈值结构，文案必须中性、
+        不得点名任何实测收敛的 df。
+        """
+        # 岛屿：升序梯子 [1e3 败, 1e5 成, 1e7 败]（历史 1e7 败/1e8 成/1e9 败形态）
+        message, calls = self._decision_message(1e9, self._K2_ISLAND_ROWS,
+                                                {1e3: False, 1e5: True, 1e7: False})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e3, 1e5, 1e7],
+                         msg="梯子必须按升序实测三个候选 df")
+        self._assert_probe_call_params(calls[0], self._K2_ISLAND_ROWS)
         self.assertIn("not shown to be the cause", message)
+        self.assertIn("did not settle consistently", message)
+        self.assertIn("appeared only between failures", message)
+        self.assertNotIn("No alternative df value", message,
+                         msg="有探针实测收敛，不得谎报全败")
+        self.assertNotIn("does settle on these rows", message,
+                         msg="孤立成功不得成为推荐")
+        self.assertNotIn("df=100000", message, msg="实测收敛的 1e5 不得被点名")
+        # 成功在失败之上：[1e3 败, 1e5 成, 1e7 成]——「任一成功即推荐最大成功
+        # df」的实现会在这里把 1e7 点名出去
+        message, calls = self._decision_message(1e9, self._K2_ISLAND_ROWS,
+                                                {1e3: False, 1e5: True, 1e7: True})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e3, 1e5, 1e7])
+        self.assertIn("not shown to be the cause", message)
+        self.assertNotIn("does settle on these rows", message,
+                         msg="成功出现在失败之上=无阈值结构，不得推荐任何 df")
+        self.assertNotIn("df=1e+07", message, msg="实测收敛的 1e7 也不得被点名")
+        self.assertNotIn("df=100000", message)
 
     def test_isolated_success_gets_its_own_honest_wording(self):
-        """孤立成功点存在时，中性诊断也不能说「没有任何 df 收敛」（那是假话）。
+        """有探针收敛时不得谎报全败；全败才允许「No alternative df value」。
 
-        夹具（k=3，实测）：df=1e10 失败，而 1e2 步长梯子上出现「失败→成功→
-        失败」的孤立成功，因而既不能推荐也不能声称全失败。文案必须落到
-        「没有一致收敛」这一支，且不得点名任何 df。
+        历史背景（本机科学栈观察，不要求平台复现）：k=3 夹具 df=1e10 失败，
+        1e2 步长梯子上出现「失败→成功→失败」的孤立成功。产品契约与数值无关：
+        两个中性措辞的选择必须由探测结果决定，且互相排斥。
         """
-        rows = [{"study_id": "S0", "measure": "MD",
-                 "estimate": -0.500826731375809, "se": 0.17232803715009687},
-                {"study_id": "S1", "measure": "MD",
-                 "estimate": -0.5437122878609378, "se": 0.20759857813849897},
-                {"study_id": "S2", "measure": "MD",
-                 "estimate": -0.506466670394568, "se": 0.18155852458647231}]
-        with self.assertRaises(ValueError) as ctx:
-            self._fit(1e10, rows=rows)
-        message = str(ctx.exception)
+        # 岛屿（升序 [1e4 败, 1e6 成, 1e8 败]，即历史 1e10 失败 + 梯子孤立成功形态）
+        message, calls = self._decision_message(1e10, self._K3_ISLAND_ROWS,
+                                                {1e4: False, 1e6: True, 1e8: False})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e4, 1e6, 1e8])
+        self._assert_probe_call_params(calls[0], self._K3_ISLAND_ROWS)
         self.assertIn("did not settle consistently", message,
-                      msg=f"孤立成功必须用「不一致」措辞，而非「一个都没收敛」：{message}")
-        self.assertNotIn("No alternative df value", message)
+                      msg="孤立成功必须用「不一致」措辞，而非「一个都没收敛」：%r" % message)
+        self.assertNotIn("No alternative df value", message,
+                         msg="有探针收敛时说「没有一个收敛」是假话")
         self.assertNotIn("does settle on these rows", message)
+        # 对照：全败 → 另一支中性措辞（选择判据=真实探测结果）
+        message, calls = self._decision_message(1e10, self._K3_ISLAND_ROWS,
+                                                {1e4: False, 1e6: False, 1e8: False})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e4, 1e6, 1e8])
+        self.assertIn("No alternative df value tried on these rows settled", message)
+        self.assertNotIn("did not settle consistently", message)
+        self.assertNotIn("does settle on these rows", message)
+
+    def test_threshold_pattern_names_largest_settled_df(self):
+        """正向控制：真阈值结构（前缀连续收敛、其后无成功）必须点名推荐。
+
+        升序梯子 [1e3 成, 1e5 成, 1e7 败] → 点名 leading run 的最大者 1e5；
+        记录验证被点名 df 确实被探测过（测量在先、建议在后），且不得越过
+        失败点推荐 1e7。
+        """
+        message, calls = self._decision_message(
+            1e9, self._K2_ISLAND_ROWS, {1e3: True, 1e5: True, 1e7: False, None: False})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e3, 1e5, 1e7, None])
+        self._assert_probe_call_params(calls[0], self._K2_ISLAND_ROWS)
+        self.assertIn("A smaller df does settle on these rows (df=100000); retry",
+                      message, msg="真阈值结构必须点名 leading run 中最大的实测收敛 df")
+        self.assertNotIn("(df=1000);", message,
+                         msg="点名的应是 run 最大者 1e5，而非更小的 1e3")
+        self.assertNotIn("df=1e+07", message, msg="1e7 实测失败，不得被点名")
+        self.assertIn(1e5, {c["mu_prior_df"] for c in calls},
+                      msg="被推荐的 df 必须真的被探测过")
+        self.assertNotIn("normal family", message,
+                         msg="normal 探测未收敛（脚本 None: False），不得附加补充句")
+
+    def test_normal_family_supplement_requires_measured_settlement(self):
+        """normal 家族补充句必须有实测依据：探测收敛才附加，失败不得出现。
+
+        阈值场景相同（[成,成,败]），仅 normal 探测结果不同——补充句的有无
+        只随探测结果变化（附加判断本身也走真实决策函数，不由文案硬编码）。
+        """
+        ladder = {1e3: True, 1e5: True, 1e7: False}
+        message, calls = self._decision_message(1e9, self._K2_ISLAND_ROWS,
+                                                {**ladder, None: True})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e3, 1e5, 1e7, None])
+        self.assertEqual(calls[-1]["mu_prior_family"], "normal")
+        self.assertIsNone(calls[-1]["mu_prior_df"])
+        self.assertEqual(calls[-1]["mu_prior_mean"], 0.0)
+        self.assertEqual(calls[-1]["mu_prior_scale"], 1.0)
+        self.assertEqual(calls[-1]["tau_prior_family"], "half_normal")
+        self.assertEqual(calls[-1]["tau_prior_scale"], 0.5)
+        self.assertIsNone(calls[-1]["tau_prior_df"])
+        self.assertIs(calls[-1]["_diagnostic_probe"], False)
+        self._assert_probe_call_params(calls[0], self._K2_ISLAND_ROWS)
+        self.assertIn("The normal family also settles on these rows.", message)
+        # normal 探测失败（含意外异常被吞）→ 不得附加；阈值推荐本身保留
+        message, calls = self._decision_message(1e9, self._K2_ISLAND_ROWS,
+                                                {**ladder, None: RuntimeError("scripted")})
+        self.assertEqual([c["mu_prior_df"] for c in calls], [1e3, 1e5, 1e7, None])
+        self.assertIn("does settle on these rows", message)
+        self.assertNotIn("normal family", message,
+                         msg="normal 探测未收敛不得附加补充句")
+
+    def test_floor_below_diagnostic_gate_pays_no_probe_cost(self):
+        """地板场景：df 低于诊断地板=常规 t 设定，走中性分支且**零探测成本**。
+
+        桩调用计数=0 是硬判据（MM11-07 第三轮文档化契约：常规 df 不付探针
+        成本）——任何「顺手探一下」的回归都会红。
+        """
+        message, calls = self._decision_message(999.0, self._K2_ISLAND_ROWS, {})
+        self.assertEqual(calls, [], msg="地板分支不得发起任何探测拟合")
+        self.assertIn("df=999 is a regular Student-t setting", message)
+        self.assertIn("not attributed", message)
+        self.assertIn("not by itself evidence", message)
+        self.assertNotIn("smaller df", message)
+        self.assertNotIn("normal family", message)
+        self.assertNotIn("does settle", message)
+
+    def test_probe_settles_reports_outcome_and_passes_priors(self):
+        """``_probe_settles`` 直测：成功→True、域失败→False、意外异常→False；
+        无替身时发起**真实**重拟合并按真实收敛/失败返回。"""
+        common = {"mu_prior_mean": 0.0, "mu_prior_scale": 1.0,
+                  "tau_prior_family": "half_normal", "tau_prior_scale": 0.5,
+                  "tau_prior_df": None}
+        fake, calls = self._scripted_probes({1000.0: True, 500.0: False,
+                                             750.0: RuntimeError("scripted")})
+        with mock.patch.object(bayesian_robust_meta, "fit_bayesian_robust_meta", fake):
+            self.assertTrue(bayesian_robust_meta._probe_settles(self._K2_ISLAND_ROWS, 1000.0, dict(common)))
+            self.assertFalse(bayesian_robust_meta._probe_settles(self._K2_ISLAND_ROWS, 500.0, dict(common)))
+            self.assertFalse(bayesian_robust_meta._probe_settles(self._K2_ISLAND_ROWS, 750.0, dict(common)),
+                             msg="探针必须吞掉非 ValueError 的意外异常")
+            self.assertEqual([c["mu_prior_df"] for c in calls], [1000.0, 500.0, 750.0])
+            self._assert_probe_call_params(calls[0], self._K2_ISLAND_ROWS)
+            for key, value in common.items():
+                self.assertEqual(calls[0][key], value, msg=key)
+        # 真实重拟合（无替身）：normal 家族在该 k=2 夹具上实测收敛——与
+        # test_diagnostic_does_not_contradict_its_own_advice 钉住的同一收敛组合。
+        self.assertTrue(bayesian_robust_meta._probe_settles(self._K2_ISLAND_ROWS, None, dict(common)))
+        # 真实重拟合的预期异常路径：ROWS + df=1e12 实测必败
+        # （test_refinement_failure_is_actionable_and_unattributed 已钉同一事实）。
+        self.assertFalse(bayesian_robust_meta._probe_settles(self.ROWS, 1e12, dict(common)))
 
     def test_probe_failure_never_masks_the_original_error(self):
         """探针只做诊断：探针里抛出的非 ValueError 不得替换掉原本的值错误。
@@ -572,6 +749,9 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
         （旧值相对新值分别偏 +1.5e-16 与 +3.1e-16）。反向 panel 修掉后这两个
         df 的取值回落到无负权重的正确权重集上；其余三个 df（1e6/1e8/1e9）
         与原值逐位相同，可作同一修正未产生漂移的对照。
+
+        2.1.6 可移植性收尾：assertEqual 改 house assert_numeric_baseline
+        （默认 rel_tol=1e-11；新旧值相对差 ≤2.2e-14，接受域不收窄）。
         """
         for df, expected in ((1e6, 0.35928724811260593),
                              (1e8, 0.3592872505883232),
@@ -579,8 +759,8 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
                              (1e9, 0.35928725061162303),
                              (3e9, 0.3592872506192819)):
             with self.subTest(df=df):
-                self.assertEqual(self._fit(df)["mu"]["mean"], expected,
-                                 msg=f"df={df:g} 在基线上是可解的合法输入，不得改判为拒绝")
+                assert_numeric_baseline(self._fit(df)["mu"]["mean"], expected,
+                                        path=f"df={df:g} mu.mean（基线合法输入，不得改判拒绝）")
 
     def test_small_df_unchanged(self):
         """常规对照（基线绿，修复后必须仍绿）：df=3 取值不变。
@@ -592,8 +772,12 @@ class MM1107BayesianDfCapTests(unittest.TestCase):
         负面积 panel，2-D 稠密参考积分（u 步长 0.02、w 步长 0.02）给出
         0.3584942051620264，与修复值相差 1.3e-9、与旧值相差 3.7e-9——两者
         都远在参考积分有效位之内，但只有修复值不再带负权重。
+
+        2.1.6 可移植性收尾：assertEqual 改 house assert_numeric_baseline
+        （默认 rel_tol=1e-11；新旧值相对差 2.2e-14，接受域不收窄）。
         """
-        self.assertEqual(self._fit(3.0)["mu"]["mean"], 0.35849420382788)
+        assert_numeric_baseline(self._fit(3.0)["mu"]["mean"], 0.35849420382788,
+                                path="df=3 mu.mean")
 
 
 # 修前实测：binary_effect(True, 2, 1, 2, 'RR') 正常返回
@@ -764,9 +948,15 @@ class MM10010NbFiniteWeightTests(unittest.TestCase):
 # 修前实测（*项独立复现）：recall_target=0 → threshold ZeroDivisionError；
 # recall_target=1.5 → threshold(10)=-4 且 should_stop 仍发证（stop=True）；
 # alpha=2 / sampling_fraction=-1 / 0 → 证书照样签发（confidence=0.30）。
-@unittest.skipIf(os.environ.get("CI") == "true", "数值容差按本机科学栈校准，平台浮点实现差异")
 class MM10011StopCertificateValidationTests(unittest.TestCase):
-    """MM10-11*：RecallCertificate 构造器无域校验。"""
+    """MM10-11*：RecallCertificate 构造器无域校验。
+
+    2.1.6 可移植性收尾：原类级 ``skipIf(CI=='true')`` 去除——三个方法的
+    断言分别是构造器域校验/负池钳制/整数 threshold 与离散 stop 判定，均
+    平台无关；唯一 float 钉（confidence=0.30000000000000004 的末位 ulp 来自
+    float 求和路径）改用 house ``assert_numeric_baseline``（默认
+    rel_tol=1e-11，远严于任何真回归）。
+    """
 
     def test_invalid_constructor_params_rejected(self):
         for kwargs in ({"recall_target": 0.0}, {"recall_target": 1.5}, {"recall_target": -0.1},
@@ -789,7 +979,7 @@ class MM10011StopCertificateValidationTests(unittest.TestCase):
         out = cert.should_stop(total_records=200, screened_count=100, found_relevant=10,
                                sample_new_relevant=0, sample_size=30)
         self.assertTrue(out["stop"])
-        self.assertEqual(out["confidence"], 0.30000000000000004)
+        assert_numeric_baseline(out["confidence"], 0.30000000000000004)
 
 
 def _network_db_rows(rows_spec):

@@ -144,6 +144,12 @@ CREATE TABLE IF NOT EXISTS pilot_decisions (
   answered_at TEXT NOT NULL,
   PRIMARY KEY(attempt_id, zotero_key)
 );
+CREATE TABLE IF NOT EXISTS pilot_skips (
+  attempt_id  INTEGER NOT NULL REFERENCES pilot_attempts(id) ON DELETE CASCADE,
+  zotero_key  TEXT NOT NULL,
+  skip_seq    INTEGER NOT NULL,
+  PRIMARY KEY(attempt_id, zotero_key)
+);
 CREATE TABLE IF NOT EXISTS pilot_results (
   attempt_id            INTEGER PRIMARY KEY
                         REFERENCES pilot_attempts(id) ON DELETE CASCADE,
@@ -744,14 +750,18 @@ def list_sets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         "SELECT s.*,"
         " (SELECT COUNT(*) FROM pilot_items i WHERE i.set_id = s.id) AS item_count,"
         " (SELECT COUNT(*) FROM pilot_gold g WHERE g.set_id = s.id) AS gold_count,"
+        " (SELECT COUNT(*) FROM pilot_gold e WHERE e.set_id = s.id"
+        "  AND e.decision != 'maybe') AS gold_effective_count,"
         " (SELECT COUNT(*) FROM pilot_attempts a WHERE a.set_id = s.id) AS attempt_count"
         " FROM pilot_sets s ORDER BY s.id DESC").fetchall()
     result = []
     for row in rows:
         data = dict(row)
         data["thresholds"] = json.loads(data.pop("thresholds_json") or "{}")
+        # 裁定 #9：存量 pilot_gold 的 maybe 行视为未完成标注——gold_complete
+        # 只认非 maybe 行（gold_count 口径不变，仍含存量行，供前端展示）。
         data["gold_complete"] = data["item_count"] > 0 and (
-            data["gold_count"] == data["item_count"])
+            data["gold_effective_count"] == data["item_count"])
         result.append(data)
     return result
 
@@ -762,7 +772,13 @@ def get_set(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
     gold = _gold_map(conn, set_id)
     data["item_count"] = len(keys)
     data["gold_count"] = len(gold)
-    data["gold_complete"] = bool(keys) and len(gold) == len(keys)
+    # 裁定 #9：存量 maybe 金标准行视为未完成标注（与 list_sets 同口径；
+    # gold_count 口径不变）。B1：effective 数一并返回（additive，前端
+    # 「金标准未完成」引导用）。
+    effective_gold = sum(1 for entry in gold.values()
+                         if entry["decision"] != "maybe")
+    data["gold_effective_count"] = effective_gold
+    data["gold_complete"] = bool(keys) and effective_gold == len(keys)
     data["items"] = [{"zotero_key": key, "position": index,
                       "gold": gold.get(key)}
                      for index, key in enumerate(keys)]
@@ -771,7 +787,15 @@ def get_set(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
 
 def save_gold(conn: sqlite3.Connection, set_id: int, *, zotero_key: str,
               decision: str, reason: str = "", actor_id: int) -> dict[str, Any]:
-    """逐条金标准；仅 draft 期可写（publish 后 409 ``gold_locked``）。"""
+    """逐条金标准；仅 draft 期可写（publish 后 409 ``gold_locked``）。
+
+    裁定 #9（2026-11-18）：金标准 decision 收窄为 include/exclude——maybe
+    同步退役，旧请求得 ``maybe_retired``；``DECISIONS`` 三值常量保留仅为
+    CHECK 约束与存量数据兼容。存量 maybe 行不删除：在 gold_complete 判定中
+    视为未完成标注，负责人重标覆盖（ON CONFLICT DO UPDATE）后恢复。
+    """
+    if decision == "maybe":
+        raise PilotScreeningError("maybe_retired", params={"decision": decision})
     if decision not in DECISIONS:
         raise PilotScreeningError("invalid_decision", params={"decision": decision})
     text = str(reason or "")[:_MAX_REASON]
@@ -802,7 +826,12 @@ def save_gold(conn: sqlite3.Connection, set_id: int, *, zotero_key: str,
 
 
 def publish_set(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
-    """开放训练：要求金标准覆盖全部条目（设计 §六）。"""
+    """开放训练：要求金标准覆盖全部条目（设计 §六）。
+
+    OC-DS B1（2026-11-19）：覆盖口径切 effective——存量 maybe 行视为未完成
+    标注（与 list_sets/get_set 的 gold_complete 三处同口径），负责人重标
+    覆盖后方可 publish。
+    """
     with write(conn):
         data = _set_row(conn, set_id)
         if data["status"] != "draft":
@@ -810,12 +839,14 @@ def publish_set(conn: sqlite3.Connection, set_id: int) -> dict[str, Any]:
         item_count = conn.execute(
             "SELECT COUNT(*) FROM pilot_items WHERE set_id = ?",
             (int(set_id),)).fetchone()[0]
-        gold_count = conn.execute(
-            "SELECT COUNT(*) FROM pilot_gold WHERE set_id = ?",
+        gold_effective_count = conn.execute(
+            "SELECT COUNT(*) FROM pilot_gold WHERE set_id = ?"
+            " AND decision != 'maybe'",
             (int(set_id),)).fetchone()[0]
-        if item_count == 0 or gold_count != item_count:
+        if item_count == 0 or gold_effective_count != item_count:
             raise PilotScreeningError(
-                "gold_incomplete", params={"missing": int(item_count - gold_count)})
+                "gold_incomplete",
+                params={"missing": int(item_count - gold_effective_count)})
         conn.execute(
             "UPDATE pilot_sets SET status = 'published', published_at = ?"
             " WHERE id = ?", (_now(), int(set_id)))
@@ -891,7 +922,14 @@ def start_attempt(conn: sqlite3.Connection, set_id: int, *,
 
 def attempt_queue(conn: sqlite3.Connection, set_id: int, *,
                   user_id: int) -> dict[str, Any]:
-    """训练队列（§六 my-attempt）：只含题录字段 + 本人作答，绝不含金标准。"""
+    """训练队列（§六 my-attempt）：只含题录字段 + 本人作答，绝不含金标准。
+
+    裁定 #3 训练沉底：条目分区呈现——未跳过在前按 position、跳过者在后按
+    skip_seq（跳过记录独立于作答，已答但曾被跳过的条目仍留在沉底分区——
+    跳过记录是 attempt 作用域属性，随尝试档案留存，不随队列重置清除）；
+    ``position`` 保持集合规范序不变，仅列表顺序分区。跳过不算作答
+    （裁定 #2），progress.answered 不变。
+    """
     data = _set_row(conn, set_id)
     attempt = _open_attempt(conn, set_id, user_id) or _latest_attempt(
         conn, set_id, user_id)
@@ -901,12 +939,28 @@ def attempt_queue(conn: sqlite3.Connection, set_id: int, *,
                for row in conn.execute(
                    "SELECT zotero_key, decision, reason FROM pilot_decisions"
                    " WHERE attempt_id = ?", (int(attempt["id"]),))}
+    try:
+        skips = {str(row["zotero_key"]): int(row["skip_seq"])
+                 for row in conn.execute(
+                     "SELECT zotero_key, skip_seq FROM pilot_skips"
+                     " WHERE attempt_id = ?", (int(attempt["id"]),))}
+    except sqlite3.OperationalError as exc:
+        # N1（OC-DS r1）：升级前旧库已有 pilot 表但无 pilot_skips——只读
+        # GET 按「无跳过」降级，不再 503（与 has_schema 的 "no such table"
+        # 容忍同模式）；其余 OperationalError 原样上抛。
+        if "no such table" not in str(exc).lower():
+            raise
+        skips = {}
     items = []
     for index, key in enumerate(_item_keys(conn, set_id)):
         answer = answers.get(key)
         items.append({"zotero_key": key, "position": index,
                       "answer": answer["decision"] if answer else None,
-                      "reason": (answer["reason"] or "") if answer else ""})
+                      "reason": (answer["reason"] or "") if answer else "",
+                      "skip_seq": skips.get(key)})
+    # 稳定分区：未跳（key 全等 → 保持 position 序）在前，跳过按 skip_seq 在后。
+    items.sort(key=lambda item: (item["skip_seq"] is not None,
+                                 item["skip_seq"] or 0))
     return {"attempt": _attempt_payload(attempt),
             "set": {"id": int(data["id"]), "status": data["status"],
                     "size": int(data["size"]), "sampling": data["sampling"],
@@ -922,7 +976,11 @@ def attempt_queue(conn: sqlite3.Connection, set_id: int, *,
 def save_item(conn: sqlite3.Connection, set_id: int, *, user_id: int,
               zotero_key: str, decision: str, reason: str = "",
               attempt_id: int | None = None) -> dict[str, Any]:
-    """逐条作答：maybe 在训练里是合法三选项之一（S9 唯一居所）。"""
+    """逐条作答：maybe 已退役（2026-11-18 跳过裁定 #9）——合法值收窄为
+    include/exclude，旧请求得结构化 ``maybe_retired``；``DECISIONS`` 三值
+    常量保留仅为金标准/作答表 CHECK 约束与存量数据兼容。"""
+    if decision == "maybe":
+        raise PilotScreeningError("maybe_retired", params={"decision": decision})
     if decision not in DECISIONS:
         raise PilotScreeningError("invalid_decision", params={"decision": decision})
     key = str(zotero_key)
@@ -958,6 +1016,51 @@ def save_item(conn: sqlite3.Connection, set_id: int, *, user_id: int,
     return {"saved": True,
             "answer": {"zotero_key": key, "decision": decision, "reason": text},
             "progress": {"total": int(total), "answered": int(answered)}}
+
+
+def skip_item(conn: sqlite3.Connection, set_id: int, *, user_id: int,
+              zotero_key: str, attempt_id: int | None = None) -> dict[str, Any]:
+    """暂时跳过（2026-11-18 跳过裁定 #2/#3）：不写作答，条目按跳过先后沉底。
+
+    - 校验序与 ``save_item`` 一致：attempt 必须 in_progress、文献必须在集合；
+    - 该条目已有作答 → ``item_already_answered``（跳过只在待答时允许）；
+    - ``skip_seq = max+1``；重复跳过 = 序号更新（越跳越后，裁定 #3）；
+    - 不写 ``pilot_decisions``（跳过不算作答，裁定 #2）；
+    - N3（OC-DS r1）：``attempt_id`` 前值校验同 ``save_item``
+      （``attempt_mismatch``）——旧页面迟到跳过不得落进新尝试。
+    """
+    key = str(zotero_key)
+    with write(conn):
+        _set_row(conn, set_id)
+        attempt = _open_attempt(conn, set_id, user_id)
+        if attempt is None:
+            latest = _latest_attempt(conn, set_id, user_id)
+            if latest is not None and latest["status"] == "submitted":
+                raise PilotScreeningError("attempt_submitted")
+            raise PilotScreeningError("attempt_not_started")
+        if attempt_id is not None and int(attempt_id) != int(attempt["id"]):
+            raise PilotScreeningError("attempt_mismatch")
+        row = conn.execute(
+            "SELECT 1 FROM pilot_items WHERE set_id = ? AND zotero_key = ?",
+            (int(set_id), key)).fetchone()
+        if row is None:
+            raise PilotScreeningError("item_not_in_set", params={"zotero_key": key})
+        row = conn.execute(
+            "SELECT 1 FROM pilot_decisions WHERE attempt_id = ? AND zotero_key = ?",
+            (int(attempt["id"]), key)).fetchone()
+        if row is not None:
+            raise PilotScreeningError("item_already_answered",
+                                      params={"zotero_key": key})
+        skip_seq = int(conn.execute(
+            "SELECT COALESCE(MAX(skip_seq), 0) FROM pilot_skips"
+            " WHERE attempt_id = ?", (int(attempt["id"]),)).fetchone()[0]) + 1
+        conn.execute(
+            "INSERT INTO pilot_skips(attempt_id, zotero_key, skip_seq)"
+            " VALUES(?, ?, ?)"
+            " ON CONFLICT(attempt_id, zotero_key) DO UPDATE SET"
+            " skip_seq=excluded.skip_seq",
+            (int(attempt["id"]), key, skip_seq))
+    return {"skipped": True, "zotero_key": key, "skip_seq": skip_seq}
 
 
 def _result_payload(conn: sqlite3.Connection, attempt: Mapping[str, Any]) -> dict:
@@ -1006,11 +1109,15 @@ def submit_attempt(conn: sqlite3.Connection, set_id: int, *,
                 raise PilotScreeningError("attempt_submitted")
             raise PilotScreeningError("attempt_not_started")
         keys = _item_keys(conn, set_id)
+        # 裁定 #6/#9：存量 in_progress 尝试里的 maybe 作答视为未答——构建
+        # answers 时排除（missing 判定自然包含，交卷被 attempt_not_answered
+        # 挡下要求重答）；已提交历史结果快照原样保留，绝不回写。
         answers = {str(row["zotero_key"]): {"decision": row["decision"],
                                             "reason": row["reason"] or ""}
                    for row in conn.execute(
                        "SELECT zotero_key, decision, reason FROM pilot_decisions"
-                       " WHERE attempt_id = ?", (int(attempt["id"]),))}
+                       " WHERE attempt_id = ? AND decision != 'maybe'",
+                       (int(attempt["id"]),))}
         missing = [key for key in keys if key not in answers]
         if missing:
             raise PilotScreeningError("attempt_not_answered",

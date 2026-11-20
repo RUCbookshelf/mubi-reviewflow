@@ -28,16 +28,45 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import Body, Depends, HTTPException, Query
+from fastapi import Body, Depends, HTTPException, Query, Response
 
 from coscreen import appraisal as core
 
-__all__ = ["register_appraisal_routes"]
+__all__ = ["prepare_appraisal_storage_for", "register_appraisal_routes"]
+
+
+def prepare_appraisal_storage_for(
+    info: Any, username: str, screener_db: Callable[..., Any],
+) -> Path:
+    """P17 明确准备生命周期：在**写窗口外**为成员个人库幂等建评价存储。
+
+    2.1.6 P17 需求 1：appraisal storage prepare 从 PUT 写窗内移出到独立的
+    准备步骤——宿主（成员准备/角色授予流程，P18/P24 接线）在业务写发生前
+    调用本函数，在自己的短连接里执行 ``ensure_appraisal_storage``（幂等
+    DDL）。PUT 的 team 写窗内**不再** ``_connect``+``ensure``：窗口只做
+    「表已准备」纯读检查，未准备时如实 409（``appraisal.storage_unavailable``），
+    绝不在保留窗口里悄悄建表。
+
+    personal/legacy 任务的旧 PUT 行为不变（窗口外自备连接、原地幂等建表），
+    旧宿主不调用本函数也不受影响。
+    """
+    from coscreen import db as db_mod
+
+    if screener_db is None:
+        raise RuntimeError(
+            "prepare_appraisal_storage_for requires the host screener_db resolver")
+    path = Path(screener_db(info, username))
+    with closing(db_mod._connect(path)) as conn, conn:
+        core.ensure_appraisal_storage(conn)
+    return path
 
 
 def register_appraisal_routes(
@@ -46,8 +75,21 @@ def register_appraisal_routes(
     task_or_404: Callable[[str], Any],
     task_visible: Callable[[Any, dict], bool] | None = None,
     screener_db: Callable[..., Any] | None = None,
+    team_role_gate: Callable[[Any, dict], None] | None = None,
+    workflow_runtime: Any = None,
 ) -> None:
-    """在 ``app`` 上注册评价四端点（main.py 注册区单行调用）。"""
+    """在 ``app`` 上注册评价四端点（main.py 注册区单行调用）。
+
+    ``team_role_gate``（2.1.6 FLOW II-A，可选注入）：team 任务的评价写=
+    编码者业务（PUT 前调用；None=宿主未注入，行为与旧版一致——独立注册/
+    测试桩兼容）。GET（读取/汇总）不加门，历史与可见性口径不变。
+
+    ``workflow_runtime``（2.1.6 P17，可选）：注入 ``WorkflowRuntime`` 后，
+    team 任务的评价 PUT 改走 P15 ``runtime.mutate`` 真实 team 门
+    （``member_appraisal``：coder 角色 + 两阶段链，**不加** paused/source/
+    expected 门——C08 addendum 口径）。未注入时按 ``app.state.review_workflow``
+    惰性解析；两者都缺省则保持 FLOW II-A ``team_role_gate`` 旧路径，
+    personal/legacy 任务始终走旧路径（零变化）。"""
 
     def _error(code: str, message_key: str, *, params: dict | None = None,
                status: int = 400) -> HTTPException:
@@ -128,6 +170,138 @@ def register_appraisal_routes(
             if article is not None:
                 return article
         return None
+
+    # -- P17 team 写路径辅助 ---------------------------------------------------
+    def _workflow_runtime():
+        """P15 runtime 惰性解析：显式注入优先，其次 app.state.review_workflow。"""
+        if workflow_runtime is not None:
+            return workflow_runtime
+        return getattr(app.state, "review_workflow", None)
+
+    def _is_team_task(runtime, task_id: str) -> bool:
+        """team 判定只认可信派生（P15 ``is_team`` 口径）；解析失败退旧路径。"""
+        try:
+            return bool(runtime.is_team(task_id))
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 —— 无协作库/旧宿主：保持 legacy 行为
+            return False
+
+    def _appraisal_table_ready(conn) -> bool:
+        """纯读检查：成员库是否已由准备生命周期建好 ``appraisal_records``。"""
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            ("appraisal_records",),
+        ).fetchone()
+        return row is not None
+
+    def _require_same_member_store(conn, path: Path, key: str) -> None:
+        """保留连接与宿主解析的成员库路径必须是同一文件（漂移=fail-closed）。"""
+        main_file = next((row[2] for row in conn.execute("PRAGMA database_list")
+                          if row[1] == "main"), None)
+        try:
+            same = (main_file is not None
+                    and Path(main_file).resolve(strict=True)
+                    .samefile(Path(path).resolve(strict=True)))
+        except OSError:
+            same = False
+        if not same:
+            raise _error("appraisal_storage_mismatch",
+                         "appraisal.storage_unavailable", status=409,
+                         params={"article_key": key})
+
+    def _team_unknown_outcome_http(envelope) -> HTTPException:
+        """S2：``outcome != 'committed'`` 的 mutate 信封 → 显式结构化 409。
+
+        unknown（提交结果不可判定，可能已提交）绝不落进兜底 409 或 null：
+        与 coding_consensus 路由同一 typed 载荷 + 可重试提示；幂等 receipt
+        保证用相同 request_id 重试安全。
+        """
+        request_id = envelope.get("request_id") if isinstance(envelope, dict) else None
+        details = (envelope.get("error") if isinstance(envelope, dict) else None
+                   ) or "commit outcome could not be determined"
+        return HTTPException(409, {
+            "code": "team_flow_unknown_outcome",
+            "message_key": "team.flow.unknown_outcome",
+            "params": {"request_id": request_id},
+            "details": details,
+            "message": "提交结果暂不可判定（可能已提交）；请使用相同请求编号重试以确认结果。",
+            "retryable": True,
+        })
+
+    def _team_drift_http(task_id: str, exc: Exception) -> HTTPException:
+        """S4：模式漂移/窗口竞争的裸异常 → 结构化可重试 409（P15 同码）。"""
+        return HTTPException(409, {
+            "code": "task_mode_changed",
+            "message_key": "team.flow.task_mode_changed",
+            "params": {"task_id": task_id},
+            "details": f"{type(exc).__name__}: {exc}",
+            "message": "任务协作模式已变化，请重试本次操作。",
+            "retryable": True,
+        })
+
+    def _save_via_team_window(
+        runtime, task_id: str, user: dict, key: str, tool_id: str, *,
+        normalized, clean_comments, chosen, stored_overall, note: str, path: Path,
+        headers_out: dict | None = None,
+    ):
+        """team 评价写：P15 ``mutate`` + ``member_appraisal``（actor 目标）。
+
+        窗口内零 ``_connect``/零 DDL：存储必须已由
+        :func:`prepare_appraisal_storage_for` 在窗口外准备好；写经保留的
+        ``actor_conn``（与检查/提交目标同一对象），业务返回保持旧形状。
+        ``member_appraisal`` 的 op spec 是 policy=False（只加两阶段链），
+        本路径不追加 paused/source/expected 任何额外门（C08 addendum）。
+        unknown outcome（S2）与漂移竞态（S4）显式结构化上抛，绝不吞。
+        """
+        from coscreen.team_flow_types import TeamOperation
+
+        operation = TeamOperation(name="member_appraisal", stage="coding")
+
+        def writer(ctx):
+            inputs = ctx.write_inputs
+            conn = inputs.actor_conn  # member_appraisal 唯一目标=actor
+            _require_same_member_store(conn, path, key)
+            if not _appraisal_table_ready(conn):
+                # 未走准备生命周期：如实 409，绝不在写窗内建表。
+                raise _error("appraisal_storage_unavailable",
+                             "appraisal.storage_unavailable", status=409,
+                             params={"article_key": key})
+            return core.save_record(
+                conn, key, tool_id,
+                responses=normalized,
+                comments=clean_comments,
+                variant=chosen,
+                overall=stored_overall,
+                note=note,
+            )
+
+        request_sha256 = hashlib.sha256(json.dumps(
+            {"article_key": key, "tool": tool_id, "responses": normalized,
+             "comments": clean_comments, "variant": chosen, "note": note},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            default=str).encode("utf-8")).hexdigest()
+        try:
+            envelope = runtime.mutate(
+                task_id, user, operation=operation, item_keys=(key,),
+                request_id=f"appraisal:{uuid.uuid4().hex}",
+                request_sha256=request_sha256, writer=writer)
+        except HTTPException:
+            raise  # P12/P15 结构化拒绝原样透传
+        except (sqlite3.Error, OSError):
+            raise  # 存储错误交由外层映射 appraisal_storage_unavailable（同 legacy）
+        except Exception as exc:  # noqa: BLE001 —— S4：漂移竞态绝不裸 500
+            raise _team_drift_http(task_id, exc) from exc
+        if not isinstance(envelope, dict) or envelope.get("outcome") != "committed":
+            raise _team_unknown_outcome_http(envelope)
+        # P24/S3：P15 信封头（X-Request-Id/X-Receipt-Id/X-Idempotent-Replay）
+        # 交路由层透传到真实 HTTP 响应；仅 committed 才附。
+        if headers_out is not None and isinstance(envelope.get("headers"), dict):
+            headers_out.update(envelope["headers"])
+        result = envelope.get("result")
+        if isinstance(result, dict) and "writer" in result:
+            return result["writer"]  # team envelope：receipt 结果包着 writer 原结果
+        return result
 
     # -- 1. 注册表摘要 --------------------------------------------------------
     @app.get("/api/tasks/{task_id}/appraisal/tools")
@@ -256,8 +430,17 @@ def register_appraisal_routes(
         article_key: str,
         body: Any = Body(...),
         user: dict = Depends(require_user),
+        response: Response = None,
     ) -> dict:
         info = _info(task_id, user)
+        # 2.1.6 P17：team 任务的评价写优先走 P15 mutate 真实 team 门
+        # （member_appraisal：coder 角色+两阶段链，不加额外 policy 门）。
+        # runtime 不可用/非 team 任务保持 FLOW II-A team_role_gate 旧行为，
+        # personal/legacy 零变化。
+        runtime = _workflow_runtime()
+        via_team = runtime is not None and _is_team_task(runtime, task_id)
+        if not via_team and team_role_gate is not None:
+            team_role_gate(info, user)
         try:
             key = core.validate_article_key(article_key)
         except core.AppraisalError as exc:
@@ -306,30 +489,57 @@ def register_appraisal_routes(
 
         stored_overall = {"aggregate": overall, "override": override,
                           "variant": chosen}
-        try:
-            from coscreen import db as db_mod
+        member_receipt_headers: dict = {}
+        if via_team:
+            # P17 需求 1：team 写窗内不 _connect+ensure——存储由
+            # prepare_appraisal_storage_for 在窗口外准备；写经保留
+            # actor_conn（与检查/提交目标同一对象）。
+            try:
+                saved = _save_via_team_window(
+                    runtime, task_id, user, key, tool_id,
+                    normalized=normalized, clean_comments=clean_comments,
+                    chosen=chosen, stored_overall=stored_overall, note=note,
+                    path=Path(_db_path(info, user)),
+                    headers_out=member_receipt_headers)
+            except HTTPException:
+                # P12/P13/P15 结构化拒绝（链/角色/版本等载荷）原样透传。
+                raise
+            except (sqlite3.Error, OSError) as exc:
+                raise _error("appraisal_storage_unavailable",
+                             "appraisal.storage_unavailable", status=409,
+                             params={"article_key": key}) from exc
+            except Exception as exc:  # noqa: BLE001 —— 兜底：绝不 500
+                raise _error("appraisal_unavailable", "appraisal.unavailable",
+                             status=409) from exc
+        else:
+            try:
+                from coscreen import db as db_mod
 
-            path = _db_path(info, user)
-            with closing(db_mod._connect(path)) as conn, conn:
-                core.ensure_appraisal_storage(conn)
-                saved = core.save_record(
-                    conn, key, tool_id,
-                    responses=normalized,
-                    comments=clean_comments,
-                    variant=chosen,
-                    overall=stored_overall,
-                    note=note,
-                )
-        except core.AppraisalError:
-            raise
-        except (sqlite3.Error, OSError) as exc:
-            raise _error("appraisal_storage_unavailable",
-                         "appraisal.storage_unavailable", status=409,
-                         params={"article_key": key}) from exc
-        except Exception as exc:  # noqa: BLE001 —— 兜底：绝不 500
-            raise _error("appraisal_unavailable", "appraisal.unavailable",
-                         status=409) from exc
+                path = _db_path(info, user)
+                with closing(db_mod._connect(path)) as conn, conn:
+                    core.ensure_appraisal_storage(conn)
+                    saved = core.save_record(
+                        conn, key, tool_id,
+                        responses=normalized,
+                        comments=clean_comments,
+                        variant=chosen,
+                        overall=stored_overall,
+                        note=note,
+                    )
+            except core.AppraisalError:
+                raise
+            except (sqlite3.Error, OSError) as exc:
+                raise _error("appraisal_storage_unavailable",
+                             "appraisal.storage_unavailable", status=409,
+                             params={"article_key": key}) from exc
+            except Exception as exc:  # noqa: BLE001 —— 兜底：绝不 500
+                raise _error("appraisal_unavailable", "appraisal.unavailable",
+                             status=409) from exc
 
+        if member_receipt_headers and response is not None:
+            # S3：team 分支的 P15 信封头透传（solo 分支 headers 恒空、零变化）。
+            for name, value in member_receipt_headers.items():
+                response.headers[name] = str(value)
         return {
             "available": True,
             "article_key": key,

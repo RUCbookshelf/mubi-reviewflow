@@ -24,9 +24,28 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-fixture = tempfile.TemporaryDirectory(prefix="rf_auth_reset_")
-os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
-os.environ["REVIEWFLOW_MODE"] = "server"
+# 数据根 + 模式生命周期（SafetyR4 A–D，test-only 所有者 helper _bare_env）：
+# pytest 下 conftest 每会话登记会话代并握手——模块导入只落模式、release 惰
+# 性，绝不删除 pytest 共享根；裸 unittest 无显式 scope 时由进程 owner 持根
+# 到进程退出/显式结束（嵌入式宿主请用 _bare_env.bare_scope() 包住导入与执
+# 行——无 scope 的 TextTestRunner 返回不承诺两键已恢复，SafetyR4 公开合
+# 同）。模块 import 只是借用：acquire 独立 token、release 幂等、绝不删根
+# （导入计数不驱动删除——SafetyR3 C 病根）。setUpModule 守卫：上一届所有
+# 者已结束/环境键被挪走/与缓存后端冻结根分叉时，在任何测试业务/API 写之
+# 前硬拒。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _bare_env  # noqa: E402
+
+_BARE = _bare_env.acquire(mode="server")
+
+
+def setUpModule():
+    _bare_env.ensure_safe_for_execution()
+
+
+def tearDownModule():
+    """归还借用（幂等；删根/两键恢复只属于所有者收尾）。"""
+    _bare_env.release(_BARE)
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -162,6 +181,11 @@ class ResetEndpointPins(unittest.TestCase):
         cls.client = TestClient(app)
         cls.client.__enter__()
         cls.user = auth.create_user("resetter", _PW_RESET_OLD)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Client 生命周期收口（2.1.6 TST-01）：进出成对，不泄漏 lifespan。
+        cls.client.__exit__(None, None, None)
 
     @classmethod
     def _code_for(self, username="resetter"):
@@ -325,34 +349,43 @@ class ResetEndpointPins(unittest.TestCase):
 
 
 class IssueChannelPins(unittest.TestCase):
-    @classmethod
-    def tearDownClass(cls):
-        fixture.cleanup()
+    def _cli_env(self, scoped_dir):
+        # 子进程与进程内同根（2.1.6 TST-01）：此前进程内 create_user 落到
+        # 运行期环境目录、子进程钉模块自建目录，多模块同进程时分叉成
+        # 「用户名不存在」。现两侧统一用例级 scoped 目录。
+        return {**os.environ, "COBOOKSHELF_DATA_DIR": scoped_dir,
+                "PYTHONIOENCODING": "utf-8"}
 
     def test_reset_code_script_respects_env_data_dir(self):
         # M7：环境变量优先——不设时才落平台默认目录（无 CWD 影子库）。
-        auth.create_user("clibuddy", _PW_CLI)
-        env = {**os.environ, "COBOOKSHELF_DATA_DIR": fixture.name,
-               "PYTHONIOENCODING": "utf-8"}
-        result = subprocess.run(
-            [sys.executable, "-X", "utf8",
-             str(REPO / "build" / "scripts" / "reset_code.py"), "clibuddy"],
-            capture_output=True, text=True, encoding="utf-8", env=env,
-            cwd=tempfile.mkdtemp(prefix="rf_cli_cwd_"), timeout=120)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        code = [ln for ln in result.stdout.splitlines() if ln.startswith("rf-")][0]
-        self.assertTrue(auth_recovery.consume_reset_code("clibuddy", code.strip()))
+        # mock.patch.dict 把进程内运行期读取（auth.data_dir()/_db_path）与
+        # 子进程环境钉到同一 scoped 目录，用例结束原样还原。
+        with tempfile.TemporaryDirectory(prefix="rf_cli_env_") as scoped, \
+                mock.patch.dict(os.environ, {"COBOOKSHELF_DATA_DIR": scoped}):
+            auth.create_user("clibuddy", _PW_CLI)
+            result = subprocess.run(
+                [sys.executable, "-X", "utf8",
+                 str(REPO / "build" / "scripts" / "reset_code.py"), "clibuddy"],
+                capture_output=True, text=True, encoding="utf-8",
+                env=self._cli_env(scoped),
+                cwd=tempfile.mkdtemp(prefix="rf_cli_cwd_"), timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            code = [ln for ln in result.stdout.splitlines()
+                    if ln.startswith("rf-")][0]
+            self.assertTrue(
+                auth_recovery.consume_reset_code("clibuddy", code.strip()))
 
     def test_reset_code_script_unknown_user_neutral_exit(self):
-        env = {**os.environ, "COBOOKSHELF_DATA_DIR": fixture.name,
-               "PYTHONIOENCODING": "utf-8"}
-        result = subprocess.run(
-            [sys.executable, "-X", "utf8",
-             str(REPO / "build" / "scripts" / "reset_code.py"), "ghost-user-1"],
-            capture_output=True, text=True, encoding="utf-8", env=env,
-            cwd=tempfile.mkdtemp(prefix="rf_cli_cwd_"), timeout=120)
-        self.assertEqual(result.returncode, 1)
-        self.assertNotIn("rf-", result.stdout)
+        with tempfile.TemporaryDirectory(prefix="rf_cli_env_") as scoped:
+            result = subprocess.run(
+                [sys.executable, "-X", "utf8",
+                 str(REPO / "build" / "scripts" / "reset_code.py"),
+                 "ghost-user-1"],
+                capture_output=True, text=True, encoding="utf-8",
+                env=self._cli_env(scoped),
+                cwd=tempfile.mkdtemp(prefix="rf_cli_cwd_"), timeout=120)
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("rf-", result.stdout)
 
     def test_windows_start_reset_user_shows_and_copies_code(self):
         auth.create_user("deskbuddy", _PW_DESK)

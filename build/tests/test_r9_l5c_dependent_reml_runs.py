@@ -517,9 +517,14 @@ class F3_62RatioShiftStationarityTests(unittest.TestCase):
 # 修前实测：`8 结局×100 研究 47.66s/12629 evals`、`4 结局×100 研究 8.62s/2898 evals`；
 # 外推最坏 114.7 min / 25.9 min；端点同步 def 无超时。
 class F3_54_58BudgetTests(unittest.TestCase):
-    """F3-54/F3-58：同一墙钟预算；超预算优雅收敛（不把可拟合数据变拒绝）。"""
+    """F3-54/F3-58：同一墙钟预算；超预算优雅收敛（不把可拟合数据变拒绝）。
 
-    @unittest.skipIf(os.environ.get("CI") == "true", "性能/预算断言按本机速度校准")
+    2.1.6 可移植性收尾：四个方法的原 ``skipIf(CI=='true')`` 已去除——
+    它们均不依赖主机速度：共享预算=静态源检查+常量；耗尽路径经
+    ``_EvaluationBudget(seconds=0)`` / ``_BUDGET_SECONDS=0`` 注入确定触发；
+    默认预算钉用默认 600s 对 ~2s 的 4×20 拟合有 >100x 余量，语义不抬阈值。
+    """
+
     def test_budget_is_shared_by_every_carrier(self):
         self.assertTrue(hasattr(dependent_random, "_EvaluationBudget"))
         self.assertGreater(dependent_random._BUDGET_SECONDS, 0)
@@ -529,14 +534,12 @@ class F3_54_58BudgetTests(unittest.TestCase):
             self.assertIn("budget.guard", source, module.__name__)
             self.assertIn("_optimizer_options()", source, module.__name__)
 
-    @unittest.skipIf(os.environ.get("CI") == "true", "性能/预算断言按本机速度校准")
     def test_exhausted_budget_returns_inf_not_an_exception(self):
         budget = dependent_random._EvaluationBudget(seconds=0.0)
         self.assertTrue(budget.expired())
         self.assertEqual(budget.guard(1.0), math.inf)
         self.assertTrue(budget.exhausted)
 
-    @unittest.skipIf(os.environ.get("CI") == "true", "性能/预算断言按本机速度校准")
     def test_budget_exhaustion_is_a_named_domain_error(self):
         """预算耗尽且无合格拟合 → 明确的域错误；默认预算下同输入照常收敛。"""
         original = dependent_random._BUDGET_SECONDS
@@ -550,7 +553,6 @@ class F3_54_58BudgetTests(unittest.TestCase):
         finally:
             dependent_random._BUDGET_SECONDS = original
 
-    @unittest.skipIf(os.environ.get("CI") == "true", "性能/预算断言按本机速度校准")
     def test_default_budget_keeps_legal_inputs_fitting(self):
         """R2 钉子：默认预算下 4 结局 × 20 研究照常收敛，SE 逐位不变。"""
         rows, matrices = _outcome_blocks(list("abcd"), 20)

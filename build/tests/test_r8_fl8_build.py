@@ -44,11 +44,16 @@ LINUX = REPO / "build" / "build_linux.sh"
 MACOS = REPO / "build" / "build_macos.sh"
 WINBAT = REPO / "build" / "build_windows.bat"
 
-FOUR_VALIDATORS = (
+# TST-03 (2.1.6 Task 8): six validators - the pre-2.1.6 four plus
+# validate_team_prisma.py and validate_evidence_locale_static.cjs (both green
+# since Task 5/recon but wired nowhere before this task).
+SIX_VALIDATORS = (
     "validate_import_review.py",
     "validate_screening_rounds.py",
+    "validate_team_prisma.py",
     "validate_import_review_static.cjs",
     "validate_team_prisma_static.js",
+    "validate_evidence_locale_static.cjs",
 )
 
 # --------------------------------------------------------------------------- #
@@ -156,8 +161,14 @@ def _fake_tree(tmp_path: Path, *, serve_stub_digest: bool = False) -> tuple[Path
     # 跳过未跟踪的 Mimosa 钩子状态目录（非产品文件；其深层长路径会让 copytree 失败）
     shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
                     ignore=shutil.ignore_patterns(".mimosa"))
+    # TST-03 (2.1.6 Task 8): validate_evidence_locale_static.cjs runs for real
+    # in the fake tree; PKG-01 (Task 6): reviewflow.metainfo.xml is a required
+    # build input - without it the metainfo guard fails the build.
     for validator in ("script_manifest.cjs", "validate_import_review_static.cjs",
-                      "validate_team_prisma_static.js", "verify_release_payload.py"):
+                      "validate_team_prisma_static.js",
+                      "validate_evidence_locale_static.cjs",
+                      "verify_release_payload.py",
+                      "reviewflow.metainfo.xml"):
         shutil.copy2(REPO / "build" / validator, tree / "build" / validator)
 
     stubs = tmp_path / "pathstubs"
@@ -217,11 +228,12 @@ def _bat_tail_subroutines() -> str:
 
 
 @pytest.mark.parametrize("script", [LINUX, MACOS])
-def test_mm9_07_sh_scripts_wire_all_four_validators_and_payload(script):
+def test_mm9_07_sh_scripts_wire_all_six_validators_and_payload(script):
     """RED at baseline: neither sh packaging script invoked any validator or
-    verify_release_payload (mm9_verify_g1 §4.2 grep exit 1)."""
+    verify_release_payload (mm9_verify_g1 §4.2 grep exit 1). TST-03 (2.1.6
+    Task 8) extended the wired set from four to six validators."""
     text = _read(script)
-    for validator in FOUR_VALIDATORS:
+    for validator in SIX_VALIDATORS:
         assert validator in text, f"{script.name} must run the {validator} gate"
     assert "verify_release_payload.py" in text, (
         f"{script.name} must verify the finished payload against the sources"
@@ -230,9 +242,10 @@ def test_mm9_07_sh_scripts_wire_all_four_validators_and_payload(script):
 
 def test_mm9_07_windows_bat_runs_payload_gate():
     """RED at baseline: build_windows.bat ran the four validators but never
-    verify_release_payload.py (git grep: release.yml only)."""
+    verify_release_payload.py (git grep: release.yml only). TST-03 (2.1.6
+    Task 8) extended the wired set from four to six validators."""
     text = _read(WINBAT)
-    for validator in FOUR_VALIDATORS:
+    for validator in SIX_VALIDATORS:
         assert validator in text
     assert re.search(r'python\.exe"\s+"%SRCDIR%\\verify_release_payload\.py"\s+windows', text), (
         "build_windows.bat must run verify_release_payload.py windows on the staging tree"
@@ -243,9 +256,9 @@ def test_mm9_07_windows_bat_runs_payload_gate():
 @pytest.mark.skipif(not (NODE and Path(NODE).exists()), reason="node runtime not found")
 def test_mm9_07_linux_build_actually_runs_validators_and_payload(tmp_path):
     """Behaviour: the real build_linux.sh (stubbed downloads) must invoke the
-    two Python validators, the two node validators and the payload verifier.
-    RED at baseline - RF_PY_LOG stays empty of all five invocations and the
-    node validator success JSON never reaches stdout."""
+    three Python validators, the three node validators and the payload
+    verifier. RED at baseline - RF_PY_LOG stays empty of all seven invocations
+    and the node validator success JSON never reaches stdout."""
     tree, stubs, python_stub = _fake_tree(tmp_path, serve_stub_digest=True)
     (tmp_path / "py.log").write_text("", encoding="utf-8", newline="\n")
     proc, curl_log, tool_log, py_log = _run_build(tree, stubs, tmp_path, python_stub)
@@ -253,6 +266,7 @@ def test_mm9_07_linux_build_actually_runs_validators_and_payload(tmp_path):
     invoked = py_log.read_text(encoding="utf-8")
     assert "validate_import_review.py" in invoked
     assert "validate_screening_rounds.py" in invoked
+    assert "validate_team_prisma.py" in invoked
     assert "verify_release_payload.py" in invoked
     # the node gates are real here: their success output flows through stdout
     assert '"status": "passed"' in proc.stdout, "node validators did not run green"

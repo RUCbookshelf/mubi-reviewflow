@@ -10,7 +10,7 @@ import sqlite3
 import time
 import uuid
 import warnings
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from coscreen import coding, review_workflow as workflow
@@ -230,18 +230,54 @@ def definition(dim: dict) -> str:
                       ensure_ascii=False, sort_keys=True)
 
 
-def field_rows(db: str | Path) -> list[dict]:
+def _require_evidence_conn(conn: sqlite3.Connection, *, api: str) -> None:
+    if not isinstance(conn, sqlite3.Connection):
+        raise RuntimeError(
+            f"{api} requires an existing sqlite3.Connection (borrowed read; never opened here).")
+    if not conn.in_transaction:
+        raise RuntimeError(
+            f"{api} requires an active caller transaction; this function never starts one.")
+    if conn.row_factory is not sqlite3.Row:
+        raise RuntimeError(
+            f"{api} requires the caller connection to use sqlite3.Row; "
+            "this function never changes row_factory.")
+
+
+def _require_evidence_conn_pair(
+    actor_conn: sqlite3.Connection | None,
+    owner_conn: sqlite3.Connection | None,
+    *,
+    api: str,
+) -> None:
+    if (actor_conn is None) != (owner_conn is None):
+        raise ValueError(
+            f"{api} requires both actor_conn and owner_conn or neither.")
+    if actor_conn is None:
+        return
+    _require_evidence_conn(actor_conn, api=f"{api} actor_conn")
+    if owner_conn is not actor_conn:
+        _require_evidence_conn(owner_conn, api=f"{api} owner_conn")
+
+
+def _field_rows_on_conn(conn: sqlite3.Connection) -> list[dict]:
+    if not workflow.has_table(conn, 'coding_dimensions'):
+        return []
+    fields = {r['dimension_id']: dict(r) for r in conn.execute('SELECT * FROM workflow_coding_fields')} \
+        if workflow.has_table(conn, 'workflow_coding_fields') else {}
+    return [{**coding._row_to_dimension(row), **({'field_id': fields[row[0]]['field_id']} if row[0] in fields else {})}
+            for row in conn.execute(
+                    "SELECT id,name,dtype,options_json,multi_select,unit,description,section,"
+                    "position,created_at FROM coding_dimensions ORDER BY section,position,id")]
+
+
+def field_rows(db: str | Path, *, conn: sqlite3.Connection | None = None) -> list[dict]:
+    if conn is not None:
+        _require_evidence_conn(conn, api="field_rows")
+        return _field_rows_on_conn(conn)
     if not Path(db).is_file():
         return []
-    with closing(workflow.connect(db, read_only=True)) as conn:
-        if not workflow.has_table(conn, 'coding_dimensions'):
-            return []
-        fields = {r['dimension_id']: dict(r) for r in conn.execute('SELECT * FROM workflow_coding_fields')} \
-            if workflow.has_table(conn, 'workflow_coding_fields') else {}
-        return [{**coding._row_to_dimension(row), **({'field_id': fields[row[0]]['field_id']} if row[0] in fields else {})}
-                for row in conn.execute(
-                        "SELECT id,name,dtype,options_json,multi_select,unit,description,section,"
-                        "position,created_at FROM coding_dimensions ORDER BY section,position,id")]
+    with closing(workflow.connect(db, read_only=True)) as path_conn:
+        return _field_rows_on_conn(path_conn)
 
 
 def current_owner_db(db: str | Path) -> Path:
@@ -311,15 +347,12 @@ def ensure_fields(db: str | Path) -> None:
             conn.execute('UPDATE workflow_state SET evidence_json=? WHERE singleton=1', (json.dumps(converted),))
 
 
-def mapping(actor_db: str | Path, owner_db: str | Path) -> tuple[dict[int, str], list[dict], list[str]]:
-    """Read current owner policy, even for members who have never reopened their store."""
-    owners, actors = field_rows(owner_db), field_rows(actor_db)
-    required = [str(fid) for fid in workflow.settings(owner_db)['evidence_required_field_ids']]
-    frozen = {}
-    if Path(owner_db).is_file():
-        with closing(workflow.connect(owner_db, read_only=True)) as conn:
-            if workflow.has_table(conn, 'workflow_evidence_requirements'):
-                frozen = dict(conn.execute('SELECT field_id,definition_json FROM workflow_evidence_requirements'))
+def _mapping_from_rows(
+    owners: list[dict],
+    actors: list[dict],
+    required: list[str],
+    frozen: dict,
+) -> tuple[dict[int, str], list[dict], list[str]]:
     result, issues = {}, []
     for owner in owners:
         fid = owner.get('field_id', str(owner['id']))
@@ -337,24 +370,66 @@ def mapping(actor_db: str | Path, owner_db: str | Path) -> tuple[dict[int, str],
     return result, issues, required
 
 
+def _mapping_on_conns(
+    actor_conn: sqlite3.Connection,
+    owner_conn: sqlite3.Connection,
+    owner_db: str | Path,
+) -> tuple[dict[int, str], list[dict], list[str]]:
+    owners, actors = _field_rows_on_conn(owner_conn), _field_rows_on_conn(actor_conn)
+    required = [str(fid) for fid in workflow.settings(
+        owner_db, conn=owner_conn)['evidence_required_field_ids']]
+    frozen = {}
+    if workflow.has_table(owner_conn, 'workflow_evidence_requirements'):
+        frozen = dict(owner_conn.execute(
+            'SELECT field_id,definition_json FROM workflow_evidence_requirements'))
+    return _mapping_from_rows(owners, actors, required, frozen)
+
+
+def mapping(
+    actor_db: str | Path,
+    owner_db: str | Path,
+    *,
+    actor_conn: sqlite3.Connection | None = None,
+    owner_conn: sqlite3.Connection | None = None,
+) -> tuple[dict[int, str], list[dict], list[str]]:
+    """Read current owner policy, even for members who have never reopened their store."""
+    if actor_conn is not None or owner_conn is not None:
+        _require_evidence_conn_pair(actor_conn, owner_conn, api="mapping")
+        return _mapping_on_conns(actor_conn, owner_conn, owner_db)
+    owners, actors = field_rows(owner_db), field_rows(actor_db)
+    required = [str(fid) for fid in workflow.settings(owner_db)['evidence_required_field_ids']]
+    frozen = {}
+    if Path(owner_db).is_file():
+        with closing(workflow.connect(owner_db, read_only=True)) as conn:
+            if workflow.has_table(conn, 'workflow_evidence_requirements'):
+                frozen = dict(conn.execute('SELECT field_id,definition_json FROM workflow_evidence_requirements'))
+    return _mapping_from_rows(owners, actors, required, frozen)
+
+
 def has_note_text(text: str | None) -> bool:
     """Use Python's Unicode whitespace semantics without changing stored text."""
     return bool((text or '').strip())
 
 
-def evidence_state(db: str | Path, key: str, owner_db: str | Path, task_id: str = '') -> dict:
-    mapped, issues, required = mapping(db, owner_db)
+def _evidence_state_from(
+    mapped: dict[int, str],
+    issues: list[dict],
+    required: list[str],
+    dims: list[dict],
+    conn: sqlite3.Connection,
+    key: str,
+    task_id: str,
+) -> dict:
     evidence = {}
-    with closing(workflow.connect(db, read_only=True)) as conn:
-        for dim in field_rows(db):
-            did = dim['id']
-            note = conn.execute('SELECT id,text FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (did, key)).fetchone()
-            images = [] if not note else [{'id': r[0], 'sha256': r[1],
-                'url': f'/api/tasks/{task_id}/coding/evidence/images/{r[0]}'}
-                for r in conn.execute('SELECT id,sha256 FROM coding_note_images WHERE note_id=? ORDER BY id', (note[0],))]
-            fid = mapped.get(did)
-            evidence[str(did)] = {'text': note[1] or '' if note else '', 'images': images,
-                                  'field_id': fid, 'required': fid in required}
+    for dim in dims:
+        did = dim['id']
+        note = conn.execute('SELECT id,text FROM coding_notes WHERE dimension_id=? AND zotero_key=?', (did, key)).fetchone()
+        images = [] if not note else [{'id': r[0], 'sha256': r[1],
+            'url': f'/api/tasks/{task_id}/coding/evidence/images/{r[0]}'}
+            for r in conn.execute('SELECT id,sha256 FROM coding_note_images WHERE note_id=? ORDER BY id', (note[0],))]
+        fid = mapped.get(did)
+        evidence[str(did)] = {'text': note[1] or '' if note else '', 'images': images,
+                              'field_id': fid, 'required': fid in required}
     missing = [{'field_id': fid, 'dimension_id': did} for did, fid in mapped.items()
                if fid in required and not has_note_text(evidence[str(did)]['text']) and not evidence[str(did)]['images']]
     missing += [{'field_id': i['field_id'], 'dimension_id': None} for i in issues]
@@ -362,34 +437,76 @@ def evidence_state(db: str | Path, key: str, owner_db: str | Path, task_id: str 
             'mapping_issues': issues}
 
 
-def complete_keys(db: str | Path, owner_db: str | Path, keys: list[str]) -> set[str]:
+def evidence_state(
+    db: str | Path,
+    key: str,
+    owner_db: str | Path,
+    task_id: str = '',
+    *,
+    actor_conn: sqlite3.Connection | None = None,
+    owner_conn: sqlite3.Connection | None = None,
+) -> dict:
+    if actor_conn is not None or owner_conn is not None:
+        _require_evidence_conn_pair(actor_conn, owner_conn, api="evidence_state")
+        mapped, issues, required = _mapping_on_conns(actor_conn, owner_conn, owner_db)
+        return _evidence_state_from(
+            mapped, issues, required, _field_rows_on_conn(actor_conn), actor_conn, key, task_id)
+    mapped, issues, required = mapping(db, owner_db)
+    with closing(workflow.connect(db, read_only=True)) as conn:
+        return _evidence_state_from(
+            mapped, issues, required, field_rows(db), conn, key, task_id)
+
+
+def _complete_keys_on_conn(
+    conn: sqlite3.Connection,
+    keys: list[str],
+    required_dims: set[int],
+) -> set[str]:
+    if not all(workflow.has_table(conn, name) for name in ('coding_dimensions', 'coding_values')):
+        return set()
+    dims = {r[0] for r in conn.execute('SELECT id FROM coding_dimensions')}
+    if not dims:
+        return set()
+    filled, supported = {}, {}
+    for dim, key in conn.execute("SELECT dimension_id,zotero_key FROM coding_values WHERE TRIM(COALESCE(value,''))<>''"):
+        filled.setdefault(key, set()).add(dim)
+    if required_dims and workflow.has_table(conn, 'coding_notes'):
+        if workflow.has_table(conn, 'coding_note_images'):
+            rows = conn.execute(
+                'SELECT n.dimension_id,n.zotero_key,n.text,'
+                'EXISTS(SELECT 1 FROM coding_note_images i WHERE i.note_id=n.id) '
+                'FROM coding_notes n')
+        else:
+            rows = conn.execute(
+                'SELECT n.dimension_id,n.zotero_key,n.text,0 FROM coding_notes n')
+        for dim, key, text, has_image in rows:
+            if has_note_text(text) or has_image:
+                supported.setdefault(key, set()).add(dim)
+    return {key for key in keys if dims <= filled.get(key, set()) and required_dims <= supported.get(key, set())}
+
+
+def complete_keys(
+    db: str | Path,
+    owner_db: str | Path,
+    keys: list[str],
+    *,
+    actor_conn: sqlite3.Connection | None = None,
+    owner_conn: sqlite3.Connection | None = None,
+) -> set[str]:
     """Aggregate counts only; no note text or private image metadata leaves this helper."""
+    if actor_conn is not None or owner_conn is not None:
+        _require_evidence_conn_pair(actor_conn, owner_conn, api="complete_keys")
+        mapped, issues, required = _mapping_on_conns(actor_conn, owner_conn, owner_db)
+        if issues:
+            return set()
+        required_dims = {dim for dim, fid in mapped.items() if fid in required}
+        return _complete_keys_on_conn(actor_conn, keys, required_dims)
     mapped, issues, required = mapping(db, owner_db)
     if issues:
         return set()
     required_dims = {dim for dim, fid in mapped.items() if fid in required}
     with closing(workflow.connect(db, read_only=True)) as conn:
-        if not all(workflow.has_table(conn, name) for name in ('coding_dimensions', 'coding_values')):
-            return set()
-        dims = {r[0] for r in conn.execute('SELECT id FROM coding_dimensions')}
-        if not dims:
-            return set()
-        filled, supported = {}, {}
-        for dim, key in conn.execute("SELECT dimension_id,zotero_key FROM coding_values WHERE TRIM(COALESCE(value,''))<>''"):
-            filled.setdefault(key, set()).add(dim)
-        if required_dims and workflow.has_table(conn, 'coding_notes'):
-            if workflow.has_table(conn, 'coding_note_images'):
-                rows = conn.execute(
-                    'SELECT n.dimension_id,n.zotero_key,n.text,'
-                    'EXISTS(SELECT 1 FROM coding_note_images i WHERE i.note_id=n.id) '
-                    'FROM coding_notes n')
-            else:
-                rows = conn.execute(
-                    'SELECT n.dimension_id,n.zotero_key,n.text,0 FROM coding_notes n')
-            for dim, key, text, has_image in rows:
-                if has_note_text(text) or has_image:
-                    supported.setdefault(key, set()).add(dim)
-    return {key for key in keys if dims <= filled.get(key, set()) and required_dims <= supported.get(key, set())}
+        return _complete_keys_on_conn(conn, keys, required_dims)
 
 
 def assets_dir(db: str | Path) -> Path:
@@ -466,12 +583,34 @@ def _staged_budget(conn: sqlite3.Connection, task_id: str, actor_id) -> tuple[in
     return len(rows), total
 
 
-def stage_upload(db: str | Path, task_id: str, actor_id: int, key: str, dim: int, data: bytes) -> dict:
+@contextmanager
+def _evidence_write_connection(db: str | Path, conn: sqlite3.Connection | None, *, upload: bool = False):
+    """Schema preparation and transaction ownership belong only to standalone writes."""
+    if conn is not None:
+        from coscreen.db import _require_borrowed_write_conn
+        _require_borrowed_write_conn(conn)
+        yield conn
+    else:
+        connect = workflow.connect if upload else coding._connect
+        with closing(connect(db)) as own, own:
+            if upload:
+                own.execute('BEGIN IMMEDIATE')
+            yield own
+
+
+def stage_upload(db: str | Path, task_id: str, actor_id: int, key: str, dim: int, data: bytes,
+                 *, conn: sqlite3.Connection | None = None) -> dict:
+    """Stage on the caller transaction when borrowed; callers GC only after commit/release.
+
+    File writes and SQLite are not atomic. Rollback may leave a collectible orphan;
+    it must never delete a file still owned by committed upload/image references.
+    """
     ext = validate_image(data)
-    migrate(db)
+    borrowed = conn is not None
+    if not borrowed:
+        migrate(db)
     digest = hashlib.sha256(data).hexdigest()
-    with closing(workflow.connect(db)) as conn, conn:
-        conn.execute('BEGIN IMMEDIATE')
+    with _evidence_write_connection(db, conn, upload=True) as conn:
         coding._require_dimension(conn, dim)
         # 证据只属于本任务里真实存在的文献：修复前任意 zotero_key 都能落盘
         # 占位（7 天 GC 窗口内无上界占盘，b11·F3-20）。与附着契约同口径——
@@ -510,7 +649,18 @@ def stage_upload(db: str | Path, task_id: str, actor_id: int, key: str, dim: int
                 _write_atomic(path, data)
             conn.execute('UPDATE workflow_evidence_uploads SET created_at=?,path=? WHERE id=?',
                          (time.time(), str(path), uid))
-        cleanup_staging(conn, db)
+    if not borrowed:
+        # Business has committed and released its connection. Destructive GC runs
+        # in a separate locked transaction and cannot turn that success into a
+        # reported business rollback. Borrowed callers clean up after their window.
+        try:
+            with closing(workflow.connect(db)) as cleanup_conn, cleanup_conn:
+                cleanup_conn.execute('BEGIN IMMEDIATE')
+                cleanup_staging(cleanup_conn, db)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                'Evidence upload committed, but staging cleanup failed for %s', db,
+                exc_info=True)
     return {'upload_id': uid, 'sha256': digest,
             'preview_url': f'/api/tasks/{task_id}/coding/evidence/uploads/{uid}'}
 
@@ -587,19 +737,22 @@ def _prune_form_requests(conn: sqlite3.Connection, task_id: str, actor_id: str) 
 
 
 def save_form(db: str | Path, key: str, values: dict[int, str], *, notes: dict[int, str] | None,
-              evidence: dict[int, dict] | None, trace_context, submission_evidence: bool = False) -> None:
+              evidence: dict[int, dict] | None, trace_context, submission_evidence: bool = False,
+              conn: sqlite3.Connection | None = None) -> None:
     from coscreen import workspace_undo as undo, research_trace as trace
     if submission_evidence and values:
         raise ValueError('Submission evidence cannot change personal coding values.')
-    migrate(db)
+    borrowed = conn is not None
+    if not borrowed:
+        migrate(db)
     notes, evidence = notes or {}, evidence or {}
     dims = sorted(set(values) | set(notes) | set(evidence))
     if not dims:
         raise ValueError('Supply at least one coding value, note or evidence field.')
     context = trace_context.normalized()
-    with closing(coding._connect(db)) as conn, conn:
-        undo.begin_save(conn)
-        trace.begin_capture_transaction(conn, context, 'coding')
+    with _evidence_write_connection(db, conn) as conn:
+        undo.begin_save(conn, prepared=borrowed)
+        trace.begin_capture_transaction(conn, context, 'coding', prepared=borrowed)
         payload = {'key': key, 'values': values, 'notes': notes, 'evidence': evidence}
         if submission_evidence:
             payload['access_context'] = undo.SUBMISSION_EVIDENCE

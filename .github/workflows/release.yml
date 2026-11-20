@@ -40,7 +40,7 @@ jobs:
             artifact: ReviewFlow-x86_64.AppImage
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # L-03：构建/测试作业不需要凭据——不把令牌留进本地 git 配置
           #（后续 pip 安装/pytest/校验器执行的代码一律拿不到写凭据）。
@@ -48,7 +48,7 @@ jobs:
       - name: Read application version
         shell: bash
         run: echo "APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install Linux build dependencies
@@ -125,102 +125,152 @@ jobs:
           # 260 贴边，根每多一级即爆（f1_72 教训：开发者当年挪 E: 盘即此因）。
           RF_R9_TMP_ROOT: ${{ runner.temp }}
         run: |
-          # MM7-02: the four static validators run in CI after the payload check;
-          # any non-zero exit fails the job. httpx is used by the two Python
-          # validators and is not part of the runtime requirements file;
-          # pyyaml is used by build/tests/test_r7_luna_release_static.py (L-03).
-          python -m pip install --disable-pip-version-check -r build/requirements-app.txt httpx pytest pyyaml
+          # MM7-02: the full static gate runs in CI after the payload check;
+          # any non-zero exit fails the job. build/requirements-test.txt
+          # (Task5, 2.1.6) is the single source for the verification extras
+          # on top of the runtime requirements (it -r-includes
+          # requirements-app.txt): pytest, the pyyaml the workflow static
+          # nails parse with, httpx for the Python validators that import it,
+          # and httpx2 for TestClient.
+          python -m pip install --disable-pip-version-check -r build/requirements-test.txt
           if [ "${{ matrix.command }}" = macos ]; then
             export DYLD_LIBRARY_PATH="$REVIEWFLOW_CAIRO_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           fi
-          # MM8-02: the test suite (1,222+ assertions) runs in CI before the
-          # validators; any failure fails the job.
-          # P2（发布前对抗审查 2026-11-11）：与本地门禁的分段口径对齐——
-          # test_w4_study_design 与 test_r6_undo_collab_fixes 存在存量跨文件
-          # 状态泄漏（w4 模块级 fixture 对 main 单例的污染，stash 验证非新引入），
-          # 同进程联跑 5 败、分进程 35+24 全绿；根因修复另立工单，CI 先分段。
-          # 2026-11-13（CI 静态钉收口）：再添三件同病受害者——ai_formats/
-          # auth_remember_reset/upload_security 独立跑全绿、整目录必红
-          # （模块级 env 串扰，本地 30 分钟复现实证 34F+16E）；分段名单扩至五件。
-          python -m pytest build/tests -q \
-            --ignore=build/tests/test_w4_study_design.py \
-            --ignore=build/tests/test_r6_undo_collab_fixes.py \
-            --ignore=build/tests/test_2_1_5_ai_formats.py \
-            --ignore=build/tests/test_2_1_5_auth_remember_reset.py \
-            --ignore=build/tests/test_upload_security_regression.py
-          python -m pytest build/tests/test_w4_study_design.py -q
-          python -m pytest build/tests/test_r6_undo_collab_fixes.py -q
-          python -m pytest build/tests/test_2_1_5_ai_formats.py -q
-          python -m pytest build/tests/test_2_1_5_auth_remember_reset.py -q
-          python -m pytest build/tests/test_upload_security_regression.py -q
-          python build/validate_import_review.py
-          python build/validate_screening_rounds.py
-          node build/validate_import_review_static.cjs
-          node build/validate_team_prisma_static.js
-          # MM11-01: the three node --test unit suites (17 cases) were
-          # documentation-only - no automation ever ran them. They ride the
-          # same node-on-PATH precondition as the two node validators above
-          # (every matrix runner image ships node) and run from the checkout
-          # root: ml_batch.test.cjs reads custom_frontend/index.html relative
-          # to the working directory.
-          # W2 (2.1.4-r8): pdf_fetch_ui.test.cjs nails the PDF auto-fetch
-          # frontend module (default-off zero-render, three outcome paths,
-          # ten-language corpus). Local-green only would leave it unguarded
-          # on every release platform, so it joins the same node --test run.
-          # W3 (2.1.4-r8): living_review.test.cjs nails the revived PubMed
-          # check (manual check-now wiring, graceful 409 degradation, and the
-          # sliced in-session timer that must never overflow the 32-bit delay).
-          node --test build/tests/import_review_model.test.cjs \
-                      build/tests/import_review_updates.test.cjs \
-                      build/tests/ml_batch.test.cjs \
-                      build/tests/study_design_badge.test.cjs \
-                      build/tests/pdf_fetch_ui.test.cjs \
-                      build/tests/living_review.test.cjs \
-                      build/tests/auth_remember_reset.test.cjs \
-                      build/tests/ai_providers_wizard.test.cjs \
-                      build/tests/ai_import_bulk.test.cjs \
-                      build/tests/aiux_locale.test.cjs \
-                      build/tests/analysis_grade_ui.test.cjs \
-                      build/tests/analysis_rob_locale.test.cjs \
-                      build/tests/import_review_review67.test.cjs \
-                      build/tests/report_evidence_ui.test.cjs \
-                      build/tests/ai_settings_drafts.test.cjs \
-                      build/tests/analysis_rob_editor_ui.test.cjs \
-                      build/tests/table_wizards_polish.test.cjs \
-                      build/tests/workflow_evidence_save_ui.test.cjs \
-                      build/tests/workflow_ui_polish.test.cjs \
-                      build/tests/import_ai_ui_polish.test.cjs \
-                      build/tests/app_module_loader.test.cjs \
-                      build/tests/ui_polish_core.test.cjs \
-                      build/tests/ui_polish_recovery.test.cjs \
-                      build/tests/screen_reader_e10.test.cjs
-      - uses: actions/upload-artifact@v4
+          # TST-03 (2.1.6 Task 8): the gate - whole-directory pytest (MM8-02,
+          # 1,222+ assertions), the six static validators (MM7-02: 3 Python +
+          # 3 Node, including the two that were green but unwired before
+          # 2.1.6) and all 24 node --test behaviour suites (MM11-01/W2/W3) -
+          # runs through the single validation entry CI and the local full
+          # validation run share. The three packaging scripts call the six
+          # validators directly, not this full entry. The command plan lives
+          # only in build/run_validation.py (single source; --list/--json
+          # exports the real argv), never hand-copied in this workflow. The
+          # 2026-11-13 five-file pytest segmentation ended here: the 2.1.6
+          # conftest (Task 2) restores per-module isolation, so the suite
+          # runs whole again.
+          python build/run_validation.py --log-dir "$RUNNER_TEMP/validation-logs"
+      - uses: actions/upload-artifact@v6
         with:
           name: reviewflow-${{ matrix.platform }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 7
+          # F1 (2.1.6 R1): the artifact name is fixed per platform, so a rerun
+          # of the same run must explicitly overwrite the previous upload.
+          overwrite: true
+
+  assemble:
+    name: Assemble and verify release assets
+    # REL-02b（2.1.6 Task8 主控裁定）：publish 收口为仅 push 标签事件后，
+    # 分支推送与 workflow_dispatch 演练原先不再经过 download/汇集/SHA 校验
+    # （原 REL-01 验收缺一段）。本作业把产物汇集与校验从 publish 前移为
+    # 只读作业：任何触发面（含演练）都全链路复现产物传输、六载荷完整性
+    # 与 checksum 校验；publish 只按名取走这份已验证的完整资产包。
+    needs: build
+    runs-on: ubuntu-22.04
+    # 只读产物准备：无检出、无写凭据、无仓库写权限。
+    permissions:
+      contents: read
+    steps:
+      - name: Download platform artifacts
+        # 固定产物名 reviewflow-<platform>：同一 run 重跑时同名产物覆盖，
+        # 且 download-artifact 只取本 run 的产物——不存在跨 run 旧平台包
+        # 混入路径。
+        uses: actions/download-artifact@v7
+        with:
+          pattern: reviewflow-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release asset completeness
+        run: |
+          # REL-02：download-artifact 的 merge-multiple 只交付"存在的"产物——
+          # 缺件不报错，不完整资产集不得进入校验与上传。六件资产（三平台
+          # 安装包 + verify_release_payload.py 写出的三份 build-manifest）
+          # 缺一即败；publish 侧保留同型检查作双保险（防资产包被替换）。
+          cd release-assets
+          missing=0
+          for f in ReviewFlow-Setup-x64.exe ReviewFlow.dmg ReviewFlow-x86_64.AppImage \
+                   build-manifest-windows.json build-manifest-macos.json build-manifest-linux.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing release asset: $f" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::release assets incomplete; refusing to assemble" >&2
+            exit 1
+          fi
+      - name: Generate checksums
+        run: |
+          # 显式六载荷清单生成 SHA256SUMS.txt：清单永不包含自身（重定向
+          # 创建的文件不在参数列表内），也不吸收目录里任何多余文件。
+          cd release-assets
+          sha256sum ReviewFlow-Setup-x64.exe ReviewFlow.dmg ReviewFlow-x86_64.AppImage \
+                    build-manifest-windows.json build-manifest-macos.json build-manifest-linux.json \
+            > SHA256SUMS.txt
+      - name: Verify checksums
+        # assemble 自身先实际校验一次——演练面（分支/dispatch）跑的就是
+        # 与发布完全相同的 checksum 语义。
+        run: cd release-assets && sha256sum -c SHA256SUMS.txt
+      - name: Upload assembled release assets
+        # 名称刻意避开 reviewflow-* 前缀：不会被本作业的 pattern 下载
+        # 捕获；publish 按 name 精确取这一份已验证的七件资产包
+        # （六载荷 + SHA256SUMS.txt）。
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+          # F1 (2.1.6 R1)：包名固定，同一 run 重跑必须显式覆盖旧上传。
+          overwrite: true
 
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: assemble
+    # REL-01（2.1.6，主控裁定）：只有 push 标签事件进入写权限发布——
+    # release/** 分支推送与 workflow_dispatch 演练（即使手动选择标签 ref）
+    # 一律只构建上传。2.1.5 曾实证 branch push 可发正式版（run 43541772593），
+    # 此 if 收口该触发面；P1-1 三重标签守卫（下方步骤）原样保留继续生效。
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     # L-03：写权限只在 publish 显式授予（打标签/推标签/建发行版）；
     # checkout 保持默认持久化凭据——git push 标签依赖它。
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Read application version
         shell: bash
         run: echo "APP_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v4
+      - name: Download assembled release assets
+        # REL-02b：按名取 assemble 已验证的完整资产包（desktop-release-assets，
+        # 七件=六载荷+SHA256SUMS.txt）——不再 pattern 合并平台产物。
+        uses: actions/download-artifact@v7
         with:
-          pattern: reviewflow-*
+          name: desktop-release-assets
           path: release-assets
-          merge-multiple: true
-      - name: Generate checksums
-        run: cd release-assets && sha256sum * > SHA256SUMS.txt
+      - name: Verify release asset completeness
+        run: |
+          # REL-02（2.1.6）：assemble 已验过一次；发布侧在 checksum 校验前
+          # 再确认六载荷齐全（防资产包在汇集后被替换或缺件的双保险）。
+          cd release-assets
+          missing=0
+          for f in ReviewFlow-Setup-x64.exe ReviewFlow.dmg ReviewFlow-x86_64.AppImage \
+                   build-manifest-windows.json build-manifest-macos.json build-manifest-linux.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing release asset: $f" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::release assets incomplete; refusing to publish" >&2
+            exit 1
+          fi
+      - name: Verify checksums
+        # REL-02b：SHA256SUMS.txt 由 assemble 生成；发布侧在任何 tag/push/
+        # release 动作之前对照实文件再验一次（防汇集后、发布前被篡改）。
+        run: cd release-assets && sha256sum -c SHA256SUMS.txt
       - name: Point release tag to this build (P1-1 tag guards)
         run: |
           # P1-1（发布前对抗审查 2026-11-11，本地裸仓库 12 组复现：4 组改写
@@ -249,7 +299,7 @@ jobs:
             git push origin "$tag_ref"
           fi
       - name: Create versioned release and upload installers
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.APP_VERSION }}
           target_commitish: ${{ github.sha }}

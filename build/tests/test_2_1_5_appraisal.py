@@ -21,7 +21,6 @@ import json
 import os
 import sqlite3
 import sys
-import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -29,9 +28,27 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-fixture = tempfile.TemporaryDirectory(prefix="rf_215b_appraisal_")
-os.environ["COBOOKSHELF_DATA_DIR"] = fixture.name
-os.environ["REVIEWFLOW_MODE"] = "server"
+# 数据根 + 模式生命周期（SafetyR4 A–D，test-only 所有者 helper _bare_env）：
+# pytest 下 conftest 每会话登记会话代并握手——模块导入只落模式、release 惰
+# 性，绝不删除 pytest 共享根；裸 unittest 无显式 scope 时由进程 owner 持根
+# 到进程退出/显式结束（此前 appraisal 裸跑遗留 server 不还、tearDownClass
+# 清自有根使同批后导入模块立即失根分叉——均由所有者模型根治）。模块
+# import 只是借用：acquire 独立 token、release 幂等、绝不删根（导入计数不
+# 驱动删除——SafetyR3 C 病根）。setUpModule 守卫：上一届所有者已结束/环
+# 境键被挪走/与缓存后端冻结根分叉时，在任何测试业务/API 写之前硬拒。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _bare_env  # noqa: E402
+
+_BARE = _bare_env.acquire(mode="server")
+
+
+def setUpModule():
+    _bare_env.ensure_safe_for_execution()
+
+
+def tearDownModule():
+    """归还借用（幂等；删根/两键恢复只属于所有者收尾）。"""
+    _bare_env.release(_BARE)
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -785,7 +802,8 @@ class TestAppraisalEndpoints(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.__exit__(None, None, None)
-        fixture.cleanup()
+        # 数据根/模式生命周期已移交模块级 _bare_env 租约（SafetyR3 F3/F4）：
+        # 类收尾只关自己的 Client，不碰共享根（tearDownModule 统一归还）。
 
     def setUp(self):
         response = self.client.post(

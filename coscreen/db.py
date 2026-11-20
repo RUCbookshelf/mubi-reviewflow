@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from coscreen import config
+from coscreen import team_vote_ledger  # S1a：票版本账本（不反向 import 本模块，无环）
 from coscreen.al.ranker import RankingResult
 from coscreen.dedup import (
     KEY_MAX_LEN,
@@ -399,6 +400,11 @@ _MIGRATE_LOCK = threading.Lock()
 #: 进程内已迁移标记：{库文件绝对路径: 迁移完成时的 schema cookie}。
 _MIGRATED_SCHEMAS: dict[Path, int] = {}
 
+# S1a：本进程已确认存在真实 32hex library_id 的库路径集合。仅缓存安装
+# 成本（§13.6）：不证明当前库可信——每个实际打开的连接仍执行账本结构
+# 定义级验证（见 _connect 快路径与自愈链）；失败即清除，后续连接重试。
+_LEDGER_READY: set[Path] = set()
+
 
 def _add_column_if_missing(
     conn: sqlite3.Connection, table: str, column: str, ddl_sql: str
@@ -625,10 +631,53 @@ def _connect(db_path: StrPath) -> sqlite3.Connection:
         except (sqlite3.Error, TypeError, IndexError):
             schema_version = None
         if schema_version is not None and _MIGRATED_SCHEMAS.get(path) == schema_version:
-            return conn
+            # S1a（§13.6）：cookie 快路径同样对本次连接执行账本结构/约束/
+            # 六触发器定义验证，不凭 cookie/meta 单行宣称成功；_LEDGER_READY
+            # 仅是安装成本缓存。installed→照常快返回；broken→清 READY、记
+            # 警告（不修、不沿用旧 library_id），个人用途继续，team 可信
+            # 消费 fail-closed；absent→同路径换库或从未安装，失效 cookie
+            # 缓存并走下方完整自愈（含账本安装）。
+            try:
+                _tv_state = team_vote_ledger.ledger_state(conn)
+            except sqlite3.Error:
+                _tv_state = "broken"
+            if _tv_state == "installed":
+                _LEDGER_READY.add(path)
+                return conn
+            if _tv_state == "broken":
+                _LEDGER_READY.discard(path)
+                team_vote_ledger.note_broken_once(path)
+                return conn
+            _MIGRATED_SCHEMAS.pop(path, None)
+            _LEDGER_READY.discard(path)
         _ensure_tags_column(conn)  # 旧库自愈（幂等）：补齐 decisions.tags 列
         conn.executescript(_TITLE_DUPLICATE_SCHEMA)
         _ensure_stage2_tables(conn)  # 旧库自愈（幂等）：补建复筛三表（SPEC §14）
+        # S1a：持久票版本账本（team 专用）。两票表齐才装（本行之后两表均
+        # 已保证存在；decisions 由 init_db 的 _SCHEMA 建，新库路径在此为
+        # absent 无操作，由 init_db 挂点在 _SCHEMA 之后安装）。局部 catch
+        # 仅包账本安装/验证调用（sqlite3.Error + VoteLedgerUnavailable，
+        # §13.6），不吞 _SCHEMA/其他必要迁移/业务 SQL/连接所有权违约；
+        # 失败清 READY、不标成功，个人用途照旧，team 可信消费 fail-closed，
+        # 后续连接自动重试；broken 不自动修复、不沿用旧 library_id。
+        try:
+            _tv_state = team_vote_ledger.ledger_state(conn)
+            if _tv_state == "installed":
+                _LEDGER_READY.add(path)
+            elif _tv_state == "absent":
+                if team_vote_ledger.both_decision_tables_present(conn):
+                    _tv_library_id = team_vote_ledger.install(conn)
+                    if _tv_library_id:
+                        _LEDGER_READY.add(path)
+            else:  # broken
+                _LEDGER_READY.discard(path)
+                team_vote_ledger.note_broken_once(path)
+        except (sqlite3.Error, team_vote_ledger.VoteLedgerUnavailable) as exc:
+            _LEDGER_READY.discard(path)
+            logging.getLogger(__name__).warning(
+                "db._connect(%s): 团队票版本账本安装/验证失败，已降级跳过"
+                "（个人用途继续，team 消费保持拒绝；后续连接将自动重试）：%r",
+                db_path, exc)
         _ensure_coding_tables(conn)  # 旧库自愈（幂等）：补建编码四表（SPEC §15.1）
         conn.executescript(_ANALYSIS_SCHEMA)
         conn.executescript(_GRADE_SCHEMA)  # 旧库自愈（幂等）：补建 GRADE 评估表（衍生产品规格 §0.5）
@@ -660,6 +709,24 @@ def _connect(db_path: StrPath) -> sqlite3.Connection:
                 )
             except (sqlite3.Error, TypeError, IndexError):
                 pass
+    return conn
+
+
+def _require_borrowed_write_conn(conn) -> sqlite3.Connection:
+    """S2-A1 借用写入口校验：三个 writer 的 ``conn`` 分支在任何 SQL 前调用。
+
+    非法类型（非 ``sqlite3.Connection``）＝TypeError（编程错误，不降级、
+    不开 fallback）；无活动事务＝RuntimeError（窗口事务编程契约，避免
+    SQLite 对首条写语句隐式 BEGIN、不自行补 BEGIN）；已关闭连接的
+    ``in_transaction`` 读取自然抛 ``sqlite3.ProgrammingError``——原样上抛
+    不吞（§2.1/§8）。校验零 SQL、零连接管理；通过后原样返回该连接。
+    """
+    if not isinstance(conn, sqlite3.Connection):
+        raise TypeError(
+            f"conn must be sqlite3.Connection, got {type(conn).__name__!r}")
+    if not conn.in_transaction:
+        raise RuntimeError(
+            "borrowed write conn requires an open transaction (conn.in_transaction)")
     return conn
 
 
@@ -701,6 +768,20 @@ def init_db(db_path: StrPath) -> None:
     """建库建表（幂等，可重复调用）。"""
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA)
+    # S1a：新库安装顺序＝_SCHEMA → ledger → 超长键迁移（超长键改写由已装
+    # 触发器记账，旧 key 墓碑与新 key 行共存）。降级与下方超长键迁移同款：
+    # 局部 catch 仅包账本调用（sqlite3.Error + VoteLedgerUnavailable），
+    # 失败不阻断个人用途；team 可信消费 fail-closed，后续自动重试。
+    try:
+        _tv_library_id = team_vote_ledger.install_in_db(db_path)
+        if _tv_library_id:
+            _LEDGER_READY.add(Path(db_path).resolve())
+    except (sqlite3.Error, team_vote_ledger.VoteLedgerUnavailable) as exc:
+        _LEDGER_READY.discard(Path(db_path).resolve())
+        logging.getLogger(__name__).warning(
+            "init_db(%s): 团队票版本账本安装失败，已降级跳过（个人用途继续，"
+            "team 消费保持拒绝；后续 init_db/_connect 将自动重试）：%r",
+            db_path, exc)
     # MM6-03：存量超长键的幂等迁移。CLI import（cli.cmd_import）与 Web
     # 筛选员库访问（custom_backend._screener_db）都以本函数为入口，接在
     # 此处即覆盖两条产品路径；无超长键的正常库只做一次 SELECT、零写入。
@@ -1858,6 +1939,7 @@ def save_decision(
     tags: str | None = None,
     *,
     trace_context: TraceContext | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> None:
     """保存/更新一条筛选决策（upsert）。decision 必须是 config.DECISIONS 之一。
 
@@ -1865,59 +1947,101 @@ def save_decision(
     tags（SPEC §6bis，逗号分隔自由文本）：传 None（缺省）时更新**保留原值**、
     首次插入存空串；传字符串（含空串，用于显式清空）时整体覆盖。
     zotero_key 不存在时因外键约束抛 sqlite3.IntegrityError。
+
+    S2-A1 借用写（``conn`` 给定）：任何 SQL 前先核类型与活动事务
+    （``_require_borrowed_write_conn``：非法 TypeError／无事务 RuntimeError／
+    关闭连接 ProgrammingError 原样）；此后校验/replay/undo 快照/journal/
+    trace/请求摘要与业务 upsert **全部落在该连接**——不 _connect/close/
+    连接上下文/BEGIN/commit/rollback/executescript/ensure/DDL；replay 命中
+    与正常返回均**不代表提交**（提交权归窗口，单业务目标 commit）；异常
+    原样上抛交窗口整体回滚。缺省（conn=None）保留旧 standalone 语义。
     """
     if decision not in config.DECISIONS:
         raise ValueError(
             f"非法 decision: {decision!r}，必须为 {config.DECISIONS} 之一"
         )
+    # FIX-R1：now/SQL 恢复在原位置取样——decision 校验后、任何连接/取锁/
+    # 自愈迁移**之前**（standalone 与 borrowed 同点位；迁移耗时不得漂移
+    # screened_at/updated_at 时钟），由 wrapper 计算后传入共用体。
     now = _now()
     sql = _upsert_decision_sql(
         keep_tags=tags is None, keep_screened_at=True
     )
-    with closing(_connect(db_path)) as conn, conn:
-        request_result = None
-        if trace_context is not None:
-            from coscreen.workspace_undo import begin_save, snapshot, record_save
-            begin_save(conn)
-            from coscreen.research_trace import begin_capture_transaction, begin_write_request
+    if conn is not None:
+        _require_borrowed_write_conn(conn)
+        return _save_decision_in_conn(
+            conn, zotero_key, decision, exclusion_reason, notes, tags,
+            trace_context, now, sql, prepared=True)
+    with closing(_connect(db_path)) as own, own:
+        return _save_decision_in_conn(
+            own, zotero_key, decision, exclusion_reason, notes, tags,
+            trace_context, now, sql, prepared=False)
 
-            begin_capture_transaction(conn, trace_context, "screen")
-            replay, request_result = begin_write_request(
-                conn, trace_context, stage="screen", operation="decision_save",
-                subject_id=zotero_key,
-                payload={"decision": decision, "exclusion_reason": exclusion_reason,
-                         "notes": notes, "tags": {"keep": True} if tags is None else tags},
-            )
-            if replay:
-                return None
-            undo_before = snapshot(conn, "screen", zotero_key)
-        old = conn.execute(
-            "SELECT decision,exclusion_reason,notes,tags FROM decisions WHERE zotero_key=?",
-            (zotero_key,),
-        ).fetchone()
-        before = ({"decision": old[0], "exclusion_reason": old[1] or "", "notes": old[2] or "",
-                   "tags": old[3] or ""} if old else None)
-        after = {
-            "decision": decision, "exclusion_reason": exclusion_reason or "", "notes": notes or "",
-            "tags": (tags if tags is not None else (old[3] if old else "")) or "",
-        }
-        conn.execute(
-            sql,
-            (zotero_key, decision, exclusion_reason, notes, tags or "", now, now),
+
+def _save_decision_in_conn(
+    conn: sqlite3.Connection,
+    zotero_key: str,
+    decision: str,
+    exclusion_reason: str,
+    notes: str,
+    tags: str | None,
+    trace_context: TraceContext | None,
+    now: str,
+    sql: str,
+    *,
+    prepared: bool,
+) -> None:
+    """save_decision 的共用算法体（standalone/借用同一份，禁止复制两份，§2.1）。
+
+    standalone 由 ``save_decision`` 以自建连接＋连接上下文事务调用
+    （``prepared=False``，helper 走旧准备路径）；借用由窗口事务内调用
+    （``prepared=True``，helper 仅事务断言/现读）。``now``/``sql`` 由
+    wrapper 在原位置（校验后、连接/迁移前）计算传入，共用体不自取样
+    （FIX-R1）。本函数不管理连接与事务。
+    """
+    request_result = None
+    if trace_context is not None:
+        from coscreen.workspace_undo import begin_save, snapshot, record_save
+        begin_save(conn, prepared=prepared)
+        from coscreen.research_trace import begin_capture_transaction, begin_write_request
+
+        begin_capture_transaction(conn, trace_context, "screen", prepared=prepared)
+        replay, request_result = begin_write_request(
+            conn, trace_context, stage="screen", operation="decision_save",
+            subject_id=zotero_key,
+            payload={"decision": decision, "exclusion_reason": exclusion_reason,
+                     "notes": notes, "tags": {"keep": True} if tags is None else tags},
         )
-        if trace_context is not None:
-            record_save(conn, trace_context, "screen", zotero_key, undo_before,
-                        snapshot(conn, "screen", zotero_key))
-            from coscreen.research_trace import capture_event
+        if replay:
+            return None
+        undo_before = snapshot(conn, "screen", zotero_key)
+    old = conn.execute(
+        "SELECT decision,exclusion_reason,notes,tags FROM decisions WHERE zotero_key=?",
+        (zotero_key,),
+    ).fetchone()
+    before = ({"decision": old[0], "exclusion_reason": old[1] or "", "notes": old[2] or "",
+               "tags": old[3] or ""} if old else None)
+    after = {
+        "decision": decision, "exclusion_reason": exclusion_reason or "", "notes": notes or "",
+        "tags": (tags if tags is not None else (old[3] if old else "")) or "",
+    }
+    conn.execute(
+        sql,
+        (zotero_key, decision, exclusion_reason, notes, tags or "", now, now),
+    )
+    if trace_context is not None:
+        record_save(conn, trace_context, "screen", zotero_key, undo_before,
+                    snapshot(conn, "screen", zotero_key))
+        from coscreen.research_trace import capture_event
 
-            capture_event(
-                conn, trace_context, stage="screen",
-                action="decision_created" if old is None else "decision_changed",
-                subject_id=zotero_key, before=before, after=after,
-            )
-            from coscreen.research_trace import finish_write_request
+        capture_event(
+            conn, trace_context, stage="screen",
+            action="decision_created" if old is None else "decision_changed",
+            subject_id=zotero_key, before=before, after=after,
+        )
+        from coscreen.research_trace import finish_write_request
 
-            finish_write_request(conn, trace_context)
+        finish_write_request(conn, trace_context)
 
 
 def restore_decision(

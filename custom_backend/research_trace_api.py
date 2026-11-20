@@ -1070,6 +1070,8 @@ def register_research_trace_routes(
     shared_store: Callable[[Any], Any],
     authorize_task: Callable[[Any, dict, str], bool],
     validate_subject: Callable[[Any, str, str], bool] | None = None,
+    team_clear_runner: Callable[[Any, dict, dict], Mapping[str, Any] | None] | None = None,
+    team_write_guard: Callable[[Any, dict, Mapping[str, Any]], None] | None = None,
 ) -> None:
     """Register actor-private trace routes. Actor identity always comes from auth.
 
@@ -1078,6 +1080,15 @@ def register_research_trace_routes(
     actions are ``trace:read`` and ``trace:write``. Personal snapshots are stored
     in the actor's personal database; newer coding snapshots are read from the
     shared task database but are filtered by authenticated actor ID.
+
+    P21（C11/C12）：宿主可选注入 ``team_clear_runner``（团队多分区历史清空
+    协调器入口）与 ``team_write_guard``（团队 trace 写入口 edit/restore 的
+    同一 footprint 只读保护）。runner 必须在既有**有副作用** context（经
+    personal_store/shared_store 的 ensure 解析）之前接管 team 分支；guard
+    的 settings 编辑（edit）在 context 之前断言，imports/commit（restore）
+    在包解析与 subject 映射校验之后、任何写入语句之前断言（其键域依赖
+    解析结果，无法整体前移——见 P21 REPORT 遗留）。runner 对非 team 任务
+    返回 ``None``，调用方交回 personal/legacy 原路（字节不变）。
     """
 
     def context(task_id: str, user: dict[str, Any], action: str):
@@ -1089,6 +1100,10 @@ def register_research_trace_routes(
             raise HTTPException(401, "Authenticated user ID is missing.")
         return info, actor_id, _partition_paths(info, user, personal_store, shared_store)
 
+    def _team_info(task_id: str, user: dict[str, Any]):
+        """team 分支专用零副作用任务解析（无 resolver ensure/get_settings）。"""
+        return task_or_404(task_id), user
+
     @app.get("/api/tasks/{task_id}/trace/settings")
     def get_settings(task_id: str, user: dict = Depends(require_user)):
         info, actor_id, paths = context(task_id, user, "trace:read")
@@ -1098,6 +1113,15 @@ def register_research_trace_routes(
 
     @app.put("/api/tasks/{task_id}/trace/settings", dependencies=[Depends(_body_within_limit)])
     def put_settings(task_id: str, body: TraceSettingsIn, user: dict = Depends(require_user)):
+        # P21/D1：team 任务的 settings 编辑（edit）先过同一 footprint 只读
+        # 保护（历史门+完成封条，零写入）再走既有 _set_status 算法。域按
+        # 真实转写足迹派生：进入 recording 无条件含全部 articles/protocol
+        # 基线域（不按 body.stages 派生）；off/paused 仅 control 事件、不
+        # 阻断。保护拒绝在任何 resolver ensure/默认 get_settings 之前发生。
+        if team_write_guard is not None:
+            info, user_map = _team_info(task_id, dict(user))
+            team_write_guard(info, user_map, {
+                "settings_transition": (body.status, list(body.stages))})
         info, actor_id, paths = context(task_id, user, "trace:write")
         try:
             return _set_status(info, actor_id, paths, body)
@@ -1106,6 +1130,13 @@ def register_research_trace_routes(
 
     @app.delete("/api/tasks/{task_id}/trace/history", dependencies=[Depends(_body_within_limit)])
     def clear_history(task_id: str, body: HistoryClearIn, user: dict = Depends(require_user)):
+        # P21：team 任务的多分区 clear 由宿主协调器在既有 context（有副作用
+        # 的 personal/shared resolver）之前接管；非 team 返回 None 走原路。
+        if team_clear_runner is not None:
+            info, user_map = _team_info(task_id, dict(user))
+            team_result = team_clear_runner(info, user_map, dict(body.model_dump()))
+            if team_result is not None:
+                return team_result
         info, actor_id, paths = context(task_id, user, "trace:write")
         if body.confirm is not True:
             raise HTTPException(400, "Explicit confirmation is required to clear personal trace history.")
@@ -1385,6 +1416,23 @@ def register_research_trace_routes(
             for stage in subjects[source_subject]:
                 if validate_subject(info, stage, target_subject) is not True:
                     raise HTTPException(400, f"Mapped subject is not in this task for stage {stage}.")
+        # P21：team 任务的 trace 导入（restore）先过同一 footprint 只读保护
+        # ——按映射后的最终 subject 键域断言历史门+完成封条（零写入），
+        # 命中即 409；已完成的投票/决策不能经导入恢复。非 team 由 guard
+        # 自行返回，走既有导入算法。
+        if team_write_guard is not None:
+            stage_keys: dict[str, set[str]] = {"screen": set(), "fulltext": set()}
+            for event in parsed["events"]:
+                stage = event.get("stage")
+                if stage not in stage_keys or event.get("stage") == "control":
+                    continue
+                mapped_subject = (mappings.get(str(event.get("subject_id")))
+                                  if event.get("subject_id") is not None else None)
+                final_subject = mapped_subject or event.get("subject_id")
+                if isinstance(final_subject, str) and final_subject:
+                    stage_keys[stage].add(final_subject)
+            team_write_guard(task_or_404(task_id), dict(user),
+                             {"stage_keys": stage_keys})
         conflicts = []
         imported = 0
         duplicates = 0

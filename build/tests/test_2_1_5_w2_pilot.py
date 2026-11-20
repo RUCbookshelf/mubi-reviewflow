@@ -516,7 +516,7 @@ class PilotApiBase(unittest.TestCase):
 
 ATTEMPT_ITEM_FIELDS = {
     "zotero_key", "position", "title", "authors", "journal", "year", "doi",
-    "item_type", "abstract", "answer", "reason",
+    "item_type", "abstract", "answer", "reason", "skip_seq",
 }
 
 
@@ -707,18 +707,31 @@ class StateMachinePins(PilotApiBase):
         self.assertEqual(incomplete.status_code, 409, incomplete.text)
         self.assertEqual(incomplete.json()["detail"]["error_code"], "gold_incomplete")
         self.assertEqual(incomplete.json()["detail"]["params"]["missing"], 1)
-        # draft 期可改金标准
-        changed = self.post(f"/pilot/sets/{set_id}/gold",
+        # draft 期可改金标准（216 跳过合同裁定 #9：maybe 同步退役）——
+        # 负控保留：旧值 maybe 写入 → 400 maybe_retired，原标注不动。
+        retired = self.post(f"/pilot/sets/{set_id}/gold",
                             {"zotero_key": "K01", "decision": "maybe",
                              "reason": "边界"})
+        self.assertEqual(retired.status_code, 400, retired.text)
+        self.assertEqual(retired.json()["detail"]["error_code"], "maybe_retired")
+        self.assertEqual(retired.json()["detail"]["message_key"],
+                         "pilot.maybe_retired")
+        self.assertEqual(self.gold_map(set_id)["K01"], "include",
+                         "maybe 退役后不得落库，原标注保持")
+        # 原「maybe 写入成功」的 draft 可改意图改走 include/exclude 正常改值。
+        changed = self.post(f"/pilot/sets/{set_id}/gold",
+                            {"zotero_key": "K01", "decision": "exclude",
+                             "reason": "改判排除"})
         self.assertEqual(changed.status_code, 200, changed.text)
-        self.assertEqual(self.gold_map(set_id)["K01"], "maybe")
+        self.assertEqual(self.gold_map(set_id)["K01"], "exclude")
         self.answer_gold(set_id, {"K10": "exclude"})
         self.publish(set_id)
         detail = self.api(f"/pilot/sets/{set_id}").json()
         self.assertEqual(detail["set"]["status"], "published")
         self.assertTrue(detail["set"]["gold_complete"])
         self.assertEqual(detail["set"]["gold_count"], 10)
+        # B1：effective 口径（非 maybe 行数）随详情返回并等于条目数。
+        self.assertEqual(detail["set"]["gold_effective_count"], 10)
         # 二次 publish → 409 set_not_draft
         again = self.post(f"/pilot/sets/{set_id}/publish")
         self.assertEqual(again.status_code, 409, again.text)

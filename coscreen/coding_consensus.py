@@ -150,6 +150,45 @@ def _write(path: StrPath) -> Iterator[sqlite3.Connection]:
             raise
 
 
+def prepare_coding_consensus_storage(db: StrPath) -> None:
+    """Prepare the original schema in a short owned connection before the write window."""
+    with closing(sqlite3.connect(db, timeout=30)) as conn:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            # executescript ends any pending transaction before running its text;
+            # BEGIN must be in that text so all original DDL shares this transaction.
+            conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+
+@contextmanager
+def _consensus_write_connection(db: StrPath, conn: sqlite3.Connection | None):
+    """Reuse the caller transaction, or delegate unchanged standalone ownership to _write."""
+    if conn is not None:
+        from coscreen.db import _require_borrowed_write_conn
+        _require_borrowed_write_conn(conn)
+        if conn.row_factory is not sqlite3.Row:
+            raise TypeError("borrowed consensus connection requires sqlite3.Row")
+        main_file = next((row[2] for row in conn.execute("PRAGMA database_list")
+                          if row[1] == "main"), None)
+        if not main_file:
+            raise ValueError("borrowed consensus connection requires a file-backed main database")
+        expected = Path(db).resolve(strict=True)
+        actual = Path(main_file).resolve(strict=True)
+        if not actual.samefile(expected):
+            raise ValueError("borrowed consensus connection must match the canonical main database target")
+        yield conn
+    else:
+        with _write(db) as own:
+            yield own
+
+
 def _text(value: Any, name: str, limit: int, *, required: bool = True) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{name} must be text")
@@ -268,6 +307,7 @@ def append_rater_record(
     source: dict[str, Any],
     rationale: str = "",
     trace_context: TraceContext | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Append a coder's version; `rater_id` must be supplied from server auth."""
     item_key = _text(item_key, "item_key", 300)
@@ -279,10 +319,13 @@ def append_rater_record(
         trace_context = trace_context.normalized()
         if str(trace_context.actor_id) != rater_id:
             raise ValueError("trace actor must match the authenticated rater ID")
-    with _write(db) as conn:
+    borrowed = conn is not None
+    with _consensus_write_connection(db, conn) as conn:
         if trace_context is not None:
-            from coscreen.research_trace import begin_write_request
+            from coscreen.research_trace import begin_capture_transaction, begin_write_request
 
+            if borrowed:
+                begin_capture_transaction(conn, trace_context, "coding", prepared=True)
             replay, result = begin_write_request(
                 conn, trace_context, stage="coding", operation="rater_record_save",
                 subject_id=item_key,
@@ -430,6 +473,7 @@ def append_consensus_record(
     source: dict[str, Any],
     rationale: str,
     rater_record_ids: tuple[int, ...] | list[int] = (),
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Append a consensus entity linked to its independent inputs and rationale."""
     item_key = _text(item_key, "item_key", 300)
@@ -438,7 +482,7 @@ def append_consensus_record(
     value_json, source_json = _json(value), _source(source)
     rationale = _text(rationale, "rationale", 4000)
     ids = _ids(rater_record_ids, "rater_record_ids") if rater_record_ids else []
-    with _write(db) as conn:
+    with _consensus_write_connection(db, conn) as conn:
         if ids:
             rows = conn.execute(
                 "".join((
@@ -514,12 +558,13 @@ def freeze_consensus(
     name: str,
     frozen_by: str | int,
     consensus_ids: tuple[int, ...] | list[int],
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Freeze explicit consensus record IDs as an immutable, named version."""
     name = _text(name, "freeze name", 200)
     frozen_by = _actor(frozen_by)
     ids = _ids(consensus_ids, "consensus_ids")
-    with _write(db) as conn:
+    with _consensus_write_connection(db, conn) as conn:
         rows = conn.execute(
             "".join((
                 "SELECT id,item_key,field_key FROM coding_consensus_records WHERE id IN (",

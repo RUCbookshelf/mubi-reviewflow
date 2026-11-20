@@ -140,28 +140,68 @@ def list_team_progress(
     task_id: str,
     authorized_usernames: Iterable[str],
     data_dir: str | Path = "data",
-    *, owner_db: Path | None = None,
+    *,
+    owner_db: Path | None = None,
+    collaboration_store: str | Path | None = None,
+    arbitration_user_ids: dict[str, str | int] | None = None,
 ) -> list[dict[str, object]]:
     """List counts and timestamps for caller-authorized task users.
 
     The caller must resolve these usernames from authenticated task membership.
-    Missing participant databases are reported as zero progress and are never created.
+    Missing participant databases are reported as zero progress and are never
+    created.
+
+    Arbitration contract (frozen 2026-11-18): when ``collaboration_store`` is
+    given, every row additionally carries an ``"arbitration"`` object
+    ``{"stage1": ..., "stage2": ...}``; each stage holds ``{"completed": int,
+    "total": int, "status": "open" | "completed" | None, "updated_at": str |
+    None}`` — the arbitrator's latest session summary for that stage (total =
+    that session's queue size: frozen for completed sessions, refreshed on the
+    next open). Entries are looked up by the member's user id string via
+    ``arbitration_user_ids`` (username -> user id; the collaboration store
+    keeps no username<->user-id mapping, so the caller supplies its
+    authenticated-membership mapping). Members without a mapping entry or
+    without any session, and any missing store/table/read failure, all degrade
+    to the two-stage zero object (completed 0 / total 0 / status None); only
+    counts and session status are ever returned (never queue items, votes, or
+    screener names). ``collaboration_store=None`` (default) keeps rows exactly
+    on the previous contract: no ``"arbitration"`` key at all.
     """
     task_dir = _safe_task_dir(task_id, data_dir)
+    arbitration: dict[str, dict[str, dict]] = {}
+    if collaboration_store is not None:
+        from coscreen.arbitration_session import session_progress
+        arbitration = session_progress(collaboration_store, task_id)
     result: list[dict[str, object]] = []
     for username in _participant_names(authorized_usernames):
+        member_arbitration = None
+        if collaboration_store is not None:
+            member_arbitration = {
+                "stage1": {"completed": 0, "total": 0,
+                           "status": None, "updated_at": None},
+                "stage2": {"completed": 0, "total": 0,
+                           "status": None, "updated_at": None},
+            }
+            actor_id = (None if arbitration_user_ids is None
+                        else arbitration_user_ids.get(username))
+            if actor_id is not None:
+                member_arbitration = arbitration.get(
+                    str(actor_id), member_arbitration)
         slug = tasks.slugify_screener(username)
         path = task_dir / f"{slug}.db"
         try:
             resolved = path.resolve(strict=True)
             resolved.relative_to(task_dir)
         except FileNotFoundError:
-            result.append({
+            row = {
                 "username": username,
                 "stage1": {"completed": 0, "total": 0, "updated_at": None},
                 "stage2": {"completed": 0, "total": 0, "updated_at": None},
                 "coding": {"completed": 0, "total": 0, "updated_at": None},
-            })
+            }
+            if member_arbitration is not None:
+                row["arbitration"] = member_arbitration
+            result.append(row)
             continue
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError("participant database path is unavailable") from exc
@@ -170,10 +210,13 @@ def list_team_progress(
         if resolved.parent != task_dir or resolved.name != path.name:
             raise ValueError("participant database path is unavailable")
         with closing(_readonly_connection(resolved)) as conn:
-            result.append({
+            row = {
                 "username": username,
                 "stage1": _screen_progress(conn, "decisions"),
                 "stage2": _screen_progress(conn, "stage2_decisions"),
                 "coding": _coding_progress(conn, resolved, owner_db or resolved),
-            })
+            }
+            if member_arbitration is not None:
+                row["arbitration"] = member_arbitration
+            result.append(row)
     return result

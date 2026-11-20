@@ -23,6 +23,38 @@ _TRACE_TABLES = {
     "trace_store", "trace_settings", "trace_operations", "trace_clear_operations",
     "trace_write_operations", "trace_events", "trace_field_lifecycles",
 }
+#: S2-B2 prepared seam: full structure required before any transactional default
+#: initialization. Covers every table/column the initialization algorithms write,
+#: not only the A1 writer trio. Missing table/column is fail-closed.
+_PREPARED_REQUIRED_COLUMNS = {
+    "trace_store": ("singleton", "store_id"),
+    "trace_settings": (
+        "task_id", "actor_id", "stages_json", "status", "operation_id", "version",
+        "updated_at",
+    ),
+    "trace_operations": (
+        "task_id", "actor_id", "operation_id", "payload_sha256", "result_json",
+    ),
+    "trace_clear_operations": (
+        "task_id", "actor_id", "operation_id", "payload_sha256", "result_json",
+    ),
+    "trace_write_operations": (
+        "task_id", "actor_id", "request_id", "stage", "operation", "subject_id",
+        "payload_sha256", "result_json", "created_at",
+    ),
+    "trace_events": (
+        "event_id", "store_id", "task_id", "actor_id", "stage", "action", "subject_id",
+        "before_json", "after_json", "field_json", "source", "source_record_id",
+        "source_revision_id", "batch_id", "request_id", "recorded_at",
+        "schema_version", "app_version", "origin_store_id", "origin_event_id",
+        "origin_sequence", "origin_actor_id", "imported_at", "origin_alias",
+        "origin_json", "origin_sha256",
+    ),
+    "trace_field_lifecycles": (
+        "task_id", "actor_id", "legacy_field_id", "field_uuid", "definition_json",
+        "created_at", "deleted_at",
+    ),
+}
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS trace_store ("
@@ -237,8 +269,31 @@ def _backup_before_schema_migration(conn: sqlite3.Connection, migration_id: str)
         raise
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create additive trace tables on the research database connection."""
+def _ensure_store_id(conn: sqlite3.Connection) -> None:
+    """Insert the singleton store identity only when it is missing (shared body).
+
+    Used by the default :func:`ensure_schema` path and by the S2-B2 prepared
+    seam inside an already-open target transaction (no DDL, no transaction
+    ownership). An existing store id is never rewritten.
+    """
+    row = conn.execute("SELECT store_id FROM trace_store WHERE singleton=1").fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO trace_store(singleton,store_id) VALUES(1,?)",
+            (str(uuid.uuid4()),),
+        )
+
+
+def ensure_schema(conn: sqlite3.Connection, *, structure_only: bool = False) -> None:
+    """Create additive trace tables on the research database connection.
+
+    S2-B2 ``structure_only=True``: reuse the original migration detection,
+    backup, DDL and ALTER algorithm, but skip the ``trace_store`` singleton data
+    INSERT. No trace business rows (store/settings/events/operations/lifecycles)
+    are written. Schema metadata and the pre-migration maintenance backup remain
+    allowed side effects, and the default ``structure_only=False`` path is
+    byte-compatible with the previous behavior.
+    """
     migration_id = _schema_migration_id(conn)
     if migration_id is not None:
         _backup_before_schema_migration(conn, migration_id)
@@ -251,12 +306,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         event_columns = {row[1] for row in conn.execute("PRAGMA table_info(trace_events)")}
         if "request_id" not in event_columns:
             conn.execute("ALTER TABLE trace_events ADD COLUMN request_id TEXT")
-        row = conn.execute("SELECT store_id FROM trace_store WHERE singleton=1").fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO trace_store(singleton,store_id) VALUES(1,?)",
-                (str(uuid.uuid4()),),
-            )
+        if not structure_only:
+            _ensure_store_id(conn)
         if own_transaction:
             conn.execute("RELEASE SAVEPOINT trace_schema_init")
     except Exception:
@@ -283,8 +334,64 @@ def _settings_row(conn: sqlite3.Connection, task_id: str, actor_id: str) -> dict
     return _row_dict(cursor, row) if row else None
 
 
-def get_settings(conn: sqlite3.Connection, task_id: str, actor_id: str | int) -> dict[str, Any]:
-    ensure_schema(conn)
+def _require_prepared_conn(conn: sqlite3.Connection) -> None:
+    """Enforce the S2-B2 prepared contract before any statement runs.
+
+    The frozen interface requires a native connection with an active
+    transaction; both violations are explicit ``RuntimeError`` (programming
+    contract, never a silent fallback or an implicit ``BEGIN``).
+    """
+    if not isinstance(conn, sqlite3.Connection):
+        raise RuntimeError(
+            "prepared trace operation requires a native sqlite3.Connection")
+    if not conn.in_transaction:
+        raise RuntimeError("prepared trace operation requires an open transaction")
+
+
+def _require_prepared_structure(
+    conn: sqlite3.Connection, *, require_store_row: bool,
+) -> None:
+    """Fail-closed structural check for the prepared seam (zero writes).
+
+    Every table/column the default-initialization algorithm writes must already
+    exist. Missing objects raise ``sqlite3.OperationalError`` and are never
+    silently skipped. ``require_store_row`` additionally demands the existing
+    store identity for read-only settings access.
+    """
+    _require_prepared_conn(conn)
+    for table, columns in _PREPARED_REQUIRED_COLUMNS.items():
+        if not _table_exists(conn, table):
+            raise sqlite3.OperationalError(
+                f"prepared trace operation requires table {table}")
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        missing = [column for column in columns if column not in present]
+        if missing:
+            raise sqlite3.OperationalError(
+                "prepared trace operation requires columns "
+                f"{','.join(missing)} on table {table}")
+    if require_store_row:
+        row = conn.execute(
+            "SELECT store_id FROM trace_store WHERE singleton=1").fetchone()
+        if row is None:
+            raise sqlite3.OperationalError(
+                "prepared trace operation requires the trace_store singleton row")
+
+
+def get_settings(
+    conn: sqlite3.Connection, task_id: str, actor_id: str | int,
+    *, prepared: bool = False,
+) -> dict[str, Any]:
+    """Return this actor's trace settings.
+
+    S2-B2 ``prepared=True``: pure read on the caller's open transaction; no
+    ``ensure_schema``/DDL/backup/transaction ownership. Requires the complete
+    prepared structure and an existing store identity (fail-closed), so the
+    default path stays byte-compatible.
+    """
+    if prepared:
+        _require_prepared_structure(conn, require_store_row=True)
+    else:
+        ensure_schema(conn)
     task = _text(task_id, "task_id", 200)
     actor = _text(str(actor_id), "actor_id", 200)
     row = _settings_row(conn, task, actor)
@@ -402,9 +509,32 @@ def is_recording(conn: sqlite3.Connection, context: TraceContext, stage: str) ->
     )
 
 
-def ensure_default_recording(conn: sqlite3.Connection, context: TraceContext) -> None:
-    """Enable all stages once; saved off/paused preferences remain authoritative."""
+def ensure_default_recording(
+    conn: sqlite3.Connection, context: TraceContext, *, prepared: bool = False,
+) -> None:
+    """Enable all stages once; saved off/paused preferences remain authoritative.
+
+    S2-B2 ``prepared=True``: caller already holds the unique target transaction
+    after every final gate. The seam performs no DDL/backup/reconnect/transaction
+    ownership/SAVEPOINT; it fail-closes on incomplete structure, fills only a
+    missing ``trace_store`` singleton, and reuses the same :func:`update_settings`
+    body for a missing setting row. Existing off/paused/recording rows are never
+    overwritten and no event/operation/baseline is added for them.
+    """
     context = context.normalized()
+    if prepared:
+        _require_prepared_structure(conn, require_store_row=False)
+        _ensure_store_id(conn)
+        if _settings_row(conn, context.task_id, str(context.actor_id)) is not None:
+            return
+        update_settings(conn, context, stages=list(STAGES), status="recording",
+                        operation_id="default-recording", expected_version=0,
+                        prepared=True)
+        if _settings_row(conn, context.task_id, str(context.actor_id)) is None:
+            raise sqlite3.OperationalError(
+                "prepared trace default initialization did not persist the "
+                "trace_settings row")
+        return
     ensure_schema(conn)
     if _settings_row(conn, context.task_id, str(context.actor_id)) is not None:
         return
@@ -424,7 +554,9 @@ def ensure_default_recording(conn: sqlite3.Connection, context: TraceContext) ->
 
 
 def begin_capture_transaction(
-    conn: sqlite3.Connection, context: TraceContext, stage: str
+    conn: sqlite3.Connection, context: TraceContext, stage: str,
+    *,
+    prepared: bool = False,
 ) -> bool:
     """Read this actor's setting first, then start an appropriately locked transaction.
 
@@ -436,10 +568,34 @@ def begin_capture_transaction(
     before any business-state read; this serializes concurrent recorded writes.
 
     Off/paused contexts use a deferred transaction, avoiding an eager write lock.
+
+    S2-A1 borrowed mode (``prepared=True``)：窗口已持事务、prepare 阶段已跑
+    旧签名完成 schema/默认 settings 准备。本分支只核事务已在（编程违约
+    RuntimeError），不 ensure_schema/不写默认/BEGIN/commit/rollback/DDL。
+    prepare 必需状态显式 fail-closed（缺即 sqlite3.OperationalError，不折
+    False、不静默）：(1) 窗口写请求/事件路径所需既有表 trace_settings/
+    trace_events/trace_write_operations——均由合法 prepare 的 ensure_schema
+    无条件建立，缺任一即未跑 prepare，且 begin/finish_write_request 缺
+    trace_write_operations 时会静默跳过而丢 request 幂等；(2) 本
+    task/actor 的 trace_settings 行。表/行确认后**复用 is_recording 现读**
+    当前 setting（同 caller conn，不缓存 prepare 时快照、不另写第二套
+    status/stages_json 解析；其缺表缺行折叠在上方确认后不可达）（§2.2/§8）。
     """
     context = context.normalized()
     if stage not in STAGES:
         raise ValueError(f"unknown trace stage: {stage!r}")
+    if prepared:
+        if not conn.in_transaction:
+            raise RuntimeError("prepared=True requires an open transaction")
+        for required in ("trace_settings", "trace_events", "trace_write_operations"):
+            if not _table_exists(conn, required):
+                raise sqlite3.OperationalError(
+                    f"prepared=True requires prepare to have created table {required}")
+        if _settings_row(conn, context.task_id, str(context.actor_id)) is None:
+            raise sqlite3.OperationalError(
+                "prepared=True requires prepare to have created the "
+                "trace_settings row for this task/actor")
+        return is_recording(conn, context, stage)
     ensure_default_recording(conn, context)
     if conn.in_transaction:
         return is_recording(conn, context, stage)
@@ -732,8 +888,17 @@ def update_settings(
     status: str,
     operation_id: str,
     expected_version: int,
+    prepared: bool = False,
 ) -> dict[str, Any]:
-    """Set this actor's local recording scope, add its start snapshot and boundary."""
+    """Set this actor's local recording scope, add its start snapshot and boundary.
+
+    S2-B2 ``prepared=True``: the caller owns the open target transaction. This
+    mode skips ``ensure_schema``, transaction ownership and SAVEPOINT control and
+    delegates the version read to ``get_settings(prepared=True)``; the payload
+    hash, idempotent replay, version check, settings/control/baseline/lifecycle
+    and operation-receipt algorithm is the same shared body. Exceptions propagate
+    to the caller's rollback with no inner partial commit.
+    """
     context = context.normalized()
     if status not in {"off", "recording", "paused"}:
         raise ValueError("status must be off, recording or paused")
@@ -745,11 +910,15 @@ def update_settings(
         raise ValueError("expected_version must be a non-negative integer")
     payload = {"stages": stage_list, "status": status, "expected_version": expected_version}
     payload_sha = hashlib.sha256(_json(payload).encode()).hexdigest()
-    ensure_schema(conn)
-    own_transaction = not conn.in_transaction
-    if own_transaction:
-        conn.execute("BEGIN IMMEDIATE")
-    conn.execute("SAVEPOINT trace_settings_change")
+    if prepared:
+        _require_prepared_structure(conn, require_store_row=True)
+        own_transaction = False
+    else:
+        ensure_schema(conn)
+        own_transaction = not conn.in_transaction
+        if own_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SAVEPOINT trace_settings_change")
     try:
         prior_op = conn.execute(
             "SELECT payload_sha256,result_json FROM trace_operations WHERE task_id=? AND actor_id=? AND operation_id=?",
@@ -759,11 +928,12 @@ def update_settings(
             if prior_op[0] != payload_sha:
                 raise TraceConflict("operation ID was already used with different settings")
             result = json.loads(prior_op[1])
-            conn.execute("RELEASE SAVEPOINT trace_settings_change")
+            if not prepared:
+                conn.execute("RELEASE SAVEPOINT trace_settings_change")
             if own_transaction:
                 conn.commit()
             return result
-        previous = get_settings(conn, context.task_id, context.actor_id)
+        previous = get_settings(conn, context.task_id, context.actor_id, prepared=prepared)
         if previous["version"] != expected_version:
             raise TraceVersionConflict(previous)
         now = _now()
@@ -810,13 +980,15 @@ def update_settings(
             "VALUES(?,?,?,?,?)",
             (context.task_id, str(context.actor_id), operation_id, payload_sha, _json(next_settings)),
         )
-        conn.execute("RELEASE SAVEPOINT trace_settings_change")
+        if not prepared:
+            conn.execute("RELEASE SAVEPOINT trace_settings_change")
         if own_transaction:
             conn.commit()
         return next_settings
     except Exception:
-        conn.execute("ROLLBACK TO SAVEPOINT trace_settings_change")
-        conn.execute("RELEASE SAVEPOINT trace_settings_change")
+        if not prepared:
+            conn.execute("ROLLBACK TO SAVEPOINT trace_settings_change")
+            conn.execute("RELEASE SAVEPOINT trace_settings_change")
         if own_transaction:
             conn.rollback()
         raise
@@ -828,6 +1000,7 @@ def clear_history(
     *,
     operation_id: str,
     expected_version: int,
+    prepared: bool = False,
 ) -> dict[str, Any]:
     """Clear only one actor/task trace and start a fresh, explicitly bounded history.
 
@@ -835,17 +1008,30 @@ def clear_history(
     录制启动时同款重建**全局文献/协议基线**（_snapshot_articles_and_protocol）
     ——否则导出的 trace 包在导入预览中失去 DOI 匹配数据，直到用户关掉再开
     录制才恢复。
+
+    P21（HISTORY_CLEAR_TRANSACTION_RULING_SOL §36）``prepared=True``：调用方
+    （team history-clear 协调器）已持有该现存目标的唯一事务。此模式跳过
+    ``ensure_schema``/BEGIN/SAVEPOINT/RELEASE/ROLLBACK/commit/close，结构
+    校验走 ``_require_prepared_structure(require_store_row=True)``，版本读取
+    委托 ``get_settings(prepared=True)``；删除/基线/settings/receipt 业务体
+    与默认路径**同一份**（不复制算法），异常原样交协调器回滚。默认
+    ``prepared=False`` 行为与既有 generic/CLI 路径逐字不变。
     """
     context = context.normalized()
     operation_id = _text(operation_id, "operation_id", 200)
     if type(expected_version) is not int or expected_version < 0:
         raise ValueError("expected_version must be a non-negative integer")
-    ensure_schema(conn)
-    own_transaction = not conn.in_transaction
-    if own_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+    if prepared:
+        _require_prepared_structure(conn, require_store_row=True)
+        own_transaction = False
+    else:
+        ensure_schema(conn)
+        own_transaction = not conn.in_transaction
+        if own_transaction:
+            conn.execute("BEGIN IMMEDIATE")
     payload_sha = hashlib.sha256(_json({"expected_version": expected_version}).encode()).hexdigest()
-    conn.execute("SAVEPOINT trace_history_clear")
+    if not prepared:
+        conn.execute("SAVEPOINT trace_history_clear")
     try:
         old_op = conn.execute(
             "SELECT payload_sha256,result_json FROM trace_clear_operations "
@@ -856,11 +1042,12 @@ def clear_history(
             if old_op[0] != payload_sha:
                 raise TraceConflict("clear operation ID was already used with different settings")
             result = json.loads(old_op[1])
-            conn.execute("RELEASE SAVEPOINT trace_history_clear")
+            if not prepared:
+                conn.execute("RELEASE SAVEPOINT trace_history_clear")
             if own_transaction:
                 conn.commit()
             return result
-        previous = get_settings(conn, context.task_id, context.actor_id)
+        previous = get_settings(conn, context.task_id, context.actor_id, prepared=prepared)
         if previous["version"] != expected_version:
             raise TraceVersionConflict(previous)
         deleted_count = int(conn.execute(
@@ -926,13 +1113,15 @@ def clear_history(
             "VALUES(?,?,?,?,?)",
             (context.task_id, str(context.actor_id), operation_id, payload_sha, _json(result)),
         )
-        conn.execute("RELEASE SAVEPOINT trace_history_clear")
+        if not prepared:
+            conn.execute("RELEASE SAVEPOINT trace_history_clear")
         if own_transaction:
             conn.commit()
         return result
     except Exception:
-        conn.execute("ROLLBACK TO SAVEPOINT trace_history_clear")
-        conn.execute("RELEASE SAVEPOINT trace_history_clear")
+        if not prepared:
+            conn.execute("ROLLBACK TO SAVEPOINT trace_history_clear")
+            conn.execute("RELEASE SAVEPOINT trace_history_clear")
         if own_transaction:
             conn.rollback()
         raise

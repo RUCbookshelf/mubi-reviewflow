@@ -180,35 +180,38 @@ def _error(code: str, message_key: str, *, params: dict | None = None,
 
 
 def _consensus_gate(task_id: str, user: dict,
-                    arbitration_store: Callable[[str, dict], Any] | None = None, *,
+                    arbitration_store: Callable[[str, dict], Any] | None = None,
+                    arbitration_read_store: Callable[[str, dict], Any] | None = None, *,
+                    read: bool = False,
                     code: str = "tables_rob_requires_consensus",
                     message_key: str = "tables.rob_requires_consensus") -> None:
-    """带 ``rob_tool`` 的 SoF 与判定写回共用的权限闸（同一判定函数）。
+    """带 ``rob_tool`` 的 SoF 读与判定写回共用的权限闸（2.1.6 FLOW II-A 读写分离）。
 
-    研究局限性列会跨全员个人库聚合评价档位（``_appraisal_levels``），判定
-    写回更是定稿落库，而 grade-input 对同一批数据只允许属主/裁决员
-    （``consensus:write``）。因此这里**直接复用** ``main._arbitration_store``
-    这一个判定函数（不复制、不另造口径）：非属主且无 ``consensus:write`` →
-    403；server 模式 legacy 任务 → 既有 409
-    ``coding.collaboration_owner_unset``。
+    同一基础授权解析（属主/有效 reconciler），但**显式区分两个语义入口**
+    （不靠 HTTP 动词/路径猜用途——POST /tables/sof 实际是导出读）：
 
-    403 改写为调用方的结构化键（响应体只有 ``error_code/message_key/params``，
-    不含任何档位）；409/503 原样透出。缺省键 = SoF 读取的
-    ``tables.rob_requires_consensus``；判定写回（PUT judgment）传
-    ``tables.judgment_requires_consensus`` —— **换的只是词条，权限判定逻辑
-    仍是这一个函数**，不存在第二份口径。
+    - ``read=True``（rob_tool 汇总/预览/导出、judgment 展示脱敏探测）走
+      ``main._arbitration_read_store``：R-1 属主保留既有查看（无论其业务
+      角色配置状态）；team 成员须当前有效 reconciler；成员拒绝沿既有
+      403 结构化键（无档位），**不抛** team.role.*。
+    - ``read=False``（PUT judgment 判定写回）走 ``main._arbitration_store``
+      严格业务写门：team 属主须有效 reconciler（未配置/冲突给 team.role.*
+      409/403）；读门例外绝不穿到写路径。
 
-    判定函数的来源（2.1.5 收尾清债 C1）：优先用**注册期注入**的
-    ``arbitration_store``（``register_tables_routes`` 参数，``main.py`` 注册区
-    传入——显式依赖，不依赖宿主模块属性的运行期可变性）；仅当未注入
-    （``None``，独立注册/测试桩）时在请求期从宿主模块导入同一函数对象兜底。
-    两条路取的都是同一个 ``main._arbitration_store``，不存在第二份权限口径。
+    判定函数来源（2.1.5 收尾清债 C1，不变）：优先注册期注入；未注入
+    （独立注册/测试桩）时请求期从宿主模块导入同一函数对象兜底。
     """
-    if arbitration_store is None:
-        from custom_backend.main import _arbitration_store as arbitration_store
+    if read:
+        if arbitration_read_store is None:
+            from custom_backend.main import _arbitration_read_store as arbitration_read_store
+        gate = arbitration_read_store
+    else:
+        if arbitration_store is None:
+            from custom_backend.main import _arbitration_store as arbitration_store
+        gate = arbitration_store
 
     try:
-        arbitration_store(task_id, user)
+        gate(task_id, user)
     except HTTPException as exc:
         if exc.status_code == 403:
             raise _error(code, message_key, status=403) from exc
@@ -972,6 +975,7 @@ def register_tables_routes(
     screener_db: Callable[..., Path],
     library_unavailable_message: str,
     arbitration_store: Callable[[str, dict], Any] | None = None,
+    arbitration_read_store: Callable[[str, dict], Any] | None = None,
 ) -> None:
     """在 ``app`` 上注册 W7 两个表生成端点 + 判定写回端点（main.py 一行调用）。
 
@@ -1029,7 +1033,8 @@ def register_tables_routes(
         无权；其余（409 legacy/503）按既有语义透出，不在这里吞。
         """
         try:
-            _consensus_gate(task_id, user, arbitration_store)
+            _consensus_gate(task_id, user, arbitration_store, arbitration_read_store,
+                            read=True)
         except HTTPException as exc:
             if exc.status_code == 403:
                 return False
@@ -1082,7 +1087,8 @@ def register_tables_routes(
         if body.rob_tool:
             # 研究局限性列聚合全员评价档位：权限与 grade-input 完全同一判定，
             # 不通过时在校验工具之前就 403（响应中不含任何档位）。
-            _consensus_gate(task_id, user, arbitration_store)
+            _consensus_gate(task_id, user, arbitration_store, arbitration_read_store,
+                            read=True)
             # 后续聚合/回显一律用注册表返回的**规范 id**（终审 #08）：get_tool
             # 内部 strip 使带首尾空白的 rob_tool 通过校验，但评价聚合按 tool_id
             # 精确匹配，未规范化的原串会命中 0 条 → 研究局限性全空、总体置信度

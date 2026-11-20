@@ -6,8 +6,9 @@
 不变。行为面用真实入口驱动：
 
 - F04：从 index.html 同源加载的 research_trace.js 原文抽出 localDay/defaultWindow/
-  params，在三个时区（宿主 Asia/Shanghai、UTC、EST5EDT）下逐点核对日界序列化与
-  本地 00:00±1h 记录的可见性；并静态钉住两处同步点（明细 params + 导出预览）。
+  params，在三个显式时区（TZ=Asia/Shanghai、UTC、EST5EDT）下逐点核对日界序列化与
+  本地 00:00±1h 记录的可见性（宿主/CI 的真实时区不参与任何断言）；并静态钉住两处
+  同步点（明细 params + 导出预览）。
 - F07：静态钉住「先清单后校验」的调用次序与面板/高亮接线；文案必须十语言注册。
 - F60：真实 preview 端点（MAX_EVENTS 临时压到 -1）返回 413，文案必须逐字等于
   interface_locale.js 已注册的十语言词条；三处 413 不得再有插值英文。
@@ -197,28 +198,37 @@ process.stdout.write(JSON.stringify({
 """
 
 
-@unittest.skipIf(os.environ.get("CI") == "true", "F04 本地日期窗口按 GMT+8 设计，CI 为 UTC")
 class F04TraceLocalDateWindowTests(unittest.TestCase):
-    """默认窗口 = 全部阶段 + 最近 7 天（含今天）；日界按本地时区构造。"""
+    """默认窗口 = 全部阶段 + 最近 7 天（含今天）；日界按本地时区构造。
 
-    def _probe(self, tz=None):
-        env = {"TZ": tz} if tz else {}
-        return json.loads(_run_node(_F04_HARNESS, env_extra=env, argv=[str(FRONTEND / "research_trace.js")]))
+    可移植性收尾（2.1.6 Flash 第二阶段）：原类级 ``skipIf(CI=='true')`` 删除——
+    跳过原因是探测曾依赖宿主时区（开发机 GMT+8、CI UTC）。现在每个探测都显式
+    传 TZ（Asia/Shanghai/UTC/EST5EDT），预期值与时区一一钉死，CI 与本机同一套
+    断言；不改产品时间语义（localDay/utcDaySpan 仍按用户本地时区）。
+    """
+
+    def _probe(self, tz):
+        """tz 必填：探测结果只允许由显式 TZ 决定，宿主时区不得进入断言。"""
+        return json.loads(_run_node(_F04_HARNESS, env_extra={"TZ": tz}, argv=[str(FRONTEND / "research_trace.js")]))
 
     def test_local_midnight_serialization_per_timezone(self):
         """本地 00:00 序列化结果必须随时区变化；UTC 'Z' 裸拼只在零时区正确。"""
         cases = {
-            None: "2026-10-25T16:00:00.000Z",       # 宿主 Asia/Shanghai（UTC+8）
+            "Asia/Shanghai": "2026-10-25T16:00:00.000Z",  # 显式东八区（原 GMT+8 设计口径）
             "UTC": "2026-10-26T00:00:00.000Z",
             "EST5EDT": "2026-10-26T04:00:00.000Z",  # 10/26 仍为夏令时（UTC-4）
         }
+        from datetime import datetime, timedelta
         for tz, expected in cases.items():
             out = self._probe(tz)
             self.assertEqual(out["localDay"], expected,
                              "localDay('2026-10-26') 在 %r 下应为本地零点：%r" % (tz, out))
             self.assertTrue(out["localDayEnd"].endswith(".999Z"), out)
-            self.assertEqual(out["localDayEnd"],
-                             expected.replace("T00:00:00.000Z", "T23:59:59.999Z") if expected.endswith("T00:00:00.000Z") else out["localDayEnd"])
+            # 日末 = 本地零点 + 1 天 − 1ms，三个时区都做真断言（旧三元式只在零时区
+            # 命中真断言，其余分支是 assertEqual(x, x) 套壳）。
+            end = datetime.fromisoformat(expected.replace("Z", "+00:00")) + timedelta(days=1, milliseconds=-1)
+            self.assertEqual(out["localDayEnd"], end.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (end.microsecond // 1000),
+                             "localDay('2026-10-26', true) 在 %r 下应为本地日末：%r" % (tz, out))
 
     def test_local_hour_window_visibility(self):
         """本地 00:30 必须被 10/26 窗口包含；前一日 23:30 必须排除；当日最后一毫秒包含。
@@ -226,7 +236,7 @@ class F04TraceLocalDateWindowTests(unittest.TestCase):
         修复前 since 恒为 '2026-10-26T00:00:00Z'：UTC+8 下本地 00:30 的记录
         （2026-10-25T16:30Z）落在 since 之前 → 明明有记录却 0 行（F04 复现）。
         """
-        sh = self._probe(None)
+        sh = self._probe("Asia/Shanghai")
         since, until = sh["localDay"], sh["localDayEnd"]
         self.assertLessEqual(since, sh["at0030"], "本地 00:30 记录必须 ≥ 本地零点序列")
         self.assertGreaterEqual(until, sh["atLastMs"], "本地当日最后一毫秒必须 ≤ until")
@@ -239,7 +249,7 @@ class F04TraceLocalDateWindowTests(unittest.TestCase):
                          "零时区下新旧口径应一致（对照组：UTC 用户行为不变）")
 
     def test_params_serializes_local_window(self):
-        for tz in (None, "UTC"):
+        for tz in ("Asia/Shanghai", "UTC"):
             out = self._probe(tz)
             query = unquote(out["query"])
             self.assertIn("since=" + out["localDay"], query,
@@ -251,7 +261,7 @@ class F04TraceLocalDateWindowTests(unittest.TestCase):
             self.assertNotIn("T23:59:59Z", query, "结束日界不得是 UTC 裸拼：%r" % query)
 
     def test_default_window_is_seven_local_days_including_today(self):
-        out = self._probe(None)
+        out = self._probe("Asia/Shanghai")
         since, until = out["window"]["since"], out["window"]["until"]
         self.assertEqual(until, out["today"], "默认窗口结束日必须是本地今天")
         from datetime import date, timedelta

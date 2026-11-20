@@ -26,6 +26,7 @@ import os
 import json
 import re
 import shutil
+import sqlite3
 import tempfile
 from contextlib import closing
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from coscreen.db import (
     StrPath,
     _add_column_if_missing,  # noqa: PLC2701  同包内复用连接工厂模块的补列原语
     _connect,  # noqa: PLC2701  同包内复用唯一连接工厂（WAL/外键/旧库自愈）
+    _require_borrowed_write_conn,  # noqa: PLC2701  S2-A1 借用写入口校验（连接工厂模块）
     list_articles,
     list_decisions,
     upsert_decision_sql,
@@ -677,9 +679,14 @@ def list_highlights(db_path: StrPath, zotero_key: str | None = None) -> list[Hig
     return [Highlight(*row) for row in rows]
 
 
-def delete_highlight(db_path: StrPath, highlight_id: int) -> bool:
-    """删除一条高亮；返回是否确实删除了行。"""
-    with closing(_connect(db_path)) as conn, conn:
+def delete_highlight(db_path: StrPath, highlight_id: int, *, conn: sqlite3.Connection | None = None) -> bool:
+    """删除一条高亮；借用活动事务时不接管连接或提交，返回是否确实删除了行。"""
+    with contextlib.ExitStack() as stack:
+        if conn is not None:
+            _require_borrowed_write_conn(conn)
+        else:
+            conn = stack.enter_context(closing(_connect(db_path)))
+            stack.enter_context(conn)
         cur = conn.execute("DELETE FROM highlights WHERE id = ?", (int(highlight_id),))
         return cur.rowcount > 0
 
@@ -743,7 +750,8 @@ def _ensure_rects_column(conn) -> None:
     )
 
 
-def add_highlight_rects(db_path: StrPath, zotero_key: str, events: list) -> int:
+def add_highlight_rects(db_path: StrPath, zotero_key: str, events: list,
+                        *, conn: sqlite3.Connection | None = None) -> int:
     """批量入库 PDF 页面级标注事件（SPEC §16），返回实际新增/更新条数。
 
     events 元素为组件回传的 dict：
@@ -797,10 +805,14 @@ def add_highlight_rects(db_path: StrPath, zotero_key: str, events: list) -> int:
         normalized.append((kind, page, text, color, note, list(rects)))
 
     count = 0
-    with closing(_connect(db_path)) as conn, conn:
-        # 幂等判定与写入同处写事务：跨进程由 BEGIN IMMEDIATE 串行化，进程内
-        # 亦不会出现两个连接同时「查无此行 → 各插一行」。
-        conn.execute("BEGIN IMMEDIATE")
+    with contextlib.ExitStack() as stack:
+        if conn is not None:
+            _require_borrowed_write_conn(conn)
+        else:
+            conn = stack.enter_context(closing(_connect(db_path)))
+            stack.enter_context(conn)
+            # 幂等判定与写入同处写事务；借用时由外层持有该事务。
+            conn.execute("BEGIN IMMEDIATE")
         for kind, page, text, color, note, rects in normalized:
             if kind == "highlight":
                 if conn.execute(
@@ -921,6 +933,7 @@ def save_stage2(
     tags: str | None = None,
     *,
     trace_context: TraceContext | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> None:
     """保存/更新一条复筛决策（upsert）。
 
@@ -928,55 +941,97 @@ def save_stage2(
     复筛时间（更新时保留）；tags 传 None（缺省）保留原值、传字符串（含
     空串）整体覆盖；排除理由必填由调用方（UI 的 prepare_decision）校验。
     zotero_key 不存在时因外键约束抛 sqlite3.IntegrityError。
+
+    S2-A1 借用写（``conn`` 给定）：任何 SQL 前先核类型与活动事务
+    （``_require_borrowed_write_conn``：非法 TypeError／无事务 RuntimeError／
+    关闭连接 ProgrammingError 原样）；此后校验/replay/undo 快照/journal/
+    trace/请求摘要与业务 upsert **全部落在该连接**——不 _connect/close/
+    连接上下文/BEGIN/commit/rollback/executescript/ensure/DDL；replay 命中
+    与正常返回均**不代表提交**（提交权归窗口，单业务目标 commit）；异常
+    原样上抛交窗口整体回滚。缺省（conn=None）保留旧 standalone 语义。
     """
     _validate_stage2_decision(decision)
+    # FIX-R1：now/SQL 恢复在原位置取样——decision 校验后、任何连接/取锁/
+    # 自愈迁移**之前**（standalone 与 borrowed 同点位；迁移耗时不得漂移
+    # screened_at/updated_at 时钟），由 wrapper 计算后传入共用体。
     now = _now()
     sql = upsert_decision_sql(
         _STAGE2_TABLE, keep_tags=tags is None, keep_screened_at=True
     )
-    with closing(_connect(db_path)) as conn, conn:
-        if trace_context is not None:
-            from coscreen.workspace_undo import begin_save, snapshot, record_save
-            begin_save(conn)
-            from coscreen.research_trace import begin_capture_transaction, begin_write_request
+    if conn is not None:
+        _require_borrowed_write_conn(conn)
+        return _save_stage2_in_conn(
+            conn, zotero_key, decision, exclusion_reason, notes, tags,
+            trace_context, now, sql, prepared=True)
+    with closing(_connect(db_path)) as own, own:
+        return _save_stage2_in_conn(
+            own, zotero_key, decision, exclusion_reason, notes, tags,
+            trace_context, now, sql, prepared=False)
 
-            begin_capture_transaction(conn, trace_context, "fulltext")
-            replay, _ = begin_write_request(
-                conn, trace_context, stage="fulltext", operation="stage2_save",
-                subject_id=zotero_key,
-                payload={"decision": decision, "exclusion_reason": exclusion_reason,
-                         "notes": notes, "tags": {"keep": True} if tags is None else tags},
-            )
-            if replay:
-                return None
-            undo_before = snapshot(conn, "fulltext", zotero_key)
-        old = conn.execute(
-            "SELECT decision,exclusion_reason,notes,tags FROM stage2_decisions WHERE zotero_key=?",
-            (zotero_key,),
-        ).fetchone()
-        before = ({"decision": old[0], "exclusion_reason": old[1] or "", "notes": old[2] or "",
-                   "tags": old[3] or ""} if old else None)
-        after = {
-            "decision": decision, "exclusion_reason": exclusion_reason or "", "notes": notes or "",
-            "tags": (tags if tags is not None else (old[3] if old else "")) or "",
-        }
-        conn.execute(
-            sql,
-            (zotero_key, decision, exclusion_reason, notes, tags or "", now, now),
+
+def _save_stage2_in_conn(
+    conn: sqlite3.Connection,
+    zotero_key: str,
+    decision: str,
+    exclusion_reason: str,
+    notes: str,
+    tags: str | None,
+    trace_context: TraceContext | None,
+    now: str,
+    sql: str,
+    *,
+    prepared: bool,
+) -> None:
+    """save_stage2 的共用算法体（standalone/借用同一份，禁止复制两份，§2.1）。
+
+    standalone 由 ``save_stage2`` 以自建连接＋连接上下文事务调用
+    （``prepared=False``，helper 走旧准备路径）；借用由窗口事务内调用
+    （``prepared=True``，helper 仅事务断言/现读）。``now``/``sql`` 由
+    wrapper 在原位置（校验后、连接/迁移前）计算传入，共用体不自取样
+    （FIX-R1）。本函数不管理连接与事务。
+    """
+    if trace_context is not None:
+        from coscreen.workspace_undo import begin_save, snapshot, record_save
+        begin_save(conn, prepared=prepared)
+        from coscreen.research_trace import begin_capture_transaction, begin_write_request
+
+        begin_capture_transaction(conn, trace_context, "fulltext", prepared=prepared)
+        replay, _ = begin_write_request(
+            conn, trace_context, stage="fulltext", operation="stage2_save",
+            subject_id=zotero_key,
+            payload={"decision": decision, "exclusion_reason": exclusion_reason,
+                     "notes": notes, "tags": {"keep": True} if tags is None else tags},
         )
-        if trace_context is not None:
-            record_save(conn, trace_context, "fulltext", zotero_key, undo_before,
-                        snapshot(conn, "fulltext", zotero_key))
-            from coscreen.research_trace import capture_event
+        if replay:
+            return None
+        undo_before = snapshot(conn, "fulltext", zotero_key)
+    old = conn.execute(
+        "SELECT decision,exclusion_reason,notes,tags FROM stage2_decisions WHERE zotero_key=?",
+        (zotero_key,),
+    ).fetchone()
+    before = ({"decision": old[0], "exclusion_reason": old[1] or "", "notes": old[2] or "",
+               "tags": old[3] or ""} if old else None)
+    after = {
+        "decision": decision, "exclusion_reason": exclusion_reason or "", "notes": notes or "",
+        "tags": (tags if tags is not None else (old[3] if old else "")) or "",
+    }
+    conn.execute(
+        sql,
+        (zotero_key, decision, exclusion_reason, notes, tags or "", now, now),
+    )
+    if trace_context is not None:
+        record_save(conn, trace_context, "fulltext", zotero_key, undo_before,
+                    snapshot(conn, "fulltext", zotero_key))
+        from coscreen.research_trace import capture_event
 
-            capture_event(
-                conn, trace_context, stage="fulltext",
-                action="decision_created" if old is None else "decision_changed",
-                subject_id=zotero_key, before=before, after=after,
-            )
-            from coscreen.research_trace import finish_write_request
+        capture_event(
+            conn, trace_context, stage="fulltext",
+            action="decision_created" if old is None else "decision_changed",
+            subject_id=zotero_key, before=before, after=after,
+        )
+        from coscreen.research_trace import finish_write_request
 
-            finish_write_request(conn, trace_context)
+        finish_write_request(conn, trace_context)
 
 
 def restore_stage2(

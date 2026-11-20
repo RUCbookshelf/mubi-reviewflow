@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 import json
+import uuid
 from typing import Annotated, Literal
 
-from fastapi import Depends, HTTPException, File, Form, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, Header, HTTPException, File, Form, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,20 +81,160 @@ class SubmissionEvidenceIn(BaseModel):
 SAVE_NOT_SAVED_503 = "本次修改尚未保存。轨迹记录不可用，请重试或暂停记录后重新保存。"
 
 
+# ---------------------------------------------------------------------------
+# P16（C12 作者侧；2.1.6 team contracts P16 节）：成员写路由的 mutate 适配
+# 助手。本文件四入口（values-batch/evidence uploads/submission-evidence/
+# restore）与 main.py 的 save_decision/save_stage2_decision/save_coding_value
+# 在**服务端可信状态**判定的 team 任务上改经 P15
+# ``WorkflowRuntime.mutate``；solo/legacy 保持既有 write_guard 路径字节不变
+# （P15 契约：旧 solo 路由继续直接走 write_guard，P24 负责最终接线与无漏网
+# 检查）。
+# ---------------------------------------------------------------------------
+
+def member_request_fingerprint(request_id: str | None, payload: dict) -> tuple[str, str]:
+    """P16 需求 2 前半：进入写窗口**之前**解析并固定请求内容与 SHA。
+
+    ``request_id`` 取客户端 ``X-Request-Id``（缺省由服务端生成 uuid4——单次
+    请求、不参与回执幂等，legacy 客户端行为不变；非法形状原样透传，由
+    mutate 的 team 路径按 ``invalid_request_id`` 400 拒绝）。``payload`` 是
+    服务端路由代码构造的规范化请求视图（路由名/规范 task_id/body 或固定后
+    的上传内容 SHA），``request_sha256`` 是其 canonical JSON 的 SHA-256——
+    同 id 同内容的客户端重试命中回执幂等，同 id 异内容 409（C09）。
+    """
+    rid = request_id if request_id is not None else str(uuid.uuid4())
+    sha = hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                    ensure_ascii=False, default=str)
+                         .encode("utf-8")).hexdigest()
+    return rid, sha
+
+
+def _json_string_keys(value):
+    """递归把 dict 键规范为字符串（P07 回执 result.writer 契约；幂等）。"""
+    if isinstance(value, dict):
+        return {k if isinstance(k, str) else str(k): _json_string_keys(v)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_string_keys(item) for item in value]
+    return value
+
+
+def member_mutate(runtime, info, user, *, op_name: str, stage: str, key: str,
+                  expected_version: int | None, request_id: str,
+                  request_sha256: str, writer):
+    """P16 需求 1：stage/key 由服务端路由代码/请求体/持久 journal 归属导出。
+
+    ``operation`` 只在此构造（``TeamOperation`` DTO）——客户端载荷绝不能充当
+    路由键；team 路径经 P13 提交协议，writer 在窗口 yield 内收到绑定了
+    ``ctx.write_inputs`` 的原生 WorkflowContext（保留连接读取）。
+
+    返回**业务载荷**（writer 返回值）：P13 的 ``mutate`` 返回映射里
+    ``result`` 是回执信封 ``{"request_id","operation","item_keys",
+    "writer":<业务载荷>,"seals":[...]}``——路由层必须解信封取 ``writer``，
+    业务返回形状才与 solo 分支兼容（幂等重放命中时同为回执信封形态，
+    一致解包）。
+    """
+    from coscreen.team_flow_types import TeamOperation
+
+    def canonical_writer(ctx):
+        # P07 回执严格契约：writer 结果（回执 result.writer）对象键必须全是
+        # JSON 字符串——业务载荷（如 coding_result 的 int 维度键嵌套 dict）在
+        # 进回执前递归字符串键化；solo 分支的响应序列化本就把 int 键强转为
+        # 字符串，客户端看到的 JSON 逐字相同（业务返回兼容零变化）。
+        return _json_string_keys(writer(ctx))
+
+    outcome = runtime.mutate(
+        info.task_id, user,
+        operation=TeamOperation(name=op_name, stage=stage,
+                                expected_version=expected_version),
+        item_keys=(key,), request_id=request_id, request_sha256=request_sha256,
+        writer=canonical_writer)
+    result = outcome.get("result")
+    if isinstance(result, dict) and "writer" in result:
+        return result["writer"]
+    return result
+
+
+def member_prepare_trace(db_path, task_id: str, user_id: int) -> None:
+    """P16/A1：team borrowed writer 的 prepare——**最终资格窗口之前**在 actor
+    库以 path 连接完成 trace 三表（ensure_schema）与本 task/actor 的默认
+    settings 行（ensure_default_recording；默认 recording off，与 solo 首存
+    的懒 ensure 同语义）。S2-A1 prepared 契约：窗口内
+    ``begin_capture_transaction(prepared=True)`` 只读复用，不做 DDL/自愈；
+    缺 prepare 即 fail-closed（OperationalError），本函数就是那个 prepare。
+    幂等：表/行已存在时零写入。
+    """
+    from coscreen import research_trace
+    from coscreen.research_trace import TraceContext
+    with closing(workflow_store.connect(db_path)) as conn, conn:
+        # undo journal 表/索引/列：begin_save 的 standalone 建表分支（prepared
+        # 分支只核事务，schema 由本 prepare 负责——S2-A1 §2.2）。
+        workspace_undo.begin_save(conn, prepared=False)
+        research_trace.ensure_schema(conn)
+        research_trace.ensure_default_recording(
+            conn, TraceContext(task_id=task_id, actor_id=user_id))
+
+
+def borrowed_target_conn(ctx):
+    """P16 断言锚：真实保存 writer 的连接必须与检查/提交目标**同一对象**。
+
+    team 窗口内 writer 只允许使用 ``ctx.write_inputs`` 的 actor 连接，且该
+    连接必须是本窗口的 target 连接（member_* 操作 target 恒 actor）——检查/
+    业务写/提交同连接同事务，任何漂移立即 fail-closed（RuntimeError），
+    绝不静默换目标。solo/legacy 不经此函数（无绑定窗口）。
+    """
+    inputs = getattr(ctx, "write_inputs", None)
+    if inputs is None:
+        raise RuntimeError("team writer requires bound ctx.write_inputs")
+    conn = inputs.actor_conn
+    if conn is not inputs.target_conn:
+        raise RuntimeError(
+            "borrowed writer connection is not the guarded target connection")
+    return conn
+
+
 def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, trace_context, data_dir,
                                    screening_allowed=None, screening_disabled_error=None) -> None:
     async def upload_evidence(task_id: str, zotero_key: str, dim_id: int, file: UploadFile,
                               user: dict, *, canonical_only: bool = False,
-                              expected_version: int | None = None) -> dict:
+                              expected_version: int | None = None,
+                              request_id: str | None = None) -> dict:
         # R6-C3/#22：路由原始 task_id（Windows 尾点别名）统一为规范 id——
         # stage_upload 落库的 task_id 与 save_form 附着查询（trace_context 的
         # info.task_id）同键，别名路径上传的图片才能被表单保存附着。
         info = task_lookup(task_id)
         task_id = info.task_id
+        # P16 需求 2：先解析/固定请求内容与 SHA——读满请求字节并关闭
+        # UploadFile 后才进入写窗口；窗口/writer 不再触碰请求流。上传的
+        # request_sha256 覆盖规范 task_id/zotero_key/dim_id/canonical_only 与
+        # 内容 SHA：客户端重试同 id 同内容幂等命中，同 id 异内容 409。
         data = await file.read(coding_evidence.MAX_UPLOAD_BYTES + 1)
         await file.close()
+        payload_id, payload_sha = member_request_fingerprint(request_id, {
+            "task_id": task_id, "zotero_key": zotero_key, "dim_id": dim_id,
+            "canonical_only": canonical_only,
+            "content_sha256": hashlib.sha256(data).hexdigest()})
         try:
             runtime = app.state.review_workflow
+            if runtime.is_team(task_id):
+                # P16：真实 team 上传经 P15 mutate（member_coding/coding，stage/
+                # key 服务端导出）；stage_upload 使用 borrowed actor——检查/
+                # 暂存落库/提交同连接。FS 暂存不具 SQLite 原子性：文件写在
+                # caller 事务前发生，窗口回滚可能留下**可回收孤儿文件**，
+                # 只交给既有 GC 清理（如实，不假装原子、绝不删除已提交引用
+                # 仍持有的文件）。
+                def writer(ctx):
+                    conn = borrowed_target_conn(ctx)
+                    if canonical_only:
+                        runtime.validate_evidence_dimensions(ctx, {dim_id})
+                    return coding_evidence.stage_upload(
+                        ctx.actor_db, task_id, user['user_id'], zotero_key,
+                        dim_id, data, conn=conn)
+                return member_mutate(runtime, info, user, op_name="member_coding",
+                                     stage="coding", key=zotero_key,
+                                     expected_version=expected_version,
+                                     request_id=payload_id,
+                                     request_sha256=payload_sha,
+                                     writer=writer)
             with runtime.write_guard(task_id, user, 'coding', zotero_key, expected_version,
                                      canonical_only=canonical_only) as ctx:
                 if canonical_only:
@@ -104,16 +246,21 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
     @app.post('/api/tasks/{task_id}/coding/evidence/uploads')
     async def upload(task_id: str, zotero_key: str = Form(..., min_length=1, max_length=300),
                      dim_id: int = Form(..., ge=1), file: UploadFile = File(...),
+                     x_request_id: str | None = Header(default=None, max_length=128),
                      user: dict = Depends(require_user)) -> dict:
-        return await upload_evidence(task_id, zotero_key, dim_id, file, user)
+        return await upload_evidence(task_id, zotero_key, dim_id, file, user,
+                                     request_id=x_request_id)
 
     @app.post('/api/tasks/{task_id}/coding/submission-evidence/uploads')
     async def submission_upload(task_id: str, zotero_key: str = Form(..., min_length=1, max_length=300),
                                 dim_id: int = Form(..., ge=1), file: UploadFile = File(...),
                                 expected_policy_version: int | None = Form(default=None, ge=1),
+                                x_request_id: str | None = Header(default=None, max_length=128),
                                 user: dict = Depends(require_user)) -> dict:
         return await upload_evidence(task_id, zotero_key, dim_id, file, user,
-                                     canonical_only=True, expected_version=expected_policy_version)
+                                     canonical_only=True,
+                                     expected_version=expected_policy_version,
+                                     request_id=x_request_id)
 
     @app.get('/api/tasks/{task_id}/coding/submission-evidence')
     def submission_queue(task_id: str, source_id: str | None = None, user: dict = Depends(require_user)) -> dict:
@@ -126,28 +273,67 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
 
     @app.post('/api/tasks/{task_id}/coding/submission-evidence')
     def save_submission_evidence(task_id: str, body: SubmissionEvidenceIn,
+                                 x_request_id: str | None = Header(default=None, max_length=128),
                                  user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
         task_id = info.task_id  # R6-C3/#22：锁/守卫统一规范 id（别名同键）
         runtime = app.state.review_workflow
         try:
-            with runtime.write_guard(task_id, user, 'coding', body.zotero_key,
-                                     body.expected_policy_version, canonical_only=True) as ctx:
-                dimensions = set(body.notes or {}) | set(body.evidence or {})
-                runtime.validate_evidence_dimensions(ctx, dimensions)
-                context = trace_context(ctx.info, user)
-                if context is None:
-                    # F64（UX 批准单 §七）：保存端点的 503 此前复用撤销端点的
-                    # 「Undo is unavailable」，用户看不出这次保存是否生效。改为
-                    # 对齐 main.py 决策保存的 503 口径：先说明「本次修改尚未保存」，
-                    # 再给补救动作。撤销端点（下方 restore）仍保留撤销专属文案。
-                    raise HTTPException(503, SAVE_NOT_SAVED_503)
-                coding_evidence.save_form(ctx.actor_db, body.zotero_key, {}, notes=body.notes,
-                    evidence=_evidence_intents(body.evidence),
-                    trace_context=context, submission_evidence=True)
-                result = runtime.coding_result(ctx, body.zotero_key, body.draft)
-                result['access_context'] = workspace_undo.SUBMISSION_EVIDENCE
-                result['submission_evidence'] = runtime.submission_evidence_capability(ctx)
+            if runtime.is_team(task_id):
+                # P16：真实 team 提交证据保存经 P15 mutate（member_coding/
+                # coding；stage/key 服务端导出），writer 使用同一
+                # ctx.write_inputs target；canonical 维度校验在窗口内以保留
+                # 连接读取（validate_evidence_dimensions 感知 write_inputs）。
+                payload_id, payload_sha = member_request_fingerprint(
+                    x_request_id, {"task_id": task_id,
+                                   "route": "submission-evidence",
+                                   "body": body.model_dump()})
+
+                member_prepare_trace(
+                    screener_db(info, user["username"]), task_id,
+                    user["user_id"])
+
+                def writer(ctx):
+                    conn = borrowed_target_conn(ctx)
+                    dimensions = set(body.notes or {}) | set(body.evidence or {})
+                    runtime.validate_evidence_dimensions(ctx, dimensions)
+                    context = trace_context(ctx.info, user)
+                    if context is None:
+                        # F64：同下方 solo 分支口径（本次保存尚未生效）。
+                        raise HTTPException(503, SAVE_NOT_SAVED_503)
+                    coding_evidence.save_form(ctx.actor_db, body.zotero_key, {},
+                        notes=body.notes,
+                        evidence=_evidence_intents(body.evidence),
+                        trace_context=context, submission_evidence=True,
+                        conn=conn)
+                    result = runtime.coding_result(ctx, body.zotero_key, body.draft)
+                    result['access_context'] = workspace_undo.SUBMISSION_EVIDENCE
+                    result['submission_evidence'] = runtime.submission_evidence_capability(ctx)
+                    return result
+                result = member_mutate(runtime, info, user, op_name="member_coding",
+                                       stage="coding", key=body.zotero_key,
+                                       expected_version=body.expected_policy_version,
+                                       request_id=payload_id,
+                                       request_sha256=payload_sha,
+                                       writer=writer)
+            else:
+                with runtime.write_guard(task_id, user, 'coding', body.zotero_key,
+                                         body.expected_policy_version, canonical_only=True) as ctx:
+                    dimensions = set(body.notes or {}) | set(body.evidence or {})
+                    runtime.validate_evidence_dimensions(ctx, dimensions)
+                    context = trace_context(ctx.info, user)
+                    if context is None:
+                        # F64（UX 批准单 §七）：保存端点的 503 此前复用撤销端点的
+                        # 「Undo is unavailable」，用户看不出这次保存是否生效。改为
+                        # 对齐 main.py 决策保存的 503 口径：先说明「本次修改尚未保存」，
+                        # 再给补救动作。撤销端点（下方 restore）仍保留撤销专属文案。
+                        raise HTTPException(503, SAVE_NOT_SAVED_503)
+                    coding_evidence.save_form(ctx.actor_db, body.zotero_key, {}, notes=body.notes,
+                        evidence=_evidence_intents(body.evidence),
+                        trace_context=context, submission_evidence=True)
+                    result = runtime.coding_result(ctx, body.zotero_key, body.draft)
+                    result['access_context'] = workspace_undo.SUBMISSION_EVIDENCE
+                    result['submission_evidence'] = runtime.submission_evidence_capability(ctx)
         except (ValueError, sqlite3.IntegrityError) as exc:
             raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else 'Evidence field or article is unavailable.') from exc
         tasks.touch_task(task_id, data_dir)
@@ -223,6 +409,7 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
 
     @app.post("/api/tasks/{task_id}/undo/{stage}")
     def restore(task_id: str, stage: Stage, body: UndoIn, screener: str | None = None,
+                x_request_id: str | None = Header(default=None, max_length=128),
                 user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
         # R2：撤销也是初筛/复筛写入面——被负责人关闭参与权的裁决员不得借
@@ -252,13 +439,51 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                     raise HTTPException(409, "There is no saved operation to undo.")
                 before, after = json.loads(entry[1]), json.loads(entry[2])
                 canonical_only = stage == 'coding' and workspace_undo.is_submission_evidence(before, after)
-                with runtime.write_guard(task_id, user, stage, entry[0], body.expected_policy_version,
-                                         canonical_only=canonical_only) as ctx:
-                    if canonical_only:
-                        runtime.validate_evidence_dimensions(ctx, {int(dim) for dim in after.get('values', {})})
-                    # Restoration may contain historical Maybe; existing Undo
-                    # snapshots already reject changed downstream work.
-                    result = workspace_undo.undo(db, context, stage, body.entry_id)
+                if runtime.is_team(task_id):
+                    # P16 需求 1：undo 的 stage/key 由**持久 journal 归属导出**
+                    # （上方锁内只读预解析 entry[0]），再经 P15 mutate 开窗
+                    # （member_undo/<stage>）；writer 内**同窗复核**同一条目归属
+                    # 后，把保留的 target 连接传给真实 workspace_undo.undo——
+                    # journal/请求摘要/trace/恢复全部同连接，提交权归窗口。
+                    payload_id, payload_sha = member_request_fingerprint(
+                        x_request_id, {"task_id": task_id, "route": "undo",
+                                       "stage": stage, "entry_id": body.entry_id,
+                                       "zotero_key": entry[0],
+                                       "expected_policy_version": body.expected_policy_version})
+
+                    member_prepare_trace(
+                        screener_db(info, user["username"]), task_id,
+                        user["user_id"])
+
+                    def writer(ctx):
+                        conn = borrowed_target_conn(ctx)
+                        if ctx.actor_db.resolve() != db.resolve():
+                            raise HTTPException(403, "Undo is limited to your own workspace.")
+                        row = conn.execute(
+                            "SELECT zotero_key FROM workspace_undo WHERE id=? AND task_id=? AND actor_id=? AND stage=?",
+                            (body.entry_id, task_id, str(user["user_id"]), stage)).fetchone()
+                        if row is None or row[0] != entry[0]:
+                            raise ValueError("There is no saved operation to undo.")
+                        if canonical_only:
+                            runtime.validate_evidence_dimensions(
+                                ctx, {int(dim) for dim in after.get('values', {})})
+                        # Restoration may contain historical Maybe; existing Undo
+                        # snapshots already reject changed downstream work.
+                        return workspace_undo.undo(db, context, stage,
+                                                   body.entry_id, conn=conn)
+                    result = member_mutate(
+                        runtime, info, user, op_name="member_undo", stage=stage,
+                        key=entry[0], expected_version=body.expected_policy_version,
+                        request_id=payload_id, request_sha256=payload_sha,
+                        writer=writer)
+                else:
+                    with runtime.write_guard(task_id, user, stage, entry[0], body.expected_policy_version,
+                                             canonical_only=canonical_only) as ctx:
+                        if canonical_only:
+                            runtime.validate_evidence_dimensions(ctx, {int(dim) for dim in after.get('values', {})})
+                        # Restoration may contain historical Maybe; existing Undo
+                        # snapshots already reject changed downstream work.
+                        result = workspace_undo.undo(db, context, stage, body.entry_id)
         except (ValueError, sqlite3.IntegrityError) as exc:
             message = str(exc) if isinstance(exc, ValueError) else "The saved result or downstream work has changed. Undo cannot overwrite newer changes."
             raise HTTPException(409, message) from exc
@@ -267,6 +492,7 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
 
     @app.post("/api/tasks/{task_id}/coding/values-batch")
     def save_form(task_id: str, body: CodingBatchIn, screener: str | None = None,
+                  x_request_id: str | None = Header(default=None, max_length=128),
                   user: dict = Depends(require_user)) -> dict:
         info = task_lookup(task_id)
         task_id = info.task_id  # R6-C3/#22：锁/守卫统一规范 id（别名同键）
@@ -275,17 +501,56 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
         if context is None:
             raise HTTPException(503, SAVE_NOT_SAVED_503)
         try:
-            with app.state.review_workflow.write_guard(task_id, user, "coding", body.zotero_key,
-                                                       body.expected_policy_version) as ctx:
-                if ctx.actor_db.resolve() != db.resolve():
-                    raise HTTPException(403, 'Coding evidence is limited to your own workspace.')
-                coding_evidence.save_form(db, body.zotero_key, body.values, notes=body.notes,
-                    evidence=_evidence_intents(body.evidence),
-                    trace_context=context)
-                result = app.state.review_workflow.coding_result(ctx, body.zotero_key, body.draft)
+            runtime = app.state.review_workflow
+            if runtime.is_team(task_id):
+                # P16：真实 team 批量编码保存经 P15 mutate（member_coding/
+                # coding）；writer 使用同一 ctx.write_inputs target（borrowed
+                # actor 连接）落真实 coding_evidence.save_form，结果组装
+                # （coding_result）也在窗口内以保留连接读取。
+                payload_id, payload_sha = member_request_fingerprint(
+                    x_request_id, {"task_id": task_id, "route": "values-batch",
+                                   "body": body.model_dump()})
+
+                # P16/A1：窗口前 prepare trace 三表+默认 settings 行（幂等）。
+                member_prepare_trace(
+                    screener_db(info, user["username"]), task_id,
+                    user["user_id"])
+
+                def writer(ctx):
+                    conn = borrowed_target_conn(ctx)
+                    if ctx.actor_db.resolve() != db.resolve():
+                        raise HTTPException(403, 'Coding evidence is limited to your own workspace.')
+                    coding_evidence.save_form(ctx.actor_db, body.zotero_key, body.values,
+                        notes=body.notes,
+                        evidence=_evidence_intents(body.evidence),
+                        trace_context=context, conn=conn)
+                    return runtime.coding_result(ctx, body.zotero_key, body.draft)
+                # P24 修轮 D1：values-batch 与 main.py 六路由同款信封感知
+                # 接线——unknown→409 team_flow_unknown_outcome、锁外 postcommit
+                # SSE、S3 信封头透传（延迟导入避免 main→本模块的环）。
+                from custom_backend.main import _member_mutate_notified
+                result, member_headers = _member_mutate_notified(
+                    runtime, info, user, op_name="member_coding",
+                    stage="coding", key=body.zotero_key,
+                    expected_version=body.expected_policy_version,
+                    request_id=payload_id,
+                    request_sha256=payload_sha,
+                    writer=writer, change_kind="vote")
+            else:
+                member_headers = {}
+                with runtime.write_guard(task_id, user, "coding", body.zotero_key,
+                                         body.expected_policy_version) as ctx:
+                    if ctx.actor_db.resolve() != db.resolve():
+                        raise HTTPException(403, 'Coding evidence is limited to your own workspace.')
+                    coding_evidence.save_form(db, body.zotero_key, body.values, notes=body.notes,
+                        evidence=_evidence_intents(body.evidence),
+                        trace_context=context)
+                    result = runtime.coding_result(ctx, body.zotero_key, body.draft)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except sqlite3.IntegrityError as exc:
             raise HTTPException(400, "维度或文献不存在（请确认后重试）。") from exc
         tasks.touch_task(info.task_id, data_dir)
+        if member_headers:
+            return JSONResponse(result, headers=member_headers)
         return result

@@ -5,14 +5,20 @@
 - 迁移本体在 ``coscreen.binary_reset``（一次性、幂等、备份+留痕）；本端点
   在读取时对**已存在**的成员库补跑迁移（不创建不存在的库），使属主首次打开
   任务即可看到全员摘要。
+- ``training_enabled``：顶层只读 pilot 训练开关（前端未开训练时隐藏建议
+  行/按钮）；任何读失败按 ``False`` 降级，绝不写库、绝不加迁移，
+  ``enforce_pass`` 不在返回中。
 """
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from fastapi import Depends, HTTPException
 
-from coscreen import binary_reset, review_workflow as store, task_collaboration
+from coscreen import (binary_reset, pilot_screening, review_workflow as store,
+                      task_collaboration)
 from custom_backend import auth as auth_mod
 
 
@@ -95,9 +101,23 @@ def register_binary_reset_routes(app, require_user, task_or_404, screener_db) ->
                         })
                 rows.append(row)
 
+        # 冻结裁定（问题②）：顶层只读 pilot 训练开关；协作库缺失/表缺/
+        # sqlite 任何读失败都按 False 降级（方向安全 = 前端隐藏训练建议）。
+        # 只读连接（mode=ro），绝不写库、绝不加迁移；enforce_pass 不返回。
+        training_enabled = False
+        try:
+            with closing(pilot_screening.connect(
+                    pilot_screening.store_path(info.dir),
+                    readonly=True)) as conn:
+                training_enabled = bool(
+                    pilot_screening.get_settings(conn).get("pilot_enabled"))
+        except (FileNotFoundError, OSError, sqlite3.Error):
+            training_enabled = False
+
         return {
             "task_id": info.task_id,
             "can_manage": can_manage,
+            "training_enabled": training_enabled,
             "migration_version": binary_reset.RESET_VERSION,
             "members": rows,
             "totals": {

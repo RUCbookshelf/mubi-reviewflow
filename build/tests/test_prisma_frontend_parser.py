@@ -1,4 +1,4 @@
-"""前端 PRISMA DOT 解析器（index.html prParseDot）r5 复审 #53 回归钉。
+r"""前端 PRISMA DOT 解析器（index.html prParseDot）r5 复审 #53 回归钉。
 
 nodeRe 曾用 [^\]]* 字符组截断节点属性段：标签含 ']'（来源名如
 'CINAHL [Ebsco]'、自由文本 'see [Annex 1]'）时整条节点语句失配，该框从

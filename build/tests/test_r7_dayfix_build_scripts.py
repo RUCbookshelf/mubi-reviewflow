@@ -118,9 +118,12 @@ def _fake_tree(tmp_path: Path, *, digest_override: str | None = None) -> tuple[P
     The build script itself is the REAL repo copy (optionally with its pinned
     digest constant rewritten, to prove the pass path of the same gate).
     MM9-07 wired the static validators into the script, so the fake tree also
-    carries the real custom_frontend/ tree and the two JavaScript validators
+    carries the real custom_frontend/ tree and the three JavaScript validators
     (+ their script_manifest.cjs helper): the node gates run for real inside
     the behaviour nails, exactly like a local build would.
+    TST-03 (2.1.6 Task 8) added validate_evidence_locale_static.cjs to the
+    wired set, and PKG-01 (Task 6) made build/reviewflow.metainfo.xml a
+    required build input - the fake tree carries both.
     """
     tree = tmp_path / "tree"
     (tree / "build").mkdir(parents=True)
@@ -138,7 +141,10 @@ def _fake_tree(tmp_path: Path, *, digest_override: str | None = None) -> tuple[P
     shutil.copytree(REPO / "custom_frontend", tree / "custom_frontend",
                     ignore=shutil.ignore_patterns(".mimosa"))
     for validator in ("script_manifest.cjs", "validate_import_review_static.cjs",
-                      "validate_team_prisma_static.js", "verify_release_payload.py"):
+                      "validate_team_prisma_static.js",
+                      "validate_evidence_locale_static.cjs",
+                      "verify_release_payload.py",
+                      "reviewflow.metainfo.xml"):
         shutil.copy2(REPO / "build" / validator, tree / "build" / validator)
 
     stubs = tmp_path / "pathstubs"

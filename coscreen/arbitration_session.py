@@ -40,10 +40,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from coscreen.screening_arbitration import (
     SCREENER_READ_TIMEOUT,
@@ -506,6 +507,84 @@ def _reveal_payload(row: sqlite3.Row) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 团队进度汇总（只读）
+# ---------------------------------------------------------------------------
+
+def session_progress(
+    store_path: StrPath, task_id: str,
+) -> dict[str, dict[str, dict]]:
+    """按裁决员汇总各阶段会话进度（只读聚合，绝不建库建表）。
+
+    团队进度口径（2026-11-18 冻结裁定）：
+
+    - ``total`` = 该裁决员该阶段最近一次会话的队列规模
+      （``arbitration_decision`` 行数；completed 会话冻结数字、open 会话
+      下次 open 时刷新，此处不做实时冲突集重算）；
+    - ``completed`` = ``decision`` 非空的条数；
+    - ``status`` / ``updated_at`` 来自 ``arbitration_session`` 行；从未
+      开会话的裁决员不产生键（调用方按零值对象渲染）；
+    - 只输出计数与会话状态，绝不输出队列条目、votes 或筛选员姓名；
+    - 复用本模块 ``mode=ro`` 只读连接与表名字面量；库缺失、表不存在或
+      任何读失败都返回空 ``dict``（缺表/缺库 = 零进度，绝不写入）。
+
+    返回 ``{str(arbitrator_user_id): {"stage1": {...}, "stage2": {...}}}``，
+    每个阶段为 ``{"completed": int, "total": int,
+    "status": "open" | "completed" | None, "updated_at": str | None}``。
+    """
+    path = Path(store_path)
+    if not path.is_file():
+        return {}
+    try:
+        with closing(_read_only_connection(path)) as conn:
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                " AND name IN ('arbitration_session', 'arbitration_decision')",
+            ).fetchall()
+            if len(tables) != 2:
+                return {}
+            sessions = conn.execute(
+                "SELECT stage, arbitrator_id, status, updated_at"
+                " FROM arbitration_session WHERE task_id=?",
+                (task_id,),
+            ).fetchall()
+            decisions = conn.execute(
+                "SELECT stage, arbitrator_id, COUNT(*),"
+                " SUM(CASE WHEN decision IS NOT NULL THEN 1 ELSE 0 END)"
+                " FROM arbitration_decision WHERE task_id=?"
+                " GROUP BY stage, arbitrator_id",
+                (task_id,),
+            ).fetchall()
+    except FileNotFoundError:
+        return {}
+    except (sqlite3.Error, OSError):
+        return {}
+    progress: dict[str, dict[str, dict]] = {}
+    for stage, actor, total, completed in decisions:
+        progress.setdefault(str(actor), {})[str(stage)] = {
+            "completed": int(completed or 0),
+            "total": int(total or 0),
+            "status": None,
+            "updated_at": None,
+        }
+    for stage, actor, status, updated_at in sessions:
+        item = progress.setdefault(str(actor), {}).setdefault(
+            str(stage),
+            {"completed": 0, "total": 0, "status": None, "updated_at": None})
+        item["status"] = status
+        item["updated_at"] = updated_at
+    for stages in progress.values():
+        for stage_name in STAGES:
+            if stage_name not in stages:
+                stages[stage_name] = {
+                    "completed": 0,
+                    "total": 0,
+                    "status": None,
+                    "updated_at": None,
+                }
+    return progress
+
+
+# ---------------------------------------------------------------------------
 # open
 # ---------------------------------------------------------------------------
 
@@ -849,3 +928,656 @@ def _completed_payload(conn: sqlite3.Connection, session: sqlite3.Row,
     payload["record"] = record
     payload["already_completed"] = True
     return payload
+
+
+# ===========================================================================
+# P19　team 逐条仲裁分支（C10 合同；独立命名空间，generic 会话零迁移零改写）
+# ===========================================================================
+#
+# 与 legacy 分支的关系（P19 需求 1）：
+#
+# - 新 team 分支使用独立表（``team_arbitration_session`` /
+#   ``team_arbitration_decision``），绝不读写 legacy ``arbitration_session``
+#   行；generic CSV/旧 bulk 暂停规则保留在 legacy 分支，不受本节影响；
+# - 全部 ``*_on`` 接口遵 C02 借用连接契约：真 ``sqlite3.Connection``、
+#   调用方已开启事务（P10 写窗的 collab 屏障事务）、不在本模块内
+#   BEGIN/commit/rollback/close、不反向 import backend；
+# - ``open_team_session_on``/``decide_team_item_on``/``finish_team_keys_on``
+#   管理 session 行；``reveal_team_item_on`` 只读；
+# - 每键版本（C10）＝ ``task_id/task_instance_id/stage/item_key/
+#   actor_user_id + 该键输入 proof 摘要 + decision_revision + finished``
+#   的 canonical SHA。proof 摘要绑定 task/instance/stage/round、required
+#   UID 集合与每 UID 的 library/revision/完整意见摘要——B 键票变只改 B 键
+#   摘要（不废 A）；A 键未完成输入变化使 A 的准备中结论 stale（409
+#   refresh_required）；已 finished 键的 proof 冻结在该键 decision 行，
+#   已有 F1 永不因此作废；
+# - 缺/旧 ``expected_key_version`` 一律
+#   :class:`ArbitrationTeamRefreshRequired`（409 ``arbitration_refresh_required``）。
+
+_TEAM_SESSION_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS team_arbitration_session ("
+    " task_instance_id TEXT NOT NULL,"
+    " stage TEXT NOT NULL CHECK(stage IN ('stage1', 'stage2')),"
+    " session_id TEXT NOT NULL,"
+    " actor_user_id INTEGER NOT NULL CHECK(actor_user_id > 0),"
+    " task_id TEXT NOT NULL,"
+    " round_id TEXT,"
+    " status TEXT NOT NULL CHECK(status IN ('open', 'partial', 'completed')),"
+    " record_id INTEGER,"
+    " attestation_id INTEGER,"
+    " created_at TEXT NOT NULL,"
+    " updated_at TEXT NOT NULL,"
+    " completed_at TEXT,"
+    " PRIMARY KEY (task_instance_id, stage, session_id))",
+    "CREATE TABLE IF NOT EXISTS team_arbitration_decision ("
+    " session_id TEXT NOT NULL,"
+    " zotero_key TEXT NOT NULL,"
+    " decision TEXT CHECK(decision IS NULL OR decision IN ('include', 'exclude')),"
+    " reason TEXT NOT NULL DEFAULT '',"
+    " decision_revision INTEGER NOT NULL DEFAULT 0"
+    " CHECK(typeof(decision_revision)='integer' AND decision_revision >= 0),"
+    " decided_at TEXT,"
+    " revealed INTEGER NOT NULL DEFAULT 0 CHECK(revealed IN (0, 1)),"
+    " finished INTEGER NOT NULL DEFAULT 0 CHECK(finished IN (0, 1)),"
+    " finished_at TEXT,"
+    " record_id INTEGER,"
+    " attestation_id INTEGER,"
+    " proof_json TEXT NOT NULL DEFAULT '{}',"
+    " PRIMARY KEY (session_id, zotero_key))",
+    "CREATE INDEX IF NOT EXISTS team_arbitration_session_actor"
+    " ON team_arbitration_session(task_instance_id, stage, actor_user_id)",
+)
+
+TEAM_SESSION_TABLES = ("team_arbitration_session", "team_arbitration_decision")
+
+
+class ArbitrationTeamRefreshRequired(ArbitrationSessionRejected):
+    """缺/旧 expected_key_version：前端刷新后重发，不能绑旧页面判断。"""
+
+    code = "arbitration_refresh_required"
+    message_key = "team.arbitration_refresh_required"
+    status = 409
+
+
+class ArbitrationTeamKeyFinished(ArbitrationSessionRejected):
+    """该键已在先前 finish 提交中完成（已有 F1），不能再裁决。"""
+
+    code = "team_arbitration_key_finished"
+    message_key = "team.arbitration_key_finished"
+    status = 409
+
+
+class ArbitrationTeamSessionCompleted(ArbitrationSessionRejected):
+    """team 会话已全部完成。"""
+
+    code = "team_arbitration_session_completed"
+    message_key = "team.arbitration_session_completed"
+
+
+def prepare_team_session_storage(store_path: StrPath) -> None:
+    """C05 显式准备生命周期：幂等建立 team 会话两张表（独立连接、自提交）。
+
+    由 backend 协调器在**进入 P10 写窗之前**调用（窗口内连接由 B1 屏障
+    持有，不得另开连接做 DDL）；GET 路径绝不调用本函数（只读 preview 不
+    隐式 DDL/写入）。
+    """
+    path = Path(store_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ArbitrationStoreUnavailable("团队仲裁会话存储目录不可写。") from exc
+    try:
+        with closing(sqlite3.connect(path, timeout=STORE_TIMEOUT)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for statement in _TEAM_SESSION_SCHEMA:
+                conn.execute(statement)
+            conn.commit()
+    except sqlite3.Error as exc:
+        raise ArbitrationStoreUnavailable("团队仲裁会话存储表初始化失败。") from exc
+
+
+def _ensure_team_tables_on(conn: sqlite3.Connection) -> None:
+    """借用连接上的幂等 DDL（表已存在时零行变更；新库首用建表）。"""
+    if not isinstance(conn, sqlite3.Connection):
+        raise ArbitrationSessionRejected("team 仲裁接口需要既有协作库连接。")
+    try:
+        for statement in _TEAM_SESSION_SCHEMA:
+            conn.execute(statement)
+    except sqlite3.Error as exc:
+        raise ArbitrationStoreUnavailable("团队仲裁会话表初始化失败。") from exc
+
+
+def _sha256_hex(value: Any) -> str:
+    import hashlib
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def team_proof_digest(*, task_instance_id: str, stage: str, item_key: str,
+                      proof_entry: Mapping[str, Any]) -> str:
+    """逐键 proof 摘要：绑 task/instance/stage/round、required UID 集合、
+    每 UID 的 library/revision 与完整意见摘要（decision/理由/notes）。
+
+    绝不以整批 merge SHA 充当逐键版本——B 键意见变化只影响 B 键摘要。"""
+    return _sha256_hex({
+        "task_instance_id": task_instance_id,
+        "stage": stage,
+        "item_key": item_key,
+        "round_id": proof_entry.get("round_id"),
+        "required_uids": list(proof_entry.get("required_uids") or []),
+        "attestation": proof_entry.get("attestation") or {},
+        "opinions": proof_entry.get("opinions") or {},
+    })
+
+
+def team_key_version(*, task_id: str, task_instance_id: str, stage: str,
+                     item_key: str, actor_user_id: int,
+                     proof_entry: Mapping[str, Any],
+                     decision_revision: int, finished: bool) -> str:
+    """C10 每键版本：canonical SHA（task/instance/stage/key/actor、输入
+    proof、该键 decision_revision、finished 标志）。未创建 preview 的
+    ``decision_revision=0``。"""
+    digest = team_proof_digest(
+        task_instance_id=task_instance_id, stage=stage, item_key=item_key,
+        proof_entry=proof_entry)
+    return _sha256_hex({
+        "task_id": task_id,
+        "task_instance_id": task_instance_id,
+        "stage": stage,
+        "item_key": item_key,
+        "actor_user_id": int(actor_user_id),
+        "proof_sha256": digest,
+        "decision_revision": int(decision_revision),
+        "finished": bool(finished),
+    })
+
+
+def _team_session_row(conn: sqlite3.Connection, instance: str, stage: str,
+                      actor: int) -> sqlite3.Row | None:
+    """该裁决员当前（未 completed 的）team 会话行；completed 会话不复用。"""
+    try:
+        return conn.execute(
+            "SELECT * FROM team_arbitration_session"
+            " WHERE task_instance_id=? AND stage=? AND actor_user_id=?"
+            " AND status != 'completed' ORDER BY created_at DESC LIMIT 1",
+            (instance, stage, actor),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None  # 表未建＝尚无会话（GET 只读路径绝不建表）
+    except sqlite3.Error as exc:
+        raise ArbitrationStoreUnavailable("team 仲裁会话读取失败。") from exc
+
+
+def _team_decision_row(conn: sqlite3.Connection, session_id: str,
+                       key: str) -> sqlite3.Row | None:
+    try:
+        return conn.execute(
+            "SELECT * FROM team_arbitration_decision"
+            " WHERE session_id=? AND zotero_key=?",
+            (session_id, key),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise ArbitrationStoreUnavailable("team 仲裁条目读取失败。") from exc
+
+
+def _team_key_state(conn: sqlite3.Connection, session_id: str,
+                    key: str) -> tuple[int, bool]:
+    row = _team_decision_row(conn, session_id, key)
+    if row is None:
+        return 0, False
+    return int(row["decision_revision"] or 0), bool(row["finished"])
+
+
+def _team_proof_entry(raw: Any, key: str) -> dict[str, Any]:
+    entry = _json_loads(raw, {})
+    if not isinstance(entry, dict) or not entry:
+        raise ArbitrationSessionRejected(
+            "该键缺少输入 proof。", params={"zotero_key": key})
+    return entry
+
+
+def _team_version_for(conn: sqlite3.Connection, session: Mapping[str, Any],
+                      key: str, proof_entry: Mapping[str, Any],
+                      frozen: bool) -> str:
+    """计算键版本：frozen（已 finish 键）用行内冻结 proof；否则用当前 proof。"""
+    revision, finished = _team_key_state(conn, session["session_id"], key)
+    effective = proof_entry
+    if frozen:
+        row = _team_decision_row(conn, session["session_id"], key)
+        effective = _team_proof_entry(row["proof_json"] if row else "{}", key)
+    return team_key_version(
+        task_id=session["task_id"],
+        task_instance_id=session["task_instance_id"],
+        stage=session["stage"], item_key=key,
+        actor_user_id=int(session["actor_user_id"]),
+        proof_entry=effective, decision_revision=revision,
+        finished=finished)
+
+
+def _validate_team_proofs(item_keys: list[str],
+                          input_proofs: Mapping[str, Any]) -> dict[str, dict]:
+    keys = set(item_keys)
+    proofs = dict(input_proofs or {})
+    unknown = sorted(set(proofs) - keys)
+    missing = sorted(keys - set(proofs))
+    if unknown or missing:
+        raise ArbitrationSessionRejected(
+            "item_keys 与 input_proofs 键域不一致。",
+            params={"unknown": unknown[:5], "missing": missing[:5]})
+    normalized: dict[str, dict] = {}
+    for key in item_keys:
+        entry = proofs[key]
+        if not isinstance(entry, Mapping):
+            raise ArbitrationSessionRejected(
+                "每键 proof 必须为对象。", params={"zotero_key": key})
+        required = entry.get("required_uids")
+        attestation = entry.get("attestation")
+        opinions = entry.get("opinions")
+        if (not isinstance(required, list) or not required
+                or not isinstance(attestation, Mapping)
+                or not isinstance(opinions, Mapping)):
+            raise ArbitrationSessionRejected(
+                "每键 proof 缺 required_uids/attestation/opinions。",
+                params={"zotero_key": key})
+        normalized[key] = {
+            "round_id": entry.get("round_id"),
+            "required_uids": [int(uid) for uid in required],
+            "attestation": {str(uid): dict(value)
+                            for uid, value in attestation.items()},
+            "opinions": {str(uid): dict(value)
+                         for uid, value in opinions.items()},
+        }
+    return normalized
+
+
+def _team_session_payload(conn: sqlite3.Connection, session: sqlite3.Row,
+                          current_proofs: Mapping[str, Mapping[str, Any]] | None,
+                          ) -> dict[str, Any]:
+    """team 会话载荷：finished/pending 键 + 每键版本（当前或冻结 proof）。"""
+    instance, stage = session["task_instance_id"], session["stage"]
+    session_id = session["session_id"]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM team_arbitration_decision WHERE session_id=?"
+            " ORDER BY zotero_key", (session_id,)).fetchall()
+    except sqlite3.Error as exc:
+        raise ArbitrationStoreUnavailable("team 仲裁条目读取失败。") from exc
+    items: list[dict[str, Any]] = []
+    finished_keys: list[str] = []
+    pending_keys: list[str] = []
+    for row in rows:
+        key = row["zotero_key"]
+        frozen = bool(row["finished"])
+        proof_entry = _team_proof_entry(row["proof_json"], key)
+        version = team_key_version(
+            task_id=session["task_id"], task_instance_id=instance,
+            stage=stage, item_key=key,
+            actor_user_id=int(session["actor_user_id"]),
+            proof_entry=proof_entry,
+            decision_revision=int(row["decision_revision"] or 0),
+            finished=frozen)
+        items.append({
+            "zotero_key": key,
+            "status": ("finished" if frozen
+                       else "decided" if row["decision"] else "pending"),
+            "decision": row["decision"],
+            "key_version": version,
+        })
+        if frozen:
+            finished_keys.append(key)
+        else:
+            # 剩余 pending＝一切未完成键（含未裁决——它们仍可准备/裁决）。
+            pending_keys.append(key)
+    return {
+        "session_id": session_id,
+        "task_instance_id": instance,
+        "stage": stage,
+        "status": session["status"],
+        "record_id": session["record_id"],
+        "attestation_id": session["attestation_id"],
+        "created_at": session["created_at"],
+        "updated_at": session["updated_at"],
+        "completed_at": session["completed_at"],
+        "items": items,
+        "finished_keys": finished_keys,
+        "pending_keys": pending_keys,
+    }
+
+
+def open_team_session_on(conn: sqlite3.Connection, *,
+                         task_id: str,
+                         task_instance_id: str,
+                         stage: str,
+                         round_id: str | None,
+                         actor_user_id: int,
+                         item_keys: Iterable[str],
+                         input_proofs: Mapping[str, Mapping[str, object]],
+                         ) -> dict[str, Any]:
+    """建立/恢复 team 逐条仲裁会话（借用连接；幂等刷新 proof，不丢进度）。
+
+    - 该裁决员存在未 completed 会话 → 复用（断点续作）：未完成键的
+      ``proof_json`` 刷新为当前输入（decided 结论保留，版本随之变化），
+      finished 键行**原样不动**（已有 F1 永不作废）；
+    - 无会话 → 新建（``session_id`` = 服务端 UUID 字符串）；
+    - 不在当前就绪键域中的未完成旧键删除（已非冲突/未就绪，留着只会
+      污染 pending 域）；finished 键永不删除。
+    """
+    task = _task_id(task_id)
+    _stage(stage)
+    if isinstance(actor_user_id, bool) or type(actor_user_id) is not int \
+            or actor_user_id <= 0:
+        raise ArbitrationSessionRejected("actor_user_id 必须为正整数。")
+    keys = list(dict.fromkeys(_key(key) for key in item_keys))
+    proofs = _validate_team_proofs(keys, input_proofs)
+    _ensure_team_tables_on(conn)
+
+    existing = _team_session_row(conn, task_instance_id, stage, actor_user_id)
+    now = _now()
+    if existing is None:
+        session_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO team_arbitration_session"
+            " (task_instance_id,stage,session_id,actor_user_id,task_id,"
+            "  round_id,status,record_id,attestation_id,created_at,"
+            "  updated_at,completed_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_instance_id, stage, session_id, actor_user_id, task,
+             round_id, "open", None, None, now, now, None))
+    else:
+        session_id = existing["session_id"]
+
+    current = set(keys)
+    try:
+        rows = conn.execute(
+            "SELECT zotero_key, finished FROM team_arbitration_decision"
+            " WHERE session_id=?", (session_id,)).fetchall()
+    except sqlite3.Error as exc:
+        raise ArbitrationStoreUnavailable("team 仲裁条目读取失败。") from exc
+    for row in rows:
+        if not row["finished"] and row["zotero_key"] not in current:
+            conn.execute(
+                "DELETE FROM team_arbitration_decision"
+                " WHERE session_id=? AND zotero_key=?",
+                (session_id, row["zotero_key"]))
+    for key in keys:
+        stored = _team_decision_row(conn, session_id, key)
+        if stored is not None and stored["finished"]:
+            continue  # 冻结键：proof/结论/版本原样保留
+        conn.execute(
+            "INSERT INTO team_arbitration_decision"
+            " (session_id,zotero_key,proof_json) VALUES(?,?,?)"
+            " ON CONFLICT(session_id,zotero_key) DO UPDATE SET"
+            " proof_json=excluded.proof_json",
+            (session_id, key, _canonical_json(proofs[key])))
+    conn.execute(
+        "UPDATE team_arbitration_session SET updated_at=?, round_id=?, task_id=?"
+        " WHERE task_instance_id=? AND stage=? AND session_id=?",
+        (now, round_id, task, task_instance_id, stage, session_id))
+    session = conn.execute(
+        "SELECT * FROM team_arbitration_session"
+        " WHERE task_instance_id=? AND stage=? AND session_id=?",
+        (task_instance_id, stage, session_id)).fetchone()
+    return _team_session_payload(conn, session, proofs)
+
+
+def decide_team_item_on(conn: sqlite3.Connection, *,
+                        task_instance_id: str,
+                        stage: str,
+                        actor_user_id: int,
+                        session_id: str,
+                        item_key: str,
+                        decision: Any,
+                        reason: Any = "",
+                        expected_key_version: str,
+                        ) -> dict[str, Any]:
+    """裁决单键（r18 两道闸先行；版本不符 409 refresh_required）。
+
+    ``decision_revision`` 原子推进（0→1→2…）；finished 键拒绝（已有 F1）。
+    拒绝（maybe/排除无理由/版本不符）在写库前抛出，会话与条目保持原状。
+    """
+    _stage(stage)
+    if not isinstance(session_id, str) or not session_id:
+        raise ArbitrationSessionNotOpen("team 仲裁会话尚未开始。")
+    key = _key(item_key)
+    if not isinstance(expected_key_version, str) or not expected_key_version:
+        raise ArbitrationTeamRefreshRequired(
+            "缺少 expected_key_version，请刷新后重发。",
+            params={"zotero_key": key})
+    normalized, rationale = validate_arbitration_decision(
+        decision, reason, zotero_key=key)
+
+    _ensure_team_tables_on(conn)
+    session = conn.execute(
+        "SELECT * FROM team_arbitration_session WHERE session_id=?",
+        (session_id,)).fetchone()
+    if session is None or session["task_instance_id"] != task_instance_id \
+            or session["stage"] != stage \
+            or int(session["actor_user_id"]) != actor_user_id:
+        raise ArbitrationSessionNotOpen("team 仲裁会话尚未开始。")
+    row = _team_decision_row(conn, session_id, key)
+    if row is None:
+        raise ArbitrationSessionItemNotFound(
+            "该文献不在本次 team 仲裁就绪集中。",
+            params={"zotero_key": key})
+    if row["finished"]:
+        raise ArbitrationTeamKeyFinished(
+            "该键已完成仲裁提交（已有 F1），不能再裁决。",
+            params={"zotero_key": key})
+    proof_entry = _team_proof_entry(row["proof_json"], key)
+    current_version = team_key_version(
+        task_id=session["task_id"], task_instance_id=task_instance_id,
+        stage=stage, item_key=key, actor_user_id=actor_user_id,
+        proof_entry=proof_entry,
+        decision_revision=int(row["decision_revision"] or 0), finished=False)
+    if expected_key_version != current_version:
+        raise ArbitrationTeamRefreshRequired(
+            "该键输入已变化（或页面版本过旧），请刷新后重发。",
+            params={"zotero_key": key})
+
+    now = _now()
+    revision = int(row["decision_revision"] or 0) + 1
+    conn.execute(
+        "UPDATE team_arbitration_decision"
+        " SET decision=?, reason=?, decided_at=?, revealed=1,"
+        "     decision_revision=?"
+        " WHERE session_id=? AND zotero_key=? AND finished=0",
+        (normalized, rationale, now, revision, session_id, key))
+    conn.execute(
+        "UPDATE team_arbitration_session SET updated_at=? WHERE session_id=?",
+        (now, session_id))
+    new_version = team_key_version(
+        task_id=session["task_id"], task_instance_id=task_instance_id,
+        stage=stage, item_key=key, actor_user_id=actor_user_id,
+        proof_entry=proof_entry, decision_revision=revision, finished=False)
+    return {
+        "session_id": session_id,
+        "zotero_key": key,
+        "decision": normalized,
+        "reason": rationale,
+        "decided_at": now,
+        "key_version": new_version,
+    }
+
+
+def reveal_team_item_on(conn: sqlite3.Connection, *,
+                        task_instance_id: str,
+                        stage: str,
+                        actor_user_id: int,
+                        session_id: str,
+                        item_key: str,
+                        expected_key_version: str,
+                        ) -> dict[str, Any]:
+    """只读 reveal：已裁决键返回该键裁决结论；未裁决绝不返回任何人票。
+
+    载荷只含**本键**（reveal A 不含 B 未完成人票）；筛选员原始票面由
+    backend 从同一受保护 ready 快照附加（本模块不持有成员库）。
+    无已存会话/条目时不建任何行——由 backend 直接从快照应答。
+    """
+    _stage(stage)
+    key = _key(item_key)
+    if not isinstance(session_id, str) or not session_id:
+        raise ArbitrationSessionNotOpen("team 仲裁会话尚未开始。")
+    if not isinstance(expected_key_version, str) or not expected_key_version:
+        raise ArbitrationTeamRefreshRequired(
+            "缺少 expected_key_version，请刷新后重发。",
+            params={"zotero_key": key})
+    try:
+        session = conn.execute(
+            "SELECT * FROM team_arbitration_session WHERE session_id=?",
+            (session_id,)).fetchone()
+    except sqlite3.OperationalError:
+        raise ArbitrationSessionNotOpen("team 仲裁会话尚未开始。")
+    if session is None or session["task_instance_id"] != task_instance_id \
+            or session["stage"] != stage \
+            or int(session["actor_user_id"]) != actor_user_id:
+        raise ArbitrationSessionNotOpen("team 仲裁会话尚未开始。")
+    row = _team_decision_row(conn, session_id, key)
+    if row is None:
+        raise ArbitrationSessionItemNotFound(
+            "该文献不在本次 team 仲裁会话中。",
+            params={"zotero_key": key})
+    if not row["decision"] or not row["revealed"]:
+        raise ArbitrationSessionRevealNotReady(
+            "该文献尚未裁决，裁决后才能查看各筛选员的原始决定。",
+            params={"zotero_key": key})
+    proof_entry = _team_proof_entry(row["proof_json"], key)
+    version = team_key_version(
+        task_id=session["task_id"], task_instance_id=task_instance_id,
+        stage=stage, item_key=key, actor_user_id=actor_user_id,
+        proof_entry=proof_entry,
+        decision_revision=int(row["decision_revision"] or 0),
+        finished=bool(row["finished"]))
+    if expected_key_version != version:
+        raise ArbitrationTeamRefreshRequired(
+            "该键输入已变化（或页面版本过旧），请刷新后重发。",
+            params={"zotero_key": key})
+    return {
+        "session_id": session_id,
+        "zotero_key": key,
+        "decision": row["decision"],
+        "reason": row["reason"],
+        "decided_at": row["decided_at"],
+        "key_version": version,
+        "finished": bool(row["finished"]),
+    }
+
+
+def finish_team_keys_on(conn: sqlite3.Connection, *,
+                        task_instance_id: str,
+                        stage: str,
+                        actor_user_id: int,
+                        session_id: str,
+                        item_keys: Iterable[str],
+                        expected_key_versions: Mapping[str, str],
+                        record_id: int,
+                        attestation_id: int,
+                        ) -> dict[str, Any]:
+    """把本会话中已裁决且仍就绪的指定键标记完成（五工件之一，同 collab 提交）。
+
+    - 逐键核 ``expected_key_versions``（不豁免：任一缺/旧 → 409
+      refresh_required，列出全部不匹配键，绝不落半笔）；
+    - 只接受已裁决、未 finished 的键；全批校验通过才写；
+    - 部分结束后其余键仍可准备（status='partial'）；无剩余未完成键则
+      'completed'；
+    - ``record_id``/``attestation_id`` 为同事务内 P05 attested append 的
+      真实 ID，写入会话与各键行（幂等重试由宿主 receipt 层短路，本函数
+      重复调用同一批键时按已完成处理并原样返回）。
+    """
+    _stage(stage)
+    if (isinstance(record_id, bool) or type(record_id) is not int
+            or record_id <= 0):
+        raise ArbitrationSessionRejected("record_id 必须为正整数。")
+    if (isinstance(attestation_id, bool) or type(attestation_id) is not int
+            or attestation_id <= 0):
+        raise ArbitrationSessionRejected("attestation_id 必须为正整数。")
+    keys = list(dict.fromkeys(_key(key) for key in item_keys))
+    if not keys:
+        raise ArbitrationSessionRejected(
+            "finish 拒绝空键集：至少提交一个已就绪且有决议的键。")
+    versions = dict(expected_key_versions or {})
+    _ensure_team_tables_on(conn)
+    session = conn.execute(
+        "SELECT * FROM team_arbitration_session WHERE session_id=?",
+        (session_id,)).fetchone()
+    if session is None or session["task_instance_id"] != task_instance_id \
+            or session["stage"] != stage \
+            or int(session["actor_user_id"]) != actor_user_id:
+        raise ArbitrationSessionNotOpen("team 仲裁会话尚未开始。")
+
+    now = _now()
+    already: list[str] = []
+    stale: list[str] = []
+    undecided: list[str] = []
+    rows: dict[str, sqlite3.Row] = {}
+    for key in keys:
+        row = _team_decision_row(conn, session_id, key)
+        if row is None:
+            raise ArbitrationSessionItemNotFound(
+                "该文献不在本次 team 仲裁会话中。",
+                params={"zotero_key": key})
+        if row["finished"]:
+            already.append(key)
+            continue
+        if not row["decision"]:
+            undecided.append(key)
+            continue
+        proof_entry = _team_proof_entry(row["proof_json"], key)
+        current_version = team_key_version(
+            task_id=session["task_id"], task_instance_id=task_instance_id,
+            stage=stage, item_key=key, actor_user_id=actor_user_id,
+            proof_entry=proof_entry,
+            decision_revision=int(row["decision_revision"] or 0),
+            finished=False)
+        if versions.get(key) != current_version:
+            stale.append(key)
+        rows[key] = row
+    if undecided:
+        raise ArbitrationSessionIncomplete(
+            "仍有未裁决键混入 finish 请求。",
+            params={"undecided": undecided})
+    if stale:
+        raise ArbitrationTeamRefreshRequired(
+            "部分键输入已变化（或页面版本过旧），请刷新后重发。",
+            params={"stale_keys": sorted(stale)})
+
+    for key in keys:
+        if key in already:
+            continue
+        conn.execute(
+            "UPDATE team_arbitration_decision"
+            " SET finished=1, finished_at=?, record_id=?, attestation_id=?"
+            " WHERE session_id=? AND zotero_key=? AND finished=0",
+            (now, record_id, attestation_id, session_id, key))
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM team_arbitration_decision"
+        " WHERE session_id=? AND finished=0", (session_id,)).fetchone()[0]
+    status = "completed" if not remaining else "partial"
+    conn.execute(
+        "UPDATE team_arbitration_session"
+        " SET status=?, record_id=?, attestation_id=?, updated_at=?,"
+        "     completed_at=CASE WHEN ?='completed' THEN ? ELSE completed_at END"
+        " WHERE session_id=?",
+        (status, record_id, attestation_id, now, status, now, session_id))
+    session = conn.execute(
+        "SELECT * FROM team_arbitration_session WHERE session_id=?",
+        (session_id,)).fetchone()
+    payload = _team_session_payload(conn, session, None)
+    payload["already_finished_keys"] = already
+    return payload
+
+
+def team_session_overview_on(conn: sqlite3.Connection, *,
+                             task_instance_id: str,
+                             stage: str,
+                             actor_user_id: int,
+                             ) -> dict[str, Any] | None:
+    """GET 只读 helper：该裁决员当前 team 会话载荷；无会话/无表返回 None。
+
+    绝不建表、绝不写入（GET 只读 preview；表缺失＝尚无会话）。"""
+    _stage(stage)
+    try:
+        row = _team_session_row(conn, task_instance_id, stage, actor_user_id)
+        if row is None:
+            return None
+        return _team_session_payload(conn, row, None)
+    except sqlite3.OperationalError:
+        return None

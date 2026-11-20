@@ -261,8 +261,18 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                            "_pinned_allow_private": bool(
                                getattr(req, "allow_private_pin", False)
                                or getattr(req, "pinned_allow_private", False))})
-        return self.do_open(conn_class, req, context=self._context,
-                            check_hostname=self._check_hostname)
+        # 2.1.6 兼容（用户报 2.1.5 服务器 AI 测试/使用 500）：Python 3.12 起
+        # urllib.HTTPSHandler 不再设置 _check_hostname 私有属性、http.client.
+        # HTTPSConnection 也不再接收 check_hostname 形参——无条件读取该属性
+        # 在新箱直接 AttributeError（实测 3.12.13，POST /api/ai/key/test 500）。
+        # 仅在旧形态属性实际存在时才透传（保 ≤3.11 的显式 False/True/None
+        # 语义，与旧版 stdlib 自身 https_open 行为一致）；context 恒透传
+        # （两版 stdlib handler 都有 _context）。DNS 钉扎/peer 复核/Host/SNI/
+        # 代理/重定向/allow_private 规则均不变。
+        if hasattr(self, "_check_hostname"):
+            return self.do_open(conn_class, req, context=self._context,
+                                check_hostname=self._check_hostname)
+        return self.do_open(conn_class, req, context=self._context)
 
 
 #: 拒绝跟随 3xx（_NoRedirectHandler）+ **显式空 ProxyHandler**：urllib 默认读

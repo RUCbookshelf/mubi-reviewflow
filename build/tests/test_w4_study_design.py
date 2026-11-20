@@ -29,8 +29,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -38,20 +38,29 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-_ENV_KEYS = ("REVIEWFLOW_MODE", "COBOOKSHELF_DATA_DIR")
-_ORIGINAL_ENV = {key: os.environ.get(key) for key in _ENV_KEYS}
-_fixture = tempfile.TemporaryDirectory(prefix="rf_w4_study_design_")
-os.environ["COBOOKSHELF_DATA_DIR"] = _fixture.name
-os.environ.setdefault("REVIEWFLOW_MODE", "server")
+# 数据根 + 模式生命周期（SafetyR4 A–D，test-only 所有者 helper _bare_env）：
+# pytest 下 conftest 每会话登记会话代并握手——模块导入只落模式、release 惰
+# 性，绝不删除 pytest 共享根；裸 unittest 无显式 scope 时由进程 owner 持根
+# 到进程退出/显式结束（嵌入式宿主请用 _bare_env.bare_scope() 包住导入与执
+# 行——无 scope 的 TextTestRunner 返回不承诺两键已恢复，SafetyR4 公开合
+# 同）。模块 import 只是借用：acquire 独立 token、release 幂等、绝不删根
+# （导入计数不驱动删除——SafetyR3 C 病根：w4→auth→w4 交错块/筛空模块/清理
+# 后复用账本都会分叉）。setUpModule 守卫：上一届所有者已结束/环境键被挪
+# 走/与缓存后端冻结根分叉时，在任何测试业务/API 写之前硬拒。
+# w4 保持 setdefault 语义：宿主预置 desktop 时不覆盖（prefer_existing=True）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _bare_env  # noqa: E402
+
+_BARE = _bare_env.acquire(mode="server", prefer_existing=True)
+
+
+def setUpModule():
+    _bare_env.ensure_safe_for_execution()
 
 
 def tearDownModule():
-    """恢复导入期环境（r13 测试卫生，与 W2 同款）：不泄漏临时目录/运行模式。"""
-    for key, value in _ORIGINAL_ENV.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+    """归还借用（幂等；删根/两键恢复只属于所有者收尾）。"""
+    _bare_env.release(_BARE)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -645,12 +654,28 @@ class WiringStaticGuardNails(unittest.TestCase):
         self.assertEqual(self.main_py.count("from custom_backend.study_design_api import"), 1)
 
     def test_release_yml_wires_node_behavior_suite(self):
-        """MM11-01 同型：本组 node 行为套件必须挂在 release 门禁的
-        node --test 接线里（撤线即红——不留文档型测试）。"""
+        """MM11-01 同型（TST-03 2.1.6 双读）：本组 node 行为套件必须挂在
+        release 门禁的 node --test 计划里（撤线即红——不留文档型测试）。
+
+        release.yml 自 2.1.6 Task 8 起只调用唯一入口 build/run_validation.py，
+        不再逐行列命令；故第二读改为对入口 --list --json 真实导出的计划
+        断言 study_design_badge.test.cjs 在 node --test 步中。"""
         yml = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         step = yml[yml.index("Run static validators"):yml.index("actions/upload-artifact")]
-        self.assertIn("node --test", step)
-        self.assertIn("build/tests/study_design_badge.test.cjs", step)
+        # 行级判定：必须是以入口为命令的可执行行——注释里提到入口不算接线
+        # （mutation 实证：子串断言会被注释假绿满足）。
+        call_lines = [ln for ln in step.splitlines()
+                      if ln.lstrip().startswith("python build/run_validation.py")]
+        self.assertTrue(call_lines, "release.yml 校验步骤必须调用唯一入口 run_validation.py")
+        plan = json.loads(subprocess.run(
+            [sys.executable, "build/run_validation.py", "--list", "--json"],
+            cwd=str(REPO), capture_output=True, text=True, timeout=120,
+            check=True,
+        ).stdout)
+        node_steps = [s for s in plan["steps"] if "--test" in s["argv"]]
+        self.assertEqual(len(node_steps), 1)
+        self.assertIn("build/tests/study_design_badge.test.cjs",
+                      node_steps[0]["argv"])
 
     def test_doc_declares_freshness_and_biases(self):
         for needle in ("2026-10-30", "选择偏差", "小样本", "截断", "多设计文献",
