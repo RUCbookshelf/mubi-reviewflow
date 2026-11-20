@@ -89,6 +89,13 @@ SAVE_NOT_SAVED_503 = "本次修改尚未保存。轨迹记录不可用，请重�
 # ``WorkflowRuntime.mutate``；solo/legacy 保持既有 write_guard 路径字节不变
 # （P15 契约：旧 solo 路由继续直接走 write_guard，P24 负责最终接线与无漏网
 # 检查）。
+#
+# P24 修轮 D1 → 包 B 缺口 2 收口：四入口全部换接 main.py
+# ``_member_mutate_notified``（values-batch 先行，evidence uploads/
+# submission-evidence/restore 本包补齐）——unknown 信封→409
+# ``team_flow_unknown_outcome``、成功 commit 且锁释后 postcommit SSE、
+# P15 信封头（X-Request-Id/X-Receipt-Id/X-Idempotent-Replay）透传真实
+# HTTP 响应；``member_mutate`` 保留供延迟导入环规避前的兼容引用。
 # ---------------------------------------------------------------------------
 
 def member_request_fingerprint(request_id: str | None, payload: dict) -> tuple[str, str]:
@@ -229,12 +236,21 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                     return coding_evidence.stage_upload(
                         ctx.actor_db, task_id, user['user_id'], zotero_key,
                         dim_id, data, conn=conn)
-                return member_mutate(runtime, info, user, op_name="member_coding",
-                                     stage="coding", key=zotero_key,
-                                     expected_version=expected_version,
-                                     request_id=payload_id,
-                                     request_sha256=payload_sha,
-                                     writer=writer)
+                # P24 修轮 D1 同款接线（包 B 缺口 2）：evidence uploads 与
+                # main.py 六路由/values-batch 同款信封感知——unknown→409
+                # team_flow_unknown_outcome、锁外 postcommit SSE、S3 信封头
+                # 透传（延迟导入避免 main→本模块的环）。
+                from custom_backend.main import _member_mutate_notified
+                result, member_headers = _member_mutate_notified(
+                    runtime, info, user, op_name="member_coding",
+                    stage="coding", key=zotero_key,
+                    expected_version=expected_version,
+                    request_id=payload_id,
+                    request_sha256=payload_sha,
+                    writer=writer, change_kind="vote")
+                if member_headers:
+                    return JSONResponse(result, headers=member_headers)
+                return result
             with runtime.write_guard(task_id, user, 'coding', zotero_key, expected_version,
                                      canonical_only=canonical_only) as ctx:
                 if canonical_only:
@@ -310,13 +326,20 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                     result['access_context'] = workspace_undo.SUBMISSION_EVIDENCE
                     result['submission_evidence'] = runtime.submission_evidence_capability(ctx)
                     return result
-                result = member_mutate(runtime, info, user, op_name="member_coding",
-                                       stage="coding", key=body.zotero_key,
-                                       expected_version=body.expected_policy_version,
-                                       request_id=payload_id,
-                                       request_sha256=payload_sha,
-                                       writer=writer)
+                # P24 修轮 D1 同款接线（包 B 缺口 2）：submission-evidence
+                # 换接 _member_mutate_notified——unknown→409
+                # team_flow_unknown_outcome、锁外 postcommit SSE、S3 信封头
+                # 透传（延迟导入避免 main→本模块的环）。
+                from custom_backend.main import _member_mutate_notified
+                result, member_headers = _member_mutate_notified(
+                    runtime, info, user, op_name="member_coding",
+                    stage="coding", key=body.zotero_key,
+                    expected_version=body.expected_policy_version,
+                    request_id=payload_id,
+                    request_sha256=payload_sha,
+                    writer=writer, change_kind="vote")
             else:
+                member_headers = {}
                 with runtime.write_guard(task_id, user, 'coding', body.zotero_key,
                                          body.expected_policy_version, canonical_only=True) as ctx:
                     dimensions = set(body.notes or {}) | set(body.evidence or {})
@@ -337,6 +360,8 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
         except (ValueError, sqlite3.IntegrityError) as exc:
             raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else 'Evidence field or article is unavailable.') from exc
         tasks.touch_task(task_id, data_dir)
+        if member_headers:
+            return JSONResponse(result, headers=member_headers)
         return result
 
     def image_file(task_id: str, identity: str | int, staged: bool, user: dict):
@@ -471,12 +496,19 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                         # snapshots already reject changed downstream work.
                         return workspace_undo.undo(db, context, stage,
                                                    body.entry_id, conn=conn)
-                    result = member_mutate(
-                        runtime, info, user, op_name="member_undo", stage=stage,
-                        key=entry[0], expected_version=body.expected_policy_version,
+                    # P24 修轮 D1 同款接线（包 B 缺口 2）：restore（member_undo）
+                    # 换接 _member_mutate_notified——unknown→409
+                    # team_flow_unknown_outcome、锁外 postcommit SSE、S3 信封头
+                    # 透传（延迟导入避免 main→本模块的环）。
+                    from custom_backend.main import _member_mutate_notified
+                    result, member_headers = _member_mutate_notified(
+                        runtime, info, user, op_name="member_undo",
+                        stage=stage, key=entry[0],
+                        expected_version=body.expected_policy_version,
                         request_id=payload_id, request_sha256=payload_sha,
-                        writer=writer)
+                        writer=writer, change_kind="vote")
                 else:
+                    member_headers = {}
                     with runtime.write_guard(task_id, user, stage, entry[0], body.expected_policy_version,
                                              canonical_only=canonical_only) as ctx:
                         if canonical_only:
@@ -488,6 +520,8 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
             message = str(exc) if isinstance(exc, ValueError) else "The saved result or downstream work has changed. Undo cannot overwrite newer changes."
             raise HTTPException(409, message) from exc
         tasks.touch_task(info.task_id, data_dir)
+        if member_headers:
+            return JSONResponse(result, headers=member_headers)
         return result
 
     @app.post("/api/tasks/{task_id}/coding/values-batch")

@@ -46,10 +46,12 @@ from coscreen import db as db_mod  # noqa: E402
 from coscreen import pilot_screening as pilot  # noqa: E402
 from coscreen import research_trace  # noqa: E402
 from coscreen import review_workflow as store  # noqa: E402
+from coscreen import task_collaboration as collaboration_mod  # noqa: E402
 from coscreen import tasks as tasks_mod  # noqa: E402
 from coscreen.models import Article  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
 from custom_backend import pilot_screening_api  # noqa: E402
+from custom_backend import team_source_lifecycle  # noqa: E402
 from custom_backend.main import DATA_DIR, app  # noqa: E402
 
 USERS = ("w2owner@example.test", "w2member@example.test",
@@ -413,6 +415,76 @@ class PilotApiBase(unittest.TestCase):
             self.assertEqual(invited.status_code, 201, invited.text)
         self.member_db = self.info.dir / (
             tasks_mod.slugify_screener(self.users[1]["username"]) + ".db")
+        # 2.1.6 语义（用户裁定：规则升级正确，旧夹具按新语义补步）：
+        # (a) 邀请只授访问角色，业务角色（编码者/仲裁者）须属主显式单选配置，
+        #     否则团队写通道 409 team.role.unconfigured——属主=仲裁者（负责人
+        #     豁免语义不变）、成员=编码者（正式筛选写=编码者本职，
+        #     enforce/资格闸语义不变）。
+        # (b) P10/P16 建队配方（与 test_216_member_write_routes._team_task、
+        #     E 线 pkgE P19 夹具同法）：C05 显式协议存储准备（与业务请求分离
+        #     的设计条款）＋成员库确定性 library 身份（%032x uid）＋owner
+        #     latch ＋P06 真实 source 登记——统一写通道按登记借成员连接，
+        #     未登记即 connection_contract（非产品缺陷）。
+        collab_store = collaboration_mod.shared_store_path(self.info.dir)
+        for index in range(max(invite, 0) + 1):
+            collaboration_mod.set_business_role(
+                collab_store, actor_user_id=self.users[0]["user_id"],
+                user_id=self.users[index]["user_id"],
+                business_role="reconciler" if index == 0 else "coder",
+                task_id=self.task)
+        # (a2) R2：裁决员（reconciler 业务角色）默认**不参与**初筛/复筛，
+        #      正式筛选写 403 screening_not_enabled；本套件负责人同时亲自
+        #      筛选（2.1.5 语义），按新语义显式开启其「允许参与筛选」。
+        screening = self.client.put(
+            f"/api/tasks/{self.task}/collaboration/members/"
+            f"{self.users[0]['user_id']}/screening",
+            json={"screening_enabled": True}, headers=self.auth())
+        self.assertEqual(screening.status_code, 200, screening.text)
+        member_paths = [self.info.dir / (
+            tasks_mod.slugify_screener(self.users[index]["username"]) + ".db")
+            for index in range(1, max(invite, 0) + 1)]
+        for path in member_paths:
+            if not path.exists():
+                db_mod.init_db(path)
+                store.migrate(path)
+        team_source_lifecycle.prepare_team_protocol_storage(
+            collab_path=Path(self.collab_db),
+            source_paths=[self.owner_db, *member_paths])
+        with closing(sqlite3.connect(self.owner_db)) as conn, conn:
+            conn.execute("UPDATE workflow_state SET team_latched=1 WHERE singleton=1")
+        from coscreen import team_terminal_registry as terminal_registry
+        with closing(sqlite3.connect(str(self.collab_db))) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT task_instance_id FROM main.team_task_protocol"
+                " LIMIT 1").fetchone()
+        assert row is not None, (
+            "create_task must have registered the team protocol row (P18)")
+        instance_id = row["task_instance_id"]
+        for index, path in enumerate(member_paths, start=1):
+            uid = self.users[index]["user_id"]
+            library = "%032x" % uid
+            with closing(sqlite3.connect(path)) as conn, conn:
+                conn.execute(
+                    "INSERT INTO team_vote_revision_meta (singleton,"
+                    " format_version, library_id, seeded_stage1, seeded_stage2,"
+                    " advances) VALUES (1, 2, ?, 0, 0, 0)"
+                    " ON CONFLICT(singleton) DO UPDATE SET"
+                    " library_id=excluded.library_id", (library,))
+            token = team_source_lifecycle.make_source_identity(
+                task_dir=self.info.dir, source_path=path,
+                source_user_id=uid, source_library_id=library)
+            writer = sqlite3.connect(str(self.collab_db), timeout=15)
+            writer.row_factory = sqlite3.Row
+            writer.execute("BEGIN IMMEDIATE")
+            try:
+                terminal_registry.register_source_on(
+                    writer, task_instance_id=instance_id, source_user_id=uid,
+                    source_library_id=library, source_path_identity=token,
+                    registration_id=f"reg-w2-{self.task}-{index}")
+                writer.commit()
+            finally:
+                writer.close()
 
     def seed_articles(self, count: int) -> None:
         db_mod.init_db(self.owner_db)
@@ -907,6 +979,13 @@ class ZeroPollutionPins(PilotApiBase):
         self.assertEqual(self.post("/decisions",
                                    {"zotero_key": "K03", "decision": "include"}).status_code,
                          200)
+        # 2.1.6 链闸（P12：owner 亦无旁路）：团队内复筛（fulltext）写要求
+        # 该键初筛阶段**团队完成**（必需筛选员=业务角色单选口径，成员同为
+        # 必需筛选员）。旧 2.1.5 基线只写属主一票即可进复筛；按新语义补
+        # 成员初筛票使 K03 初筛达成团队一致后，负责人复筛写才放行。
+        self.assertEqual(self.post("/decisions", index=1,
+                                   body={"zotero_key": "K03", "decision": "include"}).status_code,
+                         200)
         self.assertEqual(self.post("/stage2/decisions",
                                    {"zotero_key": "K03", "decision": "include"}).status_code,
                          200)
@@ -943,8 +1022,13 @@ class ZeroPollutionPins(PilotApiBase):
                         for table in FORMAL_TABLES}
         self.assertEqual(before_owner, after_owner, "初筛/复筛/编码/轨迹必须逐字节不变")
         self.assertEqual(before_member, after_member)
-        # 成员正式库仍为空（训练作答不得落正式 decisions）
-        self.assertIsNone(_table_dump(self.member_db, "decisions"))
+        # 断言按 2.1.6 新语义校准：链闸（owner 亦无旁路）要求 K03 初筛团队
+        # 完成才能写复筛基线，成员作为必需筛选员必须先投一票真实初筛——
+        # 成员库不再是「零正式决策」。「训练不落正式 decisions」的钉由
+        # 上面逐字节不变 + 本行（正式 decisions 恒等于基线那一票）共同承担。
+        self.assertEqual(_table_dump(self.member_db, "decisions"),
+                         before_member["decisions"],
+                         "训练作答不得向成员正式 decisions 追加任何行")
         # pilot_* 只在协作库出现
         with closing(sqlite3.connect(self.collab_db)) as conn:
             collab_tables = {row[0] for row in conn.execute(

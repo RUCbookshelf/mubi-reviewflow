@@ -139,6 +139,7 @@ __all__ = [
     "task_kind",
     "team_stage_view",
     "team_chain_view",
+    "keyed_progress_queue",
     "stage_final_keys",
     "chain_cleared_keys",
     "arbitration_ready_keys",
@@ -1257,19 +1258,25 @@ def _keyed_roster(scope: TeamReadScope,
 
 def _witness_payload(scope: TeamReadScope, witness: SealWitness,
                      task_instance_id: str,
-                     stage: str) -> tuple[Mapping | None, KeyIssue | None]:
+                     stage: str, *,
+                     reader_of=None) -> tuple[Mapping | None, KeyIssue | None]:
     """按 plan 见证重读 F1 完整记录并核身份四元组。
 
     返回 ``(payload, None)`` 或 ``(None, KeyIssue)``：holder 保留连接缺失/
     F1 重读失败（非 connection_contract）＝``witness_unreadable``（可重试）；
     行已不在或 seal_id/双 SHA/sealed_at 与 plan 见证不一致＝``witness_drift``
     （计划后漂移，重计划可收敛）。collab 持有见证经屏障连接读取。
+
+    P24 收尾（C12 包 C）：``reader_of``（``Path -> conn | None``）允许调用方
+    注入 holder reader overlay（写窗进度队列的短命 ro reader）；缺省沿用
+    scope 附着的 ``witness_connection``（P09 语义零变化）。
     """
     if witness.source_path is None:
         conn = scope.collab_connection()
         source_role = "collab"
     else:
-        conn = scope.witness_connection(witness.source_path)
+        conn = (reader_of(witness.source_path) if reader_of is not None
+                else scope.witness_connection(witness.source_path))
         source_role = "actor"
         if conn is None:
             return None, KeyIssue(
@@ -1377,6 +1384,19 @@ def _keyed_stage_view(scope: TeamReadScope, stage: str,
     一致（consensus/已适用仲裁）补 persisted=False 完成投影（不造 seal/时间）。
     每请求键恰落入 statuses 或 issues（不交并集=keys）。
     """
+    return _stage_view_on(scope, stage, keys,
+                          plan=scope.keyed_plan(),
+                          reader_of=scope.witness_connection)
+
+
+def _stage_view_on(scope: TeamReadScope, stage: str,
+                   keys: tuple[str, ...], *,
+                   plan: KeyedReadPlan | None,
+                   reader_of=None) -> TeamStageView:
+    """_keyed_stage_view 的参数化核（P24 收尾，C12 包 C）：plan 与 holder
+    reader 可注入——scope 附着 plan（P09 既有）或调用方的全域 overlay plan
+    （写窗进度队列）；键域合同 ``set(keys) <= set(plan.item_keys)`` 与
+    见证/issue/票/仲裁顺序两侧同守，评估语义零分叉。"""
     state = scope.role_state()
     if state.get("classification") != "owner_match":
         raise TeamFlowUnavailableError(
@@ -1402,7 +1422,6 @@ def _keyed_stage_view(scope: TeamReadScope, stage: str,
                 source_role="owner", retryable=False)
 
     live: list[str] = []
-    plan = scope.keyed_plan()
     if plan is None:
         live = list(canonical_keys)
     else:
@@ -1413,7 +1432,7 @@ def _keyed_stage_view(scope: TeamReadScope, stage: str,
             witness = plan.witnesses.get((stage, key))
             if witness is not None:
                 payload, issue = _witness_payload(
-                    scope, witness, instance, stage)
+                    scope, witness, instance, stage, reader_of=reader_of)
                 if issue is not None:
                     issues[key] = issue
                     continue
@@ -1625,14 +1644,28 @@ def _keyed_chain_view(scope: TeamReadScope, target: str,
                       keys: tuple[str, ...]) -> TeamChainView:
     """按键链视图：stage1 exclude 已知即剪枝 stage2 读取（C07）；每请求键恰
     有 chain 或 issue（stage1 issue 优先；非 stage2 目标再看 stage2 issue）。"""
-    stage1 = _keyed_stage_view(scope, "stage1", keys)
+    return _chain_view_on(scope, target, keys,
+                          plan=scope.keyed_plan(),
+                          reader_of=scope.witness_connection)
+
+
+def _chain_view_on(scope: TeamReadScope, target: str,
+                   keys: tuple[str, ...], *,
+                   plan: KeyedReadPlan | None,
+                   reader_of=None) -> TeamChainView:
+    """_keyed_chain_view 的参数化核（P24 收尾，C12 包 C）：与
+    ``_stage_view_on`` 同一注入面（scope 附着 plan 或全域 overlay plan），
+    剪枝/issue 序/clean completion 投影语义零分叉。"""
+    stage1 = _stage_view_on(scope, "stage1", keys,
+                            plan=plan, reader_of=reader_of)
     # 剪枝：stage1 已终局 exclude 的键不再读 stage2（C01.4 短路；F1 发现侧
     # 由 P08 plan 同步剪枝）。
     stage2_keys = tuple(
         key for key in keys
         if stage1.statuses.get(key) is None
         or stage1.statuses[key].status != FINAL_EXCLUDE)
-    stage2 = _keyed_stage_view(scope, "stage2", stage2_keys)
+    stage2 = _stage_view_on(scope, "stage2", stage2_keys,
+                            plan=plan, reader_of=reader_of)
     full_chain = evaluate_chain(stage1.statuses, stage2.statuses, target,
                                 keys=list(keys))
     issues: dict[str, KeyIssue] = {}
@@ -1654,6 +1687,107 @@ def _keyed_chain_view(scope: TeamReadScope, target: str,
     return TeamChainView(
         target=target, chain=chain, stage1=stage1, stage2=stage2,
         issues=issues, completion=completion)
+
+
+# ---------------------------------------------------------------------------
+# P24 收尾（C12 包 C）：写窗进度队列的团队化按键评估
+# ---------------------------------------------------------------------------
+
+def _queue_witness_reader(path: Path) -> sqlite3.Connection:
+    """进度队列 overlay 的 holder 见证 reader：mode=ro＋Row＋显式 BEGIN
+    （满足 F1 ``read_seal_on`` 借用合同并固定该 holder 读取快照）。
+
+    与 ``team_keyed_reads._open_readonly_reader`` 同型（本模块不跨界导入
+    私有符号）；打开失败由调用方按 ``witness_unreadable`` 呈现该 holder 的
+    键，不遮蔽其他已见证键。
+    """
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro",
+                           uri=True, timeout=_RO_TIMEOUT)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+    except BaseException:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        raise
+    return conn
+
+
+def keyed_progress_queue(scope: TeamReadScope, ctx, target: str) -> list[str]:
+    """写窗进度队列的团队化按键评估（完成看 seal、未完成看票）。
+
+    ``coding_result`` 的写窗进度队列此前走全域 ``team_chain_view``
+    （votes-only），对 pre-join-sealed/归档键显示错误进度：seal 已终局的键
+    仍按当前名册全员数票（后加入员无票 → 键被当未清出队、total 虚低）。本
+    函数在 scope 的 collab 屏障连接上一次构建**全域** P08 keyed read plan
+    （与 P23 ``keyed_work_items``/``protected_keyed_read_scope`` 同一发现
+    通道、``work_items_read`` 读形操作），经 ``_chain_view_on`` 用该 overlay
+    plan 评估链：见证键直读 F1 payload 给 FINAL_*（不读票），无见证键读
+    当前名册＋按键票，冲突键走 C06 按键仲裁——与 HIGH#1 落地面
+    （B1/B2：f19a4ead/0a79005a）读写同语义。返回链 cleared 键（canonical
+    域序），供 ``coding_progress_on`` 物化进度；键级 issue（witness 不可读/
+    漂移等）该键不计入队列（保守展示，不炸请求）。
+
+    连接面：holder 见证经短命 ro reader（本函数自开自收，绝不动窗口保留
+    连接）；collab 见证经 scope 屏障连接；票读经 scope 保留成员连接。task
+    未注册 P08 协议（``KeyedPlanUnavailableError``）→ 回退修复前全域票面
+    展示（真实 P13 写窗恒已注册——窗口自身的 plan 构建先于此失败；回退仅
+    覆盖 legacy/合成路径，进度展示不因此 503）。其余 typed 错误原样上抛
+    （与旧全域路径同口径）。只读：不 BEGIN/commit/rollback 窗口连接、
+    零 DDL/零迁移/零建库。
+    """
+    if target not in _CHAIN_TARGETS:
+        raise ValueError(f"target 必须为 {_CHAIN_TARGETS} 之一: {target!r}")
+    domain = scope.canonical_keys()
+    if not domain:
+        return []
+    from coscreen.team_flow_types import TeamOperation
+    from custom_backend.team_keyed_inputs import (
+        KeyedPlanUnavailableError,
+        build_keyed_read_plan,
+    )
+    try:
+        plan = build_keyed_read_plan(
+            ctx, collab_conn=scope.collab_connection(),
+            operation=TeamOperation(name="work_items_read", stage=target),
+            item_keys=domain)
+    except KeyedPlanUnavailableError:
+        # legacy/合成路径（无 P08 协议注册）：维持修复前全域 votes-only 展示。
+        return chain_cleared_keys(team_chain_view(scope, target))
+    readers: dict[Path, sqlite3.Connection] = {}
+    unreadable: set[Path] = set()
+
+    def reader_of(path: Path):
+        if path in unreadable:
+            return None
+        conn = readers.get(path)
+        if conn is None:
+            try:
+                conn = _queue_witness_reader(path)
+            except sqlite3.Error:
+                unreadable.add(path)
+                return None
+            readers[path] = conn
+        return conn
+
+    try:
+        view = _chain_view_on(scope, target, domain,
+                              plan=plan, reader_of=reader_of)
+        return chain_cleared_keys(view)
+    finally:
+        # 自开 reader 只读事务，确定性收尾（rollback→close）；释放失败不吞
+        # 在飞主错（只可能发生在无主错的清理段，如实上抛）。
+        for conn in readers.values():
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
 
 
 # ---------------------------------------------------------------------------

@@ -1068,10 +1068,27 @@ def _prepare_inputs(
     # member_coding 经真实窗口必然崩死锁：票不全 409 awaiting、票全封版 503）。
     # 非 chain 型（chain_target=None，如 member_vote:screen）与未知 op（P10 原始
     # 窗口直调的未注册名）保持既有"仅 live 依赖才保留"语义——P10 已锁行为零变化。
+    #
+    # 裁定 A 收口（包 B 缺口 1，HIGH#2 跟进#2；HIGH#1 重接轮 R8.1 实测）：窗口
+    # 保留集与**当前有效名册**对齐——持章成员移除成功（HIGH#2：角色行删除＋
+    # 成员库改名移走＋ seals 按 watermark 归档进 collab）后，其 F2 源行 retired
+    # （HIGH#1 B5 发现层跳过），若该成员是名册最后一个 active source，则
+    # ``verified_active_sources`` 为空、逐源 ``live_dependencies`` 映射为空 dict；
+    # 此时**无完成见证的目标键**（干净负发现）仍会驱动 P12 同阶段完成/链检查
+    # （team_write_checks._require_stage_open → team_stage_view →
+    # scope.member_vote_snapshot_keys）对缩编名册逐成员读 live 票——非 chain 型
+    # op 依赖"live 依赖才保留"判据会跳过全部成员保留，borrowed 映射不完备 →
+    # 503 connection_contract [missing_members/borrowed]（member=投票者本人）。
+    # 修法：保留判据补"计划键域存在无见证目标键"（``_plan_reads_live_member_votes``）；
+    # 全部键已见证时仍零保留（P10 已锁语义不动），retired/移除者不进保留集
+    # （名册来自 collab 当前 grant 行，移除即不在 participants），其历史经
+    # collab 归档副本可发现（B5 语义，不在本层重复）。
     member_paths: dict[int, Path] = {}
     member_entries: dict[int, tuple[Path, os.stat_result]] = {}
     missing_members: set[int] = set()
-    if plan.live_dependencies or _chain_targeted_operation(operation):
+    if (plan.live_dependencies
+            or _chain_targeted_operation(operation)
+            or _plan_reads_live_member_votes(plan)):
         for entry in state.get("participants") or []:
             if entry.get("required_screener") is not True:
                 continue
@@ -1336,6 +1353,36 @@ def _chain_targeted_operation(operation) -> bool:
     except (TypeError, ValueError, ImportError):
         return False
     return getattr(rule, "chain_target", None) is not None
+
+
+def _plan_reads_live_member_votes(plan: KeyedReadPlan) -> bool:
+    """裁定 A 收口辅助（包 B 缺口 1）：计划键域是否存在**无完成见证**的目标键。
+
+    P12 检查面对任一无见证目标键都会走按键视图的 live 票读取
+    （``member_vote_snapshot_keys``，逐 required 成员）——窗口必须保留这些
+    成员库。判据只看 ``plan.witnesses``（发现层已核的完成见证），不复制
+    视图的 issue/live 细分：有 issue 的键同样不阻断当前票读取（发现层
+    语义），保守保留；**全部键已见证时返回 False**——P10 已锁的"完全
+    见证请求零成员保留"行为逐字保持。F1 阶段映射属 P08
+    （``team_keyed_inputs._OPERATION_F1_STAGES``，只读复用、绝不复制）；
+    未知 stage（计划构建期已拒，防御位）保守 True——宁可多保留不可
+    connection_contract。
+    """
+    try:
+        from custom_backend.team_keyed_inputs import _OPERATION_F1_STAGES
+        stages = _OPERATION_F1_STAGES.get(
+            getattr(getattr(plan, "operation", None), "stage", None))
+    except ImportError:  # pragma: no cover - defensive, plan came from P08
+        stages = None
+    if not stages:
+        return True
+    item_keys = tuple(getattr(plan, "item_keys", ()) or ())
+    witnesses = getattr(plan, "witnesses", None) or {}
+    for stage in stages:
+        for key in item_keys:
+            if (stage, key) not in witnesses:
+                return True
+    return False
 
 
 @contextmanager

@@ -53,6 +53,7 @@ from coscreen import appraisal as appraisal_core  # noqa: E402
 from coscreen import db as db_mod  # noqa: E402
 from coscreen import review_analysis as analysis_mod  # noqa: E402
 from coscreen import sof_judgments as sof_judgments_core  # noqa: E402
+from coscreen import task_collaboration as collaboration_mod  # noqa: E402
 from coscreen import tasks as tasks_mod  # noqa: E402
 from coscreen.models import Article  # noqa: E402
 from custom_backend import auth as auth_mod  # noqa: E402
@@ -100,6 +101,16 @@ class SofJudgmentBase(unittest.TestCase):
             headers=self.auth)
         self.assertEqual(invite.status_code, 201, invite.text)
         self.info = tasks_mod.find_task(self.task, DATA_DIR)
+        # 2.1.6 语义：邀请/角色授予只是访问角色，业务角色（编码者/仲裁者）
+        # 须由属主显式单选配置——未配置时团队流守卫 409 team.role.unconfigured，
+        # 属主不配置则属主自身写判定也被拦。夹具按新语义补 set_business_role
+        # （属主=仲裁者：带 consensus:write 可写判定；成员=编码者：纯参与者，
+        # 权限断言（成员 403）在新语义下不变）。
+        store = self.info.dir / "collaboration.db"
+        for user, business in ((self.owner, "reconciler"), (self.member, "coder")):
+            collaboration_mod.set_business_role(
+                store, actor_user_id=self.owner["id"], user_id=user["id"],
+                business_role=business, task_id=self.task)
         self.db = self.info.dir / (tasks_mod.slugify_screener(self.owner["username"]) + ".db")
         self.store = self.info.dir / "collaboration.db"
         self.sof = f"/api/tasks/{self.task}/tables/sof"
@@ -149,6 +160,14 @@ class SofJudgmentBase(unittest.TestCase):
             json={"user_id": self.member["id"], "role": "reconciler"},
             headers=self.auth)
         self.assertEqual(response.status_code, 201, response.text)
+        # 2.1.6 语义：成员升级为裁决员=「补 reconciler 访问授权 + 属主显式
+        # 单选业务角色为仲裁者」两步。只补授权不改单选时，成员同时持有
+        # 编码者与仲裁者授权 → 团队流守卫 409 team.role.conflict（新规则：
+        # 双授权必须显式选择单一有效业务角色）。
+        collaboration_mod.set_business_role(
+            self.store, actor_user_id=self.owner["id"],
+            user_id=self.member["id"],
+            business_role="reconciler", task_id=self.task)
 
     # ---- 请求小工具 ---------------------------------------------------
     def _put(self, headers=None, **body):

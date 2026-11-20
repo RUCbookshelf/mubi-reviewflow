@@ -241,15 +241,28 @@ class WorkflowRuntime:
                                owner["owner_user_id"] == user["user_id"],
                                self._readonly_task_kind(info, owner), collab)
 
+    @staticmethod
+    def _screener_library_503() -> HTTPException:
+        """属主筛选库不可读的统一 503（包 G）。
+
+        词条 = ``main.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE``（tables_api 各
+        端点「个人库不可读 503」同一承诺口径，前端 interface_locale.js 已
+        注册）。懒 import：main 在注册期才 import 本模块，模块级反向
+        import 成环（先例：COLLABORATION_RESERVED_NAME_MESSAGE）。
+        """
+        from custom_backend.main import SCREENER_LIBRARY_UNAVAILABLE_MESSAGE
+        return HTTPException(503, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
+
     def _readonly_task_kind(self, info, owner) -> str:
         """只读派生 task_kind（2.1.6 FLOW II-A；fix-r1 R6 与 context 事实一致）。
 
         与 :meth:`context` 同一判定**事实**——``team_latched==1`` 或协作库存在
         当前非属主 grant（邀请 grant 与 latch 两步提交的现实窗口不再判
         personal）——但**零写**：不建库、不迁移、不 latch。属主库确无文件/
-        无表 = personal（兼容口径：从未开过工作流的属主任务）；锁忙/读失败/
-        协作库中途不可读抛 503——读失败不得伪装成 personal（fail-closed，
-        fix-r1 §9.2：PermissionError 不笼统折叠为无 grants）。"""
+        无表 = personal（兼容口径：从未开过工作流的属主任务）；属主库锁忙/
+        坏库字节（非 SQLite，包 G）/读失败、协作库中途不可读抛 503——读失败
+        不得伪装成 personal（fail-closed，fix-r1 §9.2：PermissionError 不
+        笼统折叠为无 grants）。"""
         owner_db = info.dir / (tasks.slugify_screener(owner["owner_username"]) + ".db")
         latched = False
         if owner_db.is_file():
@@ -260,12 +273,15 @@ class WorkflowRuntime:
                             "SELECT team_latched FROM workflow_state WHERE singleton=1"
                         ).fetchone()
                         latched = row is not None and int(row[0] or 0) == 1
-            except sqlite3.OperationalError as exc:
-                raise HTTPException(
-                    503, "任务协作状态暂时无法读取，请稍后重试。") from exc
+            except sqlite3.DatabaseError as exc:
+                # 包 G（F 线停手上报）：捕获面上移 DatabaseError——
+                # OperationalError 只是其子类（锁忙照旧收口），坏库字节
+                # （"file is not a database"）此前逃逸成全局 500，违反本函数
+                # fail-closed 503 自述与 tables_api「个人库不可读各端点 503」
+                # 承诺。词条=个人库不可读标准 503（前端 locale 已注册）。
+                raise self._screener_library_503() from exc
             except OSError as exc:
-                raise HTTPException(
-                    503, "任务协作状态暂时无法读取，请稍后重试。") from exc
+                raise self._screener_library_503() from exc
         if latched:
             return "team"
         try:
@@ -532,10 +548,13 @@ class WorkflowRuntime:
                 ctx.actor_db, ctx.owner_db, [key],
                 actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
             from custom_backend.team_screening_runtime import (
-                chain_cleared_keys,
-                team_chain_view,
+                keyed_progress_queue,
             )
-            queue = chain_cleared_keys(team_chain_view(inputs.scope, "coding"))
+            # P24 收尾（C12 包 C）：写窗进度队列团队化——不再全域数票，改走
+            # 按键 keyed 评估（完成看 seal、未完成看票），与保存门
+            # （HIGH#1 B2 keyed plan 视图）读写同语义：pre-join-sealed/
+            # 归档键按 seal 终局入队，不再因后加入员无票被误出队。
+            queue = keyed_progress_queue(inputs.scope, ctx, "coding")
             progress = coding.coding_progress_on(
                 inputs.actor_conn,
                 owner_conn=inputs.owner_conn,

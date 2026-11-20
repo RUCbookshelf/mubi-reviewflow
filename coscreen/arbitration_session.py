@@ -497,6 +497,18 @@ def _reveal_payload(row: sqlite3.Row) -> dict[str, Any]:
     votes = _json_loads(row["votes_json"], [])
     if not isinstance(votes, list):
         votes = []
+    # 盲到底（包 E，2026-11-20 用户裁定）：裁决未决（无结论或未揭示）的
+    # 条目，reveal 载荷层不携带任何筛选员排除理由——votes_json 里的票面
+    # 理由只在条目已决/揭示后才随载荷外发。现有两处调用（decide 传入刚
+    # 裁决行、reveal 有先判后示守卫）都只会送已决行，故已决路径逐字段
+    # 原样；本剥离是传输层加固：即使未来新增调用方或守卫被放宽，未决
+    # 条目也绝不外发理由。存储零变化——votes_json 原样保留在库里。
+    if not (row["decision"] and row["revealed"]):
+        votes = [
+            {key: value for key, value in vote.items() if key != "reason"}
+            if isinstance(vote, dict) else vote
+            for vote in votes
+        ]
     return {
         "zotero_key": row["zotero_key"],
         "decision": row["decision"],

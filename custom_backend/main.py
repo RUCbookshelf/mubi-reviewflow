@@ -3062,6 +3062,10 @@ def _run_team_management_entry(entry_word: str, info, user, *, target_user_id: i
       源准备）不进入该承诺——角色失败时 ``membership_committed is False``，
       绝不声称先前账号创建也被回滚（不伪跨库原子）。
     """
+    # 包 A（方案 A）：属主管理写入口的锁外自动准备（幂等；非属主不可达——
+    # 管理端点仅属主可写。被邀**目标**库仍由各入口的 _prepare_invited_member_
+    # storage 负责，此处只补属主自身这一缺口）。协调器写窗在其内部——锁外。
+    _ensure_owner_team_storage(info, user)
     from custom_backend import team_source_lifecycle as team_lifecycle
     action = _team_management_action(entry_word)
     payload_id, payload_sha = member_request_fingerprint(
@@ -3169,6 +3173,141 @@ def _prepare_invited_member_storage(info, target: dict) -> dict:
         "library_prepared": library_prepared,
         "prepare_error": prepare_error,
     }
+
+
+#: 包 A（用户裁定方案 A，2026-11-20；复审 D1 增补）：属主自动准备的 schema
+#: 清单。属主成员库（F1+receipts+appraisal，5 表）与协作库 F2 registry+
+#: F1+receipts（6 表）——与 _prepare_invited_member_storage 两步准备实际安装
+#: 的表集一致；另含协作库业务角色两表（collaboration_business_role/_events，
+#: initialize_task_store 的 _SCHEMA 不含、team 协调器借用写者
+#: （_management_conn require_business 预检）要求**已存在且不建表**——
+#: set_business_role 仅非借用分支自 ensure，全新 collab 缺表即 503 不随重试
+#: 收敛（复审 D1 证伪「set_business_role 自 ensure 兜底」旧判断），故由
+#: 准备层经 task_collaboration 自身 ensure 路径幂等补齐，零手写 DDL。
+_OWNER_MEMBER_TEAM_TABLES = (
+    "team_flow_receipts", "team_flow_receipts_meta",
+    "team_terminal_seals", "team_terminal_facts_meta", "appraisal_records")
+_OWNER_COLLAB_TEAM_TABLES = (
+    "team_task_protocol", "team_source_registry",
+    "team_flow_receipts", "team_flow_receipts_meta",
+    "team_terminal_seals", "team_terminal_facts_meta",
+    "collaboration_business_role", "collaboration_business_role_events")
+
+
+def _sqlite_tables_present(path) -> set:
+    """只读列出库中表名（sqlite_master 纯读；文件缺失返回空集）。"""
+    import sqlite3 as _sqlite3
+    if not path.is_file():
+        return set()
+    conn = _sqlite3.connect(str(path), timeout=5)
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    finally:
+        conn.close()
+    return {row[0] for row in rows}
+
+
+def _owner_team_storage_missing(info, owner_username: str) -> list[str]:
+    """属主成员库/协作库缺哪些团队 schema 表（空列表=已备齐）。
+
+    只读检查（两个短连接的 sqlite_master 查询）；既不建表也不取任何任务锁。
+    """
+    slug = tasks_mod.slugify_screener(owner_username)
+    owner_db = info.dir / f"{slug}.db"
+    missing: list[str] = []
+    for path, expected in ((owner_db, _OWNER_MEMBER_TEAM_TABLES),
+                           (_collaboration_store(info), _OWNER_COLLAB_TEAM_TABLES)):
+        missing.extend(sorted(set(expected) - _sqlite_tables_present(path)))
+    return missing
+
+
+def _ensure_owner_team_storage(info, user) -> bool:
+    """包 A（用户裁定方案 A）：属主首次团队操作的自动准备（幂等、锁外）。
+
+    实证缺口（2026-11-20 目检）：桌面模式创建的任务切服务器模式后，属主本人
+    的成员库不经任何入口获得团队准备——invite/grant 只准备**被邀成员**库
+    （``_prepare_invited_member_storage``），属主自身无触发点；属主首次团队
+    操作两次 503（business_role 表缺 + 五张团队表缺，离线手工补齐已验证修法
+    有效）。本函数即修法的产品化：actor 为该任务属主且其库缺团队 schema 时，
+    执行与邀请流程同款的两步准备——appraisal ensure（宿主 ``_screener_db``
+    注入）+ P14 ``prepare_team_protocol_storage``（collab 幂等复装 + 属主
+    成员库 F1/receipts）。
+
+    契约：
+    - **幂等**：schema 备齐时零 DDL 直接跳过（已有表不重复迁移）；
+    - **锁外显式步骤**（P18 位形）：必须在任务锁/写窗**外**调用——本函数
+      不自取任何锁，DDL 由各 prepare 自持短连接完成；
+    - **非属主 no-op**：成员写保持「不经此、不顺手 prepare」既有口径；
+    - **失败如实 typed 503**（``team_owner_storage_unprepared``）：不吞、
+      不降级、不回滚已装 schema（prepare 自身幂等，重试安全）；就绪检查
+      读失败同样 typed 503（复审 D2：不逃逸为全局 500）。
+
+    复审 D1 增补：除与邀请流程同款的两步（appraisal ensure + P14
+    ``prepare_team_protocol_storage``）外，另经 task_collaboration 自身
+    ensure 路径（``_write`` BEGIN IMMEDIATE 事务内 ``_ensure_business_role_
+    schema``）在协作库幂等补齐业务角色两表——team 协调器借用写者预检要求
+    表已存在且不建表，全新 collab 缺表时 PUT business-role 即 503 不随重试
+    收敛（基线 create/invite 准备路径不含该两表，记遗留，见包报告）。
+    """
+    try:
+        owner = collaboration_mod.get_owner(
+            _collaboration_store(info), task_id=info.task_id)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise  # 全局处理器（desktop 409 修复指引 / server 503 fail-closed）
+    except collaboration_mod.OwnerUnavailableError:
+        return False  # 协作库暂不可读：不在此新增失败面，后续入口自行处理
+    if owner is None or owner.get("owner_user_id") != user["user_id"]:
+        return False  # 非属主 / legacy 无属主绑定：no-op
+    owner_username = owner.get("owner_username")
+    if not isinstance(owner_username, str) or not owner_username:
+        return False  # 属主名缺失交由既有 roster 口径处理，不在此报错
+    try:
+        missing = _owner_team_storage_missing(info, owner_username)
+    except collaboration_mod.CollaborationStoreCorruptError:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        # 复审 D2：就绪检查的只读查询异常 → typed 503（不逃逸全局 500）。
+        logger.warning("owner storage readiness check failed: task=%s owner=%s: %s",
+                       info.task_id, owner_username, exc)
+        raise HTTPException(503, {
+            "error_code": "team_owner_storage_unprepared",
+            "message_key": "team.owner_storage_unprepared",
+            "params": {},
+            "details": f"readiness check failed: {type(exc).__name__}: {exc}",
+            "message": "属主成员库团队存储状态暂时无法确认，请稍后重试。",
+        }) from exc
+    if not missing:
+        return False  # 已备齐：幂等跳过
+    from custom_backend import team_source_lifecycle as team_lifecycle
+    from custom_backend.appraisal_api import prepare_appraisal_storage_for
+    slug = tasks_mod.slugify_screener(owner_username)
+    owner_db = info.dir / f"{slug}.db"
+    collab_path = _collaboration_store(info)
+    try:
+        # 与 _prepare_invited_member_storage 同款两步（缺库时 _screener_db
+        # ensure=True 按产品标准原语建属主库，appraisal ensure 幂等）。
+        prepare_appraisal_storage_for(info, owner_username, _screener_db)
+        team_lifecycle.prepare_team_protocol_storage(
+            collab_path=collab_path, source_paths=(owner_db,))
+        # 复审 D1：协作库业务角色两表——经 task_collaboration 自身 ensure
+        # 路径安装（_write BEGIN IMMEDIATE 事务内逐条 CREATE IF NOT EXISTS，
+        # 与非借用 set_business_role 同一安装器），零手写 DDL。
+        with collaboration_mod._write(collab_path) as _role_conn:
+            collaboration_mod._ensure_business_role_schema(_role_conn)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - typed 503 如实上报，不吞
+        logger.warning("owner storage auto-prepare failed: task=%s owner=%s: %s",
+                       info.task_id, owner_username, exc)
+        raise HTTPException(503, {
+            "error_code": "team_owner_storage_unprepared",
+            "message_key": "team.owner_storage_unprepared",
+            "params": {},
+            "details": f"{type(exc).__name__}: {exc}",
+            "message": "属主成员库团队存储准备失败，请稍后重试（准备幂等，重试安全）。",
+        }) from exc
+    return True
 
 
 def _register_fresh_team_protocol(info, user) -> dict:
@@ -3407,6 +3546,10 @@ def _member_mutate_notified(runtime, info, user, *, op_name: str, stage: str,
        （前置 c/S3）。writer 结果进 receipt 前递归字符串键化（P07 契约，
        与 member_mutate 的 canonical_writer 同实现口径）。
     """
+    # 包 A（方案 A）：属主首次团队写触发的锁外自动准备（幂等；非属主 no-op，
+    # 成员写保持「不顺手 prepare」口径）。P13 写窗/任务锁在 runtime.mutate
+    # 内部——本调用天然锁外（P18 成员准备同款位形）；失败如实 typed 503。
+    _ensure_owner_team_storage(info, user)
     from coscreen.team_flow_types import TeamOperation
 
     def _string_keys(value):
@@ -3466,6 +3609,10 @@ def team_progress(task_id: str, user: dict = Depends(require_user)) -> dict:
     user_ids = {account["username"]: account["id"] for account in accounts}
     from custom_backend.team_progress import list_team_progress
     can_manage = owner["owner_user_id"] == user["user_id"]
+    if can_manage:
+        # 包 A（方案 A）：属主首次团队读触发的自动准备（幂等、无写窗无任务
+        # 锁——读路径天然锁外；失败如实 typed 503）。非属主读保持纯读。
+        _ensure_owner_team_storage(info, user)
     # 冻结裁定（问题①）：只读仲裁会话汇总随行输出（member.arbitration.*；
     # 缺会话/缺映射 = 两阶段零值；绝不带队列条目/votes/筛选员姓名）。
     members = list_team_progress(info.task_id, list(user_ids), DATA_DIR,

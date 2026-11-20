@@ -693,6 +693,16 @@ class ConsensusPermissionPins(W7TablesBase):
             json={"user_id": self.member["id"], "role": "reconciler"},
             headers=self.auth)
         self.assertEqual(response.status_code, 201, response.text)
+        # 2.1.6 语义：访问角色升级 + 属主显式单选业务角色为仲裁者两步——
+        # 只补授权不改单选时成员同时持有编码者与仲裁者授权，团队流守卫
+        # 409 team.role.conflict；consensus:write 判定以业务角色单选为准
+        # （未配置=409 team.role.unconfigured）。
+        from coscreen import task_collaboration as _collab
+        _collab.set_business_role(
+            _collab.shared_store_path(self.info.dir),
+            actor_user_id=self.owner["id"],
+            user_id=self.member["id"],
+            business_role="reconciler", task_id=self.task)
 
     def _member_sof(self, *, detail=0, **body):
         payload = {"format": "csv"}

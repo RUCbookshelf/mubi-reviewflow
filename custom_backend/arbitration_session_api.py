@@ -671,6 +671,33 @@ def _decided_reason_on(conn, session_id: str, key: str) -> str:
     return str(row[0]) if row is not None and row[0] else ""
 
 
+def _team_screeners_payload(required, votes, *, item_decided: bool) -> list[dict]:
+    """盲到底（包 E，2026-11-20 用户裁定）——载荷层条件剥离筛选员理由。
+
+    仅**已决/揭示**条目的载荷可携带各筛选员的排除理由（``reason``）；
+    裁决未决（pending）条目连 ``reason`` 键都不发（缺席，非空串遮盖）。
+    界面本就未渲染未决条目的理由——本 helper 保证**传输层**结构性缺席，
+    不依赖 ``reveal_team_item_on``/``decide_team_item_on`` 的上游先判后示
+    守卫：即使未来守卫被放宽或新增调用方，未决条目也无法把理由发到浏览器。
+
+    ``votes`` 兼容两种键域：ready 快照 ``opinions`` 的 ``str(uid)`` 与
+    ``_enumerate_ready_snapshot`` 票面的 ``int(uid)``。已决路径逐字段保持
+    原形状（name/decision/reason 三键齐全，值原样）。
+    """
+    screeners: list[dict] = []
+    for uid in sorted(required):
+        entry = votes.get(uid)
+        if entry is None:
+            entry = votes.get(str(uid))
+        entry = entry if isinstance(entry, Mapping) else {}
+        screener = {"name": required[uid],
+                    "decision": str(entry.get("decision") or "")}
+        if item_decided:
+            screener["reason"] = str(entry.get("exclusion_reason") or "")
+        screeners.append(screener)
+    return screeners
+
+
 def _merged_frame(finish_keys, ready, required):
     """构造 P05 兼容 merged（仅本次 finish 键的 conflict 行；固定列名）。"""
     import pandas as pd
@@ -847,11 +874,10 @@ def run_team_arbitration_decide(
                     "decision": decide_payload["decision"],
                     "reason": decide_payload["reason"],
                     "decided_at": decide_payload["decided_at"],
-                    "screeners": [
-                        {"name": required[uid],
-                         "decision": entry["opinions"][str(uid)]["decision"],
-                         "reason": entry["opinions"][str(uid)]["exclusion_reason"]}
-                        for uid in sorted(required)],
+                    # decide 刚成功＝该键已决；已决路径照常带完整人票理由
+                    # （盲到底剥离只作用于未决条目——见 helper 契约）。
+                    "screeners": _team_screeners_payload(
+                        required, entry["opinions"], item_decided=True),
                 }
                 decide_payload["session"] = open_payload
                 receipt = append_receipt_on(inputs.target_conn, {
@@ -1359,11 +1385,11 @@ def register_team_arbitration_routes(
             close_all()
             raise _team_http_for(exc, unavailable_message, bad) from exc
         close_all()
-        base["screeners"] = [
-            {"name": required[uid],
-             "decision": (votes.get(uid) or {}).get("decision", ""),
-             "reason": (votes.get(uid) or {}).get("exclusion_reason", "")}
-            for uid in sorted(required)]
+        # 盲到底（包 E）：screeners 附件本身按条目状态条件携带理由——
+        # reveal_team_item_on 已保证走到这里的键必然已决（item_decided
+        # 恒真），此处再设一道载荷层闸：未决条目结构性缺席 reason。
+        base["screeners"] = _team_screeners_payload(
+            required, votes, item_decided=bool(base.get("decision")))
         return base
 
     @app.post(_TEAM_BASE + "/session/finish")

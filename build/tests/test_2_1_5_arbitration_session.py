@@ -105,6 +105,17 @@ class ArbitrationSessionTests(unittest.TestCase):
                 json={"username": self.users[index]["username"], "role": role},
                 headers=self.auth())
             self.assertEqual(response.status_code, 201, response.text)
+        # 2.1.6 语义：邀请只授访问角色（reconciler/coder），业务角色（编码者/
+        # 仲裁者）须显式配置——未配置时团队流守卫 409 team.role.unconfigured
+        # （用户裁定规则升级正确，夹具按新语义补 set_business_role，
+        # 与 E 线 test_216_pkg_e_blind_payload generic 夹具同法）。
+        store = collaboration_mod.shared_store_path(self.info.dir)
+        owner_uid = self.users[0]["user_id"]
+        for index, business in ((0, "reconciler"), (1, "reconciler"), (2, "coder")):
+            collaboration_mod.set_business_role(
+                store, actor_user_id=owner_uid,
+                user_id=self.users[index]["user_id"],
+                business_role=business, task_id=self.task)
         self.ctx = app.state.review_workflow.context(self.task, self.users[0])
         self.owner_db = Path(self.ctx.owner_db)
 

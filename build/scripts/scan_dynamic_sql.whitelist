@@ -18,5 +18,5 @@ coscreen/review_workflow.py:160#executescript 不支持参数绑定；脚本由�
 # ---- review67（2026-11-12）：两处新命中皆非外部输入 ——
 coscreen/db.py:557#整表重建 DDL 的 measure CHECK 改拼模块级注册表常量 _MEASURE_CHECK_SQL（review67 M-04：消灭硬编码清单；拼入内容为固定代码常量，无任何外部输入）
 coscreen/analysis_storage.py:517#IN(?) 占位符个数由选中效应 result_id 数量决定（review67 M-03 独立性守卫前置）；拼入内容仅为 '?'，id 值经参数绑定
-custom_backend/review_workflow_api.py:1232#P23 keyed read: IN-list placeholders only (one ? per key), values bound as parameters
+custom_backend/review_workflow_api.py:1235#P23 keyed read: IN-list placeholders only (one ? per key), values bound as parameters
 custom_backend/team_completion_clear.py:162#P21 clear: 表/列名为模块内固定常量（data_tables 族内部映射，同 research_trace.py:743；SQLite 标识符不能参数绑定），拼入内容非外部输入，语句本身无数据值参数
