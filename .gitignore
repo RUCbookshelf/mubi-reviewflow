@@ -55,3 +55,14 @@ build/dist/
 build/staging/
 build/downloads/
 build/.build-*.lock/
+
+# 2.1.6 后端清零收尾（2026-11-21 用户令）：out/ 产物目录整体排除（既有 99 个
+# 已跟踪验收件不受影响，仅拦截新增未跟踪噪音——163 文件误报与 183MB 快照
+# 误暂存事故的根治）；根目录散置的历史报告/补丁/笔记同样排除。
+/out/
+/notes.md
+/task_plan.md
+/review_*.md
+/fix_2.1.4_report*.md
+/patches/
+/scripts/
