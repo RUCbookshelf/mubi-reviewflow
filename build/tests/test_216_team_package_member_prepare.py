@@ -329,25 +329,18 @@ class TeamPackageMemberPrepareTests(unittest.TestCase):
             rows = c.execute(
                 "SELECT COUNT(*) FROM collaboration_business_role").fetchone()
         self.assertGreaterEqual(rows[0], 1, "前置失真：choice 应随包残留")
-        # 属主首次 appraisal（choice 命中同 uid → 角色门可过）：**不得 500**
-        # 且必须 typed 信封（实测发现：底版即 typed 503 completion_source_
-        # unresolved——protocol 行 task_id 为旧部署本地绑定且产品守卫触发器
-        # 禁止改绑（team_task_protocol_guard_update），可解析协议的写路径在
-        # receipts 读之前已被该 typed 503 拦下；E7 预测的 receipts 裸 500 被
-        # 该墙前置。500 禁令 + typed 信封照常断言；503 墙升报 REPORT 残余
-        # 风险（修复需协议绑定裁定，非 P3 文件域）。
+        # 属主首次 appraisal（choice 命中同 uid → 角色门可过）：**200**。
+        # R8（用户裁定 a，2026-11-21）起首用例升级：修前此处是 typed 503
+        # completion_source_unresolved（协议行 task_id 仍为旧部署本地绑定，
+        # 守卫触发器 team_task_protocol_guard_update 禁止改绑）；candidate 在
+        # 导入组装窗口内受控重绑协议 → 该墙消失，属主团队写直接 200。
         resp = self.client.put(
             f"/api/tasks/{new_id}/appraisal/{_KEY}",
             json={"tool": _TOOL, "responses": {"1": "Yes"}},
             headers=self._auth(_OWNER))
-        self.assertNotEqual(
-            resp.status_code, 500,
-            f"E7 首用例：属主首次 appraisal 裸 500：{resp.text}")
-        detail = resp.json().get("detail")
-        self.assertIsInstance(
-            detail, dict,
-            f"非 2xx 必须 typed 信封（error_code），实得：{resp.text[:200]}")
-        self.assertIn("error_code", detail)
+        self.assertEqual(
+            resp.status_code, 200,
+            f"E7 首用例：属主首次 appraisal 必须 200（R8 重绑后）：{resp.text}")
 
     # ------------------------------------------------------------------
     # 2. F2 失配 → 重登记（成员库换新 ledger 身份）

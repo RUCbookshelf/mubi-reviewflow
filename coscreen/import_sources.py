@@ -1,6 +1,7 @@
 """Import-derived provenance. Never change article metadata or research decisions."""
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -19,6 +20,45 @@ SOURCE_TYPES = {'database', 'register', 'website', 'organisation', 'citation_sea
 # v5 起 detect() 刻意只认上传文件名（见其注释），source_type 恒为 None，
 # 该分支从未生效；如需恢复来源类型识别，须基于 RIS DB/DP 元数据另立设计
 # 并配套迁移，而非沿用这里的文件名口径。
+
+
+class StorageUnavailable(sqlite3.DatabaseError):
+    """S3 首开/升级热路径前置收口标记：import_sources 迁移链坏库/不可读。
+
+    与 S1 ``coscreen.review_imports.StorageUnavailable``、S2
+    ``coscreen.coding_evidence.StorageUnavailable`` 同构：本类继承
+    ``sqlite3.DatabaseError``，既有捕获面（binary_reset_api:81 的
+    ``except Exception`` 降级、调用方 ``except sqlite3.DatabaseError``）
+    行为零漂移。生产入口是 ``review_workflow_api.context``（每请求热路径），
+    该处已把 DatabaseError 族统一译 503（包 S3）；本标记让直调
+    ``import_sources.migrate`` 的其他路径同样可被既有感知面识别。
+    """
+
+
+def _storage_guarded(api: str):
+    """S3 公共入口收口：``sqlite3.DatabaseError`` → :class:`StorageUnavailable`。
+
+    勘察结论（REPORT §2.9）：11 站真缺口全部在 ``migrate``/``_migrate_v4``
+    的同一调用链上（v4/v5 两个迁移体），逐站包装无增量价值；在公共入口
+    出标记、调用点一处收口即可。``ProgrammingError``/``IntegrityError``
+    是编程缺陷/确定性冲突，原样上抛（与 S2 装饰器同口径）。
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except StorageUnavailable:
+                raise
+            except sqlite3.ProgrammingError:
+                raise
+            except sqlite3.IntegrityError:
+                raise
+            except sqlite3.DatabaseError as exc:
+                raise StorageUnavailable(
+                    f"import source storage unavailable ({api}): {exc}") from exc
+        return wrapper
+    return decorate
 
 
 def first(raw: dict, *keys: str) -> str:
@@ -307,6 +347,7 @@ def decorate(conn: sqlite3.Connection, sources: list[dict]) -> list[dict]:
     return result
 
 
+@_storage_guarded("migrate")
 def migrate(db: str | Path) -> None:
     """Upgrade filename associations without rewriting original records or research."""
     _migrate_v4(db)

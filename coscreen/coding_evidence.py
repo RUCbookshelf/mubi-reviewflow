@@ -1,6 +1,7 @@
 """Actor-private coding evidence, stable task fields and atomic form saves."""
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import json
@@ -49,6 +50,51 @@ CREATE TABLE IF NOT EXISTS workflow_form_requests(task_id TEXT NOT NULL,actor_id
 """
 
 
+class StorageUnavailable(sqlite3.DatabaseError):
+    """S2 公共入口收口标记：coding evidence 存储坏库/不可读（sqlite 族）。
+
+    与 S1 ``coscreen.review_imports.StorageUnavailable`` 同构：本类是
+    ``sqlite3.DatabaseError`` 的**子类**——既有调用方（包 I 的
+    ``except sqlite3.DatabaseError → 503``、测试里按 DatabaseError 断言的
+    路径）处理行为零漂移；API 层把本标记与裸 ``DatabaseError`` 一并译成
+    标准 503 词条（``main.SCREENER_LIBRARY_UNAVAILABLE_MESSAGE``，G/I/L 口径）。
+
+    站内不逐站包装（19 站）：公共入口（``migrate``/``field_rows``/
+    ``ensure_fields``/``mapping``/``evidence_state``/``complete_keys``）
+    统一经 :func:`_storage_guarded` 出标记，调用点只需收口一次。
+    """
+
+
+def _storage_guarded(api: str):
+    """公共入口统一收口装饰器（S2 勘察建议：调用点包一层，而非 19 站逐个包）。
+
+    ``sqlite3.DatabaseError``（含 ``OperationalError``/``IntegrityError``
+    子类）→ :class:`StorageUnavailable`（DatabaseError 子类，形状零漂移）；
+    其他异常族（``ValueError`` 业务拒绝、借用连接合同违约的 ``RuntimeError``
+    等）**原样上抛**，不改变既有语义。
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except StorageUnavailable:
+                raise
+            except sqlite3.ProgrammingError:
+                # 调用写法缺陷（关闭的连接/列数错等）是编程错误，不伪装成
+                # 业务存储不可用——先例 tables_api 复审 #05、screening_arbitration。
+                raise
+            except sqlite3.IntegrityError:
+                # 约束冲突（unique/foreign key）是确定性业务冲突，不是"库暂时
+                # 不可用"；保持原类型上抛（调用方既有 400/409 映射零漂移）。
+                raise
+            except sqlite3.DatabaseError as exc:
+                raise StorageUnavailable(
+                    f"coding evidence storage unavailable ({api}): {exc}") from exc
+        return wrapper
+    return decorate
+
+
 def _backup_is_usable(path: Path) -> bool:
     """既有升级前备份是否可读、且确实含表（0 字节/截断/非 SQLite 文件为不可用）。"""
     try:
@@ -92,6 +138,7 @@ def _write_backup_atomic(source: sqlite3.Connection, backup: Path) -> bool:
         return False
 
 
+@_storage_guarded("migrate")
 def migrate(db: str | Path) -> None:
     # 快路径（门禁墙钟）：基础迁移(v1)与自身版本(v7)齐全时 migrate 是无操作
     # ——一次只读连接判齐即返回（原先每个 API 请求经 ensure_fields 进来要开
@@ -270,6 +317,7 @@ def _field_rows_on_conn(conn: sqlite3.Connection) -> list[dict]:
                     "position,created_at FROM coding_dimensions ORDER BY section,position,id")]
 
 
+@_storage_guarded("field_rows")
 def field_rows(db: str | Path, *, conn: sqlite3.Connection | None = None) -> list[dict]:
     if conn is not None:
         _require_evidence_conn(conn, api="field_rows")
@@ -292,6 +340,7 @@ def current_owner_db(db: str | Path) -> Path:
     return candidate if candidate.is_file() else path
 
 
+@_storage_guarded("ensure_fields")
 def ensure_fields(db: str | Path) -> None:
     migrate(db)
     # 只读优先（门禁墙钟）：先以只读连接比对，全部就绪（无缺字段/无定义
@@ -385,6 +434,7 @@ def _mapping_on_conns(
     return _mapping_from_rows(owners, actors, required, frozen)
 
 
+@_storage_guarded("mapping")
 def mapping(
     actor_db: str | Path,
     owner_db: str | Path,
@@ -437,6 +487,7 @@ def _evidence_state_from(
             'mapping_issues': issues}
 
 
+@_storage_guarded("evidence_state")
 def evidence_state(
     db: str | Path,
     key: str,
@@ -485,6 +536,7 @@ def _complete_keys_on_conn(
     return {key for key in keys if dims <= filled.get(key, set()) and required_dims <= supported.get(key, set())}
 
 
+@_storage_guarded("complete_keys")
 def complete_keys(
     db: str | Path,
     owner_db: str | Path,

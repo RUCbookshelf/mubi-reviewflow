@@ -193,16 +193,33 @@ def dumps(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
+class StorageUnavailable(sqlite3.DatabaseError):
+    """S1 函数体站点收口标记：坏库/不可读（sqlite3.DatabaseError 族）。
+
+    本模块 ``migrate``/``has_research`` 的裸 sqlite 站点（原 197/198/222 行）
+    改抛本标记；它是 ``sqlite3.DatabaseError`` 的**子类**，因此链外既有调用方
+    （binary_reset_api:81 ``except Exception`` 降级、import_ai_assist_api:1178
+    ``except (sqlite3.Error, OSError)``、shared_corpus.py:99 与
+    review_workflow_api 裸调 500、review_workflow_api:2488
+    ``except sqlite3.DatabaseError``）处理行为零漂移。仅导入评审链
+    （custom_backend/review_imports_api）把本标记连同裸 DatabaseError 一并译成
+    typed 503（storage_unavailable 信封）。
+    """
+
+
 def migrate(db: str | Path) -> None:
-    workflow.migrate(db)
-    with closing(workflow.connect(db)) as conn, conn:
-        conn.execute('BEGIN IMMEDIATE')
-        if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (MIGRATION_VERSION,)).fetchone():
-            return
-        for statement in _SCHEMA.split(';'):
-            if statement.strip():
-                conn.execute(statement)
-        conn.execute('INSERT INTO workflow_migrations VALUES(?,?)', (MIGRATION_VERSION, now()))
+    try:
+        workflow.migrate(db)
+        with closing(workflow.connect(db)) as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM workflow_migrations WHERE version=?', (MIGRATION_VERSION,)).fetchone():
+                return
+            for statement in _SCHEMA.split(';'):
+                if statement.strip():
+                    conn.execute(statement)
+            conn.execute('INSERT INTO workflow_migrations VALUES(?,?)', (MIGRATION_VERSION, now()))
+    except sqlite3.DatabaseError as exc:
+        raise StorageUnavailable('import review storage unavailable: %s' % exc) from exc
 
 
 def has_research(task_dir: Path, conn: sqlite3.Connection) -> bool:
@@ -219,47 +236,50 @@ def has_research(task_dir: Path, conn: sqlite3.Connection) -> bool:
             continue
         if path.is_symlink():
             raise ValueError('Cannot inspect a symbolic-link task database.')
-        with closing(workflow.connect(path, read_only=True)) as other:
-            tables = {r[0] for r in other.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            for table in sorted(tables & work_tables):
-                # 表名来自模块内固定枚举 work_tables → 逐条字面量选择。
-                if table == 'decisions':
-                    hit = other.execute('SELECT 1 FROM "decisions" LIMIT 1').fetchone()
-                elif table == 'stage2_decisions':
-                    hit = other.execute('SELECT 1 FROM "stage2_decisions" LIMIT 1').fetchone()
-                elif table == 'coding_values':
-                    hit = other.execute('SELECT 1 FROM "coding_values" LIMIT 1').fetchone()
-                elif table == 'coding_notes':
-                    hit = other.execute('SELECT 1 FROM "coding_notes" LIMIT 1').fetchone()
-                elif table == 'coding_note_images':
-                    hit = other.execute('SELECT 1 FROM "coding_note_images" LIMIT 1').fetchone()
-                elif table == 'highlights':
-                    hit = other.execute('SELECT 1 FROM "highlights" LIMIT 1').fetchone()
-                elif table == 'coding_rater_records':
-                    hit = other.execute('SELECT 1 FROM "coding_rater_records" LIMIT 1').fetchone()
-                elif table == 'coding_consensus_records':
-                    hit = other.execute('SELECT 1 FROM "coding_consensus_records" LIMIT 1').fetchone()
-                elif table == 'coding_freezes':
-                    hit = other.execute('SELECT 1 FROM "coding_freezes" LIMIT 1').fetchone()
-                elif table == 'workflow_coding_evidence':
-                    hit = other.execute('SELECT 1 FROM "workflow_coding_evidence" LIMIT 1').fetchone()
-                elif table == 'coding_evidence':
-                    hit = other.execute('SELECT 1 FROM "coding_evidence" LIMIT 1').fetchone()
-                elif table == 'workspace_undo':
-                    hit = other.execute('SELECT 1 FROM "workspace_undo" LIMIT 1').fetchone()
-                else:
-                    hit = None
-                if hit:
+        try:
+            with closing(workflow.connect(path, read_only=True)) as other:
+                tables = {r[0] for r in other.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for table in sorted(tables & work_tables):
+                    # 表名来自模块内固定枚举 work_tables → 逐条字面量选择。
+                    if table == 'decisions':
+                        hit = other.execute('SELECT 1 FROM "decisions" LIMIT 1').fetchone()
+                    elif table == 'stage2_decisions':
+                        hit = other.execute('SELECT 1 FROM "stage2_decisions" LIMIT 1').fetchone()
+                    elif table == 'coding_values':
+                        hit = other.execute('SELECT 1 FROM "coding_values" LIMIT 1').fetchone()
+                    elif table == 'coding_notes':
+                        hit = other.execute('SELECT 1 FROM "coding_notes" LIMIT 1').fetchone()
+                    elif table == 'coding_note_images':
+                        hit = other.execute('SELECT 1 FROM "coding_note_images" LIMIT 1').fetchone()
+                    elif table == 'highlights':
+                        hit = other.execute('SELECT 1 FROM "highlights" LIMIT 1').fetchone()
+                    elif table == 'coding_rater_records':
+                        hit = other.execute('SELECT 1 FROM "coding_rater_records" LIMIT 1').fetchone()
+                    elif table == 'coding_consensus_records':
+                        hit = other.execute('SELECT 1 FROM "coding_consensus_records" LIMIT 1').fetchone()
+                    elif table == 'coding_freezes':
+                        hit = other.execute('SELECT 1 FROM "coding_freezes" LIMIT 1').fetchone()
+                    elif table == 'workflow_coding_evidence':
+                        hit = other.execute('SELECT 1 FROM "workflow_coding_evidence" LIMIT 1').fetchone()
+                    elif table == 'coding_evidence':
+                        hit = other.execute('SELECT 1 FROM "coding_evidence" LIMIT 1').fetchone()
+                    elif table == 'workspace_undo':
+                        hit = other.execute('SELECT 1 FROM "workspace_undo" LIMIT 1').fetchone()
+                    else:
+                        hit = None
+                    if hit:
+                        conn.execute('UPDATE workflow_import_state SET researched=1 WHERE singleton=1')
+                        return True
+                if 'trace_events' in tables and other.execute('''SELECT 1 FROM trace_events WHERE
+                    stage IN ('screen','fulltext','coding') AND action IN
+                    ('decision_created','decision_changed','decision_imported','decision_undone',
+                     'coding_value_created','coding_value_changed','coding_value_cleared','coding_values_undone',
+                     'coding_note_created','coding_note_changed','coding_note_cleared','coding_note_image_added',
+                     'coding_note_image_removed','coding_evidence_undone') LIMIT 1''').fetchone():
                     conn.execute('UPDATE workflow_import_state SET researched=1 WHERE singleton=1')
                     return True
-            if 'trace_events' in tables and other.execute('''SELECT 1 FROM trace_events WHERE
-                stage IN ('screen','fulltext','coding') AND action IN
-                ('decision_created','decision_changed','decision_imported','decision_undone',
-                 'coding_value_created','coding_value_changed','coding_value_cleared','coding_values_undone',
-                 'coding_note_created','coding_note_changed','coding_note_cleared','coding_note_image_added',
-                 'coding_note_image_removed','coding_evidence_undone') LIMIT 1''').fetchone():
-                conn.execute('UPDATE workflow_import_state SET researched=1 WHERE singleton=1')
-                return True
+        except sqlite3.DatabaseError as exc:
+            raise StorageUnavailable('import review storage unavailable: %s' % exc) from exc
     return False
 
 

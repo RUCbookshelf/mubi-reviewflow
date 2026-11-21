@@ -27,6 +27,23 @@ from coscreen.models import Article
 logger = logging.getLogger(__name__)
 
 
+def _storage_unavailable(exc):
+    """S1 站点收口（review_imports_api 12 站）：裸 sqlite3.DatabaseError（含
+    coscreen.review_imports.StorageUnavailable 标记子类）→ typed 503。
+
+    信封形状沿用本域既有先例（eric_incremental_api._resolve_eric_strategy 的
+    storage_unavailable 503 dict：error_code/message_key/params），按任务口径
+    补齐 retryable；不引 team_http_errors 的十语/recovery 全装（零超范围）。
+    字符串诊断仍经 `from exc` 保留在服务端日志/异常链。
+    """
+    return HTTPException(503, {
+        'error_code': 'storage_unavailable',
+        'message_key': 'import_review.storage_unavailable',
+        'params': {},
+        'retryable': True,
+    })
+
+
 class VersionBody(BaseModel):
     expected_policy_version: int | None = None
 
@@ -138,14 +155,23 @@ class ImportRuntime:
                     raise HTTPException(403, 'Only owner catalogue imports are permitted.')
                 if ctx.info.degraded:
                     raise HTTPException(409, 'Task is read-only.')
-                store.migrate(ctx.owner_db)
+                try:  # S1 站①（原 141 行）：store.migrate（coscreen.review_imports.migrate 函数体站点已同抛标记）
+                    store.migrate(ctx.owner_db)
+                except sqlite3.DatabaseError as exc:
+                    raise _storage_unavailable(exc) from exc
                 valid_sources = {s['id'] for s in workflow.sources(ctx.owner_db)} | {workflow.UNASSIGNED}
                 if any(f['source_id'] and f['source_id'] not in valid_sources for f in files):
                     raise HTTPException(400, 'Unknown source ID. Create or select a task source before importing.')
-                with closing(workflow.connect(ctx.owner_db)) as conn, conn:
-                    protected = store.has_research(ctx.info.dir, conn)
-                with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
-                    conn.backup(snapshot)
+                try:  # S1 站②（原 145 行）：写连接打开 + has_research（函数体站点 L222 经此入口）
+                    with closing(workflow.connect(ctx.owner_db)) as conn, conn:
+                        protected = store.has_research(ctx.info.dir, conn)
+                except sqlite3.DatabaseError as exc:
+                    raise _storage_unavailable(exc) from exc
+                try:  # S1 站③（原 147 行）：只读快照连接 + backup
+                    with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
+                        conn.backup(snapshot)
+                except sqlite3.DatabaseError as exc:
+                    raise _storage_unavailable(exc) from exc
                 version, revision = snapshot.execute('SELECT version,catalog_revision FROM workflow_state WHERE singleton=1').fetchone()
                 info, owner_name = ctx.info, ctx.owner['owner_username']
             # All matching and initial legacy duplicate preparation uses this
@@ -183,7 +209,10 @@ class ImportRuntime:
                             'workflow_settings': self.workflow.settings(fresh), 'message': 'Catalogue changed during matching; retry the import.'})
                     with closing(workflow.connect(fresh.owner_db)) as conn, conn:
                         conn.execute('BEGIN IMMEDIATE')
-                        protected = store.has_research(fresh.info.dir, conn) or protected
+                        try:  # S1 站⑫（原 186 行）：has_research 提交事务入口（§2.2 L222 定性点名 process:146/186）
+                            protected = store.has_research(fresh.info.dir, conn) or protected
+                        except sqlite3.DatabaseError as exc:
+                            raise _storage_unavailable(exc) from exc
                         self.copy_prepared(snapshot, conn, bid, plan['new_record_ids'])
                         conn.execute('UPDATE workflow_import_batches SET protected=? WHERE id=?', (int(protected), bid))
                         activation = {'activated_new': 0, 'activated_source_records': 0}
@@ -494,8 +523,14 @@ def register_review_import_routes(app, require_user, **dependencies):
         if ctx.owner is None:
             raise HTTPException(403, 'Import provenance requires verified task ownership.')
         with runtime.workflow.lock(ctx.info.task_id):
-            store.migrate(ctx.owner_db)
-            review_undo.migrate(ctx.owner_db)
+            # S1 站④（§2.1 表 row4，原 497/498 两裸调用同包一捕；5 个读/写
+            # 端点直接调 read_context，store.migrate 与 review_undo.migrate 的
+            # 函数体站点亦已同抛标记子类）。
+            try:
+                store.migrate(ctx.owner_db)
+                review_undo.migrate(ctx.owner_db)
+            except sqlite3.DatabaseError as exc:
+                raise _storage_unavailable(exc) from exc
         return ctx
 
     def translate(exc):
@@ -513,81 +548,99 @@ def register_review_import_routes(app, require_user, **dependencies):
     def review_summary(task_id: str, user: dict = Depends(require_user)):
         """Distinct task-wide checklist counts; reimports do not double count."""
         ctx = read_context(task_id,user)
-        with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
-            source = conn.execute('SELECT COUNT(*) FROM workflow_source_records').fetchone()[0]
-            staged = conn.execute("SELECT COUNT(*) FROM workflow_source_records WHERE state='staged'").fetchone()[0]
-            metadata = conn.execute('SELECT COUNT(*) FROM workflow_import_metadata WHERE action IS NULL').fetchone()[0]
-            candidates = conn.execute("SELECT COUNT(*) FROM workflow_import_candidates WHERE status IN ('pending','undecided')").fetchone()[0]
-            return {'source_records':source, 'pending_records':staged,
-                    'metadata_review_count':metadata, 'pending_candidate_groups':candidates,
-                    'can_manage':ctx.can_manage}
+        try:  # S1 站⑤（原 516 行）：ro 连接 + 计数查询（坏库首查才爆，整块包）
+            with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
+                source = conn.execute('SELECT COUNT(*) FROM workflow_source_records').fetchone()[0]
+                staged = conn.execute("SELECT COUNT(*) FROM workflow_source_records WHERE state='staged'").fetchone()[0]
+                metadata = conn.execute('SELECT COUNT(*) FROM workflow_import_metadata WHERE action IS NULL').fetchone()[0]
+                candidates = conn.execute("SELECT COUNT(*) FROM workflow_import_candidates WHERE status IN ('pending','undecided')").fetchone()[0]
+                return {'source_records':source, 'pending_records':staged,
+                        'metadata_review_count':metadata, 'pending_candidate_groups':candidates,
+                        'can_manage':ctx.can_manage}
+        except sqlite3.DatabaseError as exc:
+            raise _storage_unavailable(exc) from exc
 
     @app.get('/api/tasks/{task_id}/import-batches')
     def batches(task_id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), user: dict = Depends(require_user)):
         ctx = read_context(task_id, user)
-        with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
-            ids = conn.execute('SELECT id FROM workflow_import_batches ORDER BY created_at DESC,id LIMIT ? OFFSET ?', (limit,offset)).fetchall()
-            total = conn.execute('SELECT COUNT(*) FROM workflow_import_batches').fetchone()[0]
-            return {'batches': [store.batch_summary(conn,r[0]) for r in ids], 'total': total,
-                    'next_offset': offset+limit if offset+limit<total else None, 'can_manage':ctx.can_manage}
+        try:  # S1 站⑥（原 528 行）
+            with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
+                ids = conn.execute('SELECT id FROM workflow_import_batches ORDER BY created_at DESC,id LIMIT ? OFFSET ?', (limit,offset)).fetchall()
+                total = conn.execute('SELECT COUNT(*) FROM workflow_import_batches').fetchone()[0]
+                return {'batches': [store.batch_summary(conn,r[0]) for r in ids], 'total': total,
+                        'next_offset': offset+limit if offset+limit<total else None, 'can_manage':ctx.can_manage}
+        except sqlite3.DatabaseError as exc:
+            raise _storage_unavailable(exc) from exc
 
     @app.get('/api/tasks/{task_id}/import-batches/{batch_id}')
     def detail(task_id: str, batch_id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0,ge=0),
                view: Literal['all','attention','completed'] = Query('all'), user: dict = Depends(require_user)):
         from custom_backend.import_review_presentation import review_projection, present_record
         ctx = read_context(task_id,user)
-        with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
-            try:
-                result = store.batch_summary(conn,batch_id)
-            except (KeyError, ValueError) as exc:
-                # b15·F4-77：batch_summary 沿 record_target→canonical 解析文章身份，
-                # 文章行缺失或 is_duplicate_of 成环时抛的是 **ValueError**，此前的
-                # `except KeyError` 漏捕，GET 详情整页 500（同一状态的 POST undo
-                # 经 mutate 的 except (ValueError,KeyError) 译成 409）。读路径按写
-                # 路径同一口径收口：KeyError → 404（批次不存在），ValueError →
-                # 409（数据需刷新/库外改写需重做），README 提示由前端展示原文由
-                # translate 统一给出。canonical 解析失败的可用性降级见
-                # import_review_undo.available（F4-82）。
-                translate(exc)
-            projection = review_projection(conn, batch_id)
-            rows = projection[view]
-            result['records'] = [present_record(conn,r,projection['classification'][r['id']]) for r in rows[offset:offset+limit]]
-            result['review_counts'] = projection['review_counts']
-            result['policy_version'] = conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
-            result['view'] = view
-            result['view_total'] = len(rows)
-            result['next_offset'] = offset+limit if offset+limit<len(rows) else None
-            result['can_manage'] = ctx.can_manage
-            result['undo'] = review_undo.available(conn, batch_id, str(user['user_id'])) if ctx.can_manage else {'available': False}
-            last_review = conn.execute('SELECT after_json FROM workflow_import_undo ORDER BY id DESC LIMIT 1').fetchone()
-            legacy_seq = conn.execute('SELECT COALESCE(MAX(seq),0) FROM title_duplicate_undo').fetchone()[0]
-            result['legacy_undo_allowed'] = not last_review or legacy_seq > json.loads(last_review[0]).get('legacy_seq',0)
-            return result
+        try:  # S1 站⑦（原 539 行）：内层 (KeyError,ValueError)→translate 译 404/409 不变
+            with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
+                try:
+                    result = store.batch_summary(conn,batch_id)
+                except (KeyError, ValueError) as exc:
+                    # b15·F4-77：batch_summary 沿 record_target→canonical 解析文章身份，
+                    # 文章行缺失或 is_duplicate_of 成环时抛的是 **ValueError**，此前的
+                    # `except KeyError` 漏捕，GET 详情整页 500（同一状态的 POST undo
+                    # 经 mutate 的 except (ValueError,KeyError) 译成 409）。读路径按写
+                    # 路径同一口径收口：KeyError → 404（批次不存在），ValueError →
+                    # 409（数据需刷新/库外改写需重做），README 提示由前端展示原文由
+                    # translate 统一给出。canonical 解析失败的可用性降级见
+                    # import_review_undo.available（F4-82）。
+                    translate(exc)
+                projection = review_projection(conn, batch_id)
+                rows = projection[view]
+                result['records'] = [present_record(conn,r,projection['classification'][r['id']]) for r in rows[offset:offset+limit]]
+                result['review_counts'] = projection['review_counts']
+                result['policy_version'] = conn.execute('SELECT version FROM workflow_state WHERE singleton=1').fetchone()[0]
+                result['view'] = view
+                result['view_total'] = len(rows)
+                result['next_offset'] = offset+limit if offset+limit<len(rows) else None
+                result['can_manage'] = ctx.can_manage
+                result['undo'] = review_undo.available(conn, batch_id, str(user['user_id'])) if ctx.can_manage else {'available': False}
+                last_review = conn.execute('SELECT after_json FROM workflow_import_undo ORDER BY id DESC LIMIT 1').fetchone()
+                legacy_seq = conn.execute('SELECT COALESCE(MAX(seq),0) FROM title_duplicate_undo').fetchone()[0]
+                result['legacy_undo_allowed'] = not last_review or legacy_seq > json.loads(last_review[0]).get('legacy_seq',0)
+                return result
+        except sqlite3.DatabaseError as exc:
+            raise _storage_unavailable(exc) from exc
 
     @app.get('/api/tasks/{task_id}/import-batches/{batch_id}/candidates')
     def candidates(task_id: str, batch_id: str, limit: int = Query(50,ge=1,le=200), offset: int = Query(0,ge=0),
                    view: Literal['all','attention','completed'] = Query('all'), user: dict = Depends(require_user)):
         ctx=read_context(task_id,user)
-        with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
-            try:
-                store.batch_summary(conn,batch_id)
-            except KeyError as exc:
-                translate(exc)
-            selected=store.candidate_rows(conn,batch_id,include_members=False)
-            if view!='all':
-                selected=[c for c in selected if (c['status'] in ('pending','undecided'))==(view=='attention')]
-            total=len(selected)
-            from custom_backend.import_review_presentation import present_candidates
-            rows=present_candidates(conn,selected[offset:offset+limit])
-            return {'candidates':rows, 'total':total, 'next_offset':offset+limit if offset+limit<total else None}
+        try:  # S1 站⑧（原 571 行）
+            with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
+                try:
+                    store.batch_summary(conn,batch_id)
+                except KeyError as exc:
+                    translate(exc)
+                selected=store.candidate_rows(conn,batch_id,include_members=False)
+                if view!='all':
+                    selected=[c for c in selected if (c['status'] in ('pending','undecided'))==(view=='attention')]
+                total=len(selected)
+                from custom_backend.import_review_presentation import present_candidates
+                rows=present_candidates(conn,selected[offset:offset+limit])
+                return {'candidates':rows, 'total':total, 'next_offset':offset+limit if offset+limit<total else None}
+        except sqlite3.DatabaseError as exc:
+            raise _storage_unavailable(exc) from exc
 
     def mutate(task_id, batch_id, user, body, operation, reason, undo_kind=None, subject=None):
         with runtime.workflow.write_guard(task_id,user,'screen',expected_version=body.expected_policy_version) as ctx:
             if ctx.info.degraded:
                 raise HTTPException(409,'Task is read-only.')
-            store.migrate(ctx.owner_db)
-            review_undo.migrate(ctx.owner_db)
+            # S1 站⑨（§2.1 表 row9，原 588/589 两裸 migrate 同包一捕；两函数体
+            # 站点亦已同抛标记子类）。
             try:
+                store.migrate(ctx.owner_db)
+                review_undo.migrate(ctx.owner_db)
+            except sqlite3.DatabaseError as exc:
+                raise _storage_unavailable(exc) from exc
+            try:  # S1 站⑩（原 591 行连接 + 事务体）：DatabaseError → 503 typed，
+                  # (ValueError,KeyError)→translate 译 404/409 面保持原样
                 with closing(workflow.connect(ctx.owner_db)) as conn, conn:
                     conn.execute('BEGIN IMMEDIATE')
                     store.batch_summary(conn,batch_id)
@@ -624,6 +677,11 @@ def register_review_import_routes(app, require_user, **dependencies):
                     last_review = conn.execute('SELECT after_json FROM workflow_import_undo ORDER BY id DESC LIMIT 1').fetchone()
                     legacy_seq = conn.execute('SELECT COALESCE(MAX(seq),0) FROM title_duplicate_undo').fetchone()[0]
                     result['legacy_undo_allowed'] = not last_review or legacy_seq > json.loads(last_review[0]).get('legacy_seq',0)
+            except sqlite3.DatabaseError as exc:
+                # S1 站⑩续：事务体内裸 DatabaseError（含 coscreen 标记子类）→
+                # typed 503（with conn 回滚语义不变）；不得并入下方
+                # (ValueError,KeyError)→translate（那会降成 409）。
+                raise _storage_unavailable(exc) from exc
             except (ValueError,KeyError) as exc:
                 translate(exc)
             if changed:
@@ -659,24 +717,27 @@ def register_review_import_routes(app, require_user, **dependencies):
     @app.get('/api/tasks/{task_id}/import-batches/{batch_id}/export')
     def export(task_id: str,batch_id: str,user: dict=Depends(require_user)):
         ctx=read_context(task_id,user)
-        with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
-            try:
-                store.batch_summary(conn,batch_id)
-            except KeyError as exc:
-                translate(exc)
-            rows=conn.execute('''SELECT m.file_index,r.* FROM workflow_import_members m JOIN workflow_source_records r ON r.id=m.record_id
-                WHERE m.batch_id=? ORDER BY m.file_index,r.row_index''',(batch_id,)).fetchall()
-            output=io.StringIO(newline='')
-            fields=['batch_id','file_index','record_id','source_id','filename','digest','row_index','incoming_key','staged_key',
-                    'canonical_key','target_record_id','outcome','state','candidate_statuses','metadata_action','original_json']
-            writer=csv.DictWriter(output,fieldnames=fields)
-            writer.writeheader()
-            for row in rows:
-                public=store.public_record(conn,dict(row))
-                data={field:row[field] for field in fields if field in row.keys()}
-                data.update(batch_id=batch_id,record_id=row['id'],candidate_statuses=store.dumps(public['candidate_statuses']),
-                            metadata_action=public['metadata']['action'] if public['metadata'] else '')
-                # Prevent spreadsheet formula execution while preserving exact
-                # originals in the JSON column and archived source bytes.
-                writer.writerow({k:("'"+str(v) if isinstance(v,str) and v.startswith(('=','+','-','@','\t','\r')) else v) for k,v in data.items()})
+        try:  # S1 站⑪（原 662 行）：ro 连接 + 导出行查询整块包
+            with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
+                try:
+                    store.batch_summary(conn,batch_id)
+                except KeyError as exc:
+                    translate(exc)
+                rows=conn.execute('''SELECT m.file_index,r.* FROM workflow_import_members m JOIN workflow_source_records r ON r.id=m.record_id
+                    WHERE m.batch_id=? ORDER BY m.file_index,r.row_index''',(batch_id,)).fetchall()
+                output=io.StringIO(newline='')
+                fields=['batch_id','file_index','record_id','source_id','filename','digest','row_index','incoming_key','staged_key',
+                        'canonical_key','target_record_id','outcome','state','candidate_statuses','metadata_action','original_json']
+                writer=csv.DictWriter(output,fieldnames=fields)
+                writer.writeheader()
+                for row in rows:
+                    public=store.public_record(conn,dict(row))
+                    data={field:row[field] for field in fields if field in row.keys()}
+                    data.update(batch_id=batch_id,record_id=row['id'],candidate_statuses=store.dumps(public['candidate_statuses']),
+                                metadata_action=public['metadata']['action'] if public['metadata'] else '')
+                    # Prevent spreadsheet formula execution while preserving exact
+                    # originals in the JSON column and archived source bytes.
+                    writer.writerow({k:("'"+str(v) if isinstance(v,str) and v.startswith(('=','+','-','@','\t','\r')) else v) for k,v in data.items()})
+        except sqlite3.DatabaseError as exc:
+            raise _storage_unavailable(exc) from exc
         return Response('\ufeff'+output.getvalue(),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="import-{batch_id}.csv"'})

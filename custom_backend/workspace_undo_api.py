@@ -81,6 +81,24 @@ class SubmissionEvidenceIn(BaseModel):
 SAVE_NOT_SAVED_503 = "本次修改尚未保存。轨迹记录不可用，请重试或暂停记录后重新保存。"
 
 
+def _storage_unavailable(exc: Exception) -> HTTPException:
+    """S4（store 裸调收口）：sqlite 族故障 → 结构化 503（storage unavailable）。
+
+    站点 175/374/460/462 此前不在任何 sqlite 感知 try 内，
+    ``sqlite3.DatabaseError`` 逃逸全局兜底成通用 500。信封含
+    error_code/message_key/retryable（锁忙/IO 抖动可稍后重试）。
+    ``sqlite3.IntegrityError`` 不在此收敛（member_prepare_trace 内显式放行
+    上抛），既有调用方 except 含 IntegrityError → 400/409 的语义不变。
+    """
+    return HTTPException(503, {
+        "error_code": "workspace_undo_storage_unavailable",
+        "message_key": "workspace_undo.storage_unavailable",
+        "params": {},
+        "retryable": True,
+        "details": f"{type(exc).__name__}: {exc}",
+        "message": "工作区数据库暂时不可用（可能正被其他操作占用，或磁盘只读/已满），请稍后重试。"})
+
+
 # ---------------------------------------------------------------------------
 # P16（C12 作者侧；2.1.6 team contracts P16 节）：成员写路由的 mutate 适配
 # 助手。本文件四入口（values-batch/evidence uploads/submission-evidence/
@@ -172,13 +190,22 @@ def member_prepare_trace(db_path, task_id: str, user_id: int) -> None:
     """
     from coscreen import research_trace
     from coscreen.research_trace import TraceContext
-    with closing(workflow_store.connect(db_path)) as conn, conn:
-        # undo journal 表/索引/列：begin_save 的 standalone 建表分支（prepared
-        # 分支只核事务，schema 由本 prepare 负责——S2-A1 §2.2）。
-        workspace_undo.begin_save(conn, prepared=False)
-        research_trace.ensure_schema(conn)
-        research_trace.ensure_default_recording(
-            conn, TraceContext(task_id=task_id, actor_id=user_id))
+    try:
+        with closing(workflow_store.connect(db_path)) as conn, conn:
+            # undo journal 表/索引/列：begin_save 的 standalone 建表分支（prepared
+            # 分支只核事务，schema 由本 prepare 负责——S2-A1 §2.2）。
+            workspace_undo.begin_save(conn, prepared=False)
+            research_trace.ensure_schema(conn)
+            research_trace.ensure_default_recording(
+                conn, TraceContext(task_id=task_id, actor_id=user_id))
+    except sqlite3.IntegrityError:
+        # 既有调用方语义保留：save_submission_evidence/restore/save_form 的
+        # except 均含 IntegrityError（→400/409），不得改判 503。
+        raise
+    except sqlite3.DatabaseError as exc:
+        # S4：本 prepare 的三个 in-file 调用点与 main.py 三处内联调用均无
+        # sqlite 感知兜底——坏库/锁忙在此收敛为 typed 503。
+        raise _storage_unavailable(exc) from exc
 
 
 def borrowed_target_conn(ctx):
@@ -371,14 +398,19 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
         runtime = app.state.review_workflow
         with runtime.lock(task_id):
             ctx = runtime.context(task_id, user)
-            with closing(workflow_store.connect(ctx.actor_db, read_only=True)) as conn:
-                if staged:
-                    # r6 #28：尾点别名存量 staged 行同键兼容（规范 id 恒无尾点，
-                    # rtrim 只影响修复前以别名落库的行）。
-                    row = conn.execute("SELECT path,zotero_key FROM workflow_evidence_uploads WHERE id=? AND rtrim(task_id,'. ')=? AND actor_id=?",
-                                       (identity, task_id.rstrip('. '), str(user['user_id']))).fetchone()
-                else:
-                    row = conn.execute('SELECT i.path,n.zotero_key FROM coding_note_images i JOIN coding_notes n ON n.id=i.note_id WHERE i.id=?', (identity,)).fetchone()
+            try:
+                with closing(workflow_store.connect(ctx.actor_db, read_only=True)) as conn:
+                    if staged:
+                        # r6 #28：尾点别名存量 staged 行同键兼容（规范 id 恒无尾点，
+                        # rtrim 只影响修复前以别名落库的行）。
+                        row = conn.execute("SELECT path,zotero_key FROM workflow_evidence_uploads WHERE id=? AND rtrim(task_id,'. ')=? AND actor_id=?",
+                                           (identity, task_id.rstrip('. '), str(user['user_id']))).fetchone()
+                    else:
+                        row = conn.execute('SELECT i.path,n.zotero_key FROM coding_note_images i JOIN coding_notes n ON n.id=i.note_id WHERE i.id=?', (identity,)).fetchone()
+            except sqlite3.DatabaseError as exc:
+                # S4：preview/image 两路由（396/400）无局部兜底——只读连接/
+                # 查询的 sqlite 族收敛为 typed 503（404 判定路径不变）。
+                raise _storage_unavailable(exc) from exc
             if row is None or runtime.article_row(ctx.actor_db, row[1]) is None:
                 raise HTTPException(404, 'Evidence image not found.')
             path = Path(row[0])
@@ -457,9 +489,15 @@ def register_workspace_undo_routes(app, require_user, task_lookup, screener_db, 
                 current = runtime.context(task_id, user)
                 if current.actor_db.resolve() != db.resolve():
                     raise HTTPException(403, "Undo is limited to your own workspace.")
-                with closing(workflow_store.connect(db, read_only=True)) as conn:
-                    entry = conn.execute("SELECT zotero_key,before_json,after_json FROM workspace_undo WHERE id=? AND task_id=? AND actor_id=? AND stage=?",
-                                         (body.entry_id, task_id, str(user["user_id"]), stage)).fetchone() if workflow_store.has_table(conn, "workspace_undo") else None
+                try:
+                    with closing(workflow_store.connect(db, read_only=True)) as conn:
+                        entry = conn.execute("SELECT zotero_key,before_json,after_json FROM workspace_undo WHERE id=? AND task_id=? AND actor_id=? AND stage=?",
+                                             (body.entry_id, task_id, str(user["user_id"]), stage)).fetchone() if workflow_store.has_table(conn, "workspace_undo") else None
+                except sqlite3.DatabaseError as exc:
+                    # S4：POST undo 端点体（connect+has_table 两站）——sqlite 族
+                    # 收敛为 typed 503；外层 except (ValueError, IntegrityError)
+                    # →409 的既有语义不受影响（HTTPException 不被其捕获）。
+                    raise _storage_unavailable(exc) from exc
                 if entry is None:
                     raise HTTPException(409, "There is no saved operation to undo.")
                 before, after = json.loads(entry[1]), json.loads(entry[2])

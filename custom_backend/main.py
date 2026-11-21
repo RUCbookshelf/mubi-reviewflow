@@ -1695,7 +1695,12 @@ def _screener_db(info: tasks_mod.TaskInfo, screener: str, *, ensure: bool = True
       权限库（可读出属主）时拒绝（409 撞名改名指引）——升级前已存在的撞名
       授权成员会把整套筛选表灌进协作库（实测 2→50 张表）。仅当该文件确为
       协作库时拒绝：legacy 时代以同名落库的个人数据库（无属主记录）保持
-      历史可用（R2：不新增对合法存量输入的拒绝）。"""
+      历史可用（R2：不新增对合法存量输入的拒绝）。
+    - 包 S3（首开/升级热路径）：``init_db`` 是每个请求的懒建/自愈入口，
+      坏库字节（``sqlite3.DatabaseError``）/IO 读失败此前逃逸成全局 500。
+      捕获面收口到 ``DatabaseError``（含 ``OperationalError`` 子类）与
+      ``OSError`` → 标准 503 词条（G/I/L/main503-r2 同款）；正常建库/升级
+      路径零行为变化。"""
     slug = tasks_mod.slugify_screener(screener)
     db = info.dir / f"{slug}.db"
     if not is_within(db, info.dir):
@@ -1714,7 +1719,16 @@ def _screener_db(info: tasks_mod.TaskInfo, screener: str, *, ensure: bool = True
                       "details": "Username collides with the reserved collaboration database filename",
                       "message": COLLABORATION_RESERVED_NAME_MESSAGE})
     if ensure:
-        db_mod.init_db(db)  # 幂等：确保表齐全（首次使用即建库）
+        try:
+            db_mod.init_db(db)  # 幂等：确保表齐全（首次使用即建库）
+        except sqlite3.ProgrammingError:
+            raise  # 调用写法缺陷不伪装成库不可用（tables_api 复审 #05 先例）
+        except OSError as exc:
+            # 包 S3：init_db 的 IO/读失败 → 标准 503（不再全局 500）。
+            raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+        except sqlite3.DatabaseError as exc:
+            # 包 S3：坏库字节/锁忙/语句级失败 → 标准 503（I+L 同款口径）。
+            raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
     return db
 
 
@@ -2988,6 +3002,27 @@ SCREENING_NOT_ENABLED_MESSAGE = (
 #: 十语言词条已注册 interface_locale.js（前端把 HTTPException.detail 交 T() 渲染）。
 SCREENER_LIBRARY_UNAVAILABLE_MESSAGE = (
     "筛选员决策库暂时无法读取（可能正被其他操作占用），请稍后重试。")
+
+
+def _coding_evidence_read(fn, *args, **kwargs):
+    """S2 调用点收口：coding_evidence 公共入口 → typed 503（I+L 同款）。
+
+    勘察结论（REPORT §2.8）：19 站逐个包收益低——公共入口统一出
+    ``coding_evidence.StorageUnavailable``（DatabaseError 子类，既有捕获面
+    零漂移），API 侧只在**无局部 sqlite 感知 try** 的调用点包这一层。
+    ``ProgrammingError`` 是调用写法缺陷（先例 tables_api 复审 #05、
+    screening_arbitration:498），原样上抛；``IntegrityError`` 是确定性
+    业务冲突（调用方既有 400/409 映射），同样原样上抛——两者都不伪装成
+    "库暂时不可用"。``OSError`` 与 DatabaseError 同口径（G/I 线）。
+    """
+    try:
+        return fn(*args, **kwargs)
+    except (sqlite3.ProgrammingError, sqlite3.IntegrityError):
+        raise
+    except OSError as exc:
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+    except sqlite3.DatabaseError as exc:
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
 
 
 def _screening_disabled_error() -> HTTPException:
@@ -5865,8 +5900,13 @@ def coding_dimensions(task_id: str, screener: str | None = None,
     with app.state.review_workflow.lock(info.task_id):
         ctx = app.state.review_workflow.context(task_id, user)
         from coscreen import coding_evidence
-        mapped, issues, required = coding_evidence.mapping(db, ctx.owner_db)
-        return {"dimensions": [{**d, "field_id": mapped.get(d["id"], d.get("field_id")), "required": mapped.get(d["id"]) in required} for d in coding_evidence.field_rows(db)], "mapping_issues": issues}
+        # S2 调用点收口（§2.8 279/403 站，main.py:5723/5724 对应现行
+        # 5904/5905）：coding_evidence 公共入口现抛 StorageUnavailable
+        # （DatabaseError 子类），此处是无局部兜底的端点体——统一译 typed 503。
+        mapped, issues, required = _coding_evidence_read(
+            coding_evidence.mapping, db, ctx.owner_db)
+        dimensions = _coding_evidence_read(coding_evidence.field_rows, db)
+        return {"dimensions": [{**d, "field_id": mapped.get(d["id"], d.get("field_id")), "required": mapped.get(d["id"]) in required} for d in dimensions], "mapping_issues": issues}
 
 
 @app.post("/api/tasks/{task_id}/coding/dimensions", status_code=201)
@@ -6024,8 +6064,11 @@ def export_scheme_ep(task_id: str, screener: str | None = None,
     # R6-C3（复审扫尾）：读锁键一律用规范 task_id（同上）。
     with runtime.lock(info.task_id):
         ctx = runtime.context(task_id, user)
-        mapping, _, _ = coding_evidence.mapping(db, ctx.owner_db)
-        dims = coding_evidence.field_rows(db)
+        # S2 调用点收口（§2.8 279/403 站，main.py:5882/5883 对应现行
+        # 6071/6072）：mapping/field_rows 坏库 → typed 503。
+        mapping, _, _ = _coding_evidence_read(
+            coding_evidence.mapping, db, ctx.owner_db)
+        dims = _coding_evidence_read(coding_evidence.field_rows, db)
         scheme = coding_mod.export_scheme(db)
         for item, dim in zip(scheme['dimensions'], dims):
             if dim['id'] in mapping:
@@ -6043,6 +6086,16 @@ def import_scheme_ep(task_id: str, body: SchemeImportIn, screener: str | None = 
             n = coding_mod.import_scheme(db, body.scheme, replace=body.replace, trace_context=_trace_context(info, user, "import"))
     except ValueError as exc:
         raise _bad(str(exc)) from exc
+    except sqlite3.ProgrammingError:
+        raise  # 调用写法缺陷不伪装成库不可用（tables_api 复审 #05 先例）
+    except OSError as exc:
+        # S2 调用点收口（§2.8 migrate 101-130 站，唯一生产调用 coding.py:908
+        # ——方案导入体 ``evidence.migrate(db)`` 无局部兜底）：
+        # coding_evidence 公共入口抛 StorageUnavailable（DatabaseError 子类），
+        # 此端点此前只捕 ValueError → 全局 500；现 503 可重试。
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
+    except sqlite3.DatabaseError as exc:
+        raise _bad(SCREENER_LIBRARY_UNAVAILABLE_MESSAGE, 503) from exc
     return {"imported": n, **coding_dimensions(task_id, screener, user)}
 
 

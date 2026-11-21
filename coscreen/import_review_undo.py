@@ -15,25 +15,32 @@ MIGRATION_VERSION = 3
 
 
 def migrate(path: Path) -> None:
-    with closing(workflow.connect(path)) as conn:
-        if workflow.has_table(conn, 'workflow_import_undo'):
-            return
-        backup = path.with_name(path.name + '.pre-import-undo-v3.bak')
-        # b15·F4-78：不能只看 exists()——0 字节/截断/写坏的残留 .bak 会被永久
-        # 当作有效备份而跳过真备份，迁移 DDL 照常执行。判据与 coding_evidence
-        # 的同族备份（b11·F3-17）一致：可读且含表才算可用，否则原子重写并校验。
-        if not _backup_is_usable(backup):
-            _write_backup_atomic(conn, backup)
-        with conn:
-            conn.execute('BEGIN IMMEDIATE')
-            conn.execute('''CREATE TABLE IF NOT EXISTS workflow_import_undo(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL,
-                actor_id TEXT NOT NULL, kind TEXT NOT NULL, subject_id TEXT NOT NULL,
-                before_json TEXT NOT NULL, after_json TEXT NOT NULL,
-                policy_version INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'available',
-                created_at TEXT NOT NULL)''')
-            conn.execute('INSERT OR IGNORE INTO workflow_migrations VALUES(?,?)',
-                         (MIGRATION_VERSION, imports.now()))
+    # S1 函数体站点收口（原 18/19 行：connect 写连接 + has_table）：坏库/不可读
+    # 抛 review_imports.StorageUnavailable（sqlite3.DatabaseError 子类）——链外
+    # 无其他调用方（仅 review_imports_api read_context:498 / mutate:589，均在链
+    # 内由其站点包译成 typed 503），子类关系保证既有 except 面零漂移。
+    try:
+        with closing(workflow.connect(path)) as conn:
+            if workflow.has_table(conn, 'workflow_import_undo'):
+                return
+            backup = path.with_name(path.name + '.pre-import-undo-v3.bak')
+            # b15·F4-78：不能只看 exists()——0 字节/截断/写坏的残留 .bak 会被永久
+            # 当作有效备份而跳过真备份，迁移 DDL 照常执行。判据与 coding_evidence
+            # 的同族备份（b11·F3-17）一致：可读且含表才算可用，否则原子重写并校验。
+            if not _backup_is_usable(backup):
+                _write_backup_atomic(conn, backup)
+            with conn:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute('''CREATE TABLE IF NOT EXISTS workflow_import_undo(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL, kind TEXT NOT NULL, subject_id TEXT NOT NULL,
+                    before_json TEXT NOT NULL, after_json TEXT NOT NULL,
+                    policy_version INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'available',
+                    created_at TEXT NOT NULL)''')
+                conn.execute('INSERT OR IGNORE INTO workflow_migrations VALUES(?,?)',
+                             (MIGRATION_VERSION, imports.now()))
+    except sqlite3.DatabaseError as exc:
+        raise imports.StorageUnavailable('import review storage unavailable: %s' % exc) from exc
 
 
 def snapshot(conn, kind: str, subject: str) -> dict:

@@ -174,7 +174,7 @@ EXPECTED_WHITELIST_KEYS = frozenset({
     # ---- 2.1.5 skip 波次：executescript + 固定 _SCHEMA（158→160）----
     ("coscreen/review_workflow.py", 160),
     # ---- P23 keyed read（1232→1251→1529 三度 re-key）----
-    ("custom_backend/review_workflow_api.py", 1752),  # P1 咽喉插行使 1529→1752（2026-11-21）
+    ("custom_backend/review_workflow_api.py", 1829),  # S2S3 壳插行 1752→1829（2026-11-21）  # P1 咽喉插行使 1529→1752（2026-11-21）
     # ---- P21 clear：固定表/列名映射 ----
     ("custom_backend/team_completion_clear.py", 162),
     # ---- 2026-11-20 SQLGATE：2.1.6 夜间波次 52 处逐条 triage 后登记 ----
@@ -230,7 +230,7 @@ EXPECTED_WHITELIST_KEYS = frozenset({
     ("coscreen/team_vote_ledger.py", 502),
     ("coscreen/team_vote_ledger.py", 724),
     # custom_backend/main.py（IN 分块占位符）
-    ("custom_backend/main.py", 2421),  # 六站包插行使 2409→2421（2026-11-21）
+    ("custom_backend/main.py", 2435),  # S2S3 壳插行 2421→2435（2026-11-21）  # 六站包插行使 2409→2421（2026-11-21）
     # custom_backend/team_keyed_domain.py（固定 required_schema + IN 占位符）
     ("custom_backend/team_keyed_domain.py", 60),
     ("custom_backend/team_keyed_domain.py", 77),

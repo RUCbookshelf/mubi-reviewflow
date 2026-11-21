@@ -122,14 +122,37 @@ def outcomes(ctx, stage: str, mode: str) -> tuple[dict, int]:
     return result, unresolved
 
 
+def _storage_unavailable(exc: Exception) -> HTTPException:
+    """S4（store 裸调收口）：sqlite 族故障 → 结构化 503（storage unavailable）。
+
+    站点 128/129/162/170/191/301/303 此前不在任何 sqlite 感知 try 内，
+    ``sqlite3.DatabaseError`` 逃逸全局兜底成通用 500。负载形状沿用
+    ``_team_flow_http`` 的 error_code/message_key 家族并补 ``retryable``
+    （锁忙/IO 抖动可稍后重试）。只读连接/查询不产生 IntegrityError，
+    不存在与既有 4xx 语义交叠的路径。
+    """
+    return HTTPException(503, {
+        "error_code": "prisma_metrics_storage_unavailable",
+        "message_key": "prisma_metrics.storage_unavailable",
+        "params": {},
+        "retryable": True,
+        "details": f"{type(exc).__name__}: {exc}",
+        "message": "任务数据库暂时不可用（可能正被其他操作占用，或磁盘只读/已满），请稍后重试。"})
+
+
 def _owner_active_keys(ctx) -> set | None:
     """P22：owner 域 canonical 活跃键（articles 表缺＝域无法确定 → None，
     不把未知当零——known_total 侧用 null 呈现）。"""
-    with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
-        if not workflow.has_table(conn, 'articles'):
-            return None
-        return {r['zotero_key'] for r in conn.execute(
-            'SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL')}
+    try:
+        with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
+            if not workflow.has_table(conn, 'articles'):
+                return None
+            return {r['zotero_key'] for r in conn.execute(
+                'SELECT zotero_key FROM articles WHERE is_duplicate_of IS NULL')}
+    except sqlite3.DatabaseError as exc:
+        # S4：metric_records:284 的 try 只捕 TeamFlowUnavailableError——此处
+        # 收敛 sqlite 族，不让坏库/锁忙逃逸成通用 500。
+        raise _storage_unavailable(exc) from exc
 
 
 def _team_current_projection_or_403(runtime, ctx, item_keys):
@@ -159,36 +182,41 @@ def _team_flow_http(exc):
 
 
 def summary(ctx, mode: str, runtime=None) -> dict:
-    with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
-        articles = {r['zotero_key']: dict(r) for r in conn.execute('SELECT zotero_key,is_duplicate_of FROM articles')}
-        def root(key):
-            seen = set()
-            while key in articles and articles[key]['is_duplicate_of'] and key not in seen:
-                seen.add(key); key = articles[key]['is_duplicate_of']
-            return key
-        active_keys = {k for k,a in articles.items() if a['is_duplicate_of'] is None}
-        originals = [dict(r) for r in conn.execute('SELECT * FROM workflow_source_records')] if workflow.has_table(conn, 'workflow_source_records') else []
-        active = [r for r in originals if r['state'] == 'active' and r['canonical_key']]
-        represented = {root(r['canonical_key']) for r in active}
-        complete_provenance = active_keys <= represented and represented <= active_keys
-        counts = Counter(r['source_id'] for r in active)
-        catalog = {s['id']: s for s in workflow.sources(ctx.owner_db)}
-        unidentified = any(not catalog.get(sid, {}).get('source_type') for sid in counts)
-        db_rows, other_rows = [], []
-        for sid,n in counts.items():
-            source = catalog.get(sid, {})
-            kind = source.get('source_type')
-            if kind:
-                (db_rows if kind in {'database','register'} else other_rows).append({'source_type': kind, 'name': source['name'], 'n': n, 'source_id':sid})
-        record_types = {}
-        for r in active:
-            record_types.setdefault(root(r['canonical_key']), set()).add(catalog.get(r['source_id'],{}).get('source_type'))
-        # A report found in both pathways is counted in the database pathway once.
-        other_keys = {k for k,types in record_types.items() if types and None not in types and not types & {'database','register'}}
-        db_keys = active_keys - other_keys
-        database_records = [r for r in active if catalog.get(r['source_id'],{}).get('source_type') in {'database','register'}]
-        duplicate_count = len(database_records) - len({root(r['canonical_key']) for r in database_records}) if complete_provenance and not unidentified else None
-        group_links = {r[0]: r[1] for r in conn.execute('SELECT zotero_key,study_id FROM review_reports')} if workflow.has_table(conn,'review_reports') else {}
+    try:
+        with closing(workflow.connect(ctx.owner_db, read_only=True)) as conn:
+            articles = {r['zotero_key']: dict(r) for r in conn.execute('SELECT zotero_key,is_duplicate_of FROM articles')}
+            def root(key):
+                seen = set()
+                while key in articles and articles[key]['is_duplicate_of'] and key not in seen:
+                    seen.add(key); key = articles[key]['is_duplicate_of']
+                return key
+            active_keys = {k for k,a in articles.items() if a['is_duplicate_of'] is None}
+            originals = [dict(r) for r in conn.execute('SELECT * FROM workflow_source_records')] if workflow.has_table(conn, 'workflow_source_records') else []
+            active = [r for r in originals if r['state'] == 'active' and r['canonical_key']]
+            represented = {root(r['canonical_key']) for r in active}
+            complete_provenance = active_keys <= represented and represented <= active_keys
+            counts = Counter(r['source_id'] for r in active)
+            catalog = {s['id']: s for s in workflow.sources(ctx.owner_db)}
+            unidentified = any(not catalog.get(sid, {}).get('source_type') for sid in counts)
+            db_rows, other_rows = [], []
+            for sid,n in counts.items():
+                source = catalog.get(sid, {})
+                kind = source.get('source_type')
+                if kind:
+                    (db_rows if kind in {'database','register'} else other_rows).append({'source_type': kind, 'name': source['name'], 'n': n, 'source_id':sid})
+            record_types = {}
+            for r in active:
+                record_types.setdefault(root(r['canonical_key']), set()).add(catalog.get(r['source_id'],{}).get('source_type'))
+            # A report found in both pathways is counted in the database pathway once.
+            other_keys = {k for k,types in record_types.items() if types and None not in types and not types & {'database','register'}}
+            db_keys = active_keys - other_keys
+            database_records = [r for r in active if catalog.get(r['source_id'],{}).get('source_type') in {'database','register'}]
+            duplicate_count = len(database_records) - len({root(r['canonical_key']) for r in database_records}) if complete_provenance and not unidentified else None
+            group_links = {r[0]: r[1] for r in conn.execute('SELECT zotero_key,study_id FROM review_reports')} if workflow.has_table(conn,'review_reports') else {}
+    except sqlite3.DatabaseError as exc:
+        # S4：task_metrics 端点无局部兜底——connect/has_table/只读查询的
+        # sqlite 族故障收敛为 typed 503，不再逃逸全局通用 500。
+        raise _storage_unavailable(exc) from exc
     # P22（C11）：team 模式改走当前团队投影（每键 F1/可信当前意见/按键
     # attestation；完成条目保留完成时结论，新名单只作用于未完成——
     # 2026-11-15 裁定锚）。runtime 缺席（旧直调方）回落原 outcomes 路径。
@@ -298,18 +326,22 @@ def register_prisma_task_metrics(app, require_user):
             output=io.StringIO(newline='');writer=csv.writer(output)
             writer.writerow(['source_record_id','source_id','source_name','source_type','filename','row_index','state',
                              'canonical_key','original_title','initial_outcome','fulltext_outcome','metric_mode'])
-            with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
-                articles={r[0]:r[1] for r in conn.execute('SELECT zotero_key,is_duplicate_of FROM articles')}
-                rows=conn.execute('SELECT * FROM workflow_source_records ORDER BY filename,row_index,id') if workflow.has_table(conn,'workflow_source_records') else []
-                for row in rows:
-                    key=row['canonical_key'];seen=set()
-                    while key in articles and articles[key] and key not in seen:
-                        seen.add(key);key=articles[key]
-                    original=json.loads(row['original_json']);source=catalog.get(row['source_id'],{})
-                    values=[row['id'],row['source_id'],source.get('name',''),source.get('source_type',''),row['filename'],row['row_index'],row['state'],key or '',
-                            original.get('title',''),first.get(key,{}).get('decision',''),second.get(key,{}).get('decision',''),mode]
-                    # Treat source-supplied strings as text in spreadsheet applications.
-                    writer.writerow(["'"+value if isinstance(value,str) and value.startswith(('=','+','-','@','\t','\r')) else value for value in values])
+            try:
+                with closing(workflow.connect(ctx.owner_db,read_only=True)) as conn:
+                    articles={r[0]:r[1] for r in conn.execute('SELECT zotero_key,is_duplicate_of FROM articles')}
+                    rows=conn.execute('SELECT * FROM workflow_source_records ORDER BY filename,row_index,id') if workflow.has_table(conn,'workflow_source_records') else []
+                    for row in rows:
+                        key=row['canonical_key'];seen=set()
+                        while key in articles and articles[key] and key not in seen:
+                            seen.add(key);key=articles[key]
+                        original=json.loads(row['original_json']);source=catalog.get(row['source_id'],{})
+                        values=[row['id'],row['source_id'],source.get('name',''),source.get('source_type',''),row['filename'],row['row_index'],row['state'],key or '',
+                                original.get('title',''),first.get(key,{}).get('decision',''),second.get(key,{}).get('decision',''),mode]
+                        # Treat source-supplied strings as text in spreadsheet applications.
+                        writer.writerow(["'"+value if isinstance(value,str) and value.startswith(('=','+','-','@','\t','\r')) else value for value in values])
+            except sqlite3.DatabaseError as exc:
+                # S4：records 端点 connect/has_table/只读查询 sqlite 族 → 503。
+                raise _storage_unavailable(exc) from exc
             return Response('\ufeff'+output.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="prisma-task-records.csv"','Cache-Control':'no-store'})
 
     @app.get('/api/tasks/{task_id}/prisma-metrics')

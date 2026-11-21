@@ -350,8 +350,12 @@ class StaticGuardTests(unittest.TestCase):
         # 合并仲裁盲读卡新增 13 条 UI 文案与 6 条 team.arbitration_session_*
         # 结构化错误词条（均十语言），词典内容变更；按既有惯例令牌上调
         # 20261107-r14 -> 20261110-arbitration 并重新钉对（令牌, 内容）元组。
-        pinned_token = '20261110-arbitration'
-        pinned_sha256 = '0028132c9a28f532b7543818eb609945395b1eb7baf7ff06083f687c0aca18a7'
+        # 盲裁决卡理由库+键盘（2026-11-20 主控直修，随 18ab3c7 入库）：
+        # 新增键盘提示词条一条，令牌上调 20261110-arbitration ->
+        # 20261120-arb-reasons-kbd；当时漏更新本钉对（守卫 18ab3c7 起红，
+        # S4 波次复核定位），现按既定约定补钉。
+        pinned_token = '20261120-arb-reasons-kbd'
+        pinned_sha256 = '986bdf3f583792cbf8f847ba1d5678f2c27d90c29e1fc8324d6b60a8908bf65a'
         html = (ROOT / 'custom_frontend' / 'index.html').read_text(encoding='utf-8')
         match = re.search(r'<script src="\./interface_locale\.js\?v=([^"]+)"></script>', html)
         self.assertIsNotNone(match, 'index.html 必须以带 ?v= 令牌的 <script> 引用 interface_locale.js')

@@ -540,6 +540,22 @@ def connect(path):
     return c
 
 
+def _storage_unavailable(exc: Exception) -> HTTPException:
+    """S4（store 裸调收口）：sqlite 族故障 → 结构化 503（storage unavailable）。
+
+    信封含 error_code/message_key/retryable（锁忙/IO 抖动可稍后重试），
+    与本包其余三文件（prisma_task_metrics/workspace_undo_api/shared_corpus）
+    同族口径；只覆盖此前裸逃逸的 sqlite 族，既有 4xx/降级路径不变。
+    """
+    return HTTPException(503, {
+        "error_code": "report_evidence_storage_unavailable",
+        "message_key": "report_evidence.storage_unavailable",
+        "params": {},
+        "retryable": True,
+        "details": f"{type(exc).__name__}: {exc}",
+        "message": "报告关系工作区数据库暂时不可用（可能正被其他操作占用，或磁盘只读/已满），请稍后重试。"})
+
+
 def read(c, actor):
     row = c.execute("SELECT * FROM report_evidence_state WHERE actor=?", (actor,)).fetchone()
     return (row["revision"], json.loads(row["state"]), bool(row["previous"])) if row else (0, json.loads(json.dumps(DEFAULT)), False)
@@ -660,11 +676,18 @@ def register_report_evidence_routes(app, require_user):
         return ctx, actor, bool(allowed and not ctx.info.degraded), bool(adjudicator and not independent and not ctx.info.degraded)
 
     def reports(c):
-        rows = [dict(r) for r in c.execute("SELECT zotero_key,title,authors,year,journal,doi,raw_json FROM articles WHERE is_duplicate_of IS NULL ORDER BY title,zotero_key")]
-        sources = {}
-        if review_workflow.has_table(c, "workflow_article_sources"):
-            for r in c.execute("SELECT a.zotero_key,s.name FROM workflow_article_sources a JOIN workflow_sources s ON s.id=a.source_id WHERE a.source_id!=? ORDER BY s.name", (review_workflow.UNASSIGNED,)):
-                sources.setdefault(r[0], []).append(r[1])
+        # S4（store 裸调收口，站点 665）：has_table/目录查询的 sqlite 族此前
+        # 在调用端点（get_state catalogue 分支 / export）无兜底，逃逸全局兜底
+        # 成通用 500——此处收敛为 typed 503（storage unavailable 信封）。
+        # 下方 json.loads 循环既有 (TypeError, ValueError) 降级语义不变。
+        try:
+            rows = [dict(r) for r in c.execute("SELECT zotero_key,title,authors,year,journal,doi,raw_json FROM articles WHERE is_duplicate_of IS NULL ORDER BY title,zotero_key")]
+            sources = {}
+            if review_workflow.has_table(c, "workflow_article_sources"):
+                for r in c.execute("SELECT a.zotero_key,s.name FROM workflow_article_sources a JOIN workflow_sources s ON s.id=a.source_id WHERE a.source_id!=? ORDER BY s.name", (review_workflow.UNASSIGNED,)):
+                    sources.setdefault(r[0], []).append(r[1])
+        except sqlite3.DatabaseError as exc:
+            raise _storage_unavailable(exc) from exc
         for r in rows:
             try: raw = json.loads(r.pop("raw_json") or "{}")
             except (TypeError, ValueError): raw = {}

@@ -27,7 +27,7 @@ coscreen/analysis_storage.py:517#IN(?) 占位符个数由选中效应 result_id 
 # ---- P21/P23（2026-11-19 夜间波次）新增登记 ——
 # P23：1232→1251→1529 三度 re-key（2.1.6 团队写通道波次插行下移、I+L 包
 #   头部/中部插入 321 行再下移 278 行）；表达式文本逐字未变。
-custom_backend/review_workflow_api.py:1752#P23 keyed read: IN-list placeholders only (one ? per key), values bound as parameters
+custom_backend/review_workflow_api.py:1829#P23 keyed read: IN-list placeholders only (one ? per key), values bound as parameters
 custom_backend/team_completion_clear.py:162#P21 clear: 表/列名为模块内固定常量（data_tables 族内部映射，同 research_trace.py:743；SQLite 标识符不能参数绑定），拼入内容非外部输入，语句本身无数据值参数
 # ============================================================================
 # SQLGATE 对齐包（2026-11-20）：2.1.6 夜间各波新增的 52 处动态拼装点逐条
@@ -93,7 +93,7 @@ coscreen/team_vote_ledger.py:417#表名取自固定 _STAGE_TABLES 映射的字�
 coscreen/team_vote_ledger.py:502#表名由 _stage_table 在固定 _STAGE_TABLES 映射内解析（未知 stage 直接 ValueError），其余全为字面量，stage 参数绑定
 coscreen/team_vote_ledger.py:724#表名同上取自固定 _STAGE_TABLES 映射；stage/key 参数绑定
 # ---- custom_backend/main.py：IN(?) 分块占位符 ----
-custom_backend/main.py:2421#IN(?) 占位符个数由 user_ids 分块大小决定；拼入内容仅为 '?'，id 值经参数绑定
+custom_backend/main.py:2435#IN(?) 占位符个数由 user_ids 分块大小决定；拼入内容仅为 '?'，id 值经参数绑定
 # ---- custom_backend/team_keyed_domain.py：固定 required_schema 表名 + IN 占位符 + 固定续页分支 ----
 custom_backend/team_keyed_domain.py:60#IN(?) 占位符个数由固定 required_schema 表名数量决定；拼入内容仅为 '?'，表名经参数绑定
 custom_backend/team_keyed_domain.py:77#PRAGMA 表名取自固定 required_schema 的字面量表名，非外部输入

@@ -1823,6 +1823,240 @@ def _extract_member(archive: zipfile.ZipFile, member_name: str, base: Path,
     return target
 
 
+#: R8（用户裁定 a，2026-11-21）：带历史团队包导入时的协议重绑审计操作名。
+#: 落 ``team_flow_receipts``（既有 append-only 审计先例，collab 原产：
+#: source_registration_id/source_generation 二者 None），随包随任务迁移。
+IMPORT_PROTOCOL_REBIND_OPERATION = "team_protocol:import_rebind"
+
+#: 迁移完成提示词条（服务端契约键；十语言词条由前端 batch6_locale.js 注册，
+#: 本包只交付键与中文兜底串——见 REPORT 词条清单）。
+IMPORT_PROTOCOL_REBIND_MESSAGE_KEY = "task_package.team_protocol_rebound"
+IMPORT_PROTOCOL_REBIND_MESSAGE = (
+    "已为您完成迁移：团队协议已绑定到新任务，历史协作记录保持不变。")
+
+#: 受控重建的中转表名（固定字面量——SQL 零拼接、零外部标识符）。
+#: 包内若已占用该名字：重建前置检查拒绝整个导入（fail-closed，不猜）。
+_PROTOCOL_REBIND_STALE_TABLE = "team_task_protocol_pre_import"
+
+
+def _utc_now_ms() -> str:
+    """RFC3339 UTC 毫秒 Z（receipt/F1 同口径）。"""
+    return datetime.now(timezone.utc).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _rebind_import_failed(reason: str, detail: str = "") -> TaskPackageError:
+    params: dict[str, Any] = {"reason": reason}
+    if detail:
+        params["detail"] = detail
+    return TaskPackageError("import_failed", params=params)
+
+
+def _rebind_imported_team_protocol(task_dir: Path, task_id: str, owner_id: int,
+                                   owner_name: str,
+                                   preserved_instance: str) -> dict[str, Any]:
+    """R8：把包内协议行重绑到本次导入的新 ``task_id``（导入组装窗口内）。
+
+    问题（P3 复审探针实证）：带历史团队包导入后 protocol 行仍绑定源部署
+    的 ``task_id``；产品守卫触发器 ``team_task_protocol_guard_update``
+    禁止 UPDATE 改绑（ABORT identity/state regression），keyed 计划按新
+    task_id 解析落空 → team 写 503 ``task_not_registered``（"能看不能写"）。
+
+    受控路径（不削弱守卫）：在临时目录整体改名（``os.replace``）之前，
+    即协作库尚未进入服务期的组装窗口内，以**单事务**完成协议表重建：
+
+    1. ``ALTER TABLE ... RENAME TO team_task_protocol_pre_import``（固定
+       中转名，前置检查占用即拒绝）；表上的两条守卫触发器随表迁移；
+    2. 用产品 canonical DDL ``_TABLE_PROTOCOL_SQL`` 建回同名表；
+    3. 以**原 instance/library/coverage/roster_revision/adopted_at** 插入
+       重绑行：仅 ``task_id`` 改为本次新 id、``owner_user_id`` 改为导入者
+       （collaboration_task 已由 ``_rewrite_collaboration_store`` 改绑到
+       导入者；两处 owner 不一致会让写窗 ``identity_unconfirmed``），
+       ``owner_library_id`` 原样保留（P18 恢复契约「不悄换 instance/
+       library」）；``legacy_verified`` 行随绑定字段重算 adoption evidence
+       JSON/哈希（文档内嵌 task_id/owner_user_id），其余字段原样；
+    4. 删除中转旧表（其守卫触发器随之消失），用产品 canonical DDL
+       ``_TRIGGER_PROTOCOL_NO_DELETE_SQL`` / ``_TRIGGER_PROTOCOL_GUARD_SQL``
+       **逐字重建两条守卫**；
+    5. 同事务内经产品强读 ``read_protocol_on`` 复核新行与完整布局；
+    6. 追加迁移审计 receipt（旧/新 task_id、时间、触发者=importer、
+       evidence 是否重算、原 owner uid/library）；
+    7. 提交后经产品 ``prepare_team_terminal_registry``（精确布局断言）与
+       ``read_protocol_for_task_on``（按新 task_id 正查）终验。
+
+    语义边界：守卫触发器文本/布局零变化（重建后仍禁 UPDATE/DELETE，测试
+    钉死）；重建在导入原子边界内，失败=typed 导入失败并清场（不留半迁移
+    状态）；幂等（同包导入两次产生两个新 task_id 与各自 receipt）。
+    """
+    from coscreen import team_terminal_registry as _registry
+    from coscreen.team_flow_receipts import append_receipt_on
+
+    instance = str(preserved_instance or "")
+    if not instance:
+        raise _rebind_import_failed("protocol_instance_missing")
+    collab = task_dir / "collaboration.db"
+    conn = sqlite3.connect(str(collab), timeout=15)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            occupied = conn.execute(
+                "SELECT 1 FROM main.sqlite_master WHERE name=?",
+                (_PROTOCOL_REBIND_STALE_TABLE,)).fetchone()
+            if occupied is not None:
+                raise _rebind_import_failed("protocol_rebind_staging_name_taken")
+            rows = conn.execute(
+                "SELECT task_instance_id FROM main.team_task_protocol"
+            ).fetchall()
+            if len(rows) != 1:
+                raise _rebind_import_failed(
+                    "protocol_row_count", detail=f"rows={len(rows)}")
+            record = _registry.read_protocol_on(
+                conn, task_instance_id=instance)
+            if record is None:
+                raise _rebind_import_failed("protocol_instance_mismatch")
+            old_task_id = str(record["task_id"])
+            if old_task_id == task_id:
+                conn.commit()
+                return {"rebound": False, "reason": "already_bound",
+                        "old_task_id": old_task_id, "new_task_id": task_id}
+            coverage = str(record["coverage_state"])
+            evidence_ref = record["adoption_evidence_ref"]
+            evidence_json = record["adoption_evidence_json"]
+            evidence_sha = record["adoption_evidence_sha256"]
+            evidence_recomposed = False
+            if coverage == "legacy_verified":
+                # 证据文档内嵌 task_id/owner_user_id——重绑后必须按产品
+                # canonical JSON 规则重算（否则强读判 corrupt/绑定不符）。
+                # 复用 registry 自身的 canonical JSON/哈希实现（单一事实源：
+                # 存储校验侧也用同一对函数，绝不在本文件复制一份可能漂移的
+                # 序列化口径）。文档其余字段（sources/scope/method/
+                # adopted_at/prior_history_unknown）一字不动。
+                document = json.loads(str(evidence_json))
+                document["task_id"] = task_id
+                document["owner_user_id"] = owner_id
+                evidence_json = _registry._canonical_json(document)
+                evidence_sha = _registry._sha256_text(evidence_json)
+                evidence_recomposed = True
+            rebound_at = _utc_now_ms()
+            updated_at = max(rebound_at, str(record["updated_at"]))
+            # SQL 全字面量（Mimosa 约束）：中转表名是模块常量，此处按
+            # 「校验后的字面量」展开为单串（与 PRAGMA/ATTACH 白名单同口径），
+            # 绝不由外部输入拼接。
+            conn.execute(
+                "ALTER TABLE main.team_task_protocol"
+                " RENAME TO team_task_protocol_pre_import")
+            conn.execute(_registry._TABLE_PROTOCOL_SQL)
+            conn.execute(
+                "INSERT INTO main.team_task_protocol"
+                "(task_instance_id, task_id, owner_user_id, owner_library_id,"
+                " protocol_version, coverage_state, roster_revision, adopted_at,"
+                " adoption_evidence_ref, adoption_evidence_json,"
+                " adoption_evidence_sha256, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (instance, task_id, owner_id, record["owner_library_id"],
+                 record["protocol_version"], coverage,
+                 record["roster_revision"], record["adopted_at"],
+                 evidence_ref, evidence_json, evidence_sha,
+                 record["created_at"], updated_at))
+            conn.execute("DROP TABLE main.team_task_protocol_pre_import")
+            conn.execute(_registry._TRIGGER_PROTOCOL_NO_DELETE_SQL)
+            conn.execute(_registry._TRIGGER_PROTOCOL_GUARD_SQL)
+            # 同事务产品强读复核：精确布局 + 新行全字段校验（含重算证据）。
+            rebound = _registry.read_protocol_on(
+                conn, task_instance_id=instance)
+            if rebound is None or rebound["task_id"] != task_id:
+                raise _rebind_import_failed("protocol_rebind_readback")
+            audit = {
+                "old_task_id": old_task_id,
+                "new_task_id": task_id,
+                "rebound_at": rebound_at,
+                "importer_user_id": owner_id,
+                "importer_username": owner_name,
+                "evidence_recomposed": evidence_recomposed,
+            }
+            request_sha256 = hashlib.sha256(
+                json.dumps(audit, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"), allow_nan=False).encode("utf-8")
+            ).hexdigest()
+            receipt = append_receipt_on(conn, {
+                "schema": "team_flow_receipt.v1",
+                "task_instance_id": instance,
+                "actor_user_id": owner_id,
+                "operation": IMPORT_PROTOCOL_REBIND_OPERATION,
+                "request_id": f"import-rebind-{os.urandom(16).hex()}",
+                "request_sha256": request_sha256,
+                "result": audit,
+                "internal_evidence": {
+                    "trigger": "task_package_import",
+                    # supersede 痕迹：被替代绑定（旧 task_id/owner uid/library）
+                    # 与本次重绑的中转表名——审计可复原"哪一行被哪一次导入
+                    # 取代"，无需读取已删除的中转表。
+                    "supersede": {
+                        "task_id": old_task_id,
+                        "owner_user_id": int(record["owner_user_id"]),
+                        "owner_library_id": record["owner_library_id"],
+                        "coverage_state": coverage,
+                    },
+                    "staging_table": _PROTOCOL_REBIND_STALE_TABLE,
+                    "guard_recreated_verbatim": True,
+                    "guard_names": [
+                        "team_task_protocol_guard_update",
+                        "team_task_protocol_no_delete",
+                    ],
+                },
+                "recorded_at": rebound_at,
+                "source_registration_id": None,
+                "source_generation": None,
+            })
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    except TaskPackageError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 重绑任何失败=typed 导入失败
+        # registry 强读/布局断言（TerminalRegistryUnavailable 等 RuntimeError）
+        # 与坏库/锁忙同口径：绝不逃逸成 500，一律 typed import_failed 并清场。
+        raise _rebind_import_failed(
+            "team_protocol_rebind_failed",
+            detail=f"{type(exc).__name__}: {exc}") from exc
+    finally:
+        conn.close()
+
+    # 提交后产品终验：精确布局（含逐字守卫）＋按新 task_id 正查。
+    try:
+        _registry.prepare_team_terminal_registry(collab)
+        verify = sqlite3.connect(str(collab), timeout=15)
+        try:
+            verify.row_factory = sqlite3.Row
+            verify.execute("BEGIN")
+            final = _registry.read_protocol_for_task_on(
+                verify, task_id=task_id)
+        finally:
+            verify.close()
+    except Exception as exc:  # noqa: BLE001 - 终验失败=typed 导入失败（清场）
+        raise _rebind_import_failed(
+            "team_protocol_rebind_verify_failed",
+            detail=f"{type(exc).__name__}: {exc}") from exc
+    if final is None or final["task_instance_id"] != instance:
+        raise _rebind_import_failed("team_protocol_rebind_verify_failed")
+    return {
+        "rebound": True,
+        "old_task_id": old_task_id,
+        "new_task_id": task_id,
+        "rebound_at": rebound_at,
+        "actor_user_id": owner_id,
+        "importer_username": owner_name,
+        "receipt_id": receipt["receipt_id"],
+        "evidence_recomposed": evidence_recomposed,
+        "message_key": IMPORT_PROTOCOL_REBIND_MESSAGE_KEY,
+        "params": {"old_task_id": old_task_id, "new_task_id": task_id},
+        "message": IMPORT_PROTOCOL_REBIND_MESSAGE,
+    }
+
+
 def _import_team_provenance(task_dir: Path, task_id: str, owner_id: int,
                             owner_name: str) -> dict[str, Any]:
     """P18 需求 2：整包导入/恢复的协议绑定 hook（恢复不悄换 instance/library）。
@@ -1853,23 +2087,44 @@ def _import_team_provenance(task_dir: Path, task_id: str, owner_id: int,
                 "reason": "no_collaboration_store"}
     team_lifecycle.prepare_team_protocol_storage(
         collab_path=collab, source_paths=())
+    history_row: sqlite3.Row | None = None
     conn = sqlite3.connect(str(collab), timeout=15)
     try:
         conn.row_factory = sqlite3.Row
         tables = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         if "team_task_protocol" in tables:
-            row = conn.execute(
+            history_row = conn.execute(
                 "SELECT task_instance_id, task_id, owner_library_id,"
                 " coverage_state FROM main.team_task_protocol"
                 " ORDER BY created_at LIMIT 1").fetchone()
-            if row is not None:
-                # 带历史包：instance/library 原样保留（不悄换、不隔离）。
-                return {"has_history": True, "registered": False,
-                        "preserved_task_instance_id": row["task_instance_id"],
-                        "preserved_task_id": row["task_id"],
-                        "preserved_owner_library_id": row["owner_library_id"],
-                        "coverage_state": row["coverage_state"]}
+    finally:
+        conn.close()
+    if history_row is not None:
+        # R8（用户裁定 a，2026-11-21）：带历史包在导入组装窗口内受控重绑
+        # 协议到新 task_id（守卫触发器禁 UPDATE；经产品 canonical DDL 单事务
+        # 重建，守卫逐字重建不削弱）＋迁移审计 receipt＋响应提示。
+        # instance/library 原样保留（P18 契约）。重绑开启自持连接，故上面
+        # 的读连接必须先关（SQLite 单写者；同进程双连接会自锁）。
+        rebound = _rebind_imported_team_protocol(
+            task_dir, task_id, owner_id, owner_name,
+            str(history_row["task_instance_id"]))
+        return {"has_history": True, "registered": False,
+                "preserved_task_instance_id": history_row["task_instance_id"],
+                "preserved_task_id": history_row["task_id"],
+                "preserved_owner_library_id": history_row["owner_library_id"],
+                "coverage_state": history_row["coverage_state"],
+                "rebound": bool(rebound.get("rebound")),
+                "old_task_id": rebound.get("old_task_id"),
+                "new_task_id": task_id,
+                "rebound_at": rebound.get("rebound_at"),
+                "rebind_receipt_id": rebound.get("receipt_id"),
+                "rebind_message_key": rebound.get("message_key"),
+                "rebind_params": rebound.get("params"),
+                "rebind_message": rebound.get("message")}
+    conn = sqlite3.connect(str(collab), timeout=15)
+    try:
+        conn.row_factory = sqlite3.Row
         # S-3：fresh 登记的 owner_library=导入者个人库真实账本身份。
         from coscreen import db as _cdb
         slug = tasks_mod.slugify_screener(owner_name)

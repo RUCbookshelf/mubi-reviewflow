@@ -253,6 +253,30 @@ class WorkflowRuntime:
         from custom_backend.main import SCREENER_LIBRARY_UNAVAILABLE_MESSAGE
         return HTTPException(503, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
 
+    @staticmethod
+    def _coding_evidence_read(fn, *args, **kwargs):
+        """S2 调用点收口：coding_evidence 公共入口 → typed 503（I+L 同款）。
+
+        勘察结论：19 站逐个包收益低，统一在公共入口出
+        ``coding_evidence.StorageUnavailable``（DatabaseError 子类，既有
+        捕获面零漂移），API 侧只在**不处于 sqlite 感知 try 内**的调用点
+        包这一层。``ProgrammingError`` 是调用写法缺陷（先例
+        tables_api/tables 复审 #05、screening_arbitration:498），原样上抛，
+        不伪装成库不可用。``OSError`` 与 DatabaseError 同口径（G/I 线）。
+        """
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.ProgrammingError:
+            raise
+        except sqlite3.IntegrityError:
+            # 约束冲突是确定性业务/数据冲突（调用方既有 400/409 映射），
+            # 不伪装成"库暂时不可用"——与 coding_evidence 装饰器同口径。
+            raise
+        except OSError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+        except sqlite3.DatabaseError as exc:
+            raise WorkflowRuntime._screener_library_503() from exc
+
     def _readonly_task_kind(self, info, owner) -> str:
         """只读派生 task_kind（2.1.6 FLOW II-A；fix-r1 R6 与 context 事实一致）。
 
@@ -571,15 +595,27 @@ class WorkflowRuntime:
             # 的设计承诺（design_2.1.5_binary_screening.md §一）。「legacy 只读
             # 不建库」边界保留：库不存在时不建、不迁移（版本探针先查文件）。
             # 幂等：binary_reset.migrate 外层版本判定 + 事务内复检，二跑空操作。
+            # 包 S3（首开/升级热路径）：版本探针/迁移链的坏库字节、锁忙、
+            # IO 失败此前裸逃逸成全局 500（audit_cover 口径盲区——它只认
+            # store.connect，包装 migrate 调用不在雷达内）。捕获面收口到
+            # DatabaseError（含 OperationalError 子类）与 OSError → 标准
+            # 503 词条（G/I/L 同款）；正常首建/升级路径零行为变化。
             with self.lock(task_id):
                 if actor_db.is_file():
-                    legacy_versions = store.migration_state(actor_db)
-                    if legacy_versions is None or not {
-                            store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
-                    } <= legacy_versions:
-                        store.migrate(actor_db)
-                        binary_reset.migrate(actor_db, task_id=task_id,
-                                             actor_id=user["user_id"])
+                    try:
+                        legacy_versions = store.migration_state(actor_db)
+                        if legacy_versions is None or not {
+                                store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
+                        } <= legacy_versions:
+                            store.migrate(actor_db)
+                            binary_reset.migrate(actor_db, task_id=task_id,
+                                                 actor_id=user["user_id"])
+                    except (sqlite3.ProgrammingError, sqlite3.IntegrityError):
+                        raise  # 编程缺陷/确定性冲突不伪装成库不可用
+                    except OSError as exc:
+                        raise self._screener_library_503() from exc
+                    except sqlite3.DatabaseError as exc:
+                        raise self._screener_library_503() from exc
             return WorkflowContext(info, user, None, actor_db, actor_db, False, "legacy", collab)
         with self.lock(task_id):
             owner_db = self.screener_db(info, owner["owner_username"])
@@ -591,42 +627,53 @@ class WorkflowRuntime:
             # 无操作——一次只读连接判齐后整段跳过（原先每个 API 请求对同一
             # 库开 4 个只读连接逐个重查）；未建库/旧库走完整链，首建与升级
             # 行为不变。ensure_fields 的字段种子检查不受影响（仍每请求执行）。
-            owner_versions = store.migration_state(owner_db)
-            if owner_versions is None or not {
-                    store.SCHEMA_VERSION, import_sources.VERSION,
-                    import_sources.FILENAME_VERSION, coding_evidence.MIGRATION_VERSION,
-            } <= owner_versions:
-                import_sources.migrate(owner_db)
-            coding_evidence.ensure_fields(owner_db)
-            grants = task_collaboration.list_role_grants(collab, actor_user_id=owner["owner_user_id"], task_id=task_id)
-            if any(grant["user_id"] != owner["owner_user_id"] for grant in grants):
-                self.latch_team_db(owner_db)
-            kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
-            # 属主同人时复用 owner 库路径（省一次 _connect/PRAGMA；同文件
-            # 同名，语义不变），否则按成员名建/取个人库
-            if actor_db.name == owner_db.name:
-                actor_db = owner_db
-            else:
-                actor_db = self.screener_db(info, user["username"])
-            # 同法：actor 库 v1/v8 齐全时跳过重复重查；属主同人时 actor 库
-            # 即 owner 库，直接复用 owner 的版本判定与 ensure_fields 结果。
-            if actor_db is owner_db or actor_db.name == owner_db.name:
-                actor_versions = owner_versions
-                if actor_versions is None or not {
-                        store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
-                } <= actor_versions:
-                    store.migrate(actor_db)
-                    binary_reset.migrate(actor_db, task_id=task_id,
-                                         actor_id=user["user_id"])
-            else:
-                actor_versions = store.migration_state(actor_db)
-                if actor_versions is None or not {
-                        store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
-                } <= actor_versions:
-                    store.migrate(actor_db)
-                    binary_reset.migrate(actor_db, task_id=task_id,
-                                         actor_id=user["user_id"])
-                coding_evidence.ensure_fields(actor_db)
+            # 包 S3：整段（owner/actor 库版本探针、import_sources.migrate、
+            # ensure_fields、binary_reset.migrate、latch、settings 团队模式
+            # 判定）的 sqlite/IO 失败统一 503——这是每请求热路径，坏库在该库
+            # 被修复前每个请求都会重放；503 可重试语义与 G/I 线一致。
+            try:
+                owner_versions = store.migration_state(owner_db)
+                if owner_versions is None or not {
+                        store.SCHEMA_VERSION, import_sources.VERSION,
+                        import_sources.FILENAME_VERSION, coding_evidence.MIGRATION_VERSION,
+                } <= owner_versions:
+                    import_sources.migrate(owner_db)
+                coding_evidence.ensure_fields(owner_db)
+                grants = task_collaboration.list_role_grants(collab, actor_user_id=owner["owner_user_id"], task_id=task_id)
+                if any(grant["user_id"] != owner["owner_user_id"] for grant in grants):
+                    self.latch_team_db(owner_db)
+                kind = "team" if store.settings(owner_db)["team_latched"] else "personal"
+                # 属主同人时复用 owner 库路径（省一次 _connect/PRAGMA；同文件
+                # 同名，语义不变），否则按成员名建/取个人库
+                if actor_db.name == owner_db.name:
+                    actor_db = owner_db
+                else:
+                    actor_db = self.screener_db(info, user["username"])
+                # 同法：actor 库 v1/v8 齐全时跳过重复重查；属主同人时 actor 库
+                # 即 owner 库，直接复用 owner 的版本判定与 ensure_fields 结果。
+                if actor_db is owner_db or actor_db.name == owner_db.name:
+                    actor_versions = owner_versions
+                    if actor_versions is None or not {
+                            store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
+                    } <= actor_versions:
+                        store.migrate(actor_db)
+                        binary_reset.migrate(actor_db, task_id=task_id,
+                                             actor_id=user["user_id"])
+                else:
+                    actor_versions = store.migration_state(actor_db)
+                    if actor_versions is None or not {
+                            store.SCHEMA_VERSION, binary_reset.RESET_VERSION,
+                    } <= actor_versions:
+                        store.migrate(actor_db)
+                        binary_reset.migrate(actor_db, task_id=task_id,
+                                             actor_id=user["user_id"])
+                    coding_evidence.ensure_fields(actor_db)
+            except (sqlite3.ProgrammingError, sqlite3.IntegrityError):
+                raise  # 编程缺陷/确定性冲突不伪装成库不可用（与 S2 同口径）
+            except OSError as exc:
+                raise self._screener_library_503() from exc
+            except sqlite3.DatabaseError as exc:
+                raise self._screener_library_503() from exc
             return WorkflowContext(info, user, owner, owner_db, actor_db,
                                    owner["owner_user_id"] == user["user_id"], kind, collab)
 
@@ -655,14 +702,19 @@ class WorkflowRuntime:
         if inputs is None:
             data = store.settings(ctx.owner_db)
             sources = store.sources(ctx.owner_db)
-            evidence_fields = coding_evidence.field_rows(ctx.owner_db)
-            mapping_issues = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[1]
+            # S2 调用点收口（勘察：调用点包一层，而非 19 站逐个包）。
+            evidence_fields = self._coding_evidence_read(
+                coding_evidence.field_rows, ctx.owner_db)
+            mapping_issues = self._coding_evidence_read(
+                coding_evidence.mapping, ctx.actor_db, ctx.owner_db)[1]
         else:
             data = store.settings(ctx.owner_db, conn=inputs.owner_conn)
             sources = store.sources(ctx.owner_db, conn=inputs.owner_conn)
-            evidence_fields = coding_evidence.field_rows(
+            evidence_fields = self._coding_evidence_read(
+                coding_evidence.field_rows,
                 ctx.owner_db, conn=inputs.owner_conn)
-            mapping_issues = coding_evidence.mapping(
+            mapping_issues = self._coding_evidence_read(
+                coding_evidence.mapping,
                 ctx.actor_db, ctx.owner_db,
                 actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)[1]
         # 2.1.5 W1：show_maybe 与轮次标记退役——读取时剥离历史存储值，
@@ -723,9 +775,12 @@ class WorkflowRuntime:
     def validate_evidence_dimensions(ctx: WorkflowContext, dimensions: set[int]) -> None:
         inputs = _team_inputs(ctx)
         if inputs is None:
-            mapped, issues, _ = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)
+            # S2 调用点收口：mapping 读坏库 → typed 503（此前裸 500）。
+            mapped, issues, _ = WorkflowRuntime._coding_evidence_read(
+                coding_evidence.mapping, ctx.actor_db, ctx.owner_db)
         else:
-            mapped, issues, _ = coding_evidence.mapping(
+            mapped, issues, _ = WorkflowRuntime._coding_evidence_read(
+                coding_evidence.mapping,
                 ctx.actor_db, ctx.owner_db,
                 actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
         if not dimensions <= set(mapped):
@@ -741,8 +796,12 @@ class WorkflowRuntime:
             if ctx.actor_db.resolve() != db.resolve():
                 raise HTTPException(403, 'Coding schemes are limited to your own workspace.')
             # 包 I：方案读/自愈 DDL/版本推进的坏库或锁忙一律 503（G 线同款）。
+            # S2：coding_evidence 公共入口出 StorageUnavailable（DatabaseError
+            # 子类），既有捕获面已覆盖；包一层统一出口只为诊断链同形。
             try:
                 before = coding_evidence.field_rows(db)
+            except sqlite3.ProgrammingError:
+                raise  # 调用写法缺陷不伪装成库不可用（tables_api 复审 #05 先例）
             except OSError as exc:
                 raise self._screener_library_503() from exc
             except sqlite3.DatabaseError as exc:
@@ -777,9 +836,13 @@ class WorkflowRuntime:
     def evidence_state(self, ctx: WorkflowContext, key: str) -> dict:
         inputs = _team_inputs(ctx)
         if inputs is None:
-            return coding_evidence.evidence_state(
+            # S2 调用点收口（§2.8 evidence_state 455 推定站）：mapping/field_rows/
+            # evidence 读的坏库 → typed 503，不再逃逸成全局 500。
+            return self._coding_evidence_read(
+                coding_evidence.evidence_state,
                 ctx.actor_db, key, ctx.owner_db, ctx.info.task_id)
-        return coding_evidence.evidence_state(
+        return self._coding_evidence_read(
+            coding_evidence.evidence_state,
             ctx.actor_db, key, ctx.owner_db, ctx.info.task_id,
             actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
 
@@ -787,11 +850,14 @@ class WorkflowRuntime:
         inputs = _team_inputs(ctx)
         state = self.evidence_state(ctx, key)
         if inputs is None:
-            complete = key in coding_evidence.complete_keys(
+            # S2 调用点收口（§2.8 complete_keys 508 推定站）。
+            complete = key in self._coding_evidence_read(
+                coding_evidence.complete_keys,
                 ctx.actor_db, ctx.owner_db, [key])
             progress = coding.coding_progress(ctx.actor_db, owner_db=ctx.owner_db)
         else:
-            complete = key in coding_evidence.complete_keys(
+            complete = key in self._coding_evidence_read(
+                coding_evidence.complete_keys,
                 ctx.actor_db, ctx.owner_db, [key],
                 actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
             from custom_backend.team_screening_runtime import (
@@ -820,9 +886,12 @@ class WorkflowRuntime:
             ctx = self.context(task_id, user)
             context = TraceContext(task_id=task_id, actor_id=user['user_id'])
             can_submit = self.can_submit_coding(ctx)
-            mapped = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)[0]
+            # S2 调用点收口（§2.8 mapping/field_rows 站）：坏库 → typed 503。
+            mapped = self._coding_evidence_read(
+                coding_evidence.mapping, ctx.actor_db, ctx.owner_db)[0]
             mapped_dimensions = set(mapped)
-            actor_fields = {dim['id']: dim for dim in coding_evidence.field_rows(ctx.actor_db)}
+            actor_fields = {dim['id']: dim for dim in self._coding_evidence_read(
+                coding_evidence.field_rows, ctx.actor_db)}
             # 包 I：actor 库坏库字节/锁忙（undo journal / trace lifecycle 读）
             # → 503；块内 HTTPException（403/404 等业务拒绝）原样透传。
             try:
@@ -1249,9 +1318,12 @@ class WorkflowRuntime:
     def coding_complete(self, ctx: WorkflowContext, key: str, values: dict, dimension_ids: set[int]) -> bool:
         """Current owner requirements apply to every actor's current saved evidence."""
         inputs = _team_inputs(ctx)
+        # S2 调用点收口（§2.8 complete_keys 508 站的另一入口）。
         if inputs is None:
-            return key in coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db, [key])
-        return key in coding_evidence.complete_keys(
+            return key in self._coding_evidence_read(
+                coding_evidence.complete_keys, ctx.actor_db, ctx.owner_db, [key])
+        return key in self._coding_evidence_read(
+            coding_evidence.complete_keys,
             ctx.actor_db, ctx.owner_db, [key],
             actor_conn=inputs.actor_conn, owner_conn=inputs.owner_conn)
 
@@ -1270,7 +1342,9 @@ class WorkflowRuntime:
             scoped = self.scoped(ctx, stage, rows, source_id)
             overall = {'total':len(rows),'completed':sum(bool(saved.get(row['zotero_key'])) for row in rows)}
             overall['pending']=overall['total']-overall['completed']
-            completed_coding = coding_evidence.complete_keys(ctx.actor_db, ctx.owner_db,
+            # S2 调用点收口（§2.8 complete_keys 508 站的队列入口）。
+            completed_coding = self._coding_evidence_read(
+                coding_evidence.complete_keys, ctx.actor_db, ctx.owner_db,
                 [row['zotero_key'] for row in rows]) if stage == 'coding' else set()
             def complete(key: str) -> bool:
                 return bool(saved.get(key)) if stage != "coding" else key in completed_coding
@@ -1587,13 +1661,16 @@ class WorkflowRuntime:
             submission = {}
             if submission_evidence:
                 from coscreen.workspace_undo import SUBMISSION_EVIDENCE
-                mapped, _, required = coding_evidence.mapping(ctx.actor_db, ctx.owner_db)
+                # S2 调用点收口：mapping/field_rows 坏库 → typed 503。
+                mapped, _, required = self._coding_evidence_read(
+                    coding_evidence.mapping, ctx.actor_db, ctx.owner_db)
                 submission = {'submission_evidence': self.submission_evidence_capability(ctx),
                               'access_context': SUBMISSION_EVIDENCE,
                               'dimensions': [{**dim, 'field_id': mapped.get(dim['id']),
                                               'required': mapped.get(dim['id']) in required,
                                               'writable': dim['id'] in mapped and reason is None}
-                                             for dim in coding_evidence.field_rows(ctx.actor_db)]}
+                                             for dim in self._coding_evidence_read(
+                                                 coding_evidence.field_rows, ctx.actor_db)]}
             # 2.1.5 W1：正式两阶段全程二选一；maybe 只存在于筛选训练（W2）。
             maybe_allowed = False
             return {"article": article, "saved": self.saved_item(ctx.actor_db, stage, key),
@@ -2367,8 +2444,12 @@ def register_review_workflow_routes(app, require_user, task_lookup, screener_db,
                 # （不 422、不落盘），不再参与任何读写语义。
             field_ids = body.evidence_required_field_ids
             # 包 I：方案读（owner 库）坏库/锁忙 → 503（不再 500）。
+            # S2：coding_evidence 公共入口出 StorageUnavailable（DatabaseError
+            # 子类），捕获面已覆盖；ProgrammingError/IntegrityError 不伪装 503。
             try:
                 dimensions = {dim['field_id']: dim for dim in coding_evidence.field_rows(ctx.owner_db)}
+            except (sqlite3.ProgrammingError, sqlite3.IntegrityError):
+                raise
             except OSError as exc:
                 raise runtime._screener_library_503() from exc
             except sqlite3.DatabaseError as exc:

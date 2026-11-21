@@ -36,6 +36,27 @@ class ReservedScreenerCollisionError(ValueError):
     继承 ValueError：既有按 ValueError 捕获的调用路径语义不变。"""
 
 
+def _storage_unavailable(exc: Exception):
+    """S4（store 裸调收口）：sqlite 族故障 → 结构化 503（storage unavailable）。
+
+    站点 99/110/111 此前逃逸调用方（main.list_articles 与
+    WorkflowRuntime.sync_catalog 的 try 均只捕 ReservedScreenerCollisionError）
+    成全局 500。调用方扩捕属主包在途（R8/S1/S2S3 同文件），本包不改其 try——
+    在函数内把 ``sqlite3.DatabaseError`` 收敛为 typed 503 信封；HTTPException
+    穿透调用方的窄捕直达 FastAPI 处理器，用户面效果与调用方扩入
+    DatabaseError 等同（零调用方改动）。``fastapi`` 延迟导入：本模块保持
+    无 HTTP 依赖的可独立导入性。
+    """
+    from fastapi import HTTPException
+    return HTTPException(503, {
+        "error_code": "shared_corpus_storage_unavailable",
+        "message_key": "shared_corpus.storage_unavailable",
+        "params": {},
+        "retryable": True,
+        "details": f"{type(exc).__name__}: {exc}",
+        "message": "共享文献目录同步暂不可用（数据库被占用或暂时不可读），请稍后重试。"})
+
+
 def _user_db_path(task_dir: str | Path, username: str) -> Path:
     if not isinstance(username, str) or not _USERNAME_RE.fullmatch(username):
         raise ValueError("username is not a valid server account name")
@@ -94,75 +115,82 @@ def sync_shared_articles(
     # The caller has verified owner/member identities. Upgrade an existing
     # reviewer through the numbered backup path before any catalogue write;
     # workflow schema belongs only to that migration, including sync markers.
-    if not member_db.is_file():
-        db_mod.init_db(member_db)
-    import_store.migrate(member_db)
+    # S4（store 裸调收口）：migrate@99 / connect(ro)@110 / has_table@111
+    # 及同函数内原生 sqlite3 连接的 sqlite 族在此收敛——ValueError/
+    # FileNotFoundError/ReservedScreenerCollisionError（继承 ValueError）
+    # 按原样上抛，调用方既有 409/400 语义不变。
+    try:
+        if not member_db.is_file():
+            db_mod.init_db(member_db)
+        import_store.migrate(member_db)
 
-    owner_identity = owner_db.name
-    if catalog_revision is not None and member_db.is_file():
-        with closing(sqlite3.connect(member_db.as_uri() + "?mode=ro", uri=True, timeout=15)) as conn:
-            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_catalog_sync'").fetchone():
-                synced = conn.execute("SELECT revision FROM workflow_catalog_sync WHERE owner_identity=?", (owner_identity,)).fetchone()
-                if synced and int(synced[0]) == catalog_revision:
-                    return 0
-    rows = _read_owner_articles(owner_db)
-    accepted = []
-    with closing(workflow_store.connect(owner_db, read_only=True)) as owner_conn:
-        if workflow_store.has_table(owner_conn, "workflow_metadata_acceptances"):
-            accepted = [dict(row) for row in owner_conn.execute("SELECT * FROM workflow_metadata_acceptances")]
+        owner_identity = owner_db.name
+        if catalog_revision is not None and member_db.is_file():
+            with closing(sqlite3.connect(member_db.as_uri() + "?mode=ro", uri=True, timeout=15)) as conn:
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_catalog_sync'").fetchone():
+                    synced = conn.execute("SELECT revision FROM workflow_catalog_sync WHERE owner_identity=?", (owner_identity,)).fetchone()
+                    if synced and int(synced[0]) == catalog_revision:
+                        return 0
+        rows = _read_owner_articles(owner_db)
+        accepted = []
+        with closing(workflow_store.connect(owner_db, read_only=True)) as owner_conn:
+            if workflow_store.has_table(owner_conn, "workflow_metadata_acceptances"):
+                accepted = [dict(row) for row in owner_conn.execute("SELECT * FROM workflow_metadata_acceptances")]
 
-    # 目录 upsert 的列清单同样来自固定枚举 _ARTICLE_COLUMNS；语句直接写成字面量，
-    # 行值仍经 executemany 参数绑定（避免在 SQL 文本里拼表名/列名）。
+        # 目录 upsert 的列清单同样来自固定枚举 _ARTICLE_COLUMNS；语句直接写成字面量，
+        # 行值仍经 executemany 参数绑定（避免在 SQL 文本里拼表名/列名）。
 
-    with closing(sqlite3.connect(member_db, timeout=15)) as conn:
-        conn.execute("PRAGMA busy_timeout=15000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            conn.execute(_ARTICLE_SCHEMA)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_doi ON articles(doi)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_hash ON articles(content_hash)")
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(articles)")}
-            if set(_ARTICLE_COLUMNS) - columns:
-                raise ValueError("member articles table is missing required columns")
-            conn.executemany(
-                "INSERT INTO articles (zotero_key, item_type, title, authors, journal, year, doi, abstract, url, "
-                "source_format, raw_json, content_hash, is_duplicate_of, import_order) VALUES (?, ?, ?, ?, ?, ?, "
-                "?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(zotero_key) DO UPDATE SET item_type=CASE WHEN "
-                "articles.item_type IS NULL OR articles.item_type='' THEN excluded.item_type ELSE "
-                "articles.item_type END, title=CASE WHEN articles.title IS NULL OR articles.title='' THEN "
-                "excluded.title ELSE articles.title END, authors=CASE WHEN articles.authors IS NULL OR "
-                "articles.authors='' THEN excluded.authors ELSE articles.authors END, journal=CASE WHEN "
-                "articles.journal IS NULL OR articles.journal='' THEN excluded.journal ELSE articles.journal END, "
-                "year=CASE WHEN articles.year IS NULL OR articles.year='' THEN excluded.year ELSE articles.year "
-                "END, doi=CASE WHEN articles.doi IS NULL OR articles.doi='' THEN excluded.doi ELSE articles.doi "
-                "END, abstract=CASE WHEN articles.abstract IS NULL OR articles.abstract='' THEN excluded.abstract "
-                "ELSE articles.abstract END, url=CASE WHEN articles.url IS NULL OR articles.url='' THEN "
-                "excluded.url ELSE articles.url END, source_format=CASE WHEN articles.source_format IS NULL OR "
-                "articles.source_format='' THEN excluded.source_format ELSE articles.source_format END, "
-                "raw_json=CASE WHEN articles.raw_json IS NULL OR articles.raw_json='' THEN excluded.raw_json ELSE "
-                "articles.raw_json END, content_hash=CASE WHEN articles.content_hash IS NULL OR "
-                "articles.content_hash='' THEN excluded.content_hash ELSE articles.content_hash END, "
-                "is_duplicate_of=excluded.is_duplicate_of, import_order=excluded.import_order",
-                rows)
-            for approval in accepted:
-                applied = conn.execute("SELECT revision FROM workflow_metadata_applied WHERE owner_identity=? AND zotero_key=?",
-                                       (owner_identity, approval["zotero_key"])).fetchone()
-                if applied and applied[0] >= approval["revision"]:
-                    continue
-                values = json.loads(approval["metadata_json"])
-                # 列清单来自 import_store.METADATA_FIELDS（内部固定常量），语句写成字面量。
-                conn.execute(
-                    "UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,abstract=?,url=? WHERE "
-                    "zotero_key=?",
-                    [values.get(field) for field in import_store.METADATA_FIELDS] + [approval["zotero_key"]])
-                conn.execute("INSERT INTO workflow_metadata_applied VALUES(?,?,?) ON CONFLICT(owner_identity,zotero_key) DO UPDATE SET revision=excluded.revision",
-                             (owner_identity, approval["zotero_key"], approval["revision"]))
-            if catalog_revision is not None:
-                conn.execute("INSERT INTO workflow_catalog_sync VALUES(?,?) ON CONFLICT(owner_identity) DO UPDATE SET revision=excluded.revision",
-                             (owner_identity, catalog_revision))
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        with closing(sqlite3.connect(member_db, timeout=15)) as conn:
+            conn.execute("PRAGMA busy_timeout=15000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(_ARTICLE_SCHEMA)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_doi ON articles(doi)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_hash ON articles(content_hash)")
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(articles)")}
+                if set(_ARTICLE_COLUMNS) - columns:
+                    raise ValueError("member articles table is missing required columns")
+                conn.executemany(
+                    "INSERT INTO articles (zotero_key, item_type, title, authors, journal, year, doi, abstract, url, "
+                    "source_format, raw_json, content_hash, is_duplicate_of, import_order) VALUES (?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(zotero_key) DO UPDATE SET item_type=CASE WHEN "
+                    "articles.item_type IS NULL OR articles.item_type='' THEN excluded.item_type ELSE "
+                    "articles.item_type END, title=CASE WHEN articles.title IS NULL OR articles.title='' THEN "
+                    "excluded.title ELSE articles.title END, authors=CASE WHEN articles.authors IS NULL OR "
+                    "articles.authors='' THEN excluded.authors ELSE articles.authors END, journal=CASE WHEN "
+                    "articles.journal IS NULL OR articles.journal='' THEN excluded.journal ELSE articles.journal END, "
+                    "year=CASE WHEN articles.year IS NULL OR articles.year='' THEN excluded.year ELSE articles.year "
+                    "END, doi=CASE WHEN articles.doi IS NULL OR articles.doi='' THEN excluded.doi ELSE articles.doi "
+                    "END, abstract=CASE WHEN articles.abstract IS NULL OR articles.abstract='' THEN excluded.abstract "
+                    "ELSE articles.abstract END, url=CASE WHEN articles.url IS NULL OR articles.url='' THEN "
+                    "excluded.url ELSE articles.url END, source_format=CASE WHEN articles.source_format IS NULL OR "
+                    "articles.source_format='' THEN excluded.source_format ELSE articles.source_format END, "
+                    "raw_json=CASE WHEN articles.raw_json IS NULL OR articles.raw_json='' THEN excluded.raw_json ELSE "
+                    "articles.raw_json END, content_hash=CASE WHEN articles.content_hash IS NULL OR "
+                    "articles.content_hash='' THEN excluded.content_hash ELSE articles.content_hash END, "
+                    "is_duplicate_of=excluded.is_duplicate_of, import_order=excluded.import_order",
+                    rows)
+                for approval in accepted:
+                    applied = conn.execute("SELECT revision FROM workflow_metadata_applied WHERE owner_identity=? AND zotero_key=?",
+                                           (owner_identity, approval["zotero_key"])).fetchone()
+                    if applied and applied[0] >= approval["revision"]:
+                        continue
+                    values = json.loads(approval["metadata_json"])
+                    # 列清单来自 import_store.METADATA_FIELDS（内部固定常量），语句写成字面量。
+                    conn.execute(
+                        "UPDATE articles SET item_type=?,title=?,authors=?,journal=?,year=?,doi=?,abstract=?,url=? WHERE "
+                        "zotero_key=?",
+                        [values.get(field) for field in import_store.METADATA_FIELDS] + [approval["zotero_key"]])
+                    conn.execute("INSERT INTO workflow_metadata_applied VALUES(?,?,?) ON CONFLICT(owner_identity,zotero_key) DO UPDATE SET revision=excluded.revision",
+                                 (owner_identity, approval["zotero_key"], approval["revision"]))
+                if catalog_revision is not None:
+                    conn.execute("INSERT INTO workflow_catalog_sync VALUES(?,?) ON CONFLICT(owner_identity) DO UPDATE SET revision=excluded.revision",
+                                 (owner_identity, catalog_revision))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    except sqlite3.DatabaseError as exc:
+        raise _storage_unavailable(exc) from exc
     return len(rows)
