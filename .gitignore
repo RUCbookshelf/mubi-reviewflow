@@ -66,3 +66,18 @@ build/.build-*.lock/
 /fix_2.1.4_report*.md
 /patches/
 /scripts/
+# 工作区本地件（智能体工具链配置与草稿区，不入库）
+/.auto/
+/.claude/
+/.mimosa/
+/.v2c/
+/.video_agent/
+/.zcode/
+/build/.mimosa/
+/build/tests/.mimosa/
+/custom_frontend/.mimosa/
+/E/
+/AGENTS.md
+/CLAUDE.md
+/drafts/
+/f2_tests/
