@@ -574,6 +574,7 @@ from coscreen import task_collaboration  # noqa: E402
 from coscreen import tasks as tasks_mod  # noqa: E402
 from coscreen.team_flow_receipts import (  # noqa: E402
     TeamFlowReceiptConflict,
+    TeamFlowReceiptUnavailable,
     append_receipt_on,
     archive_receipts_on,
     read_receipt_on,
@@ -610,6 +611,12 @@ _P14_ALL = [
     "prepare_team_protocol_storage",
     "adopt_team_protocol_on",
     "run_team_management",
+]
+# P2（2026-11-21 用户裁定 R1/R2/R3/R6 落地）：退休恢复与修复面公开入口。
+_P14_ALL = _P14_ALL + [
+    "ensure_member_source_registered",
+    "retirement_recovery_payload",
+    "run_team_seal_conflict_repair",
 ]
 __all__ = __all__ + _P14_ALL  # noqa: F821  (P06 已定义 __all__)
 
@@ -947,37 +954,126 @@ def _enumerate_actor_receipts(conn) -> list:
     return rows
 
 
+def _forced_archive_evidence(*, instance: str, uid: int, generation: int,
+                             registration_id: str, reason: str,
+                             detail: str) -> dict:
+    """R3 强制移除的"证据不可确认"归档记录（诚实为零证据，绝不伪造）。"""
+    return {
+        "enumeration": "forced_removal: archive evidence unverifiable",
+        "registration_id": registration_id,
+        "generation": generation,
+        "seal_count": 0,
+        "seals": [],
+        "receipt_ids": [],
+        "verified_per_copy": False,
+        "forced": True,
+        "forced_reason": reason,
+        "forced_detail": detail[:400],
+    }
+
+
 def _archive_retiring_source(inputs, *, instance: str, uid: int, username: str,
-                             generation: int, registration_id: str) -> dict:
+                             generation: int, registration_id: str,
+                             force: bool = False) -> tuple[dict, dict]:
     """旧集完整归档：本 instance 全部 actor seals/receipts → collab 副本。
 
     完整枚举证明核实每条副本与代次（数量相等 + 每条 seal_id/
     payload_sha256 与源一致 + F2 registration/generation），不凭
     watermark；成员保留连接不可得＝切断的来源无法确认 → typed 失败
     （整次角色变更回滚）。
+
+    P2（2026-11-21 用户裁定落地）：
+    - **R1**：移除持未决票成员＝允许（现状语义不变），但管理 receipt 审计
+      ``pending_keys_at_removal``（成员已投、尚无完成见证的票键，逐阶段）；
+    - **R3/egg D.3-2**：``active 登记 ∧ 成员库缺失`` 组合按**空归档＋
+      watermark 指向空枚举证据**放行（登记时库必在，库消失＝外部干预/
+      前次隔离残留——重试永不收敛的永久阻塞改为如实放行）；
+    - **R3**：库存在但证据不可枚举（损坏/半装/schema 失配）→ 无 force 时
+      typed ``retirement_source_unverifiable``（409 口径由调用方映射，附
+      ``retirement_recovery_payload`` 修复指引）；``force=True`` 时按
+      "证据不可确认"强制放行（零伪造证据 + 审计标记），仅限显式危险操作。
+    返回 ``(archive_evidence, retirement_audit)`` 二元组；audit 含
+    ``pending_keys_at_removal`` / ``library_state`` / ``forced``。
     """
+    audit: dict = {
+        "pending_keys_at_removal": [],
+        "library_state": None,
+        "forced": bool(force),
+    }
     conn = _member_connection(inputs, uid, username)
     if conn is None:
-        raise TeamManagementError(
-            "retirement_source_unavailable",
-            f"member library not reserved; cannot confirm cut source uid={uid}")
-    seals = list_seals_on(conn, task_instance_id=instance)
-    copies = archive_seals_on(inputs.target_conn, seals)
-    if len(copies) != len(seals):
-        raise TeamManagementError(
-            "retirement_archive_incomplete",
-            f"archived {len(copies)} of {len(seals)} seals")
-    for source_seal, copy in zip(seals, copies):
-        if source_seal["seal_id"] != copy["seal_id"] \
-                or source_seal["payload_sha256"] != copy["payload_sha256"]:
+        path = _member_path(inputs.ctx.info, username)
+        if path is not None and path.is_file():
+            if not force:
+                raise TeamManagementError(
+                    "retirement_source_unavailable",
+                    f"member library not reserved; cannot confirm cut source "
+                    f"uid={uid}")
+            audit["library_state"] = "forced_no_verified_archive"
+            return (_forced_archive_evidence(
+                instance=instance, uid=uid, generation=generation,
+                registration_id=registration_id,
+                reason="retirement_source_unavailable",
+                detail="member library present but not reserved"), audit)
+        # D.3-2 裁定：active 登记 ∧ 库缺失 → 空归档放行（不阻塞管理）。
+        evidence = {
+            "enumeration": "empty_archive: member library missing at removal",
+            "registration_id": registration_id,
+            "generation": generation,
+            "seal_count": 0,
+            "seals": [],
+            "receipt_ids": [],
+            "verified_per_copy": False,
+            "member_library_missing": True,
+            "forced": bool(force),
+        }
+        audit["library_state"] = "missing_empty_archive"
+        return evidence, audit
+    try:
+        seals = list_seals_on(conn, task_instance_id=instance)
+        audit["pending_keys_at_removal"] = _retiring_pending_keys(
+            inputs, instance=instance, conn=conn)
+        copies = archive_seals_on(inputs.target_conn, seals)
+        if len(copies) != len(seals):
             raise TeamManagementError(
-                "retirement_copy_mismatch",
-                f"seal copy differs: {source_seal['seal_id']}")
-    receipts = _enumerate_actor_receipts(conn)
-    archived_receipts = archive_receipts_on(inputs.target_conn, receipts)
-    if len(archived_receipts) != len(receipts):
-        raise TeamManagementError(
-            "retirement_archive_incomplete", "receipt archive count differs")
+                "retirement_archive_incomplete",
+                f"archived {len(copies)} of {len(seals)} seals")
+        for source_seal, copy in zip(seals, copies):
+            if source_seal["seal_id"] != copy["seal_id"] \
+                    or source_seal["payload_sha256"] != copy["payload_sha256"]:
+                raise TeamManagementError(
+                    "retirement_copy_mismatch",
+                    f"seal copy differs: {source_seal['seal_id']}")
+        receipts = _enumerate_actor_receipts(conn)
+        archived_receipts = archive_receipts_on(inputs.target_conn, receipts)
+        if len(archived_receipts) != len(receipts):
+            raise TeamManagementError(
+                "retirement_archive_incomplete", "receipt archive count differs")
+    except TeamManagementError as exc:
+        if not force:
+            raise
+        audit["library_state"] = "forced_no_verified_archive"
+        return (_forced_archive_evidence(
+            instance=instance, uid=uid, generation=generation,
+            registration_id=registration_id, reason=exc.code,
+            detail=str(exc)), audit)
+    except (TerminalFactsUnavailable, sqlite3.Error) as exc:
+        if not force:
+            reason = getattr(exc, "reason", None)
+            if reason == "connection_contract":
+                raise
+            raise TeamManagementError(
+                "retirement_source_unverifiable",
+                f"member library archive evidence is unverifiable: {exc}"
+            ) from exc
+        audit["library_state"] = "forced_no_verified_archive"
+        return (_forced_archive_evidence(
+            instance=instance, uid=uid, generation=generation,
+            registration_id=registration_id,
+            reason=f"retirement_source_unverifiable:"
+                   f"{getattr(exc, 'reason', type(exc).__name__)}",
+            detail=str(exc)), audit)
+    audit["library_state"] = "archived"
     return {
         "enumeration": "list_seals_on(full instance)+archive_seals_on+"
                        "archive_receipts_on(actor origin)",
@@ -987,7 +1083,38 @@ def _archive_retiring_source(inputs, *, instance: str, uid: int, username: str,
         "seals": [_retiring_seal_evidence(seal, uid=uid) for seal in seals],
         "receipt_ids": [receipt["receipt_id"] for receipt in archived_receipts],
         "verified_per_copy": True,
-    }
+    }, audit
+
+
+def _retiring_pending_keys(inputs, *, instance: str, conn) -> list:
+    """R1 审计：成员已投、尚无 collab 完成见证的票键（逐阶段，升序）。
+
+    移除持未决票成员＝允许（2026-11-21 R1 裁定 (a)）：票不阻塞管理，但
+    其退出 required 集的事实连同键域记入管理 receipt（可审计、可追溯）。
+    成员库票面不可读时该阶段如实缺席（归档路径自身的 typed 口径不变）。
+    """
+    pending: list = []
+    for stage in _ENUM_STAGES:
+        try:
+            _library_id, rows = vote_snapshot(conn, stage)
+        except Exception:  # noqa: BLE001 - 票面不可读＝该阶段如实缺席
+            continue
+        keys = sorted(str(key) for key in rows)
+        if not keys:
+            continue
+        open_keys: list = []
+        for key in keys:
+            try:
+                sealed = read_seal_on(
+                    inputs.target_conn, task_instance_id=instance,
+                    stage=stage, item_key=key) is not None
+            except TerminalFactsUnavailable:
+                sealed = False
+            if not sealed:
+                open_keys.append(key)
+        if open_keys:
+            pending.append({"stage": stage, "item_keys": open_keys})
+    return pending
 
 
 def _retiring_seal_evidence(seal, *, uid: int) -> dict:
@@ -1023,10 +1150,27 @@ def _retiring_seal_evidence(seal, *, uid: int) -> dict:
 
 def _register_member_source(inputs, *, instance: str, uid: int,
                             username: str) -> dict:
-    """登记/复登 active 来源（P06 token 为身份；缺失成员库 → pending 如实）。"""
+    """登记/复登 active 来源（P06 token 为身份；缺失成员库 → pending 如实）。
+
+    P2（2026-11-21 R2 裁定 (a)+(c)）：缺失成员库先按身份核对尝试恢复被
+    隔离旧库（``.revoked-*``，F2 retired 行的 ``source_library_id`` 与库
+    ``library_identity_header_on`` 实际身份一致才恢复——身份核对先例与
+    ``_register_member_source`` 现行库路径同款）；恢复成功即继续正常登记，
+    失败如实 pending 并附 ``recovery`` 指引与 ``restore`` 审计（不吞、不
+    静默换新库）。返回形状新增可选键 ``restore``（None＝未触发恢复）——
+    既有消费方只读 ``status``/``registration_id``/``generation``，
+    新增键向后兼容（R7 (a) 同判）。
+    """
     path = _member_path(inputs.ctx.info, username)
+    restore_audit = None
     if path is None or not path.is_file():
-        return {"status": "pending", "issue": "member_library_missing"}
+        restore_audit = _restore_retired_member_library(
+            inputs, instance=instance, uid=uid, username=username, path=path)
+        if not restore_audit.get("restored"):
+            return {"status": "pending",
+                    "issue": "member_library_missing",
+                    "recovery": restore_audit.get("recovery"),
+                    "restore": restore_audit}
     existing = active_source_on(
         inputs.collab_conn, task_instance_id=instance, source_user_id=uid)
     uri = path.as_uri() + "?mode=ro"
@@ -1052,7 +1196,8 @@ def _register_member_source(inputs, *, instance: str, uid: int,
         return {"status": "active",
                 "registration_id": existing["registration_id"],
                 "generation": int(existing["generation"]),
-                "source_library_id": existing["source_library_id"]}
+                "source_library_id": existing["source_library_id"],
+                "restore": restore_audit}
     token = make_source_identity(
         task_dir=Path(inputs.ctx.info.dir), source_path=path,
         source_user_id=uid, source_library_id=library_id)
@@ -1062,7 +1207,8 @@ def _register_member_source(inputs, *, instance: str, uid: int,
     return {"status": "active",
             "registration_id": record["registration_id"],
             "generation": int(record["generation"]),
-            "source_library_id": record["source_library_id"]}
+            "source_library_id": record["source_library_id"],
+            "restore": restore_audit}
 
 
 def _ensure_protocol(inputs, *, instance_hint: str) -> tuple:
@@ -1295,6 +1441,7 @@ def run_team_management(
     payload: Mapping | None,
     request_id: str,
     request_sha256: str,
+    force: bool = False,
 ) -> Mapping:
     """团队名册管理协调器（typed 结果；通知由调用方锁外处理）。
 
@@ -1303,6 +1450,12 @@ def run_team_management(
     ``roster_revision``（变更后 revision；未变更为 previous）。属主/目标
     合法性由 P01 API 强制；业务拒绝原样透传（同 collab 目标回滚由 P10
     窗口完成）。
+
+    P2（2026-11-21 裁定）：``force`` 仅对 ``remove`` 生效——归档证据不可
+    确认（库损坏/半装/保留映射缺席）时按"证据不可确认"强制放行移除
+    （零伪造证据 + receipt 审计标记）；这是显式危险操作，HTTP 层须
+    confirm 语义（team_repair_api）。``False``（默认）行为与修复前逐字
+    一致。
     """
     _validated_request_pair(request_id, request_sha256)
     if action not in _MANAGEMENT_ACTIONS:
@@ -1320,6 +1473,33 @@ def run_team_management(
     if isinstance(user_id, bool) or type(user_id) is not int or user_id <= 0:
         raise TeamManagementError("invalid_user", "authenticated user_id missing")
     op_key = f"team_management:{action}"
+    # P2（2026-11-21 裁定 R3/survey §5.3-2）：remove 的锁外准备前置与目标
+    # 库保留集声明——
+    # - 目标成员库存在且 F1/receipts 缺表 → ``prepare_team_protocol_storage``
+    #   幂等补齐（把 S7/S8 从永久 503 变可恢复）；
+    # - 半装/schema_mismatch/损坏 → typed ``retirement_source_unverifiable``
+    #   （确定性条件由调用方映射 409，附 ``retirement_recovery_payload``
+    #   修复/强制移除指引）；
+    # - 文件缺失 → 不准备、不炸窗口（归档层按 egg D.3-2 空归档放行）；
+    # - 文件存在 → 路径显式声明进写窗保留集（``extra_reserve_paths``），
+    #   归档面不再依赖 required_screener 判据（缺口二根治，survey §5.3-1）。
+    # 账号/路径不可解析（无 data_dir 宿主等）→ 保留集声明缺席，行为与
+    # 修复前一致（归档层仍按原 typed 口径拒绝），绝不按 username 猜测。
+    extra_reserve_paths: tuple = ()
+    if action == "remove":
+        target_username = _accounts_username_for(runtime, target_user_id)
+        target_path = (
+            _member_path(info, target_username) if target_username else None)
+        if target_path is not None:
+            if target_path.is_file():
+                try:
+                    _prepare_retiring_source_storage(info, target_path)
+                except TeamManagementError:
+                    if not force:
+                        raise
+                    # R3 强制移除：准备失败（损坏/半装）不阻塞——归档层
+                    # 以"证据不可确认"零伪造证据审计放行。
+                extra_reserve_paths = (target_path,)
     # 延迟导入：P09 ``team_screening_write`` 反向导入本模块（P06 符号），
     # 模块级导入会成环；函数内解析也保留测试可替换的产品接缝。
     from custom_backend.team_screening_write import retained_team_write_inputs
@@ -1327,13 +1507,19 @@ def run_team_management(
     window_inputs = None
     body_completed = False
     result_payload: dict | None = None
+    # 接缝兼容（high2/生命周期测试以保留签名 mock 本函数的窗口入口）：
+    # 仅在确有声明路径时才传新 kwarg，缺省形态与 P14 原签名逐字一致。
+    window_kwargs: dict = {}
+    if extra_reserve_paths:
+        window_kwargs["extra_reserve_paths"] = extra_reserve_paths
     try:
         with retained_team_write_inputs(
                 runtime, info, dict(user), target_kind="collab",
                 operation=TeamOperation(
                     name=_MANAGEMENT_OPERATION_NAME,
                     stage=_MANAGEMENT_OPERATION_STAGE),
-                item_keys=(_MANAGEMENT_SENTINEL_KEY,)) as inputs:
+                item_keys=(_MANAGEMENT_SENTINEL_KEY,),
+                **window_kwargs) as inputs:
             window_inputs = inputs
             instance = inputs.plan.binding.task_instance_id
             task_id = inputs.plan.binding.task_id
@@ -1369,20 +1555,24 @@ def run_team_management(
 
                 sealed: list = []
                 archive_evidence = None
+                retirement_audit: dict | None = None
                 retire_registration = None
 
-                # 3. remove：先归档旧集再动角色（切断来源未知 → 整次回滚）
+                # 3. remove：先归档旧集再动角色（切断来源未知 → 整次回滚；
+                #    P2 裁定：库缺失＝空归档放行，force＝不可确认强制放行）
                 if action == "remove":
                     active = active_source_on(
                         inputs.collab_conn, task_instance_id=instance,
                         source_user_id=target_user_id)
                     if active is not None:
                         retire_registration = active
-                        archive_evidence = _archive_retiring_source(
-                            inputs, instance=instance, uid=target_user_id,
-                            username=usernames.get(target_user_id, ""),
-                            generation=int(active["generation"]),
-                            registration_id=active["registration_id"])
+                        archive_evidence, retirement_audit = \
+                            _archive_retiring_source(
+                                inputs, instance=instance, uid=target_user_id,
+                                username=usernames.get(target_user_id, ""),
+                                generation=int(active["generation"]),
+                                registration_id=active["registration_id"],
+                                force=bool(force))
 
                 # 4. 旧集观察：管理事务中用旧 revision（断言锚）
                 for key in candidate_keys:
@@ -1465,6 +1655,21 @@ def run_team_management(
                                 trigger="current_observation", sealed=sealed)
 
                 # 8. 管理 receipt（collab 原产；绑定对 None＝已知现状，P22 义务）
+                result_view = {
+                    "request_id": request_id,
+                    "operation": op_key,
+                    "action": action,
+                    "target_user_id": target_user_id,
+                    "writer": writer_result,
+                    "seals": [dict(item) for item in sealed],
+                    "roster_changed": changed,
+                }
+                if action == "remove" and retirement_audit is not None:
+                    # R1 审计（2026-11-21 裁定 (a)）：未决票键域与成员库
+                    # 状态如实入账——移除不阻塞，事实可追溯。
+                    result_view["pending_keys_at_removal"] = list(
+                        retirement_audit.get("pending_keys_at_removal") or [])
+                    result_view["retirement_audit"] = dict(retirement_audit)
                 receipt = append_receipt_on(inputs.target_conn, {
                     "schema": "team_flow_receipt.v1",
                     "task_instance_id": instance,
@@ -1472,15 +1677,7 @@ def run_team_management(
                     "operation": op_key,
                     "request_id": request_id,
                     "request_sha256": request_sha256,
-                    "result": {
-                        "request_id": request_id,
-                        "operation": op_key,
-                        "action": action,
-                        "target_user_id": target_user_id,
-                        "writer": writer_result,
-                        "seals": [dict(item) for item in sealed],
-                        "roster_changed": changed,
-                    },
+                    "result": result_view,
                     "internal_evidence": {
                         "target_kind": "collab",
                         "idempotent": False,
@@ -1511,6 +1708,626 @@ def run_team_management(
                     "roster_revision": new_revision,
                 }
                 body_completed = True
+    except BaseException as exc:  # noqa: BLE001 - 区分 body 失败与 commit 不可判定
+        if body_completed:
+            unknown_cleanup = (window_inputs.cleanup_errors
+                               if window_inputs is not None else ())
+            return {
+                "outcome": "unknown", "idempotent": False,
+                "request_id": request_id, "result": None, "receipt": None,
+                "seals": (), "roster_revision": None,
+                "cleanup_errors": tuple(unknown_cleanup),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        raise
+    assert result_payload is not None
+    cleanup = window_inputs.cleanup_errors if window_inputs is not None else ()
+    result_payload["cleanup_errors"] = tuple(cleanup)
+    return result_payload
+
+
+# ===========================================================================
+# P2（2026-11-21 用户裁定 R1/R2/R3/R6 落地）：退休恢复与修复面
+# ===========================================================================
+#
+# 依据：E:/rf216-store-scan-20261120/GAP_DESIGN_SURVEY.md §4 C 矩阵、§5.3、
+# §6 R1-R3/R6；交叉参考 E:/rf216-gap-survey-egg-20261121/GAP_DESIGN_SURVEY.md
+# 块 C 与 D.3-2（空归档论证）。本节新增：
+#
+# - ``retirement_recovery_payload``：退休/修复 typed 码 → ``recovery`` 语义
+#   载荷（P1 的 team_http_errors.py 409 映射只取本函数内容，不重复定义）；
+# - ``ensure_member_source_registered(runtime, info, user, target_uid)``：
+#   P1 对接签名（固定不变）——写路径懒准备成功后幂等补登记 F2 来源；
+#   幂等（已 active 原样返回）；库缺失/身份不可核 → ``{"status":
+#   "unavailable", ...}`` 不抛（调用方如实上报 pending、下次入口重试）；
+# - ``run_team_seal_conflict_repair``：R6 管理端"修复冲突 seal"入口
+#   （选权威 seal 归档另一枚 + 管理 receipt 审计）。
+#
+# 纪律：本节不复制任何 P01/P04/P07/P08 写者——登记/归档/回执全走既有
+# 公开 API；成员库一律只读（恢复路径的 rename 是文件系统收尾动作，
+# 不是 DB 写，镜像 main.py 隔离收尾的语义）。
+# ===========================================================================
+
+#: 退休/修复确定性 typed 码 → recovery 语义载荷（P1 映射层只取内容）。
+#: ``retryable`` 一律 False：这些码全部是"重试不会收敛"的确定性/结构性
+#: 条件（survey §5.2 映射表的 retirement 家族行）；暂时性锁忙保持既有
+#: 503 口径，不进本表。
+_RETIREMENT_RECOVERY_GUIDANCE: dict = {
+    "retirement_source_unavailable": {
+        "message": "该成员的源登记无法在本次移除中归档确认（成员库未被"
+                   "保留或不可定位）。",
+        "actions": [
+            "若成员是关闭筛选的复核员：先打开其筛选开关（screening "
+            "toggle）再重试移除；",
+            "若成员持双业务角色（grants 冲突）：先在业务角色端收敛为"
+            "单一角色，再逐个撤销；",
+            "若成员库文件仍存在：修复文件权限/占用后重试；",
+            "确认证据无需保留时，可使用管理端强制移除（repair/"
+            "force-remove，需 confirm，审计留痕）。",
+        ],
+        "force_remove_available": True,
+    },
+    "retirement_source_unverifiable": {
+        "message": "成员库存在但证据不可核（损坏/半装/schema 失配）——"
+                   "归档被 fail-closed 拒绝，重试不会成功。",
+        "actions": [
+            "先修复成员库（恢复缺失的表或从备份还原）后重试移除；",
+            "确认证据不可修复且无需保留时，使用管理端强制移除"
+            "（repair/force-remove，需 confirm=force-remove；移除以"
+            "『证据不可确认』零证据审计入账，成员库文件随收尾隔离"
+            "保留在磁盘）。",
+        ],
+        "force_remove_available": True,
+    },
+    "retirement_source_unreadable": {
+        "message": "成员库暂时不可读（文件被占用/权限不足）。",
+        "actions": [
+            "关闭占用该文件的应用或修复权限后重试。",
+        ],
+        "force_remove_available": False,
+    },
+    "member_library_missing": {
+        "message": "成员个人库缺失（登记时库必在，库消失＝外部干预或"
+                   "前次隔离残留）。",
+        "actions": [
+            "移除按空归档放行（watermark 指向空枚举证据），无需额外"
+            "操作；",
+            "重新邀请该成员时将按身份核对尝试恢复被隔离旧库"
+            "（.revoked-*）；身份不可核时返回明确指引。",
+        ],
+        "force_remove_available": False,
+    },
+    "restore_identity_unconfirmed": {
+        "message": "发现被隔离旧库但身份不可核对（无 retired 登记或库"
+                   "身份与登记不符）——不自动恢复。",
+        "actions": [
+            "邀请将新建空库（旧库文件保留在任务目录，不丢失）；",
+            "如需找回旧库内容，联系管理员核对 .revoked-* 文件身份后"
+            "手工恢复。",
+        ],
+        "force_remove_available": False,
+    },
+    "restore_rename_failed": {
+        "message": "旧库恢复失败（文件被占用，Windows 句柄锁）。",
+        "actions": [
+            "关闭占用该文件的应用后重新邀请重试；",
+            "本次邀请仍会新建空库（不静默复用旧库）。",
+        ],
+        "force_remove_available": False,
+    },
+    "seal_conflict_authority_occupied": {
+        "message": "collab 现行 seal 与所选权威 seal 不同且现行表无置换"
+                   " API——为不静默覆盖证据，修复被拒绝。",
+        "actions": [
+            "改选 collab 现行持有的 seal_id 为权威后重试；",
+            "或对该成员走 repair/force-remove（其库随收尾隔离，"
+            "分歧行保留在隔离文件中）。",
+        ],
+        "force_remove_available": True,
+    },
+}
+
+
+def retirement_recovery_payload(code: str) -> dict | None:
+    """退休/修复 typed 码的 ``recovery`` 语义载荷（P1 映射层对接点）。
+
+    仅确定性码有载荷（``retryable`` 恒 False）；未知码返回 None（调用方
+    保持既有 503 口径）。载荷内容是**唯一权威定义**——P1 的
+    ``team_http_errors.py`` 409 映射与 team_repair_api 的错误信封都从本
+    函数取值，避免文案分叉。
+    """
+    payload = _RETIREMENT_RECOVERY_GUIDANCE.get(code)
+    if payload is None:
+        return None
+    return dict(payload)
+
+
+def _accounts_username_for(runtime: object, uid: int) -> str | None:
+    """短只读 accounts 点查 uid→username（保留集声明用；不可解析返回 None）。
+
+    与 P10 ``_read_accounts_enumeration`` 同口径（短 RO 连接、立即关闭）；
+    runtime 无 ``data_dir``（测试宿主/非标准装配）时返回 None——绝不猜测。
+    """
+    data_dir = getattr(runtime, "data_dir", None)
+    if not isinstance(data_dir, (str, Path)):
+        return None
+    accounts_path = Path(data_dir) / "users.db"
+    if not accounts_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(
+            accounts_path.resolve().as_uri() + "?mode=ro", uri=True,
+            timeout=15.0)
+    except (sqlite3.Error, OSError):
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        row = conn.execute(
+            "SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    if row is None:
+        return None
+    username = row["username"]
+    return username if isinstance(username, str) and username else None
+
+
+def _prepare_retiring_source_storage(info: object, target_path: Path) -> None:
+    """移除目标库的锁外准备前置（survey §5.3-2；幂等；typed 拒绝不自动修）。
+
+    文件存在但 F1/receipts 缺表 → ``prepare_team_protocol_storage`` 幂等
+    补齐；半装/schema_mismatch/损坏 → typed
+    ``retirement_source_unverifiable``（确定性 409 口径，附修复指引）；
+    暂时不可读（锁忙）→ typed ``retirement_source_unreadable``（保持 503
+    可重试口径）；``connection_contract`` 编程违约原样上抛。
+    """
+    task_dir = getattr(info, "dir", None)
+    if task_dir is None:
+        raise TeamManagementError(
+            "retirement_source_unverifiable",
+            "task directory is unresolvable for retirement preparation")
+    collab_path = Path(
+        task_collaboration.shared_store_path(Path(task_dir)))
+    try:
+        prepare_team_protocol_storage(
+            collab_path=collab_path, source_paths=(target_path,))
+    except (TerminalFactsUnavailable, TeamFlowReceiptUnavailable) as exc:
+        reason = getattr(exc, "reason", None)
+        if reason == "connection_contract":
+            raise
+        if reason == "unreadable":
+            raise TeamManagementError(
+                "retirement_source_unreadable",
+                f"member library is temporarily unreadable: {exc}") from exc
+        raise TeamManagementError(
+            "retirement_source_unverifiable",
+            f"member library schema is not cleanly preparable: {exc}"
+        ) from exc
+
+
+def _member_library_identity(path: Path) -> str | None:
+    """成员库实际 ledger 身份（P04 ``library_identity_header_on`` 先例点查）。
+
+    自建短 RO 连接（Row 工厂＋BEGIN，满足 C02 借用合同）；不可读/未迁移/
+    损坏 → None（R2 身份核对：核对不了就不恢复，绝不静默换库）。
+    """
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        header = library_identity_header_on(conn)
+    except Exception:  # noqa: BLE001 - 身份不可核＝None（typed 调用方裁决）
+        return None
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    library_id = getattr(header, "library_id", None)
+    return library_id if isinstance(library_id, str) and library_id else None
+
+
+def _restore_retired_member_library(inputs, *, instance: str, uid: int,
+                                    username: str, path) -> dict:
+    """R2 裁定：重邀时按身份核对恢复被隔离旧库（``.revoked-*``）。
+
+    固定序：枚举 ``{slug}.db.revoked-*``（mtime 新→旧）→ retired F2 行的
+    ``source_library_id`` 集合 → 逐候选 ``library_identity_header_on`` 实际
+    身份 → 一致才 ``os.replace`` 恢复到 ``{slug}.db``。身份不可核/无 retired
+    行/改名失败 → ``restored: False`` + issue + recovery 指引（邀请继续走
+    新库路径，旧库文件原地保留——绝不静默复用、绝不销毁）。恢复动作是
+    文件系统收尾（非 DB 写），镜像 main.py 隔离收尾语义。
+    """
+    recovery_missing = retirement_recovery_payload("member_library_missing")
+    if path is None:
+        return {"restored": False, "issue": "member_path_unresolvable",
+                "recovery": recovery_missing}
+    prefix = path.name + ".revoked-"
+    try:
+        candidates = sorted(
+            (p for p in Path(path).parent.iterdir()
+             if p.name.startswith(prefix) and p.is_file()),
+            key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        candidates = []
+    if not candidates:
+        return {"restored": False, "issue": "member_library_missing",
+                "recovery": recovery_missing}
+    retired_libraries: set = set()
+    try:
+        for record in list_sources_on(
+                inputs.collab_conn, task_instance_id=instance,
+                status="retired"):
+            if int(record["source_user_id"]) == uid:
+                retired_libraries.add(str(record["source_library_id"]))
+    except Exception:  # noqa: BLE001 - 登记不可读＝身份不可核（不恢复）
+        retired_libraries = set()
+    recovery_identity = retirement_recovery_payload(
+        "restore_identity_unconfirmed")
+    for candidate in candidates:
+        library_id = _member_library_identity(candidate)
+        if library_id is None:
+            continue
+        if not retired_libraries or library_id not in retired_libraries:
+            return {"restored": False,
+                    "issue": "restore_identity_unconfirmed",
+                    "recovery": recovery_identity,
+                    "candidate": candidate.name}
+        try:
+            os.replace(candidate, path)
+        except OSError as exc:
+            return {"restored": False, "issue": "restore_rename_failed",
+                    "recovery": retirement_recovery_payload(
+                        "restore_rename_failed"),
+                    "candidate": candidate.name,
+                    "detail": str(exc)[:200]}
+        return {"restored": True, "restored_from": candidate.name,
+                "source_library_id": library_id}
+    return {"restored": False, "issue": "restore_identity_unverifiable",
+            "recovery": recovery_identity,
+            "candidates": [candidate.name for candidate in candidates]}
+
+
+def _protocol_instance_id(collab_path: Path, task_id: str) -> str | None:
+    """按 task_id 点查 collab 协议 instance（有界静态列 SELECT）。"""
+    uri = collab_path.as_uri() + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        row = conn.execute(
+            "SELECT task_instance_id FROM team_task_protocol "
+            "WHERE task_id = ?", (task_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    if row is None:
+        return None
+    value = row["task_instance_id"]
+    return value if isinstance(value, str) and value else None
+
+
+def ensure_member_source_registered(runtime: object, info: object,
+                                    user: Mapping, target_uid: int) -> dict:
+    """P1 对接入口（签名固定）：幂等补登记成员 F2 来源（写路径懒准备后）。
+
+    固定序：账号点查 → 成员库存在性 → collab registry 幂等 prepare →
+    协议 instance 点查 → 成员库 ledger 身份（P04 先例）→ 短 collab 事务
+    ``register_source_on``。幂等：已 active 原样返回（``idempotent: True``）。
+    库缺失/身份不可核/账号缺失/协议缺失 → ``{"status": "unavailable",
+    "issue": ..., "recovery": ...}`` **绝不抛**（调用方如实上报 pending，
+    下次管理/写入口重试——survey §5.4 契约）。本函数只写 collab F2 登记行，
+    不准备成员业务库、不写任何业务行。
+    """
+    try:
+        user_id = user.get("user_id") if isinstance(user, Mapping) else None
+        if isinstance(user_id, bool) or type(user_id) is not int \
+                or user_id <= 0:
+            return {"status": "unavailable", "issue": "invalid_user"}
+        if isinstance(target_uid, bool) or type(target_uid) is not int \
+                or target_uid <= 0:
+            return {"status": "unavailable", "issue": "invalid_target"}
+        task_dir = getattr(info, "dir", None)
+        if task_dir is None:
+            return {"status": "unavailable", "issue": "task_dir_unresolvable"}
+        task_dir = Path(task_dir)
+        task_id = getattr(info, "task_id", None)
+        if not isinstance(task_id, str) or not task_id:
+            return {"status": "unavailable", "issue": "task_id_unresolvable"}
+        username = _accounts_username_for(runtime, target_uid)
+        if not username:
+            return {"status": "unavailable", "issue": "account_unresolved",
+                    "recovery": retirement_recovery_payload(
+                        "member_library_missing")}
+        path = _member_path(info, username)
+        if path is None or not path.is_file():
+            return {"status": "unavailable", "issue": "member_library_missing",
+                    "recovery": retirement_recovery_payload(
+                        "member_library_missing")}
+        collab_path = Path(task_collaboration.shared_store_path(task_dir))
+        prepare_team_terminal_registry(collab_path)
+        instance = _protocol_instance_id(collab_path, task_id)
+        if instance is None:
+            return {"status": "unavailable", "issue": "protocol_missing"}
+        library_id = _member_library_identity(path)
+        if library_id is None:
+            return {"status": "unavailable",
+                    "issue": "library_identity_unverifiable"}
+        writer = sqlite3.connect(str(collab_path), timeout=15.0)
+        writer.row_factory = sqlite3.Row
+        committed = False
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            existing = active_source_on(
+                writer, task_instance_id=instance, source_user_id=target_uid)
+            if existing is not None:
+                writer.rollback()
+                return {"status": "active", "idempotent": True,
+                        "registration_id": existing["registration_id"],
+                        "generation": int(existing["generation"]),
+                        "source_library_id": existing["source_library_id"]}
+            token = make_source_identity(
+                task_dir=task_dir, source_path=path,
+                source_user_id=target_uid, source_library_id=library_id)
+            record = register_source_on(
+                writer, task_instance_id=instance, source_user_id=target_uid,
+                source_library_id=library_id, source_path_identity=token)
+            writer.commit()
+            committed = True
+            return {"status": "active", "idempotent": False,
+                    "registration_id": record["registration_id"],
+                    "generation": int(record["generation"]),
+                    "source_library_id": record["source_library_id"]}
+        finally:
+            if not committed:
+                try:
+                    writer.rollback()
+                except sqlite3.Error:
+                    pass
+            try:
+                writer.close()
+            except sqlite3.Error:
+                pass
+    except Exception as exc:  # noqa: BLE001 - 契约：登记失败绝不抛
+        return {"status": "unavailable",
+                "issue": f"{type(exc).__name__}",
+                "detail": str(exc)[:200]}
+
+
+def _active_source_member_paths(runtime: object, info: object) -> tuple:
+    """全部 active 来源成员库路径（R6 修复窗口保留集声明；缺库者跳过）。"""
+    task_dir = getattr(info, "dir", None)
+    if task_dir is None:
+        return ()
+    task_dir = Path(task_dir)
+    task_id = getattr(info, "task_id", None)
+    if not isinstance(task_id, str) or not task_id:
+        return ()
+    collab_path = Path(task_collaboration.shared_store_path(task_dir))
+    try:
+        prepare_team_terminal_registry(collab_path)
+    except Exception:  # noqa: BLE001 - registry 不可备＝无声明（窗口仍可进）
+        return ()
+    uri = collab_path.as_uri() + "?mode=ro"
+    uids: list = []
+    instance = _protocol_instance_id(collab_path, task_id)
+    if instance is None:
+        return ()
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return ()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        rows = conn.execute(
+            "SELECT source_user_id FROM team_source_registry "
+            "WHERE task_instance_id = ? AND status = 'active'",
+            (instance,)).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    for row in rows:
+        value = row["source_user_id"]
+        if isinstance(value, int) and not isinstance(value, bool):
+            uids.append(value)
+    paths: list = []
+    for uid in sorted(set(uids)):
+        username = _accounts_username_for(runtime, uid)
+        if not username:
+            continue
+        path = _member_path(info, username)
+        if path is not None and path.is_file():
+            paths.append(path)
+    return tuple(dict.fromkeys(paths))
+
+
+def run_team_seal_conflict_repair(runtime: object, info: object,
+                                  user: Mapping, *, stage: str,
+                                  item_key: str,
+                                  authoritative_seal_id: str,
+                                  request_id: str,
+                                  request_sha256: str) -> Mapping:
+    """R6 裁定：管理端"修复冲突 seal"入口（选权威 seal 归档另一枚＋审计）。
+
+    语义（无置换 API 下的诚实可实施面）：
+    - ``authoritative_seal_id`` 必须是当前可见 seal 之一（collab 现行表或
+      任一保留成员库的该 (instance, stage, item_key) 记录），否则
+      ``invalid_authoritative_seal`` 拒绝；
+    - collab 现行表该键**无**记录 → 权威 seal 经 ``archive_seals_on``
+      归档进 collab（成为现行记录，origin=actor_archive，字节保真副本）；
+    - collab 现行表已持**另一枚** → ``seal_conflict_authority_occupied``
+      fail-closed（不静默覆盖；recovery 指引改选或走强制移除）；
+    - 非权威 seal 不销毁（留在其持有库/隔离文件中），逐条
+      seal_id/payload_sha256/持有者记入管理 receipt 审计；其登记退休后
+      发现层不再读该持有者（配合成员移除）。
+    返回映射同 ``run_team_management`` 形状（``outcome``/``receipt``/...）。
+    """
+    _validated_request_pair(request_id, request_sha256)
+    if not isinstance(stage, str) or not stage or "\x00" in stage \
+            or len(stage) > 64:
+        raise TeamManagementError("invalid_stage", "stage must be a short str")
+    if not isinstance(item_key, str) or not item_key or "\x00" in item_key \
+            or len(item_key) > 512:
+        raise TeamManagementError(
+            "invalid_item_key", "item_key must be a short str")
+    if not isinstance(authoritative_seal_id, str) \
+            or not authoritative_seal_id or "\x00" in authoritative_seal_id \
+            or len(authoritative_seal_id) > 512:
+        raise TeamManagementError(
+            "invalid_authoritative_seal", "authoritative_seal_id invalid")
+    user_id = user.get("user_id") if isinstance(user, Mapping) else None
+    if isinstance(user_id, bool) or type(user_id) is not int or user_id <= 0:
+        raise TeamManagementError("invalid_user", "authenticated user_id missing")
+    from custom_backend.team_screening_write import retained_team_write_inputs
+
+    extra_paths = _active_source_member_paths(runtime, info)
+    window_inputs = None
+    body_completed = False
+    result_payload: dict | None = None
+    try:
+        with retained_team_write_inputs(
+                runtime, info, dict(user), target_kind="collab",
+                operation=TeamOperation(
+                    name=_MANAGEMENT_OPERATION_NAME,
+                    stage=_MANAGEMENT_OPERATION_STAGE),
+                item_keys=(_MANAGEMENT_SENTINEL_KEY,),
+                extra_reserve_paths=extra_paths) as inputs:
+            window_inputs = inputs
+            instance = inputs.plan.binding.task_instance_id
+            owner_id = _owner_of(inputs)
+            if user_id != owner_id:
+                raise TeamManagementError(
+                    "not_owner",
+                    "only the task owner may run seal conflict repair")
+            holder_records: dict = {}
+            for holder_path in extra_paths:
+                conn = inputs._reserved.connection(  # noqa: SLF001 - documented window channel（_member_connection 同款）
+                    holder_path)
+                if conn is None:
+                    continue
+                try:
+                    record = read_seal_on(
+                        conn, task_instance_id=instance, stage=stage,
+                        item_key=item_key)
+                except TerminalFactsUnavailable as exc:
+                    if exc.reason == "connection_contract":
+                        raise
+                    if exc.reason == "not_prepared":
+                        continue
+                    raise TeamManagementError(
+                        "retirement_source_unverifiable",
+                        f"holder seal read failed for {holder_path.name}: {exc}"
+                    ) from exc
+                if record is not None:
+                    holder_records.setdefault(
+                        record["seal_id"], (record, holder_path))
+            try:
+                collab_record = read_seal_on(
+                    inputs.target_conn, task_instance_id=instance,
+                    stage=stage, item_key=item_key)
+            except TerminalFactsUnavailable as exc:
+                raise TeamManagementError(
+                    "retirement_source_unverifiable",
+                    f"collab seal read failed for ({stage}, {item_key}): {exc}"
+                ) from exc
+            candidates = dict(holder_records)
+            if collab_record is not None:
+                candidates[collab_record["seal_id"]] = (collab_record, None)
+            if authoritative_seal_id not in candidates:
+                raise TeamManagementError(
+                    "invalid_authoritative_seal",
+                    "authoritative seal is not among the visible seals for "
+                    f"({stage}, {item_key})")
+            authoritative_record, authority_path = candidates[
+                authoritative_seal_id]
+            losers = []
+            for seal_id, (record, path) in sorted(candidates.items()):
+                if seal_id == authoritative_seal_id:
+                    continue
+                losers.append({
+                    "seal_id": seal_id,
+                    "payload_sha256": record["payload_sha256"],
+                    "sealed_at": record["sealed_at"],
+                    "holder": path.name if path is not None else "collab",
+                })
+            archived: list = []
+            if collab_record is None:
+                copies = archive_seals_on(
+                    inputs.target_conn, [authoritative_record])
+                if len(copies) != 1:
+                    raise TeamManagementError(
+                        "retirement_archive_incomplete",
+                        "authoritative seal archive did not persist")
+                archived.append({
+                    "seal_id": copies[0]["seal_id"],
+                    "payload_sha256": copies[0]["payload_sha256"],
+                    "origin": copies[0]["origin"],
+                    "source": (authority_path.name if authority_path
+                               is not None else "collab"),
+                })
+            elif collab_record["seal_id"] != authoritative_seal_id:
+                raise TeamManagementError(
+                    "seal_conflict_authority_occupied",
+                    "collab current seal differs from the chosen "
+                    "authoritative seal and cannot be replaced by a "
+                    "public API")
+            receipt = append_receipt_on(inputs.target_conn, {
+                "schema": "team_flow_receipt.v1",
+                "task_instance_id": instance,
+                "actor_user_id": user_id,
+                "operation": "team_management:seal_conflict_repair",
+                "request_id": request_id,
+                "request_sha256": request_sha256,
+                "result": {
+                    "request_id": request_id,
+                    "operation": "team_management:seal_conflict_repair",
+                    "stage": stage,
+                    "item_key": item_key,
+                    "authoritative_seal_id": authoritative_seal_id,
+                    "archived": archived,
+                    "losers": losers,
+                },
+                "internal_evidence": {
+                    "target_kind": "collab",
+                    "repair": "seal_conflict",
+                    "holders_scanned": sorted(
+                        holder_path.name for holder_path in set(
+                            p for _record, p in holder_records.values())
+                        if holder_path is not None),
+                },
+                "recorded_at": _utc_now(),
+                "source_registration_id": None,
+                "source_generation": None,
+            })
+            result_payload = {
+                "outcome": "committed", "idempotent": False,
+                "request_id": request_id,
+                "result": receipt["result"], "receipt": receipt,
+                "seals": (), "roster_revision": None,
+            }
+            body_completed = True
     except BaseException as exc:  # noqa: BLE001 - 区分 body 失败与 commit 不可判定
         if body_completed:
             unknown_cleanup = (window_inputs.cleanup_errors

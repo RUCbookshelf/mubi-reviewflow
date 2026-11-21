@@ -59,6 +59,7 @@ import os
 import sqlite3
 import stat as stat_mod
 import sys
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,6 +158,14 @@ class TeamWriteInputs:
     item_keys: tuple[str, ...]
     plan: KeyedReadPlan
     _reserved: ReservedWriteConnections = field(repr=False, compare=False)
+    # P2（2026-11-21 裁定 R3/egg D.3-2）：管理移除窗口的退休目标成员库连接。
+    # 这些连接只服务归档读取（lifecycle ``_member_connection`` 从保留映射
+    # 取），绝不进 ``scope.member_paths``（不是参与者读，不改视图语义）。
+    # 文件缺失的目标不炸窗口：如实记录进 ``retirement_missing_paths``，
+    # 由 lifecycle 归档层按"空归档＋watermark 指向空枚举证据"放行
+    # （egg D.3-2 论证）。
+    retirement_extra_paths: tuple[Path, ...] = ()
+    retirement_missing_paths: tuple[Path, ...] = ()
 
     @property
     def cleanup_errors(self) -> tuple[str, ...]:
@@ -975,6 +984,7 @@ def _prepare_inputs(
     operation: TeamOperation,
     keys: tuple[str, ...],
     plan: KeyedReadPlan,
+    extra_reserve_paths: Sequence[Path] = (),
 ) -> TeamWriteInputs:
     """Build and fully validate one reservation attempt; never yields.
 
@@ -1121,6 +1131,59 @@ def _prepare_inputs(
                 member_paths[participant_id] = classified[0]
                 member_entries[participant_id] = classified
 
+    # P2（2026-11-21 裁定 R3/egg D.3-2）：服务端声明的退休目标成员库进保留
+    # 集（survey §5.3 方案）。归档面的前提（目标连接必须在保留集）与"读
+    # 活票"保留判据（required_screener）不同构＝缺口二族根因（C.0）；管理
+    # 移除窗口由 lifecycle 显式传入目标路径，此处与其余成员同径处理——
+    # - 与 owner/actor/成员保留同物理身份（inode 别名）→ 跳过（去重）；
+    # - 文件存在 → ``_inspect_task_path`` 同径检查＋reserve；
+    # - 文件缺失 → 不炸窗口（D.3-2 空归档放行路径），如实记入
+    #   ``retirement_missing``；
+    # - 存在但不可读/越界 → 既有 member_db_unreadable typed 失败
+    #   （C.1 "可恢复合理阻塞"口径逐字不变）。
+    retirement_extra: dict[Path, tuple[Path, os.stat_result]] = {}
+    retirement_missing: list[Path] = []
+    if extra_reserve_paths:
+        retirement_known: dict[tuple, Path] = {
+            _identity_key(entry, resolved): resolved
+            for resolved, entry in (
+                (collab_resolved, collab_entry),
+                (owner_resolved, owner_entry),
+                (actor_resolved, actor_entry),
+                *member_entries.values(),
+            )
+        }
+        seen_extra: set[str] = set()
+        for extra_path in extra_reserve_paths:
+            if not isinstance(extra_path, Path) or not extra_path.is_absolute():
+                raise ValueError(
+                    "extra_reserve_paths must be absolute pathlib.Path values")
+            extra_resolved = extra_path.resolve(strict=False)
+            extra_norm = os.path.normcase(os.fspath(extra_resolved))
+            if extra_norm in seen_extra:
+                continue
+            seen_extra.add(extra_norm)
+            try:
+                extra_stat = extra_resolved.stat()
+            except FileNotFoundError:
+                retirement_missing.append(extra_resolved)
+                continue
+            except OSError as exc:
+                _fail_from(
+                    "member_db_unreadable",
+                    f"retirement source stat failed: {extra_resolved}: {exc}",
+                    exc,
+                    member=extra_resolved.name,
+                )
+            extra_inspected, extra_stat = _inspect_task_path(
+                extra_resolved, base_dir, reason="member_db_unreadable",
+                member=extra_resolved.name)
+            extra_identity = _identity_key(extra_stat, extra_inspected)
+            if extra_identity in retirement_known:
+                continue  # 同物理库已被 required/owner/actor 保留，零新连接
+            retirement_known[extra_identity] = extra_inspected
+            retirement_extra[extra_resolved] = (extra_inspected, extra_stat)
+
     accounts_resolved, accounts_entry = _inspect_accounts_path(accounts_path)
 
     # Plan-selected witness source paths join the reserve set.  Paths already
@@ -1132,6 +1195,7 @@ def _prepare_inputs(
     witness_entries: dict[Path, tuple[Path, os.stat_result]] = {}
     known_paths = {
         collab_resolved, owner_resolved, actor_resolved, *member_paths.values(),
+        *(inspected for inspected, _ in retirement_extra.values()),
     }
     for witness_path in plan.selected_paths:
         if witness_path in known_paths or witness_path in witness_entries:
@@ -1153,16 +1217,22 @@ def _prepare_inputs(
         username = pre_by_id.get(participant_id) or str(participant_id)
         _claim_path(
             claims, path, entry, ("account", participant_id), member=username)
+    for extra_resolved, (extra_inspected, extra_stat) in retirement_extra.items():
+        _claim_path(
+            claims, extra_inspected, extra_stat, ("retirement_source",),
+            member=extra_resolved.name)
 
     task_paths = tuple(dict.fromkeys(
         [collab_resolved, owner_resolved, actor_resolved]
         + [path for path, _ in member_entries.values()]
+        + [inspected for inspected, _ in retirement_extra.values()]
         + list(witness_entries.keys())
     ))
     _reject_accounts_alias(accounts_resolved, task_paths)
 
     other_paths: list[Path] = []
     for path in [accounts_resolved, actor_resolved, *member_paths.values(),
+                 *[inspected for inspected, _ in retirement_extra.values()],
                  *witness_entries.keys()]:
         if path != owner_resolved and path not in other_paths:
             other_paths.append(path)
@@ -1183,6 +1253,12 @@ def _prepare_inputs(
             witness_resolved,
             "member_db_unreadable",
             None,
+        ))
+    for extra_resolved, (extra_inspected, _) in retirement_extra.items():
+        reserve_candidates.append((
+            extra_inspected,
+            "member_db_unreadable",
+            extra_resolved.name,
         ))
     try:
         reserved.reserve(owner_resolved, other_paths)
@@ -1211,6 +1287,7 @@ def _prepare_inputs(
     connection_paths = tuple(dict.fromkeys(
         [collab_resolved, owner_resolved, accounts_resolved, actor_resolved]
         + list(member_paths.values())
+        + [inspected for inspected, _ in retirement_extra.values()]
         + list(witness_entries.keys())
     ))
     connections = _connection_map(reserved, connection_paths)
@@ -1337,6 +1414,9 @@ def _prepare_inputs(
         item_keys=keys,
         plan=plan,
         _reserved=reserved,
+        retirement_extra_paths=tuple(dict.fromkeys(
+            inspected for inspected, _ in retirement_extra.values())),
+        retirement_missing_paths=tuple(dict.fromkeys(retirement_missing)),
     )
 
 
@@ -1394,6 +1474,7 @@ def retained_team_write_inputs(
     target_kind: Literal["actor", "collab"],
     operation: TeamOperation,
     item_keys: Iterable[str],
+    extra_reserve_paths: Sequence[Path] = (),
 ) -> Iterator[TeamWriteInputs]:
     """Reserve and validate team write inputs; commit target only on normal exit.
 
@@ -1401,7 +1482,11 @@ def retained_team_write_inputs(
     never a client path; ``operation`` is the server-selected
     ``TeamOperation`` and ``item_keys`` the normalized request key domain
     (shape errors raise ValueError/TypeError before the task lock, mirroring
-    the C02 key-domain contract).  The B1 reservation owns
+    the C02 key-domain contract).  ``extra_reserve_paths`` (P2, 2026-11-21
+    R3/D.3-2 裁定) lets a server-declared retirement target member DB join
+    the reserve set for archive reads only — never ``scope.member_paths``;
+    a missing declared path is recorded, not failed (empty-archive path).
+    The B1 reservation owns
     commit/rollback/close; this function does not commit, notify, or run any
     business writer.  Fixed window order per attempt: B1 enter (collab
     ``BEGIN IMMEDIATE``) -> plan on the barrier connection -> all provisional
@@ -1416,6 +1501,11 @@ def retained_team_write_inputs(
         raise TypeError(
             "operation must be coscreen.team_flow_types.TeamOperation")
     keys = normalize_item_keys(item_keys)
+    extra_paths = tuple(extra_reserve_paths or ())
+    for extra_path in extra_paths:
+        if not isinstance(extra_path, Path) or not extra_path.is_absolute():
+            raise ValueError(
+                "extra_reserve_paths must be absolute pathlib.Path values")
     user_id = user.get("user_id") if isinstance(user, dict) else None
     if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
         _fail("identity_unconfirmed", "authenticated user_id is missing or invalid")
@@ -1537,6 +1627,7 @@ def retained_team_write_inputs(
                     operation=operation,
                     keys=keys,
                     plan=plan,
+                    extra_reserve_paths=extra_paths,
                 )
             except (_CatalogMarkerDrift, _WriteWindowDrift) as exc:
                 # Pre-writer drift only: the whole attempt (reservation

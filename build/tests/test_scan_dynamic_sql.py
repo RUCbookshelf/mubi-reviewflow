@@ -174,7 +174,7 @@ EXPECTED_WHITELIST_KEYS = frozenset({
     # ---- 2.1.5 skip 波次：executescript + 固定 _SCHEMA（158→160）----
     ("coscreen/review_workflow.py", 160),
     # ---- P23 keyed read（1232→1251→1529 三度 re-key）----
-    ("custom_backend/review_workflow_api.py", 1529),
+    ("custom_backend/review_workflow_api.py", 1752),  # P1 咽喉插行使 1529→1752（2026-11-21）
     # ---- P21 clear：固定表/列名映射 ----
     ("custom_backend/team_completion_clear.py", 162),
     # ---- 2026-11-20 SQLGATE：2.1.6 夜间波次 52 处逐条 triage 后登记 ----

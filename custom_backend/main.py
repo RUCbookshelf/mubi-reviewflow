@@ -3038,25 +3038,61 @@ def _team_management_action(entry_word: str) -> str:
 
 
 def _team_management_http_error(exc: Exception) -> HTTPException:
-    """P14 协调器/窗口 typed 异常 → 结构化 HTTP（口径对齐既有管理端点）。"""
-    from custom_backend.team_source_lifecycle import TeamManagementError
-    if isinstance(exc, TeamManagementError):
-        detail = str(exc)
-        if exc.code == "not_owner":
-            return HTTPException(403, "Only the task owner can manage collaborators.")
-        if exc.code in ("invalid_action", "invalid_target", "invalid_user"):
-            return _bad(detail, 400)
-        if exc.code == "invalid_payload":
-            return _bad(detail, 400)
-        return HTTPException(503, detail)
-    from coscreen.team_flow_receipts import TeamFlowReceiptConflict
-    if isinstance(exc, TeamFlowReceiptConflict):
-        # 同 request_id 异内容：与成员写回执冲突同语义（C09）409。
-        return HTTPException(409, f"管理请求回执冲突：{exc}")
+    """P14 协调器/窗口 typed 异常 → 结构化 HTTP（P1 换接统一映射）。
+
+    修复前：``TeamManagementError`` 除 not_owner/invalid_* 外一律 503 裸字符串
+    （``retirement_source_unavailable`` 等确定性永久条件被说成"暂时不可用"，
+    且无 ``error_code``/``recovery``），receipts/F1/registry 族落 catch-all
+    503 并裸泄异常串。P1（survey §5.2）换接
+    ``custom_backend.team_http_errors``：确定性族=409 不可重试 + ``error_code``
+    + recovery 键（R5 落点），暂时族=503 typed。
+
+    修轮（复审备注 a，P15-D1 口径统一）：``connection_contract`` 是借用合同
+    违约＝编程错误，与 arbitration 适配器一致**原样上抛**（本函数返回 None 时
+    由调用方 ``_run_team_management_entry`` 顶层 ``raise`` 交全局 fail-closed），
+    不再伪装成可重试 503 业务态。判定复用 ``typed_team_http`` 的 reason 口径，
+    不重复实现词表。
+    """
+    from custom_backend.team_http_errors import (
+        CONTRACT_OF_BREACH_REASON,
+        typed_team_http,
+    )
+
+    if isinstance(exc, HTTPException):
+        return exc
+    if getattr(exc, "reason", None) == CONTRACT_OF_BREACH_REASON:
+        raise exc  # 编程违约：不伪装业务错误（P15-D1 口径，两适配器统一）
+    mapped = typed_team_http(exc)
+    if mapped is not None:
+        return mapped
     from custom_backend.team_screening_write import TeamFlowUnavailableError
     if isinstance(exc, TeamFlowUnavailableError):
-        return HTTPException(503, f"团队协作状态暂时无法确认，请稍后重试：{exc}")
-    return HTTPException(503, f"团队管理操作暂时不可用：{exc}")
+        return HTTPException(503, {
+            "error_code": getattr(exc, "code", "team.flow.unavailable"),
+            "message_key": getattr(exc, "message_key",
+                                   "team.flow.unavailable"),
+            "params": getattr(exc, "params", {}),
+            "details": str(exc), "message": str(exc),
+        })
+    if isinstance(exc, ValueError) and str(exc).startswith(
+            "target user is not a current task participant"):
+        # 确定性客户端错误（task_collaboration.py:1663 字面，P15-D1 同款字面
+        # 匹配先例）：给非参与者配角色=永久性请求违约，400 非可重试（R5 口径），
+        # 不得落"稍后再试"兜底。
+        return HTTPException(400, {
+            "error_code": "business_role_target_not_participant",
+            "message_key": "team.business_role_target_not_participant",
+            "params": {}, "details": str(exc),
+            "message": "目标用户不是当前任务成员，业务角色选项不能授予成员资格。",
+            "retryable": False,
+        })
+    return HTTPException(503, {
+        "error_code": "team_management_unavailable",
+        "message_key": "team.management_unavailable",
+        "params": {}, "details": str(exc),
+        "message": "团队管理操作暂时不可用，请稍后重试。",
+        "retryable": True,
+    })
 
 
 def _run_team_management_entry(entry_word: str, info, user, *, target_user_id: int,
@@ -3151,6 +3187,68 @@ def _management_partial_truth_body(envelope: dict, prepare: dict | None) -> dict
         body["account_created"] = prepare.get("account_created", False)
         body["library_prepared"] = prepare.get("library_prepared", False)
     return body
+
+
+def _member_source_registration(info, user, target: dict,
+                                prepare: dict | None = None,
+                                coordinator: dict | None = None) -> dict:
+    """R7：入场响应统一携带 ``source_registration``（P18/legacy 两分支同形）。
+
+    优先使用协调器 ``add`` 分支已给出的登记事实（``coordinator``）；否则尝试
+    P2 固定签名 ``ensure_member_source_registered(runtime, info, user,
+    target_uid)``（幂等）；P2 未就绪（ImportError/AttributeError）时降级为
+    本地事实视图（依 ``prepare`` 结果）。**统一形状**：``status`` ∈
+    ``{"active", "pending"}``（P2 的 ``unavailable`` 归一化为 ``pending`` +
+    ``issue``），``active`` 时携带 ``registration_id/generation/
+    source_library_id``。
+
+    本助手**绝不抛**：任何解析/调用异常只在响应中如实呈现（不阻断已提交的
+    角色与准备事实）。``source_registration`` 是新增字段（R7 裁定 (a)），
+    不破坏旧客户端。
+    """
+
+    def _normalize(result: dict) -> dict:
+        if result.get("status") == "unavailable":
+            return {"status": "pending",
+                    "issue": result.get("issue", "registration_unavailable")}
+        return result
+
+    if isinstance(coordinator, dict) and coordinator.get("status"):
+        return _normalize(dict(coordinator))
+    target_uid = target.get("id")
+    try:
+        from custom_backend import team_source_lifecycle as team_lifecycle
+        ensure_registered = getattr(
+            team_lifecycle, "ensure_member_source_registered", None)
+        if ensure_registered is not None:
+            result = ensure_registered(
+                app.state.review_workflow, info, dict(user), target_uid)
+            if isinstance(result, dict):
+                return _normalize(result)
+            return {"status": "pending",
+                    "issue": "source_registration_invalid_result"}
+    except (ImportError, AttributeError) as exc:
+        fallback_issue = f"hook_unavailable:{type(exc).__name__}"
+    except Exception as exc:  # noqa: BLE001 - 登记失败不阻断入场响应
+        logger.warning("member source registration failed (non-blocking): "
+                       "task=%s member=%s: %s", info.task_id,
+                       target.get("username"), exc)
+        return {"status": "pending",
+                "issue": f"source_registration_failed:{type(exc).__name__}"}
+    else:  # pragma: no cover - getattr 命中时上方必已 return
+        fallback_issue = "hook_unavailable"
+    # P2 未就绪：本地事实视图（与 P18 分支同形 status/issue 键；绝不自造 active）
+    if prepare is None:
+        return {"status": "pending", "issue": "member_library_unprepared",
+                "fallback": fallback_issue}
+    if not prepare.get("library_prepared"):
+        return {"status": "pending",
+                "issue": "member_library_prepare_failed",
+                "prepare_error": prepare.get("prepare_error"),
+                "fallback": fallback_issue}
+    return {"status": "pending",
+            "issue": "source_registration_not_attempted",
+            "fallback": fallback_issue}
 
 
 def _prepare_invited_member_storage(info, target: dict) -> dict:
@@ -3484,8 +3582,13 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
                 "role_committed": True,
                 "account_created": prepare["account_created"],
                 "library_prepared": prepare["library_prepared"],
-                "prepare_error": prepare["prepare_error"]}
-    # 旧维护路径保留（personal/首邀请未 latch 任务；字节不变）。
+                "prepare_error": prepare["prepare_error"],
+                # R7：两分支同形新增字段（优先协调器 add 分支已给出的登记
+                # 事实；缺失时经 P2 接口补登记，未就绪降级 pending）。
+                "source_registration": _member_source_registration(
+                    info, user, target, prepare,
+                    coordinator=grant.get("source_registration"))}
+    # 旧维护路径保留（personal/首邀未 latch 任务；角色/latch 字节不变）。
     with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=target["id"],
@@ -3493,7 +3596,12 @@ def collaboration_invite(task_id: str, body: CollaborationInviteIn,
         app.state.review_workflow.latch_team(info.task_id, user)
     tasks_mod.register_screener(info.task_id, target["username"], DATA_DIR)
     notify_tasks_changed(target["id"], "invited", info.display_name)
-    return {"grant": {**grant, "username": target["username"]}}
+    # R7：legacy 分支补齐 ``source_registration``（与 P18 分支同形）——
+    # 该路径不准备成员库，故如实 pending（成员首次团队写经咽喉 auto-prepare
+    # 自愈并在准备成功后就地补登记 F2）。
+    return {"grant": {**grant, "username": target["username"]},
+            "source_registration": _member_source_registration(
+                info, user, target, None)}
 
 
 # ---------------------------------------------------------------------------
@@ -3709,15 +3817,24 @@ def collaboration_grant_role(task_id: str, body: CollaborationRoleIn,
                 "role_committed": True,
                 "account_created": prepare["account_created"],
                 "library_prepared": prepare["library_prepared"],
-                "prepare_error": prepare["prepare_error"]}
-    # 旧维护路径保留（字节不变）。
+                "prepare_error": prepare["prepare_error"],
+                # R7：两分支同形新增字段（优先协调器 add 分支已给出的登记
+                # 事实；缺失时经 P2 接口补登记，未就绪降级 pending）。
+                "source_registration": _member_source_registration(
+                    info, user, target, prepare,
+                    coordinator=grant.get("source_registration"))}
+    # 旧维护路径保留（角色/latch 字节不变）。
     with app.state.review_workflow.lock(info.task_id):
         grant = collaboration_mod.grant_role(
             path, actor_user_id=user["user_id"], user_id=body.user_id,
             role=body.role, task_id=info.task_id)
         app.state.review_workflow.latch_team(info.task_id, user)
     notify_tasks_changed(body.user_id, "invited", info.display_name)
-    return {"grant": {**grant, "username": target["username"]}}
+    # R7：legacy 分支补齐 ``source_registration``（与 P18 分支同形；如实
+    # pending，成员首写经咽喉 auto-prepare 自愈并补登记 F2）。
+    return {"grant": {**grant, "username": target["username"]},
+            "source_registration": _member_source_registration(
+                info, user, target, None)}
 
 
 @app.put("/api/tasks/{task_id}/collaboration/members/{target_user_id}/screening")
@@ -8480,6 +8597,12 @@ register_eric_incremental_routes(app, require_user, _task_or_404, _task_visible_
 from custom_backend.arbitration_session_api import register_arbitration_session_routes
 
 register_arbitration_session_routes(app, require_user, _task_or_404, _arbitration_store, _arbitration_double_blind_guard, _coding_owner_db, _server_mode, _bad, SCREENER_LIBRARY_UNAVAILABLE_MESSAGE)
+
+# P2/R3+R6（2026-11-21 裁定落地）：移除侧两个管理修复端点（强制移除/冲突 seal
+# 修复）——独立模块注册，属主门同款（not_owner 403 由 lifecycle 内部强制）。
+from custom_backend.team_repair_api import register_team_repair_routes
+
+register_team_repair_routes(app, require_user, _task_or_404)
 
 # P19（C12 作者侧）：team 逐条仲裁会话——独立守卫（不进 _arbitration_store
 # 的全 stage loader/2–9 包门/legacy paused 规则；desktop team 同样可达），

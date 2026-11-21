@@ -728,10 +728,12 @@ class TeamWriteInputsWindowTests(unittest.TestCase):
         helper = getattr(tws.retained_team_write_inputs, "__wrapped__",
                          tws.retained_team_write_inputs)
         signature = inspect.signature(helper)
-        # P10 合同驱动同步：签名追加 keyword-only operation/item_keys。
+        # P10 合同驱动同步：签名追加 keyword-only operation/item_keys；
+        # P2（2026-11-21 缺口二根治，survey §5.3-1 明文）：追加 keyword-only
+        # extra_reserve_paths（退休归档目标成员库进保留集，读活票判据零改动）。
         self.assertEqual(list(signature.parameters),
                          ["runtime", "info", "user", "target_kind",
-                          "operation", "item_keys"])
+                          "operation", "item_keys", "extra_reserve_paths"])
         self.assertIs(signature.parameters["target_kind"].kind,
                       inspect.Parameter.KEYWORD_ONLY,
                       "target_kind 必须为 keyword-only（服务端枚举，禁客户端来源）")
@@ -744,9 +746,13 @@ class TeamWriteInputsWindowTests(unittest.TestCase):
         # P10 合同驱动同步：TeamWriteInputs 追加 operation/item_keys/plan。
         fields = [field.name for field in dataclasses.fields(tws.TeamWriteInputs)
                   if not field.name.startswith("_")]
+        # P2（2026-11-21）：dataclass 追加 retirement_extra_paths（归档目标
+        # 保留库）/retirement_missing_paths（缺失不炸窗口的观测面）。
         self.assertEqual(fields, ["ctx", "scope", "collab_conn", "owner_conn",
                                   "actor_conn", "target_conn", "connections",
-                                  "roster", "operation", "item_keys", "plan"])
+                                  "roster", "operation", "item_keys", "plan",
+                                  "retirement_extra_paths",
+                                  "retirement_missing_paths"])
         self.assertTrue(dataclasses.is_dataclass(tws.TeamWriteInputs))
         self.assertTrue(tws.TeamWriteInputs.__dataclass_params__.frozen)
         self.assertIsInstance(tws.TeamWriteInputs.cleanup_errors, property)

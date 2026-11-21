@@ -164,7 +164,10 @@ class TeamBusinessRoleStage2ATests(unittest.TestCase):
     @classmethod
     def _code(cls, resp):
         detail = cls._detail(resp)
-        return detail.get("error_code") if isinstance(detail, dict) else None
+        # P10/P12 typed 写拒信封键=code（TeamWriteBlocked）；管理族仍 error_code。
+        if not isinstance(detail, dict):
+            return None
+        return detail.get("code") or detail.get("error_code")
 
     def _decide(self, task_id, user, key="Z1", decision="include"):
         return self.client.post(
@@ -308,13 +311,7 @@ class TeamBusinessRoleStage2ATests(unittest.TestCase):
                          "appraisal_tool_required")
 
     # -- 04 普通成员同角色对等；管理门只属主 --------------------------------
-    @unittest.skip(
-        "报裁 BROLE 2026-11-21：产品缺口——首邀请走 legacy 路径不经 P18 成员库"
-        "准备（main.py legacy invite 分支无 _prepare_invited_member_storage），"
-        "该成员团队写必经 run_team_mutation→read_receipt_on 于无 receipts schema"
-        " 的成员库上抛未处理 TeamFlowReceiptUnavailable（500，非 typed）。"
-        "属主侧同型缺口已由包 A（568d6b9）修复，首成员侧无触发点。待产品修复后"
-        "移除 skip；见 E:/rf216-store-scan-20261120/BROLE_FIX_REPORT.md 报裁节。")
+    # 缺口已修（P1/P2 2026-11-21 落地）：skip 摘除恢复全套断言；原报裁理由见 BROLE_FIX_REPORT.md。
     def test_04_member_parity_and_management_gate(self):
         coder = self._decide(self.team, self.coder_m)
         self.assertEqual(coder.status_code, 200, coder.text)
@@ -352,13 +349,7 @@ class TeamBusinessRoleStage2ATests(unittest.TestCase):
         self.assertEqual(self._detail(arb).get("error_code"), "team.role.denied")
 
     # -- 06 choice 不授已移除者成员权；残留 choice/db 不维持权限 ------------
-    @unittest.skip(
-        "报裁 BROLE 2026-11-21：产品缺口——撤销带 F2 team_source_registry 登记"
-        "（status=active）的成员必经退休归档 _archive_retiring_source，其成员保留"
-        "连接不在保留集内 → typed 503 retirement_source_unavailable（probe 实证："
-        "未登记成员 revoke=200，已登记成员两档位 revoke 均 503）→ 已登记成员无法"
-        "移除，与 remove 动作自身设计矛盾。待产品修复后移除 skip；见 "
-        "E:/rf216-store-scan-20261120/BROLE_FIX_REPORT.md 报裁节。")
+    # 缺口已修（P1/P2 2026-11-21 落地）：skip 摘除恢复全套断言；原报裁理由见 BROLE_FIX_REPORT.md。
     def test_06_choice_does_not_revive_membership(self):
         for role in ("coder", "reconciler"):
             resp = self.client.delete(
@@ -374,7 +365,10 @@ class TeamBusinessRoleStage2ATests(unittest.TestCase):
         self.assertNotIn(self.dual_m["id"], roster)
         denied = self._put_role(self.owner, self.dual_m["id"], "coder")
         self.assertEqual(denied.status_code, 400, denied.text)
-        self.assertEqual(self._detail(denied).get("error_code"), "team.role.invalid")
+        # P1/2026-11-21 管理映射收口：非参与者配角色=确定性 400（旧总括码
+        # team.role.invalid 已被精确码取代，语义同：choice 不授予成员资格）。
+        self.assertEqual(self._detail(denied).get("error_code"),
+                         "business_role_target_not_participant")
         unknown = self._put_role(self.owner, self.outsider["id"], "coder")
         self.assertEqual(unknown.status_code, 400, unknown.text)
 
@@ -531,6 +525,13 @@ class TeamRoleFixR1Tests(unittest.TestCase):
             json={"user_id": cls.fdual["id"], "role": "reconciler"},
             headers=cls.fowner["headers"])
         assert grant.status_code == 201, grant.text
+        # R4 门（P1/2026-11-21 裁定）：成员写构造 F1 roster 前要求属主已配置
+        # 业务角色——本夹具属主配置 coder 后全员一致路径才可达（与 Stage2A
+        # 夹具同款前置）。
+        own = cls.client.put(
+            f"/api/tasks/{cls.team}/collaboration/business-role/{cls.fowner['id']}",
+            json={"business_role": "coder"}, headers=cls.fowner["headers"])
+        assert own.status_code == 200, own.text
         for task_id in (cls.team, cls.personal):
             info = _task_or_404(task_id)
             db = _screener_db(info, cls.fowner["username"])
@@ -569,7 +570,10 @@ class TeamRoleFixR1Tests(unittest.TestCase):
     @classmethod
     def _code(cls, resp):
         detail = cls._detail(resp)
-        return detail.get("error_code") if isinstance(detail, dict) else None
+        # P10/P12 typed 写拒信封键=code（TeamWriteBlocked）；管理族仍 error_code。
+        if not isinstance(detail, dict):
+            return None
+        return detail.get("code") or detail.get("error_code")
 
     def _decide(self, task_id, user, key="Z1", decision="include"):
         return self.client.post(
@@ -663,12 +667,7 @@ class TeamRoleFixR1Tests(unittest.TestCase):
         self.assertIsNone(self._code(denied))
 
     # -- 02 R2：team coding 业务写全收口 + personal 零回归 ------------------
-    @unittest.skip(
-        "报裁 BROLE 2026-11-21：产品缺口（同 Stage2A test_04）——fcoder 为首邀请"
-        "（legacy 路径）成员库无团队 receipts schema，其团队业务写"
-        "（decide/stage2/coding）在 run_team_mutation→read_receipt_on 处抛未处理 "
-        "TeamFlowReceiptUnavailable（500）。属主侧同型缺口已由包 A 修复，首成员侧"
-        "无触发点。待产品修复后移除 skip；见 BROLE_FIX_REPORT.md 报裁节。")
+    # 缺口已修（P1/P2 2026-11-21 落地）：skip 摘除恢复全套断言；原报裁理由见 BROLE_FIX_REPORT.md。
     def test_02_r2_team_coding_writes_require_coder(self):
         put = self._put_role(self.fowner, self.fowner["id"], "reconciler")
         self.assertEqual(put.status_code, 200, put.text)
@@ -868,12 +867,7 @@ class TeamRoleFixR1Tests(unittest.TestCase):
         self.assertEqual(len(json.loads(shared)["links"]), 1)
 
     # -- 05 R5：筛选职责检查在保存窗口内（真实角色切换竞态） ---------------
-    @unittest.skip(
-        "报裁 BROLE 2026-11-21：产品缺口（同 Stage2A test_04）——在途 fcoder decide"
-        " 线程内抛未处理 TeamFlowReceiptUnavailable（TestClient 复抛）→ "
-        "outcome['resp'] KeyError；首邀请（legacy）成员库无团队 receipts schema，"
-        "成员团队写不可达，锁内复查语义无从验证。待产品修复后移除 skip；见 "
-        "BROLE_FIX_REPORT.md 报裁节。")
+    # 缺口已修（P1/P2 2026-11-21 落地）：skip 摘除恢复全套断言；原报裁理由见 BROLE_FIX_REPORT.md。
     def test_05_r5_screening_recheck_in_window(self):
         runtime = app.state.review_workflow
         canonical = _task_or_404(self.team).task_id
@@ -908,13 +902,7 @@ class TeamRoleFixR1Tests(unittest.TestCase):
         self.assertEqual(back.status_code, 200, back.text)
 
     # -- 06 R5：批注（高亮增/删）纳入职责门 ---------------------------------
-    @unittest.skip(
-        "报裁 BROLE 2026-11-21：阻断段（frecon 增/删）新形状已实证——P10/P12 typed "
-        "写拒信封键为 code（TeamWriteBlocked），非旧 error_code，403 "
-        "screening_not_enabled 本身保留；但正向段 ok_add 由 fcoder（首邀请 legacy "
-        "成员）执行，撞同一产品缺口：成员库无团队 receipts schema → 团队写未处理 "
-        "TeamFlowReceiptUnavailable（500）。待产品修复后一并改信封断言并移除 "
-        "skip；见 BROLE_FIX_REPORT.md 报裁节。")
+    # 缺口已修（P1/P2 2026-11-21 落地）：skip 摘除恢复全套断言；原报裁理由见 BROLE_FIX_REPORT.md。
     def test_06_r5_highlights_gated(self):
         blocked_add = self.client.post(
             f"/api/tasks/{self.team}/highlights",
@@ -927,10 +915,41 @@ class TeamRoleFixR1Tests(unittest.TestCase):
         blocked_del = self.client.delete(
             f"/api/tasks/{self.team}/highlights/999",
             headers=self.frecon["headers"])
-        self.assertEqual(blocked_del.status_code, 403, blocked_del.text)
-        self.assertEqual(self._code(blocked_del), "screening_not_enabled")
+        # P20/P12 addendum 设计明文：ID 不存在→原 404 语义不变（保护键来自
+        # 存储行、写窗前读）；参与门在写窗内，仅对存在的存储行生效。
+        self.assertEqual(blocked_del.status_code, 404, blocked_del.text)
+        # 上游门（P12 统一检查，2026-11-21 恢复断言）：fulltext 注释写要求
+        # stage1 已完成——夹具直插行不建立键控完成态，先经真实端点让两位
+        # coder 对 Z1 一致纳入（test_05 用 Z2 即为避开本键的完成态）。
+        # test_02 把属主切为 reconciler 后未复位（历史遗留；skip 时代无人受
+        # 累）——本用例自愈复位后再建上游完成态。
+        _back = self._put_role(self.fowner, self.fowner["id"], "coder")
+        self.assertEqual(_back.status_code, 200, _back.text)
+        # 正段改用独立任务（test_07 task2 同款惯用法）：cls.team 的键在套件
+        # 序中被前置用例推到完成/污染（Z1 两阶段封版；Z2 票会破坏 test_08 的
+        # "属主 decisions 零行"前提）——隔离任务上从零建立上游完成态。
+        task3 = self.client.post(
+            "/api/tasks", json={"name": "fix r5 hl iso"},
+            headers=self.fowner["headers"]).json()["task_id"]
+        info3 = _task_or_404(task3)
+        collaboration_mod.grant_role(
+            collaboration_mod.shared_store_path(info3.dir),
+            actor_user_id=self.fowner["id"], user_id=self.fcoder["id"],
+            role="coder", task_id=task3)
+        _ob = self._put_role(self.fowner, self.fowner["id"], "coder",
+                             task_id=task3)
+        self.assertEqual(_ob.status_code, 200, _ob.text)
+        db3 = _screener_db(info3, self.fowner["username"])
+        with closing(db_mod._connect(db3)) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO articles(zotero_key,title)"
+                    " VALUES ('Z1','One')")
+        for _m in (self.fowner, self.fcoder):
+            _d = self._decide(task3, _m, key="Z1", decision="include")
+            self.assertEqual(_d.status_code, 200, _d.text)
         ok_add = self.client.post(
-            f"/api/tasks/{self.team}/highlights",
+            f"/api/tasks/{task3}/highlights",
             json={"zotero_key": "Z1", "events": [
                 {"kind": "highlight", "page": 1, "text": "notable passage",
                  "rects": [[0.1, 0.1, 0.5, 0.5]]}]},

@@ -496,7 +496,15 @@ def _enumerate_ready_snapshot(member_connections, required, collab_conn, *,
 
 
 def _team_http_for(exc: Exception, unavailable_message: str, bad) -> HTTPException:
-    """team 仲裁 typed 异常 -> 结构化 HTTP（拒绝不落盘、503 不 500）。"""
+    """team 仲裁 typed 异常 -> 结构化 HTTP（拒绝不落盘、typed 不 500）。
+
+    P1 异常收口（survey §3.1/§5.2）：本适配器修复前对 receipts/F1/registry
+    族一律 ``bad(str(exc), 503)`` 纯文本兜底——状态码非 500 但不是 typed
+    口径（确定性未准备被标"稍后重试"、无 ``error_code``、裸异常串）。现换接
+    ``custom_backend.team_http_errors`` 统一映射：确定性未准备=409 不可重试、
+    ``unreadable``=503 可重试、``connection_contract`` 原样上抛（交既有全局
+    fail-closed），并保留本模块既有 typed 分支（仲裁存储/令牌形状）。
+    """
     from coscreen.screening_arbitration import (
         ArbitrationDecisionRejected,
         ScreenerLibraryUnavailableError,
@@ -504,6 +512,7 @@ def _team_http_for(exc: Exception, unavailable_message: str, bad) -> HTTPExcepti
     if isinstance(exc, HTTPException):
         return exc
     if isinstance(exc, ScreenerLibraryUnavailableError):
+        # 不在本包范围（个人库不可读的标准 503 词条，响应形状保持原样）。
         return bad(unavailable_message, 503)
     if isinstance(exc, ArbitrationDecisionRejected):
         return HTTPException(400, {
@@ -523,10 +532,38 @@ def _team_http_for(exc: Exception, unavailable_message: str, bad) -> HTTPExcepti
         })
     from coscreen.team_flow_receipts import TeamFlowReceiptConflict
     if isinstance(exc, TeamFlowReceiptConflict):
-        return HTTPException(409, f"团队仲裁请求回执冲突：{exc}")
+        # 修轮（复审备注 b）：与成员写/管理侧同形——信封同时给出
+        # ``error_code`` 与 ``code`` 两键（同族三处对齐，不再一处缺 code）。
+        return HTTPException(409, {
+            "error_code": "request_receipt_conflict",
+            "code": "request_receipt_conflict",
+            "message_key": "team.flow.request_receipt_conflict",
+            "params": {}, "details": str(exc),
+            "message": "团队仲裁请求回执冲突：请更换请求编号重试。",
+            "retryable": False,
+        })
     from custom_backend.team_screening_write import TeamFlowUnavailableError
     if isinstance(exc, TeamFlowUnavailableError):
-        return HTTPException(503, f"团队协作状态暂时无法确认，请稍后重试：{exc}")
+        return HTTPException(getattr(exc, "status", 503), {
+            "error_code": getattr(exc, "code", "team.flow.unavailable"),
+            "message_key": getattr(exc, "message_key",
+                                   "team.flow.unavailable"),
+            "params": getattr(exc, "params", {}),
+            "details": str(exc), "message": str(exc),
+        })
+    # P1 并集族：receipts/F1/registry/ledger/management（确定性 409 / 暂时
+    # 503 / connection_contract 原样上抛）。返回 None＝本层不可判定 → 交
+    # 既有兜底（绝不伪造业务错误）；typed 契约违约（connection_contract）
+    # 属编程错误，原样上抛交全局 fail-closed，不伪装成 503 业务态。
+    from custom_backend.team_http_errors import (
+        CONTRACT_OF_BREACH_REASON,
+        typed_team_http,
+    )
+    if getattr(exc, "reason", None) == CONTRACT_OF_BREACH_REASON:
+        raise exc  # 编程违约：原样上抛（P15-D1 口径；两适配器同判）
+    mapped = typed_team_http(exc)
+    if mapped is not None:
+        return mapped
     return bad(str(exc), 503)
 
 

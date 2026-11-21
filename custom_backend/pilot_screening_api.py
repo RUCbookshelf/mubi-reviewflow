@@ -17,19 +17,26 @@
 盲纪律（评审红线，设计 §六）：``my-attempt`` 载荷只有题录字段与本人作答；
 未交卷取结果 409；publish 后金标准只读；成员互不可见他人在途尝试。
 
+训练复盘（规格九，2026-11-21）：``my-review`` 只读聚合本人**首次**交卷快照
+（偏差模式聚类 / 误排除·误纳入分组 / 标记规范性 / 逐条题录对照），门槛与
+可见性完全沿用 my-result 口径；``my-review/export`` 服务端 python-docx 生成
+复盘报告（沿用 tables_api 生成与错误面先例，中文固定文案）。词条零新增
+（复用 attempt_not_submitted/task_forbidden 等既有键）。
+
 错误形状统一为 ``{"error_code", "message_key": "pilot.<code>", "params"}``；
 message_key 走十语言词典（本线只交键清单，词条归前端）。
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Response
 from pydantic import BaseModel, field_validator
 
 from coscreen import db as db_mod
@@ -166,6 +173,148 @@ class DiscussionIn(BaseModel):
 #: my-attempt 载荷的题录字段白名单（盲纪律断言依据，契约 §4 同源）。
 ATTEMPT_ITEM_FIELDS = ("title", "authors", "journal", "year", "doi",
                        "item_type", "abstract")
+
+#: 复盘报告 docx 媒体类型与展示标签（中文固定文案，tables_api 先例）。
+_REVIEW_DOCX_MEDIA = ("application/vnd.openxmlformats-officedocument"
+                      ".wordprocessingml.document")
+_REVIEW_DIRECTION_LABELS = {"false_exclude": "误排除（过严）",
+                            "false_include": "误纳入（过松）"}
+_REVIEW_TIER_LABELS = {"pattern": "模式（聚类≥3）", "isolated": "孤立差异",
+                       "flag": "规范性提示"}
+
+
+def _enrich_review_items(items: list[dict], catalog: dict) -> None:
+    """复盘逐条就地挂题录字段——与 my-attempt 同一白名单与拼装口径
+    （year 保留 int 或 None，其余 str；目录缺失给空值不 500）。"""
+    for item in items:
+        article = catalog.get(item["zotero_key"])
+        for field in ATTEMPT_ITEM_FIELDS:
+            value = getattr(article, field, None) if article else None
+            if field == "year":
+                item[field] = value if isinstance(value, int) else None
+            else:
+                item[field] = "" if value is None else str(value)
+
+
+def _review_add_table(document, header: list[str], rows: list[list[str]]) -> None:
+    """复盘报告用简单表格（Table Grid + 单表头行；tables_api 排版先例）。"""
+    table = document.add_table(rows=1, cols=len(header))
+    table.style = "Table Grid"
+    for index, text in enumerate(header):
+        table.rows[0].cells[index].text = str(text)
+    for row in rows:
+        cells = table.add_row().cells
+        for index, text in enumerate(row):
+            cells[index].text = str(text)
+
+
+def _review_docx(base: dict, review: dict) -> bytes:
+    """训练复盘报告 docx（规格九 B2）：python-docx 懒导入、生成期异常原样
+    上抛（tables_api 错误面先例）；结构=使用说明+偏差模式汇总+差异总表（含
+    优先级列）+误排除/误纳入分组逐篇（题录+双栏对照）+标记规范性提示。"""
+    from docx import Document
+
+    document = Document()
+    document.add_heading("筛选训练复盘报告", 0)
+    meta = base.get("set") or {}
+    attempt = base.get("attempt") or {}
+    document.add_paragraph(
+        f"训练集 #{meta.get('id', '')}（{meta.get('item_count', 0)} 条） · "
+        f"首次交卷 {attempt.get('submitted_at') or '—'} · "
+        f"结论 {base.get('verdict') or '—'}")
+    document.add_heading("使用说明", 1)
+    document.add_paragraph(
+        "本报告基于你首次交卷时存档的结果快照生成（只认首次成绩；后续练习"
+        "尝试不改变内容），仅包含本人作答与预登记金标准的对照，成员间互不可见。")
+    document.add_paragraph(
+        "方向定义：误排除（过严）= 本人 exclude × 金标准 include；"
+        "误纳入（过松）= 本人 include × 金标准 exclude。")
+    document.add_paragraph(
+        "优先级（tier）：模式 = 所在理由聚类 ≥ 3 条；孤立差异 = 未成模式的"
+        "分歧；规范性提示 = 以「不确定/不知道/unclear」或空理由作 exclude 依据。")
+
+    patterns = review.get("patterns") or []
+    document.add_heading("偏差模式汇总", 1)
+    if patterns:
+        _review_add_table(
+            document, ["方向", "理由（规范化）", "条数", "题录键"],
+            [[_REVIEW_DIRECTION_LABELS.get(pattern["direction"],
+                                           pattern["direction"]),
+              pattern["reason"] or "（空理由）", str(pattern["count"]),
+              ", ".join(pattern["keys"])] for pattern in patterns])
+    else:
+        document.add_paragraph("无偏差模式。")
+
+    items = review.get("items") or []
+    document.add_heading("差异总表", 1)
+    if items:
+        _review_add_table(
+            document, ["题录", "本人判定", "本人理由", "金标准判定",
+                       "金标准理由", "方向", "优先级"],
+            [[item.get("title") or item["zotero_key"],
+              str(item.get("trainee_decision") or "—"),
+              item.get("trainee_reason") or "",
+              str(item.get("gold_decision") or "—"),
+              item.get("gold_reason") or "",
+              _REVIEW_DIRECTION_LABELS.get(item.get("direction") or "", "—"),
+              _REVIEW_TIER_LABELS.get(item["tier"], item["tier"])]
+             for item in items])
+    else:
+        document.add_paragraph("无差异条目。")
+
+    by_key = {item["zotero_key"]: item for item in items}
+    groups = review.get("groups") or {}
+    for direction in ("false_exclude", "false_include"):
+        keys = groups.get(direction) or []
+        document.add_heading(
+            f"{_REVIEW_DIRECTION_LABELS[direction]}（{len(keys)} 条）", 1)
+        for key in keys:
+            item = by_key.get(key)
+            if item is None:
+                continue
+            document.add_heading(item.get("title") or key, 2)
+            document.add_paragraph(
+                f"期刊：{item.get('journal') or '—'} · "
+                f"年份：{item.get('year') if item.get('year') is not None else '—'}"
+                f" · DOI：{item.get('doi') or '—'}")
+            if item.get("authors"):
+                document.add_paragraph(f"作者：{item['authors']}")
+            if item.get("abstract"):
+                document.add_paragraph(f"摘要：{item['abstract']}")
+            _review_add_table(
+                document, ["", "本人", "金标准"],
+                [["判定", str(item.get("trainee_decision") or "—"),
+                  str(item.get("gold_decision") or "—")],
+                 ["理由", item.get("trainee_reason") or "",
+                  item.get("gold_reason") or ""]])
+
+    flags = review.get("flags") or []
+    document.add_heading("标记规范性提示", 1)
+    if flags:
+        _review_add_table(
+            document, ["题录键", "提示", "方向"],
+            [[flag["zotero_key"],
+              "空理由" if flag["kind"] == "empty_reason" else "不确定措辞理由",
+              _REVIEW_DIRECTION_LABELS.get(flag.get("direction") or "",
+                                           "—（判定一致，非差异）")]
+             for flag in flags])
+    else:
+        document.add_paragraph("无规范性提示。")
+    document.add_paragraph(
+        "数据来源："
+        + ("结果快照（S8 存档）" if base.get("source") == "snapshot"
+           else "同源重算（快照缺失防御路径）")
+        + "。本报告由 MUBI ReviewFlow 服务端生成。")
+    stream = io.BytesIO()
+    document.save(stream)
+    return stream.getvalue()
+
+
+def _docx_response(data: bytes, filename: str) -> Response:
+    # 文件名只含 ASCII（task_id/set_id 与固定前缀），无需 RFC 5987 编码。
+    return Response(content=data, media_type=_REVIEW_DOCX_MEDIA,
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{filename}"'})
 
 
 def register_pilot_screening_routes(
@@ -508,6 +657,35 @@ def register_pilot_screening_routes(
             result = _run(core.enter_by_discussion, conn, set_id,
                           user_id=user["user_id"], note=body.note)
         return {"result": result}
+
+    # ---- 训练复盘（规格九 B1/B2）----------------------------------------
+    @app.get("/api/tasks/{task_id}/pilot/sets/{set_id}/my-review")
+    def pilot_my_review(task_id: str, set_id: int,
+                        user: dict = Depends(require_user)) -> dict:
+        """复盘载荷：门槛/可见性完全沿用 my-result 口径（只认本人首次交卷，
+        未交卷 409；参与者读权限；成员互不可见——载荷只含本人数据）。"""
+        info = _read_info(task_id, user)
+        with closing(_open(info)) as conn:
+            base = _run(core.my_review_items, conn, set_id,
+                        user_id=user["user_id"])
+        review = core.organize_review(base.pop("items"))
+        catalog = _catalog(info, user)
+        _enrich_review_items(review["items"], catalog)
+        return {"review": {**base, **review}}
+
+    @app.get("/api/tasks/{task_id}/pilot/sets/{set_id}/my-review/export")
+    def pilot_my_review_export(task_id: str, set_id: int,
+                               user: dict = Depends(require_user)) -> Response:
+        """复盘报告导出（docx 流）：门槛同 my-review；只读零写。"""
+        info = _read_info(task_id, user)
+        with closing(_open(info)) as conn:
+            base = _run(core.my_review_items, conn, set_id,
+                        user_id=user["user_id"])
+        review = core.organize_review(base.pop("items"))
+        catalog = _catalog(info, user)
+        _enrich_review_items(review["items"], catalog)
+        return _docx_response(_review_docx(base, review),
+                              f"pilot-review-{task_id}-set{set_id}.docx")
 
     @app.get("/api/tasks/{task_id}/pilot/my-history")
     def pilot_my_history(task_id: str, user: dict = Depends(require_user)) -> dict:

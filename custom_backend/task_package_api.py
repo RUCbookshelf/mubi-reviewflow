@@ -1902,6 +1902,185 @@ def _import_team_provenance(task_dir: Path, task_id: str, owner_id: int,
         conn.close()
 
 
+def _prepare_imported_team_storage(task_dir: Path, task_id: str,
+                                   owner_name: str,
+                                   member_slugs: Iterable[str],
+                                   provenance: Mapping[str, Any]) -> dict[str, Any]:
+    """E7/P3（GAP_DESIGN_SURVEY 2026-11-20 §2 E7+§7 P3）：导入后团队存储
+    准备对齐（owner+成员库 schema 准备、F2 旧 source 行身份对齐）。
+
+    缺口（survey E7）：整包导入只对 collab 调 ``prepare_team_protocol_storage``
+    （``source_paths=()``），owner/成员库按包内**原样**落盘——旧包成员库可
+    无 F1/receipts；且 ``_rewrite_collaboration_store`` 只清 grants/settings，
+    旧部署 business-role **choice** 随 collab 残留（属主 choice 恒有效）。
+    导入后属主 coder choice 命中同 uid（典型=单人部署自导自恢复）时首次
+    appraisal 直调 ``runtime.mutate``（无 A hook）→ actor receipts 读 →
+    未处理 500；成员库同因缺 receipts 首写 500。
+
+    修法（「导入时即准备」根治，不依赖 P1 写路径 auto-prepare）：导入原子
+    边界内（temp dir 整体改名前）对属主+全部成员库执行与邀请流程同款的
+    **两步准备**——复用产品函数 ``main._prepare_invited_member_storage``
+    （appraisal ensure + P14 ``prepare_team_protocol_storage``），零手写
+    DDL。任何准备失败如实 typed 拒绝**整个导入**（失败清场、不留半准备
+    状态；与协作库改绑失败=包无效同一口径；准备幂等、重试安全）。
+
+    F2 身份对齐（survey E7/§5.4：旧 source 行可能指向旧库身份 → 发现层
+    issue）：带历史包（protocol 行随包保留）下以成员库**真实 ledger 身份**
+    为连接键，经产品原语 ``retire_source_on``/``register_source_on`` 在短
+    collab 事务内幂等对齐 active 行：
+    - 行身份在本地成员库存在 → 已对齐，原样保留；
+    - 行身份本地缺失且有未被任何 active 行认领的本地库 → **失配**：旧行
+      retire（``imported_source_identity_mismatch``）+ 原行 uid/真实身份
+      重登记（新 generation；token 与运行时 ``make_source_identity`` 同
+      口径，不手写）；
+    - 行身份本地缺失且无可认领库 → 旧行 retire（
+      ``imported_source_library_absent``）——失效，不再指向不存在的库。
+    fresh 导入（无 protocol 行）无存量行：只做准备，不做对齐。对齐失败
+    如实 typed 上抛（import 失败清场）。
+    """
+    from types import SimpleNamespace as _ShimInfo
+    from custom_backend import main as main_mod
+    from custom_backend import team_source_lifecycle as team_lifecycle
+    from custom_backend.appraisal_api import prepare_appraisal_storage_for
+    from coscreen import team_terminal_registry as _registry
+    from coscreen.team_vote_ledger import library_identity_header_on
+
+    owner_slug = tasks_mod.slugify_screener(owner_name)
+    collab = task_dir / "collaboration.db"
+
+    # 作用域闸：E7 缺口只在**带历史团队包**（collab+protocol 行随包、choice
+    # 可残留）可达——choice 存于 collab，fresh 导入（trusted_new_task）无
+    # 团队语境（登记前属主写为 solo 路径），且 legacy/个人包成员库可为任意
+    # 非 sqlite 形状、按包内原样落盘是既有契约（2.1.5 导入回归钉）。故准备
+    # 与对齐仅在 has_history 下执行，fresh 如实上报 skip。
+    if not provenance.get("has_history"):
+        return {"skipped": "fresh_import_no_team_history",
+                "owner_slug": owner_slug}
+
+    # -- 1) 属主+成员库 schema 准备（复用产品两步；失败=typed 导入失败） ----
+    # targets[0]=属主（包内缺库时由 _screener_db ensure 按产品原语建）；其余
+    # 为包内实际落盘的成员库（manifest db_members，缺文件者跳过不凭空建库）。
+    targets: list[str] = [owner_slug]
+    seen: set[str] = {owner_slug}
+    for slug in member_slugs:
+        if slug and slug not in seen:
+            seen.add(slug)
+            targets.append(slug)
+    shim = _ShimInfo(dir=task_dir, task_id=task_id)
+    for slug in targets:
+        db_path = task_dir / f"{slug}.db"
+        if slug != owner_slug and not db_path.is_file():
+            continue  # 包内本就无该成员库：不凭空建（登记语义归入场入口）
+        if tasks_mod.slugify_screener(slug) == slug:
+            # 常规路径：邀请流程产品函数整函数复用（username→slug 恒等，
+            # 路径解析/collab 撞名守卫与邀请逐字一致）。
+            result = main_mod._prepare_invited_member_storage(
+                shim, {"username": slug})
+            if not result.get("library_prepared"):
+                raise TaskPackageError("import_failed", params={
+                    "reason": "team_storage_prepare_failed", "member": slug,
+                    "detail": result.get("prepare_error")})
+            continue
+        # 非常规库 stem（slug 不可逆的历史包名）：同款两步产品原语、显式
+        # 路径（appraisal prepare 的宿主解析器直接绑定该库路径）。
+        try:
+            prepare_appraisal_storage_for(
+                shim, slug, lambda _info, _name, _p=db_path: _p)
+            team_lifecycle.prepare_team_protocol_storage(
+                collab_path=collab, source_paths=(db_path,))
+        except Exception as exc:  # noqa: BLE001 - 准备失败=导入失败（清场）
+            raise TaskPackageError("import_failed", params={
+                "reason": "team_storage_prepare_failed", "member": slug,
+                "detail": f"{type(exc).__name__}: {exc}"}) from exc
+    prepared: dict[str, Any] = {"owner_slug": owner_slug,
+                                "member_slugs": targets[1:]}
+
+    # -- 2) F2 旧 source 行身份对齐（带历史包才有存量行） -------------------
+    alignment: dict[str, int] = {"active_rows": 0, "aligned": 0,
+                                 "re-registered": 0, "retired_mismatch": 0,
+                                 "retired_absent": 0}
+    instance = provenance.get("preserved_task_instance_id")
+    if provenance.get("has_history") and instance:
+        # 本地 ledger 身份表（属主+成员库；身份不可读的库不参与对齐）。
+        local_libs: dict[str, Path] = {}
+        for slug in targets:
+            db_path = task_dir / f"{slug}.db"
+            if not db_path.is_file():
+                continue
+            try:
+                with closing(_open_read_only(db_path)) as ro:
+                    # 与 _register_member_source 同口径（C02 借用合同）：Row
+                    # 工厂 + 活动事务下读账本身份头。
+                    ro.row_factory = sqlite3.Row
+                    ro.execute("BEGIN")
+                    header = library_identity_header_on(ro)
+            except Exception:  # noqa: BLE001 - 身份不可读的库不参与对齐
+                continue
+            library_id = getattr(header, "library_id", None)
+            if library_id:
+                local_libs[library_id] = db_path
+        conn = sqlite3.connect(str(collab), timeout=15)
+        try:
+            conn.row_factory = sqlite3.Row  # C02 借用合同
+            conn.execute("BEGIN IMMEDIATE")
+            rows = _registry.list_sources_on(
+                conn, task_instance_id=str(instance), status="active")
+            alignment["active_rows"] = len(rows)
+            active_libs = {row["source_library_id"] for row in rows}
+            claimed: set[str] = set()
+            for row in rows:
+                library_id = row["source_library_id"]
+                if library_id in local_libs:
+                    alignment["aligned"] += 1
+                    continue
+                # 失配行 → 本地库认领：**只按旧行 token 内的相对路径基名**
+                # 认领同一成员的库文件（token=make_source_identity 产物，
+                # 基名跨部署稳定；绝不跨成员错配——认领不到即失效，不猜）。
+                preferred: list[str] = []
+                try:
+                    token = json.loads(str(row["source_path_identity"]))
+                    base = PurePosixPath(str(token.get("relative", ""))).name
+                    preferred = [
+                        candidate for candidate, path in local_libs.items()
+                        if candidate not in claimed
+                        and candidate not in active_libs
+                        and path.name == base]
+                except ValueError:
+                    preferred = []
+                if preferred:
+                    # 失配 → 重登记：retire 旧行后以原行 uid + 真实身份补登
+                    # （同事务内 retire 先行，active 唯一性约束不冲突）。
+                    chosen = sorted(preferred)[0]
+                    uid = int(row["source_user_id"])
+                    _registry.retire_source_on(
+                        conn, registration_id=row["registration_id"],
+                        retired_reason="imported_source_identity_mismatch")
+                    _registry.register_source_on(
+                        conn, task_instance_id=str(instance),
+                        source_user_id=uid, source_library_id=chosen,
+                        source_path_identity=team_lifecycle.make_source_identity(
+                            task_dir=task_dir, source_path=local_libs[chosen],
+                            source_user_id=uid, source_library_id=chosen))
+                    claimed.add(chosen)
+                    alignment["re-registered"] += 1
+                    alignment["retired_mismatch"] += 1
+                else:
+                    _registry.retire_source_on(
+                        conn, registration_id=row["registration_id"],
+                        retired_reason="imported_source_library_absent")
+                    alignment["retired_absent"] += 1
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 - 对齐失败=typed 导入失败
+            conn.rollback()
+            raise TaskPackageError("import_failed", params={
+                "reason": "team_source_alignment_failed",
+                "detail": f"{type(exc).__name__}: {exc}"}) from exc
+        finally:
+            conn.close()
+        prepared["source_alignment"] = alignment
+    return prepared
+
+
 def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
                   user: Mapping[str, Any], data_dir: str | Path) -> dict[str, Any]:
     """在临时目录完整落盘后整体改名（失败清理，不留半成品任务）。"""
@@ -1981,6 +2160,13 @@ def _apply_import(parsed: Mapping[str, Any], package_path: Path, *,
             # 导入（登记 trusted_new_task）在此区分并上报 provenance。
             team_provenance = _import_team_provenance(
                 temp_dir, new_id, owner_id, owner_name)
+            # E7/P3：导入原子边界内完成属主+成员库 schema 准备与 F2 旧
+            # source 行身份对齐（失败=typed 导入失败，temp_dir 整体清场，
+            # 不留半准备/半对齐状态）；详见 _prepare_imported_team_storage。
+            team_provenance["storage_prepared"] = \
+                _prepare_imported_team_storage(
+                    temp_dir, new_id, owner_name,
+                    tuple(slug_map.values()), team_provenance)
 
             restored = 0
             covered_paths: dict[str, str] = {}

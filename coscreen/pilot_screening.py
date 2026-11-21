@@ -22,6 +22,9 @@
   但 enforce 准入（``cleared``）、负责人看板结论计数、结果视图
   ``my_result`` 与其方法学段、「讨论后进入」只认每套题的**首次** submitted
   尝试；后续尝试带 ``counts_for_clearance=False`` / ``practice=True`` 标记。
+- 训练复盘（规格九，2026-11-21）：``my_review_items``/``organize_review``
+  只读聚合首次交卷快照（偏差模式聚类/误排除·误纳入分组/标记规范性），
+  零写、零评分改动；快照缺失时才以 ``evaluate`` 同源重算兜底。
 
 SQL 纪律：全部语句为固定字面量 + ``?`` 参数绑定，无 f-string/format/拼接。
 """
@@ -46,6 +49,7 @@ __all__ = [
     "DEFAULT_THRESHOLDS",
     "DECISIONS",
     "PilotScreeningError",
+    "REVIEW_PATTERN_MIN",
     "SAMPLE_LIMITS",
     "SAMPLINGS",
     "SET_STATUSES",
@@ -64,7 +68,9 @@ __all__ = [
     "member_history",
     "member_state",
     "methodology_text",
+    "my_review_items",
     "normalize_thresholds",
+    "organize_review",
     "results_board",
     "sample_keys",
     "set_settings",
@@ -1190,6 +1196,153 @@ def enter_by_discussion(conn: sqlite3.Connection, set_id: int, *,
             " discussion_note = ?, discussed_at = ? WHERE attempt_id = ?",
             (str(note or "")[:_MAX_NOTE], now, int(attempt["id"])))
     return _result_payload(conn, attempt)
+
+
+# ---------------------------------------------------------------------------
+# 训练复盘（规格九 B1，2026-11-21）：只读聚合，快照优先
+# ---------------------------------------------------------------------------
+
+#: 聚类成「模式」的最小条数（tier=pattern 阈值，规格九 B1）。
+REVIEW_PATTERN_MIN = 3
+
+#: 标记规范性：exclude 且理由含不确定措辞（大小写不敏感包含）即命中；空
+#: 理由同样命中——save_item 不强制理由非空（存储允许空串，如实定界）。
+_REVIEW_UNCERTAIN_MARKERS = ("不确定", "不知道", "unclear")
+
+
+def _review_reason_key(reason: Any) -> str:
+    """理由规范化聚类键：trim + casefold + 空白折叠的**精确串**（不做同义归并）。"""
+    return " ".join(str(reason or "").casefold().split())
+
+
+def my_review_items(conn: sqlite3.Connection, set_id: int, *,
+                    user_id: int) -> dict[str, Any]:
+    """复盘逐条对照底座（规格九 B1）：只认本人**首次**已交卷尝试（#19）。
+
+    门槛与 ``my_result`` 完全同口径（未交卷 → 409 ``attempt_not_submitted``），
+    只读零写。逐条对照**优先取交卷时存档的结果快照**（S8：报告口径可追溯，
+    绝不事后重算）；快照行缺失（外部直写库等异常）时才用与 ``submit_attempt``
+    完全同源的 ``evaluate`` 纯函数重算——金标准 publish 后只读、作答随尝试
+    档案冻结，两条路径对同一数据恒同值（回归测试抽验断言）。注：重算路径
+    与 ``submit_attempt`` 同样排除存量 maybe 作答（裁定 #9 视为未答）。
+    """
+    data = _set_row(conn, set_id)
+    rows = [dict(row) for row in conn.execute(
+        "SELECT * FROM pilot_attempts WHERE set_id = ? AND trainee_user_id = ?"
+        " AND status = 'submitted' ORDER BY id ASC LIMIT 1",
+        (int(set_id), int(user_id)))]
+    if not rows:
+        raise PilotScreeningError("attempt_not_submitted")
+    attempt = rows[0]
+    result = conn.execute(
+        "SELECT snapshot_json, verdict FROM pilot_results WHERE attempt_id = ?",
+        (int(attempt["id"]),)).fetchone()
+    if result is not None and result["snapshot_json"]:
+        snapshot = json.loads(result["snapshot_json"])
+        items = snapshot.get("items") or []
+        source, verdict = "snapshot", str(result["verdict"])
+    else:
+        keys = _item_keys(conn, set_id)
+        answers = {str(row["zotero_key"]): {"decision": row["decision"],
+                                            "reason": row["reason"] or ""}
+                   for row in conn.execute(
+                       "SELECT zotero_key, decision, reason FROM pilot_decisions"
+                       " WHERE attempt_id = ? AND decision != 'maybe'",
+                       (int(attempt["id"]),))}
+        snapshot = evaluate(_gold_map(conn, set_id), answers,
+                            data["thresholds"], order=keys,
+                            sampling=data["sampling"])
+        items = snapshot["items"]
+        source, verdict = "recomputed", snapshot["verdict"]
+    return {
+        "set": {"id": int(data["id"]), "status": data["status"],
+                "sampling": data["sampling"], "item_count": len(items)},
+        "attempt": {"id": int(attempt["id"]),
+                    "submitted_at": attempt["submitted_at"] or ""},
+        "source": source,
+        "verdict": verdict,
+        "items": items,
+    }
+
+
+def organize_review(items: Sequence[Mapping[str, Any]] | None,
+                    *, pattern_min: int = REVIEW_PATTERN_MIN) -> dict[str, Any]:
+    """复盘三段组织（规格九 B1，纯函数零 IO）。
+
+    - 方向（规格裁定，不得翻转）：``false_exclude`` = 本人 exclude × 金标准
+      include（误排除/过严）；``false_include`` = 本人 include × 金标准
+      exclude（误纳入/过松）。maybe 相关的不一致（仅存量数据可出现）按此
+      定义不属于任何方向，也不进复盘范围。
+    - ``patterns``：对每条方向分组内的 mismatch 按本人理由规范化聚类
+      （trim+casefold+空白折叠的精确串），全量列出、按 count 降序（同数按
+      direction/reason 字典序稳定排序）。
+    - ``tier`` 优先序 = 规格九页面组织序：``pattern``（所在聚类 ≥
+      ``pattern_min``）> ``isolated``（方向分组内未成模式的分歧）>
+      ``flag``（仅规范性命中、非差异条目）。
+    - 自洽不变量（验收口径 3）：``counts.total`` == 误排除 ∪ 误纳入 ∪
+      规范性提示 的去重 zotero_key 数；各聚类 count 之和 == 两个方向分组
+      条数之和。
+    """
+    entries: list[dict[str, Any]] = []
+    clusters: dict[tuple[str, str], list[str]] = {}
+    for item in items or []:
+        trainee_decision = item.get("trainee_decision")
+        gold_decision = item.get("gold_decision")
+        direction = None
+        if trainee_decision == "exclude" and gold_decision == "include":
+            direction = "false_exclude"
+        elif trainee_decision == "include" and gold_decision == "exclude":
+            direction = "false_include"
+        reason_key = _review_reason_key(item.get("trainee_reason"))
+        flagged = (trainee_decision == "exclude" and (
+            reason_key == "" or any(marker in reason_key
+                                    for marker in _REVIEW_UNCERTAIN_MARKERS)))
+        if direction is None and not flagged:
+            continue
+        entry = {
+            "zotero_key": str(item.get("zotero_key") or ""),
+            "direction": direction,
+            "flag": (("empty_reason" if reason_key == ""
+                      else "uncertain_reason") if flagged else None),
+            "trainee_decision": trainee_decision,
+            "trainee_reason": str(item.get("trainee_reason") or ""),
+            "gold_decision": gold_decision,
+            "gold_reason": str(item.get("gold_reason") or ""),
+        }
+        if direction is not None:
+            clusters.setdefault((direction, reason_key), []).append(
+                entry["zotero_key"])
+        entries.append(entry)
+    patterns = [{"reason": reason, "direction": direction,
+                 "count": len(keys), "keys": list(keys)}
+                for (direction, reason), keys in clusters.items()]
+    patterns.sort(key=lambda pattern: (-pattern["count"], pattern["direction"],
+                                       pattern["reason"]))
+    cluster_size = {key: len(keys)
+                    for keys in clusters.values() for key in keys}
+    for entry in entries:
+        if entry["direction"] is not None:
+            size = cluster_size.get(entry["zotero_key"], 0)
+            entry["pattern_count"] = size
+            entry["tier"] = "pattern" if size >= pattern_min else "isolated"
+        else:
+            entry["pattern_count"] = None
+            entry["tier"] = "flag"
+    groups = {
+        "false_exclude": [entry["zotero_key"] for entry in entries
+                          if entry["direction"] == "false_exclude"],
+        "false_include": [entry["zotero_key"] for entry in entries
+                          if entry["direction"] == "false_include"],
+    }
+    flags = [{"zotero_key": entry["zotero_key"], "kind": entry["flag"],
+              "direction": entry["direction"]}
+             for entry in entries if entry["flag"] is not None]
+    counts = {"total": len(entries),
+              "false_exclude": len(groups["false_exclude"]),
+              "false_include": len(groups["false_include"]),
+              "flags": len(flags), "patterns": len(patterns)}
+    return {"counts": counts, "patterns": patterns, "groups": groups,
+            "flags": flags, "items": entries}
 
 
 def member_state(conn: sqlite3.Connection, *, set_id: int,

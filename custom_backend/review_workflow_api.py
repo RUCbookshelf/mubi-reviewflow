@@ -318,6 +318,229 @@ class WorkflowRuntime:
             return False
         return self._readonly_task_kind(info, owner) == "team"
 
+    def _require_owner_business_role(self, task_id: str) -> None:
+        """R4（用户裁定 (a)）：属主业务角色未配置时团队业务写前置 409 typed。
+
+        不改 F1 roster 规则（``roster must contain exactly one owner entry``
+        保持不变）；本门只在写窗口之前把"确定性未配置"如实表达为用户可
+        理解的 409 + ``recovery`` 指引，而不是让末票在构造 seal 时落成
+        裸 500。判定复用 P01 ``resolve_business_role`` 的单一有效角色口径
+        （choice 优先 / 单 grant 兼容 / 双 grant conflict）；``config=="ok"``
+        即视为已配置（coder 或 reconciler 均可，不改选择语义）。
+
+        读取失败不在此新增失败面：协作库暂时不可读/损坏交既有写窗与全局
+        处理器（同一请求会在下游得到既有 typed 结果）。
+        """
+        from custom_backend.team_http_errors import (
+            OWNER_BUSINESS_ROLE_UNCONFIGURED_CODE,
+            OWNER_BUSINESS_ROLE_UNCONFIGURED_MESSAGE,
+            OWNER_BUSINESS_ROLE_UNCONFIGURED_MESSAGE_KEY,
+            typed_unprepared_envelope,
+        )
+
+        info = self.task_lookup(task_id)
+        collab = task_collaboration.shared_store_path(info.dir)
+        try:
+            owner = task_collaboration.get_owner(collab, task_id=info.task_id)
+            if owner is None:
+                return  # legacy：本方法只在 team 路径调用
+            resolution = task_collaboration.resolve_business_role(
+                collab, user_id=int(owner["owner_user_id"]),
+                task_id=info.task_id)
+        except task_collaboration.CollaborationStoreCorruptError:
+            raise
+        except (task_collaboration.OwnerUnavailableError, ValueError):
+            # 暂时不可读/绑定漂移：不在此新增失败面（写窗按既有契约处理）。
+            return
+        if resolution.get("config") == "ok":
+            return
+        raise HTTPException(409, typed_unprepared_envelope(
+            error_code=OWNER_BUSINESS_ROLE_UNCONFIGURED_CODE,
+            message_key=OWNER_BUSINESS_ROLE_UNCONFIGURED_MESSAGE_KEY,
+            details=(f"owner business role unconfigured "
+                     f"(source={resolution.get('source')!r})"),
+            message=OWNER_BUSINESS_ROLE_UNCONFIGURED_MESSAGE,
+            recovery_kind="owner_business_role",
+            actions=("owner_choose_business_role",),
+            doc="team/business-role#owner"))
+
+    # ------------------------------------------------------------------
+    # P1（2.1.6 缺口族根治主干包，2026-11-21 用户裁定"按建议执行"）
+    # 成员写路径的锁外幂等自动准备
+    # ------------------------------------------------------------------
+    #: actor 成员库（团队写目标）的两大存储族——与 ``main._prepare_invited_
+    #: member_storage`` 两步准备安装的表集同源。**只有两族整体缺失（裸库）**
+    #: 才安全自动准备；任一族部分在场＝半装/异布局，禁止自动修补（survey
+    #: §5.1 幂等/失败语义），由下游 typed 映射如实 409。
+    _MEMBER_TEAM_RECEIPTS_TABLES = (
+        "team_flow_receipts", "team_flow_receipts_meta")
+    _MEMBER_TEAM_FACTS_TABLES = (
+        "team_terminal_seals", "team_terminal_facts_meta")
+
+    def _ensure_member_team_storage(self, task_id: str, user: dict) -> bool:
+        """写前锁外幂等准备：**owner + actor** 两个目标库（C 路线咽喉）。
+
+        覆盖 E1-E9 全部入场族与存量裸库（legacy 首邀零准备、P18 best-effort
+        失败残余、读路径懒建裸成员库、整包导入旧库、owner 直调 appraisal
+        绕过 main.py 的 A 方案 hook 等）：每个目标库**两族整体缺失**
+        （=从未准备）→ 与邀请流程同款两步准备（appraisal ensure + P14
+        ``prepare_team_protocol_storage``）。**幂等**：两族齐全时零动作；
+        两准备函数各自 BEGIN IMMEDIATE，并发首写由 SQLite 写锁串行，输者
+        复核直接跳过。
+
+        关键边界（survey §5.1「not_prepared/零对象→可安全 prepare；
+        schema_mismatch/半装/损坏→禁止自动修补」）：**半装/异布局不自动
+        修补**——只缺一族（receipts 或 F1 在场、另一族缺失）视为半装，
+        交给下游 typed 映射如实 409（``team_flow_receipt_unavailable`` /
+        ``team_terminal_facts_unavailable`` 的 ``not_prepared``/
+        ``schema_mismatch``），绝不把"被破坏的存储"悄悄修成健康态。
+
+        契约：
+
+        - **锁外**：本方法在 ``mutate`` 顶部、``retained_team_write_inputs``
+          取 canonical 任务锁与写窗之前调用，天然保持 P18 准备位形；
+        - **非参与者 no-op**：actor 无 grant 时不在此新增失败面（角色门
+          会在写窗内如实拒绝）；
+        - **失败如实 typed 409**（``team_member_storage_unprepared``，
+          retryable=false）：确定性未准备/半装/损坏不自动修补，且绝不在
+          写窗内建表、绝不落成裸 500；
+        - **准备成功后可选补登记 F2（actor 非属主）**：
+          ``ensure_member_source_registered``（P2 提供的固定签名）就地调用；
+          P2 未就绪（ImportError/AttributeError）时跳过并记日志，不阻断写。
+        """
+        import logging
+        from pathlib import Path
+
+        from custom_backend import team_source_lifecycle as team_lifecycle
+        from custom_backend.appraisal_api import prepare_appraisal_storage_for
+
+        log = logging.getLogger(__name__)
+        info = self.task_lookup(task_id)
+        task_id = info.task_id
+        user_id = user.get("user_id") if isinstance(user, dict) else None
+        username = user.get("username") if isinstance(user, dict) else None
+        if not isinstance(username, str) or not username:
+            return False
+        collab = task_collaboration.shared_store_path(info.dir)
+        try:
+            owner = task_collaboration.get_owner(collab, task_id=task_id)
+        except task_collaboration.CollaborationStoreCorruptError:
+            raise
+        except task_collaboration.OwnerUnavailableError:
+            # 协作库暂不可读：不在此新增失败面（写窗会按既有契约如实 503）。
+            return False
+        if owner is None:
+            return False  # legacy（无属主）：mutate 不会进入 team 路径
+        owner_uid = int(owner.get("owner_user_id") or 0)
+        owner_username = owner.get("owner_username")
+        is_owner_actor = owner_uid == int(user_id or 0)
+        if not is_owner_actor:
+            try:
+                if not task_collaboration.is_participant(
+                        collab, int(user_id or 0), task_id=task_id):
+                    return False  # 非参与者：角色门负责拒绝，不在此准备
+            except task_collaboration.CollaborationStoreCorruptError:
+                raise
+            except task_collaboration.OwnerUnavailableError:
+                return False
+        targets: list[tuple[str, Path]] = []
+        if isinstance(owner_username, str) and owner_username:
+            targets.append((owner_username, Path(info.dir) / (
+                tasks.slugify_screener(owner_username) + ".db")))
+        if not (is_owner_actor or username == owner_username):
+            targets.append((username, Path(info.dir) / (
+                tasks.slugify_screener(username) + ".db")))
+        to_prepare: list[tuple[str, Path]] = []
+        for name, path in targets:
+            try:
+                present = self._sqlite_tables_present(path)
+            except (sqlite3.Error, OSError) as exc:
+                # 就绪检查读失败：typed 409 确定性（重试同请求不会自愈）——
+                # 与准备函数自身的 schema_mismatch 口径一致，绝不落成裸 500。
+                raise self._member_storage_http(
+                    "readiness check failed: "
+                    f"{type(exc).__name__}: {exc}") from exc
+            receipts_ready = set(self._MEMBER_TEAM_RECEIPTS_TABLES) <= present
+            facts_ready = set(self._MEMBER_TEAM_FACTS_TABLES) <= present
+            if receipts_ready and facts_ready:
+                continue  # 两族齐全：幂等零动作
+            if receipts_ready != facts_ready:
+                # 半装/异布局：禁止自动修补（survey §5.1）——由下游 typed
+                # 映射如实 409，绝不把被破坏的存储悄悄修成健康态。
+                continue
+            to_prepare.append((name, path))
+        if not to_prepare:
+            return False
+        # 两族整体缺失＝从未准备（E3/E5 首邀 legacy、E9 读路径裸库、
+        # E1/E2 owner 直调 appraisal 等）：锁外两步幂等准备。
+        try:
+            for name, _path in to_prepare:
+                prepare_appraisal_storage_for(info, name, self.screener_db)
+            team_lifecycle.prepare_team_protocol_storage(
+                collab_path=collab,
+                source_paths=tuple(path for _name, path in to_prepare))
+        except Exception as exc:  # noqa: BLE001 - typed 409 如实上报，不吞
+            log.warning(
+                "team write storage auto-prepare failed: task=%s targets=%s: %s",
+                task_id, [name for name, _p in to_prepare], exc)
+            raise self._member_storage_http(
+                f"{type(exc).__name__}: {exc}") from exc
+        # F2 补登记（P2 固定签名；未就绪时降级跳过，不阻断写）
+        if not is_owner_actor:
+            try:
+                ensure_registered = getattr(
+                    team_lifecycle, "ensure_member_source_registered", None)
+                if ensure_registered is not None:
+                    result = ensure_registered(self, info, dict(user), user_id)
+                    if isinstance(result, dict) \
+                            and result.get("status") == "unavailable":
+                        log.warning(
+                            "member source registration deferred: task=%s "
+                            "member=%s issue=%s", task_id, username,
+                            result.get("issue"))
+            except (ImportError, AttributeError) as exc:
+                log.warning(
+                    "member source registration hook unavailable: task=%s: %s",
+                    task_id, exc)
+            except Exception as exc:  # noqa: BLE001 - 补登记失败不阻断写
+                log.warning(
+                    "member source registration failed (non-blocking): "
+                    "task=%s member=%s: %s", task_id, username, exc)
+        return True
+
+    @staticmethod
+    def _member_storage_http(details: str) -> HTTPException:
+        """成员库团队存储确定性未准备的 typed 响应（409 不可重试）。"""
+        from custom_backend.team_http_errors import typed_unprepared_envelope
+        return HTTPException(409, typed_unprepared_envelope(
+            error_code="team_member_storage_unprepared",
+            message_key="team.member_storage_unprepared",
+            details=details,
+            message=("成员个人库的团队存储未就绪且无法自动准备"
+                     "（库缺失/半装/损坏）；请修复后重试同一请求。"),
+            recovery_kind="team_member_storage",
+            actions=("repair_member_library", "contact_operator"),
+            doc="team/member-storage#recovery"))
+
+    @staticmethod
+    def _sqlite_tables_present(path) -> set:
+        """只读列出库中表名（sqlite_master 纯读；文件缺失返回空集）。
+
+        与 ``custom_backend.main._sqlite_tables_present`` 同语义（文件缺失
+        = 空集 → 可安全准备；主仓文件互斥约束下在此保留最小实现，后续可
+        下沉合并）。
+        """
+        path = Path(path) if not isinstance(path, Path) else path
+        if not path.is_file():
+            return set()
+        conn = sqlite3.connect(str(path), timeout=5)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        finally:
+            conn.close()
+        return {row[0] for row in rows}
+
     def context(self, task_id: str, user: dict) -> WorkflowContext:
         info = self.task_lookup(task_id)
         # R6-C3/#35：锁与权限键统一规范 task_id——find_task 会把尾点别名解析到
@@ -1768,6 +1991,22 @@ class WorkflowRuntime:
     _REQUEST_SHAPE_ERROR_CODES = frozenset({
         "invalid_request_id", "invalid_request_sha256"})
 
+    #: R4 门限域＝**全部构造 F1 roster 的 operation**（修轮：复审 §1.2 证伪
+    #: "member_vote/member_undo 唯一"的旧论断）。roster 构造函数 `_roster_and_
+    #: required`（team_flow_commit.py:160）仅两个调用点：
+    #:   1. `_append_last_vote_seals`（门=``_STAGE_SEAL_OPERATIONS={"member_vote"}``）
+    #:      → probe9 的 500（owner 缺项 → TerminalFactsPayloadInvalid）在此；
+    #:   2. `_append_one_observation`（经 `_append_upstream_observation`，门=
+    #:      stage∈``_UPSTREAM_BY_STAGE={"fulltext":(...)}`` 且 name∈
+    #:      ``{member_vote, member_undo, member_annotation,
+    #:      member_annotation_note}``）→ fulltext 观察路径同样产 v2 观察载荷
+    #:      的 roster（owner 未配置时会写入无属主项 roster，数据面皱纹）。
+    #: 故门限域 = 上述四族并集。coding/appraisal/consensus/annotation-note
+    #: 之外的 coding 族不构造 roster，不纳入。
+    _OWNER_ROLE_GATED_OPS = frozenset({
+        "member_vote", "member_undo",
+        "member_annotation", "member_annotation_note"})
+
     def mutate(
         self,
         task_id: str,
@@ -1823,6 +2062,26 @@ class WorkflowRuntime:
         keys = normalize_item_keys(item_keys)
         task_id = self.task_lookup(task_id).task_id  # R6-C3 canonical id
         if self.is_team(task_id):
+            # R4（用户 2026-11-21 裁定 (a)）：团队业务写前要求属主业务角色
+            # 已配置——修复前 owner 未配置时 F1 roster 缺属主项，末票
+            # ``_validate_payload`` 抛 ``TerminalFactsPayloadInvalid`` →
+            # 未处理 500（probe9）。roster 规则本身不改，前置 409 typed 并
+            # 明确提示配置（含 recovery 指引）。门限域＝**全部构造 F1 roster
+            # 的 operation**：member_vote / member_undo（末票+观察两路）/
+            # member_annotation / member_annotation_note（fulltext 观察路，
+            # 见常量 `_OWNER_ROLE_GATED_OPS` 的调用点论证）。coding/appraisal/
+            # consensus 不构造 roster，不受此门影响。
+            if getattr(operation, "name", "") in self._OWNER_ROLE_GATED_OPS:
+                self._require_owner_business_role(task_id)
+            # P1（2.1.6 缺口族根治主干包）：成员写路径单一咽喉的锁外幂等
+            # 自动准备（镜像属主 A 方案 ``_ensure_owner_team_storage``）——
+            # 本调用天然在 canonical 任务锁/P13 写窗之外（survey §5.1 B
+            # 路线位形），覆盖 E1-E9 全部入场族与存量坏库：actor 的成员库
+            # 缺 F1/receipts/appraisal schema 时先幂等准备（appraisal
+            # ensure + ``prepare_team_protocol_storage``），已备零动作。
+            # 失败按确定性 409 typed（``team_member_storage_unprepared``），
+            # 绝不在写窗内建表、绝不落成裸 500。
+            self._ensure_member_team_storage(task_id, user)
             return self._mutate_team(
                 task_id, user, operation=operation, keys=keys,
                 request_id=request_id, request_sha256=request_sha256,
@@ -1839,7 +2098,20 @@ class WorkflowRuntime:
         from collections.abc import Mapping
 
         from coscreen import task_collaboration
-        from coscreen.team_flow_receipts import TeamFlowReceiptConflict
+        from coscreen.team_flow_receipts import (
+            TeamFlowReceiptConflict,
+            TeamFlowReceiptUnavailable,
+        )
+        from coscreen.team_terminal_facts import (
+            TerminalFactsConflict,
+            TerminalFactsUnavailable,
+        )
+        from coscreen.team_terminal_registry import (
+            TerminalRegistryConflict,
+            TerminalRegistryStateError,
+            TerminalRegistryUnavailable,
+        )
+        from coscreen.team_vote_ledger import VoteLedgerUnavailable
         from custom_backend.team_flow_commit import (
             TeamMutationError,
             run_team_mutation,
@@ -1898,6 +2170,26 @@ class WorkflowRuntime:
                 "details": str(exc),
                 "message": "该请求编号已有内容不同的成功回执，请更换请求编号重试。",
             }) from exc
+        except (
+            TeamFlowReceiptUnavailable,
+            TerminalFactsUnavailable,
+            TerminalFactsConflict,
+            TerminalRegistryUnavailable,
+            TerminalRegistryConflict,
+            TerminalRegistryStateError,
+            VoteLedgerUnavailable,
+        ) as exc:
+            # P1 异常收口（survey §3.1-3.4 并集族）：修复前 receipts/F1/registry/
+            # ledger 四族在写主通道完全未捕获 → 全局裸 500；现统一走
+            # ``team_http_errors``：确定性未准备/布局/损坏=409 不可重试，
+            # unreadable=503 可重试，``connection_contract``=编程违约原样上抛。
+            # 一处收口覆盖 decisions/stage2/coding/highlights/evidence/undo/
+            # values-batch 全部成员写通道与 appraisal/consensus 直调路径。
+            from custom_backend.team_http_errors import typed_team_http
+            mapped = typed_team_http(exc)
+            if mapped is None:
+                raise  # connection_contract：内部违约不伪装业务错误
+            raise mapped from exc
         except TeamMutationError as exc:
             status = (400 if exc.code in self._REQUEST_SHAPE_ERROR_CODES
                       else 500)
@@ -1907,6 +2199,15 @@ class WorkflowRuntime:
                 "message": "请求参数不合法。" if status == 400 else str(exc),
             }) from exc
         except ValueError as exc:
+            # P1 异常收口（survey §5.2）：typed 存储族中 ``TerminalFactsPayloadInvalid``
+            # /``TerminalRegistryPayloadInvalid`` 是 ValueError 子类——必须先于
+            # 通用 ValueError 分支按确定性 409 映射（R4 的 owner 未配置即由此
+            # 从裸 500 转 409），且 writer 已运行后同样适用（同目标已回滚，
+            # 映射不改变回滚事实，只是不再落成裸 500）。
+            from custom_backend.team_http_errors import typed_team_http
+            mapped = typed_team_http(exc)
+            if mapped is not None:
+                raise mapped from exc
             if entered["writer"]:
                 raise  # writer 自身异常原样上抛（同目标已回滚），不吞不改
             message = str(exc)
